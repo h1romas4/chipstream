@@ -9,4 +9,4 @@ homepage = "https://github.com/h1romas4"
 repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 keywords = ["vgm", "sound", "audio"]
-categories = ["audio"]
+categories = ["multimedia::audio"]
