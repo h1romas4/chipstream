@@ -1,0 +1,19 @@
+[package]
+name = "soundlog-tools"
+version = "0.1.0"
+edition = "2024"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+description = "Simple CLI tools for soundlog"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+flate2 = "1.0"
+anyhow = "1.0"
+comfy-table = "6"
+soundlog = { path = "../soundlog" }
+unicode-width = "0.1"
+
+[[bin]]
+name = "soundlog"
+path = "src/main.rs"
