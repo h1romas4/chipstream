@@ -9,6 +9,8 @@ utilities for building and parsing register-write logs such as the VGM
 
 ## Contents
 
+[![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
+
 - `crates/soundlog` — a builder and parser for VGM documents (included in this repository).
 - Additional utilities and experimental crates for working with sound chips.
 
