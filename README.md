@@ -1,5 +1,7 @@
 # chipstream
 
+![](https://github.com/h1romas4/chipstream/workflows/Build/badge.svg)
+
 `chipstream` is a toolkit suite for running and working with retro sound chips.
 This repository is organized as a monorepo containing multiple crates and provides
 utilities for building and parsing register-write logs such as the VGM

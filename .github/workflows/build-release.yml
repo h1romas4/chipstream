@@ -1,0 +1,41 @@
+name: Build-Release
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: "release"
+        type: boolean
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v3
+        id: cache-toolchaine
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Rust Toolchain Setup
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.91.1
+          profile: minimal
+          override: true
+
+      - name: Test
+        run: |
+          cargo test
+
+      - name: Compile
+        run: |
+          cargo build --release
