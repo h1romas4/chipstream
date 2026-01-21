@@ -1,0 +1,24 @@
+[package]
+name = "soundlog-debuger"
+version = "0.1.0"
+edition = "2024"
+description = "GUI frontend for soundlog using egui/eframe"
+license = "MIT"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+repository = "https://github.com/h1romas4/chipstream"
+
+[dependencies]
+eframe = "0.23"
+clap = { version = "4", features = ["derive"] }
+flate2 = "1.0"
+anyhow = "1.0"
+comfy-table = "6"
+unicode-width = "0.1"
+
+# Optional: depend on the local soundlog crate if the GUI will use it.
+# Uncomment if you need to link against the library crate.
+soundlog = { path = "../soundlog" }
+
+[[bin]]
+name = "soundlog-debuger"
+path = "src/main.rs"

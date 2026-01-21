@@ -9,4 +9,4 @@ mod header;
 pub mod parser;
 
 pub use document::{VgmBuilder, VgmDocument};
-pub use header::{VgmExtraHeader, VgmHeader};
+pub use header::{VgmExtraHeader, VgmHeader, VgmHeaderField};

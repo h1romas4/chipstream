@@ -23,6 +23,241 @@ use std::convert::TryFrom;
 
 pub(crate) const VGM_MAX_HEADER_SIZE: u32 = 0x100;
 
+/// Enum identifying header fields and their on-disk offsets.
+#[derive(Copy, Clone, Debug)]
+pub enum VgmHeaderField {
+    Ident,
+    EofOffset,
+    Version,
+    Sn76489Clock,
+    Ym2413Clock,
+    Gd3Offset,
+    TotalSamples,
+    LoopOffset,
+    LoopSamples,
+    SampleRate,
+    SnFb,
+    Snw,
+    Sf,
+    Ym2612Clock,
+    Ym2151Clock,
+    DataOffset,
+    SegaPcmClock,
+    SpcmInterface,
+    Rf5c68Clock,
+    Ym2203Clock,
+    Ym2608Clock,
+    Ym2610bClock,
+    Ym3812Clock,
+    Ym3526Clock,
+    Y8950Clock,
+    Ymf262Clock,
+    Ymf278bClock,
+    Ymf271Clock,
+    Ymz280bClock,
+    Rf5c164Clock,
+    PwmClock,
+    Ay8910Clock,
+    AyMisc,
+    GbDmgClock,
+    NesApuClock,
+    MultipcmClock,
+    Upd7759Clock,
+    Okim6258Clock,
+    Okim6258Flags,
+    Okim6295Clock,
+    K051649Clock,
+    K054539Clock,
+    Huc6280Clock,
+    C140Clock,
+    K053260Clock,
+    PokeyClock,
+    QsoundClock,
+    ScspClock,
+    ExtraHeaderOffset,
+    WonderSwan,
+    Vsu,
+    Saa1099,
+    Es5503,
+    Es5506,
+    Es5506Channels,
+    Es5506Cd,
+    Es5506Reserved,
+    X1_010,
+    C352,
+    Ga20,
+    Mikey,
+    ReservedE8EF,
+    ReservedF0FF,
+}
+
+impl VgmHeaderField {
+    pub fn offset(self) -> usize {
+        match self {
+            VgmHeaderField::Ident => 0x00,
+            VgmHeaderField::EofOffset => 0x04,
+            VgmHeaderField::Version => 0x08,
+            VgmHeaderField::Sn76489Clock => 0x0C,
+            VgmHeaderField::Ym2413Clock => 0x10,
+            VgmHeaderField::Gd3Offset => 0x14,
+            VgmHeaderField::TotalSamples => 0x18,
+            VgmHeaderField::LoopOffset => 0x1C,
+            VgmHeaderField::LoopSamples => 0x20,
+            VgmHeaderField::SampleRate => 0x24,
+            VgmHeaderField::SnFb => 0x28,
+            VgmHeaderField::Snw => 0x2A,
+            VgmHeaderField::Sf => 0x2B,
+            VgmHeaderField::Ym2612Clock => 0x2C,
+            VgmHeaderField::Ym2151Clock => 0x30,
+            VgmHeaderField::DataOffset => 0x34,
+            VgmHeaderField::SegaPcmClock => 0x38,
+            VgmHeaderField::SpcmInterface => 0x3C,
+            VgmHeaderField::Rf5c68Clock => 0x40,
+            VgmHeaderField::Ym2203Clock => 0x44,
+            VgmHeaderField::Ym2608Clock => 0x48,
+            VgmHeaderField::Ym2610bClock => 0x4C,
+            VgmHeaderField::Ym3812Clock => 0x50,
+            VgmHeaderField::Ym3526Clock => 0x54,
+            VgmHeaderField::Y8950Clock => 0x58,
+            VgmHeaderField::Ymf262Clock => 0x5C,
+            VgmHeaderField::Ymf278bClock => 0x60,
+            VgmHeaderField::Ymf271Clock => 0x64,
+            VgmHeaderField::Ymz280bClock => 0x68,
+            VgmHeaderField::Rf5c164Clock => 0x6C,
+            VgmHeaderField::PwmClock => 0x70,
+            VgmHeaderField::Ay8910Clock => 0x74,
+            VgmHeaderField::AyMisc => 0x78,
+            VgmHeaderField::GbDmgClock => 0x80,
+            VgmHeaderField::NesApuClock => 0x84,
+            VgmHeaderField::MultipcmClock => 0x88,
+            VgmHeaderField::Upd7759Clock => 0x8C,
+            VgmHeaderField::Okim6258Clock => 0x90,
+            VgmHeaderField::Okim6258Flags => 0x94,
+            VgmHeaderField::Okim6295Clock => 0x98,
+            VgmHeaderField::K051649Clock => 0x9C,
+            VgmHeaderField::K054539Clock => 0xA0,
+            VgmHeaderField::Huc6280Clock => 0xA4,
+            VgmHeaderField::C140Clock => 0xA8,
+            VgmHeaderField::K053260Clock => 0xAC,
+            VgmHeaderField::PokeyClock => 0xB0,
+            VgmHeaderField::QsoundClock => 0xB4,
+            VgmHeaderField::ScspClock => 0xB8,
+            VgmHeaderField::ExtraHeaderOffset => 0xBC,
+            VgmHeaderField::WonderSwan => 0xC0,
+            VgmHeaderField::Vsu => 0xC4,
+            VgmHeaderField::Saa1099 => 0xC8,
+            VgmHeaderField::Es5503 => 0xCC,
+            VgmHeaderField::Es5506 => 0xD0,
+            VgmHeaderField::Es5506Channels => 0xD4,
+            VgmHeaderField::Es5506Cd => 0xD6,
+            VgmHeaderField::Es5506Reserved => 0xD7,
+            VgmHeaderField::X1_010 => 0xD8,
+            VgmHeaderField::C352 => 0xDC,
+            VgmHeaderField::Ga20 => 0xE0,
+            VgmHeaderField::Mikey => 0xE4,
+            VgmHeaderField::ReservedE8EF => 0xE8,
+            VgmHeaderField::ReservedF0FF => 0xF0,
+        }
+    }
+
+    /// Return the length in bytes for this field as stored in the header.
+    pub fn len(self) -> usize {
+        match self {
+            VgmHeaderField::Ident => 4,
+            VgmHeaderField::EofOffset => 4,
+            VgmHeaderField::Version => 4,
+            VgmHeaderField::Sn76489Clock => 4,
+            VgmHeaderField::Ym2413Clock => 4,
+            VgmHeaderField::Gd3Offset => 4,
+            VgmHeaderField::TotalSamples => 4,
+            VgmHeaderField::LoopOffset => 4,
+            VgmHeaderField::LoopSamples => 4,
+            VgmHeaderField::SampleRate => 4,
+            VgmHeaderField::SnFb => 2,
+            VgmHeaderField::Snw => 1,
+            VgmHeaderField::Sf => 1,
+            VgmHeaderField::Ym2612Clock => 4,
+            VgmHeaderField::Ym2151Clock => 4,
+            VgmHeaderField::DataOffset => 4,
+            VgmHeaderField::SegaPcmClock => 4,
+            VgmHeaderField::SpcmInterface => 4,
+            VgmHeaderField::Rf5c68Clock => 4,
+            VgmHeaderField::Ym2203Clock => 4,
+            VgmHeaderField::Ym2608Clock => 4,
+            VgmHeaderField::Ym2610bClock => 4,
+            VgmHeaderField::Ym3812Clock => 4,
+            VgmHeaderField::Ym3526Clock => 4,
+            VgmHeaderField::Y8950Clock => 4,
+            VgmHeaderField::Ymf262Clock => 4,
+            VgmHeaderField::Ymf278bClock => 4,
+            VgmHeaderField::Ymf271Clock => 4,
+            VgmHeaderField::Ymz280bClock => 4,
+            VgmHeaderField::Rf5c164Clock => 4,
+            VgmHeaderField::PwmClock => 4,
+            VgmHeaderField::Ay8910Clock => 4,
+            VgmHeaderField::AyMisc => 8,
+            VgmHeaderField::GbDmgClock => 4,
+            VgmHeaderField::NesApuClock => 4,
+            VgmHeaderField::MultipcmClock => 4,
+            VgmHeaderField::Upd7759Clock => 4,
+            VgmHeaderField::Okim6258Clock => 4,
+            VgmHeaderField::Okim6258Flags => 4,
+            VgmHeaderField::Okim6295Clock => 4,
+            VgmHeaderField::K051649Clock => 4,
+            VgmHeaderField::K054539Clock => 4,
+            VgmHeaderField::Huc6280Clock => 4,
+            VgmHeaderField::C140Clock => 4,
+            VgmHeaderField::K053260Clock => 4,
+            VgmHeaderField::PokeyClock => 4,
+            VgmHeaderField::QsoundClock => 4,
+            VgmHeaderField::ScspClock => 4,
+            VgmHeaderField::ExtraHeaderOffset => 4,
+            VgmHeaderField::WonderSwan => 4,
+            VgmHeaderField::Vsu => 4,
+            VgmHeaderField::Saa1099 => 4,
+            VgmHeaderField::Es5503 => 4,
+            VgmHeaderField::Es5506 => 4,
+            VgmHeaderField::Es5506Channels => 2,
+            VgmHeaderField::Es5506Cd => 1,
+            VgmHeaderField::Es5506Reserved => 1,
+            VgmHeaderField::X1_010 => 4,
+            VgmHeaderField::C352 => 4,
+            VgmHeaderField::Ga20 => 4,
+            VgmHeaderField::Mikey => 4,
+            VgmHeaderField::ReservedE8EF => 8,
+            VgmHeaderField::ReservedF0FF => 16,
+        }
+    }
+
+    /// Return true if this field occupies zero bytes (none in current spec).
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// Compute the byte range (start, length) of this field within the
+    /// serialized header buffer considering the `data_offset` rules used by
+    /// `VgmHeader::to_bytes()`.
+    ///
+    /// `header_version` should be the header's `version` value and is used
+    /// when `data_offset == 0` to compute the legacy header size.
+    pub fn byte_range(self, header_version: u32, data_offset: u32) -> Option<(usize, usize)> {
+        // Compute header size using same rules as serialization
+        let header_size = if data_offset == 0 {
+            VgmHeader::fallback_header_size_for_version(header_version)
+        } else {
+            0x34_usize.wrapping_add(data_offset as usize)
+        };
+
+        let off = self.offset();
+        let len = self.len();
+        if off + len <= header_size {
+            Some((off, len))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// VGM file header fields and utilities for serialization.
 pub struct VgmHeader {
@@ -165,135 +400,319 @@ impl VgmHeader {
     pub(crate) fn to_bytes(&self, gd3_offset: u32, data_offset: u32) -> Vec<u8> {
         let mut buf: Vec<u8> = vec![0; VGM_MAX_HEADER_SIZE as usize];
         // ident (0x00)
-        write_slice(&mut buf, 0x00, &self.ident);
+        write_slice(&mut buf, VgmHeaderField::Ident.offset(), &self.ident);
         // eof_offset placeholder (0x04)
         // If an EOF offset was already set in the header, emit it here so callers
         // (e.g. higher-level serialization) can choose to respect the stored value.
         // Otherwise emit 0 and allow the document-level serializer to compute/update it.
         if self.eof_offset != 0 {
-            write_u32(&mut buf, 0x04, self.eof_offset);
+            write_u32(
+                &mut buf,
+                VgmHeaderField::EofOffset.offset(),
+                self.eof_offset,
+            );
         } else {
-            write_u32(&mut buf, 0x04, 0);
+            write_u32(&mut buf, VgmHeaderField::EofOffset.offset(), 0);
         }
         // version (0x08)
-        write_u32(&mut buf, 0x08, self.version);
+        write_u32(&mut buf, VgmHeaderField::Version.offset(), self.version);
         // SN76489 clock (0x0C)
-        write_u32(&mut buf, 0x0C, self.sn76489_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Sn76489Clock.offset(),
+            self.sn76489_clock,
+        );
         // YM2413 clock (0x10)
-        write_u32(&mut buf, 0x10, self.ym2413_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2413Clock.offset(),
+            self.ym2413_clock,
+        );
         // GD3 offset (0x14)
-        write_u32(&mut buf, 0x14, gd3_offset);
+        write_u32(&mut buf, VgmHeaderField::Gd3Offset.offset(), gd3_offset);
         // total samples (0x18)
-        write_u32(&mut buf, 0x18, self.total_samples);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::TotalSamples.offset(),
+            self.total_samples,
+        );
         // loop offset (0x1C)
-        write_u32(&mut buf, 0x1C, self.loop_offset);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::LoopOffset.offset(),
+            self.loop_offset,
+        );
         // loop samples (0x20)
-        write_u32(&mut buf, 0x20, self.loop_samples);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::LoopSamples.offset(),
+            self.loop_samples,
+        );
         // sample rate (0x24)
-        write_u32(&mut buf, 0x24, self.sample_rate);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::SampleRate.offset(),
+            self.sample_rate,
+        );
         // SN FB (0x28) u16
-        write_u16(&mut buf, 0x28, self.sn_fb);
+        write_u16(&mut buf, VgmHeaderField::SnFb.offset(), self.sn_fb);
         // SNW (0x2A) u8
-        write_u8(&mut buf, 0x2A, self.snw);
+        write_u8(&mut buf, VgmHeaderField::Snw.offset(), self.snw);
         // SF (0x2B) u8
-        write_u8(&mut buf, 0x2B, self.sf);
+        write_u8(&mut buf, VgmHeaderField::Sf.offset(), self.sf);
         // YM2612 clock (0x2C)
-        write_u32(&mut buf, 0x2C, self.ym2612_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2612Clock.offset(),
+            self.ym2612_clock,
+        );
         // YM2151 clock (0x30)
-        write_u32(&mut buf, 0x30, self.ym2151_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2151Clock.offset(),
+            self.ym2151_clock,
+        );
         // data offset (0x34)
-        write_u32(&mut buf, 0x34, data_offset);
+        write_u32(&mut buf, VgmHeaderField::DataOffset.offset(), data_offset);
         // SegaPCM clock (0x38)
-        write_u32(&mut buf, 0x38, self.sega_pcm_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::SegaPcmClock.offset(),
+            self.sega_pcm_clock,
+        );
         // SPCM interface (0x3C)
-        write_u32(&mut buf, 0x3C, self.spcm_interface);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::SpcmInterface.offset(),
+            self.spcm_interface,
+        );
         // RF5C68 (0x40)
-        write_u32(&mut buf, 0x40, self.rf5c68_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Rf5c68Clock.offset(),
+            self.rf5c68_clock,
+        );
         // YM2203 (0x44)
-        write_u32(&mut buf, 0x44, self.ym2203_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2203Clock.offset(),
+            self.ym2203_clock,
+        );
         // YM2608 (0x48)
-        write_u32(&mut buf, 0x48, self.ym2608_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2608Clock.offset(),
+            self.ym2608_clock,
+        );
         // YM2610/B (0x4C)
-        write_u32(&mut buf, 0x4C, self.ym2610b_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym2610bClock.offset(),
+            self.ym2610b_clock,
+        );
         // YM3812 (0x50)
-        write_u32(&mut buf, 0x50, self.ym3812_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym3812Clock.offset(),
+            self.ym3812_clock,
+        );
         // YM3526 (0x54)
-        write_u32(&mut buf, 0x54, self.ym3526_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ym3526Clock.offset(),
+            self.ym3526_clock,
+        );
         // Y8950 (0x58)
-        write_u32(&mut buf, 0x58, self.y8950_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Y8950Clock.offset(),
+            self.y8950_clock,
+        );
         // YMF262 (0x5C)
-        write_u32(&mut buf, 0x5C, self.ymf262_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ymf262Clock.offset(),
+            self.ymf262_clock,
+        );
         // YMF278B (0x60)
-        write_u32(&mut buf, 0x60, self.ymf278b_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ymf278bClock.offset(),
+            self.ymf278b_clock,
+        );
         // YMF271 (0x64)
-        write_u32(&mut buf, 0x64, self.ymf271_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ymf271Clock.offset(),
+            self.ymf271_clock,
+        );
         // YMZ280B (0x68)
-        write_u32(&mut buf, 0x68, self.ymz280b_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ymz280bClock.offset(),
+            self.ymz280b_clock,
+        );
         // RF5C164 (0x6C)
-        write_u32(&mut buf, 0x6C, self.rf5c164_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Rf5c164Clock.offset(),
+            self.rf5c164_clock,
+        );
         // PWM (0x70)
-        write_u32(&mut buf, 0x70, self.pwm_clock);
+        write_u32(&mut buf, VgmHeaderField::PwmClock.offset(), self.pwm_clock);
         // AY8910 (0x74)
-        write_u32(&mut buf, 0x74, self.ay8910_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Ay8910Clock.offset(),
+            self.ay8910_clock,
+        );
         // AY misc (0x78..0x7F)
-        write_slice(&mut buf, 0x78, &self.ay_misc);
+        write_slice(&mut buf, VgmHeaderField::AyMisc.offset(), &self.ay_misc);
         // GB DMG (0x80)
-        write_u32(&mut buf, 0x80, self.gb_dmg_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::GbDmgClock.offset(),
+            self.gb_dmg_clock,
+        );
         // NES APU (0x84)
-        write_u32(&mut buf, 0x84, self.nes_apu_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::NesApuClock.offset(),
+            self.nes_apu_clock,
+        );
         // MultiPCM (0x88)
-        write_u32(&mut buf, 0x88, self.multipcm_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::MultipcmClock.offset(),
+            self.multipcm_clock,
+        );
         // uPD7759 (0x8C)
-        write_u32(&mut buf, 0x8C, self.upd7759_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Upd7759Clock.offset(),
+            self.upd7759_clock,
+        );
         // OKIM6258 (0x90)
-        write_u32(&mut buf, 0x90, self.okim6258_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Okim6258Clock.offset(),
+            self.okim6258_clock,
+        );
         // OKIM6258 flags (0x94..0x97)
-        write_slice(&mut buf, 0x94, &self.okim6258_flags);
+        write_slice(
+            &mut buf,
+            VgmHeaderField::Okim6258Flags.offset(),
+            &self.okim6258_flags,
+        );
         // OKIM6295 (0x98)
-        write_u32(&mut buf, 0x98, self.okim6295_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Okim6295Clock.offset(),
+            self.okim6295_clock,
+        );
         // K051649 (0x9C)
-        write_u32(&mut buf, 0x9C, self.k051649_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::K051649Clock.offset(),
+            self.k051649_clock,
+        );
         // K054539 (0xA0)
-        write_u32(&mut buf, 0xA0, self.k054539_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::K054539Clock.offset(),
+            self.k054539_clock,
+        );
         // HuC6280 (0xA4)
-        write_u32(&mut buf, 0xA4, self.huc6280_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Huc6280Clock.offset(),
+            self.huc6280_clock,
+        );
         // C140 (0xA8)
-        write_u32(&mut buf, 0xA8, self.c140_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::C140Clock.offset(),
+            self.c140_clock,
+        );
         // K053260 (0xAC)
-        write_u32(&mut buf, 0xAC, self.k053260_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::K053260Clock.offset(),
+            self.k053260_clock,
+        );
         // Pokey (0xB0)
-        write_u32(&mut buf, 0xB0, self.pokey_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::PokeyClock.offset(),
+            self.pokey_clock,
+        );
         // QSound (0xB4)
-        write_u32(&mut buf, 0xB4, self.qsound_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::QsoundClock.offset(),
+            self.qsound_clock,
+        );
         // SCSP (0xB8)
-        write_u32(&mut buf, 0xB8, self.scsp_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::ScspClock.offset(),
+            self.scsp_clock,
+        );
         // Extra header offset (0xBC)
-        write_u32(&mut buf, 0xBC, self.extra_header_offset);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::ExtraHeaderOffset.offset(),
+            self.extra_header_offset,
+        );
         // WonderSwan (0xC0)
-        write_u32(&mut buf, 0xC0, self.wonderswan_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::WonderSwan.offset(),
+            self.wonderswan_clock,
+        );
         // VSU (0xC4)
-        write_u32(&mut buf, 0xC4, self.vsu_clock);
+        write_u32(&mut buf, VgmHeaderField::Vsu.offset(), self.vsu_clock);
         // SAA1099 (0xC8)
-        write_u32(&mut buf, 0xC8, self.saa1099_clock);
+        write_u32(
+            &mut buf,
+            VgmHeaderField::Saa1099.offset(),
+            self.saa1099_clock,
+        );
         // ES5503 (0xCC)
-        write_u32(&mut buf, 0xCC, self.es5503_clock);
+        write_u32(&mut buf, VgmHeaderField::Es5503.offset(), self.es5503_clock);
         // ES5506 (0xD0)
-        write_u32(&mut buf, 0xD0, self.es5506_clock);
-        write_u16(&mut buf, 0xD4, self.es5506_channels);
-        write_u8(&mut buf, 0xD6, self.es5506_cd);
-        write_u8(&mut buf, 0xD7, self.es5506_reserved);
+        write_u32(&mut buf, VgmHeaderField::Es5506.offset(), self.es5506_clock);
+        write_u16(
+            &mut buf,
+            VgmHeaderField::Es5506Channels.offset(),
+            self.es5506_channels,
+        );
+        write_u8(&mut buf, VgmHeaderField::Es5506Cd.offset(), self.es5506_cd);
+        write_u8(
+            &mut buf,
+            VgmHeaderField::Es5506Reserved.offset(),
+            self.es5506_reserved,
+        );
         // X1-010 (0xD8)
-        write_u32(&mut buf, 0xD8, self.x1_010_clock);
+        write_u32(&mut buf, VgmHeaderField::X1_010.offset(), self.x1_010_clock);
         // C352 (0xDC)
-        write_u32(&mut buf, 0xDC, self.c352_clock);
+        write_u32(&mut buf, VgmHeaderField::C352.offset(), self.c352_clock);
         // GA20 (0xE0)
-        write_u32(&mut buf, 0xE0, self.ga20_clock);
+        write_u32(&mut buf, VgmHeaderField::Ga20.offset(), self.ga20_clock);
         // Mikey (0xE4)
-        write_u32(&mut buf, 0xE4, self.mikey_clock);
+        write_u32(&mut buf, VgmHeaderField::Mikey.offset(), self.mikey_clock);
         // reserved (0xE8..0xEF)
-        write_slice(&mut buf, 0xE8, &self.reserved_e8_ef);
+        write_slice(
+            &mut buf,
+            VgmHeaderField::ReservedE8EF.offset(),
+            &self.reserved_e8_ef,
+        );
         // reserved (0xF0..0xFF)
-        write_slice(&mut buf, 0xF0, &self.reserved_f0_ff);
+        write_slice(
+            &mut buf,
+            VgmHeaderField::ReservedF0FF.offset(),
+            &self.reserved_f0_ff,
+        );
 
         let header_size = if data_offset == 0 {
             VgmHeader::fallback_header_size_for_version(self.version)

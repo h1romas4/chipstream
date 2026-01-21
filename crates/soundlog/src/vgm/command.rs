@@ -20,7 +20,7 @@ use crate::binutil::{
 };
 use crate::chip;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::VGM_MAX_HEADER_SIZE;
+use crate::vgm::header::{VGM_MAX_HEADER_SIZE, VgmHeader};
 
 /// Chip instance identifier for VGM commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2526,7 +2526,7 @@ impl VgmDocument {
         let mut header = self.header.to_bytes(0, data_offset);
 
         let header_size: usize = if self.header.data_offset == 0 {
-            crate::vgm::header::VgmHeader::fallback_header_size_for_version(self.header.version)
+            VgmHeader::fallback_header_size_for_version(self.header.version)
         } else {
             0x34_usize.wrapping_add(data_offset as usize)
         };
@@ -2680,5 +2680,29 @@ impl VgmDocument {
             offset = offset.wrapping_add(len);
         }
         out
+    }
+
+    /// Return command offsets/lengths as absolute file offsets (including header size).
+    ///
+    /// This computes the header length using the same rules as `to_bytes()` and
+    /// adds that header length to the per-command offsets returned by
+    /// `command_offsets_and_lengths()` so callers receive absolute file offsets
+    /// suitable for highlighting bytes in the original serialized VGM file.
+    pub fn souecemap(&self) -> Vec<(usize, usize)> {
+        // compute data_offset the same way as to_bytes()
+        let data_offset: u32 = if self.header.data_offset == 0 {
+            (VgmHeader::fallback_header_size_for_version(self.header.version).wrapping_sub(0x34))
+                as u32
+        } else {
+            self.header.data_offset
+        };
+
+        // compute header length using the header's to_bytes helper so layout rules match to_bytes()
+        let header_len = self.header.to_bytes(0, data_offset).len();
+
+        self.command_offsets_and_lengths()
+            .into_iter()
+            .map(|(off, len)| (header_len + off, len))
+            .collect()
     }
 }
