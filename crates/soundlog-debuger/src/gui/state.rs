@@ -18,7 +18,7 @@ This avoids doing large string allocation and widget construction on the UI
 thread all at once and keeps the UI responsive for very large VGM files.
 */
 
-use crate::ui::HexViewer;
+use crate::gui::HexViewer;
 use eframe::egui;
 
 use soundlog::VgmDocument;
@@ -212,6 +212,600 @@ impl UiState {
         // Intentionally left empty: UI-level event logging removed for release build.
     }
 
+    /// Build the `Header` top-level AST node (with child fields and byte ranges).
+    ///
+    /// This extracts the header construction logic from the background worker so
+    /// the closure remains small. It returns a fully-populated `AstNode` for
+    /// the Header (including byte_range when determinable).
+    fn build_header_node(doc: &VgmDocument) -> AstNode {
+        // Build header child nodes (only non-zero/meaningful fields except Ident which is always shown).
+        let mut header_children: Vec<AstNode> = Vec::new();
+
+        // Always show ident even if it's zero-filled
+        header_children.push(
+            AstNode::new(
+                "Ident",
+                format!("'{}'", String::from_utf8_lossy(&doc.header.ident)),
+            )
+            // VGM ident occupies bytes 0x00..0x03 (4 bytes)
+            .with_byte_range(0x00, 4),
+        );
+
+        if doc.header.eof_offset != 0 {
+            header_children.push(AstNode::new(
+                "EOF offset",
+                format!("0x{:08x}", doc.header.eof_offset),
+            ));
+        }
+        if doc.header.version != 0 {
+            header_children.push(AstNode::new(
+                "Version",
+                format!("0x{:08x}", doc.header.version),
+            ));
+        }
+        if doc.header.sn76489_clock != 0 {
+            header_children.push(AstNode::new(
+                "SN76489 clock",
+                format!("{}", doc.header.sn76489_clock),
+            ));
+        }
+        if doc.header.ym2413_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2413 clock",
+                format!("{}", doc.header.ym2413_clock),
+            ));
+        }
+        if doc.header.gd3_offset != 0 {
+            header_children.push(AstNode::new(
+                "GD3 offset",
+                format!("0x{:08x}", doc.header.gd3_offset),
+            ));
+        }
+        if doc.header.total_samples != 0 {
+            header_children.push(AstNode::new(
+                "Total samples",
+                format!("{}", doc.header.total_samples),
+            ));
+        }
+        if doc.header.loop_offset != 0 {
+            header_children.push(AstNode::new(
+                "Loop offset",
+                format!("0x{:08x}", doc.header.loop_offset),
+            ));
+        }
+        if doc.header.loop_samples != 0 {
+            header_children.push(AstNode::new(
+                "Loop samples",
+                format!("{}", doc.header.loop_samples),
+            ));
+        }
+        if doc.header.sample_rate != 0 {
+            header_children.push(AstNode::new(
+                "Sample rate",
+                format!("{}", doc.header.sample_rate),
+            ));
+        }
+        if doc.header.sn_fb != 0 {
+            header_children.push(AstNode::new("SN FB", format!("{}", doc.header.sn_fb)));
+        }
+        if doc.header.snw != 0 {
+            header_children.push(AstNode::new("SNW", format!("{}", doc.header.snw)));
+        }
+        if doc.header.sf != 0 {
+            header_children.push(AstNode::new("SF", format!("{}", doc.header.sf)));
+        }
+        if doc.header.ym2612_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2612 clock",
+                format!("{}", doc.header.ym2612_clock),
+            ));
+        }
+        if doc.header.ym2151_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2151 clock",
+                format!("{}", doc.header.ym2151_clock),
+            ));
+        }
+        if doc.header.data_offset != 0 {
+            header_children.push(AstNode::new(
+                "Data offset",
+                format!("0x{:08x}", doc.header.data_offset),
+            ));
+        }
+        if doc.header.sega_pcm_clock != 0 {
+            header_children.push(AstNode::new(
+                "Sega PCM clock",
+                format!("{}", doc.header.sega_pcm_clock),
+            ));
+        }
+        if doc.header.spcm_interface != 0 {
+            header_children.push(AstNode::new(
+                "SPCM interface",
+                format!("{}", doc.header.spcm_interface),
+            ));
+        }
+        if doc.header.rf5c68_clock != 0 {
+            header_children.push(AstNode::new(
+                "RF5C68 clock",
+                format!("{}", doc.header.rf5c68_clock),
+            ));
+        }
+        if doc.header.ym2203_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2203 clock",
+                format!("{}", doc.header.ym2203_clock),
+            ));
+        }
+        if doc.header.ym2608_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2608 clock",
+                format!("{}", doc.header.ym2608_clock),
+            ));
+        }
+        if doc.header.ym2610b_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM2610B clock",
+                format!("{}", doc.header.ym2610b_clock),
+            ));
+        }
+        if doc.header.ym3812_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM3812 clock",
+                format!("{}", doc.header.ym3812_clock),
+            ));
+        }
+        if doc.header.ym3526_clock != 0 {
+            header_children.push(AstNode::new(
+                "YM3526 clock",
+                format!("{}", doc.header.ym3526_clock),
+            ));
+        }
+        if doc.header.y8950_clock != 0 {
+            header_children.push(AstNode::new(
+                "Y8950 clock",
+                format!("{}", doc.header.y8950_clock),
+            ));
+        }
+        if doc.header.ymf262_clock != 0 {
+            header_children.push(AstNode::new(
+                "YMF262 clock",
+                format!("{}", doc.header.ymf262_clock),
+            ));
+        }
+        if doc.header.ymf278b_clock != 0 {
+            header_children.push(AstNode::new(
+                "YMF278B clock",
+                format!("{}", doc.header.ymf278b_clock),
+            ));
+        }
+        if doc.header.ymf271_clock != 0 {
+            header_children.push(AstNode::new(
+                "YMF271 clock",
+                format!("{}", doc.header.ymf271_clock),
+            ));
+        }
+        if doc.header.ymz280b_clock != 0 {
+            header_children.push(AstNode::new(
+                "YMZ280B clock",
+                format!("{}", doc.header.ymz280b_clock),
+            ));
+        }
+        if doc.header.rf5c164_clock != 0 {
+            header_children.push(AstNode::new(
+                "RF5C164 clock",
+                format!("{}", doc.header.rf5c164_clock),
+            ));
+        }
+        if doc.header.pwm_clock != 0 {
+            header_children.push(AstNode::new(
+                "PWM clock",
+                format!("{}", doc.header.pwm_clock),
+            ));
+        }
+        if doc.header.ay8910_clock != 0 {
+            header_children.push(AstNode::new(
+                "AY8910 clock",
+                format!("{}", doc.header.ay8910_clock),
+            ));
+        }
+        if doc.header.ay_misc != [0u8; 8] {
+            header_children.push(AstNode::new(
+                "AY miscellaneous",
+                format!("{:?}", doc.header.ay_misc),
+            ));
+        }
+        if doc.header.gb_dmg_clock != 0 {
+            header_children.push(AstNode::new(
+                "GB DMG clock",
+                format!("{}", doc.header.gb_dmg_clock),
+            ));
+        }
+        if doc.header.nes_apu_clock != 0 {
+            header_children.push(AstNode::new(
+                "NES APU clock",
+                format!("{}", doc.header.nes_apu_clock),
+            ));
+        }
+        if doc.header.multipcm_clock != 0 {
+            header_children.push(AstNode::new(
+                "MultiPCM clock",
+                format!("{}", doc.header.multipcm_clock),
+            ));
+        }
+        if doc.header.upd7759_clock != 0 {
+            header_children.push(AstNode::new(
+                "UPD7759 clock",
+                format!("{}", doc.header.upd7759_clock),
+            ));
+        }
+        if doc.header.okim6258_clock != 0 {
+            header_children.push(AstNode::new(
+                "OKIM6258 clock",
+                format!("{}", doc.header.okim6258_clock),
+            ));
+        }
+        if doc.header.okim6258_flags != [0u8; 4] {
+            header_children.push(AstNode::new(
+                "OKIM6258 flags",
+                format!("{:?}", doc.header.okim6258_flags),
+            ));
+        }
+        if doc.header.okim6295_clock != 0 {
+            header_children.push(AstNode::new(
+                "OKIM6295 clock",
+                format!("{}", doc.header.okim6295_clock),
+            ));
+        }
+        if doc.header.k051649_clock != 0 {
+            header_children.push(AstNode::new(
+                "K051649 clock",
+                format!("{}", doc.header.k051649_clock),
+            ));
+        }
+        if doc.header.k054539_clock != 0 {
+            header_children.push(AstNode::new(
+                "K054539 clock",
+                format!("{}", doc.header.k054539_clock),
+            ));
+        }
+        if doc.header.huc6280_clock != 0 {
+            header_children.push(AstNode::new(
+                "HuC6280 clock",
+                format!("{}", doc.header.huc6280_clock),
+            ));
+        }
+        if doc.header.c140_clock != 0 {
+            header_children.push(AstNode::new(
+                "C140 clock",
+                format!("{}", doc.header.c140_clock),
+            ));
+        }
+        if doc.header.k053260_clock != 0 {
+            header_children.push(AstNode::new(
+                "K053260 clock",
+                format!("{}", doc.header.k053260_clock),
+            ));
+        }
+        if doc.header.pokey_clock != 0 {
+            header_children.push(AstNode::new(
+                "Pokey clock",
+                format!("{}", doc.header.pokey_clock),
+            ));
+        }
+        if doc.header.qsound_clock != 0 {
+            header_children.push(AstNode::new(
+                "QSound clock",
+                format!("{}", doc.header.qsound_clock),
+            ));
+        }
+        if doc.header.scsp_clock != 0 {
+            header_children.push(AstNode::new(
+                "SCSP clock",
+                format!("{}", doc.header.scsp_clock),
+            ));
+        }
+        if doc.header.extra_header_offset != 0 {
+            header_children.push(AstNode::new(
+                "Extra header offset",
+                format!("0x{:08x}", doc.header.extra_header_offset),
+            ));
+        }
+        if doc.header.wonderswan_clock != 0 {
+            header_children.push(AstNode::new(
+                "WonderSwan clock",
+                format!("{}", doc.header.wonderswan_clock),
+            ));
+        }
+        if doc.header.vsu_clock != 0 {
+            header_children.push(AstNode::new(
+                "VSU clock",
+                format!("{}", doc.header.vsu_clock),
+            ));
+        }
+        if doc.header.saa1099_clock != 0 {
+            header_children.push(AstNode::new(
+                "SAA1099 clock",
+                format!("{}", doc.header.saa1099_clock),
+            ));
+        }
+        if doc.header.es5503_clock != 0 {
+            header_children.push(AstNode::new(
+                "ES5503 clock",
+                format!("{}", doc.header.es5503_clock),
+            ));
+        }
+        if doc.header.es5506_clock != 0 {
+            header_children.push(AstNode::new(
+                "ES5506 clock",
+                format!("{}", doc.header.es5506_clock),
+            ));
+        }
+        if doc.header.es5506_channels != 0 {
+            header_children.push(AstNode::new(
+                "ES5506 channels",
+                format!("{}", doc.header.es5506_channels),
+            ));
+        }
+        if doc.header.es5506_cd != 0 {
+            header_children.push(AstNode::new(
+                "ES5506 CD flags",
+                format!("{}", doc.header.es5506_cd),
+            ));
+        }
+        if doc.header.es5506_reserved != 0 {
+            header_children.push(AstNode::new(
+                "ES5506 reserved",
+                format!("{}", doc.header.es5506_reserved),
+            ));
+        }
+        if doc.header.x1_010_clock != 0 {
+            header_children.push(AstNode::new(
+                "X1-010 clock",
+                format!("{}", doc.header.x1_010_clock),
+            ));
+        }
+        if doc.header.c352_clock != 0 {
+            header_children.push(AstNode::new(
+                "C352 clock",
+                format!("{}", doc.header.c352_clock),
+            ));
+        }
+        if doc.header.ga20_clock != 0 {
+            header_children.push(AstNode::new(
+                "GA20 clock",
+                format!("{}", doc.header.ga20_clock),
+            ));
+        }
+        if doc.header.mikey_clock != 0 {
+            header_children.push(AstNode::new(
+                "Mikey clock",
+                format!("{}", doc.header.mikey_clock),
+            ));
+        }
+        if doc.header.reserved_e8_ef != [0u8; 8] {
+            header_children.push(AstNode::new(
+                "Reserved E8-EF",
+                format!("{:?}", doc.header.reserved_e8_ef),
+            ));
+        }
+        if doc.header.reserved_f0_ff != [0u8; 16] {
+            header_children.push(AstNode::new(
+                "Reserved F0-FF",
+                format!("{:?}", doc.header.reserved_f0_ff),
+            ));
+        }
+
+        // Attach byte ranges to header child nodes using HeaderField mapping.
+        // We map the node title to a HeaderField and, if the field exists in
+        // the serialized header (per data_offset/version rules), attach the
+        // computed byte range to the AstNode so the hex viewer can highlight it.
+        let mappings: Vec<(&str, VgmHeaderField)> = vec![
+            ("Ident", VgmHeaderField::Ident),
+            ("EOF offset", VgmHeaderField::EofOffset),
+            ("Version", VgmHeaderField::Version),
+            ("SN76489 clock", VgmHeaderField::Sn76489Clock),
+            ("YM2413 clock", VgmHeaderField::Ym2413Clock),
+            ("GD3 offset", VgmHeaderField::Gd3Offset),
+            ("Total samples", VgmHeaderField::TotalSamples),
+            ("Loop offset", VgmHeaderField::LoopOffset),
+            ("Loop samples", VgmHeaderField::LoopSamples),
+            ("Sample rate", VgmHeaderField::SampleRate),
+            ("SN FB", VgmHeaderField::SnFb),
+            ("SNW", VgmHeaderField::Snw),
+            ("SF", VgmHeaderField::Sf),
+            ("YM2612 clock", VgmHeaderField::Ym2612Clock),
+            ("YM2151 clock", VgmHeaderField::Ym2151Clock),
+            ("Data offset", VgmHeaderField::DataOffset),
+            ("Sega PCM clock", VgmHeaderField::SegaPcmClock),
+            ("SPCM interface", VgmHeaderField::SpcmInterface),
+            ("RF5C68 clock", VgmHeaderField::Rf5c68Clock),
+            ("YM2203 clock", VgmHeaderField::Ym2203Clock),
+            ("YM2608 clock", VgmHeaderField::Ym2608Clock),
+            ("YM2610B clock", VgmHeaderField::Ym2610bClock),
+            ("YM3812 clock", VgmHeaderField::Ym3812Clock),
+            ("YM3526 clock", VgmHeaderField::Ym3526Clock),
+            ("Y8950 clock", VgmHeaderField::Y8950Clock),
+            ("YMF262 clock", VgmHeaderField::Ymf262Clock),
+            ("YMF278B clock", VgmHeaderField::Ymf278bClock),
+            ("YMF271 clock", VgmHeaderField::Ymf271Clock),
+            ("YMZ280B clock", VgmHeaderField::Ymz280bClock),
+            ("RF5C164 clock", VgmHeaderField::Rf5c164Clock),
+            ("PWM clock", VgmHeaderField::PwmClock),
+            ("AY8910 clock", VgmHeaderField::Ay8910Clock),
+            ("AY miscellaneous", VgmHeaderField::AyMisc),
+            ("GB DMG clock", VgmHeaderField::GbDmgClock),
+            ("NES APU clock", VgmHeaderField::NesApuClock),
+            ("MultiPCM clock", VgmHeaderField::MultipcmClock),
+            ("UPD7759 clock", VgmHeaderField::Upd7759Clock),
+            ("OKIM6258 clock", VgmHeaderField::Okim6258Clock),
+            ("OKIM6258 flags", VgmHeaderField::Okim6258Flags),
+            ("OKIM6295 clock", VgmHeaderField::Okim6295Clock),
+            ("K051649 clock", VgmHeaderField::K051649Clock),
+            ("K054539 clock", VgmHeaderField::K054539Clock),
+            ("HuC6280 clock", VgmHeaderField::Huc6280Clock),
+            ("C140 clock", VgmHeaderField::C140Clock),
+            ("K053260 clock", VgmHeaderField::K053260Clock),
+            ("Pokey clock", VgmHeaderField::PokeyClock),
+            ("QSound clock", VgmHeaderField::QsoundClock),
+            ("SCSP clock", VgmHeaderField::ScspClock),
+            ("Extra header offset", VgmHeaderField::ExtraHeaderOffset),
+            ("WonderSwan clock", VgmHeaderField::WonderSwan),
+            ("VSU clock", VgmHeaderField::Vsu),
+            ("SAA1099 clock", VgmHeaderField::Saa1099),
+            ("ES5503 clock", VgmHeaderField::Es5503),
+            ("ES5506 clock", VgmHeaderField::Es5506),
+            ("ES5506 channels", VgmHeaderField::Es5506Channels),
+            ("ES5506 CD flags", VgmHeaderField::Es5506Cd),
+            ("ES5506 reserved", VgmHeaderField::Es5506Reserved),
+            ("X1-010 clock", VgmHeaderField::X1_010),
+            ("C352 clock", VgmHeaderField::C352),
+            ("GA20 clock", VgmHeaderField::Ga20),
+            ("Mikey clock", VgmHeaderField::Mikey),
+            ("Reserved E8-EF", VgmHeaderField::ReservedE8EF),
+            ("Reserved F0-FF", VgmHeaderField::ReservedF0FF),
+        ];
+
+        for node in &mut header_children {
+            if let Some((_, hf)) = mappings.iter().find(|(title, _)| *title == node.title)
+                && let Some((start, len)) =
+                    hf.byte_range(doc.header.version, doc.header.data_offset)
+            {
+                node.byte_range = Some((start, len));
+            }
+        }
+
+        // Attach header node and compute its overall byte range when possible.
+        // Prefer the first command absolute offset as the header length if commands exist;
+        // otherwise fall back to GD3 start if present.
+        let mut header_node =
+            AstNode::new("Header", "Header fields").with_children(header_children);
+        let header_len_opt = if !doc.commands.is_empty() {
+            // souecemap() returns absolute (file) offsets for commands; the first command's
+            // absolute offset equals the serialized header length. Use that when available.
+            doc.sourcemap().first().map(|(off, _)| *off)
+        } else if doc.header.gd3_offset != 0 {
+            // If there are no commands but GD3 exists, the GD3 start marks the end of header.
+            Some(doc.header.gd3_offset.wrapping_add(0x14) as usize)
+        } else {
+            None
+        };
+        if let Some(hlen) = header_len_opt {
+            header_node.byte_range = Some((0usize, hlen));
+        }
+        header_node
+    }
+
+    /// Build a GD3 top-level node (with child fields and byte ranges) if present.
+    /// Returns Some(AstNode) when GD3 metadata exists and at least one child field
+    /// is non-empty; otherwise returns None.
+    fn build_gd3_node(doc: &VgmDocument) -> Option<AstNode> {
+        if doc.gd3.is_some() && doc.header.gd3_offset != 0 {
+            let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
+            // Fields start after the 12-byte Gd3 header (ident+version+len).
+            let mut field_off = gd3_start + 12_usize;
+            let gd3_ref = doc.gd3.as_ref().unwrap();
+            let mut gd3_children: Vec<AstNode> = Vec::new();
+
+            // Helper to push a field node and advance the running offset.
+            // For the Notes field we strip newlines so the AST/right-pane detail
+            // shows a single-line note (per request).
+            let push_field =
+                |children: &mut Vec<AstNode>, title: &str, v: &Option<String>, off: &mut usize| {
+                    if let Some(s) = v {
+                        // UTF-16LE code units -> two bytes each
+                        let len_bytes = s.encode_utf16().count() * 2;
+                        // For Notes, remove newline characters; otherwise keep the original string.
+                        let detail = if title == "Notes" {
+                            s.replace('\n', " ")
+                        } else {
+                            s.clone()
+                        };
+                        children.push(AstNode::new(title, detail).with_byte_range(*off, len_bytes));
+                        // advance past string bytes + 2-byte UTF-16 nul terminator
+                        *off = off.saturating_add(len_bytes + 2);
+                    } else {
+                        // empty field: only the 2-byte terminator is present
+                        *off = off.saturating_add(2);
+                    }
+                };
+
+            push_field(
+                &mut gd3_children,
+                "Track name (EN)",
+                &gd3_ref.track_name_en,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Track name (JP)",
+                &gd3_ref.track_name_jp,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Game name (EN)",
+                &gd3_ref.game_name_en,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Game name (JP)",
+                &gd3_ref.game_name_jp,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "System name (EN)",
+                &gd3_ref.system_name_en,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "System name (JP)",
+                &gd3_ref.system_name_jp,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Author (EN)",
+                &gd3_ref.author_name_en,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Author (JP)",
+                &gd3_ref.author_name_jp,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Release date",
+                &gd3_ref.release_date,
+                &mut field_off,
+            );
+            push_field(
+                &mut gd3_children,
+                "Creator",
+                &gd3_ref.creator,
+                &mut field_off,
+            );
+            push_field(&mut gd3_children, "Notes", &gd3_ref.notes, &mut field_off);
+
+            if !gd3_children.is_empty() {
+                // Attach a GD3 top-level node and also record the full GD3 chunk range
+                // so selecting the GD3 node highlights the entire metadata chunk.
+                let mut gd3_node = AstNode::new("GD3", "Metadata").with_children(gd3_children);
+                let gd3_len = doc.gd3.as_ref().map(|g| g.to_bytes().len()).unwrap_or(0);
+                if gd3_len > 0 {
+                    let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
+                    gd3_node.byte_range = Some((gd3_start, gd3_len));
+                }
+                return Some(gd3_node);
+            }
+        }
+        None
+    }
+
     /// Kick off initial parse in background. This will produce a lightweight
     /// AST where the `Commands` node has `lazy_count = Some(total)`.
     pub fn populate_from_bytes(&mut self, bytes: &[u8]) {
@@ -236,486 +830,10 @@ impl UiState {
         thread::spawn(move || {
             match VgmDocument::try_from(data.as_slice()) {
                 Ok(doc) => {
-                    // Header node (expanded into all child fields)
+                    // Build header node (extracted helper).
                     let mut nodes: Vec<AstNode> = Vec::new();
-                    let mut header_children: Vec<AstNode> = Vec::new();
-
-                    // Always show ident even if it's zero-filled
-                    header_children.push(
-                        AstNode::new(
-                            "Ident",
-                            format!("'{}'", String::from_utf8_lossy(&doc.header.ident)),
-                        )
-                        // VGM ident occupies bytes 0x00..0x03 (4 bytes)
-                        .with_byte_range(0x00, 4),
-                    );
-
-                    if doc.header.eof_offset != 0 {
-                        header_children.push(AstNode::new(
-                            "EOF offset",
-                            format!("0x{:08x}", doc.header.eof_offset),
-                        ));
-                    }
-                    if doc.header.version != 0 {
-                        header_children.push(AstNode::new(
-                            "Version",
-                            format!("0x{:08x}", doc.header.version),
-                        ));
-                    }
-                    if doc.header.sn76489_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "SN76489 clock",
-                            format!("{}", doc.header.sn76489_clock),
-                        ));
-                    }
-                    if doc.header.ym2413_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2413 clock",
-                            format!("{}", doc.header.ym2413_clock),
-                        ));
-                    }
-                    if doc.header.gd3_offset != 0 {
-                        header_children.push(AstNode::new(
-                            "GD3 offset",
-                            format!("0x{:08x}", doc.header.gd3_offset),
-                        ));
-                    }
-                    if doc.header.total_samples != 0 {
-                        header_children.push(AstNode::new(
-                            "Total samples",
-                            format!("{}", doc.header.total_samples),
-                        ));
-                    }
-                    if doc.header.loop_offset != 0 {
-                        header_children.push(AstNode::new(
-                            "Loop offset",
-                            format!("0x{:08x}", doc.header.loop_offset),
-                        ));
-                    }
-                    if doc.header.loop_samples != 0 {
-                        header_children.push(AstNode::new(
-                            "Loop samples",
-                            format!("{}", doc.header.loop_samples),
-                        ));
-                    }
-                    if doc.header.sample_rate != 0 {
-                        header_children.push(AstNode::new(
-                            "Sample rate",
-                            format!("{}", doc.header.sample_rate),
-                        ));
-                    }
-                    if doc.header.sn_fb != 0 {
-                        header_children
-                            .push(AstNode::new("SN FB", format!("{}", doc.header.sn_fb)));
-                    }
-                    if doc.header.snw != 0 {
-                        header_children.push(AstNode::new("SNW", format!("{}", doc.header.snw)));
-                    }
-                    if doc.header.sf != 0 {
-                        header_children.push(AstNode::new("SF", format!("{}", doc.header.sf)));
-                    }
-                    if doc.header.ym2612_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2612 clock",
-                            format!("{}", doc.header.ym2612_clock),
-                        ));
-                    }
-                    if doc.header.ym2151_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2151 clock",
-                            format!("{}", doc.header.ym2151_clock),
-                        ));
-                    }
-                    if doc.header.data_offset != 0 {
-                        header_children.push(AstNode::new(
-                            "Data offset",
-                            format!("0x{:08x}", doc.header.data_offset),
-                        ));
-                    }
-                    if doc.header.sega_pcm_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "Sega PCM clock",
-                            format!("{}", doc.header.sega_pcm_clock),
-                        ));
-                    }
-                    if doc.header.spcm_interface != 0 {
-                        header_children.push(AstNode::new(
-                            "SPCM interface",
-                            format!("{}", doc.header.spcm_interface),
-                        ));
-                    }
-                    if doc.header.rf5c68_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "RF5C68 clock",
-                            format!("{}", doc.header.rf5c68_clock),
-                        ));
-                    }
-                    if doc.header.ym2203_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2203 clock",
-                            format!("{}", doc.header.ym2203_clock),
-                        ));
-                    }
-                    if doc.header.ym2608_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2608 clock",
-                            format!("{}", doc.header.ym2608_clock),
-                        ));
-                    }
-                    if doc.header.ym2610b_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM2610B clock",
-                            format!("{}", doc.header.ym2610b_clock),
-                        ));
-                    }
-                    if doc.header.ym3812_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM3812 clock",
-                            format!("{}", doc.header.ym3812_clock),
-                        ));
-                    }
-                    if doc.header.ym3526_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YM3526 clock",
-                            format!("{}", doc.header.ym3526_clock),
-                        ));
-                    }
-                    if doc.header.y8950_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "Y8950 clock",
-                            format!("{}", doc.header.y8950_clock),
-                        ));
-                    }
-                    if doc.header.ymf262_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YMF262 clock",
-                            format!("{}", doc.header.ymf262_clock),
-                        ));
-                    }
-                    if doc.header.ymf278b_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YMF278B clock",
-                            format!("{}", doc.header.ymf278b_clock),
-                        ));
-                    }
-                    if doc.header.ymf271_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YMF271 clock",
-                            format!("{}", doc.header.ymf271_clock),
-                        ));
-                    }
-                    if doc.header.ymz280b_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "YMZ280B clock",
-                            format!("{}", doc.header.ymz280b_clock),
-                        ));
-                    }
-                    if doc.header.rf5c164_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "RF5C164 clock",
-                            format!("{}", doc.header.rf5c164_clock),
-                        ));
-                    }
-                    if doc.header.pwm_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "PWM clock",
-                            format!("{}", doc.header.pwm_clock),
-                        ));
-                    }
-                    if doc.header.ay8910_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "AY8910 clock",
-                            format!("{}", doc.header.ay8910_clock),
-                        ));
-                    }
-                    if doc.header.ay_misc != [0u8; 8] {
-                        header_children.push(AstNode::new(
-                            "AY miscellaneous",
-                            format!("{:?}", doc.header.ay_misc),
-                        ));
-                    }
-                    if doc.header.gb_dmg_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "GB DMG clock",
-                            format!("{}", doc.header.gb_dmg_clock),
-                        ));
-                    }
-                    if doc.header.nes_apu_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "NES APU clock",
-                            format!("{}", doc.header.nes_apu_clock),
-                        ));
-                    }
-                    if doc.header.multipcm_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "MultiPCM clock",
-                            format!("{}", doc.header.multipcm_clock),
-                        ));
-                    }
-                    if doc.header.upd7759_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "UPD7759 clock",
-                            format!("{}", doc.header.upd7759_clock),
-                        ));
-                    }
-                    if doc.header.okim6258_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "OKIM6258 clock",
-                            format!("{}", doc.header.okim6258_clock),
-                        ));
-                    }
-                    if doc.header.okim6258_flags != [0u8; 4] {
-                        header_children.push(AstNode::new(
-                            "OKIM6258 flags",
-                            format!("{:?}", doc.header.okim6258_flags),
-                        ));
-                    }
-                    if doc.header.okim6295_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "OKIM6295 clock",
-                            format!("{}", doc.header.okim6295_clock),
-                        ));
-                    }
-                    if doc.header.k051649_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "K051649 clock",
-                            format!("{}", doc.header.k051649_clock),
-                        ));
-                    }
-                    if doc.header.k054539_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "K054539 clock",
-                            format!("{}", doc.header.k054539_clock),
-                        ));
-                    }
-                    if doc.header.huc6280_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "HuC6280 clock",
-                            format!("{}", doc.header.huc6280_clock),
-                        ));
-                    }
-                    if doc.header.c140_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "C140 clock",
-                            format!("{}", doc.header.c140_clock),
-                        ));
-                    }
-                    if doc.header.k053260_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "K053260 clock",
-                            format!("{}", doc.header.k053260_clock),
-                        ));
-                    }
-                    if doc.header.pokey_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "Pokey clock",
-                            format!("{}", doc.header.pokey_clock),
-                        ));
-                    }
-                    if doc.header.qsound_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "QSound clock",
-                            format!("{}", doc.header.qsound_clock),
-                        ));
-                    }
-                    if doc.header.scsp_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "SCSP clock",
-                            format!("{}", doc.header.scsp_clock),
-                        ));
-                    }
-                    if doc.header.extra_header_offset != 0 {
-                        header_children.push(AstNode::new(
-                            "Extra header offset",
-                            format!("0x{:08x}", doc.header.extra_header_offset),
-                        ));
-                    }
-                    if doc.header.wonderswan_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "WonderSwan clock",
-                            format!("{}", doc.header.wonderswan_clock),
-                        ));
-                    }
-                    if doc.header.vsu_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "VSU clock",
-                            format!("{}", doc.header.vsu_clock),
-                        ));
-                    }
-                    if doc.header.saa1099_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "SAA1099 clock",
-                            format!("{}", doc.header.saa1099_clock),
-                        ));
-                    }
-                    if doc.header.es5503_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "ES5503 clock",
-                            format!("{}", doc.header.es5503_clock),
-                        ));
-                    }
-                    if doc.header.es5506_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "ES5506 clock",
-                            format!("{}", doc.header.es5506_clock),
-                        ));
-                    }
-                    if doc.header.es5506_channels != 0 {
-                        header_children.push(AstNode::new(
-                            "ES5506 channels",
-                            format!("{}", doc.header.es5506_channels),
-                        ));
-                    }
-                    if doc.header.es5506_cd != 0 {
-                        header_children.push(AstNode::new(
-                            "ES5506 CD flags",
-                            format!("{}", doc.header.es5506_cd),
-                        ));
-                    }
-                    if doc.header.es5506_reserved != 0 {
-                        header_children.push(AstNode::new(
-                            "ES5506 reserved",
-                            format!("{}", doc.header.es5506_reserved),
-                        ));
-                    }
-                    if doc.header.x1_010_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "X1-010 clock",
-                            format!("{}", doc.header.x1_010_clock),
-                        ));
-                    }
-                    if doc.header.c352_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "C352 clock",
-                            format!("{}", doc.header.c352_clock),
-                        ));
-                    }
-                    if doc.header.ga20_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "GA20 clock",
-                            format!("{}", doc.header.ga20_clock),
-                        ));
-                    }
-                    if doc.header.mikey_clock != 0 {
-                        header_children.push(AstNode::new(
-                            "Mikey clock",
-                            format!("{}", doc.header.mikey_clock),
-                        ));
-                    }
-                    if doc.header.reserved_e8_ef != [0u8; 8] {
-                        header_children.push(AstNode::new(
-                            "Reserved E8-EF",
-                            format!("{:?}", doc.header.reserved_e8_ef),
-                        ));
-                    }
-                    if doc.header.reserved_f0_ff != [0u8; 16] {
-                        header_children.push(AstNode::new(
-                            "Reserved F0-FF",
-                            format!("{:?}", doc.header.reserved_f0_ff),
-                        ));
-                    }
-
-                    // Attach byte ranges to header child nodes using HeaderField mapping.
-                    // We map the node title to a HeaderField and, if the field exists in
-                    // the serialized header (per data_offset/version rules), attach the
-                    // computed byte range to the AstNode so the hex viewer can highlight it.
-                    let mappings: Vec<(&str, VgmHeaderField)> = vec![
-                        ("Ident", VgmHeaderField::Ident),
-                        ("EOF offset", VgmHeaderField::EofOffset),
-                        ("Version", VgmHeaderField::Version),
-                        ("SN76489 clock", VgmHeaderField::Sn76489Clock),
-                        ("YM2413 clock", VgmHeaderField::Ym2413Clock),
-                        ("GD3 offset", VgmHeaderField::Gd3Offset),
-                        ("Total samples", VgmHeaderField::TotalSamples),
-                        ("Loop offset", VgmHeaderField::LoopOffset),
-                        ("Loop samples", VgmHeaderField::LoopSamples),
-                        ("Sample rate", VgmHeaderField::SampleRate),
-                        ("SN FB", VgmHeaderField::SnFb),
-                        ("SNW", VgmHeaderField::Snw),
-                        ("SF", VgmHeaderField::Sf),
-                        ("YM2612 clock", VgmHeaderField::Ym2612Clock),
-                        ("YM2151 clock", VgmHeaderField::Ym2151Clock),
-                        ("Data offset", VgmHeaderField::DataOffset),
-                        ("Sega PCM clock", VgmHeaderField::SegaPcmClock),
-                        ("SPCM interface", VgmHeaderField::SpcmInterface),
-                        ("RF5C68 clock", VgmHeaderField::Rf5c68Clock),
-                        ("YM2203 clock", VgmHeaderField::Ym2203Clock),
-                        ("YM2608 clock", VgmHeaderField::Ym2608Clock),
-                        ("YM2610B clock", VgmHeaderField::Ym2610bClock),
-                        ("YM3812 clock", VgmHeaderField::Ym3812Clock),
-                        ("YM3526 clock", VgmHeaderField::Ym3526Clock),
-                        ("Y8950 clock", VgmHeaderField::Y8950Clock),
-                        ("YMF262 clock", VgmHeaderField::Ymf262Clock),
-                        ("YMF278B clock", VgmHeaderField::Ymf278bClock),
-                        ("YMF271 clock", VgmHeaderField::Ymf271Clock),
-                        ("YMZ280B clock", VgmHeaderField::Ymz280bClock),
-                        ("RF5C164 clock", VgmHeaderField::Rf5c164Clock),
-                        ("PWM clock", VgmHeaderField::PwmClock),
-                        ("AY8910 clock", VgmHeaderField::Ay8910Clock),
-                        ("AY miscellaneous", VgmHeaderField::AyMisc),
-                        ("GB DMG clock", VgmHeaderField::GbDmgClock),
-                        ("NES APU clock", VgmHeaderField::NesApuClock),
-                        ("MultiPCM clock", VgmHeaderField::MultipcmClock),
-                        ("UPD7759 clock", VgmHeaderField::Upd7759Clock),
-                        ("OKIM6258 clock", VgmHeaderField::Okim6258Clock),
-                        ("OKIM6258 flags", VgmHeaderField::Okim6258Flags),
-                        ("OKIM6295 clock", VgmHeaderField::Okim6295Clock),
-                        ("K051649 clock", VgmHeaderField::K051649Clock),
-                        ("K054539 clock", VgmHeaderField::K054539Clock),
-                        ("HuC6280 clock", VgmHeaderField::Huc6280Clock),
-                        ("C140 clock", VgmHeaderField::C140Clock),
-                        ("K053260 clock", VgmHeaderField::K053260Clock),
-                        ("Pokey clock", VgmHeaderField::PokeyClock),
-                        ("QSound clock", VgmHeaderField::QsoundClock),
-                        ("SCSP clock", VgmHeaderField::ScspClock),
-                        ("Extra header offset", VgmHeaderField::ExtraHeaderOffset),
-                        ("WonderSwan clock", VgmHeaderField::WonderSwan),
-                        ("VSU clock", VgmHeaderField::Vsu),
-                        ("SAA1099 clock", VgmHeaderField::Saa1099),
-                        ("ES5503 clock", VgmHeaderField::Es5503),
-                        ("ES5506 clock", VgmHeaderField::Es5506),
-                        ("ES5506 channels", VgmHeaderField::Es5506Channels),
-                        ("ES5506 CD flags", VgmHeaderField::Es5506Cd),
-                        ("ES5506 reserved", VgmHeaderField::Es5506Reserved),
-                        ("X1-010 clock", VgmHeaderField::X1_010),
-                        ("C352 clock", VgmHeaderField::C352),
-                        ("GA20 clock", VgmHeaderField::Ga20),
-                        ("Mikey clock", VgmHeaderField::Mikey),
-                        ("Reserved E8-EF", VgmHeaderField::ReservedE8EF),
-                        ("Reserved F0-FF", VgmHeaderField::ReservedF0FF),
-                    ];
-
-                    for node in &mut header_children {
-                        if let Some((_, hf)) =
-                            mappings.iter().find(|(title, _)| *title == node.title)
-                            && let Some((start, len)) =
-                                hf.byte_range(doc.header.version, doc.header.data_offset)
-                        {
-                            node.byte_range = Some((start, len));
-                        }
-                    }
-
-                    // Attach header node and compute its overall byte range when possible.
-                    // Prefer the first command absolute offset as the header length if commands exist;
-                    // otherwise fall back to GD3 start if present.
-                    let mut header_node =
-                        AstNode::new("Header", "Header fields").with_children(header_children);
-                    let header_len_opt = if !doc.commands.is_empty() {
-                        // souecemap() returns absolute (file) offsets for commands; the first command's
-                        // absolute offset equals the serialized header length. Use that when available.
-                        doc.souecemap().first().map(|(off, _)| *off)
-                    } else if doc.header.gd3_offset != 0 {
-                        // If there are no commands but GD3 exists, the GD3 start marks the end of header.
-                        Some(doc.header.gd3_offset.wrapping_add(0x14) as usize)
-                    } else {
-                        None
-                    };
-                    if let Some(hlen) = header_len_opt {
-                        header_node.byte_range = Some((0usize, hlen));
-                    }
+                    let header_node = Self::build_header_node(&doc);
                     nodes.push(header_node);
-
-                    // GD3 node moved below Commands (inserted later) to appear after Commands in the AST.
 
                     // Commands node: create bucketed children (e.g. [0..1000], [1000..2000], ...)
                     // Each bucket is a lazy node that can be expanded to load its commands.
@@ -742,116 +860,8 @@ impl UiState {
                     );
 
                     // Place GD3 node after Commands so it appears below Commands in the AST.
-                    if doc.gd3.is_some() && doc.header.gd3_offset != 0 {
-                        let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
-                        // Fields start after the 12-byte Gd3 header (ident+version+len).
-                        let mut field_off = gd3_start + 12_usize;
-                        let gd3_ref = doc.gd3.as_ref().unwrap();
-                        let mut gd3_children: Vec<AstNode> = Vec::new();
-
-                        // Helper to push a field node and advance the running offset.
-                        // For the Notes field we strip newlines so the AST/right-pane detail
-                        // shows a single-line note (per request).
-                        let push_field =
-                            |children: &mut Vec<AstNode>,
-                             title: &str,
-                             v: &Option<String>,
-                             off: &mut usize| {
-                                if let Some(s) = v {
-                                    // UTF-16LE code units -> two bytes each
-                                    let len_bytes = s.encode_utf16().count() * 2;
-                                    // For Notes, remove newline characters; otherwise keep the original string.
-                                    let detail = if title == "Notes" {
-                                        s.replace('\n', " ")
-                                    } else {
-                                        s.clone()
-                                    };
-                                    children.push(
-                                        AstNode::new(title, detail)
-                                            .with_byte_range(*off, len_bytes),
-                                    );
-                                    // advance past string bytes + 2-byte UTF-16 nul terminator
-                                    *off = off.saturating_add(len_bytes + 2);
-                                } else {
-                                    // empty field: only the 2-byte terminator is present
-                                    *off = off.saturating_add(2);
-                                }
-                            };
-
-                        push_field(
-                            &mut gd3_children,
-                            "Track name (EN)",
-                            &gd3_ref.track_name_en,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Track name (JP)",
-                            &gd3_ref.track_name_jp,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Game name (EN)",
-                            &gd3_ref.game_name_en,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Game name (JP)",
-                            &gd3_ref.game_name_jp,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "System name (EN)",
-                            &gd3_ref.system_name_en,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "System name (JP)",
-                            &gd3_ref.system_name_jp,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Author (EN)",
-                            &gd3_ref.author_name_en,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Author (JP)",
-                            &gd3_ref.author_name_jp,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Release date",
-                            &gd3_ref.release_date,
-                            &mut field_off,
-                        );
-                        push_field(
-                            &mut gd3_children,
-                            "Creator",
-                            &gd3_ref.creator,
-                            &mut field_off,
-                        );
-                        push_field(&mut gd3_children, "Notes", &gd3_ref.notes, &mut field_off);
-
-                        if !gd3_children.is_empty() {
-                            // Attach a GD3 top-level node and also record the full GD3 chunk range
-                            // so selecting the GD3 node highlights the entire metadata chunk.
-                            let mut gd3_node =
-                                AstNode::new("GD3", "Metadata").with_children(gd3_children);
-                            let gd3_len = doc.gd3.as_ref().map(|g| g.to_bytes().len()).unwrap_or(0);
-                            if gd3_len > 0 {
-                                let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
-                                gd3_node.byte_range = Some((gd3_start, gd3_len));
-                            }
-                            nodes.push(gd3_node);
-                        }
+                    if let Some(gd3_node) = Self::build_gd3_node(&doc) {
+                        nodes.push(gd3_node);
                     }
 
                     let _ = tx.send(AstBuildMessage::Full(nodes));
@@ -991,7 +1001,7 @@ impl UiState {
                     let mut nodes: Vec<AstNode> = Vec::with_capacity(end - absolute_start);
                     // Compute absolute offsets/lengths for commands once and attach them
                     // to the returned AstNodes so the UI can highlight the exact bytes.
-                    let abs_ranges = doc.souecemap();
+                    let abs_ranges = doc.sourcemap();
                     for (abs_i, cmd) in doc.iter().enumerate().take(end).skip(absolute_start) {
                         let title = format!("{}: {:?}", abs_i, cmd);
                         let detail = format!("{:?}", cmd);

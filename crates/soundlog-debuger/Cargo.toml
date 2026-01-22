@@ -20,5 +20,5 @@ unicode-width = "0.1"
 soundlog = { path = "../soundlog" }
 
 [[bin]]
-name = "soundlog-debuger"
+name = "soundlog"
 path = "src/main.rs"

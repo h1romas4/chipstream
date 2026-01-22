@@ -2474,7 +2474,15 @@ fn spec_to_vgm_bytes<C: CommandSpec + ?Sized>(chip_id: Instance, spec: &C, cmd_b
     spec.to_vgm_bytes(cmd_buf);
     cmd_buf[start] = match chip_id {
         Instance::Primary => cmd_buf[start],
-        Instance::Secondary => cmd_buf[start].wrapping_add(0x50),
+        Instance::Secondary => {
+            let primary = cmd_buf[start];
+            match primary {
+                0x50 => 0x30,
+                0x51..=0x5F => primary.wrapping_add(0x50),
+                0x00..=0x7F => primary.wrapping_add(0x80),
+                _ => primary.wrapping_add(0x50),
+            }
+        }
     };
 }
 
@@ -2688,7 +2696,7 @@ impl VgmDocument {
     /// adds that header length to the per-command offsets returned by
     /// `command_offsets_and_lengths()` so callers receive absolute file offsets
     /// suitable for highlighting bytes in the original serialized VGM file.
-    pub fn souecemap(&self) -> Vec<(usize, usize)> {
+    pub fn sourcemap(&self) -> Vec<(usize, usize)> {
         // compute data_offset the same way as to_bytes()
         let data_offset: u32 = if self.header.data_offset == 0 {
             (VgmHeader::fallback_header_size_for_version(self.header.version).wrapping_sub(0x34))

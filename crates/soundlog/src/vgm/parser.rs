@@ -430,7 +430,17 @@ pub(crate) fn parse_vgm_command(
             for &instance in &[Instance::Primary, Instance::Secondary] {
                 let opcode = match instance {
                     Instance::Primary => other,
-                    Instance::Secondary => other.wrapping_sub(0x50),
+                    Instance::Secondary => match other {
+                        // The second SN76489 PSG uses 0x30 (0x3F for GG Stereo).
+                        0x30 | 0x3F => 0x50,
+                        // All chips of the YM-family that use command 0x5n use 0xAn for the second chip.
+                        0xA0..=0xAF => other.wrapping_sub(0x50),
+                        // All other chips use bit 7 (0x80) of the first parameter byte
+                        // to distinguish between the 1st and 2nd chip.
+                        0x80..=0xFF => other.wrapping_sub(0x80),
+                        // Fallback to the older heuristic (subtract 0x50).
+                        _ => other.wrapping_sub(0x50),
+                    },
                 };
                 match parse_chip_write(opcode, instance, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),

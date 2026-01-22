@@ -852,7 +852,7 @@ impl VgmHeader {
     /// (older VGM versions omitted the data_offset field or used smaller
     /// headers). The returned size is the total header size in bytes and
     /// includes the 32-bit `data_offset` field region when applicable.
-    pub(crate) fn fallback_header_size_for_version(version: u32) -> usize {
+    pub fn fallback_header_size_for_version(version: u32) -> usize {
         match version {
             0x00000100 => 0x20 + 4,
             0x00000101 => 0x24 + 4,
