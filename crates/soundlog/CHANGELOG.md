@@ -1,5 +1,7 @@
 # Changelog
 
+## [dev] v0.3.0
+
 ## v0.2.0
 
 - Add `VgmDocument::sourcemap` to produce absolute file offsets for each command, so callers can map commands back to their byte ranges in the serialized VGM (respects header/data layout, extra-header placement and GD3 offsets).

@@ -657,52 +657,52 @@ fn test_bit_packing_decompress_16bit_values() {
 fn test_ay8910_stereo_mask_from_mask_all_enabled() {
     let mask = Ay8910StereoMaskDetail::from_mask(0b00111111);
     assert_eq!(mask.chip_instance, 0);
-    assert_eq!(mask.is_ym2203, false);
-    assert_eq!(mask.left_ch1, true);
-    assert_eq!(mask.right_ch1, true);
-    assert_eq!(mask.left_ch2, true);
-    assert_eq!(mask.right_ch2, true);
-    assert_eq!(mask.left_ch3, true);
-    assert_eq!(mask.right_ch3, true);
+    assert!(!mask.is_ym2203);
+    assert!(mask.left_ch1);
+    assert!(mask.right_ch1);
+    assert!(mask.left_ch2);
+    assert!(mask.right_ch2);
+    assert!(mask.left_ch3);
+    assert!(mask.right_ch3);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_instance1_ym2203() {
     let mask = Ay8910StereoMaskDetail::from_mask(0b11110011);
     assert_eq!(mask.chip_instance, 1);
-    assert_eq!(mask.is_ym2203, true);
-    assert_eq!(mask.left_ch1, true);
-    assert_eq!(mask.right_ch1, true);
-    assert_eq!(mask.left_ch2, false);
-    assert_eq!(mask.right_ch2, false);
-    assert_eq!(mask.left_ch3, true);
-    assert_eq!(mask.right_ch3, true);
+    assert!(mask.is_ym2203);
+    assert!(mask.left_ch1);
+    assert!(mask.right_ch1);
+    assert!(!mask.left_ch2);
+    assert!(!mask.right_ch2);
+    assert!(mask.left_ch3);
+    assert!(mask.right_ch3);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_left_only() {
     let mask = Ay8910StereoMaskDetail::from_mask(0b00010101);
     assert_eq!(mask.chip_instance, 0);
-    assert_eq!(mask.is_ym2203, false);
-    assert_eq!(mask.left_ch1, true);
-    assert_eq!(mask.right_ch1, false);
-    assert_eq!(mask.left_ch2, true);
-    assert_eq!(mask.right_ch2, false);
-    assert_eq!(mask.left_ch3, true);
-    assert_eq!(mask.right_ch3, false);
+    assert!(!mask.is_ym2203);
+    assert!(mask.left_ch1);
+    assert!(!mask.right_ch1);
+    assert!(mask.left_ch2);
+    assert!(!mask.right_ch2);
+    assert!(mask.left_ch3);
+    assert!(!mask.right_ch3);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_right_only() {
     let mask = Ay8910StereoMaskDetail::from_mask(0b00101010);
     assert_eq!(mask.chip_instance, 0);
-    assert_eq!(mask.is_ym2203, false);
-    assert_eq!(mask.left_ch1, false);
-    assert_eq!(mask.right_ch1, true);
-    assert_eq!(mask.left_ch2, false);
-    assert_eq!(mask.right_ch2, true);
-    assert_eq!(mask.left_ch3, false);
-    assert_eq!(mask.right_ch3, true);
+    assert!(!mask.is_ym2203);
+    assert!(!mask.left_ch1);
+    assert!(mask.right_ch1);
+    assert!(!mask.left_ch2);
+    assert!(mask.right_ch2);
+    assert!(!mask.left_ch3);
+    assert!(mask.right_ch3);
 }
 
 #[test]
@@ -770,13 +770,13 @@ fn test_ay8910_stereo_mask_parse() {
     let detail = parse_ay8910_stereo_mask(mask);
 
     assert_eq!(detail.chip_instance, 0);
-    assert_eq!(detail.is_ym2203, false);
-    assert_eq!(detail.left_ch1, true);
-    assert_eq!(detail.right_ch1, true);
-    assert_eq!(detail.left_ch2, true);
-    assert_eq!(detail.right_ch2, true);
-    assert_eq!(detail.left_ch3, true);
-    assert_eq!(detail.right_ch3, true);
+    assert!(!detail.is_ym2203);
+    assert!(detail.left_ch1);
+    assert!(detail.right_ch1);
+    assert!(detail.left_ch2);
+    assert!(detail.right_ch2);
+    assert!(detail.left_ch3);
+    assert!(detail.right_ch3);
 }
 
 #[test]
@@ -787,11 +787,11 @@ fn test_ay8910_stereo_mask_parse_ym2203() {
     let detail = parse_ay8910_stereo_mask(mask);
 
     assert_eq!(detail.chip_instance, 1);
-    assert_eq!(detail.is_ym2203, true);
-    assert_eq!(detail.left_ch1, true);
-    assert_eq!(detail.right_ch1, true);
-    assert_eq!(detail.left_ch2, false);
-    assert_eq!(detail.right_ch2, false);
-    assert_eq!(detail.left_ch3, true);
-    assert_eq!(detail.right_ch3, true);
+    assert!(detail.is_ym2203);
+    assert!(detail.left_ch1);
+    assert!(detail.right_ch1);
+    assert!(!detail.left_ch2);
+    assert!(!detail.right_ch2);
+    assert!(detail.left_ch3);
+    assert!(detail.right_ch3);
 }
