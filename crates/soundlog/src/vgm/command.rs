@@ -153,7 +153,7 @@ pub struct EndOfData;
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
     pub marker: u8,
-    pub chip_id: u8,
+    pub chip_instance: u8,
     pub data_type: u8,
     pub size: u32,
     pub data: Vec<u8>,
@@ -367,7 +367,7 @@ impl CommandSpec for DataBlock {
         dest.push(self.marker);
         dest.push(self.data_type);
         let mut s = self.size & 0x7FFF_FFFF;
-        if self.chip_id != 0 {
+        if self.chip_instance != 0 {
             s |= 0x8000_0000;
         }
         dest.extend_from_slice(&s.to_le_bytes());
@@ -388,7 +388,7 @@ impl CommandSpec for DataBlock {
         Ok((
             DataBlock {
                 marker,
-                chip_id,
+                chip_instance: chip_id,
                 data_type,
                 size,
                 data: data_slice.to_vec(),

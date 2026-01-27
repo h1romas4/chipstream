@@ -214,7 +214,7 @@ fn add_command_data_block() {
     let data = vec![1u8, 2, 3];
     let spec = DataBlock {
         marker: 0x66,
-        chip_id: 1,
+        chip_instance: 1,
         data_type: 0x01,
         size: data.len() as u32,
         data: data.clone(),

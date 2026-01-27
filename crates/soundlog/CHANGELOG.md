@@ -4,6 +4,7 @@
 
 - Add `VgmDocument::sourcemap` to produce absolute file offsets for each command, so callers can map commands back to their byte ranges in the serialized VGM (respects header/data layout, extra-header placement and GD3 offsets).
 - Fix encoding/decoding of `Instance::Secondary` opcodes: implement symmetric writer/parser mapping (PSG special-case 0x50↔0x30/0x3F, YM-family 0x5n↔0xAn, and other chips using the high-bit (0x80) to indicate the second instance), improving round-trip and historical opcode compatibility.
+- Add `vgm::detail` module with `parse_data_block()` function to parse VGM data blocks (command 0x67) into detailed types including uncompressed/compressed streams, ROM/RAM dumps, decompression tables, and RAM writes with chip-specific type information.
 
 ## v0.1.0 — Initial release
 

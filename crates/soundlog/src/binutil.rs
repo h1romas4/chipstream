@@ -46,6 +46,12 @@ pub enum ParseError {
     /// - `opcode` is the raw opcode byte that was invalid.
     /// - `offset` is the position in the input where the opcode was found.
     UnknownOpcode { opcode: u8, offset: usize },
+
+    /// Data inconsistency or validation error.
+    ///
+    /// This error indicates that the data structure is inconsistent or
+    /// invalid, such as missing required components or conflicting settings.
+    DataInconsistency(String),
 }
 
 impl fmt::Display for ParseError {
@@ -83,6 +89,7 @@ impl fmt::Display for ParseError {
                     opcode, offset
                 )
             }
+            ParseError::DataInconsistency(s) => write!(f, "data inconsistency: {}", s),
         }
     }
 }

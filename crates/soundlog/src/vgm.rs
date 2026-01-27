@@ -4,6 +4,7 @@
 //! submodules for command parsing/serialization and the GD3/extra-header
 //! handling utilities.
 pub mod command;
+pub mod detail;
 mod document;
 mod header;
 pub mod parser;
