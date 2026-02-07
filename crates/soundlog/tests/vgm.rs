@@ -263,16 +263,55 @@ fn add_command_wait_n_sample() {
 #[test]
 fn add_command_ay8910_mask_and_seek() {
     let mut b = VgmBuilder::new();
-    b.add_vgm_command(Ay8910StereoMask(0xAA));
+    b.add_vgm_command(Ay8910StereoMask::from_mask(0xAA));
     b.add_vgm_command(SeekOffset(0xDEADBEEF));
     let doc = b.finalize();
     assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
-        VgmCommand::AY8910StereoMask(s) => assert_eq!(s, Ay8910StereoMask(0xAA)),
+        VgmCommand::AY8910StereoMask(s) => {
+            assert_eq!(s, Ay8910StereoMask::from_mask(0xAA))
+        }
         other => panic!("unexpected command: {:?}", other),
     }
     match doc.iter().nth(1).unwrap().clone() {
         VgmCommand::SeekOffset(s) => assert_eq!(s, SeekOffset(0xDEADBEEF)),
+        other => panic!("unexpected command: {:?}", other),
+    }
+}
+
+#[test]
+fn add_command_ay8910_mask_with_spec() {
+    let mut b = VgmBuilder::new();
+
+    // Create Ay8910StereoMask directly with detailed fields
+    let mask_spec = Ay8910StereoMask {
+        chip_instance: 1,
+        is_ym2203: true,
+        left_ch1: true,
+        right_ch1: true,
+        left_ch2: false,
+        right_ch2: false,
+        left_ch3: true,
+        right_ch3: true,
+    };
+
+    b.add_vgm_command(mask_spec.clone());
+    let doc = b.finalize();
+
+    assert_eq!(doc.iter().count(), 1);
+    match doc.iter().next().unwrap().clone() {
+        VgmCommand::AY8910StereoMask(s) => {
+            assert_eq!(s.chip_instance, 1);
+            assert!(s.is_ym2203);
+            assert!(s.left_ch1);
+            assert!(s.right_ch1);
+            assert!(!s.left_ch2);
+            assert!(!s.right_ch2);
+            assert!(s.left_ch3);
+            assert!(s.right_ch3);
+            // Verify it converts to the expected mask byte
+            assert_eq!(s.to_mask(), 0b11110011);
+        }
         other => panic!("unexpected command: {:?}", other),
     }
 }

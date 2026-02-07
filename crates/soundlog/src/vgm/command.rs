@@ -131,7 +131,62 @@ pub(crate) trait CommandSpec {
 
 /// AY8910 stereo mask
 #[derive(Debug, Clone, PartialEq)]
-pub struct Ay8910StereoMask(pub u8);
+pub struct Ay8910StereoMask {
+    /// Chip instance (0 or 1)
+    pub chip_instance: u8,
+    /// true = YM2203 SSG, false = AY8910
+    pub is_ym2203: bool,
+    /// Enable channel 1 on left speaker
+    pub left_ch1: bool,
+    /// Enable channel 1 on right speaker
+    pub right_ch1: bool,
+    /// Enable channel 2 on left speaker
+    pub left_ch2: bool,
+    /// Enable channel 2 on right speaker
+    pub right_ch2: bool,
+    /// Enable channel 3 on left speaker
+    pub left_ch3: bool,
+    /// Enable channel 3 on right speaker
+    pub right_ch3: bool,
+}
+
+impl Ay8910StereoMask {
+    pub fn from_mask(mask: u8) -> Self {
+        Self {
+            chip_instance: (mask >> 7) & 1,
+            is_ym2203: (mask >> 6) & 1 == 1,
+            right_ch3: (mask >> 5) & 1 == 1,
+            left_ch3: (mask >> 4) & 1 == 1,
+            right_ch2: (mask >> 3) & 1 == 1,
+            left_ch2: (mask >> 2) & 1 == 1,
+            right_ch1: (mask >> 1) & 1 == 1,
+            left_ch1: mask & 1 == 1,
+        }
+    }
+
+    pub fn to_mask(&self) -> u8 {
+        ((self.chip_instance & 1) << 7)
+            | ((self.is_ym2203 as u8) << 6)
+            | ((self.right_ch3 as u8) << 5)
+            | ((self.left_ch3 as u8) << 4)
+            | ((self.right_ch2 as u8) << 3)
+            | ((self.left_ch2 as u8) << 2)
+            | ((self.right_ch1 as u8) << 1)
+            | (self.left_ch1 as u8)
+    }
+}
+
+impl From<u8> for Ay8910StereoMask {
+    fn from(mask: u8) -> Self {
+        Self::from_mask(mask)
+    }
+}
+
+impl From<Ay8910StereoMask> for u8 {
+    fn from(detail: Ay8910StereoMask) -> Self {
+        detail.to_mask()
+    }
+}
 
 /// Wait n samples, n can range from 0 to 65535 (approx 1.49 seconds).
 #[derive(Debug, Clone, PartialEq)]
@@ -281,14 +336,14 @@ impl CommandSpec for Ay8910StereoMask {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push(self.0);
+        dest.push(self.to_mask());
     }
     fn parse(bytes: &[u8], offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
     where
         Self: Sized,
     {
         let v = read_u8_at(bytes, offset)?;
-        Ok((Ay8910StereoMask(v), 1))
+        Ok((Ay8910StereoMask::from_mask(v), 1))
     }
 }
 

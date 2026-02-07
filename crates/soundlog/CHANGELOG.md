@@ -2,6 +2,8 @@
 
 ## [dev] v0.3.0
 
+- **Breaking change**: `Ay8910StereoMask` is now a regular struct with fields (`chip_instance`, `is_ym2203`, `left_ch1`, `right_ch1`, etc.) instead of a tuple struct wrapping `u8`. Access fields directly via `mask.chip_instance`, `mask.left_ch1`, etc. `Ay8910StereoMaskDetail` has been removed (merged into `Ay8910StereoMask`). The `parse_ay8910_stereo_mask()` function has been removed as it's no longer needed—use `Ay8910StereoMask::from_mask()` to parse from a byte.
+
 ## v0.2.0
 
 - Add `VgmDocument::sourcemap` to produce absolute file offsets for each command, so callers can map commands back to their byte ranges in the serialized VGM (respects header/data layout, extra-header placement and GD3 offsets).

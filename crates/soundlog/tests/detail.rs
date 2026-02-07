@@ -1,4 +1,4 @@
-use soundlog::vgm::command::DataBlock;
+use soundlog::vgm::command::{Ay8910StereoMask, DataBlock};
 use soundlog::vgm::detail::*;
 
 #[test]
@@ -655,7 +655,7 @@ fn test_bit_packing_decompress_16bit_values() {
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_all_enabled() {
-    let mask = Ay8910StereoMaskDetail::from_mask(0b00111111);
+    let mask = Ay8910StereoMask::from_mask(0b00111111);
     assert_eq!(mask.chip_instance, 0);
     assert!(!mask.is_ym2203);
     assert!(mask.left_ch1);
@@ -668,7 +668,7 @@ fn test_ay8910_stereo_mask_from_mask_all_enabled() {
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_instance1_ym2203() {
-    let mask = Ay8910StereoMaskDetail::from_mask(0b11110011);
+    let mask = Ay8910StereoMask::from_mask(0b11110011);
     assert_eq!(mask.chip_instance, 1);
     assert!(mask.is_ym2203);
     assert!(mask.left_ch1);
@@ -681,7 +681,7 @@ fn test_ay8910_stereo_mask_from_mask_instance1_ym2203() {
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_left_only() {
-    let mask = Ay8910StereoMaskDetail::from_mask(0b00010101);
+    let mask = Ay8910StereoMask::from_mask(0b00010101);
     assert_eq!(mask.chip_instance, 0);
     assert!(!mask.is_ym2203);
     assert!(mask.left_ch1);
@@ -694,7 +694,7 @@ fn test_ay8910_stereo_mask_from_mask_left_only() {
 
 #[test]
 fn test_ay8910_stereo_mask_from_mask_right_only() {
-    let mask = Ay8910StereoMaskDetail::from_mask(0b00101010);
+    let mask = Ay8910StereoMask::from_mask(0b00101010);
     assert_eq!(mask.chip_instance, 0);
     assert!(!mask.is_ym2203);
     assert!(!mask.left_ch1);
@@ -708,14 +708,14 @@ fn test_ay8910_stereo_mask_from_mask_right_only() {
 #[test]
 fn test_ay8910_stereo_mask_to_mask_roundtrip() {
     let original = 0b11110011;
-    let mask = Ay8910StereoMaskDetail::from_mask(original);
+    let mask = Ay8910StereoMask::from_mask(original);
     let result = mask.to_mask();
     assert_eq!(result, original);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_to_mask_construction() {
-    let mask = Ay8910StereoMaskDetail {
+    let mask = Ay8910StereoMask {
         chip_instance: 1,
         is_ym2203: true,
         left_ch1: true,
@@ -730,14 +730,14 @@ fn test_ay8910_stereo_mask_to_mask_construction() {
 
 #[test]
 fn test_ay8910_stereo_mask_from_u8_trait() {
-    let mask: Ay8910StereoMaskDetail = 0b00111111u8.into();
+    let mask: Ay8910StereoMask = 0b00111111u8.into();
     assert_eq!(mask.chip_instance, 0);
     assert!(mask.left_ch1 && mask.right_ch1);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_into_u8_trait() {
-    let mask = Ay8910StereoMaskDetail {
+    let mask = Ay8910StereoMask {
         chip_instance: 0,
         is_ym2203: false,
         left_ch1: true,
@@ -756,7 +756,7 @@ fn test_ay8910_stereo_mask_all_bits() {
     // Test each bit individually
     for bit in 0..8 {
         let value = 1u8 << bit;
-        let mask = Ay8910StereoMaskDetail::from_mask(value);
+        let mask = Ay8910StereoMask::from_mask(value);
         let result = mask.to_mask();
         assert_eq!(result, value, "Failed for bit {}", bit);
     }
@@ -764,34 +764,28 @@ fn test_ay8910_stereo_mask_all_bits() {
 
 #[test]
 fn test_ay8910_stereo_mask_parse() {
-    use soundlog::vgm::command::Ay8910StereoMask;
+    let mask = Ay8910StereoMask::from_mask(0b00111111);
 
-    let mask = Ay8910StereoMask(0b00111111);
-    let detail = parse_ay8910_stereo_mask(mask);
-
-    assert_eq!(detail.chip_instance, 0);
-    assert!(!detail.is_ym2203);
-    assert!(detail.left_ch1);
-    assert!(detail.right_ch1);
-    assert!(detail.left_ch2);
-    assert!(detail.right_ch2);
-    assert!(detail.left_ch3);
-    assert!(detail.right_ch3);
+    assert_eq!(mask.chip_instance, 0);
+    assert!(!mask.is_ym2203);
+    assert!(mask.left_ch1);
+    assert!(mask.right_ch1);
+    assert!(mask.left_ch2);
+    assert!(mask.right_ch2);
+    assert!(mask.left_ch3);
+    assert!(mask.right_ch3);
 }
 
 #[test]
 fn test_ay8910_stereo_mask_parse_ym2203() {
-    use soundlog::vgm::command::Ay8910StereoMask;
+    let mask = Ay8910StereoMask::from_mask(0b11110011);
 
-    let mask = Ay8910StereoMask(0b11110011);
-    let detail = parse_ay8910_stereo_mask(mask);
-
-    assert_eq!(detail.chip_instance, 1);
-    assert!(detail.is_ym2203);
-    assert!(detail.left_ch1);
-    assert!(detail.right_ch1);
-    assert!(!detail.left_ch2);
-    assert!(!detail.right_ch2);
-    assert!(detail.left_ch3);
-    assert!(detail.right_ch3);
+    assert_eq!(mask.chip_instance, 1);
+    assert!(mask.is_ym2203);
+    assert!(mask.left_ch1);
+    assert!(mask.right_ch1);
+    assert!(!mask.left_ch2);
+    assert!(!mask.right_ch2);
+    assert!(mask.left_ch3);
+    assert!(mask.right_ch3);
 }
