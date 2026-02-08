@@ -20,7 +20,7 @@ use crate::binutil::{
 };
 use crate::chip;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::{VGM_MAX_HEADER_SIZE, VgmHeader};
+use crate::vgm::header::VgmHeader;
 
 /// Chip instance identifier for VGM commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2580,8 +2580,19 @@ impl VgmDocument {
         // before calling `to_bytes()`.
 
         // data offset (0x34)
+        // When header.data_offset is 0, compute it based on the version-defined header size
         let data_offset: u32 = match self.header.data_offset {
-            0 => VGM_MAX_HEADER_SIZE.wrapping_sub(0x34),
+            0 => {
+                let version_header_size =
+                    VgmHeader::fallback_header_size_for_version(self.header.version);
+                // For very old versions where header size < 0x34, use 0x40 as minimum data start
+                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start)
+                if version_header_size < 0x34 {
+                    0x0C // 0x34 + 0x0C = 0x40 (64 bytes, minimum VGM data start)
+                } else {
+                    (version_header_size as u32).wrapping_sub(0x34)
+                }
+            }
             v => v,
         };
 

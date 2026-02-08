@@ -3,6 +3,7 @@
 ## [dev] v0.3.0
 
 - **Breaking change**: `Ay8910StereoMask` is now a regular struct with fields (`chip_instance`, `is_ym2203`, `left_ch1`, `right_ch1`, etc.) instead of a tuple struct wrapping `u8`. Access fields directly via `mask.chip_instance`, `mask.left_ch1`, etc. `Ay8910StereoMaskDetail` has been removed (merged into `Ay8910StereoMask`). The `parse_ay8910_stereo_mask()` function has been removed as it's no longer needed—use `Ay8910StereoMask::from_mask()` to parse from a byte.
+- Fix: VGM header parsing updated to follow the VGM specification. Main-header fields are only read when defined by the file's declared VGM version; `data_offset` is used only for VGM >= 1.50; extra-header (v1.70+) offsets are interpreted relative to the extra-header start. Serialization was adjusted for round-trip compatibility and unit tests were added to cover these cases.
 
 ## v0.2.0
 

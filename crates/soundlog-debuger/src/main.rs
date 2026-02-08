@@ -28,6 +28,24 @@ enum Commands {
         #[arg(long)]
         diag: bool,
     },
+    /// Re-dump VGM file with DAC streams expanded to chip writes
+    Redump {
+        /// Input VGM file path
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Output VGM file path
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+
+        /// Loop count limit (default: 2)
+        #[arg(long, default_value_t = 2)]
+        loop_count: u32,
+
+        /// Fadeout grace period in samples after loop end (default: 44100)
+        #[arg(long, default_value_t = 44100)]
+        fadeout_samples: u64,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -77,23 +95,55 @@ fn main() {
     // Parse CLI args early so we can load the initial bytes before creating the UI.
     let args = Args::parse();
 
-    // If the user requested the `test` subcommand, run the roundtrip test and exit.
-    if let Some(Commands::Test { file, diag }) = args.command {
-        // Read the input using the same logic as the GUI code path:
-        // read raw bytes, detect gz/vgz by extension or header and decompress.
-        match load_bytes_from_path(&file) {
-            Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, diag) {
-                Ok(_) => std::process::exit(0),
+    // Handle subcommands
+    match args.command {
+        Some(Commands::Test { file, diag }) => {
+            // Read the input using the same logic as the GUI code path:
+            // read raw bytes, detect gz/vgz by extension or header and decompress.
+            match load_bytes_from_path(&file) {
+                Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, diag) {
+                    Ok(_) => std::process::exit(0),
+                    Err(e) => {
+                        eprintln!("test_roundtrip failed: {}", e);
+                        std::process::exit(1);
+                    }
+                },
                 Err(e) => {
-                    eprintln!("test_roundtrip failed: {}", e);
+                    eprintln!("failed to read input for test: {}", e);
                     std::process::exit(1);
                 }
-            },
-            Err(e) => {
-                eprintln!("failed to read input for test: {}", e);
-                std::process::exit(1);
             }
         }
+        Some(Commands::Redump {
+            input,
+            output,
+            loop_count,
+            fadeout_samples,
+        }) => match load_bytes_from_path(&input) {
+            Ok(bytes) => {
+                match crate::cui::vgm::redump_vgm(
+                    &input,
+                    &output,
+                    bytes,
+                    Some(loop_count),
+                    Some(fadeout_samples),
+                ) {
+                    Ok(_) => {
+                        println!("Successfully redumped to {}", output.display());
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("redump failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("failed to read input for redump: {}", e);
+                std::process::exit(1);
+            }
+        },
+        None => {}
     }
 
     // Try to load bytes from the provided file, otherwise keep empty vector.

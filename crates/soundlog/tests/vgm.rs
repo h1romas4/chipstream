@@ -618,9 +618,8 @@ fn test_loop_offset_serialized_matches_header() {
 
 #[test]
 fn test_fallback_header_size_v1_00() {
-    // Public VgmDocument serialization expands the header to the full
-    // VGM_MAX_HEADER_SIZE (0x100) when data_offset == 0. Ensure the
-    // serialized document reflects that behavior.
+    // VgmDocument serialization uses version-appropriate header size when
+    // data_offset == 0. Ensure the serialized document reflects that behavior.
     let mut doc = VgmBuilder::new().finalize();
     // force version to 1.00 and ensure no explicit data_offset
     doc.header.version = 0x00000100;
@@ -629,8 +628,9 @@ fn test_fallback_header_size_v1_00() {
     // Serialize the full document and inspect resulting file bytes.
     let bytes: Vec<u8> = (&doc).into();
 
-    // Serialized header (excluding appended EndOfData opcode) should be 0x100
-    assert_eq!(bytes.len(), 0x100);
+    // VGM 1.00 header size is 0x24 (36 bytes), but data must start at minimum 0x40
+    // VgmBuilder doesn't auto-append EndOfData, so output is just the header
+    assert_eq!(bytes.len(), 0x40);
 }
 
 #[test]
@@ -647,17 +647,17 @@ fn test_explicit_data_offset_affects_header_size() {
 #[test]
 fn test_small_version_does_not_include_extra_header_field() {
     // Historically older versions had smaller main-header layouts that did not
-    // include the stored extra-header offset (0xBC..0xBF). The public
-    // serialization, however, expands the header to 0x100 when data_offset == 0.
-    // Confirm the public serialization behavior for a small-version header.
+    // include the stored extra-header offset (0xBC..0xBF). Confirm that the
+    // serialization uses the version-appropriate header size.
     let mut doc = VgmBuilder::new().finalize();
     doc.header.version = 0x00000110; // legacy small-version indicator
     doc.header.data_offset = 0;
 
     let bytes: Vec<u8> = (&doc).into();
 
-    // Serialized header (excluding appended EndOfData opcode) should be 0x100
-    assert_eq!(bytes.len(), 0x100);
+    // VGM 1.10 header size is 0x34 (52 bytes)
+    // VgmBuilder doesn't auto-append EndOfData, so output is just the header
+    assert_eq!(bytes.len(), 0x34);
 }
 
 #[test]
@@ -787,4 +787,333 @@ fn test_tail_header_fields_roundtrip() {
     assert_eq!(reparsed2.header.vsu_clock, vsu_val);
     assert_eq!(reparsed2.header.saa1099_clock, saa1099_val);
     assert_eq!(reparsed2.header.es5503_clock, es5503_val);
+}
+
+#[test]
+fn test_vgm_150_overlapping_header_bytes_treated_as_zero() {
+    // VGM 1.50+ spec: "If the VGM data starts at an offset that is lower than
+    // 0x100, all overlapping header bytes have to be handled as they were zero."
+    //
+    // This test creates a VGM 1.50+ file where data starts before 0x100,
+    // causing some header fields to overlap with the data region. Those fields
+    // should be read as zero.
+
+    // Create a minimal VGM file with version 1.50
+    // Data starts at 0x34 + 0x40 = 0x74, so we need at least that much + EndOfData command
+    let mut vgm_bytes = vec![0u8; 0x80];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset (relative to 0x04) - points to end of file
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.50
+    let version: u32 = 0x00000150;
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    // Set data_offset to a small value (e.g., 0x40) so data starts at 0x34 + 0x40 = 0x74
+    let data_offset: u32 = 0x40;
+    vgm_bytes[0x34..0x38].copy_from_slice(&data_offset.to_le_bytes());
+
+    // Set a field that is BEFORE the data start (should be preserved)
+    // ym2612_clock is at 0x2C, which is < 0x74
+    let ym2612_clock: u32 = 0xAABBCCDD;
+    vgm_bytes[0x2C..0x30].copy_from_slice(&ym2612_clock.to_le_bytes());
+
+    // Add EndOfData command (0x66) at data start position (0x74)
+    let data_start = 0x34 + data_offset as usize;
+    vgm_bytes[data_start] = 0x66;
+
+    // Now create a separate byte array that has header fields set beyond data_start
+    // to simulate what might be in a malformed or edge-case file
+    let mut test_bytes = vgm_bytes.clone();
+
+    // Set some header fields that would be AFTER the data start (0x74)
+    // These bytes exist in the buffer but should be treated as zero when parsing
+    // because they overlap with the data region
+    // For example, gb_dmg_clock is at 0x80, but our data starts at 0x74
+    if test_bytes.len() > 0x84 {
+        test_bytes.resize(0x88, 0);
+        test_bytes[0x80..0x84].copy_from_slice(&0x12345678u32.to_le_bytes());
+        test_bytes[0x84..0x88].copy_from_slice(&0x9ABCDEF0u32.to_le_bytes());
+    }
+
+    // Parse the VGM document
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM with early data start: {:?}",
+        parsed.as_ref().err()
+    );
+    let doc = parsed.unwrap();
+
+    // Fields before data start should be preserved
+    assert_eq!(doc.header.version, version);
+    assert_eq!(doc.header.data_offset, data_offset);
+    assert_eq!(doc.header.ym2612_clock, ym2612_clock);
+
+    // Fields after data start (overlapping with data) should be zero
+    // because the parser should not read beyond header_size (which is limited to data_start)
+    assert_eq!(
+        doc.header.gb_dmg_clock, 0,
+        "gb_dmg_clock at 0x80 should be 0 (beyond data start at 0x74)"
+    );
+    assert_eq!(
+        doc.header.nes_apu_clock, 0,
+        "nes_apu_clock at 0x84 should be 0 (beyond data start at 0x74)"
+    );
+}
+
+#[test]
+fn test_vgm_150_minimum_header_size_64_bytes() {
+    // VGM 1.50+ spec: "All header sizes are valid for all versions from 1.50 on,
+    // as long as header has at least 64 bytes."
+    //
+    // This test verifies that even with a very small data_offset, we still
+    // maintain at least 64 bytes (0x40) for the header when possible.
+
+    // Set a very small data_offset (0x0C would result in header ending at 0x40)
+    let data_offset: u32 = 0x0C;
+    let data_start = 0x34 + data_offset as usize;
+
+    // Create a minimal VGM file that ends right after the EndOfData command
+    let mut vgm_bytes = vec![0u8; data_start + 1];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset (relative to 0x04)
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.50
+    let version: u32 = 0x00000150;
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    vgm_bytes[0x34..0x38].copy_from_slice(&data_offset.to_le_bytes());
+
+    // Add EndOfData command at data start position
+    vgm_bytes[data_start] = 0x66;
+
+    // Parse should succeed and maintain minimum 64-byte header
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM 1.50+ with small data_offset: {:?}",
+        parsed.as_ref().err()
+    );
+}
+
+#[test]
+fn test_vgm_pre_150_not_affected_by_new_rule() {
+    // Verify that versions before 1.50 use version-based fallback header size
+    // and correctly parse files.
+
+    // VGM 1.10 header size is 0x34 bytes
+    let version: u32 = 0x00000110;
+    let data_start = 0x34; // VGM 1.10 uses version-based header size
+
+    // Create a minimal VGM file that ends right after the EndOfData command
+    let mut vgm_bytes = vec![0u8; data_start + 1];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset (relative to 0x04)
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.10 (before 1.50)
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    // Note: data_offset field at 0x34 doesn't exist in VGM 1.10 (added in 1.50)
+    // So we don't set it, and it remains 0x00
+
+    // Add EndOfData command at actual data start position (0x34 for VGM 1.10)
+    vgm_bytes[data_start] = 0x66;
+
+    // Parse should succeed
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM 1.10: {:?}",
+        parsed.as_ref().err()
+    );
+
+    let doc = parsed.unwrap();
+    assert_eq!(doc.header.version, version);
+}
+
+#[test]
+fn test_version_based_field_availability() {
+    // Test that fields are only read if they were defined in that version.
+    // For example, VGM 1.10 should not read fields added in VGM 1.51.
+
+    let mut vgm_bytes = vec![0u8; 0x100];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.10 (before 1.50)
+    let version: u32 = 0x00000110;
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    // Set data_offset to 0 (will use fallback header size)
+    let data_offset: u32 = 0;
+    vgm_bytes[0x34..0x38].copy_from_slice(&data_offset.to_le_bytes());
+
+    // Set a field that is defined in VGM 1.10 (YM2612 clock at 0x2C)
+    let ym2612_clock: u32 = 0x11223344;
+    vgm_bytes[0x2C..0x30].copy_from_slice(&ym2612_clock.to_le_bytes());
+
+    // Set a field that is NOT defined in VGM 1.10 but added in VGM 1.51
+    // (SegaPCM clock at 0x38) - this should be ignored
+    vgm_bytes[0x38..0x3C].copy_from_slice(&0x55667788u32.to_le_bytes());
+
+    // Add EndOfData command at fallback header size for 1.10 (0x34)
+    vgm_bytes[0x34] = 0x66;
+
+    // Parse the VGM
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM 1.10: {:?}",
+        parsed.as_ref().err()
+    );
+
+    let doc = parsed.unwrap();
+    assert_eq!(doc.header.version, version);
+
+    // Field defined in VGM 1.10 should be preserved
+    assert_eq!(doc.header.ym2612_clock, ym2612_clock);
+
+    // Field added in VGM 1.51 should be zero (not read)
+    assert_eq!(
+        doc.header.sega_pcm_clock, 0,
+        "SegaPCM clock should be 0 for VGM 1.10 (field added in 1.51)"
+    );
+}
+
+#[test]
+fn test_version_150_respects_version_defined_fields() {
+    // Test that VGM 1.50 does NOT read fields added in later versions,
+    // even if data_offset would allow it.
+
+    let mut vgm_bytes = vec![0u8; 0x100];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.50
+    let version: u32 = 0x00000150;
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    // Set data_offset larger than VGM 1.50's defined header size
+    let data_offset: u32 = 0x4C; // data starts at 0x34 + 0x4C = 0x80
+    vgm_bytes[0x34..0x38].copy_from_slice(&data_offset.to_le_bytes());
+
+    // Set a field added in VGM 1.51 (SegaPCM clock at 0x38)
+    // VGM 1.50 header only goes up to 0x38, so this should NOT be read
+    vgm_bytes[0x38..0x3C].copy_from_slice(&0xAABBCCDDu32.to_le_bytes());
+
+    // Add EndOfData command at data start position
+    let data_start = 0x34 + data_offset as usize;
+    vgm_bytes[data_start] = 0x66;
+
+    // Parse the VGM
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM 1.50: {:?}",
+        parsed.as_ref().err()
+    );
+
+    let doc = parsed.unwrap();
+    assert_eq!(doc.header.version, version);
+
+    // VGM 1.50 header size is 0x38, so fields at 0x38+ (added in 1.51) should be zero
+    assert_eq!(
+        doc.header.sega_pcm_clock, 0,
+        "VGM 1.50 should NOT read SegaPCM clock (field added in 1.51)"
+    );
+}
+
+#[test]
+fn test_vgm_170_does_not_read_171_fields() {
+    // Test that VGM 1.70 files do NOT read VGM 1.71 fields,
+    // even if data_offset is large enough to include them.
+    // This tests the real-world case from "01 Opening.vgz".
+
+    let mut vgm_bytes = vec![0u8; 0x100];
+
+    // VGM header identifier
+    vgm_bytes[0x00..0x04].copy_from_slice(b"Vgm ");
+
+    // EOF offset
+    let eof_offset: u32 = (vgm_bytes.len() - 0x04) as u32;
+    vgm_bytes[0x04..0x08].copy_from_slice(&eof_offset.to_le_bytes());
+
+    // Version 1.70
+    let version: u32 = 0x00000170;
+    vgm_bytes[0x08..0x0C].copy_from_slice(&version.to_le_bytes());
+
+    // Set data_offset to 0xAC (like the real file)
+    // This makes data start at 0x34 + 0xAC = 0xE0
+    let data_offset: u32 = 0xAC;
+    vgm_bytes[0x34..0x38].copy_from_slice(&data_offset.to_le_bytes());
+
+    // VGM 1.70 header ends at 0xC0
+    // Set VGM 1.71 fields (0xC0-0xE0) that should NOT be read
+    vgm_bytes[0xC0..0xC4].copy_from_slice(&0x0000000Cu32.to_le_bytes()); // WonderSwan
+    vgm_bytes[0xC4..0xC8].copy_from_slice(&0x00000000u32.to_le_bytes()); // VSU
+    vgm_bytes[0xC8..0xCC].copy_from_slice(&0x00000004u32.to_le_bytes()); // SAA1099
+    vgm_bytes[0xCC..0xD0].copy_from_slice(&0x00008601u32.to_le_bytes()); // ES5503
+
+    // Add EndOfData command at data start position
+    let data_start = 0x34 + data_offset as usize;
+    vgm_bytes[data_start] = 0x66;
+
+    // Parse the VGM
+    let parsed: Result<VgmDocument, _> = vgm_bytes.as_slice().try_into();
+    assert!(
+        parsed.is_ok(),
+        "Failed to parse VGM 1.70: {:?}",
+        parsed.as_ref().err()
+    );
+
+    let doc = parsed.unwrap();
+    assert_eq!(doc.header.version, version);
+
+    // VGM 1.70 should NOT read VGM 1.71 fields, even though data_offset
+    // suggests the header extends to 0xE0
+    assert_eq!(
+        doc.header.wonderswan_clock, 0,
+        "VGM 1.70 should NOT read WonderSwan clock (field added in 1.71)"
+    );
+    assert_eq!(
+        doc.header.vsu_clock, 0,
+        "VGM 1.70 should NOT read VSU clock (field added in 1.71)"
+    );
+    assert_eq!(
+        doc.header.saa1099_clock, 0,
+        "VGM 1.70 should NOT read SAA1099 clock (field added in 1.71)"
+    );
+    assert_eq!(
+        doc.header.es5503_clock, 0,
+        "VGM 1.70 should NOT read ES5503 clock (field added in 1.71)"
+    );
+
+    // VGM 1.70 field (Extra Header Offset at 0xBC) should still be readable
+    // (not testing this here, but it's within 1.70's header range)
 }

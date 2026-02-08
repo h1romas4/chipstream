@@ -165,33 +165,77 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     }
 
     let version = read_u32_le_at(bytes, 0x08)?;
-    let data_offset = read_u32_le_at(bytes, 0x34)?;
 
-    // Compute header_size. If data_offset is non-zero we use the normal rule
-    // (0x34 + data_offset). If it is zero, choose a fallback header size
-    // depending on the file `version` to avoid reading unrelated bytes as header.
-    let header_size: usize = if data_offset == 0 {
-        // Call the associated function on `VgmHeader` so the logic is colocated
-        // with the header type (the function is defined above as an impl on
-        // `VgmHeader`).
+    // For VGM < 1.50, the data_offset field was not defined (it was added in 1.50).
+    // Only read it if version >= 1.50, otherwise it may not exist in the file.
+    let data_offset = if version >= 0x00000150 {
+        read_u32_le_at(bytes, 0x34)?
+    } else {
+        0
+    };
+
+    // Compute actual data start position based on version and data_offset
+    let actual_data_start: usize = if version < 0x00000150 {
+        // VGM < 1.50: data_offset field doesn't exist, use fallback
+        VgmHeader::fallback_header_size_for_version(version)
+    } else if data_offset == 0 {
+        // VGM 1.50+: data_offset is 0, use fallback
         VgmHeader::fallback_header_size_for_version(version)
     } else {
+        // VGM 1.50+: data_offset is non-zero, use it
         0x34usize.wrapping_add(data_offset as usize)
+    };
+
+    // Determine the maximum header size allowed for this version.
+    // This prevents reading fields that were not defined in this version.
+    let version_max_header_size = VgmHeader::fallback_header_size_for_version(version);
+
+    // VGM 1.50+ specification: "All header sizes are valid for all versions
+    // from 1.50 on, as long as header has at least 64 bytes. If the VGM data
+    // starts at an offset that is lower than 0x100, all overlapping header
+    // bytes have to be handled as they were zero."
+    //
+    // This means: for version 1.50+, if data starts before 0x100, we must
+    // limit the header size to the actual data start position to avoid reading
+    // data bytes as header fields. Fields beyond this point are treated as zero.
+    //
+    // However, we must never read main header fields that were not defined in this version.
+    // For example, VGM 1.70 files should NOT read VGM 1.71 main header fields.
+    //
+    // Note: We need two separate sizes:
+    // 1. header_size_for_fields: Used to determine which main header fields to read
+    //    (limited to version-defined maximum)
+    // 2. total_header_size: Used to locate extra header and data start
+    //    (based on data_offset, may include extra header)
+
+    let header_size_for_fields: usize = version_max_header_size;
+
+    let total_header_size: usize = if version >= 0x00000150 {
+        if actual_data_start < 0x100 {
+            // Ensure header is at least 64 bytes (0x40) when possible
+            actual_data_start.max(0x40.min(bytes.len()))
+        } else {
+            // Data starts at 0x100+
+            actual_data_start
+        }
+    } else {
+        // For version < 1.50, use version-defined fallback
+        version_max_header_size
     };
 
     // Derive a usable data_offset value for subsequent calculations. When the
     // stored data_offset is zero we compute an effective offset from the
     // chosen fallback header size.
     if data_offset == 0 {
-        header_size.wrapping_sub(0x34)
+        version_max_header_size.wrapping_sub(0x34)
     } else {
         data_offset as usize
     };
 
-    if bytes.len() < header_size {
+    if bytes.len() < total_header_size {
         return Err(ParseError::OffsetOutOfRange {
-            offset: header_size,
-            needed: header_size,
+            offset: total_header_size,
+            needed: total_header_size,
             available: bytes.len(),
             context: Some("header_size".into()),
         });
@@ -217,69 +261,82 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     h.ym2151_clock = read_u32_le_at(bytes, 0x30)?;
     h.data_offset = data_offset;
     // Following fields are part of the extended header region.
-    // Only read extended fields that are actually present according
-    // to the computed `header_size`. This prevents interpreting
-    // uninitialized or non-existent bytes as valid header values
-    // when the VGM version/header is older and shorter.
-    let header_len = header_size;
-    let has_space = |off: usize, sz: usize| -> bool { header_len >= off + sz };
-    h.sega_pcm_clock = if has_space(0x38, 4) { read_u32_le_at(bytes, 0x38)? } else { 0 };
-    h.spcm_interface = if has_space(0x3C, 4) { read_u32_le_at(bytes, 0x3C)? } else { 0 };
-    h.rf5c68_clock = if has_space(0x40, 4) { read_u32_le_at(bytes, 0x40)? } else { 0 };
-    h.ym2203_clock = if has_space(0x44, 4) { read_u32_le_at(bytes, 0x44)? } else { 0 };
-    h.ym2608_clock = if has_space(0x48, 4) { read_u32_le_at(bytes, 0x48)? } else { 0 };
-    h.ym2610b_clock = if has_space(0x4C, 4) { read_u32_le_at(bytes, 0x4C)? } else { 0 };
-    h.ym3812_clock = if has_space(0x50, 4) { read_u32_le_at(bytes, 0x50)? } else { 0 };
-    h.ym3526_clock = if has_space(0x54, 4) { read_u32_le_at(bytes, 0x54)? } else { 0 };
-    h.y8950_clock = if has_space(0x58, 4) { read_u32_le_at(bytes, 0x58)? } else { 0 };
-    h.ymf262_clock = if has_space(0x5C, 4) { read_u32_le_at(bytes, 0x5C)? } else { 0 };
-    h.ymf278b_clock = if has_space(0x60, 4) { read_u32_le_at(bytes, 0x60)? } else { 0 };
-    h.ymf271_clock = if has_space(0x64, 4) { read_u32_le_at(bytes, 0x64)? } else { 0 };
-    h.ymz280b_clock = if has_space(0x68, 4) { read_u32_le_at(bytes, 0x68)? } else { 0 };
-    h.rf5c164_clock = if has_space(0x6C, 4) { read_u32_le_at(bytes, 0x6C)? } else { 0 };
-    h.pwm_clock = if has_space(0x70, 4) { read_u32_le_at(bytes, 0x70)? } else { 0 };
-    h.ay8910_clock = if has_space(0x74, 4) { read_u32_le_at(bytes, 0x74)? } else { 0 };
-    h.ay_misc = if has_space(0x78, 8) {
+    // For VGM 1.50+: All header sizes are valid as long as header has at least
+    // 64 bytes. Fields are available if they fit within header_size.
+    // For VGM < 1.50: Fields are only available if both:
+    //   1. The field was defined in that version (version check)
+    //   2. The field fits within header_size (space check)
+    //
+    // The `should_read` check implements the VGM spec requirement for reading
+    // fields based on version and available space. Fields that don't meet the
+    // criteria are treated as zero.
+    let should_read = |off: usize, sz: usize, min_ver: u32| -> bool {
+        let has_space = header_size_for_fields >= off + sz;
+        if version >= 0x00000150 {
+            // VGM 1.50+: Read if space is available (limited to version-defined fields)
+            has_space
+        } else {
+            // VGM < 1.50: Read only if version supports it AND space is available
+            has_space && version >= min_ver
+        }
+    };
+    h.sega_pcm_clock = if should_read(0x38, 4, 0x00000151) { read_u32_le_at(bytes, 0x38)? } else { 0 };
+    h.spcm_interface = if should_read(0x3C, 4, 0x00000151) { read_u32_le_at(bytes, 0x3C)? } else { 0 };
+    h.rf5c68_clock = if should_read(0x40, 4, 0x00000151) { read_u32_le_at(bytes, 0x40)? } else { 0 };
+    h.ym2203_clock = if should_read(0x44, 4, 0x00000151) { read_u32_le_at(bytes, 0x44)? } else { 0 };
+    h.ym2608_clock = if should_read(0x48, 4, 0x00000151) { read_u32_le_at(bytes, 0x48)? } else { 0 };
+    h.ym2610b_clock = if should_read(0x4C, 4, 0x00000151) { read_u32_le_at(bytes, 0x4C)? } else { 0 };
+    h.ym3812_clock = if should_read(0x50, 4, 0x00000151) { read_u32_le_at(bytes, 0x50)? } else { 0 };
+    h.ym3526_clock = if should_read(0x54, 4, 0x00000151) { read_u32_le_at(bytes, 0x54)? } else { 0 };
+    h.y8950_clock = if should_read(0x58, 4, 0x00000151) { read_u32_le_at(bytes, 0x58)? } else { 0 };
+    h.ymf262_clock = if should_read(0x5C, 4, 0x00000151) { read_u32_le_at(bytes, 0x5C)? } else { 0 };
+    h.ymf278b_clock = if should_read(0x60, 4, 0x00000151) { read_u32_le_at(bytes, 0x60)? } else { 0 };
+    h.ymf271_clock = if should_read(0x64, 4, 0x00000151) { read_u32_le_at(bytes, 0x64)? } else { 0 };
+    h.ymz280b_clock = if should_read(0x68, 4, 0x00000151) { read_u32_le_at(bytes, 0x68)? } else { 0 };
+    h.rf5c164_clock = if should_read(0x6C, 4, 0x00000151) { read_u32_le_at(bytes, 0x6C)? } else { 0 };
+    h.pwm_clock = if should_read(0x70, 4, 0x00000151) { read_u32_le_at(bytes, 0x70)? } else { 0 };
+    h.ay8910_clock = if should_read(0x74, 4, 0x00000151) { read_u32_le_at(bytes, 0x74)? } else { 0 };
+    h.ay_misc = if should_read(0x78, 8, 0x00000151) {
         let s = read_slice(bytes, 0x78, 8)?;
         let mut a = [0u8; 8]; a.copy_from_slice(s); a } else { [0u8; 8] };
-    h.gb_dmg_clock = if has_space(0x80, 4) { read_u32_le_at(bytes, 0x80)? } else { 0 };
-    h.nes_apu_clock = if has_space(0x84, 4) { read_u32_le_at(bytes, 0x84)? } else { 0 };
-    h.multipcm_clock = if has_space(0x88, 4) { read_u32_le_at(bytes, 0x88)? } else { 0 };
-    h.upd7759_clock = if has_space(0x8C, 4) { read_u32_le_at(bytes, 0x8C)? } else { 0 };
-    h.okim6258_clock = if has_space(0x90, 4) { read_u32_le_at(bytes, 0x90)? } else { 0 };
-    h.okim6258_flags = if has_space(0x94, 4) {
+    h.gb_dmg_clock = if should_read(0x80, 4, 0x00000161) { read_u32_le_at(bytes, 0x80)? } else { 0 };
+    h.nes_apu_clock = if should_read(0x84, 4, 0x00000161) { read_u32_le_at(bytes, 0x84)? } else { 0 };
+    h.multipcm_clock = if should_read(0x88, 4, 0x00000161) { read_u32_le_at(bytes, 0x88)? } else { 0 };
+    h.upd7759_clock = if should_read(0x8C, 4, 0x00000161) { read_u32_le_at(bytes, 0x8C)? } else { 0 };
+    h.okim6258_clock = if should_read(0x90, 4, 0x00000161) { read_u32_le_at(bytes, 0x90)? } else { 0 };
+    h.okim6258_flags = if should_read(0x94, 4, 0x00000161) {
         let s = read_slice(bytes, 0x94, 4)?;
         let mut a = [0u8; 4]; a.copy_from_slice(s); a } else { [0u8; 4] };
-    h.okim6295_clock = if has_space(0x98, 4) { read_u32_le_at(bytes, 0x98)? } else { 0 };
-    h.k051649_clock = if has_space(0x9C, 4) { read_u32_le_at(bytes, 0x9C)? } else { 0 };
-    h.k054539_clock = if has_space(0xA0, 4) { read_u32_le_at(bytes, 0xA0)? } else { 0 };
-    h.huc6280_clock = if has_space(0xA4, 4) { read_u32_le_at(bytes, 0xA4)? } else { 0 };
-    h.c140_clock = if has_space(0xA8, 4) { read_u32_le_at(bytes, 0xA8)? } else { 0 };
-    h.k053260_clock = if has_space(0xAC, 4) { read_u32_le_at(bytes, 0xAC)? } else { 0 };
-    h.pokey_clock = if has_space(0xB0, 4) { read_u32_le_at(bytes, 0xB0)? } else { 0 };
-    h.qsound_clock = if has_space(0xB4, 4) { read_u32_le_at(bytes, 0xB4)? } else { 0 };
-    h.scsp_clock = if has_space(0xB8, 4) { read_u32_le_at(bytes, 0xB8)? } else { 0 };
-    h.extra_header_offset = if has_space(0xBC, 4) { read_u32_le_at(bytes, 0xBC)? } else { 0 };
-    h.wonderswan_clock = if has_space(0xC0, 4) { read_u32_le_at(bytes, 0xC0)? } else { 0 };
-    h.vsu_clock = if has_space(0xC4, 4) { read_u32_le_at(bytes, 0xC4)? } else { 0 };
-    h.saa1099_clock = if has_space(0xC8, 4) { read_u32_le_at(bytes, 0xC8)? } else { 0 };
-    h.es5503_clock = if has_space(0xCC, 4) { read_u32_le_at(bytes, 0xCC)? } else { 0 };
-    h.es5506_clock = if has_space(0xD0, 4) { read_u32_le_at(bytes, 0xD0)? } else { 0 };
-    h.es5506_channels = if has_space(0xD4, 2) { read_u16_le_at(bytes, 0xD4)? } else { 0 };
-    h.es5506_cd = if has_space(0xD6, 1) { read_u8_at(bytes, 0xD6)? } else { 0 };
-    h.es5506_reserved = if has_space(0xD7, 1) { read_u8_at(bytes, 0xD7)? } else { 0 };
-    h.x1_010_clock = if has_space(0xD8, 4) { read_u32_le_at(bytes, 0xD8)? } else { 0 };
-    h.c352_clock = if has_space(0xDC, 4) { read_u32_le_at(bytes, 0xDC)? } else { 0 };
-    h.ga20_clock = if has_space(0xE0, 4) { read_u32_le_at(bytes, 0xE0)? } else { 0 };
-    h.mikey_clock = if has_space(0xE4, 4) { read_u32_le_at(bytes, 0xE4)? } else { 0 };
-    h.reserved_e8_ef = if has_space(0xE8, 8) {
+    h.okim6295_clock = if should_read(0x98, 4, 0x00000161) { read_u32_le_at(bytes, 0x98)? } else { 0 };
+    h.k051649_clock = if should_read(0x9C, 4, 0x00000161) { read_u32_le_at(bytes, 0x9C)? } else { 0 };
+    h.k054539_clock = if should_read(0xA0, 4, 0x00000161) { read_u32_le_at(bytes, 0xA0)? } else { 0 };
+    h.huc6280_clock = if should_read(0xA4, 4, 0x00000161) { read_u32_le_at(bytes, 0xA4)? } else { 0 };
+    h.c140_clock = if should_read(0xA8, 4, 0x00000161) { read_u32_le_at(bytes, 0xA8)? } else { 0 };
+    h.k053260_clock = if should_read(0xAC, 4, 0x00000161) { read_u32_le_at(bytes, 0xAC)? } else { 0 };
+    h.pokey_clock = if should_read(0xB0, 4, 0x00000161) { read_u32_le_at(bytes, 0xB0)? } else { 0 };
+    h.qsound_clock = if should_read(0xB4, 4, 0x00000161) { read_u32_le_at(bytes, 0xB4)? } else { 0 };
+    h.scsp_clock = if should_read(0xB8, 4, 0x00000171) { read_u32_le_at(bytes, 0xB8)? } else { 0 };
+    h.extra_header_offset = if should_read(0xBC, 4, 0x00000170) { read_u32_le_at(bytes, 0xBC)? } else { 0 };
+    h.wonderswan_clock = if should_read(0xC0, 4, 0x00000171) { read_u32_le_at(bytes, 0xC0)? } else { 0 };
+    h.vsu_clock = if should_read(0xC4, 4, 0x00000171) { read_u32_le_at(bytes, 0xC4)? } else { 0 };
+    h.saa1099_clock = if should_read(0xC8, 4, 0x00000171) { read_u32_le_at(bytes, 0xC8)? } else { 0 };
+    h.es5503_clock = if should_read(0xCC, 4, 0x00000171) { read_u32_le_at(bytes, 0xCC)? } else { 0 };
+    h.es5506_clock = if should_read(0xD0, 4, 0x00000171) { read_u32_le_at(bytes, 0xD0)? } else { 0 };
+    h.es5506_channels = if should_read(0xD4, 2, 0x00000171) { read_u16_le_at(bytes, 0xD4)? } else { 0 };
+    h.es5506_cd = if should_read(0xD6, 1, 0x00000171) { read_u8_at(bytes, 0xD6)? } else { 0 };
+    h.es5506_reserved = if should_read(0xD7, 1, 0x00000171) { read_u8_at(bytes, 0xD7)? } else { 0 };
+    h.x1_010_clock = if should_read(0xD8, 4, 0x00000171) { read_u32_le_at(bytes, 0xD8)? } else { 0 };
+    h.c352_clock = if should_read(0xDC, 4, 0x00000171) { read_u32_le_at(bytes, 0xDC)? } else { 0 };
+    h.ga20_clock = if should_read(0xE0, 4, 0x00000171) { read_u32_le_at(bytes, 0xE0)? } else { 0 };
+    h.mikey_clock = if should_read(0xE4, 4, 0x00000172) { read_u32_le_at(bytes, 0xE4)? } else { 0 };
+    h.reserved_e8_ef = if should_read(0xE8, 8, 0x00000172) {
         let s = read_slice(bytes, 0xE8, 8)?;
         let mut a = [0u8; 8]; a.copy_from_slice(s); a } else { [0u8; 8] };
-    h.reserved_f0_ff = if has_space(0xF0, 16) {
+    h.reserved_f0_ff = if should_read(0xF0, 16, 0x00000172) {
         let s = read_slice(bytes, 0xF0, 16)?;
         let mut a = [0u8; 16]; a.copy_from_slice(s); a } else { [0u8; 16] };
 
-    Ok((h, header_size))
+    Ok((h, total_header_size))
 }
 
 /// Parse a VGM extra-header (v1.70+) located at `offset` within `bytes`.
