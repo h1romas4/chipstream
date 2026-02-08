@@ -115,24 +115,32 @@ use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
 };
+use crate::vgm::header::VgmHeader;
 use crate::vgm::parser::parse_vgm_command;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// Internal source of VGM commands for the stream processor.
 ///
 /// The stream processor can work with either raw byte streams that need parsing,
 /// or pre-parsed command streams from a VgmDocument.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum VgmStreamSource {
     /// Raw byte stream that needs to be parsed into commands.
     Bytes {
         /// Buffer containing incomplete or unparsed VGM data.
         buffer: Vec<u8>,
+        /// VGM header (parsed upfront to know loop offset, etc.)
+        header: Option<VgmHeader>,
     },
     /// Pre-parsed commands from a VgmDocument.
     Commands {
-        /// Queue of commands to be processed.
-        commands: VecDeque<VgmCommand>,
+        /// Reference to the original document (boxed to avoid large enum variant size)
+        document: Box<VgmDocument>,
+        /// Current command index
+        current_index: usize,
+        /// Loop point command index (None if no loop)
+        loop_index: Option<usize>,
     },
 }
 
@@ -207,6 +215,8 @@ pub struct VgmStream {
     current_loops: u32,
     /// Whether we've encountered the end of data command
     encountered_end: bool,
+    /// Byte offset where loop should occur (for Bytes source)
+    loop_byte_offset: Option<usize>,
     /// Pending data block to return to iterator (for non-stream/table blocks)
     pending_data_block: Option<DataBlock>,
     /// DAC stream states indexed by stream ID
@@ -221,6 +231,8 @@ pub struct VgmStream {
     fadeout_samples: Option<u64>,
     /// Sample position when the loop ended (for fadeout tracking)
     loop_end_sample: Option<u64>,
+    /// Current read offset in PCM data bank (type 0x00) for 0x8n commands
+    pcm_data_offset: usize,
 }
 
 impl VgmStream {
@@ -229,6 +241,7 @@ impl VgmStream {
         Self {
             source: VgmStreamSource::Bytes {
                 buffer: Vec::with_capacity(16),
+                header: None,
             },
             data_blocks: HashMap::new(),
             uncompressed_streams: HashMap::new(),
@@ -236,6 +249,7 @@ impl VgmStream {
             loop_count: None,
             current_loops: 0,
             encountered_end: false,
+            loop_byte_offset: None,
             pending_data_block: None,
             stream_states: HashMap::new(),
             current_sample: 0,
@@ -243,6 +257,7 @@ impl VgmStream {
             pending_wait: None,
             fadeout_samples: None,
             loop_end_sample: None,
+            pcm_data_offset: 0,
         }
     }
 
@@ -266,15 +281,22 @@ impl VgmStream {
     /// let stream = VgmStream::from_document(doc);
     /// ```
     pub fn from_document(doc: VgmDocument) -> Self {
-        let commands: VecDeque<VgmCommand> = doc.into_iter().collect();
+        // Calculate loop index from header loop_offset
+        let loop_index = Self::calculate_loop_index(&doc);
+
         Self {
-            source: VgmStreamSource::Commands { commands },
+            source: VgmStreamSource::Commands {
+                document: Box::new(doc),
+                current_index: 0,
+                loop_index,
+            },
             data_blocks: HashMap::new(),
             uncompressed_streams: HashMap::new(),
             decompression_tables: HashMap::new(),
             loop_count: None,
             current_loops: 0,
             encountered_end: false,
+            loop_byte_offset: None,
             pending_data_block: None,
             stream_states: HashMap::new(),
             current_sample: 0,
@@ -282,25 +304,70 @@ impl VgmStream {
             pending_wait: None,
             fadeout_samples: None,
             loop_end_sample: None,
+            pcm_data_offset: 0,
         }
+    }
+
+    /// Calculates the command index corresponding to loop_offset in the header.
+    fn calculate_loop_index(doc: &VgmDocument) -> Option<usize> {
+        if doc.header.loop_offset == 0 {
+            return None;
+        }
+
+        // Get header length
+        let data_offset = if doc.header.data_offset == 0 {
+            use crate::vgm::header::VgmHeader;
+            (VgmHeader::fallback_header_size_for_version(doc.header.version) - 0x34) as u32
+        } else {
+            doc.header.data_offset
+        };
+
+        let mut header_len = doc.header.to_bytes(0, data_offset).len() as u32;
+
+        // Add extra header size if present
+        if let Some(ref extra) = doc.extra_header {
+            header_len += extra.to_bytes().len() as u32;
+        }
+
+        // Calculate absolute loop position: 0x1C + loop_offset
+        let loop_abs_offset = 0x1C_u32.wrapping_add(doc.header.loop_offset);
+
+        // Convert to offset relative to start of commands
+        let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
+
+        // Get command offsets and find matching index
+        let offsets = doc.command_offsets_and_lengths();
+        for (index, (cmd_offset, _len)) in offsets.iter().enumerate() {
+            if *cmd_offset as u32 == loop_command_offset {
+                return Some(index);
+            }
+        }
+
+        None
     }
 
     /// Adds new data to the internal buffer for parsing.
     ///
     /// # Arguments
     /// * `data` - Raw VGM bytes to add to the parsing buffer
-    ///
-    /// # Panics
-    /// Panics if called on a stream created with `from_document` or `from_commands`.
     pub fn push_data(&mut self, data: &[u8]) {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer } => {
+            VgmStreamSource::Bytes { buffer, header } => {
                 buffer.extend_from_slice(data);
+
+                // Try to parse header if we don't have it yet
+                // Collapse the condition into a single check to keep clippy happy.
+                if header.is_none() && buffer.len() >= 0x40 {
+                    match crate::vgm::parser::parse_vgm_header(buffer) {
+                        Ok((parsed_header, _size)) => {
+                            *header = Some(parsed_header);
+                        }
+                        Err(_) => { /* not enough data or invalid header yet */ }
+                    }
+                }
             }
             VgmStreamSource::Commands { .. } => {
-                panic!(
-                    "push_data() cannot be called on a VgmStream created from a document or commands"
-                );
+                panic!("push_data() cannot be called on a VgmStream created from a document");
             }
         }
     }
@@ -368,7 +435,7 @@ impl VgmStream {
     /// Gets the next raw command from the internal source.
     fn get_next_raw_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer } => {
+            VgmStreamSource::Bytes { buffer, .. } => {
                 // If buffer is empty, we need more data
                 if buffer.is_empty() {
                     return Ok(None);
@@ -391,9 +458,20 @@ impl VgmStream {
                     Err(e) => Err(e),
                 }
             }
-            VgmStreamSource::Commands { commands } => {
-                // Pop the next command from the queue
-                Ok(commands.pop_front())
+            VgmStreamSource::Commands {
+                document,
+                current_index,
+                ..
+            } => {
+                // Get command at current index (document is boxed)
+                let doc_ref: &VgmDocument = document.as_ref();
+                if *current_index < doc_ref.commands.len() {
+                    let cmd = doc_ref.commands[*current_index].clone();
+                    *current_index += 1;
+                    Ok(Some(cmd))
+                } else {
+                    Ok(None)
+                }
             }
         }
     }
@@ -404,27 +482,41 @@ impl VgmStream {
         match &command {
             VgmCommand::EndOfData(_) => {
                 self.handle_end_of_data();
+                // Don't return EndOfData to the iterator, get the next command instead
+                return self.next_command();
             }
             VgmCommand::DataBlock(block) => {
                 return self.handle_data_block(block.clone());
             }
             VgmCommand::SetupStreamControl(setup) => {
                 self.handle_setup_stream_control(setup);
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::SetStreamData(data) => {
                 self.handle_set_stream_data(data);
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::SetStreamFrequency(freq) => {
                 self.handle_set_stream_frequency(freq);
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::StartStream(start) => {
                 self.handle_start_stream(start)?;
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::StopStream(stop) => {
                 self.handle_stop_stream(stop);
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::StartStreamFastCall(fast) => {
                 self.handle_start_stream_fast_call(fast)?;
+                // Don't return stream control commands to the iterator
+                return self.next_command();
             }
             VgmCommand::WaitSamples(w) => {
                 return self.process_wait_with_streams(w.0 as u64);
@@ -439,6 +531,48 @@ impl VgmStream {
                 // WaitNSample uses lower 4 bits + 1
                 let samples = (w.0 & 0x0F) as u64 + 1;
                 return self.process_wait_with_streams(samples);
+            }
+            VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
+                // 0x8n: Write PCM data from data bank to YM2612 DAC, then wait n samples
+                let wait_samples = cmd.0 as u64;
+
+                // Read byte from PCM data bank (type 0x00)
+                if let Some(data_byte) = self.read_pcm_data_bank_byte()? {
+                    // Create YM2612 DAC write command
+                    let dac_write = VgmCommand::Ym2612Write(
+                        crate::vgm::command::Instance::Primary,
+                        crate::chip::Ym2612Spec {
+                            port: 0,
+                            register: 0x2A,
+                            value: data_byte,
+                        },
+                    );
+
+                    // Advance PCM data offset
+                    self.pcm_data_offset += 1;
+
+                    // If there's a wait, process it with streams
+                    if wait_samples > 0 {
+                        // Emit the DAC write first
+                        self.pending_stream_writes.insert(0, dac_write);
+                        return self.process_wait_with_streams(wait_samples);
+                    } else {
+                        return Ok(StreamResult::Command(dac_write));
+                    }
+                } else {
+                    // No data available, just do the wait
+                    if wait_samples > 0 {
+                        return self.process_wait_with_streams(wait_samples);
+                    } else {
+                        return self.next_command();
+                    }
+                }
+            }
+            VgmCommand::SeekOffset(seek_offset) => {
+                // 0xE0: Seek to offset in PCM data bank
+                self.pcm_data_offset = seek_offset.0 as usize;
+                // Don't return this command to the iterator
+                return self.next_command();
             }
             _ => {}
         }
@@ -487,7 +621,8 @@ impl VgmStream {
 
     /// Shrinks the buffer if it has grown too large relative to its usage.
     fn shrink_buffer_if_needed(&mut self) {
-        if let VgmStreamSource::Bytes { buffer } = &mut self.source
+        // Collapse nested `if` into a single condition to satisfy clippy::collapsible_if.
+        if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source
             && buffer.capacity() > 1024
             && buffer.len() < buffer.capacity() / 4
         {
@@ -498,7 +633,7 @@ impl VgmStream {
     /// Returns the current size of the internal buffer.
     pub fn buffer_size(&self) -> usize {
         match &self.source {
-            VgmStreamSource::Bytes { buffer } => buffer.len(),
+            VgmStreamSource::Bytes { buffer, .. } => buffer.len(),
             VgmStreamSource::Commands { .. } => 0,
         }
     }
@@ -506,7 +641,7 @@ impl VgmStream {
     /// Optimizes memory usage by cleaning up unused resources.
     pub fn optimize_memory(&mut self) {
         self.cleanup_unused_data_blocks();
-        if let VgmStreamSource::Bytes { buffer } = &mut self.source {
+        if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source {
             buffer.shrink_to_fit();
         }
     }
@@ -514,11 +649,12 @@ impl VgmStream {
     /// Resets the parser state, clearing all buffers and data blocks.
     pub fn reset(&mut self) {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer } => {
+            VgmStreamSource::Bytes { buffer, header } => {
                 buffer.clear();
+                *header = None;
             }
-            VgmStreamSource::Commands { commands } => {
-                commands.clear();
+            VgmStreamSource::Commands { current_index, .. } => {
+                *current_index = 0;
             }
         }
         self.data_blocks.clear();
@@ -526,30 +662,84 @@ impl VgmStream {
         self.decompression_tables.clear();
         self.current_loops = 0;
         self.encountered_end = false;
+        self.loop_byte_offset = None;
         self.pending_data_block = None;
         self.stream_states.clear();
         self.current_sample = 0;
         self.pending_stream_writes.clear();
         self.pending_wait = None;
+        self.fadeout_samples = None;
         self.loop_end_sample = None;
+        self.pcm_data_offset = 0;
     }
 
     /// Handles end of data command, potentially starting a new loop.
     fn handle_end_of_data(&mut self) {
+        self.current_loops += 1;
+
         if let Some(max_loops) = self.loop_count {
-            self.current_loops += 1;
             if self.current_loops >= max_loops {
                 self.encountered_end = true;
                 // Record the sample position when loop ends for fadeout tracking
                 if self.fadeout_samples.is_some() {
                     self.loop_end_sample = Some(self.current_sample);
                 }
+            } else {
+                // Loop back to loop point
+                self.jump_to_loop_point();
+
+                // Reset loop-specific state
+                self.reset_loop_state();
+
+                // Record sample position on final loop for fadeout
+                if self.current_loops + 1 == max_loops && self.fadeout_samples.is_some() {
+                    self.loop_end_sample = Some(self.current_sample);
+                }
             }
-            // If we haven't hit the limit, continue parsing (loop back)
         } else {
             // No loop limit set, treat as single playthrough (no looping)
             self.encountered_end = true;
         }
+    }
+
+    /// Jumps to the loop point in the command stream.
+    fn jump_to_loop_point(&mut self) {
+        match &mut self.source {
+            VgmStreamSource::Commands {
+                current_index,
+                loop_index,
+                ..
+            } => {
+                if let Some(idx) = loop_index {
+                    *current_index = *idx;
+                } else {
+                    // No loop point, restart from beginning
+                    *current_index = 0;
+                }
+            }
+            VgmStreamSource::Bytes { .. } => {
+                // For byte stream, looping is handled by re-pushing data
+                // We just mark that we're ready to loop
+            }
+        }
+    }
+
+    /// Resets loop-specific state when starting a new loop iteration.
+    fn reset_loop_state(&mut self) {
+        // Reset PCM data offset to beginning
+        self.pcm_data_offset = 0;
+
+        // Reset stream states to inactive
+        for state in self.stream_states.values_mut() {
+            state.active = false;
+            state.current_data_pos = 0;
+            state.next_write_sample = self.current_sample;
+            state.remaining_commands = None;
+        }
+
+        // Clear pending operations
+        self.pending_stream_writes.clear();
+        self.pending_wait = None;
     }
 
     /// Handles a data block command by parsing it and storing or returning it.
@@ -1017,6 +1207,31 @@ impl VgmStream {
             .filter(|block| pos < block.data.len())
         {
             return Ok(Some(block.data[pos]));
+        }
+
+        Ok(None)
+    }
+
+    /// Reads a byte from the PCM data bank (type 0x00) at the current offset.
+    ///
+    /// This is used by the 0x8n commands to read YM2612 DAC data.
+    fn read_pcm_data_bank_byte(&self) -> Result<Option<u8>, ParseError> {
+        // Try to get the uncompressed stream first (type 0x00)
+        if let Some(stream) = self
+            .uncompressed_streams
+            .get(&0x00)
+            .filter(|stream| self.pcm_data_offset < stream.data.len())
+        {
+            return Ok(Some(stream.data[self.pcm_data_offset]));
+        }
+
+        // Fallback to raw data blocks (type 0x00)
+        if let Some(block) = self
+            .data_blocks
+            .get(&0x00)
+            .filter(|block| self.pcm_data_offset < block.data.len())
+        {
+            return Ok(Some(block.data[self.pcm_data_offset]));
         }
 
         Ok(None)
