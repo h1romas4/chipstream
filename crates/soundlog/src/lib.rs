@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! soundlog — builder, parser and stream-processor for retro sound-chip register-write logs
 //!
 //! `soundlog` is a small crate for building and parsing register-write
@@ -116,6 +117,7 @@
 //!
 //! ```no_run
 //! use soundlog::{VgmBuilder, VgmStream, VgmDocument};
+//! use soundlog::vgm::stream::StreamResult;
 //! use soundlog::vgm::command::{VgmCommand, WaitSamples, SetupStreamControl, StartStream, Instance};
 //! use soundlog::chip::Ym2612Spec;
 //!
@@ -143,10 +145,10 @@
 //! // Create a stream from the parsed document. The iterator will yield
 //! // parsed commands as well as any stream-generated writes expanded into
 //! // the timeline.
-//! let mut stream = VgmStream::from_document(&doc);
+//! let mut stream = VgmStream::from_document(doc);
 //! while let Some(result) = stream.next() {
 //!     match result {
-//!         Ok(cmd) => match cmd {
+//!         Ok(StreamResult::Command(cmd)) => match cmd {
 //!             VgmCommand::WaitSamples(s) => {
 //!                 // Waits may have been split to accommodate stream-generated writes.
 //!                 println!("wait {} samples", s.0);
@@ -161,10 +163,136 @@
 //!                 println!("cmd: {:?}", other)
 //!             },
 //!         },
+//!         Ok(StreamResult::NeedsMoreData) => break,
+//!         Ok(StreamResult::EndOfStream) => break,
 //!         Err(e) => eprintln!("stream error: {:?}", e),
 //!     }
 //! }
 //! ```
+//!
+//! ```no_run
+//! use soundlog::vgm::VgmStream;
+//! use soundlog::vgm::stream::StreamResult;
+//!
+//! let mut parser = VgmStream::new();
+//! parser.set_loop_count(Some(2));
+//!
+//! // Feed VGM data (could be incoming chunks)
+//! let vgm_data = vec![0x62, 0x63, 0x66];
+//! parser.push_data(&vgm_data);
+//!
+//! for result in &mut parser {
+//!     match result {
+//!         Ok(StreamResult::Command(_)) => {
+//!             // handle the command
+//!         }
+//!         Ok(StreamResult::NeedsMoreData) => break,
+//!         Ok(StreamResult::EndOfStream) => break,
+//!         Err(e) => break,
+//!     }
+//! }
+//! ```
+//!
+//! From a parsed `VgmDocument` (including stream control commands):
+//! ```no_run
+//! use soundlog::{VgmBuilder, vgm::stream::VgmStream};
+//! use soundlog::vgm::stream::StreamResult;
+//! use soundlog::vgm::command::{
+//!     WaitSamples, DataBlock, SetupStreamControl, SetStreamData, SetStreamFrequency, StartStream,
+//! };
+//!
+//! // Build a VGM document that contains:
+//! // - a DataBlock with an uncompressed PCM stream (data_type 0x00)
+//! // - stream control commands to route that bank to a YM2612 stream (chip id 0x02)
+//! // - a StartStream and a Wait to allow generated writes to occur
+//! let mut builder = VgmBuilder::new();
+//!
+//! // Simple uncompressed stream data block (type 0x00 = YM2612 PCM)
+//! let block = DataBlock {
+//!     marker: 0x66,
+//!     chip_instance: 0,
+//!     data_type: 0x00, // data bank id
+//!     size: 4,
+//!     data: vec![0x10, 0x20, 0x30, 0x40],
+//! };
+//! builder.add_vgm_command(block);
+//!
+//! // Configure stream 0 to write to YM2612 (chip id 0x02), register 0x2A
+//! builder.add_vgm_command(SetupStreamControl {
+//!     stream_id: 0,
+//!     chip_type: 0x02, // YM2612 (DacStreamChipType::Ym2612)
+//!     write_port: 0,
+//!     write_command: 0x2A,
+//! });
+//!
+//! // Point stream 0 at data bank 0x00 with step size 1
+//! builder.add_vgm_command(SetStreamData {
+//!     stream_id: 0,
+//!     data_bank_id: 0x00,
+//!     step_size: 1,
+//!     step_base: 0,
+//! });
+//!
+//! // Set a stream frequency so writes will be generated
+//! builder.add_vgm_command(SetStreamFrequency {
+//!     stream_id: 0,
+//!     frequency: 22050, // Hz
+//! });
+//!
+//! // Start the stream (length_mode 3 = play until end of block)
+//! builder.add_vgm_command(StartStream {
+//!     stream_id: 0,
+//!     data_start_offset: 0,
+//!     length_mode: 3,
+//!     data_length: 0,
+//! });
+//!
+//! // Wait long enough for the stream to generate writes
+//! builder.add_vgm_command(WaitSamples(100));
+//!
+//! let doc = builder.finalize();
+//!
+//! // Create a stream processor from the parsed document and iterate results.
+//! // The iterator will yield the original commands as well as automatically
+//! // generated chip write commands produced by the active stream during Waits.
+//! let mut stream = VgmStream::from_document(doc);
+//! for item in &mut stream {
+//!     match item {
+//!         Ok(StreamResult::Command(cmd)) => {
+//!             // `cmd` may be a parsed command (DataBlock/Setup/Start/Wait) or a
+//!             // generated chip write (e.g. `VgmCommand::Ym2612Write`).
+//!             println!("command: {:?}", cmd);
+//!         }
+//!         Ok(StreamResult::NeedsMoreData) => break,
+//!         Ok(StreamResult::EndOfStream) => break,
+//!         Err(e) => { eprintln!("error: {}", e); break; }
+//!     }
+//! }
+//! ```
+//!
+//! Streaming from multiple chunks:
+//! ```no_run
+//! use soundlog::vgm::VgmStream;
+//! use soundlog::vgm::stream::StreamResult;
+//!
+//! let mut parser = VgmStream::new();
+//! let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
+//!
+//! for chunk in chunks {
+//!     parser.push_data(&chunk);
+//!     for result in &mut parser {
+//!         match result {
+//!             Ok(StreamResult::Command(_)) => {},
+//!             Ok(StreamResult::NeedsMoreData) => break,
+//!             Ok(StreamResult::EndOfStream) => break,
+//!             Err(_) => break,
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! (For additional low-level details see the `handle_*` helpers and stream state
+//! documented on individual methods.)
 mod binutil;
 pub mod chip;
 pub mod meta;

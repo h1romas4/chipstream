@@ -118,25 +118,26 @@ let doc: VgmDocument = b.finalize();
 // Create a stream from the parsed document. The iterator will yield
 // parsed commands as well as any stream-generated writes expanded into
 // the timeline.
-let mut stream = VgmStream::from_document(&doc);
+let mut stream = VgmStream::from_document(doc);
 while let Some(result) = stream.next() {
     match result {
-        Ok(cmd) => match cmd {
+        Ok(soundlog::vgm::stream::StreamResult::Command(cmd)) => match cmd {
             VgmCommand::WaitSamples(s) => {
                 // Waits may have been split to accommodate stream-generated writes.
                 println!("wait {} samples", s.0);
             }
             VgmCommand::Ym2612Write(inst, spec) => {
                 // Handle YM2612 writes here. For example, forward to a device API.
-                println!("YM2612 write: {:?} port={} reg=0x{:02X} value=0x{:02X}",
-                    inst, spec.port, spec.register, spec.value);
+                println!("YM2612 write: {:?} {:?}", inst, spec);
             }
             other => {
-                // Write to the target chips here (e.g. YM2612, SN76489).
+                // Write to the target chips here (e.g. SN76489).
                 // Implement actual playback / device I/O in this branch.
                 println!("cmd: {:?}", other)
             },
         },
+        Ok(soundlog::vgm::stream::StreamResult::NeedsMoreData) => break,
+        Ok(soundlog::vgm::stream::StreamResult::EndOfStream) => break,
         Err(e) => eprintln!("stream error: {:?}", e),
     }
 }
