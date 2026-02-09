@@ -650,6 +650,7 @@ impl VgmStream {
     }
 
     /// Returns the current size of the internal buffer.
+    #[doc(hidden)]
     pub fn buffer_size(&self) -> usize {
         match &self.source {
             VgmStreamSource::Bytes { buffer, .. } => buffer.len(),
@@ -658,6 +659,7 @@ impl VgmStream {
     }
 
     /// Optimizes memory usage by cleaning up unused resources.
+    #[doc(hidden)]
     pub fn optimize_memory(&mut self) {
         self.cleanup_unused_data_blocks();
         if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source {
