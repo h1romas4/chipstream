@@ -20,7 +20,183 @@ use crate::binutil::{
 };
 use crate::chip;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::{VGM_MAX_HEADER_SIZE, VgmHeader};
+use crate::vgm::header::VgmHeader;
+
+/// VGM DAC Stream Control chip type enumeration.
+///
+/// These values are used in SetupStreamControl commands to identify the target chip.
+/// They correspond to the chip order in VGM headers and are also used as data_type
+/// values in DataBlock commands (chip_type and data_type use the same ID space).
+///
+/// Note: When stored as u8 in VGM files, bit 7 (0x80) indicates secondary chip instance.
+/// Use [`DacStreamChipType::from_u8`] and [`DacStreamChipType::to_u8`] for conversion with instance support.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DacStreamChipType {
+    /// SN76489 PSG
+    Sn76489 = 0x00,
+    /// YM2413 OPLL
+    Ym2413 = 0x01,
+    /// YM2612 OPN2
+    Ym2612 = 0x02,
+    /// YM2151 OPM
+    Ym2151 = 0x03,
+    /// Sega PCM
+    SegaPcm = 0x04,
+    /// RF5C68
+    Rf5c68 = 0x05,
+    /// YM2203 OPN
+    Ym2203 = 0x06,
+    /// YM2608 OPNA
+    Ym2608 = 0x07,
+    /// YM2610/YM2610B OPNB
+    Ym2610 = 0x08,
+    /// YM3812 OPL2
+    Ym3812 = 0x09,
+    /// YM3526 OPL
+    Ym3526 = 0x0A,
+    /// Y8950 MSX-Audio
+    Y8950 = 0x0B,
+    /// YMF262 OPL3
+    Ymf262 = 0x0C,
+    /// YMF278B OPL4
+    Ymf278b = 0x0D,
+    /// YMF271 OPX
+    Ymf271 = 0x0E,
+    /// YMZ280B PCMD8
+    Ymz280b = 0x0F,
+    /// RF5C164
+    Rf5c164 = 0x10,
+    /// PWM (Sega 32X)
+    Pwm = 0x11,
+    /// AY8910
+    Ay8910 = 0x12,
+    /// GameBoy DMG
+    GbDmg = 0x13,
+    /// NES APU
+    NesApu = 0x14,
+    /// MultiPCM
+    MultiPcm = 0x15,
+    /// uPD7759
+    Upd7759 = 0x16,
+    /// OKIM6258
+    Okim6258 = 0x17,
+    /// OKIM6295
+    Okim6295 = 0x18,
+    /// K051649 / SCC1
+    K051649 = 0x19,
+    /// K054539
+    K054539 = 0x1A,
+    /// HuC6280
+    Huc6280 = 0x1B,
+    /// C140
+    C140 = 0x1C,
+    /// K053260
+    K053260 = 0x1D,
+    /// Pokey
+    Pokey = 0x1E,
+    /// QSound
+    Qsound = 0x1F,
+    /// SCSP
+    Scsp = 0x20,
+    /// WonderSwan
+    WonderSwan = 0x21,
+    /// VSU (Virtual Boy)
+    Vsu = 0x22,
+    /// SAA1099
+    Saa1099 = 0x23,
+    /// ES5503
+    Es5503 = 0x24,
+    /// ES5506
+    Es5506 = 0x25,
+    /// X1-010
+    X1010 = 0x26,
+    /// C352
+    C352 = 0x27,
+    /// GA20
+    Ga20 = 0x28,
+    /// Mikey (Atari Lynx)
+    Mikey = 0x29,
+}
+
+impl DacStreamChipType {
+    /// Convert from u8 value (without instance bit).
+    ///
+    /// Returns `None` if the value doesn't correspond to a known chip type.
+    pub fn from_u8(value: u8) -> Option<Self> {
+        // Strip instance bit (bit 7)
+        let chip_id = value & 0x7F;
+        match chip_id {
+            0x00 => Some(DacStreamChipType::Sn76489),
+            0x01 => Some(DacStreamChipType::Ym2413),
+            0x02 => Some(DacStreamChipType::Ym2612),
+            0x03 => Some(DacStreamChipType::Ym2151),
+            0x04 => Some(DacStreamChipType::SegaPcm),
+            0x05 => Some(DacStreamChipType::Rf5c68),
+            0x06 => Some(DacStreamChipType::Ym2203),
+            0x07 => Some(DacStreamChipType::Ym2608),
+            0x08 => Some(DacStreamChipType::Ym2610),
+            0x09 => Some(DacStreamChipType::Ym3812),
+            0x0A => Some(DacStreamChipType::Ym3526),
+            0x0B => Some(DacStreamChipType::Y8950),
+            0x0C => Some(DacStreamChipType::Ymf262),
+            0x0D => Some(DacStreamChipType::Ymf278b),
+            0x0E => Some(DacStreamChipType::Ymf271),
+            0x0F => Some(DacStreamChipType::Ymz280b),
+            0x10 => Some(DacStreamChipType::Rf5c164),
+            0x11 => Some(DacStreamChipType::Pwm),
+            0x12 => Some(DacStreamChipType::Ay8910),
+            0x13 => Some(DacStreamChipType::GbDmg),
+            0x14 => Some(DacStreamChipType::NesApu),
+            0x15 => Some(DacStreamChipType::MultiPcm),
+            0x16 => Some(DacStreamChipType::Upd7759),
+            0x17 => Some(DacStreamChipType::Okim6258),
+            0x18 => Some(DacStreamChipType::Okim6295),
+            0x19 => Some(DacStreamChipType::K051649),
+            0x1A => Some(DacStreamChipType::K054539),
+            0x1B => Some(DacStreamChipType::Huc6280),
+            0x1C => Some(DacStreamChipType::C140),
+            0x1D => Some(DacStreamChipType::K053260),
+            0x1E => Some(DacStreamChipType::Pokey),
+            0x1F => Some(DacStreamChipType::Qsound),
+            0x20 => Some(DacStreamChipType::Scsp),
+            0x21 => Some(DacStreamChipType::WonderSwan),
+            0x22 => Some(DacStreamChipType::Vsu),
+            0x23 => Some(DacStreamChipType::Saa1099),
+            0x24 => Some(DacStreamChipType::Es5503),
+            0x25 => Some(DacStreamChipType::Es5506),
+            0x26 => Some(DacStreamChipType::X1010),
+            0x27 => Some(DacStreamChipType::C352),
+            0x28 => Some(DacStreamChipType::Ga20),
+            0x29 => Some(DacStreamChipType::Mikey),
+            _ => None,
+        }
+    }
+
+    /// Convert to u8 value (without instance bit).
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Check if a u8 value represents a secondary chip instance (bit 7 set).
+    pub fn is_secondary_instance(value: u8) -> bool {
+        value & 0x80 != 0
+    }
+
+    /// Extract chip type and instance from u8 value.
+    ///
+    /// Returns `(chip_type, is_secondary)` tuple, or `None` if chip type is unknown.
+    pub fn from_u8_with_instance(value: u8) -> Option<(Self, bool)> {
+        let is_secondary = Self::is_secondary_instance(value);
+        Self::from_u8(value).map(|chip| (chip, is_secondary))
+    }
+
+    /// Combine chip type with instance flag to create u8 value.
+    pub fn to_u8_with_instance(self, is_secondary: bool) -> u8 {
+        let base = self as u8;
+        if is_secondary { base | 0x80 } else { base }
+    }
+}
 
 /// Chip instance identifier for VGM commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -676,8 +852,8 @@ impl CommandSpec for StartStreamFastCall {
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
         dest.push(self.stream_id);
-        dest.push((self.block_id >> 8) as u8);
-        dest.push(self.block_id as u8);
+        dest.push(self.block_id as u8); // Little-endian: LSB first
+        dest.push((self.block_id >> 8) as u8); // Then MSB
         dest.push(self.flags);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
@@ -687,7 +863,7 @@ impl CommandSpec for StartStreamFastCall {
         let stream_id = read_u8_at(bytes, off)?;
         let b0 = read_u8_at(bytes, off + 1)?;
         let b1 = read_u8_at(bytes, off + 2)?;
-        let block_id = ((b0 as u16) << 8) | (b1 as u16);
+        let block_id = ((b1 as u16) << 8) | (b0 as u16); // Little-endian: LSB first
         let flags = read_u8_at(bytes, off + 3)?;
         Ok((
             StartStreamFastCall {
@@ -2580,8 +2756,19 @@ impl VgmDocument {
         // before calling `to_bytes()`.
 
         // data offset (0x34)
+        // When header.data_offset is 0, compute it based on the version-defined header size
         let data_offset: u32 = match self.header.data_offset {
-            0 => VGM_MAX_HEADER_SIZE.wrapping_sub(0x34),
+            0 => {
+                let version_header_size =
+                    VgmHeader::fallback_header_size_for_version(self.header.version);
+                // For very old versions where header size < 0x34, use 0x40 as minimum data start
+                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start)
+                if version_header_size < 0x34 {
+                    0x0C // 0x34 + 0x0C = 0x40 (64 bytes, minimum VGM data start)
+                } else {
+                    (version_header_size as u32).wrapping_sub(0x34)
+                }
+            }
             v => v,
         };
 

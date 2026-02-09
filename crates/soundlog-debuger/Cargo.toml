@@ -1,6 +1,6 @@
 [package]
 name = "soundlog-debuger"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 description = "GUI frontend for soundlog using egui/eframe"
 license = "MIT"

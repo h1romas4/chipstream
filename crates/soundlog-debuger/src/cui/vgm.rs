@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use soundlog::VgmDocument;
 
@@ -150,7 +150,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
 /// Print a rich side-by-side table of original vs. rebuilt document fields.
 ///
 /// This is used by `test_roundtrip --diag` when the roundtrip succeeds
-/// and the caller requested verbose diagnostics.
+/// and the caller requested diag diagnostics.
 fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
     // Build a field-aligned side-by-side table using summarize_doc but
     // split multi-line values into per-line rows so columns stay aligned.
@@ -406,6 +406,187 @@ pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
                 "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — run with --diag to see serialized bytes and diagnostics",
                 file_str,
                 rebuilt.len(),
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Redump VGM file with DAC streams expanded to chip writes.
+///
+/// This function parses the input VGM, processes it through VgmStream (which expands
+/// DAC Stream Control commands into actual chip writes), and writes the result to
+/// a new VGM file. This is useful for verifying that stream expansion works correctly.
+pub fn redump_vgm(
+    input_path: &Path,
+    output_path: &Path,
+    data: Vec<u8>,
+    loop_count: Option<u32>,
+    fadeout_samples: Option<u64>,
+    diag: bool,
+) -> Result<()> {
+    use soundlog::vgm::stream::{StreamResult, VgmStream};
+    use soundlog::{VgmBuilder, VgmDocument};
+    use std::fs;
+
+    // Parse original VGM document
+    let doc_orig: VgmDocument = (&data[..])
+        .try_into()
+        .with_context(|| format!("failed to parse input VGM: {}", input_path.display()))?;
+
+    // Create VgmStream from document
+    let mut stream = VgmStream::from_document(doc_orig.clone());
+
+    // Configure stream settings
+    if let Some(count) = loop_count {
+        stream.set_loop_count(Some(count));
+    }
+    if let Some(samples) = fadeout_samples {
+        stream.set_fadeout_samples(Some(samples));
+    }
+
+    // Collect all commands from stream
+    let mut commands = Vec::new();
+    loop {
+        match stream.next() {
+            Some(Ok(StreamResult::Command(cmd))) => {
+                commands.push(cmd);
+            }
+            Some(Ok(StreamResult::NeedsMoreData)) => {
+                break;
+            }
+            Some(Ok(StreamResult::EndOfStream)) => {
+                break;
+            }
+            Some(Err(e)) => {
+                return Err(anyhow::anyhow!("stream processing error: {}", e));
+            }
+            None => {
+                break;
+            }
+        }
+    }
+
+    // Ensure the redumped command stream terminates with EndOfData
+    commands.push(soundlog::vgm::command::VgmCommand::EndOfData(
+        soundlog::vgm::command::EndOfData,
+    ));
+
+    // Build new VGM document with expanded commands
+    let mut builder = VgmBuilder::new();
+
+    // Copy chip clocks from original header
+    // We need to extract the actual clock value (masking the high bit for secondary instances)
+    for (instance, chip) in doc_orig.header.chip_instances() {
+        // Get raw clock value from header and mask off the secondary instance bit
+        let raw_clock = match chip {
+            soundlog::chip::Chip::Sn76489 => doc_orig.header.sn76489_clock,
+            soundlog::chip::Chip::Ym2413 => doc_orig.header.ym2413_clock,
+            soundlog::chip::Chip::Ym2612 => doc_orig.header.ym2612_clock,
+            soundlog::chip::Chip::Ym2151 => doc_orig.header.ym2151_clock,
+            soundlog::chip::Chip::SegaPcm => doc_orig.header.sega_pcm_clock,
+            soundlog::chip::Chip::Rf5c68 => doc_orig.header.rf5c68_clock,
+            soundlog::chip::Chip::Ym2203 => doc_orig.header.ym2203_clock,
+            soundlog::chip::Chip::Ym2608 => doc_orig.header.ym2608_clock,
+            soundlog::chip::Chip::Ym2610b => doc_orig.header.ym2610b_clock,
+            soundlog::chip::Chip::Ym3812 => doc_orig.header.ym3812_clock,
+            soundlog::chip::Chip::Ym3526 => doc_orig.header.ym3526_clock,
+            soundlog::chip::Chip::Y8950 => doc_orig.header.y8950_clock,
+            soundlog::chip::Chip::Ymf262 => doc_orig.header.ymf262_clock,
+            soundlog::chip::Chip::Ymf278b => doc_orig.header.ymf278b_clock,
+            soundlog::chip::Chip::Ymf271 => doc_orig.header.ymf271_clock,
+            soundlog::chip::Chip::Ymz280b => doc_orig.header.ymz280b_clock,
+            soundlog::chip::Chip::Rf5c164 => doc_orig.header.rf5c164_clock,
+            soundlog::chip::Chip::Pwm => doc_orig.header.pwm_clock,
+            soundlog::chip::Chip::Ay8910 => doc_orig.header.ay8910_clock,
+            soundlog::chip::Chip::GbDmg => doc_orig.header.gb_dmg_clock,
+            soundlog::chip::Chip::NesApu => doc_orig.header.nes_apu_clock,
+            soundlog::chip::Chip::MultiPcm => doc_orig.header.multipcm_clock,
+            soundlog::chip::Chip::Upd7759 => doc_orig.header.upd7759_clock,
+            soundlog::chip::Chip::Okim6258 => doc_orig.header.okim6258_clock,
+            soundlog::chip::Chip::Okim6295 => doc_orig.header.okim6295_clock,
+            soundlog::chip::Chip::K051649 => doc_orig.header.k051649_clock,
+            soundlog::chip::Chip::K054539 => doc_orig.header.k054539_clock,
+            soundlog::chip::Chip::Huc6280 => doc_orig.header.huc6280_clock,
+            soundlog::chip::Chip::C140 => doc_orig.header.c140_clock,
+            soundlog::chip::Chip::K053260 => doc_orig.header.k053260_clock,
+            soundlog::chip::Chip::Pokey => doc_orig.header.pokey_clock,
+            soundlog::chip::Chip::Qsound => doc_orig.header.qsound_clock,
+            soundlog::chip::Chip::Scsp => doc_orig.header.scsp_clock,
+            soundlog::chip::Chip::WonderSwan => doc_orig.header.wonderswan_clock,
+            soundlog::chip::Chip::Vsu => doc_orig.header.vsu_clock,
+            soundlog::chip::Chip::Saa1099 => doc_orig.header.saa1099_clock,
+            soundlog::chip::Chip::Es5503 => doc_orig.header.es5503_clock,
+            soundlog::chip::Chip::Es5506U8 | soundlog::chip::Chip::Es5506U16 => {
+                doc_orig.header.es5506_clock
+            }
+            soundlog::chip::Chip::X1010 => doc_orig.header.x1_010_clock,
+            soundlog::chip::Chip::C352 => doc_orig.header.c352_clock,
+            soundlog::chip::Chip::Ga20 => doc_orig.header.ga20_clock,
+            soundlog::chip::Chip::Mikey => doc_orig.header.mikey_clock,
+            _ => 0,
+        };
+        // Mask off the high bit to get the actual clock frequency
+        let clock = raw_clock & 0x7FFF_FFFF;
+        if clock > 0 {
+            builder.register_chip(chip, instance, clock);
+        }
+    }
+
+    // Copy GD3 metadata if present
+    if let Some(gd3) = &doc_orig.gd3 {
+        builder.set_gd3(gd3.clone());
+    }
+
+    // Copy extra header if present
+    if let Some(extra) = &doc_orig.extra_header {
+        builder.set_extra_header(extra.clone());
+    }
+
+    // Add all expanded commands
+    for cmd in commands {
+        builder.add_vgm_command(cmd);
+    }
+
+    // Finalize and serialize
+    let mut doc_rebuilt = builder.finalize();
+
+    // Copy chip-specific configuration fields from original header
+    // (these are not copied by register_chip and contain important chip behavior flags)
+    doc_rebuilt.header.sn_fb = doc_orig.header.sn_fb;
+    doc_rebuilt.header.snw = doc_orig.header.snw;
+    doc_rebuilt.header.sf = doc_orig.header.sf;
+    doc_rebuilt.header.ay_misc = doc_orig.header.ay_misc;
+    doc_rebuilt.header.spcm_interface = doc_orig.header.spcm_interface;
+    doc_rebuilt.header.okim6258_flags = doc_orig.header.okim6258_flags;
+    doc_rebuilt.header.es5506_channels = doc_orig.header.es5506_channels;
+    doc_rebuilt.header.es5506_cd = doc_orig.header.es5506_cd;
+    doc_rebuilt.header.es5506_reserved = doc_orig.header.es5506_reserved;
+
+    let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
+
+    // Write to output file
+    fs::write(output_path, &rebuilt_bytes)
+        .with_context(|| format!("failed to write output VGM: {}", output_path.display()))?;
+
+    // If not diag, remain silent (no stdout output); return success early.
+    if !diag {
+        return Ok(());
+    }
+
+    // Re-parse serialized bytes into a VgmDocument
+    let doc_reparsed_res: Result<VgmDocument, _> = (&rebuilt_bytes[..]).try_into();
+    match doc_reparsed_res {
+        Ok(doc_reparsed) => {
+            print_diag_table(&doc_orig, &doc_reparsed);
+        }
+        Err(e) => {
+            eprintln!(
+                "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — run with --diag to see serialized bytes and diagnostics",
+                output_path.display(),
+                rebuilt_bytes.len(),
                 e
             );
         }

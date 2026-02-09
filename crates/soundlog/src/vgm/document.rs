@@ -159,7 +159,19 @@ impl VgmBuilder {
 
         // compute data_offset the same way as VgmDocument::to_bytes
         let data_offset: u32 = match self.document.header.data_offset {
-            0 => crate::vgm::header::VGM_MAX_HEADER_SIZE.wrapping_sub(0x34),
+            0 => {
+                let version_header_size =
+                    crate::vgm::header::VgmHeader::fallback_header_size_for_version(
+                        self.document.header.version,
+                    );
+                // For very old versions where header size < 0x34, use 0x40 as minimum data start
+                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start)
+                if version_header_size < 0x34 {
+                    0x0C // 0x34 + 0x0C = 0x40 (64 bytes, minimum VGM data start)
+                } else {
+                    (version_header_size as u32).wrapping_sub(0x34)
+                }
+            }
             v => v,
         };
 

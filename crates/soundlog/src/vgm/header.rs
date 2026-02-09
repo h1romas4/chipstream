@@ -234,6 +234,89 @@ impl VgmHeaderField {
         self.len() == 0
     }
 
+    /// Returns the minimum VGM version that introduced this field.
+    /// Fields not present in a version should be treated as zero.
+    ///
+    /// Reference: <https://vgmrips.net/wiki/VGM_Specification>
+    pub fn min_version(self) -> u32 {
+        match self {
+            // VGM 1.00 fields (0x00-0x23)
+            VgmHeaderField::Ident => 0x00000100,
+            VgmHeaderField::EofOffset => 0x00000100,
+            VgmHeaderField::Version => 0x00000100,
+            VgmHeaderField::Sn76489Clock => 0x00000100,
+            VgmHeaderField::Ym2413Clock => 0x00000100,
+            VgmHeaderField::Gd3Offset => 0x00000100,
+            VgmHeaderField::TotalSamples => 0x00000100,
+            VgmHeaderField::LoopOffset => 0x00000100,
+            VgmHeaderField::LoopSamples => 0x00000100,
+            // VGM 1.01 additions
+            VgmHeaderField::SampleRate => 0x00000101,
+            // VGM 1.10 additions
+            VgmHeaderField::SnFb => 0x00000110,
+            VgmHeaderField::Snw => 0x00000110,
+            VgmHeaderField::Ym2612Clock => 0x00000110,
+            VgmHeaderField::Ym2151Clock => 0x00000110,
+            // VGM 1.50 additions
+            VgmHeaderField::DataOffset => 0x00000150,
+            // VGM 1.51 additions
+            VgmHeaderField::Sf => 0x00000151,
+            VgmHeaderField::SegaPcmClock => 0x00000151,
+            VgmHeaderField::SpcmInterface => 0x00000151,
+            VgmHeaderField::Rf5c68Clock => 0x00000151,
+            VgmHeaderField::Ym2203Clock => 0x00000151,
+            VgmHeaderField::Ym2608Clock => 0x00000151,
+            VgmHeaderField::Ym2610bClock => 0x00000151,
+            VgmHeaderField::Ym3812Clock => 0x00000151,
+            VgmHeaderField::Ym3526Clock => 0x00000151,
+            VgmHeaderField::Y8950Clock => 0x00000151,
+            VgmHeaderField::Ymf262Clock => 0x00000151,
+            VgmHeaderField::Ymf278bClock => 0x00000151,
+            VgmHeaderField::Ymf271Clock => 0x00000151,
+            VgmHeaderField::Ymz280bClock => 0x00000151,
+            VgmHeaderField::Rf5c164Clock => 0x00000151,
+            VgmHeaderField::PwmClock => 0x00000151,
+            VgmHeaderField::Ay8910Clock => 0x00000151,
+            VgmHeaderField::AyMisc => 0x00000151,
+            // VGM 1.61 additions
+            VgmHeaderField::GbDmgClock => 0x00000161,
+            VgmHeaderField::NesApuClock => 0x00000161,
+            VgmHeaderField::MultipcmClock => 0x00000161,
+            VgmHeaderField::Upd7759Clock => 0x00000161,
+            VgmHeaderField::Okim6258Clock => 0x00000161,
+            VgmHeaderField::Okim6258Flags => 0x00000161,
+            VgmHeaderField::Okim6295Clock => 0x00000161,
+            VgmHeaderField::K051649Clock => 0x00000161,
+            VgmHeaderField::K054539Clock => 0x00000161,
+            VgmHeaderField::Huc6280Clock => 0x00000161,
+            VgmHeaderField::C140Clock => 0x00000161,
+            VgmHeaderField::K053260Clock => 0x00000161,
+            VgmHeaderField::PokeyClock => 0x00000161,
+            VgmHeaderField::QsoundClock => 0x00000161,
+            // VGM 1.71 additions
+            VgmHeaderField::ScspClock => 0x00000171,
+            // VGM 1.70 additions
+            VgmHeaderField::ExtraHeaderOffset => 0x00000170,
+            // VGM 1.71 additions
+            VgmHeaderField::WonderSwan => 0x00000171,
+            VgmHeaderField::Vsu => 0x00000171,
+            VgmHeaderField::Saa1099 => 0x00000171,
+            VgmHeaderField::Es5503 => 0x00000171,
+            VgmHeaderField::Es5506 => 0x00000171,
+            VgmHeaderField::Es5506Channels => 0x00000171,
+            VgmHeaderField::Es5506Cd => 0x00000171,
+            VgmHeaderField::Es5506Reserved => 0x00000171,
+            VgmHeaderField::X1_010 => 0x00000171,
+            VgmHeaderField::C352 => 0x00000171,
+            VgmHeaderField::Ga20 => 0x00000171,
+            // VGM 1.72 additions
+            VgmHeaderField::Mikey => 0x00000172,
+            // Reserved fields (use max version for future compatibility)
+            VgmHeaderField::ReservedE8EF => 0x00000172,
+            VgmHeaderField::ReservedF0FF => 0x00000172,
+        }
+    }
+
     /// Compute the byte range (start, length) of this field within the
     /// serialized header buffer considering the `data_offset` rules used by
     /// `VgmHeader::to_bytes()`.
@@ -852,16 +935,36 @@ impl VgmHeader {
     /// (older VGM versions omitted the data_offset field or used smaller
     /// headers). The returned size is the total header size in bytes and
     /// includes the 32-bit `data_offset` field region when applicable.
+    /// Returns the header size (in bytes) based on the VGM version number.
+    ///
+    /// This function is used when `data_offset` is zero, to determine how much
+    /// of the file should be treated as header based on what fields were defined
+    /// in each VGM specification version.
+    ///
+    /// Reference: <https://vgmrips.net/wiki/VGM_Specification>
     pub fn fallback_header_size_for_version(version: u32) -> usize {
         match version {
-            0x00000100 => 0x20 + 4,
-            0x00000101 => 0x24 + 4,
-            0x00000110 => 0x30 + 4,
-            0x00000150 => 0x34 + 4,
-            0x00000151 | 0x00000160 => 0x7f + 4,
-            0x00000170 => 0xbc + 4,
-            0x00000171 => 0xe0 + 4,
-            0x00000172 => 0xe4 + 4,
+            // VGM 1.00: Fields 0x00-0x23 (36 bytes total)
+            0x00000100 => 0x24,
+            // VGM 1.01: Added Rate at 0x24-0x27 (40 bytes total)
+            0x00000101 => 0x28,
+            // VGM 1.10: Added SN76489 feedback/width at 0x28-0x2B,
+            //           and YM2612/YM2151 clocks at 0x2C-0x33 (52 bytes total)
+            0x00000110 => 0x34,
+            // VGM 1.50: Added VGM data offset at 0x34-0x37 (56 bytes total)
+            0x00000150 => 0x38,
+            // VGM 1.51: Added many chip clocks from 0x38-0x7F (128 bytes total)
+            // VGM 1.60: Added Volume Modifier, Loop Base at 0x7C-0x7E (already in 1.51 range)
+            0x00000151 | 0x00000160 => 0x80,
+            // VGM 1.61: Added more chip clocks from 0x80-0xB7 (184 bytes total)
+            0x00000161 => 0xB8,
+            // VGM 1.70: Added Extra Header Offset at 0xBC-0xBF (192 bytes total)
+            0x00000170 => 0xC0,
+            // VGM 1.71: Added more chip clocks from 0xC0-0xE3 (228 bytes total)
+            0x00000171 => 0xE4,
+            // VGM 1.72: Added Mikey clock at 0xE4-0xE7 (232 bytes total)
+            0x00000172 => 0xE8,
+            // For unknown/future versions, use the maximum header size
             _ => VGM_MAX_HEADER_SIZE as usize,
         }
     }

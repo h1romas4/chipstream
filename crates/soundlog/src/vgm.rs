@@ -8,6 +8,8 @@ pub mod detail;
 mod document;
 mod header;
 pub mod parser;
+pub mod stream;
 
 pub use document::{VgmBuilder, VgmDocument};
 pub use header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
+pub use stream::VgmStream;
