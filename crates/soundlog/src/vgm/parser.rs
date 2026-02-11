@@ -211,13 +211,8 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     let header_size_for_fields: usize = version_max_header_size;
 
     let total_header_size: usize = if version >= 0x00000150 {
-        if actual_data_start < 0x100 {
-            // Ensure header is at least 64 bytes (0x40) when possible
-            actual_data_start.max(0x40.min(bytes.len()))
-        } else {
-            // Data starts at 0x100+
-            actual_data_start
-        }
+        // Use actual_data_start directly - this is where the command stream begins
+        actual_data_start
     } else {
         // For version < 1.50, use version-defined fallback
         version_max_header_size

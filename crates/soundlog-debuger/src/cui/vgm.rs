@@ -468,7 +468,8 @@ pub fn redump_vgm(
         // Expand the intro commands through VgmStream
         let intro_doc = intro_builder.finalize();
         let mut intro_stream = VgmStream::from_document(intro_doc);
-        intro_stream.set_loop_count(Some(0));
+        // Don't set loop_count - we want to process all intro commands exactly once
+        // (The intro_doc doesn't have a loop point set, so it will process all commands)
 
         let mut intro_expanded_count = 0;
         loop {
@@ -568,12 +569,13 @@ pub fn redump_vgm(
         builder.set_loop_offset(index);
     }
 
+    // Set version and sample_rate from original header BEFORE finalize()
+    // This is critical because finalize() uses the version to calculate data_offset
+    builder.set_version(doc_orig.header.version);
+    builder.set_sample_rate(doc_orig.header.sample_rate);
+
     // Finalize and serialize
     let mut doc_rebuilt = builder.finalize();
-
-    // Copy version and sample_rate from original header to preserve compatibility
-    doc_rebuilt.header.version = doc_orig.header.version;
-    doc_rebuilt.header.sample_rate = doc_orig.header.sample_rate;
 
     // If we're preserving loop, copy loop_samples from original
     if loop_count.is_none() && doc_orig.header.loop_offset != 0 {
@@ -649,7 +651,30 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     println!("Total Samples: {}", doc.header.total_samples);
     println!("Loop Offset: 0x{:08X}", doc.header.loop_offset);
     println!("Loop Samples: {}", doc.header.loop_samples);
+
+    // Show loop command index if available
+    if let Some(loop_idx) = doc.loop_command_index() {
+        println!("Loop Command Index: {}", loop_idx);
+    }
+
     println!("Total Commands: {}", doc.commands.len());
+
+    // Debug: Show first 5 commands directly
+    println!("\nFirst 5 commands (debug):");
+    for (i, cmd) in doc.commands.iter().enumerate().take(5) {
+        match cmd {
+            soundlog::VgmCommand::DataBlock(db) => {
+                println!(
+                    "  [{}] DataBlock(type=0x{:02X}, size={})",
+                    i, db.data_type, db.size
+                );
+            }
+            _ => {
+                println!("  [{}] {}", i, format_command_brief(cmd));
+            }
+        }
+    }
+
     println!();
 
     // Print commands with offsets and lengths

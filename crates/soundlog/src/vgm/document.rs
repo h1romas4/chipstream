@@ -100,6 +100,21 @@ impl VgmBuilder {
         self
     }
 
+    /// Set the VGM version.
+    ///
+    /// This should be set before calling `finalize()` to ensure correct
+    /// header size calculations.
+    pub fn set_version(&mut self, version: u32) -> &mut Self {
+        self.document.header.version = version;
+        self
+    }
+
+    /// Set the sample rate.
+    pub fn set_sample_rate(&mut self, sample_rate: u32) -> &mut Self {
+        self.document.header.sample_rate = sample_rate;
+        self
+    }
+
     /// Append a VGM command to the builder.
     ///
     /// Accepts any type convertible into `VgmCommand` (via `Into`).
@@ -199,19 +214,25 @@ impl VgmBuilder {
                 let new_data_offset = new_header_len.wrapping_sub(0x34_u32);
                 self.document.header.data_offset = new_data_offset;
             }
+        } else if self.document.header.data_offset == 0 {
+            self.document.header.data_offset = data_offset;
         }
 
         // handle loop offset
         if let Some(index) = self.loop_index
             && index < self.document.commands.len()
         {
-            let header_len = self.document.header.to_bytes(0, data_offset).len() as u32;
+            // Use the updated data_offset from the header (which may have been modified by extra_header processing)
+            let final_data_offset = self.document.header.data_offset;
+            let header_len = self.document.header.to_bytes(0, final_data_offset).len() as u32;
 
             let offsets = self.document.command_offsets_and_lengths();
             if index < offsets.len() {
                 let (cmd_offset, _cmd_len) = offsets[index];
                 let loop_abs = header_len.wrapping_add(cmd_offset as u32);
-                self.document.header.loop_offset = loop_abs.wrapping_sub(0x1C);
+                let computed_loop_offset = loop_abs.wrapping_sub(0x1C);
+
+                self.document.header.loop_offset = computed_loop_offset;
             }
         }
 
