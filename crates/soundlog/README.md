@@ -12,7 +12,7 @@ Key features:
 - Type-safe APIs: chip specifications and VGM commands are modeled as
   Rust types to help prevent invalid register writes at compile time.
 - Stream processing: `VgmStream` provides a low-memory, iterator-based
-  processor that can accept either chunked binary input (via `push_data`)
+  processor that can accept either chunked binary input (via `push_chunk`)
   or a pre-parsed `VgmDocument` (via `from_document`) and yields parsed
   `VgmCommand` values as they become available.
 
@@ -201,7 +201,7 @@ while let Some(result) = stream.next() {
 
 ### `VgmStream` — feeding raw byte chunks
 
-Note: apart from providing input via `push_data`, handling the stream is the same as the `from_document` example above — iterate over the stream and handle `StreamResult` variants (`Command`, `NeedsMoreData`, `EndOfStream`, `Err`) in the same way.
+Note: apart from providing input via `push_chunk`, handling the stream is the same as the `from_document` example above — iterate over the stream and handle `StreamResult` variants (`Command`, `NeedsMoreData`, `EndOfStream`, `Err`) in the same way.
 
 ```rust
 use soundlog::vgm::VgmStream;
@@ -219,7 +219,7 @@ for chunk in chunks {
             Ok(StreamResult::EndOfStream) => {
                 // EndOfStream reached — the stream has no further data.
                 // To loop playback, reset your chunk source to the loop
-                // offset and call `push_data` again so the parser receives
+                // offset and call `push_chunk` again so the parser receives
                 // the bytes from the loop point onward.
                 break
             },
