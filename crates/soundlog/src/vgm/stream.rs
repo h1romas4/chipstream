@@ -89,6 +89,8 @@ struct StreamState {
     length_mode: u8,
     /// Data length (interpretation depends on length_mode)
     data_length: u32,
+    /// End position for the current block (used with FastCall and length_mode 3)
+    block_end_pos: Option<usize>,
     /// Whether the stream is currently active/playing
     active: bool,
     /// Current read position in the data block (byte offset)
@@ -270,9 +272,9 @@ pub struct VgmStream {
     source: VgmStreamSource,
     /// Uncompressed streams stored by data type
     uncompressed_streams: HashMap<u8, UncompressedStream>,
-    /// Block ID to (data_type, offset within that type's concatenated stream) mapping
-    /// Maps global DataBlock sequence number to its location in the concatenated stream
-    block_id_map: Vec<(u8, usize)>,
+    /// Block ID to (data_type, offset within that type's concatenated stream, block_size) mapping
+    /// Maps global DataBlock sequence number to its location and size in the concatenated stream
+    block_id_map: Vec<(u8, usize, usize)>,
     /// Cumulative size of DataBlocks by data_type (for offset calculation)
     /// Used to track offsets when blocks are not stored (e.g., RomRamDump types)
     block_sizes: HashMap<u8, usize>,
@@ -802,6 +804,8 @@ impl VgmStream {
 
     /// Handles a data block command by parsing it and storing or returning it.
     fn handle_data_block(&mut self, block: DataBlock) -> Result<StreamResult, ParseError> {
+        let block_size = block.size as usize;
+        let block_data_type = block.data_type;
         let data_type = block.data_type;
         let data_len = block.data.len();
         let marker = block.marker;
@@ -826,7 +830,8 @@ impl VgmStream {
                             .get(&data_type)
                             .map(|s| s.data.len())
                             .unwrap_or(0);
-                        self.block_id_map.push((data_type, current_offset));
+                        self.block_id_map
+                            .push((data_type, current_offset, stream.data.len()));
                         self.total_data_block_size += data_len;
                         self.uncompressed_streams
                             .entry(data_type)
@@ -849,7 +854,8 @@ impl VgmStream {
                     DataBlockType::RomRamDump(dump) => {
                         // For RomRamDump, reconstruct DataBlock and return
                         let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
-                        self.block_id_map.push((data_type, current_offset));
+                        self.block_id_map
+                            .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
@@ -865,7 +871,8 @@ impl VgmStream {
                     DataBlockType::RamWrite16(write) => {
                         // For RamWrite16, reconstruct DataBlock and return
                         let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
-                        self.block_id_map.push((data_type, current_offset));
+                        self.block_id_map
+                            .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
@@ -881,7 +888,8 @@ impl VgmStream {
                     DataBlockType::RamWrite32(write) => {
                         // For RamWrite32, reconstruct DataBlock and return
                         let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
-                        self.block_id_map.push((data_type, current_offset));
+                        self.block_id_map
+                            .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
@@ -899,7 +907,8 @@ impl VgmStream {
             Err((original_block, _err)) => {
                 // If parsing fails, return the raw block without storing
                 let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
-                self.block_id_map.push((data_type, current_offset));
+                self.block_id_map
+                    .push((block_data_type, current_offset, block_size));
                 *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                 self.total_data_block_size += data_len;
                 Ok(StreamResult::Command(VgmCommand::DataBlock(original_block)))
@@ -947,11 +956,25 @@ impl VgmStream {
             }
         };
 
-        let uncompressed = UncompressedStream {
-            chip_type: stream.chip_type,
-            data: decompressed_data,
-        };
-        self.uncompressed_streams.insert(data_type, uncompressed);
+        // Record block position and size in block_id_map
+        let current_offset = self
+            .uncompressed_streams
+            .get(&data_type)
+            .map(|s| s.data.len())
+            .unwrap_or(0);
+        self.block_id_map
+            .push((data_type, current_offset, decompressed_data.len()));
+
+        // Append decompressed data to existing stream or create new one
+        self.uncompressed_streams
+            .entry(data_type)
+            .and_modify(|existing| {
+                existing.data.extend_from_slice(&decompressed_data);
+            })
+            .or_insert_with(|| UncompressedStream {
+                chip_type: stream.chip_type,
+                data: decompressed_data,
+            });
         Ok(())
     }
 
@@ -987,6 +1010,7 @@ impl VgmStream {
                 start_offset: None,
                 length_mode: 0,
                 data_length: 0,
+                block_end_pos: None,
                 active: false,
                 current_data_pos: 0,
                 next_write_sample: 0,
@@ -1010,12 +1034,13 @@ impl VgmStream {
                 write_port: 0,
                 write_command: 0,
                 data_bank_id: 0,
-                step_size: 1,
+                step_size: 0,
                 step_base: 0,
                 frequency_hz: None,
                 start_offset: None,
                 length_mode: 0,
                 data_length: 0,
+                block_end_pos: None,
                 active: false,
                 current_data_pos: 0,
                 next_write_sample: 0,
@@ -1044,6 +1069,7 @@ impl VgmStream {
             state.start_offset = Some(start.data_start_offset);
             state.length_mode = start.length_mode;
             state.data_length = start.data_length;
+            state.block_end_pos = None; // StartStream doesn't set block boundaries
             state.active = true;
 
             // Calculate initial data position
@@ -1089,10 +1115,12 @@ impl VgmStream {
             return Ok(());
         };
 
-        let block_offset = self.get_block_offset(data_bank_id, fast.block_id)?;
+        let (block_offset, block_size) =
+            self.get_block_offset_and_size(data_bank_id, fast.block_id)?;
         if let Some(state) = self.stream_states.get_mut(&fast.stream_id) {
             state.active = true;
             state.current_data_pos = block_offset + step_base as usize;
+            state.block_end_pos = Some(block_offset + block_size);
             state.next_write_sample = self.current_sample;
             state.sample_fraction = 0.0;
             // Length mode 3 = play until end of block
@@ -1102,14 +1130,18 @@ impl VgmStream {
         Ok(())
     }
 
-    /// Gets the offset for a specific block_id within a data bank.
+    /// Gets the offset and size for a specific block_id within a data bank.
     ///
     /// The block_id is the global sequence number (order of appearance) of DataBlocks.
-    /// Returns the byte offset within the concatenated stream of the specified data_bank_id.
-    fn get_block_offset(&self, data_bank_id: u8, block_id: u16) -> Result<usize, ParseError> {
-        if let Some(&(mapped_data_type, offset)) = self.block_id_map.get(block_id as usize) {
+    /// Returns the byte offset and size within the concatenated stream of the specified data_bank_id.
+    fn get_block_offset_and_size(
+        &self,
+        data_bank_id: u8,
+        block_id: u16,
+    ) -> Result<(usize, usize), ParseError> {
+        if let Some(&(mapped_data_type, offset, size)) = self.block_id_map.get(block_id as usize) {
             if mapped_data_type == data_bank_id {
-                return Ok(offset);
+                return Ok((offset, size));
             } else {
                 return Err(ParseError::DataInconsistency(format!(
                     "Block ID {} refers to data type 0x{:02x}, but stream is configured for data bank 0x{:02x}",
@@ -1177,6 +1209,7 @@ impl VgmStream {
                     step_size,
                     length_mode,
                     remaining_commands,
+                    block_end_pos,
                 ) = {
                     let state = self.stream_states.get(&stream_id).unwrap();
                     (
@@ -1187,6 +1220,7 @@ impl VgmStream {
                         state.step_size,
                         state.length_mode,
                         state.remaining_commands,
+                        state.block_end_pos,
                     )
                 };
 
@@ -1203,6 +1237,18 @@ impl VgmStream {
                     if let Some(state) = self.stream_states.get_mut(&stream_id) {
                         state.remaining_commands = Some(remaining - 1);
                     }
+                }
+
+                // Check if we've reached the block end (for FastCall with length_mode 3)
+                if length_mode == 3
+                    && block_end_pos.is_some()
+                    && current_data_pos >= block_end_pos.unwrap()
+                {
+                    // Reached end of block
+                    if let Some(state) = self.stream_states.get_mut(&stream_id) {
+                        state.active = false;
+                    }
+                    continue;
                 }
 
                 let data_byte = self.read_stream_byte_at(data_bank_id, current_data_pos)?;
