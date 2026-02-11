@@ -3019,9 +3019,12 @@ impl VgmDocument {
     ///
     /// Returns a `Vec<(usize, usize)>` where each tuple represents the byte
     /// offset (relative to the start of the command stream) and the serialized
-    /// length of the corresponding command in `self.commands`. This uses the
-    /// crate-local `command_to_vgm_bytes` helper to determine each command's
-    /// serialized length without serializing the entire document.
+    /// length of the corresponding command in `self.commands`.
+    ///
+    /// This function calls the local helper `command_to_vgm_bytes` to determine
+    /// each command's serialized length without serializing the entire
+    /// document. The method is public and intended for use by consumers of the
+    /// crate that need to map document commands to file byte offsets.
     pub fn command_offsets_and_lengths(&self) -> Vec<(usize, usize)> {
         let mut out: Vec<(usize, usize)> = Vec::with_capacity(self.commands.len());
         let mut offset: usize = 0;
