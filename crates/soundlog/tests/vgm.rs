@@ -15,9 +15,10 @@ fn build_minimal_vgmdocument() {
 
     // finalize() sets data_offset based on version, so we need to check
     // that separately from the default header
-    let mut expected_header = VgmHeader::default();
-    // Version 1.72 has header size 0xE8, so data_offset = 0xE8 - 0x34 = 0xB4
-    expected_header.data_offset = 0xB4;
+    let expected_header = VgmHeader {
+        data_offset: 0xB4,
+        ..VgmHeader::default()
+    };
     assert_eq!(doc.header, expected_header);
 }
 
