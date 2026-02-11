@@ -139,8 +139,20 @@ impl VgmBuilder {
     ///
     /// This stores the provided `VgmExtraHeader` into the builder's internal
     /// `VgmDocument` so it will be included when the document is serialized.
-    pub fn set_extra_header(&mut self, extra: VgmExtraHeader) -> &mut Self {
+    /// The `extra_header_offset` and `data_offset` fields in the header are
+    /// reset to 0 so that `finalize()` will recalculate them based on the
+    /// actual header size. The extra header's internal offset/size fields
+    /// are also reset to allow automatic recalculation during serialization.
+    pub fn set_extra_header(&mut self, mut extra: VgmExtraHeader) -> &mut Self {
+        // Reset extra header internal fields so to_bytes() recalculates them
+        extra.header_size = 0;
+        extra.chip_clock_offset = 0;
+        extra.chip_vol_offset = 0;
+
         self.document.extra_header = Some(extra);
+        // Reset extra_header_offset and data_offset so finalize() will recalculate them
+        self.document.header.extra_header_offset = 0;
+        self.document.header.data_offset = 0;
         self
     }
 

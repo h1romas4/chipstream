@@ -571,6 +571,10 @@ pub fn redump_vgm(
     // Finalize and serialize
     let mut doc_rebuilt = builder.finalize();
 
+    // Copy version and sample_rate from original header to preserve compatibility
+    doc_rebuilt.header.version = doc_orig.header.version;
+    doc_rebuilt.header.sample_rate = doc_orig.header.sample_rate;
+
     // If we're preserving loop, copy loop_samples from original
     if loop_count.is_none() && doc_orig.header.loop_offset != 0 {
         doc_rebuilt.header.loop_samples = doc_orig.header.loop_samples;
