@@ -153,7 +153,7 @@ pub enum StreamResult {
 ///
 /// // Feed VGM data (could be incoming chunks)
 /// let vgm_data = vec![0x62, 0x63, 0x66];
-/// parser.push_data(&vgm_data);
+/// parser.push_chunk(&vgm_data);
 ///
 /// for result in &mut parser {
 ///     match result {
@@ -253,7 +253,7 @@ pub enum StreamResult {
 /// let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
 ///
 /// for chunk in chunks {
-///     parser.push_data(&chunk);
+///     parser.push_chunk(&chunk);
 ///     for result in &mut parser {
 ///         match result {
 ///             Ok(StreamResult::Command(_)) => {},
@@ -418,11 +418,11 @@ impl VgmStream {
     /// Adds new data to the internal buffer for parsing.
     ///
     /// # Arguments
-    /// * `data` - Raw VGM bytes to add to the parsing buffer
-    pub fn push_data(&mut self, data: &[u8]) {
+    /// * `chunk` - Raw VGM bytes to add to the parsing buffer
+    pub fn push_chunk(&mut self, chunk: &[u8]) {
         match &mut self.source {
             VgmStreamSource::Bytes { buffer, header } => {
-                buffer.extend_from_slice(data);
+                buffer.extend_from_slice(chunk);
                 if header.is_none()
                     && buffer.len() >= 0x40
                     && let Ok((parsed_header, _size)) = crate::vgm::parser::parse_vgm_header(buffer)

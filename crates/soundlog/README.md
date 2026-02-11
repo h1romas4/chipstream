@@ -211,7 +211,7 @@ let mut parser = VgmStream::new();
 let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
 
 for chunk in chunks {
-    parser.push_data(&chunk);
+    parser.push_chunk(&chunk);
     for result in &mut parser {
         match result {
             Ok(StreamResult::Command(_)) => {},

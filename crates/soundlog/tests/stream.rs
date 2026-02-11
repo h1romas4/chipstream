@@ -46,7 +46,7 @@ fn test_stream_parser_basic_functionality() {
     let mut parser = VgmStream::new();
 
     // Feed the entire VGM data at once
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
     // Verify VGM header parses from the provided bytes
     let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
     assert_eq!(&header.ident, b"Vgm ");
@@ -78,7 +78,7 @@ fn test_stream_parser_with_loop_limit() {
     parser.set_loop_count(Some(2)); // 2 total playthroughs
 
     // Feed the VGM data
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
     // Verify VGM header parses from the provided bytes
     let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
     assert_eq!(&header.ident, b"Vgm ");
@@ -98,7 +98,7 @@ fn test_stream_parser_with_loop_limit() {
             StreamResult::NeedsMoreData => {
                 // Add the data again to simulate looping
                 if parser.current_loop_count() < 2 {
-                    parser.push_data(&vgm_data);
+                    parser.push_chunk(&vgm_data);
                 } else {
                     break;
                 }
@@ -131,7 +131,7 @@ fn test_stream_parser_incremental_data() {
     while offset < vgm_data.len() {
         let end = std::cmp::min(offset + chunk_size, vgm_data.len());
         let chunk = &vgm_data[offset..end];
-        parser.push_data(chunk);
+        parser.push_chunk(chunk);
         offset = end;
 
         // Try to parse available commands
@@ -160,7 +160,7 @@ fn test_stream_parser_with_various_commands() {
     let mut parser = VgmStream::new();
 
     // Feed the VGM data
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
 
     let mut wait_commands = 0;
     let mut commands = Vec::new();
@@ -201,7 +201,7 @@ fn test_stream_parser_iterator_interface() {
     let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
     assert_eq!(&header.ident, b"Vgm ");
     let mut parser = VgmStream::new();
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
 
     // Use the iterator interface
     let mut commands = Vec::new();
@@ -245,7 +245,7 @@ fn test_stream_parser_buffer_management() {
 
     // Add a large amount of simple commands to test buffer management
     let large_data = vec![0x62; 1000];
-    parser.push_data(&large_data);
+    parser.push_chunk(&large_data);
 
     let initial_buffer_size = parser.buffer_size();
 
@@ -279,7 +279,7 @@ fn test_stream_parser_reset_functionality() {
     parser.set_loop_count(Some(1));
 
     // Parse some data
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
     let _ = parser.next().unwrap().unwrap();
 
     assert!(parser.buffer_size() > 0);
@@ -292,7 +292,7 @@ fn test_stream_parser_reset_functionality() {
     assert_eq!(parser.current_loop_count(), 0);
 
     // Should be able to parse again after reset
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
     match parser.next().unwrap().unwrap() {
         StreamResult::Command(_) => {
             println!("Successfully parsed after reset");
@@ -306,7 +306,7 @@ fn test_stream_parser_partial_command_handling() {
     let mut parser = VgmStream::new();
 
     // Feed incomplete data for a WaitSamples command (0x61 requires 2 additional bytes)
-    parser.push_data(&[0x61]); // Command opcode only
+    parser.push_chunk(&[0x61]); // Command opcode only
 
     // Should need more data
     match parser.next().unwrap().unwrap() {
@@ -317,7 +317,7 @@ fn test_stream_parser_partial_command_handling() {
     }
 
     // Add one more byte (still incomplete)
-    parser.push_data(&[0x44]);
+    parser.push_chunk(&[0x44]);
 
     match parser.next().unwrap().unwrap() {
         StreamResult::NeedsMoreData => {
@@ -327,7 +327,7 @@ fn test_stream_parser_partial_command_handling() {
     }
 
     // Add the final byte to complete the command
-    parser.push_data(&[0x01]);
+    parser.push_chunk(&[0x01]);
 
     match parser.next().unwrap().unwrap() {
         StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(0x0144))) => {
@@ -354,7 +354,7 @@ fn test_stream_parser_multiple_data_chunks() {
     let mut total_commands = 0;
 
     for (i, &chunk) in chunks.iter().enumerate() {
-        parser.push_data(chunk);
+        parser.push_chunk(chunk);
         println!("Added chunk {}: {:?}", i, chunk);
 
         // Process all available commands after this chunk
@@ -390,7 +390,7 @@ fn test_stream_parser_two_loop_iterations() {
     parser.set_loop_count(Some(2)); // 2 total playthroughs
 
     // Feed the VGM data
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
 
     let mut total_commands = 0;
 
@@ -404,7 +404,7 @@ fn test_stream_parser_two_loop_iterations() {
             StreamResult::NeedsMoreData => {
                 // Re-feed data to simulate looping
                 if parser.current_loop_count() < 2 {
-                    parser.push_data(&vgm_data);
+                    parser.push_chunk(&vgm_data);
                 } else {
                     break;
                 }
@@ -434,7 +434,7 @@ fn test_stream_parser_two_loop_iterations() {
 fn test_iterator_interface_demonstration() {
     let vgm_data = create_test_vgm_with_loop();
     let mut parser = VgmStream::new();
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
 
     println!("Demonstrating new iterator interface:");
 
@@ -502,7 +502,7 @@ fn test_data_block_parsing_and_storage() {
 
     let doc = builder.finalize();
     let bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&bytes);
+    parser.push_chunk(&bytes);
 
     let mut found_rom_block = false;
     let mut found_uncompressed_block = false;
@@ -580,7 +580,7 @@ fn test_iterator_with_incremental_push_data() {
 
     // Initially push the first chunk
     if !data_chunks.is_empty() {
-        parser.push_data(&data_chunks[chunk_index]);
+        parser.push_chunk(&data_chunks[chunk_index]);
         chunk_index += 1;
     }
 
@@ -608,7 +608,7 @@ fn test_iterator_with_incremental_push_data() {
 
                     // Feed next chunk if available
                     if chunk_index < data_chunks.len() {
-                        parser.push_data(&data_chunks[chunk_index]);
+                        parser.push_chunk(&data_chunks[chunk_index]);
                         println!(
                             "    Fed chunk {} ({} bytes)",
                             chunk_index,
@@ -671,7 +671,7 @@ fn test_streaming_with_variable_chunk_sizes() {
     if !chunk_sizes.is_empty() && data_offset < vgm_data.len() {
         let chunk_size = std::cmp::min(chunk_sizes[chunk_index], vgm_data.len() - data_offset);
         let chunk = &vgm_data[data_offset..data_offset + chunk_size];
-        parser.push_data(chunk);
+        parser.push_chunk(chunk);
         data_offset += chunk_size;
         chunk_index += 1;
         println!("  Initial chunk: {} bytes", chunk.len());
@@ -710,7 +710,7 @@ fn test_streaming_with_variable_chunk_sizes() {
                         };
 
                         let chunk = &vgm_data[data_offset..data_offset + chunk_size];
-                        parser.push_data(chunk);
+                        parser.push_chunk(chunk);
                         data_offset += chunk_size;
                         chunk_index += 1;
                         processed_any = true;
@@ -814,7 +814,7 @@ fn test_compressed_stream_decompression() {
 
     let doc = builder.finalize();
     let bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&bytes);
+    parser.push_chunk(&bytes);
 
     let mut command_count = 0;
     let mut found_compressed_in_iterator = false;
@@ -900,7 +900,7 @@ fn test_compressed_stream_without_decompression_table() {
 
     let doc = builder.finalize();
     let bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&bytes);
+    parser.push_chunk(&bytes);
 
     let mut found_error = false;
 
@@ -959,7 +959,7 @@ fn test_dpcm_compressed_stream_without_table_fails() {
 
     let doc = builder.finalize();
     let bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&bytes);
+    parser.push_chunk(&bytes);
 
     let mut found_error = false;
 
@@ -1044,7 +1044,7 @@ fn test_dac_stream_control_basic() {
     // Finalize into bytes and feed parser
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut commands = Vec::new();
     for result in &mut parser {
@@ -1149,7 +1149,7 @@ fn test_dac_stream_control_stop_all_streams() {
     // Finalize and feed parser
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let _stop_command_found = false;
     for result in &mut parser {
@@ -1222,7 +1222,7 @@ fn test_dac_stream_control_fast_call() {
     // Finalize and feed parser
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     for result in &mut parser {
         match result {
@@ -1326,7 +1326,7 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     // Finalize and parse
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut chip_writes = Vec::new();
     for result in &mut parser {
@@ -1442,7 +1442,7 @@ fn test_start_stream_with_multiple_blocks() {
     // Finalize and parse
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut chip_writes = Vec::new();
     for result in &mut parser {
@@ -1540,7 +1540,7 @@ fn test_wait_expansion_with_stream_writes() {
     // Parse the VGM
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut commands = Vec::new();
     for result in &mut parser {
@@ -1686,7 +1686,7 @@ fn test_wait_splitting_with_stream_timing() {
     // Parse
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut commands = Vec::new();
     for result in &mut parser {
@@ -1928,7 +1928,7 @@ fn test_push_data_panics_on_document_stream() {
     let mut stream = VgmStream::from_document(doc);
 
     // This should panic
-    stream.push_data(&[0x62]);
+    stream.push_chunk(&[0x62]);
 }
 
 #[test]
@@ -1950,7 +1950,7 @@ fn test_fadeout_samples_basic() {
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1)); // 1 total playthrough (no looping)
     parser.set_fadeout_samples(Some(100)); // 100 samples fadeout
-    parser.push_data(&vgm_data);
+    parser.push_chunk(&vgm_data);
 
     let mut total_wait_samples = 0u64;
     let mut command_count = 0;
@@ -1995,7 +1995,7 @@ fn test_fadeout_samples_exact_timing() {
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1)); // 1 total playthrough (no looping)
     parser.set_fadeout_samples(Some(100)); // 100 samples fadeout
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut _wait_samples_after_end = 0u64;
     let mut loop_ended = false;
@@ -2083,7 +2083,7 @@ fn test_fadeout_samples_with_stream_control() {
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1));
     parser.set_fadeout_samples(Some(100)); // Allow 100 samples fadeout
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut stream_writes = 0;
     let mut total_wait = 0u64;
@@ -2124,7 +2124,7 @@ fn test_fadeout_samples_none() {
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1));
     // No fadeout_samples set
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut commands = Vec::new();
     for result in &mut parser {
@@ -2351,7 +2351,7 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Parse the VGM
     let doc = builder.finalize();
     let vgm_bytes: Vec<u8> = (&doc).into();
-    parser.push_data(&vgm_bytes);
+    parser.push_chunk(&vgm_bytes);
 
     let mut commands = Vec::new();
     for result in &mut parser {
@@ -2556,7 +2556,7 @@ fn test_push_data_chunked_512_bytes() {
         let end = (offset + CHUNK_SIZE).min(vgm_bytes.len());
         let chunk = &vgm_bytes[offset..end];
 
-        stream.push_data(chunk);
+        stream.push_chunk(chunk);
         offset = end;
 
         // Try to parse commands after each chunk
@@ -2621,7 +2621,7 @@ fn test_push_data_header_availability() {
 
     // Push first 64 bytes (minimum header size) to ensure header is parsed
     let header_size = 64.min(vgm_bytes.len());
-    stream.push_data(&vgm_bytes[0..header_size]);
+    stream.push_chunk(&vgm_bytes[0..header_size]);
 
     // Try to parse - this will internally parse the header
     // We can verify the stream is working by checking buffer size
@@ -2631,7 +2631,7 @@ fn test_push_data_header_availability() {
     );
 
     // Push remaining data and verify commands can be parsed
-    stream.push_data(&vgm_bytes[header_size..]);
+    stream.push_chunk(&vgm_bytes[header_size..]);
 
     let mut command_found = false;
     if let Some(Ok(StreamResult::Command(_))) = stream.next() {
@@ -2665,7 +2665,7 @@ fn test_push_data_very_small_chunks() {
 
     while offset < vgm_bytes.len() {
         let end = (offset + CHUNK_SIZE).min(vgm_bytes.len());
-        stream.push_data(&vgm_bytes[offset..end]);
+        stream.push_chunk(&vgm_bytes[offset..end]);
         offset = end;
 
         // Parse available commands
@@ -2763,7 +2763,7 @@ fn test_push_data_buffer_size() {
     assert_eq!(stream.buffer_size(), 0, "Buffer should be empty initially");
 
     // Push some data
-    stream.push_data(&vgm_bytes[0..100]);
+    stream.push_chunk(&vgm_bytes[0..100]);
     assert_eq!(
         stream.buffer_size(),
         100,
@@ -2791,7 +2791,7 @@ fn test_push_data_reset() {
     let vgm_bytes: Vec<u8> = (&doc).into();
 
     let mut stream = VgmStream::new();
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
 
     // Parse a command
     if let Some(Ok(StreamResult::Command(_))) = stream.next() {
@@ -2802,7 +2802,7 @@ fn test_push_data_reset() {
     stream.reset();
 
     // Should be able to push data again and parse from beginning
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
     let mut commands = Vec::new();
 
     while let Some(Ok(StreamResult::Command(cmd))) = stream.next() {
@@ -2856,7 +2856,7 @@ fn test_data_block_size_tracking() {
     let vgm_bytes: Vec<u8> = (&doc).into();
 
     let mut stream = VgmStream::new();
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
 
     // Parse through the stream
     while let Some(Ok(result)) = stream.next() {
@@ -2896,7 +2896,7 @@ fn test_data_block_size_limit_exceeded() {
     let mut stream = VgmStream::new();
     // Set a very small limit to trigger the error
     stream.set_max_data_block_size(1000);
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
 
     // Parse through the stream - should get an error
     let mut got_error = false;
@@ -2945,7 +2945,7 @@ fn test_data_block_size_reset() {
     let vgm_bytes: Vec<u8> = (&doc).into();
 
     let mut stream = VgmStream::new();
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
 
     // Parse to accumulate some data block size
     while let Some(Ok(result)) = stream.next() {
@@ -2995,7 +2995,7 @@ fn test_multiple_data_blocks_cumulative_size() {
     let vgm_bytes: Vec<u8> = (&doc).into();
 
     let mut stream = VgmStream::new();
-    stream.push_data(&vgm_bytes);
+    stream.push_chunk(&vgm_bytes);
 
     // Parse all blocks - they will be stored internally, not returned as commands
     while let Some(Ok(result)) = stream.next() {
