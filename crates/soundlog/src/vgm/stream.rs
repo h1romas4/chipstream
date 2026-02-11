@@ -312,6 +312,40 @@ pub struct VgmStream {
 
 impl VgmStream {
     /// Creates a new VGM stream parser.
+    ///
+    /// This constructor creates a parser that expects raw VGM bytes to be fed
+    /// incrementally. When using a `VgmStream` created with `new()`, you must
+    /// supply the VGM data by calling `push_chunk(&[u8])` to add raw VGM bytes
+    /// (for example, as file or network chunks arrive). If you already have a
+    /// parsed `VgmDocument`, prefer `VgmStream::from_document(...)` which is
+    /// more efficient and avoids re-serializing/parsing the document.
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::vgm::VgmStream;
+    /// use soundlog::vgm::stream::StreamResult;
+    ///
+    /// // Create a parser that accepts raw bytes and feed it a small chunk.
+    /// let mut parser = VgmStream::new();
+    /// parser.set_loop_count(Some(1));
+    ///
+    /// // Push raw VGM bytes (header + a few commands); in real usage these
+    /// // would typically come from a file or network in chunks.
+    /// let chunk: &[u8] = &[0x56, 0x67, 0x6D, 0x20]; // partial/example bytes
+    /// parser.push_chunk(chunk);
+    ///
+    /// // Iterate parsed commands as they become available.
+    /// for item in &mut parser {
+    ///     match item {
+    ///         Ok(StreamResult::Command(cmd)) => {
+    ///             // handle parsed or generated command
+    ///         }
+    ///         Ok(StreamResult::NeedsMoreData) => break,
+    ///         Ok(StreamResult::EndOfStream) => break,
+    ///         Err(_) => break,
+    ///     }
+    /// }
+    /// ```
     pub fn new() -> Self {
         Self {
             source: VgmStreamSource::Bytes {
