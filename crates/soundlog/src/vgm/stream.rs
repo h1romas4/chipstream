@@ -573,7 +573,7 @@ impl VgmStream {
                 return self.process_wait_with_streams(882);
             }
             VgmCommand::WaitNSample(w) => {
-                let samples = (w.0 & 0x0F) as u64 + 1;
+                let samples = (w.0 & 0x0F) as u64;
                 return self.process_wait_with_streams(samples);
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
