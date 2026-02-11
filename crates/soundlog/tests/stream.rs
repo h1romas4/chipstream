@@ -47,6 +47,9 @@ fn test_stream_parser_basic_functionality() {
 
     // Feed the entire VGM data at once
     parser.push_data(&vgm_data);
+    // Verify VGM header parses from the provided bytes
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
 
     let mut command_count = 0;
     let mut commands = Vec::new();
@@ -76,6 +79,9 @@ fn test_stream_parser_with_loop_limit() {
 
     // Feed the VGM data
     parser.push_data(&vgm_data);
+    // Verify VGM header parses from the provided bytes
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
 
     let mut end_of_data_count = 0;
     let mut total_commands = 0;
@@ -112,6 +118,9 @@ fn test_stream_parser_with_loop_limit() {
 #[test]
 fn test_stream_parser_incremental_data() {
     let vgm_data = create_test_vgm_with_loop();
+    // Verify VGM header parses from the full document bytes before incremental feeding
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
     let mut parser = VgmStream::new();
 
     // Feed data in small chunks to test incremental parsing
@@ -145,6 +154,9 @@ fn test_stream_parser_incremental_data() {
 #[test]
 fn test_stream_parser_with_various_commands() {
     let vgm_data = create_vgm_with_various_commands();
+    // Verify VGM header parses from the provided bytes
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
     let mut parser = VgmStream::new();
 
     // Feed the VGM data
@@ -185,6 +197,9 @@ fn test_stream_parser_with_various_commands() {
 #[test]
 fn test_stream_parser_iterator_interface() {
     let vgm_data = create_test_vgm_with_loop();
+    // Verify VGM header parses from the provided bytes
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
     let mut parser = VgmStream::new();
     parser.push_data(&vgm_data);
 
@@ -547,6 +562,9 @@ fn test_data_block_parsing_and_storage() {
 #[test]
 fn test_iterator_with_incremental_push_data() {
     let vgm_data = create_test_vgm_with_loop();
+    // Verify VGM header parses from the full document bytes
+    let header = soundlog::VgmHeader::from_bytes(&vgm_data).expect("parse header");
+    assert_eq!(&header.ident, b"Vgm ");
     let mut parser = VgmStream::new();
 
     // Split the VGM data into chunks for incremental feeding
@@ -987,7 +1005,7 @@ fn test_dac_stream_control_basic() {
     // SetupStreamControl (0x90): stream_id=0, chip_type=YM2612, port=0, register=0x2A
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1171,7 +1189,7 @@ fn test_dac_stream_control_fast_call() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1487,7 +1505,7 @@ fn test_wait_expansion_with_stream_writes() {
     // Setup stream control for YM2612 DAC (chip_type=0x02, port=0, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1633,7 +1651,7 @@ fn test_wait_splitting_with_stream_timing() {
     // Setup stream control
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A, // DAC register
     });
@@ -1823,7 +1841,7 @@ fn test_from_document_with_stream_control() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A, // DAC register
     });
@@ -2032,7 +2050,7 @@ fn test_fadeout_samples_with_stream_control() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A,
     });
@@ -2238,7 +2256,7 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 0: YM2612 DAC (chip_type=YM2612, port=0, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 0,
         write_command: 0x2A,
     });
@@ -2258,7 +2276,7 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 2: YM2151 (chip_type=YM2151, port=0, register=0x08)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 2,
-        chip_type: DacStreamChipType::Ym2151.to_u8(),
+        chip_type: DacStreamChipType::Ym2151.into(),
         write_port: 0,
         write_command: 0x08,
     });
@@ -2278,7 +2296,7 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 1: YM2612 Port 1 (chip_type=YM2612, port=1, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 1,
-        chip_type: DacStreamChipType::Ym2612.to_u8(),
+        chip_type: DacStreamChipType::Ym2612.into(),
         write_port: 1,
         write_command: 0x2A,
     });
@@ -2505,4 +2523,494 @@ fn test_multiple_dac_streams_wait_interleaving() {
     println!("\n=== Test passed! ===");
     println!("All streams properly interleaved with Wait commands");
     println!("No large write bursts detected");
+}
+
+#[test]
+fn test_push_data_chunked_512_bytes() {
+    // Test feeding VGM data in 512-byte chunks via push_data
+    // Verify that commands are properly parsed even when split across chunks
+    let mut builder = VgmBuilder::new();
+
+    // Register a chip to ensure header is non-trivial
+    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+
+    // Add various commands
+    builder.add_vgm_command(Wait735Samples);
+    builder.add_vgm_command(WaitSamples(1000));
+    builder.add_vgm_command(Wait882Samples);
+    builder.add_vgm_command(WaitSamples(500));
+    builder.add_vgm_command(WaitNSample(123));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    // Create stream and feed data in 512-byte chunks
+    let mut stream = VgmStream::new();
+    const CHUNK_SIZE: usize = 512;
+
+    let mut offset = 0;
+    let mut commands = Vec::new();
+
+    while offset < vgm_bytes.len() {
+        let end = (offset + CHUNK_SIZE).min(vgm_bytes.len());
+        let chunk = &vgm_bytes[offset..end];
+
+        stream.push_data(chunk);
+        offset = end;
+
+        // Try to parse commands after each chunk
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(cmd))) => {
+                    commands.push(cmd);
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => panic!("Parse error: {:?}", e),
+                None => break,
+            }
+        }
+    }
+
+    // Verify we got wait commands (EndOfData is handled internally)
+    let wait_count = commands
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                VgmCommand::Wait735Samples(_)
+                    | VgmCommand::Wait882Samples(_)
+                    | VgmCommand::WaitSamples(_)
+                    | VgmCommand::WaitNSample(_)
+            )
+        })
+        .count();
+
+    assert!(
+        wait_count >= 3,
+        "Should parse at least 3 wait commands, got {}",
+        wait_count
+    );
+
+    // Verify we parsed some commands successfully
+    assert!(
+        !commands.is_empty(),
+        "Should have parsed commands with chunked data"
+    );
+}
+
+#[test]
+fn test_push_data_header_availability() {
+    // Test that header information becomes available after enough data is pushed
+    // VGM header is at least 0x40 bytes, so we need to push that much
+    let mut builder = VgmBuilder::new();
+
+    // Register chips and set metadata
+    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+    builder.register_chip(soundlog::chip::Chip::Sn76489, 0, 3579545);
+
+    // Add commands
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+
+    // Push first 64 bytes (minimum header size) to ensure header is parsed
+    let header_size = 64.min(vgm_bytes.len());
+    stream.push_data(&vgm_bytes[0..header_size]);
+
+    // Try to parse - this will internally parse the header
+    // We can verify the stream is working by checking buffer size
+    assert!(
+        stream.buffer_size() >= header_size,
+        "Stream should have buffered header data"
+    );
+
+    // Push remaining data and verify commands can be parsed
+    stream.push_data(&vgm_bytes[header_size..]);
+
+    let mut command_found = false;
+    if let Some(Ok(StreamResult::Command(_))) = stream.next() {
+        command_found = true;
+    }
+
+    assert!(
+        command_found,
+        "Should be able to parse commands after header is available"
+    );
+}
+
+#[test]
+fn test_push_data_very_small_chunks() {
+    // Test with extremely small chunks (16 bytes) to verify robustness
+    let mut builder = VgmBuilder::new();
+
+    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+    builder.add_vgm_command(Wait735Samples);
+    builder.add_vgm_command(WaitSamples(2000));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    const CHUNK_SIZE: usize = 16;
+
+    let mut offset = 0;
+    let mut commands = Vec::new();
+
+    while offset < vgm_bytes.len() {
+        let end = (offset + CHUNK_SIZE).min(vgm_bytes.len());
+        stream.push_data(&vgm_bytes[offset..end]);
+        offset = end;
+
+        // Parse available commands
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(cmd))) => commands.push(cmd),
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => panic!("Parse error with small chunks: {:?}", e),
+                None => break,
+            }
+        }
+    }
+
+    // Verify commands were parsed correctly
+    let wait_commands: Vec<_> = commands
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                VgmCommand::Wait735Samples(_) | VgmCommand::WaitSamples(_)
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        wait_commands.len(),
+        2,
+        "Should parse both wait commands even with tiny chunks"
+    );
+}
+
+#[test]
+fn test_push_data_with_loop() {
+    // Test looping with from_document (push_data doesn't support loop_offset)
+    // This test verifies loop functionality works with chunked-built VGM
+    let mut builder = VgmBuilder::new();
+
+    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+
+    // Commands before loop
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(WaitSamples(200));
+
+    // Set loop point here
+    builder.set_loop_offset(2);
+
+    // Commands in loop
+    builder.add_vgm_command(WaitSamples(300));
+    builder.add_vgm_command(WaitSamples(400));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+
+    // Use from_document for proper loop support
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(2)); // 2 playthroughs total (initial + 1 loop)
+
+    let mut wait_values = Vec::new();
+
+    loop {
+        match stream.next() {
+            Some(Ok(StreamResult::Command(cmd))) => {
+                if let VgmCommand::WaitSamples(w) = cmd {
+                    wait_values.push(w.0);
+                }
+            }
+            Some(Ok(StreamResult::NeedsMoreData)) => break,
+            Some(Ok(StreamResult::EndOfStream)) => break,
+            Some(Err(e)) => panic!("Parse error: {:?}", e),
+            None => break,
+        }
+    }
+
+    // Expected: intro (100, 200) + loop section (300, 400) + loop again (300, 400)
+    assert_eq!(
+        wait_values,
+        vec![100, 200, 300, 400, 300, 400],
+        "Should play intro once then loop section twice"
+    );
+}
+
+#[test]
+fn test_push_data_buffer_size() {
+    // Test buffer_size() method with push_data
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+
+    assert_eq!(stream.buffer_size(), 0, "Buffer should be empty initially");
+
+    // Push some data
+    stream.push_data(&vgm_bytes[0..100]);
+    assert_eq!(
+        stream.buffer_size(),
+        100,
+        "Buffer size should reflect pushed data"
+    );
+
+    // Parse some commands (will consume buffer)
+    while let Some(Ok(StreamResult::Command(_))) = stream.next() {}
+
+    // Buffer size should have decreased as commands were parsed
+    assert!(
+        stream.buffer_size() <= 100,
+        "Buffer should be consumed during parsing"
+    );
+}
+
+#[test]
+fn test_push_data_reset() {
+    // Test that reset() clears buffer and state
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    stream.push_data(&vgm_bytes);
+
+    // Parse a command
+    if let Some(Ok(StreamResult::Command(_))) = stream.next() {
+        // Command parsed
+    }
+
+    // Reset the stream
+    stream.reset();
+
+    // Should be able to push data again and parse from beginning
+    stream.push_data(&vgm_bytes);
+    let mut commands = Vec::new();
+
+    while let Some(Ok(StreamResult::Command(cmd))) = stream.next() {
+        commands.push(cmd);
+    }
+
+    assert!(
+        !commands.is_empty(),
+        "Should be able to parse commands after reset"
+    );
+}
+
+#[test]
+fn test_data_block_size_limit_default() {
+    let stream = VgmStream::new();
+
+    // Verify default limit is 32MB
+    assert_eq!(stream.max_data_block_size(), 32 * 1024 * 1024);
+    assert_eq!(stream.total_data_block_size(), 0);
+}
+
+#[test]
+fn test_data_block_size_limit_setter() {
+    let mut stream = VgmStream::new();
+
+    // Set a custom limit
+    let custom_limit = 1024 * 1024; // 1 MB
+    stream.set_max_data_block_size(custom_limit);
+
+    assert_eq!(stream.max_data_block_size(), custom_limit);
+}
+
+#[test]
+fn test_data_block_size_tracking() {
+    use soundlog::vgm::command::DataBlock;
+
+    let mut builder = VgmBuilder::new();
+
+    // Add a data block
+    let block = DataBlock {
+        marker: 0x67,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: 1000,
+        data: vec![0u8; 1000],
+    };
+    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    stream.push_data(&vgm_bytes);
+
+    // Parse through the stream
+    while let Some(Ok(result)) = stream.next() {
+        match result {
+            StreamResult::Command(_) => {}
+            StreamResult::NeedsMoreData => break,
+            StreamResult::EndOfStream => break,
+        }
+    }
+
+    // Verify total size was tracked
+    assert!(stream.total_data_block_size() > 0);
+}
+
+#[test]
+fn test_data_block_size_limit_exceeded() {
+    use soundlog::ParseError;
+    use soundlog::vgm::command::DataBlock;
+
+    let mut builder = VgmBuilder::new();
+
+    // Create a data block larger than our limit
+    let block_size = 2000;
+    let block = DataBlock {
+        marker: 0x67,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: block_size as u32,
+        data: vec![0u8; block_size],
+    };
+    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    // Set a very small limit to trigger the error
+    stream.set_max_data_block_size(1000);
+    stream.push_data(&vgm_bytes);
+
+    // Parse through the stream - should get an error
+    let mut got_error = false;
+    for result in &mut stream {
+        match result {
+            Ok(StreamResult::Command(_)) => {}
+            Ok(StreamResult::NeedsMoreData) => break,
+            Ok(StreamResult::EndOfStream) => break,
+            Err(ParseError::DataBlockSizeExceeded {
+                current_size,
+                limit,
+                attempted_size,
+            }) => {
+                got_error = true;
+                assert_eq!(limit, 1000);
+                assert_eq!(attempted_size, block_size);
+                assert_eq!(current_size, 0);
+                break;
+            }
+            Err(e) => {
+                panic!("Unexpected error: {:?}", e);
+            }
+        }
+    }
+
+    assert!(got_error, "Expected DataBlockSizeExceeded error");
+}
+
+#[test]
+fn test_data_block_size_reset() {
+    use soundlog::vgm::command::DataBlock;
+
+    let mut builder = VgmBuilder::new();
+
+    let block = DataBlock {
+        marker: 0x67,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: 500,
+        data: vec![0u8; 500],
+    };
+    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    stream.push_data(&vgm_bytes);
+
+    // Parse to accumulate some data block size
+    while let Some(Ok(result)) = stream.next() {
+        match result {
+            StreamResult::Command(_) => {}
+            StreamResult::NeedsMoreData => break,
+            StreamResult::EndOfStream => break,
+        }
+    }
+
+    let size_before_reset = stream.total_data_block_size();
+    assert!(
+        size_before_reset > 0,
+        "Should have accumulated some data block size"
+    );
+
+    // Reset should clear the total size
+    stream.reset();
+    assert_eq!(
+        stream.total_data_block_size(),
+        0,
+        "Reset should clear total data block size"
+    );
+}
+
+#[test]
+fn test_multiple_data_blocks_cumulative_size() {
+    use soundlog::vgm::command::DataBlock;
+
+    let mut builder = VgmBuilder::new();
+
+    // Add multiple data blocks with data_type 0x00 (PCM data)
+    // These will be stored internally as uncompressed streams
+    for _i in 0..5 {
+        let block = DataBlock {
+            marker: 0x67,
+            chip_instance: 0,
+            data_type: 0x00, // PCM data type - will be stored internally
+            size: 100,
+            data: vec![0u8; 100],
+        };
+        builder.add_vgm_command(VgmCommand::DataBlock(block));
+    }
+    builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+
+    let mut stream = VgmStream::new();
+    stream.push_data(&vgm_bytes);
+
+    // Parse all blocks - they will be stored internally, not returned as commands
+    while let Some(Ok(result)) = stream.next() {
+        match result {
+            StreamResult::Command(_) => {}
+            StreamResult::NeedsMoreData => break,
+            StreamResult::EndOfStream => break,
+        }
+    }
+
+    // Verify that total size was tracked even though blocks weren't returned
+    // Total size should be cumulative (5 blocks * 100 bytes each = 500)
+    assert!(
+        stream.total_data_block_size() >= 500,
+        "Total size should be at least 500 bytes, got {}",
+        stream.total_data_block_size()
+    );
 }

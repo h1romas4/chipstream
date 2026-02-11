@@ -808,6 +808,58 @@ impl VgmHeader {
         buf
     }
 
+    /// Get the raw stored clock field for a chip `ch`.
+    ///
+    /// Returns the raw clock value from the header, including the high bit
+    /// (0x8000_0000) for secondary instances. Returns 0 if the chip is not present.
+    pub fn get_chip_clock(&self, ch: &chip::Chip) -> u32 {
+        match ch {
+            chip::Chip::Sn76489 => self.sn76489_clock,
+            chip::Chip::Ym2413 => self.ym2413_clock,
+            chip::Chip::Ym2612 => self.ym2612_clock,
+            chip::Chip::Ym2151 => self.ym2151_clock,
+            chip::Chip::SegaPcm => self.sega_pcm_clock,
+            chip::Chip::Rf5c68 => self.rf5c68_clock,
+            chip::Chip::Ym2203 => self.ym2203_clock,
+            chip::Chip::Ym2608 => self.ym2608_clock,
+            chip::Chip::Ym2610b => self.ym2610b_clock,
+            chip::Chip::Ym3812 => self.ym3812_clock,
+            chip::Chip::Ym3526 => self.ym3526_clock,
+            chip::Chip::Y8950 => self.y8950_clock,
+            chip::Chip::Ymf262 => self.ymf262_clock,
+            chip::Chip::Ymf278b => self.ymf278b_clock,
+            chip::Chip::Ymf271 => self.ymf271_clock,
+            chip::Chip::Ymz280b => self.ymz280b_clock,
+            chip::Chip::Rf5c164 => self.rf5c164_clock,
+            chip::Chip::Pwm => self.pwm_clock,
+            chip::Chip::Ay8910 => self.ay8910_clock,
+            chip::Chip::GbDmg => self.gb_dmg_clock,
+            chip::Chip::NesApu => self.nes_apu_clock,
+            chip::Chip::MultiPcm => self.multipcm_clock,
+            chip::Chip::Upd7759 => self.upd7759_clock,
+            chip::Chip::Okim6258 => self.okim6258_clock,
+            chip::Chip::Okim6295 => self.okim6295_clock,
+            chip::Chip::K051649 => self.k051649_clock,
+            chip::Chip::K054539 => self.k054539_clock,
+            chip::Chip::Huc6280 => self.huc6280_clock,
+            chip::Chip::C140 => self.c140_clock,
+            chip::Chip::K053260 => self.k053260_clock,
+            chip::Chip::Pokey => self.pokey_clock,
+            chip::Chip::Qsound => self.qsound_clock,
+            chip::Chip::Scsp => self.scsp_clock,
+            chip::Chip::WonderSwan => self.wonderswan_clock,
+            chip::Chip::Vsu => self.vsu_clock,
+            chip::Chip::Saa1099 => self.saa1099_clock,
+            chip::Chip::Es5503 => self.es5503_clock,
+            chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => self.es5506_clock,
+            chip::Chip::X1010 => self.x1_010_clock,
+            chip::Chip::C352 => self.c352_clock,
+            chip::Chip::Ga20 => self.ga20_clock,
+            chip::Chip::Mikey => self.mikey_clock,
+            _ => 0,
+        }
+    }
+
     /// Set the stored clock field for a chip `ch` at the given `instance`.
     /// For secondary instances the high bit is set on the stored value
     /// following VGM header convention.
@@ -968,6 +1020,48 @@ impl VgmHeader {
             _ => VGM_MAX_HEADER_SIZE as usize,
         }
     }
+
+    /// Parse a VGM header from a byte slice.
+    ///
+    /// This helper function parses a `VgmHeader` from the provided byte slice.
+    /// If the slice is too short to contain a valid header, it returns a
+    /// `ParseError` with detailed information about the missing bytes.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The byte slice containing VGM header data
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(VgmHeader)` - Successfully parsed header
+    /// * `Err(ParseError)` - Parse error with details about what went wrong:
+    ///   - `HeaderTooShort` - Buffer is smaller than minimum header size (0x34 bytes)
+    ///   - `InvalidIdent` - Header doesn't start with "Vgm " identifier
+    ///   - `OffsetOutOfRange` - Buffer is too small for the header size required by the version
+    ///   - Other parse errors
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::vgm::VgmHeader;
+    ///
+    /// // Create a minimal VGM 1.00 header
+    /// let mut data = vec![0u8; 0x34];
+    /// data[0..4].copy_from_slice(b"Vgm ");  // Identifier
+    /// data[0x08..0x0C].copy_from_slice(&0x00000100u32.to_le_bytes());  // Version 1.00
+    ///
+    /// match VgmHeader::from_bytes(&data) {
+    ///     Ok(header) => assert_eq!(header.version, 0x00000100),
+    ///     Err(e) => panic!("Parse error: {}", e),
+    /// }
+    ///
+    /// // Too short buffer returns error with details
+    /// let short_data = vec![0u8; 16];
+    /// assert!(VgmHeader::from_bytes(&short_data).is_err());
+    /// ```
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::binutil::ParseError> {
+        crate::vgm::parser::parse_vgm_header(bytes).map(|(h, _)| h)
+    }
 }
 
 /// Attempt to convert a raw VGM byte slice into a `VgmHeader`.
@@ -975,7 +1069,7 @@ impl TryFrom<&[u8]> for VgmHeader {
     type Error = crate::binutil::ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        crate::vgm::parser::parse_vgm_header(bytes).map(|(h, _)| h)
+        VgmHeader::from_bytes(bytes)
     }
 }
 

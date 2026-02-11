@@ -263,6 +263,40 @@ impl VgmDocument {
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, VgmCommand> {
         self.commands.iter_mut()
     }
+
+    /// Calculates the command index corresponding to the `loop_offset` in the header.
+    ///
+    /// Returns `Some(index)` if the header has a non-zero loop offset and a matching
+    /// command can be found, or `None` if there is no loop or the offset is invalid.
+    ///
+    /// This is the inverse operation of `VgmBuilder::set_loop_offset()`.
+    pub fn loop_command_index(&self) -> Option<usize> {
+        if self.header.loop_offset == 0 {
+            return None;
+        }
+
+        let data_offset = if self.header.data_offset == 0 {
+            use crate::vgm::header::VgmHeader;
+            (VgmHeader::fallback_header_size_for_version(self.header.version) - 0x34) as u32
+        } else {
+            self.header.data_offset
+        };
+
+        let mut header_len = self.header.to_bytes(0, data_offset).len() as u32;
+        if let Some(ref extra) = self.extra_header {
+            header_len += extra.to_bytes().len() as u32;
+        }
+        let loop_abs_offset = 0x1C_u32.wrapping_add(self.header.loop_offset);
+        let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
+
+        let offsets = self.command_offsets_and_lengths();
+        for (index, (cmd_offset, _len)) in offsets.iter().enumerate() {
+            if *cmd_offset as u32 == loop_command_offset {
+                return Some(index);
+            }
+        }
+        None
+    }
 }
 
 /// Consume the document and iterate its commands by value.

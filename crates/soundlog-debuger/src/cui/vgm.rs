@@ -436,12 +436,73 @@ pub fn redump_vgm(
         .try_into()
         .with_context(|| format!("failed to parse input VGM: {}", input_path.display()))?;
 
-    // Create VgmStream from document
+    // Calculate the original loop command index from the header's loop_offset
+    let original_loop_index = if loop_count.is_none() {
+        doc_orig.loop_command_index()
+    } else {
+        None
+    };
+
+    // Determine loop offset in expanded output by processing intro commands
+    let output_loop_index = if let Some(orig_loop_idx) = original_loop_index {
+        // Create a document with only the intro commands (before the loop point)
+        let mut intro_builder = VgmBuilder::new();
+
+        // Copy chip setup from original
+        for (instance, chip) in doc_orig.header.chip_instances() {
+            let raw_clock = doc_orig.header.get_chip_clock(&chip);
+            let clock = raw_clock & 0x7FFF_FFFF;
+            if clock > 0 {
+                intro_builder.register_chip(chip, instance, clock);
+            }
+        }
+
+        // Add only intro commands (commands before the loop point)
+        for (idx, cmd) in doc_orig.commands.iter().enumerate() {
+            if idx >= orig_loop_idx {
+                break;
+            }
+            intro_builder.add_vgm_command(cmd.clone());
+        }
+
+        // Expand the intro commands through VgmStream
+        let intro_doc = intro_builder.finalize();
+        let mut intro_stream = VgmStream::from_document(intro_doc);
+        intro_stream.set_loop_count(Some(0));
+
+        let mut intro_expanded_count = 0;
+        loop {
+            match intro_stream.next() {
+                Some(Ok(StreamResult::Command(_))) => {
+                    intro_expanded_count += 1;
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => {
+                    return Err(anyhow::anyhow!(
+                        "stream processing error in intro expansion: {}",
+                        e
+                    ));
+                }
+                None => break,
+            }
+        }
+
+        Some(intro_expanded_count)
+    } else {
+        None
+    };
+
+    // Create VgmStream from document for full expansion
     let mut stream = VgmStream::from_document(doc_orig.clone());
 
     // Configure stream settings
+    // If loop_count is specified, use it to expand loops
+    // If not specified, set to 1 to preserve original loop structure (intro + one loop iteration)
     if let Some(count) = loop_count {
         stream.set_loop_count(Some(count));
+    } else {
+        stream.set_loop_count(Some(1));
     }
     if let Some(samples) = fadeout_samples {
         stream.set_fadeout_samples(Some(samples));
@@ -480,55 +541,7 @@ pub fn redump_vgm(
     // Copy chip clocks from original header
     // We need to extract the actual clock value (masking the high bit for secondary instances)
     for (instance, chip) in doc_orig.header.chip_instances() {
-        // Get raw clock value from header and mask off the secondary instance bit
-        let raw_clock = match chip {
-            soundlog::chip::Chip::Sn76489 => doc_orig.header.sn76489_clock,
-            soundlog::chip::Chip::Ym2413 => doc_orig.header.ym2413_clock,
-            soundlog::chip::Chip::Ym2612 => doc_orig.header.ym2612_clock,
-            soundlog::chip::Chip::Ym2151 => doc_orig.header.ym2151_clock,
-            soundlog::chip::Chip::SegaPcm => doc_orig.header.sega_pcm_clock,
-            soundlog::chip::Chip::Rf5c68 => doc_orig.header.rf5c68_clock,
-            soundlog::chip::Chip::Ym2203 => doc_orig.header.ym2203_clock,
-            soundlog::chip::Chip::Ym2608 => doc_orig.header.ym2608_clock,
-            soundlog::chip::Chip::Ym2610b => doc_orig.header.ym2610b_clock,
-            soundlog::chip::Chip::Ym3812 => doc_orig.header.ym3812_clock,
-            soundlog::chip::Chip::Ym3526 => doc_orig.header.ym3526_clock,
-            soundlog::chip::Chip::Y8950 => doc_orig.header.y8950_clock,
-            soundlog::chip::Chip::Ymf262 => doc_orig.header.ymf262_clock,
-            soundlog::chip::Chip::Ymf278b => doc_orig.header.ymf278b_clock,
-            soundlog::chip::Chip::Ymf271 => doc_orig.header.ymf271_clock,
-            soundlog::chip::Chip::Ymz280b => doc_orig.header.ymz280b_clock,
-            soundlog::chip::Chip::Rf5c164 => doc_orig.header.rf5c164_clock,
-            soundlog::chip::Chip::Pwm => doc_orig.header.pwm_clock,
-            soundlog::chip::Chip::Ay8910 => doc_orig.header.ay8910_clock,
-            soundlog::chip::Chip::GbDmg => doc_orig.header.gb_dmg_clock,
-            soundlog::chip::Chip::NesApu => doc_orig.header.nes_apu_clock,
-            soundlog::chip::Chip::MultiPcm => doc_orig.header.multipcm_clock,
-            soundlog::chip::Chip::Upd7759 => doc_orig.header.upd7759_clock,
-            soundlog::chip::Chip::Okim6258 => doc_orig.header.okim6258_clock,
-            soundlog::chip::Chip::Okim6295 => doc_orig.header.okim6295_clock,
-            soundlog::chip::Chip::K051649 => doc_orig.header.k051649_clock,
-            soundlog::chip::Chip::K054539 => doc_orig.header.k054539_clock,
-            soundlog::chip::Chip::Huc6280 => doc_orig.header.huc6280_clock,
-            soundlog::chip::Chip::C140 => doc_orig.header.c140_clock,
-            soundlog::chip::Chip::K053260 => doc_orig.header.k053260_clock,
-            soundlog::chip::Chip::Pokey => doc_orig.header.pokey_clock,
-            soundlog::chip::Chip::Qsound => doc_orig.header.qsound_clock,
-            soundlog::chip::Chip::Scsp => doc_orig.header.scsp_clock,
-            soundlog::chip::Chip::WonderSwan => doc_orig.header.wonderswan_clock,
-            soundlog::chip::Chip::Vsu => doc_orig.header.vsu_clock,
-            soundlog::chip::Chip::Saa1099 => doc_orig.header.saa1099_clock,
-            soundlog::chip::Chip::Es5503 => doc_orig.header.es5503_clock,
-            soundlog::chip::Chip::Es5506U8 | soundlog::chip::Chip::Es5506U16 => {
-                doc_orig.header.es5506_clock
-            }
-            soundlog::chip::Chip::X1010 => doc_orig.header.x1_010_clock,
-            soundlog::chip::Chip::C352 => doc_orig.header.c352_clock,
-            soundlog::chip::Chip::Ga20 => doc_orig.header.ga20_clock,
-            soundlog::chip::Chip::Mikey => doc_orig.header.mikey_clock,
-            _ => 0,
-        };
-        // Mask off the high bit to get the actual clock frequency
+        let raw_clock = doc_orig.header.get_chip_clock(&chip);
         let clock = raw_clock & 0x7FFF_FFFF;
         if clock > 0 {
             builder.register_chip(chip, instance, clock);
@@ -550,8 +563,18 @@ pub fn redump_vgm(
         builder.add_vgm_command(cmd);
     }
 
+    // Set loop offset if we're preserving the original loop structure
+    if let Some(index) = output_loop_index {
+        builder.set_loop_offset(index);
+    }
+
     // Finalize and serialize
     let mut doc_rebuilt = builder.finalize();
+
+    // If we're preserving loop, copy loop_samples from original
+    if loop_count.is_none() && doc_orig.header.loop_offset != 0 {
+        doc_rebuilt.header.loop_samples = doc_orig.header.loop_samples;
+    }
 
     // Copy chip-specific configuration fields from original header
     // (these are not copied by register_chip and contain important chip behavior flags)
@@ -567,9 +590,18 @@ pub fn redump_vgm(
 
     let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
 
-    // Write to output file
-    fs::write(output_path, &rebuilt_bytes)
-        .with_context(|| format!("failed to write output VGM: {}", output_path.display()))?;
+    // Write to output file or stdout if output_path is "-" (convention)
+    if output_path == std::path::Path::new("-") {
+        // Write to stdout
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        stdout
+            .write_all(&rebuilt_bytes)
+            .with_context(|| "failed to write output VGM to stdout")?;
+    } else {
+        fs::write(output_path, &rebuilt_bytes)
+            .with_context(|| format!("failed to write output VGM: {}", output_path.display()))?;
+    }
 
     // If not diag, remain silent (no stdout output); return success early.
     if !diag {

@@ -321,3 +321,93 @@ fn test_parse_error_gd3_offset_out_of_range() {
         e => panic!("expected OffsetOutOfRange, got {:?}", e),
     }
 }
+
+use soundlog::{ParseError, VgmHeader};
+
+#[test]
+fn test_from_bytes_too_short() {
+    // Buffer smaller than minimum 0x34 bytes
+    let small_data = vec![0x56, 0x67, 0x6d, 0x20]; // "Vgm "
+    let result = VgmHeader::from_bytes(&small_data);
+
+    assert!(result.is_err());
+    match result {
+        Err(ParseError::HeaderTooShort(msg)) => {
+            assert!(msg.contains("0x34"));
+        }
+        _ => panic!("Expected HeaderTooShort error"),
+    }
+}
+
+#[test]
+fn test_from_bytes_invalid_ident() {
+    // Valid size but wrong identifier
+    let mut bad_ident = vec![0u8; 0x34];
+    bad_ident[0..4].copy_from_slice(b"XXXX");
+
+    let result = VgmHeader::from_bytes(&bad_ident);
+
+    assert!(result.is_err());
+    match result {
+        Err(ParseError::InvalidIdent(id)) => {
+            assert_eq!(id, *b"XXXX");
+        }
+        _ => panic!("Expected InvalidIdent error"),
+    }
+}
+
+#[test]
+fn test_from_bytes_minimum_valid() {
+    // Minimum valid VGM 1.00 header (0x34 bytes)
+    let mut min_data = vec![0u8; 0x34];
+    min_data[0..4].copy_from_slice(b"Vgm ");
+    min_data[0x04..0x08].copy_from_slice(&0u32.to_le_bytes()); // eof_offset
+    min_data[0x08..0x0C].copy_from_slice(&0x00000100u32.to_le_bytes()); // version 1.00
+
+    let result = VgmHeader::from_bytes(&min_data);
+
+    assert!(result.is_ok());
+    let header = result.unwrap();
+    assert_eq!(header.version, 0x00000100);
+    assert_eq!(&header.ident, b"Vgm ");
+}
+
+#[test]
+fn test_from_bytes_version_151_insufficient_data() {
+    // VGM 1.51 requires 0x80 bytes, but only provide 0x50
+    let mut v151_short = vec![0u8; 0x50];
+    v151_short[0..4].copy_from_slice(b"Vgm ");
+    v151_short[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
+    v151_short[0x08..0x0C].copy_from_slice(&0x00000151u32.to_le_bytes()); // version 1.51
+
+    let result = VgmHeader::from_bytes(&v151_short);
+
+    assert!(result.is_err());
+    match result {
+        Err(ParseError::OffsetOutOfRange {
+            needed, available, ..
+        }) => {
+            // The parser expects the total header size (0x80) but only 0x50 available
+            assert_eq!(needed, 0x80);
+            assert_eq!(available, 0x50);
+        }
+        _ => panic!("Expected OffsetOutOfRange error"),
+    }
+}
+
+#[test]
+fn test_from_bytes_version_151_complete() {
+    // VGM 1.51 with complete header (0x80 bytes)
+    let mut v151_data = vec![0u8; 0x80];
+    v151_data[0..4].copy_from_slice(b"Vgm ");
+    v151_data[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
+    v151_data[0x08..0x0C].copy_from_slice(&0x00000151u32.to_le_bytes()); // version 1.51
+    v151_data[0x18..0x1C].copy_from_slice(&44100u32.to_le_bytes()); // total_samples
+
+    let result = VgmHeader::from_bytes(&v151_data);
+
+    assert!(result.is_ok());
+    let header = result.unwrap();
+    assert_eq!(header.version, 0x00000151);
+    assert_eq!(header.total_samples, 44100);
+}

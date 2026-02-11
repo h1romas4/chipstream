@@ -34,13 +34,13 @@ enum Commands {
         #[arg(value_name = "INPUT")]
         input: PathBuf,
 
-        /// Output VGM file path
+        /// Output VGM file path (use '-' for stdout)
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
 
-        /// Loop count limit (default: 2)
-        #[arg(long, default_value_t = 2)]
-        loop_count: u32,
+        /// Loop count limit (if not specified, original loop settings are preserved)
+        #[arg(long)]
+        loop_count: Option<u32>,
 
         /// Fadeout grace period in samples after loop end (default: 0)
         #[arg(long, default_value_t = 0)]
@@ -53,7 +53,12 @@ enum Commands {
 }
 
 #[derive(Parser, Debug)]
-#[command(about = "soundlog tools")]
+#[command(
+    name = "soundlog",
+    author = env!("CARGO_PKG_AUTHORS"),
+    version = env!("CARGO_PKG_VERSION"),
+    about = env!("CARGO_PKG_DESCRIPTION"),
+)]
 struct Args {
     /// Subcommand to run (e.g., `test`)
     #[command(subcommand)]
@@ -133,7 +138,7 @@ fn main() {
                         &input,
                         &output,
                         bytes,
-                        Some(loop_count),
+                        loop_count,
                         Some(fadeout_samples),
                         diag,
                     ) {

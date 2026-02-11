@@ -499,20 +499,24 @@ pub enum DataBlockType {
 /// Parse a VGM data block into its detailed type.
 ///
 /// This function consumes the input `DataBlock` to avoid copying large data payloads.
+/// If parsing fails, the original `DataBlock` is returned along with the error so that
+/// the caller can still use the raw block data.
 ///
 /// # Arguments
 /// * `block` - The data block to parse (ownership is transferred)
 ///
 /// # Returns
 /// * `Ok(DataBlockType)` - Parsed data block with detailed type information
-/// * `Err(ParseError)` - If the data is insufficient or malformed
+/// * `Err((DataBlock, ParseError))` - Original block and error if parsing fails
 ///
 /// # Errors
-/// Returns error if:
+/// Returns error tuple containing the original `DataBlock` and `ParseError` if:
 /// - Data is too short for the declared block type
 /// - Data format is invalid
-pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
+pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, (DataBlock, ParseError)> {
     let data_type = block.data_type;
+    let marker = block.marker;
+    let chip_instance = block.chip_instance;
     let data = block.data;
 
     match data_type {
@@ -528,7 +532,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
         // Compressed stream (0x40-0x7E)
         0x40..=0x7E => {
             if data.len() < 5 {
-                return Err(ParseError::UnexpectedEof);
+                let block = DataBlock {
+                    marker,
+                    chip_instance,
+                    data_type,
+                    size: data.len() as u32,
+                    data,
+                };
+                return Err((block, ParseError::UnexpectedEof));
             }
 
             let chip_type = StreamChipType::from(data_type & 0x3F);
@@ -539,7 +550,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
             let compression = match compression_type {
                 CompressionType::BitPacking => {
                     if data.len() < 11 {
-                        return Err(ParseError::UnexpectedEof);
+                        let block = DataBlock {
+                            marker,
+                            chip_instance,
+                            data_type,
+                            size: data.len() as u32,
+                            data,
+                        };
+                        return Err((block, ParseError::UnexpectedEof));
                     }
                     let bits_decompressed = data[5];
                     let bits_compressed = data[6];
@@ -556,7 +574,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
                 }
                 CompressionType::Dpcm => {
                     if data.len() < 10 {
-                        return Err(ParseError::UnexpectedEof);
+                        let block = DataBlock {
+                            marker,
+                            chip_instance,
+                            data_type,
+                            size: data.len() as u32,
+                            data,
+                        };
+                        return Err((block, ParseError::UnexpectedEof));
                     }
                     let bits_decompressed = data[5];
                     let bits_compressed = data[6];
@@ -588,7 +613,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
         // Decompression table (0x7F)
         0x7F => {
             if data.len() < 6 {
-                return Err(ParseError::UnexpectedEof);
+                let block = DataBlock {
+                    marker,
+                    chip_instance,
+                    data_type,
+                    size: data.len() as u32,
+                    data,
+                };
+                return Err((block, ParseError::UnexpectedEof));
             }
 
             let compression_type = CompressionType::from(data[0]);
@@ -611,7 +643,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
         // ROM/RAM dump (0x80-0xBF)
         0x80..=0xBF => {
             if data.len() < 8 {
-                return Err(ParseError::UnexpectedEof);
+                let block = DataBlock {
+                    marker,
+                    chip_instance,
+                    data_type,
+                    size: data.len() as u32,
+                    data,
+                };
+                return Err((block, ParseError::UnexpectedEof));
             }
 
             let chip_type = RomRamChipType::from(data_type);
@@ -630,7 +669,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
         // RAM write (16-bit addressing, 0xC0-0xDF)
         0xC0..=0xDF => {
             if data.len() < 2 {
-                return Err(ParseError::UnexpectedEof);
+                let block = DataBlock {
+                    marker,
+                    chip_instance,
+                    data_type,
+                    size: data.len() as u32,
+                    data,
+                };
+                return Err((block, ParseError::UnexpectedEof));
             }
 
             let chip_type = RamWrite16ChipType::from(data_type);
@@ -647,7 +693,14 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, ParseError> {
         // RAM write (32-bit addressing, 0xE0-0xFF)
         0xE0..=0xFF => {
             if data.len() < 4 {
-                return Err(ParseError::UnexpectedEof);
+                let block = DataBlock {
+                    marker,
+                    chip_instance,
+                    data_type,
+                    size: data.len() as u32,
+                    data,
+                };
+                return Err((block, ParseError::UnexpectedEof));
             }
 
             let chip_type = RamWrite32ChipType::from(data_type);

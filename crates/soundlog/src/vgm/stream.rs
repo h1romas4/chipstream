@@ -102,6 +102,9 @@ struct StreamState {
 }
 
 /// Result type for stream parsing operations.
+/// Default maximum size for accumulated data blocks (32 MiB).
+const DEFAULT_MAX_DATA_BLOCK_SIZE: usize = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamResult {
     /// A complete command was parsed successfully.
@@ -125,10 +128,22 @@ pub enum StreamResult {
 ///   stream data blocks, schedules writes according to stream frequency, and
 ///   interleaves generated chip writes with parsed commands during Wait periods.
 ///
+/// ## Data block storage and limits
+///
+/// The stream parser stores and accumulates data blocks (for example, PCM or
+/// DAC stream data) while parsing. To avoid unbounded memory growth there is
+/// a configurable maximum total size for accumulated data blocks. By default
+/// this limit is 32 MiB. You can change the limit at runtime via
+/// `VgmStream::set_max_data_block_size(max_bytes)`. When adding a data block
+/// would cause the accumulated total to exceed the configured limit, the
+/// parser will return `ParseError::DataBlockSizeExceeded` from the iterator.
+/// Use `max_data_block_size()` and `total_data_block_size()` to query the
+/// configured limit and the current accumulated size respectively.
+///
 /// # Examples
 ///
 /// Basic usage:
-/// ```no_run
+/// ```
 /// use soundlog::vgm::VgmStream;
 /// use soundlog::vgm::command::WaitSamples;
 /// use soundlog::vgm::stream::StreamResult;
@@ -153,7 +168,7 @@ pub enum StreamResult {
 /// ```
 ///
 /// From a parsed `VgmDocument` (including stream control commands):
-/// ```no_run
+/// ```
 /// use soundlog::{VgmBuilder, vgm::stream::VgmStream};
 /// use soundlog::vgm::stream::StreamResult;
 /// use soundlog::vgm::command::{
@@ -230,7 +245,7 @@ pub enum StreamResult {
 /// ```
 ///
 /// Streaming from multiple chunks:
-/// ```no_run
+/// ```
 /// use soundlog::vgm::VgmStream;
 /// use soundlog::vgm::stream::StreamResult;
 ///
@@ -249,9 +264,6 @@ pub enum StreamResult {
 ///     }
 /// }
 /// ```
-///
-/// (For additional low-level details see the `handle_*` helpers and stream state
-/// documented on individual methods.)
 #[derive(Debug)]
 pub struct VgmStream {
     /// Internal source of VGM commands (either bytes or pre-parsed commands)
@@ -290,6 +302,10 @@ pub struct VgmStream {
     loop_end_sample: Option<u64>,
     /// Current read offset in PCM data bank (type 0x00) for 0x8n commands
     pcm_data_offset: usize,
+    /// Maximum allowed total size for accumulated data blocks
+    max_data_block_size: usize,
+    /// Current total size of accumulated data blocks
+    total_data_block_size: usize,
 }
 
 impl VgmStream {
@@ -316,6 +332,8 @@ impl VgmStream {
             fadeout_samples: None,
             loop_end_sample: None,
             pcm_data_offset: 0,
+            max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
+            total_data_block_size: 0,
         }
     }
 
@@ -338,13 +356,12 @@ impl VgmStream {
     ///
     /// let stream = VgmStream::from_document(doc);
     /// ```
-    pub fn from_document(doc: VgmDocument) -> Self {
-        // Calculate loop index from header loop_offset
-        let loop_index = Self::calculate_loop_index(&doc);
-
+    /// Creates a new VGM stream parser from an existing document.
+    pub fn from_document(document: VgmDocument) -> Self {
+        let loop_index = Self::calculate_loop_index(&document);
         Self {
             source: VgmStreamSource::Commands {
-                document: Box::new(doc),
+                document: Box::new(document),
                 current_index: 0,
                 loop_index,
             },
@@ -364,6 +381,8 @@ impl VgmStream {
             fadeout_samples: None,
             loop_end_sample: None,
             pcm_data_offset: 0,
+            max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
+            total_data_block_size: 0,
         }
     }
 
@@ -630,13 +649,36 @@ impl VgmStream {
     /// stream.set_loop_count(Some(2));
     /// stream.set_fadeout_samples(Some(44100)); // 1 second fadeout at 44.1kHz
     /// ```
+    /// Sets the fadeout grace period in samples (at 44.1 kHz).
     pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
         self.fadeout_samples = samples;
     }
 
-    /// Gets the current fadeout grace period setting.
+    /// Gets the current fadeout grace period.
     pub fn fadeout_samples(&self) -> Option<u64> {
         self.fadeout_samples
+    }
+
+    /// Sets the maximum allowed size for accumulated data blocks.
+    ///
+    /// When data blocks are added that would exceed this limit, a
+    /// `ParseError::DataBlockSizeExceeded` error will be returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_size` - Maximum size in bytes (default is 32 MiB)
+    pub fn set_max_data_block_size(&mut self, max_size: usize) {
+        self.max_data_block_size = max_size;
+    }
+
+    /// Gets the maximum allowed size for accumulated data blocks.
+    pub fn max_data_block_size(&self) -> usize {
+        self.max_data_block_size
+    }
+
+    /// Gets the current total size of accumulated data blocks.
+    pub fn total_data_block_size(&self) -> usize {
+        self.total_data_block_size
     }
 
     /// Shrinks the buffer if it has grown too large relative to its usage.
@@ -668,13 +710,18 @@ impl VgmStream {
     }
 
     /// Resets the parser state, clearing all buffers and data blocks.
+    /// Resets the stream parser to its initial state.
     pub fn reset(&mut self) {
         match &mut self.source {
             VgmStreamSource::Bytes { buffer, header } => {
                 buffer.clear();
                 *header = None;
             }
-            VgmStreamSource::Commands { current_index, .. } => {
+            VgmStreamSource::Commands {
+                current_index,
+                loop_index: _,
+                document: _,
+            } => {
                 *current_index = 0;
             }
         }
@@ -690,9 +737,9 @@ impl VgmStream {
         self.current_sample = 0;
         self.pending_stream_writes.clear();
         self.pending_wait = None;
-        self.fadeout_samples = None;
         self.loop_end_sample = None;
         self.pcm_data_offset = 0;
+        self.total_data_block_size = 0;
     }
 
     /// Handles end of data command, potentially starting a new loop.
@@ -756,8 +803,21 @@ impl VgmStream {
     /// Handles a data block command by parsing it and storing or returning it.
     fn handle_data_block(&mut self, block: DataBlock) -> Result<StreamResult, ParseError> {
         let data_type = block.data_type;
+        let data_len = block.data.len();
+        let marker = block.marker;
+        let chip_instance = block.chip_instance;
 
-        match parse_data_block(block.clone()) {
+        // Check if adding this block would exceed the size limit
+        let new_total = self.total_data_block_size.saturating_add(data_len);
+        if new_total > self.max_data_block_size {
+            return Err(ParseError::DataBlockSizeExceeded {
+                current_size: self.total_data_block_size,
+                limit: self.max_data_block_size,
+                attempted_size: data_len,
+            });
+        }
+
+        match parse_data_block(block) {
             Ok(parsed) => {
                 match parsed {
                     DataBlockType::UncompressedStream(stream) => {
@@ -767,6 +827,7 @@ impl VgmStream {
                             .map(|s| s.data.len())
                             .unwrap_or(0);
                         self.block_id_map.push((data_type, current_offset));
+                        self.total_data_block_size += data_len;
                         self.uncompressed_streams
                             .entry(data_type)
                             .and_modify(|existing| {
@@ -776,34 +837,72 @@ impl VgmStream {
                         self.next_command()
                     }
                     DataBlockType::CompressedStream(stream) => {
+                        self.total_data_block_size += data_len;
                         self.process_compressed_stream(data_type, stream)?;
                         self.next_command()
                     }
                     DataBlockType::DecompressionTable(table) => {
+                        self.total_data_block_size += data_len;
                         self.decompression_tables.insert(data_type, table);
                         self.next_command()
                     }
-                    _ => {
-                        // For other types (RomRamDump, RamWrite16, RamWrite32),
-                        // return to the iterator without storing (caller handles these)
+                    DataBlockType::RomRamDump(dump) => {
+                        // For RomRamDump, reconstruct DataBlock and return
                         let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
-
-                        // Record this block's global sequence number and its offset
                         self.block_id_map.push((data_type, current_offset));
+                        *self.block_sizes.entry(data_type).or_insert(0) += data_len;
+                        self.total_data_block_size += data_len;
 
-                        // Update cumulative size for this data_type
-                        *self.block_sizes.entry(data_type).or_insert(0) += block.data.len();
+                        let block = DataBlock {
+                            marker,
+                            chip_instance,
+                            data_type,
+                            size: dump.data.len() as u32,
+                            data: dump.data,
+                        };
+                        Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                    }
+                    DataBlockType::RamWrite16(write) => {
+                        // For RamWrite16, reconstruct DataBlock and return
+                        let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
+                        self.block_id_map.push((data_type, current_offset));
+                        *self.block_sizes.entry(data_type).or_insert(0) += data_len;
+                        self.total_data_block_size += data_len;
 
+                        let block = DataBlock {
+                            marker,
+                            chip_instance,
+                            data_type,
+                            size: write.data.len() as u32,
+                            data: write.data,
+                        };
+                        Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                    }
+                    DataBlockType::RamWrite32(write) => {
+                        // For RamWrite32, reconstruct DataBlock and return
+                        let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
+                        self.block_id_map.push((data_type, current_offset));
+                        *self.block_sizes.entry(data_type).or_insert(0) += data_len;
+                        self.total_data_block_size += data_len;
+
+                        let block = DataBlock {
+                            marker,
+                            chip_instance,
+                            data_type,
+                            size: write.data.len() as u32,
+                            data: write.data,
+                        };
                         Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
                     }
                 }
             }
-            Err(_) => {
+            Err((original_block, _err)) => {
                 // If parsing fails, return the raw block without storing
                 let current_offset = *self.block_sizes.get(&data_type).unwrap_or(&0);
                 self.block_id_map.push((data_type, current_offset));
-                *self.block_sizes.entry(data_type).or_insert(0) += block.data.len();
-                Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                *self.block_sizes.entry(data_type).or_insert(0) += data_len;
+                self.total_data_block_size += data_len;
+                Ok(StreamResult::Command(VgmCommand::DataBlock(original_block)))
             }
         }
     }

@@ -2,7 +2,7 @@
 name = "soundlog-debuger"
 version = "0.3.0"
 edition = "2024"
-description = "GUI frontend for soundlog using egui/eframe"
+description = "GUI/CLI frontend for soundlog for debug"
 license = "MIT"
 authors = ["h1romas4 <h1romas4@gmail.com>"]
 repository = "https://github.com/h1romas4/chipstream"

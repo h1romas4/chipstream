@@ -15,6 +15,56 @@
 //! Most items are crate-visible; the module is intended for internal use.
 //! The public surface exposes the command enum and associated specs so
 //! other VGM components (parser, document, header) can interoperate.
+//!
+//! # Examples
+//!
+//! ## Creating stream control commands with type-safe chip types
+//!
+//! ```
+//! use soundlog::vgm::command::{SetupStreamControl, DacStreamChipType};
+//!
+//! // Using struct literal with DacStreamChipType enum
+//! let setup = SetupStreamControl {
+//!     stream_id: 0,
+//!     chip_type: DacStreamChipType::Ym2612.into(),  // .into() converts to u8
+//!     write_port: 0,
+//!     write_command: 0x2A,
+//! };
+//!
+//! // For secondary chip instances, use to_u8_with_instance()
+//! let setup_secondary = SetupStreamControl {
+//!     stream_id: 0,
+//!     chip_type: DacStreamChipType::Ym2612.to_u8_with_instance(true),
+//!     write_port: 0,
+//!     write_command: 0x2A,
+//! };
+//!
+//! // You can still use u8 directly if needed
+//! let setup_raw = SetupStreamControl {
+//!     stream_id: 0,
+//!     chip_type: 0x02u8,
+//!     write_port: 0,
+//!     write_command: 0x2A,
+//! };
+//! ```
+//!
+//! ## Converting between DacStreamChipType and u8
+//!
+//! ```
+//! use soundlog::vgm::command::DacStreamChipType;
+//!
+//! // Convert DacStreamChipType to u8
+//! let chip_id: u8 = DacStreamChipType::Ym2612.into();
+//! assert_eq!(chip_id, 0x02);
+//!
+//! // Try converting u8 to DacStreamChipType
+//! let chip_type: Result<DacStreamChipType, _> = 0x02u8.try_into();
+//! assert_eq!(chip_type, Ok(DacStreamChipType::Ym2612));
+//!
+//! // Invalid chip type returns Err
+//! let invalid: Result<DacStreamChipType, _> = 0xFFu8.try_into();
+//! assert!(invalid.is_err());
+//! ```
 use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
@@ -127,48 +177,48 @@ impl DacStreamChipType {
         // Strip instance bit (bit 7)
         let chip_id = value & 0x7F;
         match chip_id {
-            0x00 => Some(DacStreamChipType::Sn76489),
-            0x01 => Some(DacStreamChipType::Ym2413),
-            0x02 => Some(DacStreamChipType::Ym2612),
-            0x03 => Some(DacStreamChipType::Ym2151),
-            0x04 => Some(DacStreamChipType::SegaPcm),
-            0x05 => Some(DacStreamChipType::Rf5c68),
-            0x06 => Some(DacStreamChipType::Ym2203),
-            0x07 => Some(DacStreamChipType::Ym2608),
-            0x08 => Some(DacStreamChipType::Ym2610),
-            0x09 => Some(DacStreamChipType::Ym3812),
-            0x0A => Some(DacStreamChipType::Ym3526),
-            0x0B => Some(DacStreamChipType::Y8950),
-            0x0C => Some(DacStreamChipType::Ymf262),
-            0x0D => Some(DacStreamChipType::Ymf278b),
-            0x0E => Some(DacStreamChipType::Ymf271),
-            0x0F => Some(DacStreamChipType::Ymz280b),
-            0x10 => Some(DacStreamChipType::Rf5c164),
-            0x11 => Some(DacStreamChipType::Pwm),
-            0x12 => Some(DacStreamChipType::Ay8910),
-            0x13 => Some(DacStreamChipType::GbDmg),
-            0x14 => Some(DacStreamChipType::NesApu),
-            0x15 => Some(DacStreamChipType::MultiPcm),
-            0x16 => Some(DacStreamChipType::Upd7759),
-            0x17 => Some(DacStreamChipType::Okim6258),
-            0x18 => Some(DacStreamChipType::Okim6295),
-            0x19 => Some(DacStreamChipType::K051649),
-            0x1A => Some(DacStreamChipType::K054539),
-            0x1B => Some(DacStreamChipType::Huc6280),
-            0x1C => Some(DacStreamChipType::C140),
-            0x1D => Some(DacStreamChipType::K053260),
-            0x1E => Some(DacStreamChipType::Pokey),
-            0x1F => Some(DacStreamChipType::Qsound),
-            0x20 => Some(DacStreamChipType::Scsp),
-            0x21 => Some(DacStreamChipType::WonderSwan),
-            0x22 => Some(DacStreamChipType::Vsu),
-            0x23 => Some(DacStreamChipType::Saa1099),
-            0x24 => Some(DacStreamChipType::Es5503),
-            0x25 => Some(DacStreamChipType::Es5506),
-            0x26 => Some(DacStreamChipType::X1010),
-            0x27 => Some(DacStreamChipType::C352),
-            0x28 => Some(DacStreamChipType::Ga20),
-            0x29 => Some(DacStreamChipType::Mikey),
+            v if v == DacStreamChipType::Sn76489 as u8 => Some(DacStreamChipType::Sn76489),
+            v if v == DacStreamChipType::Ym2413 as u8 => Some(DacStreamChipType::Ym2413),
+            v if v == DacStreamChipType::Ym2612 as u8 => Some(DacStreamChipType::Ym2612),
+            v if v == DacStreamChipType::Ym2151 as u8 => Some(DacStreamChipType::Ym2151),
+            v if v == DacStreamChipType::SegaPcm as u8 => Some(DacStreamChipType::SegaPcm),
+            v if v == DacStreamChipType::Rf5c68 as u8 => Some(DacStreamChipType::Rf5c68),
+            v if v == DacStreamChipType::Ym2203 as u8 => Some(DacStreamChipType::Ym2203),
+            v if v == DacStreamChipType::Ym2608 as u8 => Some(DacStreamChipType::Ym2608),
+            v if v == DacStreamChipType::Ym2610 as u8 => Some(DacStreamChipType::Ym2610),
+            v if v == DacStreamChipType::Ym3812 as u8 => Some(DacStreamChipType::Ym3812),
+            v if v == DacStreamChipType::Ym3526 as u8 => Some(DacStreamChipType::Ym3526),
+            v if v == DacStreamChipType::Y8950 as u8 => Some(DacStreamChipType::Y8950),
+            v if v == DacStreamChipType::Ymf262 as u8 => Some(DacStreamChipType::Ymf262),
+            v if v == DacStreamChipType::Ymf278b as u8 => Some(DacStreamChipType::Ymf278b),
+            v if v == DacStreamChipType::Ymf271 as u8 => Some(DacStreamChipType::Ymf271),
+            v if v == DacStreamChipType::Ymz280b as u8 => Some(DacStreamChipType::Ymz280b),
+            v if v == DacStreamChipType::Rf5c164 as u8 => Some(DacStreamChipType::Rf5c164),
+            v if v == DacStreamChipType::Pwm as u8 => Some(DacStreamChipType::Pwm),
+            v if v == DacStreamChipType::Ay8910 as u8 => Some(DacStreamChipType::Ay8910),
+            v if v == DacStreamChipType::GbDmg as u8 => Some(DacStreamChipType::GbDmg),
+            v if v == DacStreamChipType::NesApu as u8 => Some(DacStreamChipType::NesApu),
+            v if v == DacStreamChipType::MultiPcm as u8 => Some(DacStreamChipType::MultiPcm),
+            v if v == DacStreamChipType::Upd7759 as u8 => Some(DacStreamChipType::Upd7759),
+            v if v == DacStreamChipType::Okim6258 as u8 => Some(DacStreamChipType::Okim6258),
+            v if v == DacStreamChipType::Okim6295 as u8 => Some(DacStreamChipType::Okim6295),
+            v if v == DacStreamChipType::K051649 as u8 => Some(DacStreamChipType::K051649),
+            v if v == DacStreamChipType::K054539 as u8 => Some(DacStreamChipType::K054539),
+            v if v == DacStreamChipType::Huc6280 as u8 => Some(DacStreamChipType::Huc6280),
+            v if v == DacStreamChipType::C140 as u8 => Some(DacStreamChipType::C140),
+            v if v == DacStreamChipType::K053260 as u8 => Some(DacStreamChipType::K053260),
+            v if v == DacStreamChipType::Pokey as u8 => Some(DacStreamChipType::Pokey),
+            v if v == DacStreamChipType::Qsound as u8 => Some(DacStreamChipType::Qsound),
+            v if v == DacStreamChipType::Scsp as u8 => Some(DacStreamChipType::Scsp),
+            v if v == DacStreamChipType::WonderSwan as u8 => Some(DacStreamChipType::WonderSwan),
+            v if v == DacStreamChipType::Vsu as u8 => Some(DacStreamChipType::Vsu),
+            v if v == DacStreamChipType::Saa1099 as u8 => Some(DacStreamChipType::Saa1099),
+            v if v == DacStreamChipType::Es5503 as u8 => Some(DacStreamChipType::Es5503),
+            v if v == DacStreamChipType::Es5506 as u8 => Some(DacStreamChipType::Es5506),
+            v if v == DacStreamChipType::X1010 as u8 => Some(DacStreamChipType::X1010),
+            v if v == DacStreamChipType::C352 as u8 => Some(DacStreamChipType::C352),
+            v if v == DacStreamChipType::Ga20 as u8 => Some(DacStreamChipType::Ga20),
+            v if v == DacStreamChipType::Mikey as u8 => Some(DacStreamChipType::Mikey),
             _ => None,
         }
     }
@@ -195,6 +245,23 @@ impl DacStreamChipType {
     pub fn to_u8_with_instance(self, is_secondary: bool) -> u8 {
         let base = self as u8;
         if is_secondary { base | 0x80 } else { base }
+    }
+}
+
+/// Conversion from `DacStreamChipType` to the raw `u8` value used in VGM bytes.
+impl From<DacStreamChipType> for u8 {
+    fn from(chip_type: DacStreamChipType) -> Self {
+        chip_type as u8
+    }
+}
+
+/// Attempt to convert a raw `u8` value (from VGM bytes) into a `DacStreamChipType`.
+/// Returns `Err(())` if the value does not correspond to a known chip type.
+impl TryFrom<u8> for DacStreamChipType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        DacStreamChipType::from_u8(value).ok_or(())
     }
 }
 
@@ -391,6 +458,25 @@ pub struct DataBlock {
 }
 
 /// VGM command 0x68 specifies a PCM RAM write.
+///
+/// The `chip_type` field is stored as a `u8` in VGM bytes, but when
+/// constructing this struct you can use the `DacStreamChipType` enum and
+/// convert it with `.into()` to produce the required `u8`.
+///
+/// Example:
+///
+/// ```rust
+/// use soundlog::vgm::command::{PcmRamWrite, DacStreamChipType};
+///
+/// let p = PcmRamWrite {
+///     marker: 0x66,
+///     chip_type: DacStreamChipType::Ym2608.into(), // use the enum and call `.into()`
+///     read_offset: 0,
+///     write_offset: 0,
+///     size: 0,
+///     data: vec![],
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct PcmRamWrite {
     pub marker: u8,
@@ -412,6 +498,23 @@ pub struct WaitNSample(pub u8);
 pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 
 /// DAC Stream Control Write: Setup Stream Control
+///
+/// The `chip_type` field is stored as a `u8` in VGM bytes, but when
+/// constructing this struct you can use the `DacStreamChipType` enum and
+/// convert it with `.into()` to produce the required `u8`.
+///
+/// Example:
+///
+/// ```rust
+/// use soundlog::vgm::command::{SetupStreamControl, DacStreamChipType};
+///
+/// let s = SetupStreamControl {
+///     stream_id: 0,
+///     chip_type: DacStreamChipType::Ym2612.into(), // use the enum and call `.into()`
+///     write_port: 0,
+///     write_command: 0x2A,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupStreamControl {
     pub stream_id: u8,

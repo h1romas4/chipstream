@@ -52,6 +52,17 @@ pub enum ParseError {
     /// This error indicates that the data structure is inconsistent or
     /// invalid, such as missing required components or conflicting settings.
     DataInconsistency(String),
+
+    /// Data block size limit exceeded.
+    ///
+    /// - `current_size` is the total size of data blocks accumulated so far.
+    /// - `limit` is the maximum allowed size.
+    /// - `attempted_size` is the size of the block that would exceed the limit.
+    DataBlockSizeExceeded {
+        current_size: usize,
+        limit: usize,
+        attempted_size: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -90,6 +101,15 @@ impl fmt::Display for ParseError {
                 )
             }
             ParseError::DataInconsistency(s) => write!(f, "data inconsistency: {}", s),
+            ParseError::DataBlockSizeExceeded {
+                current_size,
+                limit,
+                attempted_size,
+            } => write!(
+                f,
+                "data block size limit exceeded: current {} bytes, limit {} bytes, attempted to add {} bytes",
+                current_size, limit, attempted_size
+            ),
         }
     }
 }
