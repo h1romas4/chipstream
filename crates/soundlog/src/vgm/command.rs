@@ -3022,7 +3022,7 @@ impl VgmDocument {
     /// length of the corresponding command in `self.commands`. This uses the
     /// crate-local `command_to_vgm_bytes` helper to determine each command's
     /// serialized length without serializing the entire document.
-    pub(crate) fn command_offsets_and_lengths(&self) -> Vec<(usize, usize)> {
+    pub fn command_offsets_and_lengths(&self) -> Vec<(usize, usize)> {
         let mut out: Vec<(usize, usize)> = Vec::with_capacity(self.commands.len());
         let mut offset: usize = 0;
 

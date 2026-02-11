@@ -630,3 +630,127 @@ pub fn redump_vgm(
 
     Ok(())
 }
+
+/// Parse and display VGM file commands with offsets and lengths
+pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
+    use soundlog::VgmDocument;
+
+    // Parse VGM document
+    let doc: VgmDocument = (&data[..])
+        .try_into()
+        .with_context(|| format!("failed to parse VGM file: {}", file_path.display()))?;
+
+    // Get command offsets and lengths
+    let offsets_and_lengths = doc.command_offsets_and_lengths();
+
+    // Print header information
+    println!("=== VGM File: {} ===", file_path.display());
+    println!("Version: 0x{:08X}", doc.header.version);
+    println!("Total Samples: {}", doc.header.total_samples);
+    println!("Loop Offset: 0x{:08X}", doc.header.loop_offset);
+    println!("Loop Samples: {}", doc.header.loop_samples);
+    println!("Total Commands: {}", doc.commands.len());
+    println!();
+
+    // Print commands with offsets and lengths
+    println!("Command Listing:");
+    println!(
+        "{:<8} {:<8} {:<40} {}",
+        "Index", "Offset", "Command", "Length"
+    );
+    println!("{}", "-".repeat(80));
+
+    for (index, (cmd, (offset, length))) in doc
+        .commands
+        .iter()
+        .zip(offsets_and_lengths.iter())
+        .enumerate()
+    {
+        let cmd_str = format_command_brief(cmd);
+        println!("{:<8} 0x{:06X} {:<40} {}", index, offset, cmd_str, length);
+    }
+
+    Ok(())
+}
+
+/// Format a command for brief display
+fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
+    use soundlog::VgmCommand;
+
+    match cmd {
+        VgmCommand::WaitSamples(w) => format!("WaitSamples({})", w.0),
+        VgmCommand::Wait735Samples(_) => "Wait735Samples".to_string(),
+        VgmCommand::Wait882Samples(_) => "Wait882Samples".to_string(),
+        VgmCommand::WaitNSample(w) => format!("WaitNSample({})", w.0),
+        VgmCommand::EndOfData(_) => "EndOfData".to_string(),
+        VgmCommand::Sn76489Write(inst, spec) => {
+            format!("Sn76489Write({:?}, 0x{:02X})", inst, spec.value)
+        }
+        VgmCommand::Ym2413Write(inst, spec) => {
+            format!(
+                "Ym2413Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Ym2612Write(inst, spec) => {
+            format!(
+                "Ym2612Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Ym2151Write(inst, spec) => {
+            format!(
+                "Ym2151Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Ym2203Write(inst, spec) => {
+            format!(
+                "Ym2203Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Ym2608Write(inst, spec) => {
+            format!(
+                "Ym2608Write({:?}, P{}:0x{:02X}=0x{:02X})",
+                inst, spec.port, spec.register, spec.value
+            )
+        }
+        VgmCommand::DataBlock(db) => {
+            format!("DataBlock(type=0x{:02X}, size={})", db.data_type, db.size)
+        }
+        VgmCommand::SetupStreamControl(s) => {
+            format!(
+                "SetupStreamControl(id={}, chip={:?})",
+                s.stream_id, s.chip_type
+            )
+        }
+        VgmCommand::SetStreamData(s) => {
+            format!("SetStreamData(id={}, bank={})", s.stream_id, s.data_bank_id)
+        }
+        VgmCommand::SetStreamFrequency(s) => {
+            format!(
+                "SetStreamFrequency(id={}, freq={})",
+                s.stream_id, s.frequency
+            )
+        }
+        VgmCommand::StartStream(s) => {
+            format!(
+                "StartStream(id={}, offset=0x{:X})",
+                s.stream_id, s.data_start_offset
+            )
+        }
+        VgmCommand::StopStream(s) => {
+            format!("StopStream(id={})", s.stream_id)
+        }
+        _ => {
+            // For other commands, use debug format but truncate if too long
+            let debug_str = format!("{:?}", cmd);
+            if debug_str.len() > 40 {
+                format!("{}...", &debug_str[..37])
+            } else {
+                debug_str
+            }
+        }
+    }
+}

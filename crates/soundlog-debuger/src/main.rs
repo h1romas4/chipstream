@@ -50,6 +50,12 @@ enum Commands {
         #[arg(long)]
         diag: bool,
     },
+    /// Parse and display VGM file commands with offsets and lengths
+    Parse {
+        /// VGM file path to parse
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -155,6 +161,27 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("failed to read input for redump: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Parse { file }) => {
+            // Load file
+            match load_bytes_from_path(&file) {
+                Ok(bytes) => {
+                    // Call parse_vgm
+                    match crate::cui::vgm::parse_vgm(&file, bytes) {
+                        Ok(_) => {
+                            std::process::exit(0);
+                        }
+                        Err(e) => {
+                            eprintln!("parse failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
