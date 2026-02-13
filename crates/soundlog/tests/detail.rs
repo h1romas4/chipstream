@@ -1,5 +1,9 @@
+use soundlog::ParseError;
 use soundlog::vgm::command::{Ay8910StereoMask, DataBlock};
 use soundlog::vgm::detail::*;
+
+// Maximum decompressed size for tests (32 MiB, matching default VgmStream limit)
+const TEST_MAX_DECOMPRESS_SIZE: usize = 32 * 1024 * 1024;
 
 #[test]
 fn test_parse_uncompressed_stream_ym2612() {
@@ -537,7 +541,9 @@ fn test_bit_packing_decompress_copy() {
         data: vec![0x12, 0x34], // 0001 0010 0011 0100 -> 1, 2, 3, 4 (4-bit values)
     };
 
-    compression.decompress(None).expect("Decompression failed");
+    compression
+        .decompress(None, TEST_MAX_DECOMPRESS_SIZE)
+        .expect("Decompression failed");
 
     // Each 4-bit value should be copied and add_value (10) added
     assert_eq!(compression.data, vec![11, 12, 13, 14]); // 1+10, 2+10, 3+10, 4+10
@@ -553,7 +559,9 @@ fn test_bit_packing_decompress_shift_left() {
         data: vec![0x12], // 0001 0010 -> 1, 2 (4-bit values)
     };
 
-    compression.decompress(None).expect("Decompression failed");
+    compression
+        .decompress(None, TEST_MAX_DECOMPRESS_SIZE)
+        .expect("Decompression failed");
 
     // Each 4-bit value should be shifted left by 4 bits and add_value (5) added
     assert_eq!(compression.data, vec![21, 37]); // (1<<4)+5, (2<<4)+5 = 16+5, 32+5
@@ -581,7 +589,7 @@ fn test_bit_packing_decompress_use_table() {
     };
 
     compression
-        .decompress(Some(&table))
+        .decompress(Some(&table), TEST_MAX_DECOMPRESS_SIZE)
         .expect("Decompression failed");
 
     // Look up each index in the table
@@ -598,7 +606,7 @@ fn test_bit_packing_decompress_use_table_missing_table() {
         data: vec![0x01, 0x23],
     };
 
-    let result = compression.decompress(None);
+    let result = compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE);
     assert!(
         result.is_err(),
         "Should fail when table is required but not provided"
@@ -628,7 +636,7 @@ fn test_dpcm_decompress() {
     };
 
     compression
-        .decompress(&table)
+        .decompress(&table, TEST_MAX_DECOMPRESS_SIZE)
         .expect("Decompression failed");
 
     // Start at 128, add deltas: 0, 1, 2, 3
@@ -645,12 +653,85 @@ fn test_bit_packing_decompress_16bit_values() {
         data: vec![0x10, 0x20], // 16, 32 (8-bit values)
     };
 
-    compression.decompress(None).expect("Decompression failed");
+    compression
+        .decompress(None, TEST_MAX_DECOMPRESS_SIZE)
+        .expect("Decompression failed");
 
     // Each 8-bit value + 1000, stored as 16-bit little-endian
     // 16 + 1000 = 1016 = 0x03F8 = [0xF8, 0x03]
     // 32 + 1000 = 1032 = 0x0408 = [0x08, 0x04]
     assert_eq!(compression.data, vec![0xF8, 0x03, 0x08, 0x04]);
+}
+
+#[test]
+fn test_bit_packing_decompress_size_limit() {
+    // Create compression that would decompress to 8 bytes (4 values * 2 bytes each)
+    let mut compression = BitPackingCompression {
+        bits_decompressed: 16,
+        bits_compressed: 8,
+        sub_type: BitPackingSubType::Copy,
+        add_value: 0,
+        data: vec![0x01, 0x02, 0x03, 0x04], // 4 values
+    };
+
+    // Allow only 4 bytes (2 values) - should fail on 3rd value
+    let result = compression.decompress(None, 4);
+    assert!(
+        result.is_err(),
+        "Should fail when decompressed size exceeds limit"
+    );
+    match result {
+        Err(ParseError::DataBlockSizeExceeded {
+            current_size,
+            limit,
+            attempted_size,
+        }) => {
+            assert_eq!(current_size, 4); // Already decompressed 2 values (4 bytes)
+            assert_eq!(limit, 4);
+            assert_eq!(attempted_size, 2); // Trying to add 3rd value (2 bytes)
+        }
+        _ => panic!("Expected DataBlockSizeExceeded error"),
+    }
+}
+
+#[test]
+fn test_dpcm_decompress_size_limit() {
+    let table = DecompressionTable {
+        compression_type: CompressionType::Dpcm,
+        sub_type: 0x00,
+        bits_decompressed: 16,
+        bits_compressed: 8,
+        value_count: 256,
+        table_data: (0..=255).collect(),
+    };
+
+    // Create compression that would decompress to 8 bytes (4 values * 2 bytes each)
+    let mut compression = DpcmCompression {
+        bits_decompressed: 16,
+        bits_compressed: 8,
+        reserved: 0,
+        start_value: 0,
+        data: vec![0x00, 0x01, 0x02, 0x03], // 4 delta indices
+    };
+
+    // Allow only 4 bytes (2 values) - should fail on 3rd value
+    let result = compression.decompress(&table, 4);
+    assert!(
+        result.is_err(),
+        "Should fail when decompressed size exceeds limit"
+    );
+    match result {
+        Err(ParseError::DataBlockSizeExceeded {
+            current_size,
+            limit,
+            attempted_size,
+        }) => {
+            assert_eq!(current_size, 4); // Already decompressed 2 values (4 bytes)
+            assert_eq!(limit, 4);
+            assert_eq!(attempted_size, 2); // Trying to add 3rd value (2 bytes)
+        }
+        _ => panic!("Expected DataBlockSizeExceeded error"),
+    }
 }
 
 #[test]

@@ -973,6 +973,11 @@ impl VgmStream {
         data_type: u8,
         mut stream: CompressedStream,
     ) -> Result<(), ParseError> {
+        // Calculate remaining space in data block limit
+        let remaining_space = self
+            .max_data_block_size
+            .saturating_sub(self.total_data_block_size);
+
         let decompressed_data = match &mut stream.compression {
             CompressedStreamData::BitPacking(bp) => {
                 let table = if matches!(bp.sub_type, BitPackingSubType::UseTable) {
@@ -985,7 +990,7 @@ impl VgmStream {
                 } else {
                     None
                 };
-                bp.decompress(table)?;
+                bp.decompress(table, remaining_space)?;
                 bp.data.clone()
             }
             CompressedStreamData::Dpcm(dpcm) => {
@@ -995,7 +1000,7 @@ impl VgmStream {
                         data_type
                     ))
                 })?;
-                dpcm.decompress(table)?;
+                dpcm.decompress(table, remaining_space)?;
                 dpcm.data.clone()
             }
             CompressedStreamData::Unknown { .. } => {

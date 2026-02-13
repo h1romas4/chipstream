@@ -93,7 +93,7 @@
 //! match parse_data_block(block).unwrap() {
 //!     DataBlockType::CompressedStream(mut stream) => {
 //!         if let CompressedStreamData::BitPacking(mut bp) = stream.compression {
-//!             bp.decompress(None).unwrap();
+//!             bp.decompress(None, 32 * 1024 * 1024).unwrap(); // 32 MiB limit
 //!             println!("Decompressed {} bytes", bp.data.len());
 //!             assert_eq!(bp.data, vec![0x01, 0x02, 0x03, 0x04]);
 //!         }
@@ -330,18 +330,24 @@ pub struct BitPackingCompression {
 }
 
 impl BitPackingCompression {
-    /// Decompress bit-packed data in-place.
+    /// Decompress bit-packing data in-place.
     ///
     /// After this method succeeds, `self.data` will contain the decompressed data.
     ///
     /// # Arguments
-    /// * `table` - Optional decompression table, required when sub_type is UseTable
+    /// * `table` - Optional decompression table (required for `UseTable` sub-type)
+    /// * `max_size` - Maximum allowed decompressed output size in bytes (e.g., 32 MiB)
     ///
     /// # Errors
     /// Returns error if:
     /// - `sub_type` is `UseTable` but `table` is `None`
     /// - Table is provided but doesn't match compression parameters
-    pub fn decompress(&mut self, table: Option<&DecompressionTable>) -> Result<(), ParseError> {
+    /// - Decompressed output size would exceed `max_size`
+    pub fn decompress(
+        &mut self,
+        table: Option<&DecompressionTable>,
+        max_size: usize,
+    ) -> Result<(), ParseError> {
         if matches!(self.sub_type, BitPackingSubType::UseTable) && table.is_none() {
             return Err(ParseError::DataInconsistency(
                 "Decompression table required for UseTable sub-type".to_string(),
@@ -353,6 +359,15 @@ impl BitPackingCompression {
         let mut bitstream = BitStreamReader::new(&self.data);
 
         while bitstream.bits_remaining() >= self.bits_compressed as usize {
+            // Check if adding another value would exceed max_size
+            if result.len() + bytes_per_value > max_size {
+                return Err(ParseError::DataBlockSizeExceeded {
+                    current_size: result.len(),
+                    limit: max_size,
+                    attempted_size: bytes_per_value,
+                });
+            }
+
             let compressed_value = bitstream.read_bits(self.bits_compressed as usize)?;
             let decompressed_value = match self.sub_type {
                 BitPackingSubType::Copy => {
@@ -405,16 +420,32 @@ impl DpcmCompression {
     ///
     /// # Arguments
     /// * `table` - Decompression table containing delta values
+    /// * `max_size` - Maximum allowed decompressed output size in bytes (e.g., 32 MiB)
     ///
     /// # Errors
-    /// Returns error if table doesn't match compression parameters
-    pub fn decompress(&mut self, table: &DecompressionTable) -> Result<(), ParseError> {
+    /// Returns error if:
+    /// - Table doesn't match compression parameters
+    /// - Decompressed output size would exceed `max_size`
+    pub fn decompress(
+        &mut self,
+        table: &DecompressionTable,
+        max_size: usize,
+    ) -> Result<(), ParseError> {
         let bytes_per_value = self.bits_decompressed.div_ceil(8) as usize;
         let mut result = Vec::new();
         let mut bitstream = BitStreamReader::new(&self.data);
         let mut state = self.start_value as i32;
 
         while bitstream.bits_remaining() >= self.bits_compressed as usize {
+            // Check if adding another value would exceed max_size
+            if result.len() + bytes_per_value > max_size {
+                return Err(ParseError::DataBlockSizeExceeded {
+                    current_size: result.len(),
+                    limit: max_size,
+                    attempted_size: bytes_per_value,
+                });
+            }
+
             let delta_index = bitstream.read_bits(self.bits_compressed as usize)? as usize;
             let delta = read_table_value(table, delta_index, bytes_per_value)? as i32;
             state = state.wrapping_add(delta);
