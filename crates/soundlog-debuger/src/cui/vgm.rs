@@ -81,6 +81,33 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
             });
     let data_blocks = format!("count={} total_bytes={}", db_count, db_total_bytes);
 
+    // data block types
+    use std::collections::HashMap;
+    let mut db_type_counts: HashMap<String, usize> = HashMap::new();
+    for c in &doc.commands {
+        if let soundlog::vgm::command::VgmCommand::DataBlock(db) = c {
+            match parse_data_block(db.clone()) {
+                Ok(data_type) => {
+                    let type_name = format_data_block_type(&data_type);
+                    *db_type_counts.entry(type_name).or_insert(0) += 1;
+                }
+                Err(_) => {
+                    *db_type_counts.entry("ParseError".to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let data_block_types = if db_type_counts.is_empty() {
+        "(none)".to_string()
+    } else {
+        let mut type_parts: Vec<String> = db_type_counts
+            .iter()
+            .map(|(type_name, count)| format!("{}:{}", type_name, count))
+            .collect();
+        type_parts.sort();
+        type_parts.join(", ")
+    };
+
     // gd3: produce per-field entries to avoid multiline cells in the summary table
     // we'll collect individual gd3 field rows into `gd3_fields` and append them
     // to the main returned `rows` later.
@@ -137,6 +164,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         ("total_samples".into(), total_samples),
         ("waits_total".into(), waits_total),
         ("data_blocks".into(), data_blocks),
+        ("data_block_types".into(), data_block_types),
     ];
 
     // Append individual GD3 fields (one row per field) to keep columns aligned.
@@ -665,7 +693,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     if !instances.is_empty() {
         println!("Chips:");
         for (inst, chip) in &instances {
-            let raw_clock = doc.header.get_chip_clock(&chip);
+            let raw_clock = doc.header.get_chip_clock(chip);
             let clock = raw_clock & 0x7FFF_FFFF;
             println!("  {:?} (instance {:?}): {} Hz", chip, inst, clock);
         }
@@ -681,10 +709,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
 
     // Print commands with offsets and lengths
     println!("Command Listing:");
-    println!(
-        "{:<8} {:<8} {:<40} {}",
-        "Index", "Offset", "Command", "Length"
-    );
+    println!("{:<8} {:<8} {:<40} Length", "Index", "Offset", "Command");
     println!("{}", "-".repeat(80));
 
     for (index, (cmd, (offset, length))) in doc
