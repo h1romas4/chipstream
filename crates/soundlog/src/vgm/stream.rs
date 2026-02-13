@@ -107,6 +107,9 @@ struct StreamState {
 /// Default maximum size for accumulated data blocks (32 MiB).
 const DEFAULT_MAX_DATA_BLOCK_SIZE: usize = 32 * 1024 * 1024;
 
+/// Default maximum size for the internal parsing buffer (64 MiB).
+const DEFAULT_MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamResult {
     /// A complete command was parsed successfully.
@@ -130,17 +133,35 @@ pub enum StreamResult {
 ///   stream data blocks, schedules writes according to stream frequency, and
 ///   interleaves generated chip writes with parsed commands during Wait periods.
 ///
-/// ## Data block storage and limits
+/// # Loop Handling
 ///
-/// The stream parser stores and accumulates data blocks (for example, PCM or
-/// DAC stream data) while parsing. To avoid unbounded memory growth there is
-/// a configurable maximum total size for accumulated data blocks. By default
-/// this limit is 32 MiB. You can change the limit at runtime via
-/// `VgmStream::set_max_data_block_size(max_bytes)`. When adding a data block
-/// would cause the accumulated total to exceed the configured limit, the
-/// parser will return `ParseError::DataBlockSizeExceeded` from the iterator.
-/// Use `max_data_block_size()` and `total_data_block_size()` to query the
-/// configured limit and the current accumulated size respectively.
+/// **Important**: When processing VGM files with loop points, the default behavior
+/// is to loop infinitely (`loop_count: None`). For untrusted input or non-interactive
+/// use cases, always call `set_loop_count(Some(n))` to limit the number of loop
+/// iterations and prevent infinite loops. For example:
+///
+/// ```
+/// use soundlog::vgm::VgmStream;
+///
+/// let mut stream = VgmStream::new();
+/// stream.set_loop_count(Some(2)); // Play through twice, then stop
+/// ```
+///
+/// ## Memory limits
+///
+/// The stream parser has two configurable memory limits to prevent unbounded growth:
+///
+/// 1. **Buffer size limit** (for raw byte parsing): Controls the maximum size of the
+///    internal buffer when using `push_chunk()`. Default is 64 MiB. Configure via
+///    `set_max_buffer_size()` and query via `max_buffer_size()`.
+///
+/// 2. **Data block size limit**: Controls the total size of accumulated data blocks
+///    (PCM, DAC stream data, etc.). Default is 32 MiB. Configure via
+///    `set_max_data_block_size()` and query via `max_data_block_size()` /
+///    `total_data_block_size()`.
+///
+/// When either limit is exceeded, the parser returns `ParseError::DataBlockSizeExceeded`
+/// or `ParseError::Other` respectively.
 ///
 /// # Examples
 ///
@@ -155,7 +176,7 @@ pub enum StreamResult {
 ///
 /// // Feed VGM data (could be incoming chunks)
 /// let vgm_data = vec![0x62, 0x63, 0x66];
-/// parser.push_chunk(&vgm_data);
+/// parser.push_chunk(&vgm_data).expect("push chunk");
 ///
 /// for result in &mut parser {
 ///     match result {
@@ -167,6 +188,17 @@ pub enum StreamResult {
 ///         Err(e) => break,
 ///     }
 /// }
+/// ```
+///
+/// Configuring memory limits for untrusted input:
+/// ```
+/// use soundlog::vgm::VgmStream;
+///
+/// let mut parser = VgmStream::new();
+/// // Set conservative limits for untrusted input
+/// parser.set_max_buffer_size(16 * 1024 * 1024);      // 16 MiB buffer
+/// parser.set_max_data_block_size(16 * 1024 * 1024);  // 16 MiB data blocks
+/// parser.set_loop_count(Some(2));                     // Limit loops
 /// ```
 ///
 /// From a parsed `VgmDocument` (including stream control commands):
@@ -308,6 +340,8 @@ pub struct VgmStream {
     max_data_block_size: usize,
     /// Current total size of accumulated data blocks
     total_data_block_size: usize,
+    /// Maximum allowed size for the internal parsing buffer
+    max_buffer_size: usize,
 }
 
 impl VgmStream {
@@ -319,6 +353,19 @@ impl VgmStream {
     /// (for example, as file or network chunks arrive). If you already have a
     /// parsed `VgmDocument`, prefer `VgmStream::from_document(...)` which is
     /// more efficient and avoids re-serializing/parsing the document.
+    ///
+    /// # Loop Handling
+    ///
+    /// **Warning**: By default, the stream will loop infinitely if the VGM file
+    /// contains a loop point. For untrusted input or non-interactive playback,
+    /// always call `set_loop_count(Some(n))` to prevent infinite loops:
+    ///
+    /// ```
+    /// use soundlog::vgm::VgmStream;
+    ///
+    /// let mut stream = VgmStream::new();
+    /// stream.set_loop_count(Some(2)); // Limit to 2 loop iterations
+    /// ```
     ///
     /// # Examples
     /// ```
@@ -332,7 +379,7 @@ impl VgmStream {
     /// // Push raw VGM bytes (header + a few commands); in real usage these
     /// // would typically come from a file or network in chunks.
     /// let chunk: &[u8] = &[0x56, 0x67, 0x6D, 0x20]; // partial/example bytes
-    /// parser.push_chunk(chunk);
+    /// parser.push_chunk(chunk).expect("push chunk");
     ///
     /// // Iterate parsed commands as they become available.
     /// for item in &mut parser {
@@ -370,6 +417,7 @@ impl VgmStream {
             pcm_data_offset: 0,
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
+            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
         }
     }
 
@@ -377,6 +425,24 @@ impl VgmStream {
     ///
     /// This is more efficient than serializing and re-parsing when you already
     /// have a parsed document.
+    ///
+    /// # Loop Handling
+    ///
+    /// **Warning**: By default, the stream will loop infinitely if the VGM document
+    /// contains a loop point. For untrusted input or non-interactive playback,
+    /// always call `set_loop_count(Some(n))` to prevent infinite loops:
+    ///
+    /// ```
+    /// use soundlog::{VgmBuilder, vgm::stream::VgmStream};
+    /// use soundlog::vgm::command::WaitSamples;
+    ///
+    /// let mut builder = VgmBuilder::new();
+    /// builder.add_vgm_command(WaitSamples(100));
+    /// let doc = builder.finalize();
+    ///
+    /// let mut stream = VgmStream::from_document(doc);
+    /// stream.set_loop_count(Some(2)); // Limit to 2 loop iterations
+    /// ```
     ///
     /// # Arguments
     /// * `doc` - A parsed VGM document
@@ -418,6 +484,7 @@ impl VgmStream {
             pcm_data_offset: 0,
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
+            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
         }
     }
 
@@ -451,12 +518,26 @@ impl VgmStream {
     }
 
     /// Adds new data to the internal buffer for parsing.
+    /// Appends raw VGM bytes to the internal buffer for incremental parsing.
     ///
     /// # Arguments
     /// * `chunk` - Raw VGM bytes to add to the parsing buffer
-    pub fn push_chunk(&mut self, chunk: &[u8]) {
+    ///
+    /// # Errors
+    /// Returns `ParseError::Other` if adding the chunk would exceed the maximum
+    /// buffer size (64 MiB) or if this method is called on a stream created from
+    /// a document.
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         match &mut self.source {
             VgmStreamSource::Bytes { buffer, header } => {
+                if buffer.len() + chunk.len() > self.max_buffer_size {
+                    return Err(ParseError::Other(format!(
+                        "Buffer size limit exceeded: current {} bytes, chunk {} bytes, limit {} bytes",
+                        buffer.len(),
+                        chunk.len(),
+                        self.max_buffer_size
+                    )));
+                }
                 buffer.extend_from_slice(chunk);
                 if header.is_none()
                     && buffer.len() >= 0x40
@@ -464,10 +545,11 @@ impl VgmStream {
                 {
                     *header = Some(Box::new(parsed_header));
                 }
+                Ok(())
             }
-            VgmStreamSource::Commands { .. } => {
-                panic!("push_chunk() cannot be called on a VgmStream created from a document");
-            }
+            VgmStreamSource::Commands { .. } => Err(ParseError::Other(
+                "push_chunk() cannot be called on a VgmStream created from a document".into(),
+            )),
         }
     }
 
@@ -656,8 +738,23 @@ impl VgmStream {
 
     /// Sets the loop count limit.
     ///
+    /// Controls how many times the stream will loop when it encounters a loop point.
+    /// Set to `None` for infinite looping (default, not recommended for untrusted input),
+    /// or `Some(n)` to limit loop iterations.
+    ///
+    /// **Important**: For untrusted input or automated processing, always set a finite
+    /// loop count to prevent infinite loops and potential DoS conditions.
+    ///
     /// # Arguments
-    /// * `count` - Maximum number of loops to process (None for infinite)
+    /// * `count` - Maximum number of loops to process (None for infinite, Some(n) to limit)
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::vgm::VgmStream;
+    ///
+    /// let mut stream = VgmStream::new();
+    /// stream.set_loop_count(Some(2)); // Play intro + 1 loop
+    /// ```
     pub fn set_loop_count(&mut self, count: Option<u32>) {
         self.loop_count = count;
     }
@@ -714,6 +811,32 @@ impl VgmStream {
     /// Gets the current total size of accumulated data blocks.
     pub fn total_data_block_size(&self) -> usize {
         self.total_data_block_size
+    }
+
+    /// Sets the maximum allowed size for the internal parsing buffer.
+    ///
+    /// This limit applies to the raw byte buffer used when feeding data via
+    /// `push_chunk()`. When the buffer size would exceed this limit, `push_chunk()`
+    /// returns an error.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_size` - Maximum buffer size in bytes (default is 64 MiB)
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::vgm::VgmStream;
+    ///
+    /// let mut stream = VgmStream::new();
+    /// stream.set_max_buffer_size(128 * 1024 * 1024); // 128 MiB
+    /// ```
+    pub fn set_max_buffer_size(&mut self, max_size: usize) {
+        self.max_buffer_size = max_size;
+    }
+
+    /// Gets the maximum allowed size for the internal parsing buffer.
+    pub fn max_buffer_size(&self) -> usize {
+        self.max_buffer_size
     }
 
     /// Shrinks the buffer if it has grown too large relative to its usage.

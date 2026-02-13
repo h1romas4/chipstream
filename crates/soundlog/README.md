@@ -15,6 +15,9 @@ Key features:
   processor that can accept either chunked binary input (via `push_chunk`)
   or a pre-parsed `VgmDocument` (via `from_document`) and yields parsed
   `VgmCommand` values as they become available.
+- Memory limits: Configurable limits for data block accumulation (default 32 MiB)
+  and parsing buffer size (default 64 MiB) prevent unbounded memory growth from
+  untrusted input.
 
 ### VgmStream overview
 
@@ -35,6 +38,9 @@ Key features:
 - DataBlock compression (e.g. bit-packed and DPCM streams) is automatically decompressed
   and expanded by the crate so compressed streams and their associated
   decompression tables are applied transparently.
+- Memory limits are enforced to protect against malicious or malformed files:
+  - Data block size limit (default 32 MiB, configurable via `set_max_data_block_size()`)
+  - Parsing buffer size limit (default 64 MiB, configurable via `set_max_buffer_size()`)
 
 ## Examples
 
@@ -155,6 +161,7 @@ let doc: VgmDocument = b.finalize();
 // parsed commands as well as any stream-generated writes expanded into
 // the timeline.
 let mut stream = VgmStream::from_document(doc);
+stream.set_loop_count(Some(2)); // Prevent infinite loops
 while let Some(result) = stream.next() {
     match result {
         Ok(StreamResult::Command(cmd)) => match cmd {
@@ -210,15 +217,18 @@ while let Some(result) = stream.next() {
 
 Note: apart from providing input via `push_chunk`, handling the stream is the same as the `from_document` example above — iterate over the stream and handle `StreamResult` variants (`Command`, `NeedsMoreData`, `EndOfStream`, `Err`) in the same way.
 
+**Important**: Always set a loop count limit for untrusted input to prevent infinite loops.
+
 ```rust
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::stream::StreamResult;
 
 let mut parser = VgmStream::new();
+parser.set_loop_count(Some(2)); // Prevent infinite loops
 let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
 
 for chunk in chunks {
-    parser.push_chunk(&chunk);
+    parser.push_chunk(&chunk).expect("push chunk");
     for result in &mut parser {
         match result {
             Ok(StreamResult::Command(_)) => {},
