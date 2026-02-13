@@ -208,7 +208,9 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     // 2. total_header_size: Used to locate extra header and data start
     //    (based on data_offset, may include extra header)
 
-    let header_size_for_fields: usize = version_max_header_size;
+    // Limit header_size_for_fields to actual_data_start to prevent reading
+    // VGM command data as header fields when data_offset is small
+    let header_size_for_fields: usize = actual_data_start.min(version_max_header_size);
 
     let total_header_size: usize = if version >= 0x00000150 {
         // Use actual_data_start directly - this is where the command stream begins

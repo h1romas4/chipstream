@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use soundlog::VgmDocument;
+use soundlog::vgm::detail::{DataBlockType, parse_data_block};
 
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
 use unicode_width::UnicodeWidthStr;
@@ -659,20 +660,21 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
 
     println!("Total Commands: {}", doc.commands.len());
 
+    // Show chip instances and clocks
+    let instances = doc.header.chip_instances();
+    if !instances.is_empty() {
+        println!("Chips:");
+        for (inst, chip) in &instances {
+            let raw_clock = doc.header.get_chip_clock(&chip);
+            let clock = raw_clock & 0x7FFF_FFFF;
+            println!("  {:?} (instance {:?}): {} Hz", chip, inst, clock);
+        }
+    }
+
     // Debug: Show first 5 commands directly
     println!("\nFirst 5 commands (debug):");
     for (i, cmd) in doc.commands.iter().enumerate().take(5) {
-        match cmd {
-            soundlog::VgmCommand::DataBlock(db) => {
-                println!(
-                    "  [{}] DataBlock(type=0x{:02X}, size={})",
-                    i, db.data_type, db.size
-                );
-            }
-            _ => {
-                println!("  [{}] {}", i, format_command_brief(cmd));
-            }
-        }
+        println!("  [{}] {}", i, format_command_brief(cmd));
     }
 
     println!();
@@ -741,9 +743,14 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
                 inst, spec.port, spec.register, spec.value
             )
         }
-        VgmCommand::DataBlock(db) => {
-            format!("DataBlock(type=0x{:02X}, size={})", db.data_type, db.size)
-        }
+        VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
+            Ok(data_type) => format!(
+                "DataBlock({}, size={})",
+                format_data_block_type(&data_type),
+                db.size
+            ),
+            Err((_, err)) => format!("DataBlock(parse_error={}, size={})", err, db.size),
+        },
         VgmCommand::SetupStreamControl(s) => {
             format!(
                 "SetupStreamControl(id={}, chip={:?})",
@@ -777,5 +784,22 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
                 debug_str
             }
         }
+    }
+}
+
+fn format_data_block_type(data_type: &DataBlockType) -> String {
+    use soundlog::vgm::detail::DataBlockType;
+    match data_type {
+        DataBlockType::UncompressedStream(us) => format!("UncompressedStream({:?})", us.chip_type),
+        DataBlockType::CompressedStream(cs) => format!(
+            "CompressedStream({:?}, {:?})",
+            cs.chip_type, cs.compression_type
+        ),
+        DataBlockType::DecompressionTable(dt) => {
+            format!("DecompressionTable({:?})", dt.compression_type)
+        }
+        DataBlockType::RomRamDump(rr) => format!("RomRamDump({:?})", rr.chip_type),
+        DataBlockType::RamWrite16(rw) => format!("RamWrite16({:?})", rw.chip_type),
+        DataBlockType::RamWrite32(rw) => format!("RamWrite32({:?})", rw.chip_type),
     }
 }

@@ -893,12 +893,18 @@ impl VgmStream {
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
+                        // Reconstruct the full data including rom_size and start_address header
+                        let mut full_data = Vec::with_capacity(8 + dump.data.len());
+                        full_data.extend_from_slice(&dump.rom_size.to_le_bytes());
+                        full_data.extend_from_slice(&dump.start_address.to_le_bytes());
+                        full_data.extend_from_slice(&dump.data);
+
                         let block = DataBlock {
                             marker,
                             chip_instance,
                             data_type,
-                            size: dump.data.len() as u32,
-                            data: dump.data,
+                            size: full_data.len() as u32,
+                            data: full_data,
                         };
                         Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
                     }
@@ -910,12 +916,17 @@ impl VgmStream {
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
+                        // Reconstruct the full data including start_address header
+                        let mut full_data = Vec::with_capacity(2 + write.data.len());
+                        full_data.extend_from_slice(&write.start_address.to_le_bytes());
+                        full_data.extend_from_slice(&write.data);
+
                         let block = DataBlock {
                             marker,
                             chip_instance,
                             data_type,
-                            size: write.data.len() as u32,
-                            data: write.data,
+                            size: full_data.len() as u32,
+                            data: full_data,
                         };
                         Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
                     }
@@ -927,12 +938,17 @@ impl VgmStream {
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                         self.total_data_block_size += data_len;
 
+                        // Reconstruct the full data including start_address header
+                        let mut full_data = Vec::with_capacity(4 + write.data.len());
+                        full_data.extend_from_slice(&write.start_address.to_le_bytes());
+                        full_data.extend_from_slice(&write.data);
+
                         let block = DataBlock {
                             marker,
                             chip_instance,
                             data_type,
-                            size: write.data.len() as u32,
-                            data: write.data,
+                            size: full_data.len() as u32,
+                            data: full_data,
                         };
                         Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
                     }

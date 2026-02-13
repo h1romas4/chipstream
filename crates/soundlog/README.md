@@ -116,12 +116,14 @@ The `from_document` constructor is convenient when you already have a
 parsed `VgmDocument` (for example: constructed programmatically via the
 `VgmBuilder`). The stream will expand DAC-stream-generated writes into
 the emitted command sequence and split waits so emitted writes are
-interleaved at the correct sample positions.
+interleaved at the correct sample positions. All wait commands
+(WaitSamples, WaitNSample, Wait735Samples, Wait882Samples) are converted
+to WaitSamples for consistent processing.
 
 ```rust
 use soundlog::{VgmBuilder, VgmStream, VgmDocument};
 use soundlog::vgm::stream::StreamResult;
-use soundlog::vgm::command::{VgmCommand, WaitSamples, SetupStreamControl, StartStream, Instance};
+use soundlog::vgm::command::{VgmCommand, WaitSamples, WaitNSample, Wait735Samples, Wait882Samples, SetupStreamControl, StartStream, Instance};
 use soundlog::chip::Ym2612Spec;
 use soundlog::vgm::detail::{parse_data_block, DataBlockType};
 
@@ -143,6 +145,9 @@ b.add_chip_write(
 // b.add_vgm_command(SetupStreamControl { /* ... */ });
 // b.add_vgm_command(StartStream { /* ... */ });
 b.add_vgm_command(WaitSamples(8));
+b.add_vgm_command(WaitNSample(5));  // 6 samples (5+1)
+b.add_vgm_command(Wait735Samples);  // 735 samples
+b.add_vgm_command(Wait882Samples);  // 882 samples
 
 let doc: VgmDocument = b.finalize();
 
@@ -154,7 +159,9 @@ while let Some(result) = stream.next() {
     match result {
         Ok(StreamResult::Command(cmd)) => match cmd {
             VgmCommand::WaitSamples(s) => {
-                // Waits may have been split to accommodate stream-generated writes.
+                // All wait commands (WaitSamples, WaitNSample, Wait735Samples, Wait882Samples)
+                // are converted to WaitSamples by VgmStream. Waits may also have been split
+                // to accommodate stream-generated writes.
                 println!("wait {} samples", s.0);
             }
             VgmCommand::Ym2612Write(inst, spec) => {
