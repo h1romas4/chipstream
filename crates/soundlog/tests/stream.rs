@@ -1918,9 +1918,9 @@ fn test_from_commands() {
 }
 
 #[test]
-#[should_panic(expected = "push_data() cannot be called on a VgmStream created from a document")]
+#[should_panic(expected = "push_chunk() cannot be called on a VgmStream created from a document")]
 fn test_push_data_panics_on_document_stream() {
-    // Verify that push_data panics when called on a stream from document
+    // Verify that push_chunk panics when called on a stream from document
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(100));
     let doc = builder.finalize();

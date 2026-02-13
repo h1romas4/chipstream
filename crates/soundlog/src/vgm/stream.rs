@@ -120,7 +120,7 @@ pub enum StreamResult {
 /// Memory-efficient streaming VGM parser.
 ///
 /// `VgmStream` is the primary entry point for incremental processing of VGM data.
-/// It accepts either raw VGM bytes (fed via `push_data`) or a pre-parsed
+/// It accepts either raw VGM bytes (fed via `push_chunk`) or a pre-parsed
 /// `VgmDocument` (via `from_document`) and yields `VgmCommand` values through
 /// its iterator interface.
 ///
@@ -392,7 +392,6 @@ impl VgmStream {
     ///
     /// let stream = VgmStream::from_document(doc);
     /// ```
-    /// Creates a new VGM stream parser from an existing document.
     pub fn from_document(document: VgmDocument) -> Self {
         let loop_index = Self::calculate_loop_index(&document);
         Self {
@@ -467,7 +466,7 @@ impl VgmStream {
                 }
             }
             VgmStreamSource::Commands { .. } => {
-                panic!("push_data() cannot be called on a VgmStream created from a document");
+                panic!("push_chunk() cannot be called on a VgmStream created from a document");
             }
         }
     }

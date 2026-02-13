@@ -79,7 +79,7 @@ use crate::vgm::header::VgmHeader;
 /// values in DataBlock commands (chip_type and data_type use the same ID space).
 ///
 /// Note: When stored as u8 in VGM files, bit 7 (0x80) indicates secondary chip instance.
-/// Use [`DacStreamChipType::from_u8`] and [`DacStreamChipType::to_u8`] for conversion with instance support.
+/// Use [`DacStreamChipType::from_u8_with_instance`] and [`DacStreamChipType::to_u8_with_instance`] for conversion with instance flag support.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DacStreamChipType {
