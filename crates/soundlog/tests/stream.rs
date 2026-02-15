@@ -3178,24 +3178,23 @@ fn test_callback_stream_with_track_chips() {
     });
 
     // Iterate through stream
-    let mut end_reached = false;
+    // Note: Iterator returns None on EndOfStream, so loop completion means success
     for result in callback_stream {
         match result {
             Ok(StreamResult::Command(_)) => {}
-            Ok(StreamResult::EndOfStream) => {
-                end_reached = true;
-                break;
-            }
             Ok(StreamResult::NeedsMoreData) => {
                 panic!("Unexpected NeedsMoreData");
             }
             Err(e) => {
                 panic!("Stream error: {:?}", e);
             }
+            Ok(StreamResult::EndOfStream) => {
+                panic!("EndOfStream should not be yielded, iterator should return None");
+            }
         }
     }
 
-    assert!(end_reached, "Should reach EndOfStream");
+    // If we get here, the iterator returned None (EndOfStream)
     assert_eq!(*write_count.borrow(), 1, "Should have exactly 1 write");
 }
 
@@ -3241,24 +3240,23 @@ fn test_callback_stream_with_single_chip() {
     });
 
     // Iterate through stream
-    let mut end_reached = false;
+    // Note: Iterator returns None on EndOfStream, so loop completion means success
     for result in callback_stream {
         match result {
             Ok(StreamResult::Command(_)) => {}
-            Ok(StreamResult::EndOfStream) => {
-                end_reached = true;
-                break;
-            }
             Ok(StreamResult::NeedsMoreData) => {
                 panic!("Unexpected NeedsMoreData");
             }
             Err(e) => {
                 panic!("Stream error: {:?}", e);
             }
+            Ok(StreamResult::EndOfStream) => {
+                panic!("EndOfStream should not be yielded, iterator should return None");
+            }
         }
     }
 
-    assert!(end_reached, "Should reach EndOfStream");
+    // If we get here, the iterator returned None (EndOfStream)
     assert_eq!(*write_count.borrow(), 1, "Should have exactly 1 write");
 }
 
@@ -3448,7 +3446,7 @@ fn test_callback_stream_multiple_chips_and_instances() {
 
     // Process commands via iterator (ensure no infinite loop)
     let mut command_count = 0;
-    let mut end_of_stream_reached = false;
+    // Note: Iterator returns None on EndOfStream, so loop completion means success
     for result in callback_stream {
         match result {
             Ok(StreamResult::Command(_cmd)) => {
@@ -3459,21 +3457,19 @@ fn test_callback_stream_multiple_chips_and_instances() {
                     "Too many commands, possible infinite loop"
                 );
             }
-            Ok(StreamResult::EndOfStream) => {
-                end_of_stream_reached = true;
-                break;
-            }
             Ok(StreamResult::NeedsMoreData) => {
                 panic!("Unexpected NeedsMoreData from document stream");
             }
             Err(e) => {
                 panic!("Stream error: {:?}", e);
             }
+            Ok(StreamResult::EndOfStream) => {
+                panic!("EndOfStream should not be yielded, iterator should return None");
+            }
         }
     }
 
-    // Verify that EndOfStream was reached
-    assert!(end_of_stream_reached, "Stream should reach EndOfStream");
+    // If we get here, the iterator returned None (EndOfStream)
 
     // Verify expected number of writes for each chip instance
     assert_eq!(
