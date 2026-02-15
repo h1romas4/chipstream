@@ -984,6 +984,10 @@ impl<'a> VgmCallbackStream<'a> {
     }
 
     /// Register a callback for end of data commands.
+    ///
+    /// **Note**: This callback is reserved but will not be invoked in practice.
+    /// When the underlying `VgmStream` reaches `EndOfData`, the iterator returns `None`
+    /// and terminates before this callback can be called.
     pub fn on_end_of_data<F>(&mut self, callback: F)
     where
         F: FnMut(EndOfData, u64, Option<Vec<StateEvent>>) + 'a,
