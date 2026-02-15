@@ -470,8 +470,17 @@ fn header_chip_instances_enumeration() {
     let instances = doc.header.chip_instances();
 
     assert_eq!(instances.len(), 2);
-    assert!(instances.contains(&(Instance::Primary, Chip::Ym2413)));
-    assert!(instances.contains(&(Instance::Secondary, Chip::Ym2612)));
+    // ChipInstances now returns Vec<(Instance, Chip, f64)> tuples
+    assert!(
+        instances
+            .iter()
+            .any(|(inst, chip, _)| *inst == Instance::Primary && *chip == Chip::Ym2413)
+    );
+    assert!(
+        instances
+            .iter()
+            .any(|(inst, chip, _)| *inst == Instance::Secondary && *chip == Chip::Ym2612)
+    );
 }
 
 #[test]

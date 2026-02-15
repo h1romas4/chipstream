@@ -33,7 +33,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         "(none)".to_string()
     } else {
         let mut lines = Vec::new();
-        for (inst, chip) in &instances {
+        for (inst, chip, _clock_hz) in &instances {
             let instance_number = usize::from(*inst) + 1;
             lines.push(format!("{:<12} {}", format!("{:?}", chip), instance_number));
         }
@@ -478,7 +478,7 @@ pub fn redump_vgm(
         let mut intro_builder = VgmBuilder::new();
 
         // Copy chip setup from original
-        for (instance, chip) in doc_orig.header.chip_instances() {
+        for (instance, chip, _clock_hz) in doc_orig.header.chip_instances() {
             let raw_clock = doc_orig.header.get_chip_clock(&chip);
             let clock = raw_clock & 0x7FFF_FFFF;
             if clock > 0 {
@@ -570,7 +570,7 @@ pub fn redump_vgm(
 
     // Copy chip clocks from original header
     // We need to extract the actual clock value (masking the high bit for secondary instances)
-    for (instance, chip) in doc_orig.header.chip_instances() {
+    for (instance, chip, _clock_hz) in doc_orig.header.chip_instances() {
         let raw_clock = doc_orig.header.get_chip_clock(&chip);
         let clock = raw_clock & 0x7FFF_FFFF;
         if clock > 0 {
@@ -692,7 +692,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     let instances = doc.header.chip_instances();
     if !instances.is_empty() {
         println!("Chips:");
-        for (inst, chip) in &instances {
+        for (inst, chip, _clock_hz) in &instances {
             let raw_clock = doc.header.get_chip_clock(chip);
             let clock = raw_clock & 0x7FFF_FFFF;
             println!("  {:?} (instance {:?}): {} Hz", chip, inst, clock);

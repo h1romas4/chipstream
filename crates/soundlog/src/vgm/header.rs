@@ -23,6 +23,48 @@ use std::convert::TryFrom;
 
 pub(crate) const VGM_MAX_HEADER_SIZE: u32 = 0x100;
 
+/// A list of chip instances found in a VGM header.
+///
+/// Each entry is a tuple of `(Instance, Chip, clock_hz)` indicating whether the chip
+/// is a primary or secondary instance, which chip type it is, and its clock frequency.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChipInstances(pub Vec<(Instance, chip::Chip, f64)>);
+
+impl ChipInstances {
+    /// Returns an iterator over the chip instances.
+    pub fn iter(&self) -> impl Iterator<Item = &(Instance, chip::Chip, f64)> {
+        self.0.iter()
+    }
+
+    /// Returns the number of chip instances.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns true if there are no chip instances.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl IntoIterator for ChipInstances {
+    type Item = (Instance, chip::Chip, f64);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ChipInstances {
+    type Item = &'a (Instance, chip::Chip, f64);
+    type IntoIter = std::slice::Iter<'a, (Instance, chip::Chip, f64)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// Enum identifying header fields and their on-disk offsets.
 #[derive(Copy, Clone, Debug)]
 pub enum VgmHeaderField {
@@ -919,12 +961,12 @@ impl VgmHeader {
 
     /// Return a list of present chip instances found in the header.
     ///
-    /// Scans the header clock fields and returns a `Vec` of tuples
-    /// `(Instance, chip::Chip)` for each clock that is non-zero. The
+    /// Scans the header clock fields and returns a `ChipInstances` containing tuples
+    /// `(Instance, chip::Chip, clock_hz)` for each clock that is non-zero. The
     /// high bit (0x8000_0000) on stored clock values indicates a
     /// secondary instance per VGM convention.
-    pub fn chip_instances(&self) -> Vec<(Instance, chip::Chip)> {
-        let mut out: Vec<(Instance, chip::Chip)> = Vec::new();
+    pub fn chip_instances(&self) -> ChipInstances {
+        let mut out: Vec<(Instance, chip::Chip, f64)> = Vec::new();
 
         let mut push = |raw_clock: u32, ch: chip::Chip| {
             if raw_clock != 0 {
@@ -933,7 +975,8 @@ impl VgmHeader {
                 } else {
                     Instance::Primary
                 };
-                out.push((inst, ch));
+                let clock_hz = (raw_clock & 0x7FFF_FFFF) as f64;
+                out.push((inst, ch, clock_hz));
             }
         };
 
@@ -980,7 +1023,7 @@ impl VgmHeader {
         push(self.ga20_clock, chip::Chip::Ga20);
         push(self.mikey_clock, chip::Chip::Mikey);
 
-        out
+        ChipInstances(out)
     }
 
     /// Return the legacy header size to use when a stored `data_offset` is 0

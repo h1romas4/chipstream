@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0
+
+- **New**: Add `VgmCallbackStream`, a wrapper around `VgmStream` that provides callback support for chip register writes with automatic state tracking and event detection. Register callbacks using `on_write()` with chip-specific spec types (e.g., `Ym2612Spec`, `Sn76489Spec`) to receive notifications with optional `StateEvent` information for key-on/off, tone changes, and other notable events.
+  - Add `track_state<S: ChipState>()` method to enable state tracking for specific chip instances with clock frequency information.
+  - Add `track_chips()` method to automatically enable state tracking for all chips defined in `ChipInstances`.
+  - Callbacks receive `Instance`, chip-specific spec, sample count, and optional `Vec<StateEvent>` when notable state changes occur.
+- **New**: Add `chip::event` module (moved from `chip::state::event`) with `StateEvent` enum that represents notable chip state changes including `KeyOn`, `KeyOff`, `ToneChange`, `VolumeChange`, `TimbreChange`, and chip-specific events.
+- **Breaking change**: `VgmHeader::chip_instances()` now returns `ChipInstances` (a newtype wrapping `Vec<(Instance, Chip, f64)>`) instead of `Vec<(Instance, Chip)>`. The new type includes clock frequency information for each chip instance. Use `ChipInstances::iter()` or iterate over the inner `Vec` to access the tuples.
+
 ## v0.3.0
 
 - **New**: Add `VgmStream`, an iterator-based, low-memory VGM stream processor that accepts raw VGM bytes (`push_chunk`) or a pre-parsed `VgmDocument` (`from_document`) and emits `VgmCommand` values incrementally. `VgmStream` handles DAC stream control, DataBlock storage/decompression, and automatically expands stream-generated chip writes during `Wait` periods.

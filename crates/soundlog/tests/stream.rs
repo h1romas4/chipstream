@@ -1,9 +1,12 @@
 use soundlog::VgmBuilder;
 use soundlog::vgm::command::DacStreamChipType;
 use soundlog::vgm::command::{
-    EndOfData, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
+    EndOfData, Instance, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
 };
 use soundlog::vgm::stream::{StreamResult, VgmStream};
+use soundlog::{VgmCallbackStream, chip};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Helper function to create a simple VGM document with commands and loop setup
 fn create_test_vgm_with_loop() -> Vec<u8> {
@@ -3108,5 +3111,399 @@ fn test_multiple_data_blocks_cumulative_size() {
         stream.total_data_block_size() >= 500,
         "Total size should be at least 500 bytes, got {}",
         stream.total_data_block_size()
+    );
+}
+
+#[test]
+fn test_callback_stream_struct_size() {
+    // Test to investigate the size of VgmCallbackStream structure
+    // VgmCallbackStream is approximately 30KB (29 KB) due to all chip state trackers
+    use std::mem::size_of;
+
+    let size = size_of::<VgmCallbackStream>();
+    println!(
+        "VgmCallbackStream size: {} bytes ({} KB)",
+        size,
+        size / 1024
+    );
+
+    // The struct is large but using setter pattern (&mut self) avoids stack overflow
+    assert!(
+        size < 1_000_000,
+        "VgmCallbackStream is unexpectedly large: {} bytes",
+        size
+    );
+}
+
+#[test]
+fn test_callback_stream_with_track_chips() {
+    // Test VgmCallbackStream using track_chips() setter method
+    let mut builder = VgmBuilder::new();
+
+    // Register YM2612 Primary
+    builder.register_chip(chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+
+    // Add a register write
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0,
+        },
+    );
+
+    // Prevent infinite loop
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let header = doc.header.clone();
+
+    // Create VgmCallbackStream and use track_chips to enable state tracking
+    let stream = VgmStream::from_document(doc);
+    let mut callback_stream = VgmCallbackStream::new(stream);
+    callback_stream.track_chips(&header.chip_instances());
+
+    // Counter for callback invocations
+    let write_count = Rc::new(RefCell::new(0));
+    let wc = write_count.clone();
+
+    // Register callback
+    callback_stream.on_write(move |inst, spec: chip::Ym2612Spec, _sample, _event| {
+        *wc.borrow_mut() += 1;
+        assert_eq!(inst, Instance::Primary);
+        assert_eq!(spec.port, 0);
+        assert_eq!(spec.register, 0x28);
+        assert_eq!(spec.value, 0xF0);
+    });
+
+    // Iterate through stream
+    let mut end_reached = false;
+    for result in callback_stream {
+        match result {
+            Ok(StreamResult::Command(_)) => {}
+            Ok(StreamResult::EndOfStream) => {
+                end_reached = true;
+                break;
+            }
+            Ok(StreamResult::NeedsMoreData) => {
+                panic!("Unexpected NeedsMoreData");
+            }
+            Err(e) => {
+                panic!("Stream error: {:?}", e);
+            }
+        }
+    }
+
+    assert!(end_reached, "Should reach EndOfStream");
+    assert_eq!(*write_count.borrow(), 1, "Should have exactly 1 write");
+}
+
+#[test]
+fn test_callback_stream_with_single_chip() {
+    // Test VgmCallbackStream with a single chip using individual track_*_state method
+    let mut builder = VgmBuilder::new();
+
+    // Register only YM2612 Primary
+    builder.register_chip(chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+
+    // Add a simple register write
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0,
+        },
+    );
+
+    // Prevent infinite loop
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+
+    // Create VgmCallbackStream and enable state tracking
+    let stream = VgmStream::from_document(doc);
+    let mut callback_stream = VgmCallbackStream::new(stream);
+    callback_stream.track_state::<chip::state::Ym2612State>(Instance::Primary, 7_670_454.0);
+
+    // Counter for callback invocations
+    let write_count = Rc::new(RefCell::new(0));
+    let wc = write_count.clone();
+
+    // Register callback
+    callback_stream.on_write(move |inst, spec: chip::Ym2612Spec, _sample, _event| {
+        *wc.borrow_mut() += 1;
+        assert_eq!(inst, Instance::Primary);
+        assert_eq!(spec.port, 0);
+        assert_eq!(spec.register, 0x28);
+        assert_eq!(spec.value, 0xF0);
+    });
+
+    // Iterate through stream
+    let mut end_reached = false;
+    for result in callback_stream {
+        match result {
+            Ok(StreamResult::Command(_)) => {}
+            Ok(StreamResult::EndOfStream) => {
+                end_reached = true;
+                break;
+            }
+            Ok(StreamResult::NeedsMoreData) => {
+                panic!("Unexpected NeedsMoreData");
+            }
+            Err(e) => {
+                panic!("Stream error: {:?}", e);
+            }
+        }
+    }
+
+    assert!(end_reached, "Should reach EndOfStream");
+    assert_eq!(*write_count.borrow(), 1, "Should have exactly 1 write");
+}
+
+#[test]
+fn test_callback_stream_multiple_chips_and_instances() {
+    // Create VGM document with multiple chips using both Primary and Secondary instances
+    let mut builder = VgmBuilder::new();
+
+    // Register YM2612 with both Primary and Secondary instances
+    builder.register_chip(chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    builder.register_chip(chip::Chip::Ym2612, Instance::Secondary, 7_670_454);
+
+    // Register SN76489 with both Primary and Secondary instances
+    builder.register_chip(chip::Chip::Sn76489, Instance::Primary, 3_579_545);
+    builder.register_chip(chip::Chip::Sn76489, Instance::Secondary, 3_579_545);
+
+    // Register YM2151 with both Primary and Secondary instances
+    builder.register_chip(chip::Chip::Ym2151, Instance::Primary, 3_579_545);
+    builder.register_chip(chip::Chip::Ym2151, Instance::Secondary, 3_579_545);
+
+    // YM2612 Primary: register write (port 0, reg 0x28 = Key On/Off)
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0, // Key On ch0
+        },
+    );
+
+    // YM2612 Secondary: register write (port 0, reg 0x28)
+    builder.add_chip_write(
+        Instance::Secondary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF1, // Key On ch1
+        },
+    );
+
+    // SN76489 Primary: register write
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::PsgSpec {
+            value: 0x80, // Tone 0 frequency
+        },
+    );
+
+    // SN76489 Secondary: register write
+    builder.add_chip_write(
+        Instance::Secondary,
+        chip::PsgSpec {
+            value: 0x90, // Tone 1 frequency
+        },
+    );
+
+    // YM2151 Primary: register write (reg 0x08 = Key On)
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::Ym2151Spec {
+            register: 0x08,
+            value: 0x78, // Key On ch0
+        },
+    );
+
+    // YM2151 Secondary: register write (reg 0x08)
+    builder.add_chip_write(
+        Instance::Secondary,
+        chip::Ym2151Spec {
+            register: 0x08,
+            value: 0x79, // Key On ch1
+        },
+    );
+
+    // Add more register writes to verify state changes
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0xA0, // FNUM1
+            value: 0x44,
+        },
+    );
+
+    builder.add_chip_write(
+        Instance::Secondary,
+        chip::Ym2151Spec {
+            register: 0x20, // RL/FB/CON
+            value: 0xC7,
+        },
+    );
+
+    // Add wait command
+    builder.add_vgm_command(WaitSamples(100));
+
+    // Always add EndOfData to prevent infinite loop
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+
+    // Create VgmCallbackStream
+    // Use individual track_*_state methods
+    let stream = VgmStream::from_document(doc);
+    let mut callback_stream = VgmCallbackStream::new(stream);
+    callback_stream.track_state::<chip::state::Ym2612State>(Instance::Primary, 7_670_454.0);
+    callback_stream.track_state::<chip::state::Ym2612State>(Instance::Secondary, 7_670_454.0);
+    callback_stream.track_state::<chip::state::Sn76489State>(Instance::Primary, 3_579_545.0);
+    callback_stream.track_state::<chip::state::Sn76489State>(Instance::Secondary, 3_579_545.0);
+    callback_stream.track_state::<chip::state::Ym2151State>(Instance::Primary, 3_579_545.0);
+    callback_stream.track_state::<chip::state::Ym2151State>(Instance::Secondary, 3_579_545.0);
+
+    // Prepare callback counters (wrapped with RefCell for interior mutability)
+    let ym2612_primary_writes = Rc::new(RefCell::new(0));
+    let ym2612_secondary_writes = Rc::new(RefCell::new(0));
+    let sn76489_primary_writes = Rc::new(RefCell::new(0));
+    let sn76489_secondary_writes = Rc::new(RefCell::new(0));
+    let ym2151_primary_writes = Rc::new(RefCell::new(0));
+    let ym2151_secondary_writes = Rc::new(RefCell::new(0));
+
+    // Register YM2612 callback
+    let ym2612_p = ym2612_primary_writes.clone();
+    let ym2612_s = ym2612_secondary_writes.clone();
+    callback_stream.on_write(move |inst, spec: chip::Ym2612Spec, _sample, _event| {
+        match inst {
+            Instance::Primary => {
+                let mut count = ym2612_p.borrow_mut();
+                *count += 1;
+                // Verify register write content
+                if *count == 1 {
+                    assert_eq!(spec.port, 0);
+                    assert_eq!(spec.register, 0x28);
+                    assert_eq!(spec.value, 0xF0);
+                } else if *count == 2 {
+                    assert_eq!(spec.register, 0xA0);
+                    assert_eq!(spec.value, 0x44);
+                }
+            }
+            Instance::Secondary => {
+                let mut count = ym2612_s.borrow_mut();
+                *count += 1;
+                assert_eq!(spec.port, 0);
+                assert_eq!(spec.register, 0x28);
+                assert_eq!(spec.value, 0xF1);
+            }
+        }
+    });
+
+    // Register SN76489 callback
+    let sn_p = sn76489_primary_writes.clone();
+    let sn_s = sn76489_secondary_writes.clone();
+    callback_stream.on_write(
+        move |inst, spec: chip::PsgSpec, _sample, _event| match inst {
+            Instance::Primary => {
+                *sn_p.borrow_mut() += 1;
+                assert_eq!(spec.value, 0x80);
+            }
+            Instance::Secondary => {
+                *sn_s.borrow_mut() += 1;
+                assert_eq!(spec.value, 0x90);
+            }
+        },
+    );
+
+    // Register YM2151 callback
+    let ym2151_p = ym2151_primary_writes.clone();
+    let ym2151_s = ym2151_secondary_writes.clone();
+    callback_stream.on_write(
+        move |inst, spec: chip::Ym2151Spec, _sample, _event| match inst {
+            Instance::Primary => {
+                *ym2151_p.borrow_mut() += 1;
+                assert_eq!(spec.register, 0x08);
+                assert_eq!(spec.value, 0x78);
+            }
+            Instance::Secondary => {
+                let mut count = ym2151_s.borrow_mut();
+                *count += 1;
+                if *count == 1 {
+                    assert_eq!(spec.register, 0x08);
+                    assert_eq!(spec.value, 0x79);
+                } else if *count == 2 {
+                    assert_eq!(spec.register, 0x20);
+                    assert_eq!(spec.value, 0xC7);
+                }
+            }
+        },
+    );
+
+    // Process commands via iterator (ensure no infinite loop)
+    let mut command_count = 0;
+    let mut end_of_stream_reached = false;
+    for result in callback_stream {
+        match result {
+            Ok(StreamResult::Command(_cmd)) => {
+                command_count += 1;
+                // Prevent infinite loop: panic if too many commands
+                assert!(
+                    command_count < 100,
+                    "Too many commands, possible infinite loop"
+                );
+            }
+            Ok(StreamResult::EndOfStream) => {
+                end_of_stream_reached = true;
+                break;
+            }
+            Ok(StreamResult::NeedsMoreData) => {
+                panic!("Unexpected NeedsMoreData from document stream");
+            }
+            Err(e) => {
+                panic!("Stream error: {:?}", e);
+            }
+        }
+    }
+
+    // Verify that EndOfStream was reached
+    assert!(end_of_stream_reached, "Stream should reach EndOfStream");
+
+    // Verify expected number of writes for each chip instance
+    assert_eq!(
+        *ym2612_primary_writes.borrow(),
+        2,
+        "YM2612 Primary should have 2 writes"
+    );
+    assert_eq!(
+        *ym2612_secondary_writes.borrow(),
+        1,
+        "YM2612 Secondary should have 1 write"
+    );
+    assert_eq!(
+        *sn76489_primary_writes.borrow(),
+        1,
+        "SN76489 Primary should have 1 write"
+    );
+    assert_eq!(
+        *sn76489_secondary_writes.borrow(),
+        1,
+        "SN76489 Secondary should have 1 write"
+    );
+    assert_eq!(
+        *ym2151_primary_writes.borrow(),
+        1,
+        "YM2151 Primary should have 1 write"
+    );
+    assert_eq!(
+        *ym2151_secondary_writes.borrow(),
+        2,
+        "YM2151 Secondary should have 2 writes"
     );
 }

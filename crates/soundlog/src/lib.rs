@@ -6,4 +6,4 @@ pub mod vgm;
 
 pub use binutil::ParseError;
 pub use vgm::command::*;
-pub use vgm::{VgmBuilder, VgmDocument, VgmExtraHeader, VgmHeader, VgmStream};
+pub use vgm::{VgmBuilder, VgmCallbackStream, VgmDocument, VgmExtraHeader, VgmHeader, VgmStream};

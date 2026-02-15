@@ -162,6 +162,48 @@ impl ChipTypeSpec for OpnSpec {
     }
 }
 
+/// Marker type and implementation for the OPM(YM2151) chip.
+pub struct OpmSpec;
+
+impl ChipTypeSpec for OpmSpec {
+    fn config() -> ChipTypeConfig {
+        ChipTypeConfig {
+            fnum_bits: 10,
+            block_bits: 3,
+            a4_block: 5,
+            prescaler: 64.0,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f64,
+    ) -> Result<f64, FNumberError> {
+        if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        if f_num > 0x3FF {
+            return Err(FNumberError::InvalidInput);
+        }
+        let _prescaler = Self::config().prescaler;
+        let exp = 28_i32 - 2 * (block as i32);
+        let denom_pow = 2_f64.powi(exp);
+        let freq = (f_num as f64) * master_clock_hz / denom_pow;
+        Ok(freq)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f64, block: u8, master_clock_hz: f64) -> f64 {
+        let exp = 28_i32 - 2 * (block as i32);
+        let denom_pow = 2_f64.powi(exp);
+        target_freq * denom_pow / master_clock_hz
+    }
+
+    fn default_master_clock() -> f64 {
+        3_579_545.0
+    }
+}
+
 /// Marker type and implementation for the OPL3(YMF262) chip.
 pub struct Opl3Spec;
 
@@ -183,10 +225,12 @@ impl ChipTypeSpec for Opl3Spec {
         if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
             return Err(FNumberError::InvalidInput);
         }
-        if f_num > 0x3FF {
+        let spec = Self::config();
+        let max_fnum = (1u32 << spec.fnum_bits) - 1;
+        if f_num > max_fnum {
             return Err(FNumberError::InvalidInput);
         }
-        let prescaler = Self::config().prescaler;
+        let prescaler = spec.prescaler;
         let freq = (f_num as f64) * (master_clock_hz / prescaler)
             / (288.0 * 2_f64.powi(20 - block as i32));
         Ok(freq)

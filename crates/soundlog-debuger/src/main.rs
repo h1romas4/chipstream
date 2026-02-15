@@ -56,6 +56,16 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
+    /// Play VGM file and display register writes with events
+    Play {
+        /// VGM file path to play
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Dry-run mode: process the file without printing output (only errors/panics)
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -176,6 +186,27 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("parse failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("failed to read file: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Play { file, dry_run }) => {
+            // Load file
+            match load_bytes_from_path(&file) {
+                Ok(bytes) => {
+                    // Call play_vgm
+                    match crate::cui::play::play_vgm(&file, bytes, dry_run) {
+                        Ok(_) => {
+                            std::process::exit(0);
+                        }
+                        Err(e) => {
+                            eprintln!("play failed: {}", e);
                             std::process::exit(1);
                         }
                     }

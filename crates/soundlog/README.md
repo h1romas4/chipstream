@@ -15,9 +15,14 @@ Key features:
   processor that can accept either chunked binary input (via `push_chunk`)
   or a pre-parsed `VgmDocument` (via `from_document`) and yields parsed
   `VgmCommand` values as they become available.
+- Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
+  callback registration for chip register writes with automatic state tracking
+  and event detection (KeyOn, KeyOff, ToneChange).
 - Memory limits: Configurable limits for data block accumulation (default 32 MiB)
   and parsing buffer size (default 64 MiB) prevent unbounded memory growth from
   untrusted input.
+- Chip state tracking: Monitor register writes to track key on/off events and
+  extract tone information (frequency, pitch) from sound chip registers in real-time.
 
 ### VgmStream overview
 
@@ -245,6 +250,148 @@ for chunk in chunks {
     }
 }
 ```
+
+### VgmCallbackStream overview (WIP)
+
+**Note: This feature is still under testing.**
+
+`VgmCallbackStream` wraps `VgmStream` to provide automatic chip state tracking
+and event-driven callbacks for real-time VGM processing:
+
+- **Automatic State Tracking**: Enables per-chip state management for 35+ supported
+  sound chips, automatically detecting register writes and maintaining internal state.
+- **Event Detection**: Emits `StateEvent` notifications for key musical events:
+  - `KeyOn`: Channel starts playing with tone/frequency information
+  - `KeyOff`: Channel stops playing
+  - `ToneChange`: Frequency changes while channel is active
+- **Flexible Callbacks**: Register chip-specific callbacks using type-safe spec types
+  (e.g., `Ym2612Spec`, `Sn76489Spec`) to handle register writes with sample timing
+  and associated events.
+- **Real-time Processing**: Low-overhead design suitable for streaming playback,
+  with callbacks invoked automatically as commands are processed.
+- **Comprehensive Chip Support**: Works with all major sound chips including FM
+  synthesizers (YM2612, YM2151, OPL series), PSG chips (SN76489, AY-8910),
+  PCM chips, and more.
+
+This enables building advanced VGM analysis tools, real-time visualizers,
+and custom playback engines with minimal boilerplate code.
+
+```rust
+use soundlog::{VgmBuilder, VgmCallbackStream};
+use soundlog::vgm::command::Instance;
+use soundlog::chip::{event::StateEvent, Ym2612Spec};
+
+// Build a simple VGM document with YM2612 commands
+let mut b = VgmBuilder::new();
+b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+// YM2612 initialization: LFO off
+b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x22, value: 0x00 });
+// Key on channel 1
+b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x28, value: 0xF0 });
+b.add_vgm_command(soundlog::vgm::command::WaitSamples(100));
+b.add_vgm_command(soundlog::vgm::command::VgmCommand::EndOfData(soundlog::vgm::command::EndOfData {}));
+let doc = b.finalize();
+
+let stream = soundlog::vgm::VgmStream::from_document(doc);
+let mut callback_stream = VgmCallbackStream::new(stream);
+
+// Prevent infinite loops in documentation
+callback_stream.set_loop_count(Some(1));
+
+// Enable state tracking for YM2612 at NTSC Genesis clock
+callback_stream.track_state::<soundlog::chip::state::Ym2612State>(
+    Instance::Primary, 7_670_454.0
+);
+
+// Register callback for YM2612 writes
+callback_stream.on_write(|inst, spec: Ym2612Spec, sample, events| {
+    println!("YM2612[{:?}] @ sample {}: reg={:02X} val={:02X}",
+             inst, sample, spec.register, spec.value);
+
+    if let Some(events) = events {
+        for event in events {
+            match event {
+                StateEvent::KeyOn { channel, tone } => {
+                    println!("  → KeyOn ch={} freq={:.1}Hz",
+                             channel, tone.freq_hz.unwrap_or(0.0));
+                }
+                StateEvent::KeyOff { channel } => {
+                    println!("  → KeyOff ch={}", channel);
+                }
+                StateEvent::ToneChange { channel, tone } => {
+                    println!("  → ToneChange ch={} freq={:.1}Hz",
+                             channel, tone.freq_hz.unwrap_or(0.0));
+                }
+            }
+        }
+    }
+});
+
+// Process stream - callbacks fire automatically
+for result in callback_stream {
+    match result {
+        Ok(_) => { /* callbacks already invoked */ }
+        Err(e) => eprintln!("Error: {:?}", e),
+    }
+}
+```
+
+## Chip State Tracking (WIP)
+
+**Note: This feature is still under testing.**
+
+The `chip::state` module provides real-time state tracking for sound chips,
+detecting key on/off events and extracting tone information from register writes.
+
+### Implemented Chips
+
+| Chip | Channels | Key On/Off | Tone Extract | Status | Test |
+|------|----------|------------|--------------|--------|------|
+| **SN76489 (PSG)** | 3 tone + 1 noise | ✅ | ✅ | Master System, Game Gear | ⬜ |
+| **YM2413 (OPLL)** | 9 FM | ✅ | ✅ | MSX, SMS FM Unit | ⬜ |
+| **YM2612 (OPN2)** | 6 FM | ✅ | ✅ | Sega Genesis/Mega Drive | ⬜ |
+| **YM2151 (OPM)** | 8 FM | ✅ | ✅ | Arcade systems | ⬜ |
+| **SegaPcm** | N/A | N/A | N/A | Sega PCM chip | ⬜ |
+| **Rf5c68** | N/A | N/A | N/A | RF5C68 PCM chip | ⬜ |
+| **Ym2203 (OPN)** | 3 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ⬜ |
+| **Ym2608 (OPNA)** | 6 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ⬜ |
+| **Ym2610b (OPNB)** | 6 FM + 3 PSG + ADPCM | ✅ | ✅ | Neo Geo, etc. | ⬜ |
+| **YM3812 (OPL2)** | 9 FM | ✅ | ✅ | AdLib, Sound Blaster | ⬜ |
+| **Ym3526 (OPL)** | 9 FM | ✅ | ✅ | C64 Sound Expander, etc. | ⬜ |
+| **Y8950** | 9 FM + ADPCM | ✅ | ✅ | MSX | ⬜ |
+| **Ymf262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ⬜ |
+| **Ymf278b (OPL4)** | 18 FM + PCM | ✅ | ✅ | YMF278B | ⬜ |
+| **Ymf271 (OPX)** | 12 FM + PCM | ✅ | ✅ | YMF271 | ⬜ |
+| **Scc1** | 5 | ✅ | ✅ | Konami SCC (same as K051649) | ⬜ |
+| **Ymz280b** | N/A | N/A | N/A | YMZ280B PCM | ⬜ |
+| **Rf5c164** | N/A | N/A | N/A | RF5C164 PCM | ⬜ |
+| **Pwm** | N/A | N/A | N/A | Sega PWM | ⬜ |
+| **Ay8910** | 3 tone + noise | ✅ | ✅ | ZX Spectrum, MSX, etc. | ⬜ |
+| **GbDmg** | 4 | ✅ | ✅ | Game Boy | ⬜ |
+| **NesApu** | 5 | ✅ | ✅ | NES | ⬜ |
+| **MultiPcm** | N/A | N/A | N/A | Sega MultiPCM | ⬜ |
+| **Upd7759** | N/A | N/A | N/A | uPD7759 ADPCM | ⬜ |
+| **Okim6258** | N/A | N/A | N/A | OKIM6258 ADPCM | ⬜ |
+| **Okim6295** | N/A | N/A | N/A | OKIM6295 ADPCM | ⬜ |
+| **K051649** | 5 | ✅ | ✅ | Konami SCC | ⬜ |
+| **K054539** | N/A | N/A | N/A | Konami K054539 PCM | ⬜ |
+| **Huc6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ⬜ |
+| **C140** | N/A | N/A | N/A | Namco C140 PCM | ⬜ |
+| **K053260** | N/A | N/A | N/A | Konami K053260 PCM | ⬜ |
+| **Pokey** | 4 | ✅ | ✅ | Atari 8-bit computers | ⬜ |
+| **Qsound** | N/A | N/A | N/A | Capcom QSound | ⬜ |
+| **Scsp** | N/A | N/A | N/A | Sega Saturn SCSP | ⬜ |
+| **WonderSwan** | 4 | ✅ | ✅ | WonderSwan APU | ⬜ |
+| **Vsu** | 6 | ✅ | ✅ | Virtual Boy VSU | ⬜ |
+| **Saa1099** | 6 | ✅ | ✅ | SAM Coupé, etc. | ⬜ |
+| **Es5503** | N/A | N/A | N/A | Ensoniq ES5503 | ⬜ |
+| **Es5506U8** | N/A | N/A | N/A | Ensoniq ES5506 (8-bit) | ⬜ |
+| **Es5506U16** | N/A | N/A | N/A | Ensoniq ES5506 (16-bit) | ⬜ |
+| **X1010** | N/A | N/A | N/A | Setia X1-010 | ⬜ |
+| **C352** | N/A | N/A | N/A | Namco C352 | ⬜ |
+| **Ga20** | N/A | N/A | N/A | Irem GA20 | ⬜ |
+| **Mikey** | 4 | ✅ | ✅ | Atari Lynx | ⬜ |
+| **GameGearPsg** | 3 tone + 1 noise | ✅ | ✅ | Game Gear PSG (same as SN76489) | ⬜ |
 
 ## License
 

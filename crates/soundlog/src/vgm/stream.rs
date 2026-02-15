@@ -791,6 +791,23 @@ impl VgmStream {
         self.fadeout_samples
     }
 
+    /// Gets the current sample position (at 44.1 kHz).
+    ///
+    /// This returns the number of samples that have elapsed since the start of the stream
+    /// or since the last loop point. When the stream loops, this value is reset to 0.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::vgm::VgmStream;
+    /// # let doc = soundlog::VgmDocument::default();
+    /// let stream = VgmStream::from_document(doc);
+    /// let position = stream.current_sample();
+    /// ```
+    pub fn current_sample(&self) -> u64 {
+        self.current_sample
+    }
+
     /// Sets the maximum allowed size for accumulated data blocks.
     ///
     /// When data blocks are added that would exceed this limit, a
@@ -946,6 +963,9 @@ impl VgmStream {
     /// Resets loop-specific state when starting a new loop iteration.
     fn reset_loop_state(&mut self) {
         self.pcm_data_offset = 0;
+
+        // Reset sample position to 0 when looping
+        self.current_sample = 0;
 
         for state in self.stream_states.values_mut() {
             state.active = false;
