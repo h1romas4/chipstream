@@ -4,6 +4,13 @@
 //! allows registering callbacks for chip register writes with automatic state
 //! tracking and event detection.
 //!
+//! # Iterator Behavior
+//!
+//! `VgmCallbackStream` implements `Iterator` and wraps the underlying `VgmStream`.
+//! When the underlying stream reaches `StreamResult::EndOfStream`, this iterator
+//! returns `None` to terminate iteration. The `EndOfStream` result itself is not
+//! yielded to the caller - instead, the iterator simply ends.
+//!
 //! # Examples
 //!
 //! ```
@@ -36,10 +43,14 @@
 //!         Ok(StreamResult::Command(_)) => {
 //!             // Callbacks have already been invoked
 //!         }
-//!         Ok(StreamResult::EndOfStream) => break,
+//!         Err(e) => {
+//!             eprintln!("Stream error: {:?}", e);
+//!             break;
+//!         }
 //!         _ => {}
 //!     }
 //! }
+//! // Iterator returns None on EndOfStream, terminating the loop
 //! ```
 #![allow(private_interfaces)]
 
@@ -483,6 +494,13 @@ struct Callbacks<'a> {
 /// A wrapper around `VgmStream` that provides callback support for chip register writes
 /// with automatic state tracking and event detection.
 ///
+/// # Iterator Behavior
+///
+/// `VgmCallbackStream` implements `Iterator` and wraps the underlying `VgmStream`.
+/// When the underlying stream reaches `StreamResult::EndOfStream`, this iterator
+/// returns `None` to terminate iteration. The `EndOfStream` result itself is not
+/// yielded to the caller - instead, the iterator simply ends.
+///
 /// # Examples
 ///
 /// ```
@@ -506,14 +524,9 @@ struct Callbacks<'a> {
 ///         }
 ///     });
 ///
-/// for result in callback_stream {
-///     match result {
-///         Ok(StreamResult::Command(_)) => {
-///             // Callbacks have already been invoked
-///         }
-///         Ok(StreamResult::EndOfStream) => break,
-///         _ => {}
-///     }
+/// // Process stream - iterator returns None on EndOfStream
+/// for _result in callback_stream {
+///     // Callbacks are invoked automatically
 /// }
 /// ```
 pub struct VgmCallbackStream<'a> {
@@ -582,14 +595,9 @@ impl<'a> VgmCallbackStream<'a> {
     ///     }
     /// });
     ///
-    /// for result in callback_stream {
-    ///     match result {
-    ///         Ok(StreamResult::Command(_)) => {
-    ///             // Callbacks have already been invoked
-    ///         }
-    ///         Ok(StreamResult::EndOfStream) => break,
-    ///         _ => {}
-    ///     }
+    /// // Process stream - iterator returns None on EndOfStream
+    /// for _result in callback_stream {
+    ///     // Callbacks are invoked automatically
     /// }
     /// ```
     pub fn from_document(doc: VgmDocument) -> Self {
