@@ -176,10 +176,31 @@ impl VgmBuilder {
     /// This computes derived header fields (for example `total_samples` and
     /// `loop_offset`) by scanning accumulated commands. If a loop index has
     /// been set via `set_loop_offset()`, the corresponding command's byte
-    /// offset is computed and stored (relative to 0x1C) in the header. The
-    /// method returns the complete document ready for serialization via
+    /// offset is computed and stored (relative to 0x1C) in the header.
+    ///
+    /// Additionally, when finalizing the builder the implementation will
+    /// ensure the document contains an explicit `EndOfData` command: if the
+    /// command stream does not already include one, `finalize()` appends an
+    /// `EndOfData` to the end of `commands`. Note that `VgmDocument::to_bytes()`
+    /// itself intentionally does not auto-append `EndOfData` — the builder is a
+    /// convenience layer that guarantees a finalized document is properly
+    /// terminated for common programmatic construction flows.
+    ///
+    /// The method returns the complete document ready for serialization via
     /// `VgmDocument::to_bytes()`.
     pub fn finalize(mut self) -> VgmDocument {
+        // Ensure the document always contains an explicit EndOfData when finalizing.
+        if !self
+            .document
+            .commands
+            .iter()
+            .any(|c| matches!(c, VgmCommand::EndOfData(_)))
+        {
+            self.document
+                .commands
+                .push(VgmCommand::EndOfData(crate::vgm::command::EndOfData {}));
+        }
+
         // compute total samples
         let total_sample = self.document.total_samples();
         self.document.header.total_samples = total_sample;
@@ -315,10 +336,9 @@ impl VgmDocument {
             self.header.data_offset
         };
 
-        let mut header_len = self.header.to_bytes(0, data_offset).len() as u32;
-        if let Some(ref extra) = self.extra_header {
-            header_len += extra.to_bytes().len() as u32;
-        }
+        // Calculate actual header length from data_offset
+        // data_offset is relative to 0x34, so actual header length is 0x34 + data_offset
+        let header_len = 0x34_u32.wrapping_add(data_offset);
         let loop_abs_offset = 0x1C_u32.wrapping_add(self.header.loop_offset);
         let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
 
@@ -359,5 +379,43 @@ impl<'a> IntoIterator for &'a mut VgmDocument {
 
     fn into_iter(self) -> Self::IntoIter {
         self.commands.iter_mut()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vgm::command::{EndOfData, VgmCommand};
+
+    #[test]
+    fn test_finalize_appends_end_of_data_when_missing() {
+        let builder = VgmBuilder::new();
+        let doc = builder.finalize();
+        assert!(
+            doc.commands
+                .iter()
+                .any(|c| matches!(c, VgmCommand::EndOfData(_))),
+            "finalize() should append EndOfData when missing"
+        );
+    }
+
+    #[test]
+    fn test_finalize_does_not_duplicate_end_of_data() {
+        let mut builder = VgmBuilder::new();
+        // Insert an explicit EndOfData before finalizing
+        builder
+            .document
+            .commands
+            .push(VgmCommand::EndOfData(EndOfData {}));
+        let doc = builder.finalize();
+        let count = doc
+            .commands
+            .iter()
+            .filter(|c| matches!(c, VgmCommand::EndOfData(_)))
+            .count();
+        assert_eq!(
+            count, 1,
+            "finalize() must not duplicate an existing EndOfData"
+        );
     }
 }

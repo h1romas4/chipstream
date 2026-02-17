@@ -33,7 +33,7 @@ macro_rules! impl_pcm_chip_u8_u8 {
             /// # Arguments
             ///
             /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
-            pub fn new(_clock: f64) -> Self {
+            pub fn new(_clock: f32) -> Self {
                 Self {
                     registers: ArrayStorage::default(),
                     channel_count: $channels,
@@ -43,7 +43,7 @@ macro_rules! impl_pcm_chip_u8_u8 {
 
         impl Default for $name {
             fn default() -> Self {
-                Self::new(0.0)
+                Self::new(0.0f32)
             }
         }
 
@@ -99,7 +99,7 @@ macro_rules! impl_pcm_chip_u16_u8 {
             /// # Arguments
             ///
             /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
-            pub fn new(_clock: f64) -> Self {
+            pub fn new(_clock: f32) -> Self {
                 Self {
                     registers: SparseStorage::default(),
                     channel_count: $channels,
@@ -109,7 +109,7 @@ macro_rules! impl_pcm_chip_u16_u8 {
 
         impl Default for $name {
             fn default() -> Self {
-                Self::new(0.0)
+                Self::new(0.0f32)
             }
         }
 
@@ -165,7 +165,7 @@ macro_rules! impl_pcm_chip_u8_u16 {
             /// # Arguments
             ///
             /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
-            pub fn new(_clock: f64) -> Self {
+            pub fn new(_clock: f32) -> Self {
                 Self {
                     registers: ArrayStorage::default(),
                     channel_count: $channels,
@@ -175,7 +175,7 @@ macro_rules! impl_pcm_chip_u8_u16 {
 
         impl Default for $name {
             fn default() -> Self {
-                Self::new(0.0)
+                Self::new(0.0f32)
             }
         }
 
@@ -231,7 +231,7 @@ macro_rules! impl_pcm_chip_u16_u16 {
             /// # Arguments
             ///
             /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
-            pub fn new(_clock: f64) -> Self {
+            pub fn new(_clock: f32) -> Self {
                 Self {
                     registers: SparseStorage::default(),
                     channel_count: $channels,
@@ -241,7 +241,7 @@ macro_rules! impl_pcm_chip_u16_u16 {
 
         impl Default for $name {
             fn default() -> Self {
-                Self::new(0.0)
+                Self::new(0.0f32)
             }
         }
 
@@ -402,13 +402,74 @@ impl_pcm_chip_u8_u8!(
     4
 );
 
+// PWM (register: u8, value: u32)
+// PWM uses lower 24 bits of a 32-bit value; track as u32 in storage.
+#[derive(Debug, Clone)]
+pub struct PwmState {
+    /// Register storage (u8 register -> u32 value)
+    registers: ArrayStorage<u32, 256>,
+    /// Number of channels (PWM generally treated as a single channel for tracking)
+    channel_count: usize,
+}
+
+impl PwmState {
+    /// Create a new PWM state tracker
+    ///
+    /// The clock parameter is accepted for API consistency but not used.
+    ///
+    /// # Arguments
+    ///
+    /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
+    pub fn new(_clock: f32) -> Self {
+        Self {
+            registers: ArrayStorage::default(),
+            channel_count: 1,
+        }
+    }
+}
+
+impl Default for PwmState {
+    fn default() -> Self {
+        Self::new(0.0f32)
+    }
+}
+
+impl ChipState for PwmState {
+    type Register = u8;
+    type Value = u32;
+
+    fn on_register_write(
+        &mut self,
+        register: Self::Register,
+        value: Self::Value,
+    ) -> Option<Vec<StateEvent>> {
+        // Only lower 24 bits are used by PWM spec; mask to be explicit.
+        let masked = value & 0x00FF_FFFF;
+        self.registers.write(register, masked);
+        // PWM writes do not generate tone/key events in this tracker.
+        None
+    }
+
+    fn read_register(&self, register: Self::Register) -> Option<Self::Value> {
+        self.registers.read(register)
+    }
+
+    fn reset(&mut self) {
+        self.registers.clear();
+    }
+
+    fn channel_count(&self) -> usize {
+        self.channel_count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_sega_pcm_register_storage() {
-        let mut state = SegaPcmState::new(0.0);
+        let mut state = SegaPcmState::new(0.0f32);
 
         // Initially no registers stored
         assert_eq!(state.read_register(0x0000), None);
@@ -430,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_pcm_reset() {
-        let mut state = Rf5c68State::new(0.0);
+        let mut state = Rf5c68State::new(0.0f32);
 
         state.on_register_write(0x0010, 0x42);
         state.on_register_write(0x0020, 0x99);
@@ -449,30 +510,30 @@ mod tests {
 
     #[test]
     fn test_channel_counts() {
-        assert_eq!(SegaPcmState::new(0.0).channel_count(), 16);
-        assert_eq!(Rf5c68State::new(0.0).channel_count(), 8);
-        assert_eq!(Rf5c164State::new(0.0).channel_count(), 8);
-        assert_eq!(Ymz280bState::new(0.0).channel_count(), 8);
-        assert_eq!(MultiPcmState::new(0.0).channel_count(), 28);
-        assert_eq!(Upd7759State::new(0.0).channel_count(), 1);
-        assert_eq!(Okim6258State::new(0.0).channel_count(), 1);
-        assert_eq!(Okim6295State::new(0.0).channel_count(), 4);
-        assert_eq!(K054539State::new(0.0).channel_count(), 8);
-        assert_eq!(C140State::new(0.0).channel_count(), 24);
-        assert_eq!(C352State::new(0.0).channel_count(), 32);
-        assert_eq!(K053260State::new(0.0).channel_count(), 4);
-        assert_eq!(QsoundState::new(0.0).channel_count(), 16);
-        assert_eq!(ScspState::new(0.0).channel_count(), 32);
-        assert_eq!(Es5503State::new(0.0).channel_count(), 32);
-        assert_eq!(Es5506State::new(0.0).channel_count(), 32);
-        assert_eq!(X1010State::new(0.0).channel_count(), 16);
-        assert_eq!(Ga20State::new(0.0).channel_count(), 4);
+        assert_eq!(SegaPcmState::new(0.0f32).channel_count(), 16);
+        assert_eq!(Rf5c68State::new(0.0f32).channel_count(), 8);
+        assert_eq!(Rf5c164State::new(0.0f32).channel_count(), 8);
+        assert_eq!(Ymz280bState::new(0.0f32).channel_count(), 8);
+        assert_eq!(MultiPcmState::new(0.0f32).channel_count(), 28);
+        assert_eq!(Upd7759State::new(0.0f32).channel_count(), 1);
+        assert_eq!(Okim6258State::new(0.0f32).channel_count(), 1);
+        assert_eq!(Okim6295State::new(0.0f32).channel_count(), 4);
+        assert_eq!(K054539State::new(0.0f32).channel_count(), 8);
+        assert_eq!(C140State::new(0.0f32).channel_count(), 24);
+        assert_eq!(C352State::new(0.0f32).channel_count(), 32);
+        assert_eq!(K053260State::new(0.0f32).channel_count(), 4);
+        assert_eq!(QsoundState::new(0.0f32).channel_count(), 16);
+        assert_eq!(ScspState::new(0.0f32).channel_count(), 32);
+        assert_eq!(Es5503State::new(0.0f32).channel_count(), 32);
+        assert_eq!(Es5506State::new(0.0f32).channel_count(), 32);
+        assert_eq!(X1010State::new(0.0f32).channel_count(), 16);
+        assert_eq!(Ga20State::new(0.0f32).channel_count(), 4);
     }
 
     #[test]
     fn test_multiple_chips_independent() {
-        let mut sega = SegaPcmState::new(0.0);
-        let mut okim = Okim6295State::new(0.0);
+        let mut sega = SegaPcmState::new(0.0f32);
+        let mut okim = Okim6295State::new(0.0f32);
 
         sega.on_register_write(0x0010, 0xAA);
         okim.on_register_write(0x10, 0xBB);
@@ -483,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_qsound_u16_value() {
-        let mut state = QsoundState::new(0.0);
+        let mut state = QsoundState::new(0.0f32);
 
         // QSound has u8 register but u16 value
         state.on_register_write(0x10, 0xBEEF);
@@ -492,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_c352_u16_u16() {
-        let mut state = C352State::new(0.0);
+        let mut state = C352State::new(0.0f32);
 
         // C352 has u16 register and u16 value
         state.on_register_write(0x0100, 0x1234);
@@ -501,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_es5506_u16_value() {
-        let mut state = Es5506State::new(0.0);
+        let mut state = Es5506State::new(0.0f32);
 
         // ES5506 state uses u8 register but u16 value
         state.on_register_write(0x1A, 0xBEEF);
@@ -510,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_k054539_u16_register() {
-        let mut state = K054539State::new(0.0);
+        let mut state = K054539State::new(0.0f32);
 
         // K054539 has u16 register
         state.on_register_write(0x0200, 0x42);

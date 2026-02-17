@@ -134,7 +134,7 @@ pub trait StateTracker: sealed::SealedState + 'static {
 
     /// Initialize the state tracker for this chip type.
     #[doc(hidden)]
-    fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f64);
+    fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f32);
 }
 
 // Seal the traits to prevent external implementations
@@ -203,6 +203,7 @@ mod sealed {
     impl SealedState for crate::chip::state::Ym3526State {}
     impl SealedState for crate::chip::state::Y8950State {}
     impl SealedState for crate::chip::state::Sn76489State {}
+    impl SealedState for crate::chip::state::PwmState {}
     impl SealedState for crate::chip::state::Ay8910State {}
     impl SealedState for crate::chip::state::GbDmgState {}
     impl SealedState for crate::chip::state::NesApuState {}
@@ -251,7 +252,7 @@ macro_rules! impl_callback_and_state {
         impl StateTracker for $state_type {
             type Spec = $spec_type;
 
-            fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f64) {
+            fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f32) {
                 trackers.$tracker_field[instance as usize] = Some(<$state_type>::new(clock));
             }
         }
@@ -375,7 +376,12 @@ macro_rules! impl_write_callback_target_no_state {
         }
     };
 }
-impl_write_callback_target_no_state!(chip::PwmSpec, on_pwm_write);
+impl_callback_and_state!(
+    chip::PwmSpec,
+    crate::chip::state::PwmState,
+    on_pwm_write,
+    pwm
+);
 impl_write_callback_target_no_state!(chip::MultiPcmBankSpec, on_multi_pcm_bank_write);
 impl_write_callback_target_no_state!(chip::GameGearPsgSpec, on_game_gear_psg_write);
 
@@ -396,6 +402,7 @@ struct StateTrackers {
     ymf271: [Option<Ymf271State>; 2],
     ymf278b: [Option<Ymf278bState>; 2],
     sn76489: [Option<Sn76489State>; 2],
+    gamegear_psg: [Option<Sn76489State>; 2],
     ay8910: [Option<Ay8910State>; 2],
     gb_dmg: [Option<GbDmgState>; 2],
     nes_apu: [Option<NesApuState>; 2],
@@ -410,6 +417,7 @@ struct StateTrackers {
     sega_pcm: [Option<SegaPcmState>; 2],
     rf5c68: [Option<Rf5c68State>; 2],
     rf5c164: [Option<Rf5c164State>; 2],
+    pwm: [Option<crate::chip::state::PwmState>; 2],
     multi_pcm: [Option<MultiPcmState>; 2],
     upd7759: [Option<Upd7759State>; 2],
     okim6258: [Option<Okim6258State>; 2],
@@ -637,6 +645,27 @@ impl<'a> VgmCallbackStream<'a> {
         self.stream.set_loop_count(count);
     }
 
+    /// Push raw VGM bytes into the underlying stream parser.
+    ///
+    /// This is a convenience wrapper that forwards to `VgmStream::push_chunk`.
+    /// It returns an error if the underlying stream was created from a `VgmDocument`
+    /// (the inner `VgmStream::push_chunk` enforces that) or if buffer limits are exceeded.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::vgm::VgmCallbackStream;
+    /// use soundlog::vgm::stream::VgmStream;
+    ///
+    /// let mut inner = VgmStream::new();
+    /// let mut callback_stream = VgmCallbackStream::new(inner);
+    /// let chunk = vec![0x56, 0x67, 0x6D, 0x20];
+    /// callback_stream.push_chunk(&chunk).expect("push chunk");
+    /// ```
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
+        self.stream.push_chunk(chunk)
+    }
+
     /// Enable state tracking for all chips in the given chip instances list.
     ///
     /// This is a convenience method that automatically enables state tracking
@@ -824,8 +853,15 @@ impl<'a> VgmCallbackStream<'a> {
                     self.state_trackers.ymz280b[*instance as usize] =
                         Some(Ymz280bState::new(*clock_hz));
                 }
-                _ => {
-                    // Chips without state tracking are silently skipped
+                chip::Chip::Pwm => {
+                    // Initialize PWM state tracker
+                    self.state_trackers.pwm[*instance as usize] =
+                        Some(crate::chip::state::PwmState::new(*clock_hz));
+                }
+                chip::Chip::GameGearPsg => {
+                    // Initialize Game Gear PSG state tracker
+                    self.state_trackers.gamegear_psg[*instance as usize] =
+                        Some(Sn76489State::new(*clock_hz));
                 }
             }
         }
@@ -912,7 +948,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// // Enable state tracking for YM2151
     /// stream.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
     /// ```
-    pub fn track_state<S>(&mut self, instance: Instance, clock: f64)
+    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: StateTracker,
     {
@@ -1378,8 +1414,11 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::GameGearPsgWrite(instance, spec) => {
+                let event = self.state_trackers.gamegear_psg[*instance as usize]
+                    .as_mut()
+                    .and_then(|state| state.on_register_write(spec.value, spec.value));
                 if let Some(ref mut cb) = self.callbacks.on_game_gear_psg_write {
-                    cb(*instance, spec.clone(), sample, None);
+                    cb(*instance, spec.clone(), sample, event);
                 }
             }
             VgmCommand::Scc1Write(instance, spec) => {

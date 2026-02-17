@@ -32,7 +32,7 @@ pub struct Y8950State {
     /// Channel states for 9 FM channels
     channels: [ChannelState; Y8950_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Y8950Storage,
 }
@@ -53,9 +53,9 @@ impl Y8950State {
     /// ```
     /// use soundlog::chip::state::Y8950State;
     ///
-    /// let state = Y8950State::new(3_579_545.0);
+    /// let state = Y8950State::new(3_579_545.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_y8950_key_on() {
-        let mut state = Y8950State::new(3_579_545.0);
+        let mut state = Y8950State::new(3_579_545.0f32);
 
         state.on_register_write(0xA0, 0x6D);
         let event = state.on_register_write(0xB0, 0x30);
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_y8950_key_off() {
-        let mut state = Y8950State::new(3_579_545.0);
+        let mut state = Y8950State::new(3_579_545.0f32);
 
         state.on_register_write(0xA0, 0x6D);
         state.on_register_write(0xB0, 0x30);
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_y8950_tone_change() {
-        let mut state = Y8950State::new(3_579_545.0);
+        let mut state = Y8950State::new(3_579_545.0f32);
 
         state.on_register_write(0xA0, 0x6D);
         state.on_register_write(0xB0, 0x30);
@@ -323,13 +323,13 @@ mod tests {
 
     #[test]
     fn test_y8950_channel_count() {
-        let state = Y8950State::new(3_579_545.0);
+        let state = Y8950State::new(3_579_545.0f32);
         assert_eq!(state.channel_count(), 9);
     }
 
     #[test]
     fn test_y8950_reset() {
-        let mut state = Y8950State::new(3_579_545.0);
+        let mut state = Y8950State::new(3_579_545.0f32);
 
         state.on_register_write(0xA0, 0x6D);
         state.on_register_write(0xB0, 0x30);

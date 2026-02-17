@@ -65,8 +65,8 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
             _ => 0u64,
         })
         .sum();
-    const BASE_SR: f64 = 44100.0;
-    let wait_seconds = (total_wait_samples as f64) / BASE_SR;
+    const BASE_SR: f32 = 44100.0f32;
+    let wait_seconds = (total_wait_samples as f32) / BASE_SR;
     let waits_total = format!("{} ({:.3} s @ 44100Hz)", total_wait_samples, wait_seconds);
 
     // data blocks
@@ -180,7 +180,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
 ///
 /// This is used by `test_roundtrip --diag` when the roundtrip succeeds
 /// and the caller requested diag diagnostics.
-fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
+pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
     // Build a field-aligned side-by-side table using summarize_doc but
     // split multi-line values into per-line rows so columns stay aligned.
     let orig_rows = summarize_doc(orig);
@@ -241,7 +241,7 @@ fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
 ///
 /// This is used by `test_roundtrip --diag` on mismatch to print a compact
 /// textual comparison and report the first differing byte offset.
-fn print_diag_compact(
+pub(crate) fn print_diag_compact(
     orig: &VgmDocument,
     rebuilt: &VgmDocument,
     data: &[u8],
@@ -348,20 +348,19 @@ fn print_diag_compact(
 }
 
 /// Compare two parsed documents, allowing placement-only differences for GD3/data_offset.
-fn docs_equal_allow_gd3_offset(a: &VgmDocument, b: &VgmDocument) -> bool {
+pub(crate) fn docs_equal_allow_gd3_offset(a: &VgmDocument, b: &VgmDocument) -> bool {
     let mut ha = a.header.clone();
     let mut hb = b.header.clone();
-
-    // Ignore placement-only differences: GD3 offset and data_offset/header size.
+    // Ignore placement-only differences: GD3 offset.
     ha.gd3_offset = 0;
     hb.gd3_offset = 0;
-    ha.data_offset = 0;
-    hb.data_offset = 0;
+    // Header must match exactly.
     if ha != hb {
         return false;
     }
-    // Extra header must match exactly.
-    if a.extra_header != b.extra_header {
+
+    // Extra header: only compare data content, not placement details (header_size, offsets).
+    if !extra_headers_semantically_equal(&a.extra_header, &b.extra_header) {
         return false;
     }
     // Commands must match exactly.
@@ -375,292 +374,29 @@ fn docs_equal_allow_gd3_offset(a: &VgmDocument, b: &VgmDocument) -> bool {
     true
 }
 
-/// Test command: parse, serialize, re-parse roundtrip test and compare binary bytes.
-/// Prints detailed diagnostics including a compact field-by-field comparison.
+/// Compare two extra headers semantically, ignoring placement details.
 ///
-/// The comparison is semantic: a roundtrip is considered successful if either the
-/// serialized bytes match exactly, or the parsed documents match except for
-/// placement-only differences (GD3/data offset).
-pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
-    // Prepare quoted full-path string for one-line outputs. Try to canonicalize to get absolute path,
-    // but fall back to the provided path if canonicalize fails.
-    let file_str = match path.canonicalize() {
-        Ok(p) => p.to_string_lossy().into_owned(),
-        Err(_) => path.to_string_lossy().into_owned(),
-    };
-
-    // Parse original bytes, but on parse error print filename + parse error and continue.
-    let doc_orig_res: Result<VgmDocument, _> = (&data[..]).try_into();
-    let doc_orig = match doc_orig_res {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("\"{}\": parse error: {}", file_str, e);
-            return Ok(());
+/// This function considers two extra headers equal if they contain the same
+/// chip_clocks and chip_volumes data, regardless of header_size, chip_clock_offset,
+/// or chip_vol_offset values (which are just placement details).
+fn extra_headers_semantically_equal(
+    a: &Option<soundlog::vgm::VgmExtraHeader>,
+    b: &Option<soundlog::vgm::VgmExtraHeader>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a_extra), Some(b_extra)) => {
+            // Compare data content only, not placement fields
+            a_extra.chip_clocks == b_extra.chip_clocks
+                && a_extra.chip_volumes == b_extra.chip_volumes
         }
-    };
-
-    // Round-trip: serialize parsed doc back to bytes and re-parse
-    let rebuilt: Vec<u8> = (&doc_orig).into();
-    let doc_reparsed_res: Result<VgmDocument, _> = (&rebuilt[..]).try_into();
-
-    match doc_reparsed_res {
-        Ok(doc_reparsed) => {
-            let semantic_match = docs_equal_allow_gd3_offset(&doc_orig, &doc_reparsed);
-            if rebuilt == data || semantic_match {
-                if diag {
-                    print_diag_table(&doc_orig, &doc_reparsed);
-                    if rebuilt == data {
-                        println!(
-                            "roundtrip: serialized matches original ({} bytes)",
-                            rebuilt.len()
-                        );
-                    }
-                }
-            } else {
-                // One-line error with filename as requested. Exit code remains zero.
-                println!(
-                    "\"{}\": roundtrip: MISMATCH (original {} bytes, serialized {} bytes) — run with --diag to see detailed diagnostics",
-                    file_str,
-                    data.len(),
-                    rebuilt.len()
-                );
-                if diag {
-                    print_diag_compact(&doc_orig, &doc_reparsed, &data, &rebuilt);
-                }
-            }
-        }
-        Err(e) => {
-            // One-line error with filename; re-parse failed after serialization.
-            eprintln!(
-                "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — run with --diag to see serialized bytes and diagnostics",
-                file_str,
-                rebuilt.len(),
-                e
-            );
-        }
+        _ => false, // One has extra_header, the other doesn't
     }
-
-    Ok(())
 }
 
-/// Redump VGM file with DAC streams expanded to chip writes.
-///
-/// This function parses the input VGM, processes it through VgmStream (which expands
-/// DAC Stream Control commands into actual chip writes), and writes the result to
-/// a new VGM file. This is useful for verifying that stream expansion works correctly.
-pub fn redump_vgm(
-    input_path: &Path,
-    output_path: &Path,
-    data: Vec<u8>,
-    loop_count: Option<u32>,
-    fadeout_samples: Option<u64>,
-    diag: bool,
-) -> Result<()> {
-    use soundlog::vgm::stream::{StreamResult, VgmStream};
-    use soundlog::{VgmBuilder, VgmDocument};
-    use std::fs;
+pub use crate::cui::test::test_roundtrip;
 
-    // Parse original VGM document
-    let doc_orig: VgmDocument = (&data[..])
-        .try_into()
-        .with_context(|| format!("failed to parse input VGM: {}", input_path.display()))?;
-
-    // Calculate the original loop command index from the header's loop_offset
-    let original_loop_index = if loop_count.is_none() {
-        doc_orig.loop_command_index()
-    } else {
-        None
-    };
-
-    // Determine loop offset in expanded output by processing intro commands
-    let output_loop_index = if let Some(orig_loop_idx) = original_loop_index {
-        // Create a document with only the intro commands (before the loop point)
-        let mut intro_builder = VgmBuilder::new();
-
-        // Copy chip setup from original
-        for (instance, chip, _clock_hz) in doc_orig.header.chip_instances() {
-            let raw_clock = doc_orig.header.get_chip_clock(&chip);
-            let clock = raw_clock & 0x7FFF_FFFF;
-            if clock > 0 {
-                intro_builder.register_chip(chip, instance, clock);
-            }
-        }
-
-        // Add only intro commands (commands before the loop point)
-        for (idx, cmd) in doc_orig.commands.iter().enumerate() {
-            if idx >= orig_loop_idx {
-                break;
-            }
-            intro_builder.add_vgm_command(cmd.clone());
-        }
-
-        // Expand the intro commands through VgmStream
-        let intro_doc = intro_builder.finalize();
-        let mut intro_stream = VgmStream::from_document(intro_doc);
-        // Don't set loop_count - we want to process all intro commands exactly once
-        // (The intro_doc doesn't have a loop point set, so it will process all commands)
-
-        let mut intro_expanded_count = 0;
-        loop {
-            match intro_stream.next() {
-                Some(Ok(StreamResult::Command(_))) => {
-                    intro_expanded_count += 1;
-                }
-                Some(Ok(StreamResult::NeedsMoreData)) => break,
-                Some(Ok(StreamResult::EndOfStream)) => break,
-                Some(Err(e)) => {
-                    return Err(anyhow::anyhow!(
-                        "stream processing error in intro expansion: {}",
-                        e
-                    ));
-                }
-                None => break,
-            }
-        }
-
-        Some(intro_expanded_count)
-    } else {
-        None
-    };
-
-    // Create VgmStream from document for full expansion
-    let mut stream = VgmStream::from_document(doc_orig.clone());
-
-    // Configure stream settings
-    // If loop_count is specified, use it to expand loops
-    // If not specified, set to 1 to preserve original loop structure (intro + one loop iteration)
-    if let Some(count) = loop_count {
-        stream.set_loop_count(Some(count));
-    } else {
-        stream.set_loop_count(Some(1));
-    }
-    if let Some(samples) = fadeout_samples {
-        stream.set_fadeout_samples(Some(samples));
-    }
-
-    // Collect all commands from stream
-    let mut commands = Vec::new();
-    loop {
-        match stream.next() {
-            Some(Ok(StreamResult::Command(cmd))) => {
-                commands.push(cmd);
-            }
-            Some(Ok(StreamResult::NeedsMoreData)) => {
-                break;
-            }
-            Some(Ok(StreamResult::EndOfStream)) => {
-                break;
-            }
-            Some(Err(e)) => {
-                return Err(anyhow::anyhow!("stream processing error: {}", e));
-            }
-            None => {
-                break;
-            }
-        }
-    }
-
-    // Ensure the redumped command stream terminates with EndOfData
-    commands.push(soundlog::vgm::command::VgmCommand::EndOfData(
-        soundlog::vgm::command::EndOfData,
-    ));
-
-    // Build new VGM document with expanded commands
-    let mut builder = VgmBuilder::new();
-
-    // Copy chip clocks from original header
-    // We need to extract the actual clock value (masking the high bit for secondary instances)
-    for (instance, chip, _clock_hz) in doc_orig.header.chip_instances() {
-        let raw_clock = doc_orig.header.get_chip_clock(&chip);
-        let clock = raw_clock & 0x7FFF_FFFF;
-        if clock > 0 {
-            builder.register_chip(chip, instance, clock);
-        }
-    }
-
-    // Copy GD3 metadata if present
-    if let Some(gd3) = &doc_orig.gd3 {
-        builder.set_gd3(gd3.clone());
-    }
-
-    // Copy extra header if present
-    if let Some(extra) = &doc_orig.extra_header {
-        builder.set_extra_header(extra.clone());
-    }
-
-    // Add all expanded commands
-    for cmd in commands {
-        builder.add_vgm_command(cmd);
-    }
-
-    // Set loop offset if we're preserving the original loop structure
-    if let Some(index) = output_loop_index {
-        builder.set_loop_offset(index);
-    }
-
-    // Set version and sample_rate from original header BEFORE finalize()
-    // This is critical because finalize() uses the version to calculate data_offset
-    builder.set_version(doc_orig.header.version);
-    builder.set_sample_rate(doc_orig.header.sample_rate);
-
-    // Finalize and serialize
-    let mut doc_rebuilt = builder.finalize();
-
-    // If we're preserving loop, copy loop_samples from original
-    if loop_count.is_none() && doc_orig.header.loop_offset != 0 {
-        doc_rebuilt.header.loop_samples = doc_orig.header.loop_samples;
-    }
-
-    // Copy chip-specific configuration fields from original header
-    // (these are not copied by register_chip and contain important chip behavior flags)
-    doc_rebuilt.header.sn_fb = doc_orig.header.sn_fb;
-    doc_rebuilt.header.snw = doc_orig.header.snw;
-    doc_rebuilt.header.sf = doc_orig.header.sf;
-    doc_rebuilt.header.ay_misc = doc_orig.header.ay_misc;
-    doc_rebuilt.header.spcm_interface = doc_orig.header.spcm_interface;
-    doc_rebuilt.header.okim6258_flags = doc_orig.header.okim6258_flags;
-    doc_rebuilt.header.es5506_channels = doc_orig.header.es5506_channels;
-    doc_rebuilt.header.es5506_cd = doc_orig.header.es5506_cd;
-    doc_rebuilt.header.es5506_reserved = doc_orig.header.es5506_reserved;
-
-    let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
-
-    // Write to output file or stdout if output_path is "-" (convention)
-    if output_path == std::path::Path::new("-") {
-        // Write to stdout
-        use std::io::Write;
-        let mut stdout = std::io::stdout();
-        stdout
-            .write_all(&rebuilt_bytes)
-            .with_context(|| "failed to write output VGM to stdout")?;
-    } else {
-        fs::write(output_path, &rebuilt_bytes)
-            .with_context(|| format!("failed to write output VGM: {}", output_path.display()))?;
-    }
-
-    // If not diag, remain silent (no stdout output); return success early.
-    if !diag {
-        return Ok(());
-    }
-
-    // Re-parse serialized bytes into a VgmDocument
-    let doc_reparsed_res: Result<VgmDocument, _> = (&rebuilt_bytes[..]).try_into();
-    match doc_reparsed_res {
-        Ok(doc_reparsed) => {
-            print_diag_table(&doc_orig, &doc_reparsed);
-        }
-        Err(e) => {
-            eprintln!(
-                "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — run with --diag to see serialized bytes and diagnostics",
-                output_path.display(),
-                rebuilt_bytes.len(),
-                e
-            );
-        }
-    }
-
-    Ok(())
-}
+pub use crate::cui::redump::redump_vgm;
 
 /// Parse and display VGM file commands with offsets and lengths
 pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {

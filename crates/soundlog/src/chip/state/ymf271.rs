@@ -44,7 +44,7 @@ pub struct Ymf271State {
     /// Channel states for 12 FM channels
     channels: [ChannelState; YMF271_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Current selected slot for register writes
     selected_slot: u8,
     /// Global register storage for all written registers
@@ -66,9 +66,9 @@ impl Ymf271State {
     /// ```
     /// use soundlog::chip::state::Ymf271State;
     ///
-    /// let state = Ymf271State::new(16_934_400.0);
+    /// let state = Ymf271State::new(16_934_400.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -134,14 +134,14 @@ impl Ymf271State {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, fnum: u16, block: u8) -> f64 {
+    fn calculate_frequency(&self, fnum: u16, block: u8) -> f32 {
         if fnum == 0 {
-            return 0.0;
+            return 0.0f32;
         }
 
         let block_shift = 20_i32 - (block & 0x0F) as i32;
-        let divisor = 2_f64.powi(block_shift);
-        (fnum as f64 * self.master_clock_hz / 2.0) / divisor
+        let divisor = 2f32.powi(block_shift);
+        (fnum as f32 * self.master_clock_hz / 2.0f32) / divisor
     }
 
     /// Extract tone from slot registers
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_ymf271_key_on() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         // Select slot 0
         state.on_register_write(0x80, 0x00);
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_ymf271_key_off() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         // Set up and key on slot 0
         state.on_register_write(0x80, 0x00);
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_ymf271_tone_change() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         // Set up and key on slot 0
         state.on_register_write(0x80, 0x00);
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_ymf271_multiple_channels() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         // Slot 0
         state.on_register_write(0x80, 0x00);
@@ -453,13 +453,13 @@ mod tests {
 
     #[test]
     fn test_ymf271_channel_count() {
-        let state = Ymf271State::new(16_934_400.0);
+        let state = Ymf271State::new(16_934_400.0f32);
         assert_eq!(state.channel_count(), 12);
     }
 
     #[test]
     fn test_ymf271_reset() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         state.on_register_write(0x80, 0x00);
         state.on_register_write(12, 0x04);
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_ymf271_block_extraction() {
-        let mut state = Ymf271State::new(16_934_400.0);
+        let mut state = Ymf271State::new(16_934_400.0f32);
 
         state.on_register_write(0x80, 0x00);
         state.on_register_write(12, 0x07); // Block 7

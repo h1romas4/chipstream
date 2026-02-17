@@ -45,11 +45,11 @@
 //! let tuned = find_and_tune_fnumber::<OpnSpec>(&table, 440.0, OpnSpec::default_master_clock()).unwrap();
 //! println!("closest={:?}, tuned={:?}", closest, tuned);
 //! ```
-
-/// Reference A4 frequency (default 440 Hz).
+//!
+/// /// Reference A4 frequency (default 440 Hz).
 ///
 /// This constant is used as the reference pitch when generating the 12-EDO tables.
-const A4_HZ: f64 = 440.0;
+const A4_HZ: f32 = 440.0f32;
 
 /// Representation of an F-number for a chip.
 ///
@@ -63,9 +63,9 @@ const A4_HZ: f64 = 440.0;
 pub struct FNumber {
     pub f_num: u32,
     pub block: u8,
-    pub actual_freq_hz: f64,
-    pub error_hz: f64,
-    pub error_cents: f64,
+    pub actual_freq_hz: f32,
+    pub error_hz: f32,
+    pub error_cents: f32,
 }
 
 /// Simple error enum used by F-number utilities.
@@ -87,7 +87,7 @@ pub struct ChipTypeConfig {
     /// Block index that corresponds to A4 (used as table generation baseline).
     pub a4_block: u8,
     /// Prescaler applied to the master clock for this chip (1.0 for OPL3, 4.0 for OPL2-like)
-    pub prescaler: f64,
+    pub prescaler: f32,
 }
 
 /// Trait that exposes chip-specific conversion logic and metadata.
@@ -103,19 +103,19 @@ pub trait ChipTypeSpec {
     ///
     /// Returns an error for invalid inputs (non-finite master clock, out-of-range
     /// f_num, etc.).
-    fn fnum_block_to_freq(f_num: u32, block: u8, master_clock_hz: f64)
-    -> Result<f64, FNumberError>;
+    fn fnum_block_to_freq(f_num: u32, block: u8, master_clock_hz: f32)
+    -> Result<f32, FNumberError>;
 
     /// Compute the ideal (floating-point) `f_num` value for a target frequency and block.
     ///
     /// Used by the table generator to determine integer candidate `f_num` values.
-    fn ideal_fnum_for_freq(target_freq: f64, block: u8, master_clock_hz: f64) -> f64;
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32;
 
     /// Default master clock (Hz) to use for this chip when no other value
     /// is supplied. Implementations may override this to reflect common
     /// master clock values used by the chip.
-    fn default_master_clock() -> f64 {
-        4_000_000.0
+    fn default_master_clock() -> f32 {
+        4_000_000.0f32
     }
 }
 
@@ -128,15 +128,15 @@ impl ChipTypeSpec for OpnSpec {
             fnum_bits: 11,
             block_bits: 3,
             a4_block: 6,
-            prescaler: 2.0,
+            prescaler: 2.0f32,
         }
     }
 
     fn fnum_block_to_freq(
         f_num: u32,
         block: u8,
-        master_clock_hz: f64,
-    ) -> Result<f64, FNumberError> {
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
         if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
             return Err(FNumberError::InvalidInput);
         }
@@ -145,20 +145,20 @@ impl ChipTypeSpec for OpnSpec {
         }
         let prescaler = Self::config().prescaler;
         let exp = 21_i32 - (block as i32);
-        let denom_pow = 2_f64.powi(exp);
-        let freq = (f_num as f64) * (master_clock_hz * prescaler) / 144.0 / denom_pow;
+        let denom_pow = 2_f32.powi(exp);
+        let freq = (f_num as f32) * (master_clock_hz * prescaler) / 144.0f32 / denom_pow;
         Ok(freq)
     }
 
-    fn ideal_fnum_for_freq(target_freq: f64, block: u8, master_clock_hz: f64) -> f64 {
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
         let prescaler = Self::config().prescaler;
         let exp = 21_i32 - (block as i32);
-        let denom_pow = 2_f64.powi(exp);
-        target_freq * 144.0 * denom_pow / (master_clock_hz * prescaler)
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 144.0f32 * denom_pow / (master_clock_hz * prescaler)
     }
 
-    fn default_master_clock() -> f64 {
-        4_000_000.0
+    fn default_master_clock() -> f32 {
+        4_000_000.0f32
     }
 }
 
@@ -171,15 +171,15 @@ impl ChipTypeSpec for OpmSpec {
             fnum_bits: 10,
             block_bits: 3,
             a4_block: 5,
-            prescaler: 64.0,
+            prescaler: 64.0f32,
         }
     }
 
     fn fnum_block_to_freq(
         f_num: u32,
         block: u8,
-        master_clock_hz: f64,
-    ) -> Result<f64, FNumberError> {
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
         if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
             return Err(FNumberError::InvalidInput);
         }
@@ -188,19 +188,19 @@ impl ChipTypeSpec for OpmSpec {
         }
         let _prescaler = Self::config().prescaler;
         let exp = 28_i32 - 2 * (block as i32);
-        let denom_pow = 2_f64.powi(exp);
-        let freq = (f_num as f64) * master_clock_hz / denom_pow;
+        let denom_pow = 2_f32.powi(exp);
+        let freq = (f_num as f32) * master_clock_hz / denom_pow;
         Ok(freq)
     }
 
-    fn ideal_fnum_for_freq(target_freq: f64, block: u8, master_clock_hz: f64) -> f64 {
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
         let exp = 28_i32 - 2 * (block as i32);
-        let denom_pow = 2_f64.powi(exp);
+        let denom_pow = 2_f32.powi(exp);
         target_freq * denom_pow / master_clock_hz
     }
 
-    fn default_master_clock() -> f64 {
-        3_579_545.0
+    fn default_master_clock() -> f32 {
+        3_579_545.0f32
     }
 }
 
@@ -213,15 +213,15 @@ impl ChipTypeSpec for Opl3Spec {
             fnum_bits: 11,
             block_bits: 3,
             a4_block: 5,
-            prescaler: 1.0,
+            prescaler: 1.0f32,
         }
     }
 
     fn fnum_block_to_freq(
         f_num: u32,
         block: u8,
-        master_clock_hz: f64,
-    ) -> Result<f64, FNumberError> {
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
         if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
             return Err(FNumberError::InvalidInput);
         }
@@ -231,32 +231,32 @@ impl ChipTypeSpec for Opl3Spec {
             return Err(FNumberError::InvalidInput);
         }
         let prescaler = spec.prescaler;
-        let freq = (f_num as f64) * (master_clock_hz / prescaler)
-            / (288.0 * 2_f64.powi(20 - block as i32));
+        let freq = (f_num as f32) * (master_clock_hz / prescaler)
+            / (288.0f32 * 2_f32.powi(20 - block as i32));
         Ok(freq)
     }
 
-    fn ideal_fnum_for_freq(target_freq: f64, block: u8, master_clock_hz: f64) -> f64 {
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
         let prescaler = Self::config().prescaler;
         let exp = 20_i32 - (block as i32);
-        let denom_pow = 2_f64.powi(exp);
-        target_freq * 288.0 * denom_pow / (master_clock_hz / prescaler)
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 288.0f32 * denom_pow / (master_clock_hz / prescaler)
     }
 
-    fn default_master_clock() -> f64 {
-        14_318_180.0
+    fn default_master_clock() -> f32 {
+        14_318_180.0f32
     }
 }
 
 /// Type alias for a table entry: (target_frequency_hz, FNumber)
-pub type FNumberEntry = (f64, FNumber);
+pub type FNumberEntry = (f32, FNumber);
 
 /// Generate an 8×12 F-number table for 12-EDO tuning (A4 = `A4_HZ`).
 ///
 /// - Returns a fixed-size 2D array `[block][semitone]` (no heap allocation).
 /// - `master_clock_hz` is the chip's master clock frequency used in chip formulas.
 pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
-    master_clock_hz: f64,
+    master_clock_hz: f32,
 ) -> Result<[[Option<FNumberEntry>; 12]; 8], FNumberError> {
     let spec = C::config();
 
@@ -284,7 +284,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
         for (semitone, slot) in row.iter_mut().enumerate() {
             let semitone_offset =
                 (block as i32 - spec.a4_block as i32) * 12 + (semitone as i32 - 9);
-            let target_freq = A4_HZ * 2_f64.powf(semitone_offset as f64 / 12.0);
+            let target_freq = A4_HZ * 2_f32.powf(semitone_offset as f32 / 12.0f32);
 
             let ideal_fnum_f = C::ideal_fnum_for_freq(target_freq, block as u8, master_clock_hz);
 
@@ -312,7 +312,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
                 }
                 let produced = C::fnum_block_to_freq(cand, block as u8, master_clock_hz)?;
                 let err_hz = (produced - target_freq).abs();
-                let err_cents = (produced / target_freq).log2() * 1200.0;
+                let err_cents = (produced / target_freq).log2() * 1200.0f32;
                 let entry = FNumber {
                     f_num: cand,
                     block: block as u8,
@@ -338,13 +338,13 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
 /// to match the user's requested API shape.
 pub fn find_closest_fnumber<C: ChipTypeSpec>(
     fnum_table: &[[Option<FNumberEntry>; 12]; 8],
-    freq: f64,
+    freq: f32,
 ) -> Result<FNumber, FNumberError> {
     if !freq.is_finite() || freq <= 0.0 {
         return Err(FNumberError::InvalidInput);
     }
 
-    let mut best: Option<(FNumber, f64, f64)> = None;
+    let mut best: Option<(FNumber, f32, f32)> = None;
 
     for row in fnum_table.iter() {
         for entry in row.iter().flatten() {
@@ -354,7 +354,7 @@ pub fn find_closest_fnumber<C: ChipTypeSpec>(
                 continue;
             }
             let ratio = produced / freq;
-            let err_cents = ratio.log2().abs() * 1200.0;
+            let err_cents = ratio.log2().abs() * 1200.0f32;
             let err_hz = (produced - freq).abs();
 
             match &best {
@@ -384,16 +384,16 @@ pub fn find_closest_fnumber<C: ChipTypeSpec>(
 /// can be computed with `C::fnum_block_to_freq`.
 pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
     fnum_table: &[[Option<FNumberEntry>; 12]; 8],
-    freq: f64,
-    master_clock_hz: f64,
+    freq: f32,
+    master_clock_hz: f32,
 ) -> Result<FNumber, FNumberError> {
-    if !freq.is_finite() || freq <= 0.0 {
+    if !freq.is_finite() || freq <= 0.0f32 {
         return Err(FNumberError::InvalidInput);
     }
 
     let start = find_closest_fnumber::<C>(fnum_table, freq)?;
     let spec = C::config();
-    if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+    if !master_clock_hz.is_finite() || master_clock_hz <= 0.0f32 {
         return Err(FNumberError::InvalidInput);
     }
 
@@ -402,10 +402,10 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
     let mut best_fnum = start_fnum;
     let mut best_err_hz = (start.actual_freq_hz - freq).abs();
 
-    let scale_k = if start_fnum > 0 {
-        start.actual_freq_hz / (start_fnum as f64)
+    let scale_k: f32 = if start_fnum > 0 {
+        start.actual_freq_hz / (start_fnum as f32)
     } else {
-        0.0
+        0.0f32
     };
 
     assert!(
@@ -421,8 +421,8 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
 
     let mut cand = start_fnum.saturating_add(1);
     while cand <= fnum_max {
-        let produced = if scale_k > 0.0 {
-            scale_k * (cand as f64)
+        let produced: f32 = if scale_k > 0.0f32 {
+            scale_k * (cand as f32)
         } else {
             C::fnum_block_to_freq(cand, block, master_clock_hz)?
         };
@@ -438,8 +438,8 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
 
     let mut cand_down = start_fnum.saturating_sub(1);
     while cand_down >= 1 {
-        let produced = if scale_k > 0.0 {
-            scale_k * (cand_down as f64)
+        let produced: f32 = if scale_k > 0.0f32 {
+            scale_k * (cand_down as f32)
         } else {
             C::fnum_block_to_freq(cand_down, block, master_clock_hz)?
         };
@@ -456,13 +456,13 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
         break;
     }
 
-    let produced = if scale_k > 0.0 {
-        scale_k * (best_fnum as f64)
+    let produced: f32 = if scale_k > 0.0f32 {
+        scale_k * (best_fnum as f32)
     } else {
         C::fnum_block_to_freq(best_fnum, block, master_clock_hz)?
     };
     let err_hz = (produced - freq).abs();
-    let err_cents = (produced / freq).log2().abs() * 1200.0;
+    let err_cents = (produced / freq).log2().abs() * 1200.0f32;
     let result = FNumber {
         f_num: best_fnum,
         block,

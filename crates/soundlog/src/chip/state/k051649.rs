@@ -67,7 +67,7 @@ pub struct K051649State {
     /// Channel states for 5 channels
     channels: [ChannelState; K051649_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: K051649Storage,
 }
@@ -87,9 +87,9 @@ impl K051649State {
     /// ```
     /// use soundlog::chip::state::K051649State;
     ///
-    /// let state = K051649State::new(1_789_773.0);
+    /// let state = K051649State::new(1_789_773.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -132,12 +132,12 @@ impl K051649State {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_scc(&self, freq: u16) -> f64 {
+    fn hz_scc(&self, freq: u16) -> f32 {
         if freq == 0 {
-            0.0
+            0.0f32
         } else {
             // SCC frequency formula: master_clock / (32 * (4096 - freq))
-            self.master_clock_hz / (32.0 * (4096 - freq as i32) as f64)
+            self.master_clock_hz / (32.0f32 * (4096 - freq as i32) as f32)
         }
     }
 
@@ -352,7 +352,7 @@ impl ChipState for K051649State {
 /// ```
 /// use soundlog::chip::state::Scc1State;
 ///
-/// let state = Scc1State::new(1_789_773.0);
+/// let state = Scc1State::new(1_789_773.0f32);
 /// ```
 pub type Scc1State = K051649State;
 
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_k051649_enable_channel() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x80, 0x00); // Freq low
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_k051649_disable_channel() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x80, 0x00);
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_k051649_tone_change() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x80, 0x00);
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_k051649_multiple_channels() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         // Set up channel 0
         state.on_register_write(0x80, 0x00);
@@ -451,13 +451,13 @@ mod tests {
 
     #[test]
     fn test_k051649_channel_count() {
-        let state = K051649State::new(1_789_773.0);
+        let state = K051649State::new(1_789_773.0f32);
         assert_eq!(state.channel_count(), 5);
     }
 
     #[test]
     fn test_k051649_reset() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         state.on_register_write(0x80, 0x00);
         state.on_register_write(0x81, 0x08);
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_k051649_zero_frequency() {
-        let mut state = K051649State::new(1_789_773.0);
+        let mut state = K051649State::new(1_789_773.0f32);
 
         // Set zero frequency
         state.on_register_write(0x80, 0x00);
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn test_scc1_alias() {
         // Test that Scc1State is usable as a type alias
-        let mut state = Scc1State::new(1_789_773.0);
+        let mut state = Scc1State::new(1_789_773.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x80, 0x00);

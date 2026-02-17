@@ -49,7 +49,7 @@ pub struct MikeyState {
     /// Channel states for 4 audio channels
     channels: [ChannelState; MIKEY_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Master enable flag (register 0x50)
     master_enable: bool,
     /// Global register storage for all written registers
@@ -72,9 +72,9 @@ impl MikeyState {
     /// use soundlog::chip::state::MikeyState;
     ///
     /// // Atari Lynx
-    /// let state = MikeyState::new(16_000_000.0);
+    /// let state = MikeyState::new(16_000_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -124,7 +124,7 @@ impl MikeyState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, counter: u8, timer_clock: u8) -> f64 {
+    fn calculate_frequency(&self, counter: u8, timer_clock: u8) -> f32 {
         // Timer clock divisor: 0=1, 1=2, 2=4, 3=8, 4=16, 5=32, 6=64, 7=linked
         let divisor = if timer_clock < 7 {
             1 << timer_clock
@@ -135,9 +135,9 @@ impl MikeyState {
 
         if counter == 0 {
             // Counter = 0 gives highest frequency
-            self.master_clock_hz / (divisor as f64)
+            self.master_clock_hz / (divisor as f32)
         } else {
-            self.master_clock_hz / (divisor as f64 * (counter as f64 + 1.0))
+            self.master_clock_hz / (divisor as f32 * (counter as f32 + 1.0_f32))
         }
     }
 
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_mikey_channel_enable() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         // Set counter for channel 0
         state.on_register_write(0x06, 0x40); // Counter
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_mikey_channel_disable() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x06, 0x40);
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_mikey_tone_change() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x06, 0x40);
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_mikey_master_disable() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x06, 0x40);
@@ -510,13 +510,13 @@ mod tests {
 
     #[test]
     fn test_mikey_channel_count() {
-        let state = MikeyState::new(16_000_000.0);
+        let state = MikeyState::new(16_000_000.0f32);
         assert_eq!(state.channel_count(), 4);
     }
 
     #[test]
     fn test_mikey_reset() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         state.on_register_write(0x50, 0x01);
 
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_mikey_multiple_channels() {
-        let mut state = MikeyState::new(16_000_000.0);
+        let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable master
         state.on_register_write(0x50, 0x01);

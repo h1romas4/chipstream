@@ -3053,8 +3053,9 @@ impl VgmDocument {
             self.header.data_offset
         };
 
-        // compute header length using the header's to_bytes helper so layout rules match to_bytes()
-        let header_len = self.header.to_bytes(0, data_offset).len();
+        // compute actual header length in file: fixed header (0x34) + data_offset region
+        // this matches the calculation in loop_command_index()
+        let header_len = (0x34 + data_offset) as usize;
 
         self.command_offsets_and_lengths()
             .into_iter()

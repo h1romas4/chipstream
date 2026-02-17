@@ -47,7 +47,7 @@ pub struct Sn76489State {
     /// Current latched channel and register type
     current_latch: Option<(u8, bool)>, // (channel, is_volume)
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Sn76489Storage,
 }
@@ -70,9 +70,9 @@ impl Sn76489State {
     /// use soundlog::chip::state::Sn76489State;
     ///
     /// // Sega Master System (NTSC)
-    /// let state = Sn76489State::new(3_579_545.0);
+    /// let state = Sn76489State::new(3_579_545.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             current_latch: None,
@@ -146,7 +146,7 @@ impl Sn76489State {
 
         // Calculate actual frequency
         // Formula: f = master_clock / (32 * freq_value)
-        let freq_hz = Some(self.master_clock_hz / (32.0 * freq_value as f64));
+        let freq_hz = Some(self.master_clock_hz / (32.0f32 * freq_value as f32));
 
         // Store freq_value as fnum, use block=0 for PSG
         Some(ToneInfo::new(freq_value, 0, freq_hz))
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_sn76489_latch_frequency() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         // Latch channel 0, frequency, low 4 bits
         state.on_register_write(0, 0x80 | 0x0D); // ch=0, freq, data=0x0D
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_sn76489_volume_key_on() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         // Set frequency first
         state.on_register_write(0, 0x80 | 0x0D);
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_sn76489_volume_key_off() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0, 0x80 | 0x0D);
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_sn76489_frequency_change() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0, 0x80 | 0x0D);
@@ -386,13 +386,13 @@ mod tests {
 
     #[test]
     fn test_sn76489_channel_count() {
-        let state = Sn76489State::new(3_579_545.0);
+        let state = Sn76489State::new(3_579_545.0f32);
         assert_eq!(state.channel_count(), 4);
     }
 
     #[test]
     fn test_sn76489_reset() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         state.on_register_write(0, 0x80 | 0x0D);
         state.on_register_write(0, 0x90);
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_sn76489_multiple_channels() {
-        let mut state = Sn76489State::new(3_579_545.0);
+        let mut state = Sn76489State::new(3_579_545.0f32);
 
         // Channel 0
         state.on_register_write(0, 0x80 | 0x0D); // ch=0, freq

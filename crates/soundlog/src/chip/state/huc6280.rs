@@ -46,7 +46,7 @@ pub struct Huc6280State {
     /// Channel states for 6 wavetable channels
     channels: [ChannelState; HUC6280_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Currently selected channel for register access
     selected_channel: u8,
     /// Global register storage for all written registers
@@ -69,9 +69,9 @@ impl Huc6280State {
     /// ```
     /// use soundlog::chip::state::Huc6280State;
     ///
-    /// let state = Huc6280State::new(3_579_545.0);
+    /// let state = Huc6280State::new(3_579_545.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -124,13 +124,13 @@ impl Huc6280State {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_huc6280(&self, freq: u16) -> f64 {
+    fn hz_huc6280(&self, freq: u16) -> f32 {
         if freq == 0 {
-            0.0
+            0.0f32
         } else {
             // HuC6280 frequency formula: master_clock / (32 * 32 * (4096 - freq))
             // The PSG runs at master_clock / 32, and each step is 32 samples
-            self.master_clock_hz / (32.0 * 32.0 * (4096 - freq as i32) as f64)
+            self.master_clock_hz / (32.0_f32 * 32.0_f32 * (4096 - freq as i32) as f32)
         }
     }
 
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_huc6280_enable_channel() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         // Select channel 0
         state.on_register_write(0x00, 0x00);
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_huc6280_disable_channel() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x00, 0x00);
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_huc6280_tone_change() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x00, 0x00);
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_huc6280_multiple_channels() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         // Set up channel 0
         state.on_register_write(0x00, 0x00);
@@ -446,13 +446,13 @@ mod tests {
 
     #[test]
     fn test_huc6280_channel_count() {
-        let state = Huc6280State::new(3_579_545.0);
+        let state = Huc6280State::new(3_579_545.0f32);
         assert_eq!(state.channel_count(), 6);
     }
 
     #[test]
     fn test_huc6280_reset() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         state.on_register_write(0x00, 0x00);
         state.on_register_write(0x02, 0x00);
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_huc6280_channel_select() {
-        let mut state = Huc6280State::new(3_579_545.0);
+        let mut state = Huc6280State::new(3_579_545.0f32);
 
         // Select channel 3
         state.on_register_write(0x00, 0x03);

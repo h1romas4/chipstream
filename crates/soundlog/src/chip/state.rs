@@ -94,8 +94,8 @@ pub use mikey::MikeyState;
 pub use nes_apu::NesApuState;
 pub use pcm::{
     C140State, C352State, Es5503State, Es5506State, Ga20State, K053260State, K054539State,
-    MultiPcmState, Okim6258State, Okim6295State, QsoundState, Rf5c68State, Rf5c164State, ScspState,
-    SegaPcmState, Upd7759State, X1010State, Ymz280bState,
+    MultiPcmState, Okim6258State, Okim6295State, PwmState, QsoundState, Rf5c68State, Rf5c164State,
+    ScspState, SegaPcmState, Upd7759State, X1010State, Ymz280bState,
 };
 pub use pokey::PokeyState;
 pub use saa1099::Saa1099State;

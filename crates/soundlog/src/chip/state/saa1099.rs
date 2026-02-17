@@ -45,7 +45,7 @@ pub struct Saa1099State {
     /// Channel states for 6 tone channels
     channels: [ChannelState; SAA1099_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Saa1099Storage,
     /// Selected register for next data write
@@ -71,9 +71,9 @@ impl Saa1099State {
     /// use soundlog::chip::state::Saa1099State;
     ///
     /// // SAM Coupé
-    /// let state = Saa1099State::new(8_000_000.0);
+    /// let state = Saa1099State::new(8_000_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -122,15 +122,15 @@ impl Saa1099State {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, frequency: u8, octave: u8) -> f64 {
+    fn calculate_frequency(&self, frequency: u8, octave: u8) -> f32 {
         if frequency == 255 {
             // frequency = 255 would give (511 - 255) = 256, valid but very low
-            return self.master_clock_hz / (256.0 * 256.0 * (1 << (8 - octave)) as f64);
+            return self.master_clock_hz / (256.0_f32 * 256.0_f32 * (1 << (8 - octave)) as f32);
         }
 
-        let divisor = (511 - frequency as i32) as f64;
-        let octave_shift = (1 << (8 - (octave & 0x07))) as f64;
-        self.master_clock_hz / (256.0 * divisor * octave_shift)
+        let divisor = (511 - frequency as i32) as f32;
+        let octave_shift = (1 << (8 - (octave & 0x07))) as f32;
+        self.master_clock_hz / (256.0_f32 * divisor * octave_shift)
     }
 
     /// Extract tone from channel registers
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_saa1099_channel_enable() {
-        let mut state = Saa1099State::new(8_000_000.0);
+        let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x80, 0x08); // Select freq register
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_saa1099_channel_disable() {
-        let mut state = Saa1099State::new(8_000_000.0);
+        let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x80, 0x08);
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_saa1099_tone_change() {
-        let mut state = Saa1099State::new(8_000_000.0);
+        let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x80, 0x08);
@@ -569,13 +569,13 @@ mod tests {
 
     #[test]
     fn test_saa1099_channel_count() {
-        let state = Saa1099State::new(8_000_000.0);
+        let state = Saa1099State::new(8_000_000.0f32);
         assert_eq!(state.channel_count(), 6);
     }
 
     #[test]
     fn test_saa1099_reset() {
-        let mut state = Saa1099State::new(8_000_000.0);
+        let mut state = Saa1099State::new(8_000_000.0f32);
 
         state.on_register_write(0x80, 0x1C);
         state.on_register_write(0x00, 0x01);

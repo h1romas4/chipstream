@@ -15,8 +15,14 @@ pub enum KeyState {
 /// Tone information extracted from register state
 ///
 /// This structure contains the frequency parameters (f-number and block)
-/// extracted from chip registers, along with the calculated frequency in Hz
-/// if the master clock is known.
+/// extracted from chip registers, along with an optional calculated frequency.
+/// Note: `freq_hz` is stored as `Option<f32>` to reduce size and match the
+/// crate's public API. Additionally, a `total_level` field is reserved for
+/// future use / documentation purposes. It is included in the struct for API
+/// compatibility but is currently not populated by existing constructors.
+///
+/// The `total_level` field is reserved for tooling/rustdoc and should be treated
+/// as an implementation detail for now; existing constructors leave it as `None`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToneInfo {
     /// F-number (frequency number)
@@ -33,25 +39,58 @@ pub struct ToneInfo {
 
     /// Calculated frequency in Hz (if master clock is known)
     ///
-    /// This is the actual output frequency calculated from fnum, block,
-    /// and the chip's master clock frequency. None if calculation failed
-    /// or master clock is unknown.
-    pub freq_hz: Option<f64>,
+    /// Stored as `Option<f32>`. Use `None` if the frequency could not be
+    /// calculated (unknown master clock or other failure).
+    pub freq_hz: Option<f32>,
+
+    /// Total level / attenuation (reserved)
+    ///
+    /// This field is reserved for future use (and for documentation purposes).
+    /// Existing constructors leave this as `None`. It is provided as
+    /// `Option<f32>` so callers can opt-in in future API changes.
+    pub total_level: Option<f32>,
 }
 
 impl ToneInfo {
-    /// Create a new ToneInfo with frequency calculation
+    /// Create a new ToneInfo
+    ///
+    /// This constructor accepts an `Option<f32>` for the frequency. The
+    /// `total_level` field is left as `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `fnum` - F-number value
+    /// * `block` - Block value
+    /// * `freq_hz` - Calculated frequency in Hz (or None).
+    pub fn new(fnum: u16, block: u8, freq_hz: Option<f32>) -> Self {
+        Self {
+            fnum,
+            block,
+            freq_hz,
+            total_level: None,
+        }
+    }
+
+    /// New constructor that accepts `Option<f32>` for frequency and explicitly
+    /// allows specifying `total_level`.
     ///
     /// # Arguments
     ///
     /// * `fnum` - F-number value
     /// * `block` - Block value
     /// * `freq_hz` - Calculated frequency in Hz (or None)
-    pub fn new(fnum: u16, block: u8, freq_hz: Option<f64>) -> Self {
+    /// * `total_level` - Optional total level / attenuation (reserved)
+    pub fn new_with_total_level(
+        fnum: u16,
+        block: u8,
+        freq_hz: Option<f32>,
+        total_level: Option<f32>,
+    ) -> Self {
         Self {
             fnum,
             block,
             freq_hz,
+            total_level,
         }
     }
 
@@ -66,6 +105,7 @@ impl ToneInfo {
             fnum,
             block,
             freq_hz: None,
+            total_level: None,
         }
     }
 }

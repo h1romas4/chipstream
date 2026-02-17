@@ -33,7 +33,7 @@ pub struct Ym2413State {
     /// Channel states for 9 FM channels
     channels: [ChannelState; YM2413_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Ym2413Storage,
 }
@@ -55,9 +55,9 @@ impl Ym2413State {
     /// use soundlog::chip::state::Ym2413State;
     ///
     /// // NTSC system
-    /// let state = Ym2413State::new(3_579_545.0);
+    /// let state = Ym2413State::new(3_579_545.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_ym2413_key_on_channel_0() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         // Write fnum low for channel 0
         state.on_register_write(0x10, 0x6D); // fnum_low=0x6D
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_ym2413_key_off() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0x10, 0x6D);
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_ym2413_tone_change() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0x10, 0x6D);
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_ym2413_no_event_when_key_off() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         state.on_register_write(0x10, 0x6D);
         // Don't key on, just set block/fnum
@@ -356,13 +356,13 @@ mod tests {
 
     #[test]
     fn test_ym2413_channel_count() {
-        let state = Ym2413State::new(3_579_545.0);
+        let state = Ym2413State::new(3_579_545.0f32);
         assert_eq!(state.channel_count(), 9);
     }
 
     #[test]
     fn test_ym2413_reset() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         state.on_register_write(0x10, 0x6D);
         state.on_register_write(0x20, 0x18);
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_ym2413_multiple_channels() {
-        let mut state = Ym2413State::new(3_579_545.0);
+        let mut state = Ym2413State::new(3_579_545.0f32);
 
         // Channel 0
         state.on_register_write(0x10, 0x6D);

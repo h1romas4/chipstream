@@ -28,11 +28,11 @@ pub(crate) const VGM_MAX_HEADER_SIZE: u32 = 0x100;
 /// Each entry is a tuple of `(Instance, Chip, clock_hz)` indicating whether the chip
 /// is a primary or secondary instance, which chip type it is, and its clock frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChipInstances(pub Vec<(Instance, chip::Chip, f64)>);
+pub struct ChipInstances(pub Vec<(Instance, chip::Chip, f32)>);
 
 impl ChipInstances {
     /// Returns an iterator over the chip instances.
-    pub fn iter(&self) -> impl Iterator<Item = &(Instance, chip::Chip, f64)> {
+    pub fn iter(&self) -> impl Iterator<Item = &(Instance, chip::Chip, f32)> {
         self.0.iter()
     }
 
@@ -48,7 +48,7 @@ impl ChipInstances {
 }
 
 impl IntoIterator for ChipInstances {
-    type Item = (Instance, chip::Chip, f64);
+    type Item = (Instance, chip::Chip, f32);
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -57,8 +57,8 @@ impl IntoIterator for ChipInstances {
 }
 
 impl<'a> IntoIterator for &'a ChipInstances {
-    type Item = &'a (Instance, chip::Chip, f64);
-    type IntoIter = std::slice::Iter<'a, (Instance, chip::Chip, f64)>;
+    type Item = &'a (Instance, chip::Chip, f32);
+    type IntoIter = std::slice::Iter<'a, (Instance, chip::Chip, f32)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -966,7 +966,7 @@ impl VgmHeader {
     /// high bit (0x8000_0000) on stored clock values indicates a
     /// secondary instance per VGM convention.
     pub fn chip_instances(&self) -> ChipInstances {
-        let mut out: Vec<(Instance, chip::Chip, f64)> = Vec::new();
+        let mut out: Vec<(Instance, chip::Chip, f32)> = Vec::new();
 
         let mut push = |raw_clock: u32, ch: chip::Chip| {
             if raw_clock != 0 {
@@ -975,7 +975,7 @@ impl VgmHeader {
                 } else {
                     Instance::Primary
                 };
-                let clock_hz = (raw_clock & 0x7FFF_FFFF) as f64;
+                let clock_hz = (raw_clock & 0x7FFF_FFFF) as f32;
                 out.push((inst, ch, clock_hz));
             }
         };

@@ -41,7 +41,7 @@ pub struct Ymf262State {
     /// Channel states for 18 FM channels
     channels: [ChannelState; YMF262_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Current port (0 or 1) for multi-byte register writes
     current_port: u8,
     /// OPL3 mode flag (register 0x105 bit 0)
@@ -66,9 +66,9 @@ impl Ymf262State {
     /// ```
     /// use soundlog::chip::state::Ymf262State;
     ///
-    /// let state = Ymf262State::new(14_318_180.0);
+    /// let state = Ymf262State::new(14_318_180.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_ymf262_key_on_port0() {
-        let mut state = Ymf262State::new(14_318_180.0);
+        let mut state = Ymf262State::new(14_318_180.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x6D);
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_ymf262_key_on_port1() {
-        let mut state = Ymf262State::new(14_318_180.0);
+        let mut state = Ymf262State::new(14_318_180.0f32);
 
         state.set_port(1);
         state.on_register_write(0xA0, 0x80);
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_ymf262_dual_port() {
-        let mut state = Ymf262State::new(14_318_180.0);
+        let mut state = Ymf262State::new(14_318_180.0f32);
 
         // Write to channel 0 on port 0
         state.set_port(0);
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_ymf262_opl3_mode() {
-        let mut state = Ymf262State::new(14_318_180.0);
+        let mut state = Ymf262State::new(14_318_180.0f32);
 
         assert!(!state.is_opl3_mode());
 
@@ -437,13 +437,13 @@ mod tests {
 
     #[test]
     fn test_ymf262_channel_count() {
-        let state = Ymf262State::new(14_318_180.0);
+        let state = Ymf262State::new(14_318_180.0f32);
         assert_eq!(state.channel_count(), 18);
     }
 
     #[test]
     fn test_ymf262_reset() {
-        let mut state = Ymf262State::new(14_318_180.0);
+        let mut state = Ymf262State::new(14_318_180.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x6D);

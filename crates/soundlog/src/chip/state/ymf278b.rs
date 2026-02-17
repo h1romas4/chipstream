@@ -42,7 +42,7 @@ pub struct Ymf278bState {
     /// Channel states for 18 FM channels
     channels: [ChannelState; YMF278B_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Current port (0 or 1) for multi-byte register writes
     current_port: u8,
     /// Global register storage for all written registers
@@ -65,9 +65,9 @@ impl Ymf278bState {
     /// ```
     /// use soundlog::chip::state::Ymf278bState;
     ///
-    /// let state = Ymf278bState::new(33_868_800.0);
+    /// let state = Ymf278bState::new(33_868_800.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_key_on_port0() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x81); // F-num low
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_key_on_port1() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(1);
         state.on_register_write(0xA0, 0x81);
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_key_off() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x81);
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_tone_change() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x81);
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_multiple_channels() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         // Channel 0 on port 0
         state.set_port(0);
@@ -442,13 +442,13 @@ mod tests {
 
     #[test]
     fn test_ymf278b_channel_count() {
-        let state = Ymf278bState::new(33_868_800.0);
+        let state = Ymf278bState::new(33_868_800.0f32);
         assert_eq!(state.channel_count(), 18);
     }
 
     #[test]
     fn test_ymf278b_reset() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA0, 0x81);
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_ymf278b_block_extraction() {
-        let mut state = Ymf278bState::new(33_868_800.0);
+        let mut state = Ymf278bState::new(33_868_800.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA1, 0xFF); // Channel 1, fnum low

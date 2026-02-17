@@ -48,7 +48,7 @@ pub struct PokeyState {
     /// Channel states for 4 channels
     channels: [ChannelState; POKEY_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: PokeyStorage,
 }
@@ -70,9 +70,9 @@ impl PokeyState {
     /// use soundlog::chip::state::PokeyState;
     ///
     /// // NTSC Atari 8-bit
-    /// let state = PokeyState::new(1_789_790.0);
+    /// let state = PokeyState::new(1_789_790.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -118,14 +118,14 @@ impl PokeyState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, audf: u8) -> f64 {
+    fn calculate_frequency(&self, audf: u8) -> f32 {
         if audf == 0 {
             // AUDF=0 is technically valid, represents highest frequency
-            self.master_clock_hz / 2.0
+            self.master_clock_hz / 2.0_f32
         } else {
             // Basic POKEY formula: freq = clock / (2 * (AUDF + 1))
             // Note: Actual formula is more complex with AUDCTL settings
-            self.master_clock_hz / (2.0 * (audf as f64 + 1.0))
+            self.master_clock_hz / (2.0_f32 * (audf as f32 + 1.0_f32))
         }
     }
 
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_pokey_channel_enable() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x00, 0x10); // AUDF1
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_pokey_channel_disable() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x00, 0x10);
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_pokey_tone_change() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         // Set up and enable channel 0
         state.on_register_write(0x00, 0x10);
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_pokey_multiple_channels() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         // Enable channel 0
         state.on_register_write(0x00, 0x10);
@@ -382,13 +382,13 @@ mod tests {
 
     #[test]
     fn test_pokey_channel_count() {
-        let state = PokeyState::new(1_789_790.0);
+        let state = PokeyState::new(1_789_790.0f32);
         assert_eq!(state.channel_count(), 4);
     }
 
     #[test]
     fn test_pokey_reset() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         state.on_register_write(0x00, 0x10);
         state.on_register_write(0x01, 0x08);
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_pokey_volume_controls_enable() {
-        let mut state = PokeyState::new(1_789_790.0);
+        let mut state = PokeyState::new(1_789_790.0f32);
 
         // Set frequency
         state.on_register_write(0x00, 0x10);

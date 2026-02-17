@@ -45,141 +45,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     let mut callback_stream = VgmCallbackStream::new(stream);
 
     // Track state for all chip types present in the file
-    for (inst, chip, clock_hz) in &instances {
-        let clock = *clock_hz;
-
-        match chip {
-            chip::Chip::Sn76489 => {
-                callback_stream.track_state::<chip::state::Sn76489State>(*inst, clock);
-            }
-            chip::Chip::Ym2413 => {
-                callback_stream.track_state::<chip::state::Ym2413State>(*inst, clock);
-            }
-            chip::Chip::Ym2612 => {
-                callback_stream.track_state::<chip::state::Ym2612State>(*inst, clock);
-            }
-            chip::Chip::Ym2151 => {
-                callback_stream.track_state::<chip::state::Ym2151State>(*inst, clock);
-            }
-            chip::Chip::Ym2203 => {
-                callback_stream.track_state::<chip::state::Ym2203State>(*inst, clock);
-            }
-            chip::Chip::Ym2608 => {
-                callback_stream.track_state::<chip::state::Ym2608State>(*inst, clock);
-            }
-            chip::Chip::Ym2610b => {
-                callback_stream.track_state::<chip::state::Ym2610bState>(*inst, clock);
-            }
-            chip::Chip::Ym3812 => {
-                callback_stream.track_state::<chip::state::Ym3812State>(*inst, clock);
-            }
-            chip::Chip::Ym3526 => {
-                callback_stream.track_state::<chip::state::Ym3526State>(*inst, clock);
-            }
-            chip::Chip::Y8950 => {
-                callback_stream.track_state::<chip::state::Y8950State>(*inst, clock);
-            }
-            chip::Chip::Ymf262 => {
-                callback_stream.track_state::<chip::state::Ymf262State>(*inst, clock);
-            }
-            chip::Chip::Ymf278b => {
-                callback_stream.track_state::<chip::state::Ymf278bState>(*inst, clock);
-            }
-            chip::Chip::Ymf271 => {
-                callback_stream.track_state::<chip::state::Ymf271State>(*inst, clock);
-            }
-            chip::Chip::Ymz280b => {
-                callback_stream.track_state::<chip::state::Ymz280bState>(*inst, clock);
-            }
-            chip::Chip::Rf5c68 => {
-                callback_stream.track_state::<chip::state::Rf5c68State>(*inst, clock);
-            }
-            chip::Chip::Rf5c164 => {
-                callback_stream.track_state::<chip::state::Rf5c164State>(*inst, clock);
-            }
-            chip::Chip::SegaPcm => {
-                callback_stream.track_state::<chip::state::SegaPcmState>(*inst, clock);
-            }
-            chip::Chip::Qsound => {
-                callback_stream.track_state::<chip::state::QsoundState>(*inst, clock);
-            }
-            chip::Chip::Scsp => {
-                callback_stream.track_state::<chip::state::ScspState>(*inst, clock);
-            }
-            chip::Chip::WonderSwan => {
-                callback_stream.track_state::<chip::state::WonderSwanState>(*inst, clock);
-            }
-            chip::Chip::Vsu => {
-                callback_stream.track_state::<chip::state::VsuState>(*inst, clock);
-            }
-            chip::Chip::Saa1099 => {
-                callback_stream.track_state::<chip::state::Saa1099State>(*inst, clock);
-            }
-            chip::Chip::Es5503 => {
-                callback_stream.track_state::<chip::state::Es5503State>(*inst, clock);
-            }
-            chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => {
-                callback_stream.track_state::<chip::state::Es5506State>(*inst, clock);
-            }
-            chip::Chip::X1010 => {
-                callback_stream.track_state::<chip::state::X1010State>(*inst, clock);
-            }
-            chip::Chip::C352 => {
-                callback_stream.track_state::<chip::state::C352State>(*inst, clock);
-            }
-            chip::Chip::Ga20 => {
-                callback_stream.track_state::<chip::state::Ga20State>(*inst, clock);
-            }
-            chip::Chip::MultiPcm => {
-                callback_stream.track_state::<chip::state::MultiPcmState>(*inst, clock);
-            }
-            chip::Chip::Upd7759 => {
-                callback_stream.track_state::<chip::state::Upd7759State>(*inst, clock);
-            }
-            chip::Chip::Okim6258 => {
-                callback_stream.track_state::<chip::state::Okim6258State>(*inst, clock);
-            }
-            chip::Chip::Okim6295 => {
-                callback_stream.track_state::<chip::state::Okim6295State>(*inst, clock);
-            }
-            chip::Chip::K051649 => {
-                callback_stream.track_state::<chip::state::K051649State>(*inst, clock);
-            }
-            chip::Chip::K054539 => {
-                callback_stream.track_state::<chip::state::K054539State>(*inst, clock);
-            }
-            chip::Chip::Huc6280 => {
-                callback_stream.track_state::<chip::state::Huc6280State>(*inst, clock);
-            }
-            chip::Chip::C140 => {
-                callback_stream.track_state::<chip::state::C140State>(*inst, clock);
-            }
-            chip::Chip::K053260 => {
-                callback_stream.track_state::<chip::state::K053260State>(*inst, clock);
-            }
-            chip::Chip::Pokey => {
-                callback_stream.track_state::<chip::state::PokeyState>(*inst, clock);
-            }
-            chip::Chip::Ay8910 => {
-                callback_stream.track_state::<chip::state::Ay8910State>(*inst, clock);
-            }
-            chip::Chip::GbDmg => {
-                callback_stream.track_state::<chip::state::GbDmgState>(*inst, clock);
-            }
-            chip::Chip::NesApu => {
-                callback_stream.track_state::<chip::state::NesApuState>(*inst, clock);
-            }
-            chip::Chip::Mikey => {
-                callback_stream.track_state::<chip::state::MikeyState>(*inst, clock);
-            }
-            chip::Chip::Scc1 => {
-                callback_stream.track_state::<chip::state::Scc1State>(*inst, clock);
-            }
-            _ => {
-                // Unsupported chip - skip state tracking
-            }
-        }
-    }
+    callback_stream.track_chips(&instances);
 
     // Register callbacks for all chip types
     callback_stream.on_write(
@@ -622,6 +488,16 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
         },
     );
 
+    callback_stream.on_write(
+        |inst: Instance, spec: chip::PwmSpec, sample: u64, event: Option<Vec<StateEvent>>| {
+            let reg_info = format!(
+                "Pwm[{:?}] 0x{:02X}=0x{:06X}",
+                inst, spec.register, spec.value
+            );
+            print_register_log(sample, &reg_info, event, dry_run);
+        },
+    );
+
     // Process the stream
     for result in callback_stream {
         match result {
@@ -654,9 +530,6 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
 
 /// Helper function to print register log line with events
 fn print_register_log(sample: u64, reg_info: &str, events: Option<Vec<StateEvent>>, dry_run: bool) {
-    if dry_run {
-        return;
-    }
     let event_str = if let Some(evs) = events {
         if evs.is_empty() {
             String::new()
@@ -667,7 +540,9 @@ fn print_register_log(sample: u64, reg_info: &str, events: Option<Vec<StateEvent
         String::new()
     };
 
-    println!("{:<12} {:<40} {}", sample, reg_info, event_str);
+    if !dry_run {
+        println!("{:<12} {:<40} {}", sample, reg_info, event_str);
+    }
 }
 
 /// Format a StateEvent for display

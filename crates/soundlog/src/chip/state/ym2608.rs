@@ -44,7 +44,7 @@ pub struct Ym2608State {
     /// Channel states for 6 FM + 3 PSG channels
     channels: [ChannelState; YM2608_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Current port (0 or 1) for multi-byte register writes
     current_port: u8,
     /// Global register storage for all written registers
@@ -68,9 +68,9 @@ impl Ym2608State {
     /// ```
     /// use soundlog::chip::state::Ym2608State;
     ///
-    /// let state = Ym2608State::new(8_000_000.0);
+    /// let state = Ym2608State::new(8_000_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -298,7 +298,7 @@ impl Ym2608State {
         }
 
         // PSG frequency = master_clock / 2 / (16 * period)
-        let freq_hz = self.master_clock_hz / 2.0 / (16.0 * period as f64);
+        let freq_hz = self.master_clock_hz / 2.0f32 / (16.0f32 * period as f32);
 
         Some(ToneInfo::new(period, 0, Some(freq_hz)))
     }
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_ym2608_fm_key_on_port0() {
-        let mut state = Ym2608State::new(8_000_000.0);
+        let mut state = Ym2608State::new(8_000_000.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA4, 0x22);
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_ym2608_fm_key_on_port1() {
-        let mut state = Ym2608State::new(8_000_000.0);
+        let mut state = Ym2608State::new(8_000_000.0f32);
 
         state.set_port(1);
         state.on_register_write(0xA4, 0x1A);
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_ym2608_psg_tone() {
-        let mut state = Ym2608State::new(8_000_000.0);
+        let mut state = Ym2608State::new(8_000_000.0f32);
 
         state.set_port(0);
         state.on_register_write(0x00, 0xCD);
@@ -484,13 +484,13 @@ mod tests {
 
     #[test]
     fn test_ym2608_channel_count() {
-        let state = Ym2608State::new(8_000_000.0);
+        let state = Ym2608State::new(8_000_000.0f32);
         assert_eq!(state.channel_count(), 9);
     }
 
     #[test]
     fn test_ym2608_reset() {
-        let mut state = Ym2608State::new(8_000_000.0);
+        let mut state = Ym2608State::new(8_000_000.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA4, 0x22);

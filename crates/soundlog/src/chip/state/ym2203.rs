@@ -37,7 +37,7 @@ pub struct Ym2203State {
     /// Channel states for 6 channels (3 FM + 3 PSG)
     channels: [ChannelState; YM2203_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Ym2203Storage,
 }
@@ -58,9 +58,9 @@ impl Ym2203State {
     /// ```
     /// use soundlog::chip::state::Ym2203State;
     ///
-    /// let state = Ym2203State::new(4_000_000.0);
+    /// let state = Ym2203State::new(4_000_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -244,7 +244,7 @@ impl Ym2203State {
         }
 
         // PSG frequency = master_clock / (16 * period)
-        let freq_hz = self.master_clock_hz / (16.0 * period as f64);
+        let freq_hz = self.master_clock_hz / (16.0f32 * period as f32);
 
         // For PSG, we use period as "fnum" and 0 as block
         Some(ToneInfo::new(period, 0, Some(freq_hz)))
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_ym2203_fm_key_on() {
-        let mut state = Ym2203State::new(4_000_000.0);
+        let mut state = Ym2203State::new(4_000_000.0f32);
 
         // Write fnum and block for FM channel 0
         state.on_register_write(0xA4, 0x22); // block=4, fnum_high=2
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_ym2203_fm_key_off() {
-        let mut state = Ym2203State::new(4_000_000.0);
+        let mut state = Ym2203State::new(4_000_000.0f32);
 
         // Set up and key on
         state.on_register_write(0xA4, 0x22);
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_ym2203_psg_tone() {
-        let mut state = Ym2203State::new(4_000_000.0);
+        let mut state = Ym2203State::new(4_000_000.0f32);
 
         // Write PSG channel 0 period
         state.on_register_write(0x00, 0xCD); // fine
@@ -449,13 +449,13 @@ mod tests {
 
     #[test]
     fn test_ym2203_channel_count() {
-        let state = Ym2203State::new(4_000_000.0);
+        let state = Ym2203State::new(4_000_000.0f32);
         assert_eq!(state.channel_count(), 6);
     }
 
     #[test]
     fn test_ym2203_reset() {
-        let mut state = Ym2203State::new(4_000_000.0);
+        let mut state = Ym2203State::new(4_000_000.0f32);
 
         state.on_register_write(0xA4, 0x22);
         state.on_register_write(0xA0, 0x6D);

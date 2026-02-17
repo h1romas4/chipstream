@@ -77,9 +77,9 @@ impl GbDmgState {
     /// ```
     /// use soundlog::chip::state::GbDmgState;
     ///
-    /// let state = GbDmgState::new(4_194_304.0);
+    /// let state = GbDmgState::new(4_194_304.0f32);
     /// ```
-    pub fn new(_clock: f64) -> Self {
+    pub fn new(_clock: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             registers: GbDmgStorage::default(),
@@ -121,8 +121,8 @@ impl GbDmgState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_game_boy(timer: u32) -> f64 {
-        131_072.0 / (2048 - timer) as f64
+    fn hz_game_boy(timer: u32) -> f32 {
+        131_072.0f32 / (2048 - timer) as f32
     }
 
     /// Calculate frequency in Hz from Game Boy noise parameters
@@ -134,14 +134,14 @@ impl GbDmgState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_game_boy_noise(poly_cntr: u8) -> f64 {
-        let mut freq_div = (poly_cntr & 0x07) as f64;
-        if freq_div == 0.0 {
-            freq_div = 0.5;
+    fn hz_game_boy_noise(poly_cntr: u8) -> f32 {
+        let mut freq_div = (poly_cntr & 0x07) as f32;
+        if freq_div == 0.0f32 {
+            freq_div = 0.5f32;
         }
 
         let shift_freq = (poly_cntr >> 4) as u32;
-        524_288.0 / freq_div / (1 << (shift_freq + 1)) as f64
+        524_288.0f32 / freq_div / (1 << (shift_freq + 1)) as f32
     }
 
     /// Extract tone from pulse/wave channel registers
@@ -175,7 +175,7 @@ impl GbDmgState {
 
         let freq_hz = if channel == 2 {
             // Wave channel frequency is half
-            Self::hz_game_boy(freq_value as u32) / 2.0
+            Self::hz_game_boy(freq_value as u32) / 2.0f32
         } else {
             Self::hz_game_boy(freq_value as u32)
         };
@@ -401,7 +401,7 @@ impl GbDmgState {
 
 impl Default for GbDmgState {
     fn default() -> Self {
-        Self::new(0.0)
+        Self::new(0.0f32)
     }
 }
 
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_gb_dmg_pulse_trigger() {
-        let mut state = GbDmgState::new(0.0);
+        let mut state = GbDmgState::new(0.0f32);
 
         // Set frequency for pulse channel 0
         state.on_register_write(0x13, 0xCD); // Frequency low
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_gb_dmg_wave_dac_enable() {
-        let mut state = GbDmgState::new(0.0);
+        let mut state = GbDmgState::new(0.0f32);
 
         // Set wave frequency
         state.on_register_write(0x1D, 0x00);
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_gb_dmg_noise_frequency() {
-        let mut state = GbDmgState::new(0.0);
+        let mut state = GbDmgState::new(0.0f32);
 
         // Enable master sound
         state.on_register_write(0x26, 0x80);
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn test_gb_dmg_master_disable() {
-        let mut state = GbDmgState::new(0.0);
+        let mut state = GbDmgState::new(0.0f32);
 
         // Enable wave channel
         state.on_register_write(0x1D, 0x00);
@@ -599,13 +599,13 @@ mod tests {
 
     #[test]
     fn test_gb_dmg_channel_count() {
-        let state = GbDmgState::new(0.0);
+        let state = GbDmgState::new(0.0f32);
         assert_eq!(state.channel_count(), 4);
     }
 
     #[test]
     fn test_gb_dmg_reset() {
-        let mut state = GbDmgState::new(0.0);
+        let mut state = GbDmgState::new(0.0f32);
 
         state.on_register_write(0x1A, 0x80);
 

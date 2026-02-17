@@ -1,16 +1,16 @@
 use soundlog::chip::state::Ym3812State;
 use soundlog::chip::{
-    Ay8910Spec, C352Spec, Es5506U16Spec, GbDmgSpec, Huc6280Spec, K054539Spec, MikeySpec,
-    MultiPcmSpec, NesApuSpec, Okim6295Spec, PokeySpec, PsgSpec, QsoundSpec, Rf5c68U16Spec,
-    Saa1099Spec, Scc1Spec, SegaPcmSpec, VsuSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
-    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
+    Ay8910Spec, C352Spec, Es5506U16Spec, GameGearPsgSpec, GbDmgSpec, Huc6280Spec, K054539Spec,
+    MikeySpec, MultiPcmSpec, NesApuSpec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, QsoundSpec,
+    Rf5c68U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, VsuSpec, Y8950Spec, Ym2151Spec, Ym2203Spec,
+    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
     Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::chip::{
     event::StateEvent,
     state::{
         Ay8910State, C352State, ChipState, Es5506State, GbDmgState, Huc6280State, K051649State,
-        K054539State, MikeyState, MultiPcmState, NesApuState, Okim6295State, PokeyState,
+        K054539State, MikeyState, MultiPcmState, NesApuState, Okim6295State, PokeyState, PwmState,
         QsoundState, Rf5c68State, Saa1099State, SegaPcmState, Sn76489State, VsuState, Y8950State,
         Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State,
         Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
@@ -1845,6 +1845,113 @@ fn test_sega_pcm_state_tracking() {
     assert_eq!(state.read_register(0x0100), Some(0xAB));
     assert_eq!(state.read_register(0x0200), Some(0xCD));
     assert_eq!(state.read_register(0x0300), None); // Not written
+}
+
+#[test]
+fn test_pwm_state_tracking() {
+    // Create a VGM document with PWM register writes
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(soundlog::chip::Chip::Pwm, Instance::Primary, 0);
+
+    // Write registers: one 24-bit value and one 25-bit value (will be masked to 24 bits)
+    builder.add_chip_write(
+        Instance::Primary,
+        PwmSpec {
+            register: 0x05,
+            value: 0x00AB_CDEF,
+        },
+    );
+    builder.add_chip_write(
+        Instance::Primary,
+        PwmSpec {
+            register: 0x06,
+            value: 0x01AB_CDEF,
+        },
+    );
+
+    let doc = builder.finalize();
+    let stream = VgmStream::from_document(doc);
+
+    // Create PWM state tracker
+    let mut state = PwmState::new(0.0);
+
+    // Process all commands (PWM is treated like PCM; no events expected)
+    for result in stream {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::PwmWrite(Instance::Primary, spec))) => {
+                let event = state.on_register_write(spec.register, spec.value);
+                assert!(event.is_none());
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            _ => {}
+        }
+    }
+
+    // Verify registers are stored correctly and masking applied
+    assert_eq!(state.read_register(0x05), Some(0x00AB_CDEF));
+    // The 25-bit value should be masked to lower 24 bits
+    assert_eq!(state.read_register(0x06), Some(0x00AB_CDEF));
+}
+
+#[test]
+fn test_gamegear_psg_state_tracking() {
+    // Create a VGM document with Game Gear PSG register writes using VgmBuilder
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(
+        soundlog::chip::Chip::GameGearPsg,
+        Instance::Primary,
+        3_579_545,
+    );
+
+    // Latch channel 0 frequency
+    builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x8D });
+    // High bits
+    builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x26 });
+    // Set volume to key on
+    builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x90 });
+
+    let doc = builder.finalize();
+
+    // Create a VgmStream from the document
+    let stream = VgmStream::from_document(doc);
+
+    // Create SN76489 state tracker (Game Gear PSG maps to SN76489)
+    let mut state = Sn76489State::new(3_579_545.0);
+
+    // Collect state events while processing the stream
+    let mut events = Vec::new();
+    for result in stream {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::GameGearPsgWrite(Instance::Primary, spec))) => {
+                if let Some(mut evs) = state.on_register_write(0, spec.value) {
+                    events.append(&mut evs);
+                }
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            _ => {}
+        }
+    }
+
+    // Verify that we got the expected key-on event
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        StateEvent::KeyOn { channel, .. } => {
+            assert_eq!(*channel, 0);
+        }
+        _ => panic!("Expected KeyOn event"),
+    }
+
+    // Verify channel count (SN76489 uses latched addressing, register storage is internal)
+    assert_eq!(state.channel_count(), 4);
+
+    // Verify that registers are stored correctly in global storage
+    // SN76489 stores frequency in registers (channel * 2) and (channel * 2 + 1)
+    // Volume is stored in register (8 + channel)
+    // Channel 0 frequency: registers 0 and 1
+    // Channel 0 volume: register 8
+    assert_eq!(state.read_register(0), Some(0x0D)); // Frequency low
+    assert_eq!(state.read_register(1), Some(0x26)); // Frequency high
+    assert_eq!(state.read_register(8), Some(0x00)); // Volume (attenuation=0)
 }
 
 #[test]

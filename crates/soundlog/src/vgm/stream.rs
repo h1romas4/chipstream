@@ -18,9 +18,16 @@ use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
 };
-use crate::vgm::header::VgmHeader;
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
+
+/// Minimum buffer capacity (in bytes) at which we consider shrinking the
+/// parser's internal byte buffer. The shrink logic avoids attempting to reduce
+/// capacity for small allocations to prevent frequent reallocations and allocator
+/// churn on light workloads, while still allowing large, mostly-unused buffers
+/// to be reduced to save RAM. Tune this value for more constrained environments
+/// (lower for very small-RAM targets).
+const MIN_CAP_TO_SHRINK: usize = 64 * 1024; // 64 KiB
 
 /// Internal source of VGM commands for the stream processor.
 ///
@@ -32,8 +39,6 @@ enum VgmStreamSource {
     Bytes {
         /// Buffer containing incomplete or unparsed VGM data.
         buffer: Vec<u8>,
-        /// VGM header (parsed upfront to know loop offset, etc.)
-        header: Option<Box<VgmHeader>>,
     },
     /// Pre-parsed commands from a VgmDocument.
     Commands {
@@ -396,8 +401,7 @@ impl VgmStream {
     pub fn new() -> Self {
         Self {
             source: VgmStreamSource::Bytes {
-                buffer: Vec::with_capacity(16),
-                header: None,
+                buffer: Vec::with_capacity(MIN_CAP_TO_SHRINK),
             },
             uncompressed_streams: HashMap::new(),
             block_id_map: Vec::new(),
@@ -518,10 +522,14 @@ impl VgmStream {
     }
 
     /// Adds new data to the internal buffer for parsing.
-    /// Appends raw VGM bytes to the internal buffer for incremental parsing.
+    /// Appends raw VGM bytes (command/data bytes) to the internal buffer for incremental parsing.
+    ///
+    /// Note: this method does not parse or strip the VGM header. When you have
+    /// a full VGM file, feed only the serialized command/data region starting at
+    /// the command stream offset: `0x34 + header.data_offset`.
     ///
     /// # Arguments
-    /// * `chunk` - Raw VGM bytes to add to the parsing buffer
+    /// * `chunk` - Raw VGM command/data bytes to add to the parsing buffer
     ///
     /// # Errors
     /// Returns `ParseError::Other` if adding the chunk would exceed the maximum
@@ -529,7 +537,7 @@ impl VgmStream {
     /// a document.
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer, header } => {
+            VgmStreamSource::Bytes { buffer } => {
                 if buffer.len() + chunk.len() > self.max_buffer_size {
                     return Err(ParseError::Other(format!(
                         "Buffer size limit exceeded: current {} bytes, chunk {} bytes, limit {} bytes",
@@ -538,13 +546,8 @@ impl VgmStream {
                         self.max_buffer_size
                     )));
                 }
+
                 buffer.extend_from_slice(chunk);
-                if header.is_none()
-                    && buffer.len() >= 0x40
-                    && let Ok((parsed_header, _size)) = crate::vgm::parser::parse_vgm_header(buffer)
-                {
-                    *header = Some(Box::new(parsed_header));
-                }
                 Ok(())
             }
             VgmStreamSource::Commands { .. } => Err(ParseError::Other(
@@ -859,7 +862,7 @@ impl VgmStream {
     /// Shrinks the buffer if it has grown too large relative to its usage.
     fn shrink_buffer_if_needed(&mut self) {
         if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source
-            && buffer.capacity() > 1024
+            && buffer.capacity() > MIN_CAP_TO_SHRINK
             && buffer.len() < buffer.capacity() / 4
         {
             buffer.shrink_to_fit();
@@ -888,9 +891,8 @@ impl VgmStream {
     /// Resets the stream parser to its initial state.
     pub fn reset(&mut self) {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer, header } => {
+            VgmStreamSource::Bytes { buffer } => {
                 buffer.clear();
-                *header = None;
             }
             VgmStreamSource::Commands {
                 current_index,

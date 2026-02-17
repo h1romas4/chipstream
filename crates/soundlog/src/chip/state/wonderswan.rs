@@ -23,7 +23,7 @@ pub struct WonderSwanState {
     /// Channel states for 4 PCM channels
     channels: [ChannelState; WONDERSWAN_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: WonderSwanStorage,
 }
@@ -43,9 +43,9 @@ impl WonderSwanState {
     /// ```
     /// use soundlog::chip::state::WonderSwanState;
     ///
-    /// let state = WonderSwanState::new(3_072_000.0);
+    /// let state = WonderSwanState::new(3_072_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: [
                 ChannelState::new(),
@@ -150,16 +150,12 @@ impl WonderSwanState {
         // period = 2048 - freq
         let period = 2048 - freq;
         let freq_hz = if period > 0 {
-            Some(self.master_clock_hz / (128.0 * period as f64))
+            Some(self.master_clock_hz / (128.0f32 * period as f32))
         } else {
             None
         };
 
-        ToneInfo {
-            fnum: freq,
-            block: 0, // WonderSwan doesn't use block/octave
-            freq_hz,
-        }
+        ToneInfo::new(freq, 0, freq_hz)
     }
 }
 
@@ -230,13 +226,13 @@ mod tests {
 
     #[test]
     fn test_wonderswan_channel_count() {
-        let state = WonderSwanState::new(3_072_000.0);
+        let state = WonderSwanState::new(3_072_000.0f32);
         assert_eq!(state.channel_count(), 4);
     }
 
     #[test]
     fn test_wonderswan_key_on() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x80, 0x00);
@@ -254,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_key_on_via_control() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Set frequency for channel 0
         state.on_register_write(0x80, 0x00);
@@ -277,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_key_off() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Set frequency and volume, enable channel
         state.on_register_write(0x80, 0x00);
@@ -296,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_tone_change() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Set frequency and volume, enable channel
         state.on_register_write(0x80, 0x00);
@@ -315,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_multiple_channels() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x80, 0x00);
@@ -335,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_reset() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         state.on_register_write(0x80, 0x00);
         state.on_register_write(0x81, 0x04);
@@ -349,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_wonderswan_volume_key_off() {
-        let mut state = WonderSwanState::new(3_072_000.0);
+        let mut state = WonderSwanState::new(3_072_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x80, 0x00);

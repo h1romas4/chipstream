@@ -10,8 +10,14 @@ use soundlog::{VgmBuilder, VgmDocument, VgmHeader};
 fn build_minimal_vgmdocument() {
     // Build an empty/default VGM document using the builder API.
     let doc: VgmDocument = VgmBuilder::new().finalize();
-    // Header defaults are set and commands are empty.
-    assert_eq!(doc.iter().count(), 0);
+    // Header defaults are set. The builder appends an EndOfData marker
+    // if none was present, so we expect one command (the terminator).
+    assert_eq!(doc.iter().count(), 1);
+    // Verify the final command is EndOfData to make the intent explicit.
+    match doc.iter().last().unwrap().clone() {
+        VgmCommand::EndOfData(_) => {}
+        other => panic!("expected EndOfData terminator, got {:?}", other),
+    }
 
     // finalize() sets data_offset based on version, so we need to check
     // that separately from the default header
@@ -61,7 +67,8 @@ fn add_chip_write_psg() {
     let mut b = VgmBuilder::new();
     b.add_chip_write(0usize, PsgSpec { value: 0xAB });
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // builder appends EndOfData, so we expect the command + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Sn76489Write(id, s) => {
             assert_eq!(usize::from(id), 0usize);
@@ -82,7 +89,8 @@ fn add_chip_write_ym2413() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // builder appends EndOfData
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Ym2413Write(id, s) => {
             assert_eq!(usize::from(id), 1usize);
@@ -118,7 +126,8 @@ fn add_chip_write_ym2612_ports() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 2);
+    // two commands plus EndOfData terminator appended by the builder
+    assert_eq!(doc.iter().count(), 3);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Ym2612Write(id, s) => {
             assert_eq!(usize::from(id), 1usize);
@@ -160,7 +169,8 @@ fn add_chip_write_pwm() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + EndOfData
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::PwmWrite(id, s) => {
             assert_eq!(usize::from(id), 1usize);
@@ -187,7 +197,8 @@ fn add_chip_write_okim6295() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + EndOfData
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Okim6295Write(id, s) => {
             assert_eq!(usize::from(id), 1usize);
@@ -208,7 +219,8 @@ fn add_command_wait_samples() {
     let mut b = VgmBuilder::new();
     b.add_vgm_command(WaitSamples(0x1234));
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + EndOfData
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::WaitSamples(s) => assert_eq!(s, WaitSamples(0x1234)),
         other => panic!("unexpected command: {:?}", other),
@@ -228,7 +240,8 @@ fn add_command_data_block() {
     };
     b.add_vgm_command(spec.clone());
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // data block + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::DataBlock(s) => assert_eq!(s.data, data),
         other => panic!("unexpected command: {:?}", other),
@@ -248,7 +261,8 @@ fn add_command_pcm_ram_write() {
     };
     b.add_vgm_command(spec.clone());
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // pcm ram write + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::PcmRamWrite(s) => assert_eq!(s, spec),
         other => panic!("unexpected command: {:?}", other),
@@ -260,7 +274,8 @@ fn add_command_wait_n_sample() {
     let mut b = VgmBuilder::new();
     b.add_vgm_command(WaitNSample(5));
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + EndOfData
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::WaitNSample(s) => assert_eq!(s, WaitNSample(5)),
         other => panic!("unexpected command: {:?}", other),
@@ -273,7 +288,8 @@ fn add_command_ay8910_mask_and_seek() {
     b.add_vgm_command(Ay8910StereoMask::from_mask(0xAA));
     b.add_vgm_command(SeekOffset(0xDEADBEEF));
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 2);
+    // two commands + EndOfData appended by builder
+    assert_eq!(doc.iter().count(), 3);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::AY8910StereoMask(s) => {
             assert_eq!(s, Ay8910StereoMask::from_mask(0xAA))
@@ -305,7 +321,8 @@ fn add_command_ay8910_mask_with_spec() {
     b.add_vgm_command(mask_spec.clone());
     let doc = b.finalize();
 
-    assert_eq!(doc.iter().count(), 1);
+    // mask spec + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::AY8910StereoMask(s) => {
             assert_eq!(s.chip_instance, 1);
@@ -339,7 +356,8 @@ fn add_command_stream_controls() {
     b.add_vgm_command(setup.clone());
     b.add_vgm_command(freq.clone());
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 2);
+    // two stream control commands + terminator
+    assert_eq!(doc.iter().count(), 3);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::SetupStreamControl(s) => assert_eq!(s, setup),
         other => panic!("unexpected command: {:?}", other),
@@ -366,7 +384,8 @@ fn add_command_start_stop_and_fastcall() {
         flags: 9,
     });
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 3);
+    // three commands + EndOfData
+    assert_eq!(doc.iter().count(), 4);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::StartStream(s) => assert_eq!(
             s,
@@ -401,7 +420,8 @@ fn add_command_ym2612_port0_address2a() {
     let mut b = VgmBuilder::new();
     b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(3));
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::YM2612Port0Address2AWriteAndWaitN(s) => {
             assert_eq!(s, Ym2612Port0Address2AWriteAndWaitN(3))
@@ -441,7 +461,8 @@ fn add_chip_write_uses_registered_instance() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Ym2612Write(i, s) => {
             assert_eq!(usize::from(i), 0usize);
@@ -470,7 +491,7 @@ fn header_chip_instances_enumeration() {
     let instances = doc.header.chip_instances();
 
     assert_eq!(instances.len(), 2);
-    // ChipInstances now returns Vec<(Instance, Chip, f64)> tuples
+    // ChipInstances now returns Vec<(Instance, Chip, f32)> tuples
     assert!(
         instances
             .iter()
@@ -495,7 +516,8 @@ fn add_chip_write_scc1() {
         },
     );
     let doc = b.finalize();
-    assert_eq!(doc.iter().count(), 1);
+    // command + terminator
+    assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::Scc1Write(id, s) => {
             assert_eq!(usize::from(id), 1usize);
@@ -536,12 +558,20 @@ fn roundtrip_vgmdocument_into_vec_and_parse() {
         .expect("failed to parse serialized VGM");
 
     let mut parsed_commands: Vec<VgmCommand> = parsed.iter().cloned().collect();
-    if let Some(c) = parsed_commands.last()
-        && matches!(c, VgmCommand::EndOfData(_))
-    {
+    let mut original_commands: Vec<VgmCommand> = doc.iter().cloned().collect();
+
+    // Normalize trailing EndOfData for comparison: the builder appends an
+    // EndOfData terminator but parsers/serializers may or may not include it
+    // depending on context. Remove it from both sides if present so we compare
+    // the meaningful payload commands.
+    if matches!(parsed_commands.last(), Some(VgmCommand::EndOfData(_))) {
         parsed_commands.pop();
     }
-    assert_eq!(parsed_commands, doc.iter().cloned().collect::<Vec<_>>());
+    if matches!(original_commands.last(), Some(VgmCommand::EndOfData(_))) {
+        original_commands.pop();
+    }
+
+    assert_eq!(parsed_commands, original_commands);
     assert_eq!(parsed.gd3, doc.gd3);
     assert_eq!(parsed.header.ident, doc.header.ident);
     assert_eq!(parsed.header.version, doc.header.version);
@@ -645,8 +675,9 @@ fn test_fallback_header_size_v1_00() {
     let bytes: Vec<u8> = (&doc).into();
 
     // VGM 1.00 header size is 0x24 (36 bytes), but data must start at minimum 0x40
-    // VgmBuilder doesn't auto-append EndOfData, so output is just the header
-    assert_eq!(bytes.len(), 0x40);
+    // The VgmBuilder now appends an EndOfData terminator, so the serialized
+    // output includes one extra terminator byte.
+    assert_eq!(bytes.len(), 0x40 + 1);
 }
 
 #[test]
@@ -657,7 +688,8 @@ fn test_explicit_data_offset_affects_header_size() {
 
     let bytes: Vec<u8> = (&doc).into();
 
-    assert_eq!(bytes.len(), 0x34usize + 0x20usize);
+    // Account for the EndOfData terminator appended by the builder.
+    assert_eq!(bytes.len(), 0x34usize + 0x20usize + 1usize);
 }
 
 #[test]
@@ -672,8 +704,9 @@ fn test_small_version_does_not_include_extra_header_field() {
     let bytes: Vec<u8> = (&doc).into();
 
     // VGM 1.10 header size is 0x34 (52 bytes)
-    // VgmBuilder doesn't auto-append EndOfData, so output is just the header
-    assert_eq!(bytes.len(), 0x34);
+    // The VgmBuilder now appends an EndOfData terminator, so the serialized
+    // output contains one extra terminator byte beyond the main header size.
+    assert_eq!(bytes.len(), 0x34 + 1);
 }
 
 #[test]

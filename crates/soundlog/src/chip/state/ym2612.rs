@@ -37,7 +37,7 @@ pub struct Ym2612State {
     /// Channel states for 6 FM channels
     channels: [ChannelState; YM2612_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Current port (0 or 1) for multi-byte register writes
     current_port: u8,
     /// Global register storage for all written registers
@@ -62,9 +62,9 @@ impl Ym2612State {
     /// use soundlog::chip::state::Ym2612State;
     ///
     /// // NTSC Genesis
-    /// let state = Ym2612State::new(7_670_454.0);
+    /// let state = Ym2612State::new(7_670_454.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -89,7 +89,7 @@ impl Ym2612State {
     /// use soundlog::chip::state::Ym2612State;
     /// use soundlog::chip::event::KeyState;
     ///
-    /// let state = Ym2612State::new(7_670_454.0);
+    /// let state = Ym2612State::new(7_670_454.0f32);
     /// let ch0 = state.channel(0).unwrap();
     /// assert_eq!(ch0.key_state, KeyState::Off);
     /// ```
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_key_on_channel_0() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Set port 0 (channels 0-2)
         state.set_port(0);
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_key_on_channel_3() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Set port 1 (channels 3-5)
         state.set_port(1);
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_key_off() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Set up and key on first
         state.set_port(0);
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_tone_change() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Set up and key on
         state.set_port(0);
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_no_event_when_key_off() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         state.set_port(0);
         state.on_register_write(0xA4, 0x22);
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_invalid_channel() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Try to key on invalid channel 3 (ch_bits=3 is invalid)
         let event = state.on_register_write(0x28, 0xF3);
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_port_switching() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Write to channel 0 on port 0
         state.set_port(0);
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_reset() {
-        let mut state = Ym2612State::new(7_670_454.0);
+        let mut state = Ym2612State::new(7_670_454.0f32);
 
         // Set up some state
         state.set_port(0);
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn test_ym2612_channel_count() {
-        let state = Ym2612State::new(7_670_454.0);
+        let state = Ym2612State::new(7_670_454.0f32);
         assert_eq!(state.channel_count(), 6);
     }
 }

@@ -34,7 +34,7 @@ pub struct Ym2151State {
     /// Channel states for 8 FM channels
     channels: [ChannelState; YM2151_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Ym2151Storage,
 }
@@ -56,9 +56,9 @@ impl Ym2151State {
     /// use soundlog::chip::state::Ym2151State;
     ///
     /// // Arcade system
-    /// let state = Ym2151State::new(3_579_545.0);
+    /// let state = Ym2151State::new(3_579_545.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_ym2151_key_on_channel_0() {
-        let mut state = Ym2151State::new(3_579_545.0);
+        let mut state = Ym2151State::new(3_579_545.0f32);
 
         // Write KC and KF for channel 0
         state.on_register_write(0x28, 0x4C); // KC: block=4, note=C (0x0C)
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_ym2151_key_off() {
-        let mut state = Ym2151State::new(3_579_545.0);
+        let mut state = Ym2151State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0x28, 0x4C);
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_ym2151_tone_change() {
-        let mut state = Ym2151State::new(3_579_545.0);
+        let mut state = Ym2151State::new(3_579_545.0f32);
 
         // Set up and key on
         state.on_register_write(0x28, 0x4C);
@@ -339,13 +339,13 @@ mod tests {
 
     #[test]
     fn test_ym2151_channel_count() {
-        let state = Ym2151State::new(3_579_545.0);
+        let state = Ym2151State::new(3_579_545.0f32);
         assert_eq!(state.channel_count(), 8);
     }
 
     #[test]
     fn test_ym2151_reset() {
-        let mut state = Ym2151State::new(3_579_545.0);
+        let mut state = Ym2151State::new(3_579_545.0f32);
 
         state.on_register_write(0x28, 0x4C);
         state.on_register_write(0x08, 0x78);

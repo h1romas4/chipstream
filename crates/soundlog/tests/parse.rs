@@ -411,3 +411,121 @@ fn test_from_bytes_version_151_complete() {
     assert_eq!(header.version, 0x00000151);
     assert_eq!(header.total_samples, 44100);
 }
+
+#[test]
+fn test_parse_malformed_extra_header_chip_vol_offset_inside_header() {
+    use soundlog::VgmBuilder;
+    use soundlog::VgmDocument;
+    use soundlog::vgm::VgmExtraHeader;
+    use soundlog::vgm::command::WaitSamples;
+
+    // Build a document with one volume entry in the extra header.
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(1));
+    let extra = VgmExtraHeader {
+        header_size: 0,
+        chip_clock_offset: 0,
+        chip_vol_offset: 0,
+        chip_clocks: vec![],
+        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+    };
+    builder.set_extra_header(extra);
+    let doc = builder.finalize();
+    let mut serialized: Vec<u8> = (&doc).into();
+
+    // Compute the extra header start and then corrupt chip_vol_offset to point
+    // inside the 12-byte header area (value 4). This mimics malformed files
+    // observed in the wild where offsets point into the header itself.
+    let stored_offset = u32::from_le_bytes(serialized[0xBC..0xC0].try_into().unwrap());
+    let extra_start = stored_offset.wrapping_add(0xBC_u32) as usize;
+    let bad_vol_offset: u32 = 4;
+    serialized[extra_start + 8..extra_start + 12].copy_from_slice(&bad_vol_offset.to_le_bytes());
+
+    // Parsing should succeed due to the parser's fallback/normalization logic
+    // and the chip_volumes data should be recovered.
+    let parsed: VgmDocument = serialized
+        .as_slice()
+        .try_into()
+        .expect("failed to parse malformed extra header with chip_vol_offset inside header");
+
+    assert!(
+        parsed.extra_header.is_some(),
+        "parsed document missing extra_header"
+    );
+    let parsed_extra = parsed.extra_header.unwrap();
+
+    // The volume entry should be present and match the original data.
+    assert_eq!(parsed_extra.chip_volumes.len(), 1);
+    assert_eq!(parsed_extra.chip_volumes[0], (2u8, 0x01u8, 1000u16));
+
+    // The parser is expected to normalize header_size and chip_vol_offset so that
+    // subsequent serialization will not corrupt header bytes. Ensure the
+    // normalized offsets place the volume block after the 12-byte header.
+    assert!(
+        parsed_extra.header_size >= 12,
+        "normalized header_size too small"
+    );
+    assert!(
+        parsed_extra.chip_vol_offset >= 12,
+        "normalized chip_vol_offset inside header"
+    );
+}
+
+#[test]
+fn test_parse_malformed_extra_header_chip_clock_offset_inside_header() {
+    use soundlog::VgmBuilder;
+    use soundlog::VgmDocument;
+    use soundlog::vgm::VgmExtraHeader;
+    use soundlog::vgm::command::WaitSamples;
+
+    // Build a document with one clock entry in the extra header.
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(1));
+    let extra = VgmExtraHeader {
+        header_size: 0,
+        chip_clock_offset: 0,
+        chip_vol_offset: 0,
+        chip_clocks: vec![(1u8, 12345u32)],
+        chip_volumes: vec![],
+    };
+    builder.set_extra_header(extra);
+    let doc = builder.finalize();
+    let mut serialized: Vec<u8> = (&doc).into();
+
+    // Compute the extra header start and then corrupt chip_clock_offset to point
+    // inside the 12-byte header area (value 4). This mimics malformed files
+    // observed in the wild where offsets point into the header itself.
+    let stored_offset = u32::from_le_bytes(serialized[0xBC..0xC0].try_into().unwrap());
+    let extra_start = stored_offset.wrapping_add(0xBC_u32) as usize;
+    let bad_clock_offset: u32 = 4;
+    serialized[extra_start + 4..extra_start + 8].copy_from_slice(&bad_clock_offset.to_le_bytes());
+
+    // Parsing should succeed due to the parser's fallback/normalization logic
+    // and the chip_clocks data should be recovered.
+    let parsed: VgmDocument = serialized
+        .as_slice()
+        .try_into()
+        .expect("failed to parse malformed extra header with chip_clock_offset inside header");
+
+    assert!(
+        parsed.extra_header.is_some(),
+        "parsed document missing extra_header"
+    );
+    let parsed_extra = parsed.extra_header.unwrap();
+
+    // The clock entry should be present and match the original data.
+    assert_eq!(parsed_extra.chip_clocks.len(), 1);
+    assert_eq!(parsed_extra.chip_clocks[0], (1u8, 12345u32));
+
+    // The parser is expected to normalize header_size and chip_clock_offset so that
+    // subsequent serialization will not corrupt header bytes. Ensure the
+    // normalized offsets place the clock block after the 12-byte header.
+    assert!(
+        parsed_extra.header_size >= 12,
+        "normalized header_size too small"
+    );
+    assert!(
+        parsed_extra.chip_clock_offset >= 12,
+        "normalized chip_clock_offset inside header"
+    );
+}

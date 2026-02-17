@@ -21,7 +21,7 @@ pub type NesApuStorage = SparseStorage<u8, u8>;
 /// NES APU base clock frequency
 /// N2A03 clock: 21,477,270 / 12 = 1,789,772.5 Hz
 /// Clock / 16 for tone calculation
-const NES_CLK_BASE: f64 = 111_860.781_25;
+const NES_CLK_BASE: f32 = 111_860.78_f32;
 
 /// NES APU register state tracker
 ///
@@ -82,9 +82,9 @@ impl NesApuState {
     /// ```
     /// use soundlog::chip::state::NesApuState;
     ///
-    /// let state = NesApuState::new(1_789_773.0);
+    /// let state = NesApuState::new(1_789_773.0f32);
     /// ```
-    pub fn new(_clock: f64) -> Self {
+    pub fn new(_clock: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             registers: NesApuStorage::default(),
@@ -126,8 +126,8 @@ impl NesApuState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_nes(timer: u32) -> f64 {
-        NES_CLK_BASE / (timer + 1) as f64
+    fn hz_nes(timer: u32) -> f32 {
+        NES_CLK_BASE / (timer + 1) as f32
     }
 
     /// Calculate frequency in Hz from NES noise period
@@ -139,13 +139,13 @@ impl NesApuState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_nes_noise(period: u8) -> f64 {
+    fn hz_nes_noise(period: u8) -> f32 {
         const NOISE_PERIODS: [u16; 16] = [
             4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
         ];
 
         let timer = NOISE_PERIODS[period as usize & 0x0F];
-        NES_CLK_BASE / timer as f64
+        NES_CLK_BASE / timer as f32
     }
 
     /// Extract tone from pulse/triangle channel registers
@@ -184,7 +184,7 @@ impl NesApuState {
 
         let freq_hz = if channel == 2 {
             // Triangle channel frequency is half of timer frequency
-            Self::hz_nes(timer as u32) / 2.0
+            Self::hz_nes(timer as u32) / 2.0f32
         } else {
             Self::hz_nes(timer as u32)
         };
@@ -353,7 +353,7 @@ impl NesApuState {
 
 impl Default for NesApuState {
     fn default() -> Self {
-        Self::new(0.0)
+        Self::new(0.0f32)
     }
 }
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_pulse_enable() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         // Set timer for pulse channel 0
         state.on_register_write(0x02, 0x6D); // Timer low
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_pulse_disable() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         // Enable and set up pulse channel
         state.on_register_write(0x02, 0x6D);
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_triangle() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         // Set triangle timer
         state.on_register_write(0x0A, 0x80); // Timer low
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_noise() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         // Set noise period
         state.on_register_write(0x0E, 0x05);
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_tone_change() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         // Enable and set up pulse channel
         state.on_register_write(0x02, 0x6D);
@@ -571,13 +571,13 @@ mod tests {
 
     #[test]
     fn test_nes_apu_channel_count() {
-        let state = NesApuState::new(0.0);
+        let state = NesApuState::new(0.0f32);
         assert_eq!(state.channel_count(), 5);
     }
 
     #[test]
     fn test_nes_apu_reset() {
-        let mut state = NesApuState::new(0.0);
+        let mut state = NesApuState::new(0.0f32);
 
         state.on_register_write(0x02, 0x6D);
         state.on_register_write(0x03, 0x02);

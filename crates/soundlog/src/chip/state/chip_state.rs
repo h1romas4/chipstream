@@ -48,10 +48,7 @@ pub trait ChipState: Send + Sync {
     /// # Returns
     ///
     /// Some(value) if the register has been written, None otherwise
-    fn read_register(&self, register: Self::Register) -> Option<Self::Value> {
-        let _ = register;
-        None
-    }
+    fn read_register(&self, register: Self::Register) -> Option<Self::Value>;
 
     /// Reset all state
     ///

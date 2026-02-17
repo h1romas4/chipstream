@@ -46,7 +46,7 @@ pub struct VsuState {
     /// Channel states for 6 channels
     channels: [ChannelState; VSU_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: VsuStorage,
 }
@@ -66,9 +66,9 @@ impl VsuState {
     /// ```
     /// use soundlog::chip::state::VsuState;
     ///
-    /// let state = VsuState::new(5_000_000.0);
+    /// let state = VsuState::new(5_000_000.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -114,17 +114,17 @@ impl VsuState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, freq_value: u16) -> f64 {
+    fn calculate_frequency(&self, freq_value: u16) -> f32 {
         if freq_value >= 2048 {
-            return 0.0;
+            return 0.0f32;
         }
 
         let divisor = 2048 - freq_value as i32;
         if divisor <= 0 {
-            return 0.0;
+            return 0.0f32;
         }
 
-        self.master_clock_hz / (divisor as f64)
+        self.master_clock_hz / (divisor as f32)
     }
 
     /// Extract tone from channel registers
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_vsu_channel_enable() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         // Channel 0: register 0x400 (interval), 0x404 (volume), 0x408 (freq low), 0x40C (freq high)
         state.on_register_write(0x408, 0x00); // Freq low
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_vsu_channel_disable() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x408, 0x00);
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_vsu_tone_change() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x408, 0x00);
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_vsu_multiple_channels() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         // Enable channel 0 (register base 0x400)
         state.on_register_write(0x408, 0x00);
@@ -452,13 +452,13 @@ mod tests {
 
     #[test]
     fn test_vsu_channel_count() {
-        let state = VsuState::new(5_000_000.0);
+        let state = VsuState::new(5_000_000.0f32);
         assert_eq!(state.channel_count(), 6);
     }
 
     #[test]
     fn test_vsu_reset() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         state.on_register_write(0x408, 0x00);
         state.on_register_write(0x40C, 0x04);
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_vsu_volume_disable() {
-        let mut state = VsuState::new(5_000_000.0);
+        let mut state = VsuState::new(5_000_000.0f32);
 
         // Enable channel 0
         state.on_register_write(0x408, 0x00);

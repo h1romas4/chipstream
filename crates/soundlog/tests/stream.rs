@@ -1,4 +1,5 @@
 use soundlog::VgmBuilder;
+use soundlog::VgmDocument;
 use soundlog::vgm::command::DacStreamChipType;
 use soundlog::vgm::command::{
     EndOfData, Instance, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
@@ -3115,6 +3116,25 @@ fn test_multiple_data_blocks_cumulative_size() {
 }
 
 #[test]
+fn test_push_chunk_wrapper_on_bytes_stream() {
+    // Ensure push_chunk forwards to the inner VgmStream when created with new()
+    let inner = VgmStream::new();
+    let mut callback_stream = VgmCallbackStream::new(inner);
+    let chunk = vec![0x56, 0x67, 0x6D, 0x20];
+    assert!(callback_stream.push_chunk(&chunk).is_ok());
+}
+
+#[test]
+fn test_push_chunk_wrapper_on_document_stream_errors() {
+    // push_chunk should return an error when the underlying stream is from_document()
+    let doc = VgmDocument::default();
+    let inner = VgmStream::from_document(doc);
+    let mut callback_stream = VgmCallbackStream::new(inner);
+    let chunk = vec![0x00];
+    assert!(callback_stream.push_chunk(&chunk).is_err());
+}
+
+#[test]
 fn test_callback_stream_struct_size() {
     // Test to investigate the size of VgmCallbackStream structure
     // VgmCallbackStream is approximately 30KB (29 KB) due to all chip state trackers
@@ -3501,5 +3521,108 @@ fn test_callback_stream_multiple_chips_and_instances() {
         *ym2151_secondary_writes.borrow(),
         2,
         "YM2151 Secondary should have 2 writes"
+    );
+}
+
+#[test]
+fn test_vgm_callback_stream_push_chunk_large_doc() {
+    // This test ensures `VgmCallbackStream::push_chunk` can accept a larger
+    // serialized `VgmDocument` streamed in chunks and that registered write
+    // callbacks are invoked for chip register writes.
+    //
+    // We construct a document with many YM2612 writes interleaved with waits,
+    // then feed its bytes to a `VgmCallbackStream` created from `VgmStream::new()`
+    // (so push_chunk is allowed). The test counts callback invocations to ensure
+    // writes were processed.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // Build a document with many writes
+    let mut builder = VgmBuilder::new();
+
+    // Register a YM2612 instance at id 0 so writes map to a tracked instance
+    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7987200);
+
+    // Add 200 writes interleaved with small waits to make the document reasonably large
+    for i in 0u16..200u16 {
+        builder.add_chip_write(
+            0usize,
+            chip::Ym2612Spec {
+                port: 0,
+                register: 0x22,
+                value: (i & 0xFF) as u8,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(10));
+    }
+
+    // Final terminator
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let bytes: Vec<u8> = (&doc).into();
+
+    // Create callback stream backed by a byte-mode VgmStream so we can push chunks
+    let inner = VgmStream::new();
+    let mut cb_stream = VgmCallbackStream::new(inner);
+
+    // Enable state tracking for YM2612 (not strictly necessary for callbacks,
+    // but ensures event detection paths are exercised)
+    cb_stream.track_state::<crate::chip::state::Ym2612State>(Instance::Primary, 7_987_200.0);
+
+    // Install a callback to count YM2612 write invocations
+    let counter = Rc::new(RefCell::new(0usize));
+    let counter_clone = counter.clone();
+    cb_stream.on_write(move |_inst, _spec: chip::Ym2612Spec, _sample, _event| {
+        *counter_clone.borrow_mut() += 1;
+    });
+
+    // Feed the serialized bytes in moderate-sized chunks
+    let chunk_size = 256usize;
+    // Compute initial offset into the serialized bytes from the finalized document header.
+    // Use `data_offset` directly: start offset is always `0x34 + data_offset`.
+    let header = &doc.header;
+    let mut offset = 0x34usize.wrapping_add(header.data_offset as usize);
+    while offset < bytes.len() {
+        let end = std::cmp::min(offset + chunk_size, bytes.len());
+        cb_stream
+            .push_chunk(&bytes[offset..end])
+            .expect("push_chunk");
+        offset = end;
+
+        // Drain available commands after each push to allow callbacks to run.
+        // Stop draining when stream indicates it needs more data or ends.
+        // Limit inner iterations to avoid pathological infinite loops.
+        for _ in 0..1000 {
+            match cb_stream.next() {
+                Some(Ok(StreamResult::Command(_))) => {
+                    // processed a command and callbacks (if any) have been invoked
+                    continue;
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => panic!("Stream processing error: {:?}", e),
+                None => break,
+            }
+        }
+    }
+
+    // Exhaust any remaining commands after the final chunk
+    loop {
+        match cb_stream.next() {
+            Some(Ok(StreamResult::Command(_))) => {}
+            Some(Ok(StreamResult::NeedsMoreData)) => break,
+            Some(Ok(StreamResult::EndOfStream)) => break,
+            Some(Err(e)) => panic!("Stream error during final drain: {:?}", e),
+            None => break,
+        }
+    }
+
+    // We added 200 YM2612 writes, so expect at least that many callbacks.
+    // Some writes may be coalesced/filtered by stream internals; require >= 200 to be safe.
+    assert!(
+        *counter.borrow() >= 200,
+        "Expected at least 200 write callbacks, got {}",
+        *counter.borrow()
     );
 }

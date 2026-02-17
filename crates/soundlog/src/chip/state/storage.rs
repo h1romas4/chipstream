@@ -101,6 +101,18 @@ pub trait RegisterStorage: Default + Clone + Debug {
 /// Memory usage scales with the number of unique registers written,
 /// not the total register address space.
 ///
+/// Note: The maximum number of entries this storage can hold depends on the
+/// width of the register type `R`. For example:
+/// - `u8` register addresses → at most 256 distinct entries
+/// - `u16` register addresses → at most 65,536 distinct entries
+///
+/// While these are finite limits, storing all possible addresses for a wide
+/// register type (e.g. `u16`) can still consume a significant amount of memory
+/// (approximately `sizeof(R) + sizeof(V)` plus HashMap overhead per entry).
+/// If you expect a large number of distinct register writes from untrusted or
+/// malformed input, prefer `ArrayStorage` or `CompactStorage` when appropriate,
+/// or ensure the caller enforces sensible limits.
+///
 /// # Examples
 ///
 /// ```

@@ -38,7 +38,7 @@ pub struct Ay8910State {
     /// Channel states for 3 tone channels
     channels: [ChannelState; AY8910_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
-    master_clock_hz: f64,
+    master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Ay8910Storage,
 }
@@ -61,9 +61,9 @@ impl Ay8910State {
     /// use soundlog::chip::state::Ay8910State;
     ///
     /// // ZX Spectrum / MSX
-    /// let state = Ay8910State::new(1_789_773.0);
+    /// let state = Ay8910State::new(1_789_773.0f32);
     /// ```
-    pub fn new(master_clock_hz: f64) -> Self {
+    pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
@@ -106,11 +106,11 @@ impl Ay8910State {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_ay(&self, period: u16) -> f64 {
+    fn hz_ay(&self, period: u16) -> f32 {
         if period == 0 {
-            0.0
+            0.0f32
         } else {
-            self.master_clock_hz / 16.0 / period as f64
+            self.master_clock_hz / 16.0_f32 / period as f32
         }
     }
 
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_ay8910_tone_enable() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         // Set period for channel A
         state.on_register_write(0x00, 0xCD); // Fine
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_ay8910_tone_disable() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         // Set up and enable channel A
         state.on_register_write(0x00, 0xCD);
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_ay8910_tone_change() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         // Set up and enable channel A
         state.on_register_write(0x00, 0xCD);
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn test_ay8910_multiple_channels() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         // Set up channel A
         state.on_register_write(0x00, 0xCD);
@@ -427,13 +427,13 @@ mod tests {
 
     #[test]
     fn test_ay8910_channel_count() {
-        let state = Ay8910State::new(1_789_773.0);
+        let state = Ay8910State::new(1_789_773.0f32);
         assert_eq!(state.channel_count(), 3);
     }
 
     #[test]
     fn test_ay8910_reset() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         state.on_register_write(0x00, 0xCD);
         state.on_register_write(0x01, 0x02);
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_ay8910_zero_period() {
-        let mut state = Ay8910State::new(1_789_773.0);
+        let mut state = Ay8910State::new(1_789_773.0f32);
 
         // Set zero period
         state.on_register_write(0x00, 0x00);
