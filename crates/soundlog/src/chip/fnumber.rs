@@ -134,7 +134,7 @@ pub trait ChipTypeSpec {
 /// In this crate's generic formula `freq = FN × (fM × prescaler) / (144 × 2^(21 − B))`,
 /// that corresponds to **`prescaler = 2.0`**.
 ///
-/// See also [`Opn2Spec`] for the OPN2 family (YM2612, YM2608, YM2610B) which uses
+/// See also [`OpnSpec`] for the OPN family (YM2612, YM2608, YM2610B) which uses
 /// `prescaler = 1.0`.
 pub struct OpnSpec;
 
