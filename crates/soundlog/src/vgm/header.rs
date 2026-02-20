@@ -970,13 +970,16 @@ impl VgmHeader {
 
         let mut push = |raw_clock: u32, ch: chip::Chip| {
             if raw_clock != 0 {
-                let inst = if (raw_clock & 0x8000_0000_u32) != 0 {
-                    Instance::Secondary
-                } else {
-                    Instance::Primary
-                };
+                // If the stored clock has the high bit set it indicates a
+                // secondary instance per VGM convention.
+                let is_secondary = (raw_clock & 0x8000_0000_u32) != 0;
                 let clock_hz = (raw_clock & 0x7FFF_FFFF) as f32;
-                out.push((inst, ch, clock_hz));
+                if is_secondary {
+                    out.push((Instance::Primary, ch.clone(), clock_hz));
+                    out.push((Instance::Secondary, ch.clone(), clock_hz));
+                } else {
+                    out.push((Instance::Primary, ch.clone(), clock_hz));
+                }
             }
         };
 

@@ -7,7 +7,6 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
 
 /// YM2151 has 8 FM channels
 const YM2151_CHANNELS: usize = 8;
@@ -120,22 +119,65 @@ impl Ym2151State {
         let kc = self.registers.read(kc_reg)?;
         let kf = self.registers.read(kf_reg).unwrap_or(0);
 
-        // Extract block (octave) from KC bits 6-4
+        // Extract block, note and KF fraction and compute fnum/block for ToneInfo
         let block = (kc >> 4) & 0x07;
-
-        // Extract note code from KC bits 3-0 and KF bits 7-2
-        // F-number calculation for YM2151:
-        // fnum = (note_code * 64) + (kf >> 2)
         let note_code = kc & 0x0F;
         let kf_fraction = (kf >> 2) & 0x3F;
-        let fnum = (note_code as u16 * 64) + kf_fraction as u16;
+        let fnum = (note_code as u32) * 64 + kf_fraction as u32;
 
-        // Calculate actual frequency using OpmSpec
-        // YM2151 (OPM) uses its own frequency calculation formula
-        let freq_hz =
-            fnumber::OpmSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+        // Calculate actual frequency directly from KC/KF (note ratio + octave + KF fine tuning)
+        let freq_hz = Self::kc_kf_to_freq(kc, kf, self.master_clock_hz);
 
-        Some(ToneInfo::new(fnum, block, freq_hz))
+        Some(ToneInfo::new(fnum as u16, block, freq_hz))
+    }
+
+    /// Convert a YM2151 KC/KF register pair into a frequency in Hertz.
+    ///
+    /// KC/KF encoding
+    /// - `KC` (Key Code) layout:
+    ///   - bits 6..4 = block (octave)
+    ///   - bits 3..0 = note index (0..11 for C..B). Values > 11 are considered invalid.
+    /// - `KF` (Key Fraction) layout:
+    ///   - bits 7..2 = fractional tuning steps (0..63). Lower two bits are ignored.
+    ///
+    /// Mapping chosen here
+    /// - Map KC to a MIDI note number so that `KC = 0x4A` (block=4, note=10) becomes MIDI 69 (A4).
+    ///   Concretely: `midi = block * 12 + note + 11`.
+    /// - Compute the base frequency using equal-tempered tuning relative to A4 = 440 Hz:
+    ///   `base_freq = 440 * 2^((midi - 69) / 12)`.
+    /// - Apply KF as a fine fractional semitone. KF provides 64 discrete steps per semitone,
+    ///   and there are 12 semitones per octave, so we treat KF as a fraction of 768 steps:
+    ///   `fine_multiplier = 2^(kf_fraction / 768)`.
+    /// - Finally, scale the result linearly by the ratio of the provided `master_clock_hz` to
+    ///   a nominal YM2151 clock of 3,579,545 Hz. This keeps frequencies consistent if the
+    ///   device uses a different master clock.
+    ///
+    /// Arguments
+    /// - `kc`: KC register value
+    /// - `kf`: KF register value
+    /// - `master_clock_hz`: actual master clock in Hz used to scale the nominal frequency
+    ///
+    /// Returns
+    /// - `Some(frequency_hz)` when `KC` encodes a valid note (note <= 11)
+    /// - `None` when `KC`'s note field is out of range
+    fn kc_kf_to_freq(kc: u8, kf: u8, master_clock_hz: f32) -> Option<f32> {
+        let nominal_clock = 3_579_545.0;
+        let oct = (kc >> 4) & 0x07;
+        let note = (kc & 0x0F) as i32;
+        if note > 11 {
+            return None;
+        }
+        let kf_fraction = ((kf >> 2) & 0x3F) as f32; // 0..63
+        // Map KC to MIDI note (so 0x4A -> MIDI 69)
+        let midi = (oct as i32) * 12 + note + 11;
+        // Base frequency using equal-tempered tuning relative to A4 = 440 Hz.
+        let base_freq = 440.0f32 * 2f32.powf((midi as f32 - 69.0f32) / 12.0f32);
+        // Apply KF fine-tuning (fraction of a semitone)
+        let fine = 2f32.powf(kf_fraction / 768.0f32);
+        // Apply clock scale (TODO)
+        let scale = master_clock_hz / nominal_clock;
+
+        Some(base_freq * fine * scale)
     }
 
     /// Handle key on/off register write (0x08)
@@ -285,7 +327,7 @@ mod tests {
         let mut state = Ym2151State::new(3_579_545.0f32);
 
         // Write KC and KF for channel 0
-        state.on_register_write(0x28, 0x4C); // KC: block=4, note=C (0x0C)
+        state.on_register_write(0x28, 0x4A); // KC: note=A
         state.on_register_write(0x30, 0x00); // KF: no fraction
 
         // Key on channel 0, all operators
@@ -353,5 +395,28 @@ mod tests {
         state.reset();
 
         assert_eq!(state.channel(0).unwrap().key_state, KeyState::Off);
+    }
+
+    #[test]
+    fn test_kc_kf_4a_yields_a4_440hz() {
+        // Typical YM2151 master clock used in tests and many arcade systems
+        let master_clock: f32 = 3_579_545.0f32;
+
+        // KC = 0x4A, KF = 0x00 should map to A4 (440 Hz) with our KC/KF->freq mapping
+        let freq_opt = Ym2151State::kc_kf_to_freq(0x4A, 0x00, master_clock);
+        assert!(
+            freq_opt.is_some(),
+            "kc_kf_to_freq returned None for KC=0x4A, KF=0x00"
+        );
+
+        let freq = freq_opt.unwrap();
+        let diff = (freq - 440.0f32).abs();
+        // Allow a small tolerance (sub-hertz rounding and float precision)
+        assert!(
+            diff <= 0.5f32,
+            "Expected ≈440 Hz for KC=0x4A KF=0x00, got {} Hz (diff {})",
+            freq,
+            diff
+        );
     }
 }

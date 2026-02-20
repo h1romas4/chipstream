@@ -89,7 +89,7 @@ pub use channel::ChannelState;
 pub use chip_state::ChipState;
 pub use gb_dmg::GbDmgState;
 pub use huc6280::Huc6280State;
-pub use k051649::{K051649State, Scc1State};
+pub use k051649::K051649State;
 pub use mikey::MikeyState;
 pub use nes_apu::NesApuState;
 pub use pcm::{

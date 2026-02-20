@@ -170,9 +170,9 @@ impl Ym2608State {
         // Extract block (3 bits, bits 5-3 of block_fnum_high register)
         let block = (block_fnum_high >> 3) & 0x07;
 
-        // Calculate actual frequency using OpnSpec
+        // Calculate actual frequency using OpnaSpec
         let freq_hz =
-            fnumber::OpnSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+            fnumber::OpnaSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
 
         Some(ToneInfo::new(fnum, block, freq_hz))
     }
@@ -297,8 +297,10 @@ impl Ym2608State {
             return None;
         }
 
-        // PSG frequency = master_clock / 2 / (16 * period)
-        let freq_hz = self.master_clock_hz / 2.0f32 / (16.0f32 * period as f32);
+        // PSG frequency = master_clock / 4 / (16 * period)
+        // The YM2608 SSG section receives the chip master clock pre-divided by 4
+        // before the AY-compatible tone counters (YM2203 divides by 2; YM2608/YM2610B by 4).
+        let freq_hz = self.master_clock_hz / 4.0f32 / (16.0f32 * period as f32);
 
         Some(ToneInfo::new(period, 0, Some(freq_hz)))
     }

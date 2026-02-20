@@ -243,8 +243,10 @@ impl Ym2203State {
             return None;
         }
 
-        // PSG frequency = master_clock / (16 * period)
-        let freq_hz = self.master_clock_hz / (16.0f32 * period as f32);
+        // PSG frequency = master_clock / 2 / (16 * period)
+        // The YM2203 SSG section receives the chip master clock pre-divided by 2
+        // before the AY-compatible tone counters, identical to YM2608/YM2610B.
+        let freq_hz = self.master_clock_hz / 2.0f32 / (16.0f32 * period as f32);
 
         // For PSG, we use period as "fnum" and 0 as block
         Some(ToneInfo::new(period, 0, Some(freq_hz)))

@@ -119,9 +119,9 @@ impl Ym3526State {
         // Extract block (3 bits, bits 4-2 of block_fnum_high register)
         let block = (block_fnum_high >> 2) & 0x07;
 
-        // Calculate actual frequency using Opl3Spec
+        // Calculate actual frequency using Opl2Spec
         let freq_hz =
-            fnumber::Opl3Spec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+            fnumber::Opl2Spec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
 
         Some(ToneInfo::new(fnum, block, freq_hz))
     }

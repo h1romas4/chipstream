@@ -1,4 +1,4 @@
-//! YMF271 (OPX) chip state implementation.
+//! YMF271 (OPX) chip state implementation. (NOT WORKING)
 //!
 //! This module provides state tracking for the Yamaha YMF271 FM synthesis chip,
 //! commonly known as OPX, with 12 FM channels and PCM capabilities.
@@ -121,35 +121,43 @@ impl Ymf271State {
         self.selected_slot
     }
 
-    /// Calculate frequency in Hz from block and F-number
+    /// Calculate frequency in Hz from block and F-number.
     ///
-    /// YMF271 frequency formula (simplified):
-    /// freq = (fnum * master_clock / 2) / (2^(20 - block))
+    /// # Formula
+    ///
+    /// YMF271 (OPX) uses the standard OPL-family formula with a 288 prescaler:
+    ///
+    /// ```text
+    /// freq = fnum × Fclk / (288 × 2^(20 − block))
+    /// ```
+    ///
+    /// This is identical in structure to the OPL3 formula but with a 12-bit
+    /// F-number and a 16.9344 MHz master clock.
     ///
     /// # Arguments
     ///
-    /// * `fnum` - 12-bit F-number value
-    /// * `block` - 4-bit block (octave) value
+    /// * `fnum`  - 12-bit F-number value (0–4095)
+    /// * `block` - 3-bit block / octave value (0–7)
     ///
     /// # Returns
     ///
-    /// Frequency in Hz
+    /// Frequency in Hz, or 0.0 when `fnum` is 0.
     fn calculate_frequency(&self, fnum: u16, block: u8) -> f32 {
         if fnum == 0 {
             return 0.0f32;
         }
 
-        let block_shift = 20_i32 - (block & 0x0F) as i32;
-        let divisor = 2f32.powi(block_shift);
-        (fnum as f32 * self.master_clock_hz / 2.0f32) / divisor
+        // 3-bit block (0–7), matching the OPX hardware specification.
+        let block_clamped = (block & 0x07) as i32;
+        (fnum as f32 * self.master_clock_hz) / (288.0_f32 * 2_f32.powi(20 - block_clamped))
     }
 
-    /// Extract tone from slot registers
+    /// Extract tone from slot registers.
     ///
     /// YMF271 register layout per slot:
-    /// - Register 12: Block (bits 3-0)
-    /// - Register 13: F-number high byte (bits 7-4)
-    /// - Register 14: F-number low byte (bits 7-0)
+    /// - Register 12: Block / octave (bits 2–0, 3-bit value 0–7)
+    /// - Register 13: F-number high nibble (bits 3–0, upper 4 bits of the 12-bit F-number)
+    /// - Register 14: F-number low byte (bits 7–0, lower 8 bits of the 12-bit F-number)
     ///
     /// # Arguments
     ///
@@ -167,7 +175,8 @@ impl Ymf271State {
         // Read block register (register 12)
         let block_reg = 12;
         let block_data = self.registers.read(block_reg)?;
-        let block = block_data & 0x0F;
+        // 3-bit block (octave 0–7) — matches the OPX hardware specification.
+        let block = block_data & 0x07;
 
         // Read F-number high (register 13)
         let fnum_hi_reg = 13;

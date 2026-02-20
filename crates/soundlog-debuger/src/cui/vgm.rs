@@ -33,9 +33,18 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         "(none)".to_string()
     } else {
         let mut lines = Vec::new();
-        for (inst, chip, _clock_hz) in &instances {
+        for (inst, chip, clock_hz) in &instances {
             let instance_number = usize::from(*inst) + 1;
-            lines.push(format!("{:<12} {}", format!("{:?}", chip), instance_number));
+            // `chip_instances()` provides the clock as an `f32` in Hz.
+            // Display it with 3 fractional digits to show sub-hertz precision
+            // while keeping the column reasonably compact.
+            let clock = *clock_hz;
+            lines.push(format!(
+                "{:<12} {:>10.3} Hz ({})",
+                format!("{:?}", chip),
+                clock,
+                instance_number
+            ));
         }
         lines.join("\n")
     };
@@ -435,18 +444,10 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
         }
     }
 
-    // Debug: Show first 5 commands directly
-    println!("\nFirst 5 commands (debug):");
-    for (i, cmd) in doc.commands.iter().enumerate().take(5) {
-        println!("  [{}] {}", i, format_command_brief(cmd));
-    }
-
-    println!();
-
     // Print commands with offsets and lengths
     println!("Command Listing:");
-    println!("{:<8} {:<8} {:<40} Length", "Index", "Offset", "Command");
-    println!("{}", "-".repeat(80));
+    println!("{:<8} {:<8} {:<80} Length", "Index", "Offset", "Command");
+    println!("{}", "-".repeat(120));
 
     for (index, (cmd, (offset, length))) in doc
         .commands
@@ -455,7 +456,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
         .enumerate()
     {
         let cmd_str = format_command_brief(cmd);
-        println!("{:<8} 0x{:06X} {:<40} {}", index, offset, cmd_str, length);
+        println!("{:<8} 0x{:06X} {:<80} {}", index, offset, cmd_str, length);
     }
 
     Ok(())
@@ -466,11 +467,43 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
     use soundlog::VgmCommand;
 
     match cmd {
+        VgmCommand::AY8910StereoMask(m) => format!("AY8910StereoMask({:?})", m),
         VgmCommand::WaitSamples(w) => format!("WaitSamples({})", w.0),
         VgmCommand::Wait735Samples(_) => "Wait735Samples".to_string(),
         VgmCommand::Wait882Samples(_) => "Wait882Samples".to_string(),
         VgmCommand::WaitNSample(w) => format!("WaitNSample({})", w.0),
         VgmCommand::EndOfData(_) => "EndOfData".to_string(),
+        VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
+            Ok(data_type) => format!(
+                "DataBlock({}, size={})",
+                format_data_block_type(&data_type),
+                db.size
+            ),
+            Err((_, err)) => format!("DataBlock(parse_error={}, size={})", err, db.size),
+        },
+        VgmCommand::PcmRamWrite(p) => format!("PcmRamWrite({:?})", p),
+        VgmCommand::YM2612Port0Address2AWriteAndWaitN(s) => {
+            format!("YM2612Port0Address2AWriteAndWaitN({:?})", s)
+        }
+        VgmCommand::SetupStreamControl(s) => format!(
+            "SetupStreamControl(id={}, chip={:?})",
+            s.stream_id, s.chip_type
+        ),
+        VgmCommand::SetStreamData(s) => format!(
+            "SetStreamData(id={}, bank=0x{:02X})",
+            s.stream_id, s.data_bank_id
+        ),
+        VgmCommand::SetStreamFrequency(s) => format!(
+            "SetStreamFrequency(id={}, freq={})",
+            s.stream_id, s.frequency
+        ),
+        VgmCommand::StartStream(s) => format!(
+            "StartStream(id={}, offset=0x{:X})",
+            s.stream_id, s.data_start_offset
+        ),
+        VgmCommand::StopStream(s) => format!("StopStream(id={})", s.stream_id),
+        VgmCommand::StartStreamFastCall(s) => format!("StartStreamFastCall({:?})", s),
+        VgmCommand::SeekOffset(s) => format!("SeekOffset({:?})", s),
         VgmCommand::Sn76489Write(inst, spec) => {
             format!("Sn76489Write({:?}, 0x{:02X})", inst, spec.value)
         }
@@ -492,6 +525,26 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
                 inst, spec.register, spec.value
             )
         }
+        VgmCommand::SegaPcmWrite(inst, spec) => {
+            // offset is u16
+            format!(
+                "SegaPcmWrite({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::Rf5c68U8Write(inst, spec) => {
+            // offset is u8
+            format!(
+                "Rf5c68U8Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::Rf5c68U16Write(inst, spec) => {
+            format!(
+                "Rf5c68U16Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
         VgmCommand::Ym2203Write(inst, spec) => {
             format!(
                 "Ym2203Write({:?}, 0x{:02X}=0x{:02X})",
@@ -500,51 +553,227 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
         }
         VgmCommand::Ym2608Write(inst, spec) => {
             format!(
-                "Ym2608Write({:?}, P{}:0x{:02X}=0x{:02X})",
+                "Ym2608Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                 inst, spec.port, spec.register, spec.value
             )
         }
-        VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
-            Ok(data_type) => format!(
-                "DataBlock({}, size={})",
-                format_data_block_type(&data_type),
-                db.size
-            ),
-            Err((_, err)) => format!("DataBlock(parse_error={}, size={})", err, db.size),
-        },
-        VgmCommand::SetupStreamControl(s) => {
+        VgmCommand::Ym2610bWrite(inst, spec) => {
             format!(
-                "SetupStreamControl(id={}, chip={:?})",
-                s.stream_id, s.chip_type
+                "Ym2610bWrite({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
+                inst, spec.port, spec.register, spec.value
             )
         }
-        VgmCommand::SetStreamData(s) => {
-            format!("SetStreamData(id={}, bank={})", s.stream_id, s.data_bank_id)
-        }
-        VgmCommand::SetStreamFrequency(s) => {
+        VgmCommand::Ym3812Write(inst, spec) => {
             format!(
-                "SetStreamFrequency(id={}, freq={})",
-                s.stream_id, s.frequency
+                "Ym3812Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
             )
         }
-        VgmCommand::StartStream(s) => {
+        VgmCommand::Ym3526Write(inst, spec) => {
             format!(
-                "StartStream(id={}, offset=0x{:X})",
-                s.stream_id, s.data_start_offset
+                "Ym3526Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
             )
         }
-        VgmCommand::StopStream(s) => {
-            format!("StopStream(id={})", s.stream_id)
+        VgmCommand::Y8950Write(inst, spec) => {
+            format!(
+                "Y8950Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
         }
-        _ => {
-            // For other commands, use debug format but truncate if too long
-            let debug_str = format!("{:?}", cmd);
-            if debug_str.len() > 40 {
-                format!("{}...", &debug_str[..37])
-            } else {
-                debug_str
-            }
+        VgmCommand::Ymf262Write(inst, spec) => format!("Ymf262Write({:?}, {:?})", inst, spec),
+        VgmCommand::Ymf278bWrite(inst, spec) => format!("Ymf278bWrite({:?}, {:?})", inst, spec),
+        VgmCommand::Ymf271Write(inst, spec) => format!("Ymf271Write({:?}, {:?})", inst, spec),
+        VgmCommand::Scc1Write(inst, spec) => {
+            // Keep Scc1 (VGM) spec debug but show port/register/value explicitly for readability
+            format!(
+                "Scc1Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
+                inst, spec.port, spec.register, spec.value
+            )
         }
+        VgmCommand::Ymz280bWrite(inst, spec) => {
+            format!(
+                "Ymz280bWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Rf5c164U8Write(inst, spec) => {
+            format!(
+                "Rf5c164U8Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::Rf5c164U16Write(inst, spec) => {
+            format!(
+                "Rf5c164U16Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::PwmWrite(inst, spec) => {
+            // register is low 4 bits; value uses lower 24 bits
+            format!(
+                "PwmWrite({:?}, reg=0x{:02X}=0x{:06X})",
+                inst,
+                spec.register,
+                spec.value & 0x00FF_FFFF
+            )
+        }
+        VgmCommand::Ay8910Write(inst, spec) => {
+            format!(
+                "Ay8910Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::GbDmgWrite(inst, spec) => {
+            format!(
+                "GbDmgWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::NesApuWrite(inst, spec) => {
+            format!(
+                "NesApuWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::MultiPcmWrite(inst, spec) => {
+            format!(
+                "MultiPcmWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::MultiPcmBankWrite(inst, spec) => {
+            format!("MultiPcmBankWrite({:?}, {:?})", inst, spec)
+        }
+        VgmCommand::Upd7759Write(inst, spec) => {
+            format!(
+                "Upd7759Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Okim6258Write(inst, spec) => {
+            format!(
+                "Okim6258Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Okim6295Write(inst, spec) => {
+            format!(
+                "Okim6295Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::K054539Write(inst, spec) => {
+            format!(
+                "K054539Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Huc6280Write(inst, spec) => {
+            format!(
+                "Huc6280Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::C140Write(inst, spec) => {
+            format!(
+                "C140Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::K053260Write(inst, spec) => {
+            format!(
+                "K053260Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::PokeyWrite(inst, spec) => {
+            format!(
+                "PokeyWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::QsoundWrite(inst, spec) => {
+            // register/value combined as u16
+            format!(
+                "QsoundWrite({:?}, 0x{:04X}=0x{:04X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::ScspWrite(inst, spec) => {
+            format!(
+                "ScspWrite({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::WonderSwanWrite(inst, spec) => {
+            format!(
+                "WonderSwanWrite({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::VsuWrite(inst, spec) => {
+            format!(
+                "VsuWrite({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::Saa1099Write(inst, spec) => {
+            format!(
+                "Saa1099Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Es5503Write(inst, spec) => {
+            format!(
+                "Es5503Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Es5506BEWrite(inst, spec) => {
+            format!(
+                "Es5506BEWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Es5506D6Write(inst, spec) => {
+            format!(
+                "Es5506D6Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::X1010Write(inst, spec) => {
+            format!(
+                "X1010Write({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::C352Write(inst, spec) => {
+            format!(
+                "C352Write({:?}, 0x{:04X}=0x{:04X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::Ga20Write(inst, spec) => {
+            format!(
+                "Ga20Write({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::MikeyWrite(inst, spec) => {
+            format!(
+                "MikeyWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            )
+        }
+        VgmCommand::GameGearPsgWrite(inst, spec) => {
+            format!("GameGearPsgWrite({:?}, 0x{:02X})", inst, spec.value)
+        }
+        VgmCommand::ReservedU8Write(r) => format!("ReservedU8Write({:?})", r),
+        VgmCommand::ReservedU16Write(r) => format!("ReservedU16Write({:?})", r),
+        VgmCommand::ReservedU24Write(r) => format!("ReservedU24Write({:?})", r),
+        VgmCommand::ReservedU32Write(r) => format!("ReservedU32Write({:?})", r),
+        VgmCommand::UnknownCommand(u) => format!("UnknownCommand({:?})", u),
     }
 }
 

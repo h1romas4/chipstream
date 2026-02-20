@@ -1,3 +1,5 @@
 /target
 *.vgm
+*.vgz
 *.wav
+!crates/soundlog/assets/vgm/*.vgm

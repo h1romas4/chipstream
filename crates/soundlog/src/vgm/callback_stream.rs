@@ -62,9 +62,9 @@ use crate::chip::state::{
     Ay8910State, C140State, C352State, ChipState, Es5503State, Es5506State, Ga20State, GbDmgState,
     Huc6280State, K051649State, K053260State, K054539State, MikeyState, MultiPcmState, NesApuState,
     Okim6258State, Okim6295State, PokeyState, QsoundState, Rf5c68State, Rf5c164State, Saa1099State,
-    Scc1State, ScspState, SegaPcmState, Sn76489State, Upd7759State, VsuState, WonderSwanState,
-    X1010State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
-    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
+    ScspState, SegaPcmState, Sn76489State, Upd7759State, VsuState, WonderSwanState, X1010State,
+    Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState, Ym2612State,
+    Ym3526State, Ym3812State, Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
 };
 use crate::vgm::command::{
     Ay8910StereoMask, DataBlock, EndOfData, Instance, PcmRamWrite, ReservedU8, ReservedU16,
@@ -185,7 +185,6 @@ mod sealed {
     impl Sealed for crate::chip::Ga20Spec {}
     impl Sealed for crate::chip::MikeySpec {}
     impl Sealed for crate::chip::GameGearPsgSpec {}
-    impl Sealed for crate::chip::K051649Spec {}
     impl Sealed for crate::chip::Scc1Spec {}
     impl Sealed for crate::chip::Ymf262Spec {}
     impl Sealed for crate::chip::Ymf278bSpec {}
@@ -282,7 +281,6 @@ impl_callback_and_state!(
 );
 impl_callback_and_state!(chip::VsuSpec, VsuState, on_vsu_write, vsu);
 impl_callback_and_state!(chip::MikeySpec, MikeyState, on_mikey_write, mikey);
-impl_callback_and_state!(chip::K051649Spec, K051649State, on_k051649_write, k051649);
 impl_callback_and_state!(chip::Ymf262Spec, Ymf262State, on_ymf262_write, ymf262);
 impl_callback_and_state!(chip::Ymf271Spec, Ymf271State, on_ymf271_write, ymf271);
 impl_callback_and_state!(chip::Ymf278bSpec, Ymf278bState, on_ymf278b_write, ymf278b);
@@ -320,15 +318,7 @@ impl_callback_and_state!(
 impl_callback_and_state!(chip::K054539Spec, K054539State, on_k054539_write, k054539);
 impl_callback_and_state!(chip::C140Spec, C140State, on_c140_write, c140);
 impl_callback_and_state!(chip::K053260Spec, K053260State, on_k053260_write, k053260);
-// Scc1State is a type alias for K051649State, so we only implement WriteCallbackTarget
-impl WriteCallbackTarget for chip::Scc1Spec {
-    fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
-    where
-        F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
-    {
-        callbacks.on_scc1_write = Some(Box::new(callback));
-    }
-}
+impl_callback_and_state!(chip::Scc1Spec, K051649State, on_scc1_write, k051649);
 // Rf5c68U16Spec shares the same state as Rf5c68U8Spec
 impl WriteCallbackTarget for chip::Rf5c68U16Spec {
     fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
@@ -413,7 +403,6 @@ struct StateTrackers {
     vsu: [Option<VsuState>; 2],
     mikey: [Option<MikeyState>; 2],
     k051649: [Option<K051649State>; 2],
-    scc1: [Option<Scc1State>; 2],
     sega_pcm: [Option<SegaPcmState>; 2],
     rf5c68: [Option<Rf5c68State>; 2],
     rf5c164: [Option<Rf5c164State>; 2],
@@ -480,7 +469,6 @@ struct Callbacks<'a> {
     on_ga20_write: ChipCallback<'a, chip::Ga20Spec>,
     on_mikey_write: ChipCallback<'a, chip::MikeySpec>,
     on_game_gear_psg_write: ChipCallback<'a, chip::GameGearPsgSpec>,
-    on_k051649_write: ChipCallback<'a, chip::K051649Spec>,
     on_scc1_write: ChipCallback<'a, chip::Scc1Spec>,
     on_ymf262_write: ChipCallback<'a, chip::Ymf262Spec>,
     on_ymf278b_write: ChipCallback<'a, chip::Ymf278bSpec>,
@@ -782,9 +770,6 @@ impl<'a> VgmCallbackStream<'a> {
                     self.state_trackers.k051649[*instance as usize] =
                         Some(K051649State::new(*clock_hz));
                 }
-                chip::Chip::Scc1 => {
-                    self.state_trackers.scc1[*instance as usize] = Some(Scc1State::new(*clock_hz));
-                }
                 chip::Chip::SegaPcm => {
                     self.state_trackers.sega_pcm[*instance as usize] =
                         Some(SegaPcmState::new(*clock_hz));
@@ -1080,7 +1065,6 @@ impl<'a> VgmCallbackStream<'a> {
         }
 
         // Process chip-specific commands with state tracking
-        #[allow(clippy::single_match)]
         match cmd {
             VgmCommand::Ym2612Write(instance, spec) => {
                 let event = self.state_trackers.ym2612[*instance as usize]
@@ -1422,9 +1406,18 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::Scc1Write(instance, spec) => {
-                let event = self.state_trackers.scc1[*instance as usize]
+                // Use the canonical mapping helper to convert VGM SCC1 (port, register,
+                // value) into the K051649 internal register space, then apply the
+                // resulting write to the K051649 state tracker.
+                let (mapped_register, mapped_value) =
+                    crate::chip::state::k051649::K051649State::map_vgm_to_k051649_register(
+                        spec.port,
+                        spec.register,
+                        spec.value,
+                    );
+                let event = self.state_trackers.k051649[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.register, spec.value));
+                    .and_then(|state| state.on_register_write(mapped_register, mapped_value));
                 if let Some(ref mut cb) = self.callbacks.on_scc1_write {
                     cb(*instance, spec.clone(), sample, event);
                 }

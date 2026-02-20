@@ -28,7 +28,6 @@ pub enum Chip {
     Ymf262,
     Ymf278b,
     Ymf271,
-    Scc1,
     Ymz280b,
     Rf5c164,
     Pwm,
@@ -274,13 +273,6 @@ pub struct Okim6258Spec {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Okim6295Spec {
     pub register: u8,
-    pub value: u8,
-}
-
-/// K051649 register write specification (16-bit register index).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct K051649Spec {
-    pub register: u16,
     pub value: u8,
 }
 

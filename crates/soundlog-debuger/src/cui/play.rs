@@ -98,7 +98,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2608Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2608[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Ym2608[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -108,7 +108,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2610Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2610[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Ym2610[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -148,7 +148,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf262Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ymf262[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Ymf262[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -158,7 +158,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf278bSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ymf278b[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Ymf278b[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -168,7 +168,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf271Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ymf271[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Ymf271[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -379,16 +379,6 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::K051649Spec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!(
-                "K051649[{:?}] 0x{:04X}=0x{:02X}",
-                inst, spec.register, spec.value
-            );
-            print_register_log(sample, &reg_info, event, dry_run);
-        },
-    );
-
-    callback_stream.on_write(
         |inst: Instance, spec: chip::K054539Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "K054539[{:?}] 0x{:04X}=0x{:02X}",
@@ -481,7 +471,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Scc1Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Scc1[{:?}] P{}:0x{:02X}=0x{:02X}",
+                "Scc1[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -550,7 +540,11 @@ fn format_event(event: &StateEvent) -> String {
     match event {
         StateEvent::KeyOn { channel, tone } => {
             if let Some(freq) = tone.freq_hz {
-                format!("KeyOn(ch={}, freq={:.2}Hz)", channel, freq)
+                // Show both the chip f-number and the calculated Hz to avoid confusion.
+                format!(
+                    "KeyOn(ch={}, fnum=0x{:03X}({}), freq={:.2}Hz)",
+                    channel, tone.fnum, tone.fnum, freq
+                )
             } else {
                 format!(
                     "KeyOn(ch={}, fnum={}, block={})",
@@ -563,7 +557,11 @@ fn format_event(event: &StateEvent) -> String {
         }
         StateEvent::ToneChange { channel, tone } => {
             if let Some(freq) = tone.freq_hz {
-                format!("ToneChange(ch={}, freq={:.2}Hz)", channel, freq)
+                // Include f-number as well for clarity
+                format!(
+                    "ToneChange(ch={}, fnum=0x{:03X}({}), freq={:.2}Hz)",
+                    channel, tone.fnum, tone.fnum, freq
+                )
             } else {
                 format!(
                     "ToneChange(ch={}, fnum={}, block={})",

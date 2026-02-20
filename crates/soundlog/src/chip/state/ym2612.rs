@@ -7,7 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
+use crate::chip::fnumber::{ChipTypeSpec, OpnaSpec};
 
 /// YM2612 channel storage (256 register space, but sparse usage)
 ///
@@ -184,9 +184,8 @@ impl Ym2612State {
         // Extract block (3 bits, bits 5-3 of block_fnum_high register)
         let block = (block_fnum_high >> 3) & 0x07;
 
-        // Calculate actual frequency using OpnSpec
-        let freq_hz =
-            fnumber::OpnSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+        // Calculate actual frequency using Opn2Spec (prescaler=1.0, matches vgm2wav/Nuked-OPN2)
+        let freq_hz = OpnaSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
 
         Some(ToneInfo::new(fnum, block, freq_hz))
     }

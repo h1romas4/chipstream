@@ -490,12 +490,19 @@ fn header_chip_instances_enumeration() {
 
     let instances = doc.header.chip_instances();
 
-    assert_eq!(instances.len(), 2);
+    // Secondary-only header entries may produce both Primary and Secondary
+    // instances (primary included to be robust against real-world files).
+    assert_eq!(instances.len(), 3);
     // ChipInstances now returns Vec<(Instance, Chip, f32)> tuples
     assert!(
         instances
             .iter()
             .any(|(inst, chip, _)| *inst == Instance::Primary && *chip == Chip::Ym2413)
+    );
+    assert!(
+        instances
+            .iter()
+            .any(|(inst, chip, _)| *inst == Instance::Primary && *chip == Chip::Ym2612)
     );
     assert!(
         instances

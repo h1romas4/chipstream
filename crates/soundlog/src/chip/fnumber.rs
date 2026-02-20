@@ -119,7 +119,23 @@ pub trait ChipTypeSpec {
     }
 }
 
-/// Marker type and implementation for the OPN(YM2203) chip.
+/// Marker type and implementation for the OPN (YM2203) chip.
+///
+/// # Frequency formula
+///
+/// Per the YM2203 Application Manual:
+///
+/// ```text
+/// FN = 144 × fn × 2^(20 − B) / fM
+///  fn = FN × fM / (144 × 2^(20 − B))
+///  fn = FN × fM × 2 / (144 × 2^(21 − B))
+/// ```
+///
+/// In this crate's generic formula `freq = FN × (fM × prescaler) / (144 × 2^(21 − B))`,
+/// that corresponds to **`prescaler = 2.0`**.
+///
+/// See also [`Opn2Spec`] for the OPN2 family (YM2612, YM2608, YM2610B) which uses
+/// `prescaler = 1.0`.
 pub struct OpnSpec;
 
 impl ChipTypeSpec for OpnSpec {
@@ -128,6 +144,8 @@ impl ChipTypeSpec for OpnSpec {
             fnum_bits: 11,
             block_bits: 3,
             a4_block: 6,
+            // prescaler = 2.0 matches the YM2203 Application Manual formula:
+            //   fn = FN × fM / (144 × 2^(20−B))  ≡  FN × fM × 2 / (144 × 2^(21−B))
             prescaler: 2.0f32,
         }
     }
@@ -162,16 +180,39 @@ impl ChipTypeSpec for OpnSpec {
     }
 }
 
-/// Marker type and implementation for the OPM(YM2151) chip.
-pub struct OpmSpec;
+/// Marker type and implementation for the OPN2 family (YM2612, YM2608, YM2610B).
+///
+/// # Frequency formula
+///
+/// The OPN2 FM engine runs at `fM / 144`.  Each engine cycle the 20-bit phase
+/// accumulator increments by `F-num × 2^(Block−1)`.  The resulting tone frequency is:
+///
+/// ```text
+/// freq = F-num × fM / (144 × 2^(21 − Block))
+/// ```
+///
+/// This is the formula used by vgm2wav / libvgm / GPGX / Nuked-OPN2 and matches
+/// real OPN2 hardware.  It differs from [`OpnSpec`] (YM2203) by a factor of 2:
+/// `prescaler = 1.0` here vs `prescaler = 2.0` for the YM2203 application-manual
+/// formula.
+///
+/// Common master clocks:
+/// - YM2612 NTSC Genesis: 7 670 454 Hz
+/// - YM2612 PAL Genesis:  7 600 489 Hz
+/// - YM2608 (OPNA):       8 000 000 Hz
+/// - YM2610B:             8 000 000 Hz
+pub struct OpnaSpec;
 
-impl ChipTypeSpec for OpmSpec {
+impl ChipTypeSpec for OpnaSpec {
     fn config() -> ChipTypeConfig {
         ChipTypeConfig {
-            fnum_bits: 10,
+            fnum_bits: 11,
             block_bits: 3,
-            a4_block: 5,
-            prescaler: 64.0f32,
+            // With prescaler=1 and a typical YM2612 clock of 7 670 454 Hz,
+            // A4 (440 Hz) falls comfortably in block 4 (F-num ≈ 1083).
+            a4_block: 4,
+            // prescaler = 1.0: freq = F-num × fM / (144 × 2^(21 − Block))
+            prescaler: 1.0f32,
         }
     }
 
@@ -183,20 +224,90 @@ impl ChipTypeSpec for OpmSpec {
         if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
             return Err(FNumberError::InvalidInput);
         }
-        if f_num > 0x3FF {
+        if f_num > 0x7FF {
             return Err(FNumberError::InvalidInput);
         }
-        let _prescaler = Self::config().prescaler;
-        let exp = 28_i32 - 2 * (block as i32);
+        let prescaler = Self::config().prescaler; // 1.0
+        let exp = 21_i32 - (block as i32);
         let denom_pow = 2_f32.powi(exp);
-        let freq = (f_num as f32) * master_clock_hz / denom_pow;
+        let freq = (f_num as f32) * (master_clock_hz * prescaler) / 144.0f32 / denom_pow;
         Ok(freq)
     }
 
     fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
-        let exp = 28_i32 - 2 * (block as i32);
+        let prescaler = Self::config().prescaler; // 1.0
+        let exp = 21_i32 - (block as i32);
         let denom_pow = 2_f32.powi(exp);
-        target_freq * denom_pow / master_clock_hz
+        target_freq * 144.0f32 * denom_pow / (master_clock_hz * prescaler)
+    }
+
+    fn default_master_clock() -> f32 {
+        // NTSC Genesis / Mega Drive master clock
+        7_670_454.0f32
+    }
+}
+
+/// Marker type and implementation for the OPL2 family (YM3812, YM3526).
+///
+/// # Frequency formula
+///
+/// OPL2 chips (YM3812/YM3526) use 10-bit F-numbers and the formula:
+///
+/// ```text
+/// freq = F-num × fM / (72 × 2^(20 − Block))
+/// ```
+///
+/// where `fM` is the chip master clock (typically 3,579,545 Hz for NTSC).
+///
+/// # Relation to OPL3
+///
+/// [`Opl3Spec`] uses the constant 288 with a ~14.3 MHz clock.  Both constants
+/// encode the same underlying ratio:
+///
+/// ```text
+/// 72 / 3_579_545 ≈ 288 / 14_318_180 ≈ 2.012 × 10⁻⁵
+/// ```
+///
+/// so a given (F-num, Block) pair produces the same frequency with either spec
+/// when the respective default clocks are used.  OPL2 chips differ only in
+/// their 10-bit F-number width (vs. 10-bit for OPL3 — identical in practice).
+///
+/// # Data-sheet reference
+///
+/// Yamaha YM3812 / YM3526 application manuals, frequency register section.
+pub struct Opl2Spec;
+
+impl ChipTypeSpec for Opl2Spec {
+    fn config() -> ChipTypeConfig {
+        ChipTypeConfig {
+            fnum_bits: 10,
+            block_bits: 3,
+            a4_block: 5,
+            prescaler: 1.0f32,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
+        if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        let spec = Self::config();
+        let max_fnum = (1u32 << spec.fnum_bits) - 1;
+        if f_num > max_fnum {
+            return Err(FNumberError::InvalidInput);
+        }
+        let freq = (f_num as f32) * master_clock_hz / (72.0f32 * 2_f32.powi(20 - block as i32));
+        Ok(freq)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
+        let exp = 20_i32 - (block as i32);
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 72.0f32 * denom_pow / master_clock_hz
     }
 
     fn default_master_clock() -> f32 {
@@ -204,13 +315,216 @@ impl ChipTypeSpec for OpmSpec {
     }
 }
 
-/// Marker type and implementation for the OPL3(YMF262) chip.
+/// Marker type and implementation for the OPLL (YM2413).
+///
+/// # Frequency formula
+///
+/// OPLL (YM2413) uses 9-bit F-numbers and the formula:
+/// ```text
+/// freq = F-num × fM / (288 × 2^(20 − Block))
+/// ```
+///
+/// This is the same formula as OPL2/OPL3 but with 9-bit F-numbers.
+pub struct OpllSpec;
+
+impl ChipTypeSpec for OpllSpec {
+    fn config() -> ChipTypeConfig {
+        ChipTypeConfig {
+            fnum_bits: 9,
+            block_bits: 3,
+            a4_block: 6,
+            prescaler: 1.0f32,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
+        if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        let spec = Self::config();
+        let max_fnum = (1u32 << spec.fnum_bits) - 1;
+        if f_num > max_fnum {
+            return Err(FNumberError::InvalidInput);
+        }
+        let freq = (f_num as f32) * master_clock_hz / (72.0f32 * 2_f32.powi(20 - block as i32));
+        Ok(freq)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
+        let exp = 20_i32 - (block as i32);
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 72.0f32 * denom_pow / master_clock_hz
+    }
+
+    fn default_master_clock() -> f32 {
+        3_579_545.0f32
+    }
+}
+
+/// Marker type and implementation for the OPL chip.
+///
+/// # Frequency formula
+///
+/// OPL chips use 11-bit F-numbers and the formula:
+///
+/// ```text
+/// freq = F-num × fM / (72 × 2^(20 − Block))
+/// ```
+///
+/// where `fM` is the chip master clock.  The default clock for this spec is
+/// the OPL internal oscillator input (14,318,180 Hz ÷ 1, i.e. the raw crystal
+/// for boards that use the 14 MHz reference).
+///
+/// # Relation to Opl2Spec / Opl3Spec
+///
+/// [`Opl2Spec`] has 10-bit F-numbers and a 3,579,545 Hz default clock.
+/// [`Opl3Spec`] has 10-bit F-numbers and a 14,318,180 Hz default clock with
+/// the constant 288 (= 4 × 72).  All three use the same underlying ratio
+/// `constant / fM`, differing only in F-number bit-width and typical clock.
+///
+/// # Data-sheet reference
+///
+/// Yamaha OPL (YM3526 family) application manual, frequency register section.
+pub struct OplSpec;
+
+impl ChipTypeSpec for OplSpec {
+    fn config() -> ChipTypeConfig {
+        ChipTypeConfig {
+            fnum_bits: 11,
+            block_bits: 3,
+            a4_block: 4,
+            prescaler: 1.0f32,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
+        if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        let spec = Self::config();
+        let max_fnum = (1u32 << spec.fnum_bits) - 1;
+        if f_num > max_fnum {
+            return Err(FNumberError::InvalidInput);
+        }
+        let freq = (f_num as f32) * master_clock_hz / (72.0f32 * 2_f32.powi(20 - block as i32));
+        Ok(freq)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
+        let exp = 20_i32 - (block as i32);
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 72.0f32 * denom_pow / master_clock_hz
+    }
+
+    fn default_master_clock() -> f32 {
+        14_318_180.0f32
+    }
+}
+
+/// Marker type and implementation for the OPX (YMF271) chip.
+///
+/// # Frequency formula
+///
+/// OPX (YMF271) uses 12-bit F-numbers, a 3-bit block (octave 0–7), and the
+/// standard OPL-family formula:
+///
+/// ```text
+/// freq = F-num × Fclk / (288 × 2^(20 − Block))
+/// ```
+///
+/// This is structurally identical to the OPL3 formula, but with a 12-bit
+/// F-number (vs. 10-bit for OPL3) and a higher master clock.
+///
+/// # Reference clock
+///
+/// The YMF271 crystal is 16,934,400 Hz (yielding a 44,100 Hz sample rate
+/// via an internal ÷384 divider).
+///
+/// # Data-sheet reference
+///
+/// Yamaha YMF271 (OPX) application manual, frequency register section.
+pub struct OpxSpec;
+
+impl ChipTypeSpec for OpxSpec {
+    fn config() -> ChipTypeConfig {
+        ChipTypeConfig {
+            fnum_bits: 12,
+            block_bits: 3,
+            // Block 4 keeps A4's F-number (~490) comfortably within the
+            // 12-bit range while preserving adequate tuning resolution.
+            a4_block: 4,
+            prescaler: 1.0f32,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f32,
+    ) -> Result<f32, FNumberError> {
+        if !master_clock_hz.is_finite() || master_clock_hz <= 0.0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        let spec = Self::config();
+        let max_fnum = (1u32 << spec.fnum_bits) - 1;
+        if f_num > max_fnum {
+            return Err(FNumberError::InvalidInput);
+        }
+        // freq = fnum × Fclk / (288 × 2^(20 − block))
+        let freq = (f_num as f32) * master_clock_hz / (288.0f32 * 2_f32.powi(20 - block as i32));
+        Ok(freq)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
+        // fnum = target_freq × 288 × 2^(20 − block) / Fclk
+        let exp = 20_i32 - (block as i32);
+        let denom_pow = 2_f32.powi(exp);
+        target_freq * 288.0f32 * denom_pow / master_clock_hz
+    }
+
+    fn default_master_clock() -> f32 {
+        // YMF271 master crystal: 16.9344 MHz
+        16_934_400.0f32
+    }
+}
+
+/// Marker type and implementation for the OPL3 (YMF262) chip.
+///
+/// # Frequency formula
+///
+/// OPL3 chips use 10-bit F-numbers and the formula:
+///
+/// ```text
+/// freq = F-num × fM / (288 × 2^(20 − Block))
+/// ```
+///
+/// where `fM` is the chip master clock (typically 14,318,180 Hz).
+///
+/// # Relation to Opl2Spec / OplSpec
+///
+/// [`Opl2Spec`] uses the constant 72 with a ~3.58 MHz clock, and [`OplSpec`]
+/// uses 72 with a ~14.3 MHz clock.  [`Opl3Spec`] uses 288 (= 4 × 72) with
+/// ~14.3 MHz.  All encode the same ratio `constant / fM ≈ 2.012 × 10⁻⁵`.
+/// The practical difference is in F-number bit-width (10 bits here) and the
+/// typical master-clock value used on real hardware.
+///
+/// # Data-sheet reference
+///
+/// Yamaha YMF262 (OPL3) application manual, frequency register section.
 pub struct Opl3Spec;
 
 impl ChipTypeSpec for Opl3Spec {
     fn config() -> ChipTypeConfig {
         ChipTypeConfig {
-            fnum_bits: 11,
+            fnum_bits: 10,
             block_bits: 3,
             a4_block: 5,
             prescaler: 1.0f32,

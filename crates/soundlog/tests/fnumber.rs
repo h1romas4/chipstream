@@ -1,26 +1,26 @@
 use soundlog::chip::fnumber::ChipTypeSpec;
 use soundlog::chip::fnumber::{
-    Opl3Spec, OpnSpec, find_and_tune_fnumber, find_closest_fnumber, generate_12edo_fnum_table,
+    OplSpec, OpnSpec, find_and_tune_fnumber, find_closest_fnumber, generate_12edo_fnum_table,
 };
 
 #[test]
 fn test_fnote_block_to_freq_ymf262() {
     let expected = [
-        (261.625_58_f32, 5_u8, 172_u32),
-        (277.182_62_f32, 5_u8, 182_u32),
-        (293.664_76_f32, 5_u8, 194_u32),
-        (311.126_98_f32, 5_u8, 206_u32),
-        (329.627_56_f32, 5_u8, 218_u32),
-        (349.228_24_f32, 5_u8, 230_u32),
-        (369.994_42_f32, 5_u8, 244_u32),
-        (391.995_42_f32, 5_u8, 258_u32),
-        (415.304_7_f32, 5_u8, 274_u32),
-        (440.0_f32, 5_u8, 290_u32),
-        (466.163_76_f32, 5_u8, 308_u32),
-        (493.883_3_f32, 5_u8, 326_u32),
+        (261.625_58_f32, 4_u8, 86_u32),
+        (277.182_62_f32, 4_u8, 91_u32),
+        (293.664_76_f32, 4_u8, 97_u32),
+        (311.126_98_f32, 4_u8, 103_u32),
+        (329.627_56_f32, 4_u8, 109_u32),
+        (349.228_24_f32, 4_u8, 115_u32),
+        (369.994_42_f32, 4_u8, 122_u32),
+        (391.995_42_f32, 4_u8, 129_u32),
+        (415.304_7_f32, 4_u8, 137_u32),
+        (440.0_f32, 4_u8, 145_u32),
+        (466.163_76_f32, 4_u8, 154_u32),
+        (493.883_3_f32, 4_u8, 163_u32),
     ];
     for &(ref_freq, block, f_num) in &expected {
-        let produced = Opl3Spec::fnum_block_to_freq(f_num, block, 14_318_180.0f32).unwrap();
+        let produced = OplSpec::fnum_block_to_freq(f_num, block, 14_318_180.0f32).unwrap();
         assert!(
             (produced - ref_freq).abs() <= 2.0,
             "f_num {} block {} produced {} Hz, expected {} Hz",
@@ -65,10 +65,10 @@ fn test_fnote_block_to_freq_ym2203() {
 
 #[test]
 fn test_find_closest_fnumber_ymf262opl3_440() {
-    let table = generate_12edo_fnum_table::<Opl3Spec>(14_318_180.0).unwrap();
-    let found = find_closest_fnumber::<Opl3Spec>(&table, 440.0).unwrap();
-    assert_eq!(found.block, 5);
-    assert!((found.f_num as i32 - 290).abs() <= 1);
+    let table = generate_12edo_fnum_table::<OplSpec>(14_318_180.0).unwrap();
+    let found = find_closest_fnumber::<OplSpec>(&table, 440.0).unwrap();
+    assert_eq!(found.block, 4);
+    assert!((found.f_num as i32 - 145).abs() <= 1);
 }
 
 #[test]
@@ -82,15 +82,15 @@ fn test_find_closest_fnumber_ym2203_440() {
 
 #[test]
 fn test_find_closest_fnumber_ymf262opl3_off_tune() {
-    let table = generate_12edo_fnum_table::<Opl3Spec>(14_318_180.0f32).unwrap();
+    let table = generate_12edo_fnum_table::<OplSpec>(14_318_180.0f32).unwrap();
 
-    let found_flat = find_closest_fnumber::<Opl3Spec>(&table, 439.0).unwrap();
-    assert_eq!(found_flat.block, 5);
-    assert!((found_flat.f_num as i32 - 290).abs() <= 1);
+    let found_flat = find_closest_fnumber::<OplSpec>(&table, 439.0).unwrap();
+    assert_eq!(found_flat.block, 4);
+    assert!((found_flat.f_num as i32 - 145).abs() <= 1);
 
-    let found_sharp = find_closest_fnumber::<Opl3Spec>(&table, 445.0).unwrap();
-    assert_eq!(found_sharp.block, 5);
-    assert!((found_flat.f_num as i32 - 290).abs() <= 1);
+    let found_sharp = find_closest_fnumber::<OplSpec>(&table, 445.0).unwrap();
+    assert_eq!(found_sharp.block, 4);
+    assert!((found_flat.f_num as i32 - 145).abs() <= 1);
 }
 
 #[test]
@@ -109,13 +109,13 @@ fn test_find_closest_fnumber_ym2203_off_tune() {
 
 #[test]
 fn test_find_and_tune_fnumber_ymf262opl3() {
-    let table = generate_12edo_fnum_table::<Opl3Spec>(14_318_180.0f32).unwrap();
+    let table = generate_12edo_fnum_table::<OplSpec>(14_318_180.0f32).unwrap();
     let target = 441.0_f32;
-    let base = find_closest_fnumber::<Opl3Spec>(&table, target).unwrap();
-    let tuned = find_and_tune_fnumber::<Opl3Spec>(&table, target, 14_318_180.0f32).unwrap();
+    let base = find_closest_fnumber::<OplSpec>(&table, target).unwrap();
+    let tuned = find_and_tune_fnumber::<OplSpec>(&table, target, 14_318_180.0f32).unwrap();
     let base_err = (base.actual_freq_hz - target).abs();
     assert!(tuned.error_hz <= base_err);
-    assert!((tuned.f_num as i32 - 291).abs() <= 1);
+    assert!((tuned.f_num as i32 - 146).abs() <= 1);
 }
 
 #[test]

@@ -122,10 +122,10 @@ impl Ym2413State {
         // Extract block (3 bits, bits 3-1 of block_fnum_high register)
         let block = (block_fnum_high >> 1) & 0x07;
 
-        // Calculate actual frequency using Opl3Spec
+        // Calculate actual frequency using OpllSpec
         // YM2413 (OPLL) uses OPL-family frequency calculation
         let freq_hz =
-            fnumber::Opl3Spec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+            fnumber::OpllSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
 
         Some(ToneInfo::new(fnum, block, freq_hz))
     }

@@ -132,7 +132,7 @@ impl Ymf278bState {
     ///
     /// YMF278B FM register layout (similar to OPL3):
     /// - Register 0xA0-0xA8: F-number low 8 bits
-    /// - Register 0xB0-0xB8: Key On (bit 5) + Block (bits 4-2) + F-number high 2 bits (bits 1-0)
+    /// - Register 0xB0-0xB8: Key On (bit 5) + Block (bits 4-2) + F-number high 3 bits (bits 2-0)
     ///
     /// # Arguments
     ///
@@ -162,6 +162,7 @@ impl Ymf278bState {
         let block_fnum_high = self.registers.read(block_fnum_high_addr)?;
 
         // Extract fnum (10 bits total: 8 low + 2 high)
+        // Bits 1-0 of block_fnum_high contain F-number [9:8]
         let fnum = (fnum_low as u16) | ((block_fnum_high & 0x03) as u16) << 8;
 
         // Extract block (3 bits, bits 4-2 of block_fnum_high register)
@@ -179,7 +180,7 @@ impl Ymf278bState {
     /// Register 0xB0-0xB8 format:
     /// - Bit 5: Key On (1=on, 0=off)
     /// - Bits 4-2: Block (octave, 0-7)
-    /// - Bits 1-0: F-Number bits 9-8 (MSB of 10-bit f-number)
+    /// - Bits 2-0: F-Number bits 10-8 (MSB of 11-bit f-number)
     ///
     /// # Arguments
     ///

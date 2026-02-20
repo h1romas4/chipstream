@@ -122,7 +122,7 @@ impl Y8950State {
 
         // Calculate actual frequency using Opl3Spec
         let freq_hz =
-            fnumber::Opl3Spec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
+            fnumber::OplSpec::fnum_block_to_freq(fnum as u32, block, self.master_clock_hz).ok();
 
         Some(ToneInfo::new(fnum, block, freq_hz))
     }

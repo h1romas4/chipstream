@@ -20,9 +20,6 @@ const K051649_CHANNELS: usize = 5;
 /// K051649 recommended storage
 pub type K051649Storage = SparseStorage<u8, u8>;
 
-/// SCC1 is the same as K051649 (Konami SCC)
-pub type Scc1Storage = K051649Storage;
-
 /// K051649 register state tracker
 ///
 /// Tracks all 5 wavetable channels and their register state, detecting key on/off
@@ -123,22 +120,19 @@ impl K051649State {
         self.channels.get_mut(channel as usize)
     }
 
-    /// Calculate frequency in Hz from SCC frequency value
+    /// Calculate frequency in Hz from SCC period value
     ///
     /// # Arguments
     ///
-    /// * `freq` - 12-bit frequency value
+    /// * `period` - 12-bit period value
     ///
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_scc(&self, freq: u16) -> f32 {
-        if freq == 0 {
-            0.0f32
-        } else {
-            // SCC frequency formula: master_clock / (32 * (4096 - freq))
-            self.master_clock_hz / (32.0f32 * (4096 - freq as i32) as f32)
-        }
+    fn hz_scc(&self, period: u16) -> f32 {
+        let period = period as f32;
+        let denom = 32.0 * (period + 1.0);
+        self.master_clock_hz / denom
     }
 
     /// Extract tone from channel registers
@@ -284,6 +278,45 @@ impl K051649State {
             Some(events)
         }
     }
+
+    /// Map a VGM SCC1-style (port, register, value) tuple into the K051649 internal
+    /// register space. This helper is pure and does not borrow self; it encodes the
+    /// canonical VGM -> K051649 register mapping used by the callback stream.
+    /// VGM port format:
+    ///  0x00 - waveform
+    ///  0x01 - frequency
+    ///  0x02 - volume
+    ///  0x03 - key on/off
+    ///  0x04 - waveform (0x00 used to do SCC access, 0x04 SCC+)
+    ///  0x05 - test register
+    /// Returns (mapped_register, mapped_value).
+    pub(crate) fn map_vgm_to_k051649_register(port: u8, register: u8, value: u8) -> (u8, u8) {
+        match port {
+            // Waveform RAM (0x00 - 0x7F) and SCC+ waveform (0x04) map directly.
+            0x00 | 0x04 => (register, value),
+
+            // Frequency registers -> 0x80 - 0x89
+            0x01 => (0x80u8.wrapping_add(register), value),
+
+            // Volume registers -> 0x8A - 0x8E
+            0x02 => (0x8Au8.wrapping_add(register), value),
+
+            // Key on/off -> channel enable register 0x8F.
+            // If 'register' is a small channel index (0..4) treat as index and encode mask,
+            // otherwise assume 'value' already conveys the mask.
+            0x03 => {
+                // Key on/off -> channel enable register 0x8F.
+                // Always write the provided `value` to 0x8F (no special-case channel-index encoding).
+                (0x8Fu8, value)
+            }
+
+            // Test registers -> 0xE0+
+            0x05 => (0xE0u8.wrapping_add(register), value),
+
+            // Unknown ports: fall back to raw register/value.
+            _ => (register, value),
+        }
+    }
 }
 
 impl ChipState for K051649State {
@@ -341,20 +374,6 @@ impl ChipState for K051649State {
         K051649_CHANNELS
     }
 }
-
-/// SCC1 state tracker (type alias for K051649State)
-///
-/// SCC1 is functionally identical to the K051649 chip. This type alias is provided
-/// for compatibility with code that references the SCC1 chip name.
-///
-/// # Examples
-///
-/// ```
-/// use soundlog::chip::state::Scc1State;
-///
-/// let state = Scc1State::new(1_789_773.0f32);
-/// ```
-pub type Scc1State = K051649State;
 
 #[cfg(test)]
 mod tests {
@@ -491,22 +510,23 @@ mod tests {
     }
 
     #[test]
-    fn test_scc1_alias() {
-        // Test that Scc1State is usable as a type alias
-        let mut state = Scc1State::new(1_789_773.0f32);
+    fn test_hz_scc_period_formula() {
+        // Verify the period-based formula produces a frequency near A4 for a known case.
+        // Use the requested master clock of 3_579_545 Hz.
+        let state = K051649State::new(3_579_545.0f32);
 
-        // Set frequency for channel 0
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(0x81, 0x08);
+        // Period value (12-bit) to test: 0x0FE
+        let period: u16 = 0x0FE;
+        let freq_hz = state.hz_scc(period);
 
-        // Enable channel 0
-        let event = state.on_register_write(0x8F, 0x01);
-
-        assert!(event.is_some());
-        if let Some(ref events) = event {
-            assert_eq!(events.len(), 1);
-            assert!(matches!(&events[0], StateEvent::KeyOn { channel: 0, .. }));
-        }
-        assert_eq!(state.channel_count(), 5);
+        // Expected: approximately A4 (440Hz). Allow a small tolerance.
+        let diff = (freq_hz - 440.0f32).abs();
+        assert!(
+            diff < 2.0,
+            "hz_scc({:#X}) produced {:.6} Hz, which differs from 440 Hz by {:.6} Hz",
+            period,
+            freq_hz,
+            diff
+        );
     }
 }

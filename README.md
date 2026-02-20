@@ -19,7 +19,29 @@ utilities for building and parsing register-write logs such as the VGM
 Build all crates:
 
 ```bash
-cargo build
+cargo build --release
+```
+
+`target/release/soundlog --help`:
+
+```bash
+GUI/CLI frontend for soundlog for debug
+
+Usage: soundlog [FILE] [COMMAND]
+
+Commands:
+  test    Run in test / headless mode
+  redump  Re-dump VGM file with DAC streams expanded to chip writes
+  parse   Parse and display VGM file commands with offsets and lengths
+  play    Play VGM file and display register writes with events
+  help    Print this message or the help of the given subcommand(s)
+
+Arguments:
+  [FILE]  Path to binary file to display (supports .vgz (gzipped) and raw files)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 Run tests for the `soundlog` crate:
@@ -27,6 +49,14 @@ Run tests for the `soundlog` crate:
 ```bash
 cargo test -p soundlog
 ```
+
+Optional: set the `SOUNDLOG_TEST_OUTPUT_VGM` environment variable to a non-empty path (relative to the crate root) to write VGM test artifacts when running tests. Example:
+
+```bash
+SOUNDLOG_TEST_OUTPUT_VGM=assets/vgm cargo test -p soundlog
+```
+
+When the variable is not set or is empty, no VGM test artifacts will be written.
 
 ## License
 

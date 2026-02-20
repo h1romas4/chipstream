@@ -45,7 +45,7 @@ Key features:
   decompression tables are applied transparently.
 - Memory limits are enforced to protect against malicious or malformed files:
   - Data block size limit (default 32 MiB, configurable via `set_max_data_block_size()`)
-  - Parsing buffer size limit (default 64 MiB, configurable via `set_max_buffer_size()`)
+  - Parsing buffer size limit (for chunked parsing via `push_chunk()`) (default 64 MiB, configurable via `set_max_buffer_size()`)
 
 ## Examples
 
@@ -257,9 +257,9 @@ for chunk in chunks {
 `VgmCallbackStream` wraps `VgmStream` to provide automatic chip state tracking
 and event-driven callbacks for real-time VGM processing:
 
-- **Automatic State Tracking**: (**WIP**) Enables per-chip state management for 35+ supported
+- **Automatic State Tracking**: Enables per-chip state management for 35+ supported
   sound chips, automatically detecting register writes and maintaining internal state.
-- **Event Detection**: (**WIP**) Emits `StateEvent` notifications for key musical events:
+- **Event Detection**: Emits `StateEvent` notifications for key musical events:
   - `KeyOn`: Channel starts playing with tone/frequency information
   - `KeyOff`: Channel stops playing
   - `ToneChange`: Frequency changes while channel is active
@@ -271,8 +271,6 @@ and event-driven callbacks for real-time VGM processing:
 - **Comprehensive Chip Support**: (**WIP**) Works with all major sound chips including FM
   synthesizers (YM2612, YM2151, OPL series), PSG chips (SN76489, AY-8910),
   PCM chips, and more.
-
-**Important**: The values captured in `StateEvent` are mostly untested in `v0.5.0`.
 
 This enables building advanced VGM analysis tools, real-time visualizers,
 and custom playback engines with minimal boilerplate code.
@@ -357,44 +355,44 @@ for result in callback_stream {
 - `VgmCallbackStream` wraps `VgmStream` and invokes callbacks for register writes and other commands as they are emitted. Note that `VgmStream` consumes the `EndOfData` command internally while implementing loop behavior; as a result the `on_end_of_data` callback registered on `VgmCallbackStream` will not be invoked in normal operation. To detect playback termination observe the iterator reaching `EndOfStream` (or the iterator returning `None` in the callback wrapper).
 - Fadeout support: configure `set_fadeout_samples(Some(n))` on the stream to allow the stream to continue emitting commands for `n` samples after the final loop end, which can be used to implement graceful fadeouts. When fadeout is active the stream records the loop end sample and will keep yielding commands (or generated waits) until the fadeout period elapses, after which `EndOfStream` is returned.
 
-## Chip State Tracking
-
-**Note: This feature has hardly been teste in `v0.5.0`**
+## Chip State Tracking (WIP)
 
 The `chip::state` module provides real-time state tracking for sound chips,
 detecting key on/off events and extracting tone information from register writes.
+
+Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
 
 ### Implemented Chips
 
 | Chip | Channels | Key On/Off | Tone Extract | System | Test |
 |------|----------|------------|--------------|--------|------|
-| **SN76489 (PSG)** | 3 tone + 1 noise | ✅ | ✅ | Master System, Game Gear, etc. | ⬜ |
-| **YM2413 (OPLL)** | 9 FM | ✅ | ✅ | MSX, SMS FM Unit | ⬜ |
-| **YM2612 (OPN2)** | 6 FM | ✅ | ✅ | Sega Genesis/Mega Drive | ⬜ |
-| **YM2151 (OPM)** | 8 FM | ✅ | ✅ | Arcade systems, etc. | ⬜ |
+| **SN76489 (PSG)** | 3 tone + 1 noise | ✅ | ✅ | Master System, Game Gear, etc. | ✅ |
+| **YM2413 (OPLL)** | 9 FM | ✅ | ✅ | MSX, SMS FM Unit | ✅ |
+| **YM2612 (OPN2)** | 6 FM | ✅ | ✅ | Sega Genesis/Mega Drive | ✅ |
+| **YM2151 (OPM)** | 8 FM | ✅ | ✅ | Arcade systems, etc. | ✅ |
 | **SegaPcm** | N/A | N/A | N/A | Sega PCM chip | - |
 | **Rf5c68** | N/A | N/A | N/A | RF5C68 PCM chip | - |
-| **YM2203 (OPN)** | 3 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ⬜ |
-| **YM2608 (OPNA)** | 6 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ⬜ |
-| **YM2610b (OPNB)** | 6 FM + 3 PSG + ADPCM | ✅ | ✅ | Neo Geo, etc. | ⬜ |
-| **YM3812 (OPL2)** | 9 FM | ✅ | ✅ | AdLib, Sound Blaster | ⬜ |
-| **YM3526 (OPL)** | 9 FM | ✅ | ✅ | C64 Sound Expander, etc. | ⬜ |
-| **Y8950** | 9 FM + ADPCM | ✅ | ✅ | MSX | ⬜ |
-| **YMf262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ⬜ |
-| **YMF278b (OPL4)** | 18 FM + PCM | ✅ | ✅ | YMF278B | ⬜ |
-| **YMF271 (OPX)** | 12 FM + PCM | ✅ | ✅ | YMF271 | ⬜ |
-| **SCC1** | 5 | ✅ | ✅ | Konami SCC (same as K051649) | ⬜ |
+| **YM2203 (OPN)** | 3 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ✅ |
+| **YM2608 (OPNA)** | 6 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ✅ |
+| **YM2610b (OPNB)** | 6 FM + 3 PSG + ADPCM | ✅ | ✅ | Neo Geo, etc. | ✅ |
+| **YM3812 (OPL2)** | 9 FM | ✅ | ✅ | AdLib, Sound Blaster | ✅ |
+| **YM3526 (OPL)** | 9 FM | ✅ | ✅ | C64 Sound Expander, etc. | ✅ |
+| **Y8950** | 9 FM + ADPCM | ✅ | ✅ | MSX | ✅ |
+| **YMf262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ✅ |
+| **YMF278b (OPL4)** | 18 FM + PCM | ✅ | ✅ | YMF278B | ✅ |
+| **YMF271 (OPX)** | 12 FM + PCM | ✅ | ✅ | YMF271 | NOT WORKING |
+| **K051649** | 5 | ✅ | ✅ | Konami SCC | ✅ |
+| **SCC1 (K052539)** | 5 | ✅ | ✅ | Konami SCC (same as K051649) | ✅ |
 | **YMZ280b** | N/A | N/A | N/A | YMZ280B PCM | - |
 | **RF5C164** | N/A | N/A | N/A | RF5C164 PCM | - |
 | **PWM** | N/A | N/A | N/A | Sega PWM | - |
-| **AY8910** | 3 tone + noise | ✅ | ✅ | ZX Spectrum, MSX, etc. | ⬜ |
+| **AY8910** | 3 tone + noise | ✅ | ✅ | ZX Spectrum, MSX, etc. | ✅ |
 | **GbDmg** | 4 | ✅ | ✅ | Game Boy | ⬜ |
 | **NesApu** | 5 | ✅ | ✅ | NES | ⬜ |
 | **MultiPcm** | N/A | N/A | N/A | Sega MultiPCM | - |
 | **UPD7759** | N/A | N/A | N/A | uPD7759 ADPCM | - |
 | **OKIM6258** | N/A | N/A | N/A | OKIM6258 ADPCM | - |
 | **OKIM6295** | N/A | N/A | N/A | OKIM6295 ADPCM | - |
-| **K051649** | 5 | ✅ | ✅ | Konami SCC | ⬜ |
 | **K054539** | N/A | N/A | N/A | Konami K054539 PCM | - |
 | **HUC6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ⬜ |
 | **C140** | N/A | N/A | N/A | Namco C140 PCM | - |
@@ -412,7 +410,7 @@ detecting key on/off events and extracting tone information from register writes
 | **C352** | N/A | N/A | N/A | Namco C352 | - |
 | **GA20** | N/A | N/A | N/A | Irem GA20 | - |
 | **Mikey** | N/A | N/A | N/A | Atari Lynx | - |
-| **GameGearPsg** | 3 tone + 1 noise | ✅ | ✅ | Game Gear PSG (same as SN76489) | ⬜ |
+| **GameGearPsg** | 3 tone + 1 noise | ✅ | ✅ | Game Gear PSG (same as SN76489) | ✅ |
 
 ## License
 
