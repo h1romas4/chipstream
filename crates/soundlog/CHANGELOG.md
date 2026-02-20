@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.0 (dev)
+
+- Enable runtime ChipState tracking for a variety of sound chips and add unit/integration tests to validate state and event behavior (e.g. frequency/key events, VGM parsing).
+
 ## v0.5.0
 
 - **Change (Builder)**: `VgmBuilder::finalize()` now ensures a finalized document contains an explicit end marker. If the assembled command stream does not already include an `EndOfData` command, `finalize()` appends one to the end of `commands`. This makes documents constructed via the builder safe to serialize and stream without requiring callers to remember to add an explicit terminator.
