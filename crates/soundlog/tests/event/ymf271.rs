@@ -138,9 +138,7 @@ pub fn write_ymf271_keyoff(builder: &mut VgmBuilder, instance: Instance, slot: u
 
 #[test]
 fn test_ymf271_fm_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = 440.0_f32;
 
     // YMF271 master clock: 16.9344 MHz (÷384 → 44,100 Hz sample rate).
@@ -149,9 +147,7 @@ fn test_ymf271_fm_keyon_and_tone_freq_matches_a4() {
     // We'll use FM slot 0.
     let slot: u8 = 0;
 
-    // ---------------------------------------------------------------
     // F-number calculation using OpxSpec (12-bit F-number, 3-bit block)
-    // ---------------------------------------------------------------
     let table =
         generate_12edo_fnum_table::<OpxSpec>(master_clock).expect("generate OpxSpec fnum table");
     let tuned = find_and_tune_fnumber::<OpxSpec>(&table, target_hz, master_clock)
@@ -160,38 +156,32 @@ fn test_ymf271_fm_keyon_and_tone_freq_matches_a4() {
     let fnum = tuned.f_num as u16;
     let block = tuned.block;
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ymf271, Instance::Primary, master_clock as u32);
 
-    // 1. Configure slot with a simple sine-wave voice.
+    // Configure slot with a simple sine-wave voice.
     write_ymf271_sine_voice(&mut builder, Instance::Primary, slot);
 
-    // 2. Write the frequency registers (block + F-number) for the slot.
+    // Write the frequency registers (block + F-number) for the slot.
     write_ymf271_frequency(&mut builder, Instance::Primary, slot, fnum, block);
 
-    // 3. Key on.
+    // Key on.
     write_ymf271_keyon(&mut builder, Instance::Primary, slot);
 
-    // 4. Hold the note for ~0.5 s at 44 100 Hz sample rate.
+    // Hold the note for ~0.5 s at 44 100 Hz sample rate.
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(WAIT_SAMPLES));
 
-    // 5. Key off.
+    // Key off.
     write_ymf271_keyoff(&mut builder, Instance::Primary, slot);
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artifact for manual verification.
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ymf271_fm_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz.
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ymf271State>(Instance::Primary, master_clock);
 

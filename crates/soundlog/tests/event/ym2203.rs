@@ -40,46 +40,42 @@ fn ym2203_write(builder: &mut VgmBuilder, instance: Instance, register: u8, valu
 pub fn write_ym2203_sine_voice(builder: &mut VgmBuilder, instance: Instance, channel: u8) {
     assert!(channel < 3, "YM2203 has 3 FM channels (0-2)");
 
-    // Operator register layout (all four operators, per channel):
-    //   base + op_offset + channel
-    //     op_offset : op1=0x00, op2=0x04, op3=0x08, op4=0x0C
-
-    // --- DT1/MUL  [--DT1[2:0]-MUL[3:0]] ---------------------------------
+    // DT1/MUL  [--DT1[2:0]-MUL[3:0]]
     // DT1=0 (no detune), MUL=1 (×1 frequency).  Encoded value = 0x01.
     ym2203_write(builder, instance, 0x30 + channel, 0x01); // op1
     ym2203_write(builder, instance, 0x34 + channel, 0x01); // op2
     ym2203_write(builder, instance, 0x38 + channel, 0x01); // op3
     ym2203_write(builder, instance, 0x3C + channel, 0x01); // op4
 
-    // --- TL  [---TL[6:0]] ------------------------------------------------
+    // TL  [---TL[6:0]]
     // OP1 at full volume (TL=0); OP2/3/4 fully attenuated (TL=127 = 0x7F).
     ym2203_write(builder, instance, 0x40 + channel, 0x00); // op1 – loudest
     ym2203_write(builder, instance, 0x44 + channel, 0x7F); // op2 – muted
     ym2203_write(builder, instance, 0x48 + channel, 0x7F); // op3 – muted
     ym2203_write(builder, instance, 0x4C + channel, 0x7F); // op4 – muted
 
-    // --- RS/AR  [RS[1:0]-0-AR[4:0]] --------------------------------------
+    // RS/AR  [RS[1:0]-0-AR[4:0]]
     // RS=0, AR=31 (0x1F) → instant attack for all operators.
     ym2203_write(builder, instance, 0x50 + channel, 0x1F); // op1
     ym2203_write(builder, instance, 0x54 + channel, 0x1F); // op2
     ym2203_write(builder, instance, 0x58 + channel, 0x1F); // op3
     ym2203_write(builder, instance, 0x5C + channel, 0x1F); // op4
 
-    // --- AM/D1R  [AM-0-D1R[4:0]] -----------------------------------------
+    // AM/D1R  [AM-0-D1R[4:0]]
     // AM=0, D1R=0 → no first-decay while key is held.
     ym2203_write(builder, instance, 0x60 + channel, 0x00); // op1
     ym2203_write(builder, instance, 0x64 + channel, 0x00); // op2
     ym2203_write(builder, instance, 0x68 + channel, 0x00); // op3
     ym2203_write(builder, instance, 0x6C + channel, 0x00); // op4
 
-    // --- D2R  [---D2R[4:0]] -----------------------------------------------
+    // D2R  [---D2R[4:0]]
     // D2R=0 → no secondary decay.
     ym2203_write(builder, instance, 0x70 + channel, 0x00); // op1
     ym2203_write(builder, instance, 0x74 + channel, 0x00); // op2
     ym2203_write(builder, instance, 0x78 + channel, 0x00); // op3
     ym2203_write(builder, instance, 0x7C + channel, 0x00); // op4
 
-    // --- D1L/RR  [D1L[3:0]-RR[3:0]] --------------------------------------
+    // D1L/RR  [D1L[3:0]-RR[3:0]]
     // D1L=0 (sustain at full level), RR=15 (fast release after key-off).
     // Encoded: (0 << 4) | 15 = 0x0F.
     ym2203_write(builder, instance, 0x80 + channel, 0x0F); // op1
@@ -87,16 +83,12 @@ pub fn write_ym2203_sine_voice(builder: &mut VgmBuilder, instance: Instance, cha
     ym2203_write(builder, instance, 0x88 + channel, 0x0F); // op3
     ym2203_write(builder, instance, 0x8C + channel, 0x0F); // op4
 
-    // --- SSG-EG  [---SSG-EG[3:0]] ----------------------------------------
+    // SSG-EG  [---SSG-EG[3:0]]
     // Proprietary; always 0.
     ym2203_write(builder, instance, 0x90 + channel, 0x00); // op1
     ym2203_write(builder, instance, 0x94 + channel, 0x00); // op2
     ym2203_write(builder, instance, 0x98 + channel, 0x00); // op3
     ym2203_write(builder, instance, 0x9C + channel, 0x00); // op4
-
-    // ------------------------------------------------------------------
-    // Per-channel registers (B0H+, B4H+)
-    // ------------------------------------------------------------------
 
     // B0H+  [--FB[2:0]-ALG[2:0]]
     // Feedback=0 (no OP1 self-feedback → pure sine), Algorithm=7 (all ops are
@@ -154,9 +146,7 @@ pub fn write_ym2203_keyoff(builder: &mut VgmBuilder, instance: Instance, channel
 
 #[test]
 fn test_ym2203_fm_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = 440.0_f32;
 
     // YM2203 typical master clock
@@ -165,9 +155,7 @@ fn test_ym2203_fm_keyon_and_tone_freq_matches_a4() {
     // We'll use FM channel 0
     let channel: u8 = 0;
 
-    // ---------------------------------------------------------------
     // F-number calculation using OpnSpec (prescaler = 2.0 for YM2203)
-    // ---------------------------------------------------------------
     let table = generate_12edo_fnum_table::<OpnSpec>(master_clock).expect("generate fnum table");
     let tuned = find_and_tune_fnumber::<OpnSpec>(&table, target_hz, master_clock)
         .expect("find and tune fnumber");
@@ -181,25 +169,23 @@ fn test_ym2203_fm_keyon_and_tone_freq_matches_a4() {
     let fnum_high = ((fnum_u32 >> 8) & 0x07) as u8;
     let a4_value = ((block_u8 & 0x07) << 3) | (fnum_high & 0x07);
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2203, Instance::Primary, master_clock as u32);
 
-    // 1. Initialize channel with a pure-sine voice
+    // Initialize channel with a pure-sine voice
     write_ym2203_sine_voice(&mut builder, Instance::Primary, channel);
 
-    // 2. Write the frequency (A4H high byte first, then A0H low byte)
+    // Write the frequency (A4H high byte first, then A0H low byte)
     write_ym2203_frequency(&mut builder, Instance::Primary, channel, a4_value, fnum_low);
 
-    // 3. Key on – all four operators
+    // Key on – all four operators
     write_ym2203_keyon(&mut builder, Instance::Primary, channel);
 
-    // 4. Hold note for ~0.5 s at 44 100 Hz sample rate
+    // Hold note for ~0.5 s at 44 100 Hz sample rate
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(WAIT_SAMPLES));
 
-    // 5. Key off
+    // Key off
     write_ym2203_keyoff(&mut builder, Instance::Primary, channel);
 
     let doc = builder.finalize();
@@ -210,9 +196,7 @@ fn test_ym2203_fm_keyon_and_tone_freq_matches_a4() {
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2203_fm_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2203State>(Instance::Primary, master_clock);
 

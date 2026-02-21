@@ -80,7 +80,6 @@ pub fn write_ym2151_global_init(builder: &mut VgmBuilder, instance: Instance) {
 pub fn write_ym2151_sine_voice(builder: &mut VgmBuilder, instance: Instance, channel: u8) {
     assert!(channel < 8, "channel must be 0-7");
 
-    // ------------------------------------------------------------------
     // YM2151 operator register layout:
     //
     // YM2151 has 32 operator slots arranged as:
@@ -99,7 +98,6 @@ pub fn write_ym2151_sine_voice(builder: &mut VgmBuilder, instance: Instance, cha
     //   AMS/D1R:  0xA0-0xBF
     //   DT2/D2R:  0xC0-0xDF
     //   D1L/RR:   0xE0-0xFF
-    // ------------------------------------------------------------------
 
     // Operator offsets for M1, C1, M2, C2
     let op_m1 = channel; // slot 0
@@ -107,42 +105,42 @@ pub fn write_ym2151_sine_voice(builder: &mut VgmBuilder, instance: Instance, cha
     let op_m2 = channel + 16; // slot 16
     let op_c2 = channel + 24; // slot 24
 
-    // --- DT1/MUL  [DT1[2:0]-0-MUL[3:0]] ---------------------------------
+    // DT1/MUL  [DT1[2:0]-0-MUL[3:0]]
     // DT1=0 (no detune), MUL=1 (×1 frequency).  Encoded value = 0x01.
     ym2151_write(builder, instance, 0x40 + op_m1, 0x01); // M1
     ym2151_write(builder, instance, 0x40 + op_c1, 0x01); // C1
     ym2151_write(builder, instance, 0x40 + op_m2, 0x01); // M2
     ym2151_write(builder, instance, 0x40 + op_c2, 0x01); // C2
 
-    // --- TL  [0-TL[6:0]] ------------------------------------------------
+    // TL  [0-TL[6:0]]
     // M1 at full volume (TL=0); C1/M2/C2 fully attenuated (TL=127 = 0x7F).
     ym2151_write(builder, instance, 0x60 + op_m1, 0x00); // M1 – loudest
     ym2151_write(builder, instance, 0x60 + op_c1, 0x7F); // C1 – muted
     ym2151_write(builder, instance, 0x60 + op_m2, 0x7F); // M2 – muted
     ym2151_write(builder, instance, 0x60 + op_c2, 0x7F); // C2 – muted
 
-    // --- KS/AR  [KS[1:0]-0-AR[4:0]] -------------------------------------
+    // KS/AR  [KS[1:0]-0-AR[4:0]]
     // KS=0, AR=31 (0x1F) → instant attack for all operators.
     ym2151_write(builder, instance, 0x80 + op_m1, 0x1F); // M1
     ym2151_write(builder, instance, 0x80 + op_c1, 0x1F); // C1
     ym2151_write(builder, instance, 0x80 + op_m2, 0x1F); // M2
     ym2151_write(builder, instance, 0x80 + op_c2, 0x1F); // C2
 
-    // --- AMS-EN/D1R  [AMS-EN-0-D1R[4:0]] --------------------------------
+    // AMS-EN/D1R  [AMS-EN-0-D1R[4:0]]
     // AMS-EN=0, D1R=0 → no first-decay while key is held.
     ym2151_write(builder, instance, 0xA0 + op_m1, 0x00); // M1
     ym2151_write(builder, instance, 0xA0 + op_c1, 0x00); // C1
     ym2151_write(builder, instance, 0xA0 + op_m2, 0x00); // M2
     ym2151_write(builder, instance, 0xA0 + op_c2, 0x00); // C2
 
-    // --- DT2/D2R  [DT2[1:0]-0-D2R[4:0]] ---------------------------------
+    // DT2/D2R  [DT2[1:0]-0-D2R[4:0]]
     // DT2=0, D2R=0 → no secondary decay.
     ym2151_write(builder, instance, 0xC0 + op_m1, 0x00); // M1
     ym2151_write(builder, instance, 0xC0 + op_c1, 0x00); // C1
     ym2151_write(builder, instance, 0xC0 + op_m2, 0x00); // M2
     ym2151_write(builder, instance, 0xC0 + op_c2, 0x00); // C2
 
-    // --- D1L/RR  [D1L[3:0]-RR[3:0]] -------------------------------------
+    // D1L/RR  [D1L[3:0]-RR[3:0]]
     // D1L=0 (sustain at full level), RR=15 (fast release after key-off).
     // Encoded: (0 << 4) | 15 = 0x0F.
     ym2151_write(builder, instance, 0xE0 + op_m1, 0x0F); // M1
@@ -209,9 +207,7 @@ pub fn write_ym2151_keyoff(builder: &mut VgmBuilder, instance: Instance, channel
 
 #[test]
 fn test_ym2151_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = TARGET_A4_HZ;
 
     // YM2151 master clock for arcade systems (NTSC colorburst frequency)
@@ -226,42 +222,36 @@ fn test_ym2151_keyon_and_tone_freq_matches_a4() {
     let kc_value = 0x4a;
     let kf_value = 0x00;
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2151, Instance::Primary, master_clock as u32);
 
-    // 1. One-time global initialisation (LFO off, all channels key-off)
+    // One-time global initialisation (LFO off, all channels key-off)
     write_ym2151_global_init(&mut builder, Instance::Primary);
 
-    // 2. Initialise channel 0 with a pure-sine voice (algorithm 7, feedback 0,
-    //    M1 full volume, C1/M2/C2 muted, instant attack, no decay, fast release).
+    // Initialise channel 0 with a pure-sine voice (algorithm 7, feedback 0,
+    //  M1 full volume, C1/M2/C2 muted, instant attack, no decay, fast release).
     write_ym2151_sine_voice(&mut builder, Instance::Primary, channel);
 
-    // 3. Write the frequency (KC and KF registers).
+    // Write the frequency (KC and KF registers).
     write_ym2151_frequency(&mut builder, Instance::Primary, channel, kc_value, kf_value);
 
-    // 4. Key on – all four operators.
+    // Key on – all four operators.
     write_ym2151_keyon(&mut builder, Instance::Primary, channel);
 
-    // 5. Hold note for ~0.5 s at 44 100 Hz sample rate.
+    // Hold note for ~0.5 s at 44 100 Hz sample rate.
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(22100));
 
-    // 6. Key off.
+    // Key off.
     write_ym2151_keyoff(&mut builder, Instance::Primary, channel);
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artefact for manual verification
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2151_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2151State>(Instance::Primary, master_clock);
 

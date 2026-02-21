@@ -115,22 +115,20 @@ impl Huc6280State {
         self.selected_channel
     }
 
-    /// Calculate frequency in Hz from HuC6280 frequency value
+    /// Calculate frequency in Hz from HuC6280 period value
     ///
     /// # Arguments
     ///
-    /// * `freq` - 12-bit frequency value
+    /// * `period` - 12-bit period value
     ///
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_huc6280(&self, freq: u16) -> f32 {
-        if freq == 0 {
+    fn hz_huc6280(&self, period: u16) -> f32 {
+        if period == 0 {
             0.0f32
         } else {
-            // HuC6280 frequency formula: master_clock / (32 * 32 * (4096 - freq))
-            // The PSG runs at master_clock / 32, and each step is 32 samples
-            self.master_clock_hz / (32.0_f32 * 32.0_f32 * (4096 - freq as i32) as f32)
+            self.master_clock_hz / 32.0_f32 / period as f32
         }
     }
 

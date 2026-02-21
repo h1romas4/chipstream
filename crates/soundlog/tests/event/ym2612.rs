@@ -97,57 +97,42 @@ pub fn write_ym2612_sine_voice(
     assert!(ch_in_port < 3, "ch_in_port must be 0, 1, or 2");
     let ch = ch_in_port; // register offset within the port
 
-    // ------------------------------------------------------------------
-    // Operator register layout (all four operators, per channel):
-    //
-    //   base + op_offset + ch_in_port
-    //     op_offset : op1=0x00, op2=0x04, op3=0x08, op4=0x0C
-    //
-    // DT1/MUL  0x30+
-    // TL       0x40+
-    // RS/AR    0x50+
-    // AM/D1R   0x60+
-    // D2R      0x70+
-    // D1L/RR   0x80+
-    // SSG-EG   0x90+
-    // ------------------------------------------------------------------
-
-    // --- DT1/MUL  [--DT1[2:0]-MUL[3:0]] ---------------------------------
+    // DT1/MUL  [--DT1[2:0]-MUL[3:0]]
     // DT1=0 (no detune), MUL=1 (×1 frequency).  Encoded value = 0x01.
     ym2612_write(builder, instance, port, 0x30 + ch, 0x01); // op1
     ym2612_write(builder, instance, port, 0x34 + ch, 0x01); // op2
     ym2612_write(builder, instance, port, 0x38 + ch, 0x01); // op3
     ym2612_write(builder, instance, port, 0x3C + ch, 0x01); // op4
 
-    // --- TL  [---TL[6:0]] ------------------------------------------------
+    // TL  [---TL[6:0]]
     // OP1 at full volume (TL=0); OP2/3/4 fully attenuated (TL=127 = 0x7F).
     ym2612_write(builder, instance, port, 0x40 + ch, 0x00); // op1 – loudest
     ym2612_write(builder, instance, port, 0x44 + ch, 0x7F); // op2 – muted
     ym2612_write(builder, instance, port, 0x48 + ch, 0x7F); // op3 – muted
     ym2612_write(builder, instance, port, 0x4C + ch, 0x7F); // op4 – muted
 
-    // --- RS/AR  [RS[1:0]-0-AR[4:0]] --------------------------------------
+    // RS/AR  [RS[1:0]-0-AR[4:0]]
     // RS=0, AR=31 (0x1F) → instant attack for all operators.
     ym2612_write(builder, instance, port, 0x50 + ch, 0x1F); // op1
     ym2612_write(builder, instance, port, 0x54 + ch, 0x1F); // op2
     ym2612_write(builder, instance, port, 0x58 + ch, 0x1F); // op3
     ym2612_write(builder, instance, port, 0x5C + ch, 0x1F); // op4
 
-    // --- AM/D1R  [AM-0-D1R[4:0]] -----------------------------------------
+    // AM/D1R  [AM-0-D1R[4:0]]
     // AM=0, D1R=0 → no first-decay while key is held.
     ym2612_write(builder, instance, port, 0x60 + ch, 0x00); // op1
     ym2612_write(builder, instance, port, 0x64 + ch, 0x00); // op2
     ym2612_write(builder, instance, port, 0x68 + ch, 0x00); // op3
     ym2612_write(builder, instance, port, 0x6C + ch, 0x00); // op4
 
-    // --- D2R  [---D2R[4:0]] -----------------------------------------------
+    // D2R  [---D2R[4:0]]
     // D2R=0 → no secondary decay.
     ym2612_write(builder, instance, port, 0x70 + ch, 0x00); // op1
     ym2612_write(builder, instance, port, 0x74 + ch, 0x00); // op2
     ym2612_write(builder, instance, port, 0x78 + ch, 0x00); // op3
     ym2612_write(builder, instance, port, 0x7C + ch, 0x00); // op4
 
-    // --- D1L/RR  [D1L[3:0]-RR[3:0]] --------------------------------------
+    // D1L/RR  [D1L[3:0]-RR[3:0]]
     // D1L=0 (sustain at full level), RR=15 (fast release after key-off).
     // Encoded: (0 << 4) | 15 = 0x0F.
     ym2612_write(builder, instance, port, 0x80 + ch, 0x0F); // op1
@@ -155,16 +140,14 @@ pub fn write_ym2612_sine_voice(
     ym2612_write(builder, instance, port, 0x88 + ch, 0x0F); // op3
     ym2612_write(builder, instance, port, 0x8C + ch, 0x0F); // op4
 
-    // --- SSG-EG  [---SSG-EG[3:0]] ----------------------------------------
+    // SSG-EG  [---SSG-EG[3:0]]
     // Proprietary; always 0.
     ym2612_write(builder, instance, port, 0x90 + ch, 0x00); // op1
     ym2612_write(builder, instance, port, 0x94 + ch, 0x00); // op2
     ym2612_write(builder, instance, port, 0x98 + ch, 0x00); // op3
     ym2612_write(builder, instance, port, 0x9C + ch, 0x00); // op4
 
-    // ------------------------------------------------------------------
     // Per-channel registers (B0H+, B4H+)
-    // ------------------------------------------------------------------
 
     // B0H+  [--FB[2:0]-ALG[2:0]]
     // Feedback=0 (no OP1 self-feedback → pure sine), Algorithm=7 (all ops are
@@ -241,9 +224,7 @@ pub fn write_ym2612_keyoff(builder: &mut VgmBuilder, instance: Instance, port: u
 
 #[test]
 fn test_ym2612_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = 440.0_f32;
 
     // YM2612 master clock for Genesis (NTSC)
@@ -253,9 +234,7 @@ fn test_ym2612_keyon_and_tone_freq_matches_a4() {
     let port: u8 = 0;
     let ch_in_port: u8 = 0;
 
-    // ---------------------------------------------------------------
     // F-number calculation (unchanged from original test)
-    // ---------------------------------------------------------------
     let table = generate_12edo_fnum_table::<OpnaSpec>(master_clock).expect("generate fnum table");
     let tuned = find_and_tune_fnumber::<OpnaSpec>(&table, target_hz, master_clock)
         .expect("find and tune fnumber");
@@ -269,20 +248,18 @@ fn test_ym2612_keyon_and_tone_freq_matches_a4() {
     let fnum_high = ((fnum_u32 >> 8) & 0x07) as u8;
     let a4_value = ((block_u8 & 0x07) << 3) | (fnum_high & 0x07);
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2612, Instance::Primary, master_clock as u32);
 
-    // 1. One-time global initialisation (LFO off, DAC off, all channels key-off …)
+    // One-time global initialisation (LFO off, DAC off, all channels key-off …)
     write_ym2612_global_init(&mut builder, Instance::Primary);
 
-    // 2. Initialise channel 1 with a pure-sine voice (algorithm 7, feedback 0,
-    //    OP1 full volume, OP2/3/4 muted, instant attack, no decay, fast release).
+    // Initialise channel 1 with a pure-sine voice (algorithm 7, feedback 0,
+    // OP1 full volume, OP2/3/4 muted, instant attack, no decay, fast release).
     write_ym2612_sine_voice(&mut builder, Instance::Primary, port, ch_in_port);
 
-    // 3. Write the frequency (A4H high byte first, then A0H low byte).
+    // Write the frequency (A4H high byte first, then A0H low byte).
     write_ym2612_frequency(
         &mut builder,
         Instance::Primary,
@@ -292,26 +269,22 @@ fn test_ym2612_keyon_and_tone_freq_matches_a4() {
         fnum_low,
     );
 
-    // 4. Key on – all four operators.
+    // Key on – all four operators.
     write_ym2612_keyon(&mut builder, Instance::Primary, port, ch_in_port);
 
-    // 5. Hold note for ~0.5 s at 44 100 Hz sample rate.
+    // Hold note for ~0.5 s at 44 100 Hz sample rate.
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(22100));
 
-    // 6. Key off.
+    // Key off.
     write_ym2612_keyoff(&mut builder, Instance::Primary, port, ch_in_port);
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artefact for manual verification
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2612_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2612State>(Instance::Primary, master_clock);
 

@@ -105,9 +105,7 @@ pub fn write_ym2413_keyoff(
 
 #[test]
 fn test_ym2413_fm_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = 440.0_f32;
 
     // YM2413 typical master clock (NTSC)
@@ -116,9 +114,7 @@ fn test_ym2413_fm_keyon_and_tone_freq_matches_a4() {
     // We'll use FM channel 0
     let channel: u8 = 0;
 
-    // ---------------------------------------------------------------
     // F-number calculation using OpllSpec (9-bit F-number)
-    // ---------------------------------------------------------------
     let table = generate_12edo_fnum_table::<OpllSpec>(master_clock).expect("generate fnum table");
     let tuned = find_and_tune_fnumber::<OpllSpec>(&table, target_hz, master_clock)
         .expect("find and tune fnumber");
@@ -130,9 +126,7 @@ fn test_ym2413_fm_keyon_and_tone_freq_matches_a4() {
     let fnum = fnum_u32 as u16;
     let block = block_u8;
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2413, Instance::Primary, master_clock as u32);
 
@@ -146,37 +140,33 @@ fn test_ym2413_fm_keyon_and_tone_freq_matches_a4() {
     ym2413_write(&mut builder, Instance::Primary, 0x06, 0xBB);
     ym2413_write(&mut builder, Instance::Primary, 0x07, 0xEB);
 
-    // 1. Initialize channel with a preset instrument (channel-specific instrument/volume)
+    // Initialize channel with a preset instrument (channel-specific instrument/volume)
     // Keep using the helper which writes 0x30+channel
     write_ym2413_preset_voice(&mut builder, Instance::Primary, channel);
 
-    // 2. Write the frequency (F-number and Block)
+    // Write the frequency (F-number and Block)
     write_ym2413_frequency(&mut builder, Instance::Primary, channel, fnum, block);
 
-    // 3. Ensure channel volume (0 = loudest). This is safe even if the preset
+    // Ensure channel volume (0 = loudest). This is safe even if the preset
     // wrote the same register earlier; it guarantees an audible level.
     ym2413_write(&mut builder, Instance::Primary, 0x30 + channel, 0x00);
 
-    // 4. Key on
+    // Key on
     write_ym2413_keyon(&mut builder, Instance::Primary, channel, fnum, block);
 
-    // 5. Hold note for ~0.5 s at 44 100 Hz sample rate
+    // Hold note for ~0.5 s at 44 100 Hz sample rate
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(WAIT_SAMPLES));
 
-    // 6. Key off
+    // Key off
     write_ym2413_keyoff(&mut builder, Instance::Primary, channel, fnum, block);
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artifact for manual verification
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2413_fm_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2413State>(Instance::Primary, master_clock);
 

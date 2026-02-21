@@ -31,38 +31,33 @@ fn ym3526_write(builder: &mut VgmBuilder, instance: Instance, register: u8, valu
 pub fn write_ym3526_sine_voice(builder: &mut VgmBuilder, instance: Instance, channel: u8) {
     assert!(channel < 9, "YM3526 has 9 FM channels (0-8)");
 
-    // OPL register layout:
-    // Operator registers are organized as:
-    // - Modulator (OP1): base + channel (0x00-0x08, 0x0B-0x12, etc.)
-    // - Carrier (OP2): base + channel + 3 (0x03-0x0B, 0x0E-0x15, etc.)
-
     let op1 = channel; // Modulator
     let op2 = channel + 3; // Carrier
 
-    // --- 0x20-0x35: AM/VIB/EGT/KSR/MULT ---
+    // 0x20-0x35: AM/VIB/EGT/KSR/MULT
     // Bits: [AM-VIB-EGT-KSR-MULT[3:0]]
     // AM=0, VIB=0, EGT=1 (sustaining), KSR=0, MULT=1 (×1 frequency)
     ym3526_write(builder, instance, 0x20 + op1, 0x21); // Modulator: EGT=1, MULT=1
     ym3526_write(builder, instance, 0x20 + op2, 0x2F); // Carrier: EGT=1, MULT=15 (muted via TL)
 
-    // --- 0x40-0x55: KSL/TL (Key Scale Level / Total Level) ---
+    // 0x40-0x55: KSL/TL (Key Scale Level / Total Level)
     // Bits: [KSL[1:0]-TL[5:0]]
     // TL: 0 = loudest, 63 = silent
     ym3526_write(builder, instance, 0x40 + op1, 0x00); // Modulator: full volume
     ym3526_write(builder, instance, 0x40 + op2, 0x3F); // Carrier: silent
 
-    // --- 0x60-0x75: AR/DR (Attack Rate / Decay Rate) ---
+    // 0x60-0x75: AR/DR (Attack Rate / Decay Rate)
     // Bits: [AR[3:0]-DR[3:0]]
     ym3526_write(builder, instance, 0x60 + op1, 0xFF); // Modulator: AR=15, DR=15 (fast)
     ym3526_write(builder, instance, 0x60 + op2, 0xFF); // Carrier: AR=15, DR=15
 
-    // --- 0x80-0x95: SL/RR (Sustain Level / Release Rate) ---
+    // 0x80-0x95: SL/RR (Sustain Level / Release Rate)
     // Bits: [SL[3:0]-RR[3:0]]
     // SL=0 (sustain at full level), RR=15 (fast release)
     ym3526_write(builder, instance, 0x80 + op1, 0x0F); // Modulator: SL=0, RR=15
     ym3526_write(builder, instance, 0x80 + op2, 0x0F); // Carrier: SL=0, RR=15
 
-    // --- 0xC0-0xC8: Feedback/Algorithm ---
+    // 0xC0-0xC8: Feedback/Algorithm
     // Bits: [--CNT-FB[2:0]-unused[2:0]]
     // CNT=1 (both operators to output = additive synthesis)
     // FB=0 (no feedback)
@@ -140,9 +135,7 @@ pub fn write_ym3526_keyoff(
 
 #[test]
 fn test_ym3526_fm_keyon_and_tone_freq_matches_a4() {
-    // ---------------------------------------------------------------
     // Target pitch and chip configuration
-    // ---------------------------------------------------------------
     let target_hz = 440.0_f32;
 
     // YM3526 typical master clock (NTSC)
@@ -151,9 +144,7 @@ fn test_ym3526_fm_keyon_and_tone_freq_matches_a4() {
     // We'll use FM channel 0
     let channel: u8 = 0;
 
-    // ---------------------------------------------------------------
     // F-number calculation using Opl2Spec (10-bit F-number)
-    // ---------------------------------------------------------------
     let table = generate_12edo_fnum_table::<Opl2Spec>(master_clock).expect("generate fnum table");
     let tuned = find_and_tune_fnumber::<Opl2Spec>(&table, target_hz, master_clock)
         .expect("find and tune fnumber");
@@ -165,38 +156,32 @@ fn test_ym3526_fm_keyon_and_tone_freq_matches_a4() {
     let fnum = fnum_u32 as u16;
     let block = block_u8;
 
-    // ---------------------------------------------------------------
     // Build VGM
-    // ---------------------------------------------------------------
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym3526, Instance::Primary, master_clock as u32);
 
-    // 1. Initialize channel with a sine wave voice
+    // Initialize channel with a sine wave voice
     write_ym3526_sine_voice(&mut builder, Instance::Primary, channel);
 
-    // 2. Write the frequency (F-number and Block)
+    // Write the frequency (F-number and Block)
     write_ym3526_frequency(&mut builder, Instance::Primary, channel, fnum, block);
 
-    // 3. Key on
+    // Key on
     write_ym3526_keyon(&mut builder, Instance::Primary, channel, fnum, block);
 
-    // 4. Hold note for ~0.5 s at 44 100 Hz sample rate
+    // Hold note for ~0.5 s at 44 100 Hz sample rate
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(WAIT_SAMPLES));
 
-    // 5. Key off
+    // Key off
     write_ym3526_keyoff(&mut builder, Instance::Primary, channel, fnum, block);
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artifact for manual verification
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym3526_fm_a4.vgm", &vgm_bytes);
 
-    // ---------------------------------------------------------------
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
-    // ---------------------------------------------------------------
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym3526State>(Instance::Primary, master_clock);
 

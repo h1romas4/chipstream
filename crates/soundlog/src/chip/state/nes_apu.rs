@@ -6,6 +6,8 @@
 //! - 1 triangle wave channel
 //! - 1 noise channel
 //! - 1 DMC (Delta Modulation Channel) for samples
+//!
+//! Note: FDS (Famicom Disk System) expansion audio is not currently supported.
 
 use super::channel::ChannelState;
 use super::chip_state::ChipState;

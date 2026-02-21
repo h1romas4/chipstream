@@ -39,10 +39,31 @@ pub type PokeyStorage = ArrayStorage<u8, 16>;
 /// - 0x0F (SKCTL): Serial port control
 ///
 /// AUDCx format (control register):
-/// - Bits 3-0: Volume (0-15)
-/// - Bits 7-4: Distortion/noise control
-///   - If volume is 0, channel is off
-///   - If volume is non-zero, channel is on
+/// Bit 7: Use 9-bit polynomial counter (shortened from default 17-bit)
+///        1 = 9-bit poly (shorter, more metallic/clicky noise)
+///        0 = Standard 17-bit poly (longer, whiter noise)
+/// Bit 6: Clock Channel 1 with 1.79 MHz (instead of base clock)
+///        1 = Channel 1 uses 1.79 MHz clock (high frequency/precision)
+///        0 = Channel 1 uses base clock (64 kHz or 15 kHz)
+/// Bit 5: Clock Channel 3 with 1.79 MHz (instead of base clock)
+///        1 = Channel 3 uses 1.79 MHz clock
+///        0 = Channel 3 uses base clock
+/// Bit 4: Join channels 1 & 2 for 16-bit resolution
+///        1 = Channel 2 clocked by Channel 1 output → 16-bit combined (Ch1+Ch2)
+///        0 = Channels 1 and 2 independent (8-bit each)
+/// Bit 3: Join channels 3 & 4 for 16-bit resolution
+///        1 = Channel 4 clocked by Channel 3 output → 16-bit combined (Ch3+Ch4)
+///        0 = Channels 3 and 4 independent (8-bit each)
+/// Bit 2: Enable high-pass filter on Channel 1
+///        1 = High-pass filter enabled on Ch1 (clocked by Ch3 output)
+///        0 = No high-pass filter on Ch1
+/// Bit 1: Enable high-pass filter on Channel 2
+///        1 = High-pass filter enabled on Ch2 (clocked by Ch4 output)
+///        0 = No high-pass filter on Ch2
+/// Bit 0: Select 15 kHz base clock instead of 64 kHz
+///        1 = Base clock = 15 kHz (affects channels not using 1.79 MHz)
+///        0 = Base clock = 64 kHz
+/// Note: Channels with 1.79 MHz clock (bits 5 or 6 set) ignore this bit
 #[derive(Debug, Clone)]
 pub struct PokeyState {
     /// Channel states for 4 channels
@@ -114,18 +135,47 @@ impl PokeyState {
     /// # Arguments
     ///
     /// * `audf` - 8-bit frequency value (0-255)
+    /// * `channel` - Channel index (0-3) used to consult AUDCTL channel-specific bits
     ///
     /// # Returns
     ///
     /// Frequency in Hz
-    fn calculate_frequency(&self, audf: u8) -> f32 {
+    fn calculate_frequency(&self, audf: u8, channel: usize) -> f32 {
+        // Read AUDCTL (0x08) from register storage; default to 0 if absent.
+        let audctl = self.registers.read(0x08).unwrap_or(0);
+
+        // Determine if this channel uses the 1.79 MHz clock due to AUDCTL bits.
+        // Per AUDCTL:
+        //  - Bit 6 (0x40) clocks Channel 1 (AUDF1, index 0) with 1.79 MHz
+        //  - Bit 5 (0x20) clocks Channel 3 (AUDF3, index 2) with 1.79 MHz
+        let uses_179mhz = match channel {
+            0 => (audctl & 0x40) != 0,
+            2 => (audctl & 0x20) != 0,
+            _ => false,
+        };
+
+        // Choose effective clock for frequency calculation:
+        //  - If channel uses 1.79 MHz: use master_clock_hz
+        //  - Otherwise: choose base clock depending on bit 0 (15 kHz vs 64 kHz)
+        //    We approximate base clock as a fraction of master_clock_hz:
+        //    - 64kHz mode: master_clock_hz / 28
+        //    - 15kHz mode: master_clock_hz / 112
+        let clock = if uses_179mhz {
+            self.master_clock_hz
+        } else if (audctl & 0x01) != 0 {
+            // 15 kHz mode
+            self.master_clock_hz / 112.0_f32
+        } else {
+            // 64 kHz mode
+            self.master_clock_hz / 28.0_f32
+        };
+
         if audf == 0 {
             // AUDF=0 is technically valid, represents highest frequency
-            self.master_clock_hz / 2.0_f32
+            clock / 2.0_f32
         } else {
             // Basic POKEY formula: freq = clock / (2 * (AUDF + 1))
-            // Note: Actual formula is more complex with AUDCTL settings
-            self.master_clock_hz / (2.0_f32 * (audf as f32 + 1.0_f32))
+            clock / (2.0_f32 * (audf as f32 + 1.0_f32))
         }
     }
 
@@ -148,7 +198,7 @@ impl PokeyState {
         let audf_reg = (channel * 2) as u8;
         let audf = self.registers.read(audf_reg)?;
 
-        let freq_hz = self.calculate_frequency(audf);
+        let freq_hz = self.calculate_frequency(audf, channel);
 
         Some(ToneInfo::new(audf as u16, 0, Some(freq_hz)))
     }
@@ -234,6 +284,15 @@ impl PokeyState {
             _ => None,
         }
     }
+
+    /// Handle AUDCTL (audio control) register write.
+    ///
+    /// AUDCTL changes affect how `calculate_frequency` computes the effective
+    /// clock for each channel. This handler intentionally does not emit events;
+    /// frequency calculations will consult the stored AUDCTL value on-demand.
+    fn handle_audio_control_register(&mut self, _audctl: u8) -> Option<Vec<StateEvent>> {
+        None
+    }
 }
 
 impl ChipState for PokeyState {
@@ -278,8 +337,7 @@ impl ChipState for PokeyState {
             0x07 => self.handle_control_register(3, value),
 
             // AUDCTL (0x08) - Audio control register
-            // This affects frequency calculation but we use simplified formula
-            0x08 => None,
+            0x08 => self.handle_audio_control_register(value),
 
             // Other registers (STIMER, SKREST, POTGO, SEROUT, IRQEN, SKCTL)
             // These don't affect audio state

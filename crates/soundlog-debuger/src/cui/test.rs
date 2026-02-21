@@ -44,7 +44,7 @@ pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
                     crate::cui::vgm::print_diag_table(&doc_orig, &doc_reparsed);
                     if rebuilt == data {
                         println!(
-                            "roundtrip: serialized matches original ({} bytes)",
+                            " roundtrip: serialized matches original ({} bytes)",
                             rebuilt.len()
                         );
                     }

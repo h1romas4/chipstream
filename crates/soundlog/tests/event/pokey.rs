@@ -10,19 +10,24 @@ use soundlog::{VgmBuilder, VgmCallbackStream};
 /// Typical POKEY master clock for NTSC Atari machines (Hz)
 const POKEY_MASTER_CLOCK: f32 = 1_789_790.0_f32;
 
-/// Allowed absolute Hz tolerance when comparing produced frequency to target.
-/// Relaxed: compare observed frequency against the expected AUDF-derived value.
-const POKEY_TOLERANCE_HZ: f32 = 10.0;
+/// Allowed tolerance when checking observed frequency (Hz)
+const POKEY_TOLERANCE_HZ: f32 = 4.0;
 
 #[test]
 fn test_pokey_keyon_and_tone_freq_matches_a4() {
     // Target frequency (A4)
     let target_hz = 440.0_f32;
 
-    // Compute AUDF value for POKEY using simplified formula:
-    // freq = master_clock / (2 * (AUDF + 1))
-    // => AUDF = (master_clock / (2 * freq)) - 1
-    let ideal = POKEY_MASTER_CLOCK / (2.0_f32 * target_hz) - 1.0_f32;
+    // The Pokey state tracker assumes AUDCTL is 0x00 by default, which means
+    // channels use the "base clock" (64k mode) that we approximate as
+    // master_clock / 28. Compute AUDF from that effective clock so the
+    // resulting tone will be near 440 Hz.
+    let base_clock = POKEY_MASTER_CLOCK / 28.0_f32; // effective base clock (64 kHz approximation)
+
+    // Compute AUDF value for POKEY using simplified formula with effective base_clock:
+    // freq = base_clock / (2 * (AUDF + 1))
+    // => AUDF = (base_clock / (2 * freq)) - 1
+    let ideal = base_clock / (2.0_f32 * target_hz) - 1.0_f32;
     let audf = ideal.round().clamp(0.0, 255.0) as u8;
 
     // Build a VGM document:
@@ -34,6 +39,15 @@ fn test_pokey_keyon_and_tone_freq_matches_a4() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Pokey, Instance::Primary, POKEY_MASTER_CLOCK as u32);
 
+    // Ensure AUDCTL is explicitly set to 0x00 (default) so the test is deterministic
+    builder.add_chip_write(
+        Instance::Primary,
+        chip::PokeySpec {
+            register: 0x08,
+            value: 0x00,
+        },
+    );
+
     // AUDF1 (channel 0 frequency)
     builder.add_chip_write(
         Instance::Primary,
@@ -43,24 +57,24 @@ fn test_pokey_keyon_and_tone_freq_matches_a4() {
         },
     );
 
-    // AUDC1 (channel 0 control) — set small non-zero volume to key on
+    // AUDC1 (channel 0 control) — key on
     builder.add_chip_write(
         Instance::Primary,
         chip::PokeySpec {
             register: 0x01,
-            value: 0x01, // volume non-zero => channel on in PokeyState
+            value: 0xEF,
         },
     );
 
     // Wait 22100 samples so downstream logic can detect duration, then key off
     builder.add_vgm_command(WaitSamples(22100));
 
-    // Key off by setting AUDC1 volume to zero
+    // AUDC1 (channel 0 control) — key off
     builder.add_chip_write(
         Instance::Primary,
         chip::PokeySpec {
             register: 0x01,
-            value: 0x00, // volume 0 => off
+            value: 0xE0,
         },
     );
 
@@ -95,9 +109,7 @@ fn test_pokey_keyon_and_tone_freq_matches_a4() {
         // no-op; callback captures the freq
     }
 
-    // Assert we observed a KeyOn and the computed freq_hz is close to the expected AUDF-derived frequency.
-    // Note: AUDF was clamped to [0,255] above which may produce a frequency far from the musical target.
-    // Therefore compute the expected frequency from the audf value actually used and compare to that.
+    // Assert we observed a key-on and that the frequency is within tolerance.
     let got_guard = captured_freq.lock().unwrap();
     let got_opt = *got_guard; // copy out Option<f32> (Option<f32> is Copy)
     assert!(
@@ -105,20 +117,12 @@ fn test_pokey_keyon_and_tone_freq_matches_a4() {
         "Expected KeyOn StateEvent with ToneInfo.freq_hz for POKEY, but none was captured"
     );
     let freq = got_opt.unwrap();
-
-    // Recompute expected frequency from the AUDF value used earlier (simplified POKEY formula).
-    let expected_freq = if audf == 0 {
-        POKEY_MASTER_CLOCK / 2.0_f32
-    } else {
-        POKEY_MASTER_CLOCK / (2.0_f32 * (audf as f32 + 1.0_f32))
-    };
-
-    let diff = (freq - expected_freq).abs();
+    let diff = (freq - target_hz).abs();
     assert!(
         diff <= POKEY_TOLERANCE_HZ,
         "POKEY ToneInfo.freq_hz differs from expected: got {} Hz, expected {} Hz (diff {})",
         freq,
-        expected_freq,
+        target_hz,
         diff
     );
 }

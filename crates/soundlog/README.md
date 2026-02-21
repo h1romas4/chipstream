@@ -360,7 +360,8 @@ for result in callback_stream {
 The `chip::state` module provides real-time state tracking for sound chips,
 detecting key on/off events and extracting tone information from register writes.
 
-Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
+- Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
+- The specifications for key on/off detection — including total level extraction — are not yet stabilized.
 
 ### Implemented Chips
 
@@ -387,17 +388,17 @@ Chips with a check in the `Test` column have unit or integration tests that exer
 | **RF5C164** | N/A | N/A | N/A | RF5C164 PCM | - |
 | **PWM** | N/A | N/A | N/A | Sega PWM | - |
 | **AY8910** | 3 tone + noise | ✅ | ✅ | ZX Spectrum, MSX, etc. | ✅ |
-| **GbDmg** | 4 | ✅ | ✅ | Game Boy | ⬜ |
-| **NesApu** | 5 | ✅ | ✅ | NES | ⬜ |
+| **GbDmg** | 4 | ✅ | ✅ | Game Boy | ✅ |
+| **NesApu** | 5 | ✅ | ✅ | NES | ✅ (1) |
 | **MultiPcm** | N/A | N/A | N/A | Sega MultiPCM | - |
 | **UPD7759** | N/A | N/A | N/A | uPD7759 ADPCM | - |
 | **OKIM6258** | N/A | N/A | N/A | OKIM6258 ADPCM | - |
 | **OKIM6295** | N/A | N/A | N/A | OKIM6295 ADPCM | - |
 | **K054539** | N/A | N/A | N/A | Konami K054539 PCM | - |
-| **HUC6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ⬜ |
+| **HUC6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ✅ |
 | **C140** | N/A | N/A | N/A | Namco C140 PCM | - |
 | **K053260** | N/A | N/A | N/A | Konami K053260 PCM | - |
-| **Pokey** | 4 | ✅ | ✅ | Atari 8-bit computers | ⬜ |
+| **Pokey** | 4 | ✅ | ✅ | Atari 8-bit computers | ✅ |
 | **QSound** | N/A | N/A | N/A | Capcom QSound | - |
 | **SCSP** | N/A | N/A | N/A | Sega Saturn SCSP | - |
 | **WonderSwan** | 4 | ✅ | ✅ | WonderSwan APU | ⬜ |
@@ -411,6 +412,8 @@ Chips with a check in the `Test` column have unit or integration tests that exer
 | **GA20** | N/A | N/A | N/A | Irem GA20 | - |
 | **Mikey** | N/A | N/A | N/A | Atari Lynx | - |
 | **GameGearPsg** | 3 tone + 1 noise | ✅ | ✅ | Game Gear PSG (same as SN76489) | ✅ |
+
+- (1) The NES APU state tracker does not currently support Famicom Disk System (FDS) expansion audio.  
 
 ## License
 

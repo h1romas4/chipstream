@@ -1164,9 +1164,16 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::GbDmgWrite(instance, spec) => {
+                // Map VGM compact register encoding into the internal GbDmg register
+                // address space before applying the write to the state tracker.
+                let (mapped_register, mapped_value) =
+                    crate::chip::state::gb_dmg::GbDmgState::map_vgm_to_gbdmg_register(
+                        spec.register,
+                        spec.value,
+                    );
                 let event = self.state_trackers.gb_dmg[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.register, spec.value));
+                    .and_then(|state| state.on_register_write(mapped_register, mapped_value));
                 if let Some(ref mut cb) = self.callbacks.on_gb_dmg_write {
                     cb(*instance, spec.clone(), sample, event);
                 }

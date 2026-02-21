@@ -85,3 +85,12 @@ mod ymf271;
 
 #[path = "event/k051649.rs"]
 mod k051649;
+
+#[path = "event/gb_dmg.rs"]
+mod gb_dmg;
+
+#[path = "event/nes_apu.rs"]
+mod nes_apu;
+
+#[path = "event/huc6280.rs"]
+mod huc6280;

@@ -8,6 +8,7 @@ use soundlog::chip::{self, Chip};
 use soundlog::vgm::VgmCallbackStream;
 use soundlog::vgm::command::Instance;
 
+/// Allowed tolerance when checking observed frequency (Hz)
 const SN76489_TOLERANCE_HZ: f32 = 2.0;
 
 #[test]

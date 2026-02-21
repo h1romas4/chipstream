@@ -35,23 +35,23 @@ pub fn write_y8950_sine_voice(builder: &mut VgmBuilder, instance: Instance, chan
     let op1 = channel; // Modulator
     let op2 = channel + 3; // Carrier
 
-    // --- 0x20-0x35: AM/VIB/EGT/KSR/MULT ---
+    // 0x20-0x35: AM/VIB/EGT/KSR/MULT
     y8950_write(builder, instance, 0x20 + op1, 0x21); // Modulator: EGT=1, MULT=1
     y8950_write(builder, instance, 0x20 + op2, 0x2F); // Carrier: EGT=1, MULT=15 (muted via TL)
 
-    // --- 0x40-0x55: KSL/TL ---
+    // 0x40-0x55: KSL/TL
     y8950_write(builder, instance, 0x40 + op1, 0x00); // Modulator: full volume
     y8950_write(builder, instance, 0x40 + op2, 0x3F); // Carrier: silent
 
-    // --- 0x60-0x75: AR/DR ---
+    // 0x60-0x75: AR/DR
     y8950_write(builder, instance, 0x60 + op1, 0xFF); // Modulator: AR=15, DR=15
     y8950_write(builder, instance, 0x60 + op2, 0xFF); // Carrier: AR=15, DR=15
 
-    // --- 0x80-0x95: SL/RR ---
+    // 0x80-0x95: SL/RR
     y8950_write(builder, instance, 0x80 + op1, 0x0F); // Modulator: SL=0, RR=15
     y8950_write(builder, instance, 0x80 + op2, 0x0F); // Carrier: SL=0, RR=15
 
-    // --- 0xC0-0xC8: Feedback/Algorithm ---
+    // 0xC0-0xC8: Feedback/Algorithm
     // CNT=1 => both operators to output (additive), FB=0
     y8950_write(builder, instance, 0xC0 + channel, 0x01);
 }
