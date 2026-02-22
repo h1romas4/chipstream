@@ -20,9 +20,6 @@ pub enum KeyState {
 /// crate's public API. Additionally, a `total_level` field is reserved for
 /// future use / documentation purposes. It is included in the struct for API
 /// compatibility but is currently not populated by existing constructors.
-///
-/// The `total_level` field is reserved for tooling/rustdoc and should be treated
-/// as an implementation detail for now; existing constructors leave it as `None`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToneInfo {
     /// F-number (frequency number)
@@ -46,8 +43,7 @@ pub struct ToneInfo {
     /// Total level / attenuation (reserved)
     ///
     /// This field is reserved for future use (and for documentation purposes).
-    /// Existing constructors leave this as `None`. It is provided as
-    /// `Option<f32>` so callers can opt-in in future API changes.
+    /// Existing constructors leave this as `None`.
     pub total_level: Option<f32>,
 }
 

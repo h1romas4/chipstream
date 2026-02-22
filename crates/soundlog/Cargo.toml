@@ -10,4 +10,7 @@ repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 keywords = ["vgm", "sound", "audio"]
 categories = ["multimedia::audio"]
-exclude = ["assets/vgm", "assets/vgm/**"]
+exclude = [
+    "assets/vgm",
+    "assets/vgm/**",
+]

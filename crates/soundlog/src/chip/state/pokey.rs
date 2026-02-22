@@ -39,30 +39,43 @@ pub type PokeyStorage = ArrayStorage<u8, 16>;
 /// - 0x0F (SKCTL): Serial port control
 ///
 /// AUDCx format (control register):
+///
 /// Bit 7: Use 9-bit polynomial counter (shortened from default 17-bit)
-///        1 = 9-bit poly (shorter, more metallic/clicky noise)
-///        0 = Standard 17-bit poly (longer, whiter noise)
+/// - 1 = 9-bit poly (shorter, more metallic/clicky noise)
+/// - 0 = Standard 17-bit poly (longer, whiter noise)
+///
 /// Bit 6: Clock Channel 1 with 1.79 MHz (instead of base clock)
-///        1 = Channel 1 uses 1.79 MHz clock (high frequency/precision)
-///        0 = Channel 1 uses base clock (64 kHz or 15 kHz)
+/// - 1 = Channel 1 uses 1.79 MHz clock (high frequency/precision)
+/// - 0 = Channel 1 uses base clock (64 kHz or 15 kHz)
+///
 /// Bit 5: Clock Channel 3 with 1.79 MHz (instead of base clock)
-///        1 = Channel 3 uses 1.79 MHz clock
-///        0 = Channel 3 uses base clock
+/// - 1 = Channel 3 uses 1.79 MHz clock
+/// - 0 = Channel 3 uses base clock
+///
 /// Bit 4: Join channels 1 & 2 for 16-bit resolution
-///        1 = Channel 2 clocked by Channel 1 output → 16-bit combined (Ch1+Ch2)
-///        0 = Channels 1 and 2 independent (8-bit each)
+/// - 1 = Channel 2 clocked by Channel 1 output → 16-bit combined (Ch1+Ch2)
+/// - 0 = Channels 1 and 2 independent (8-bit each)
+///
 /// Bit 3: Join channels 3 & 4 for 16-bit resolution
-///        1 = Channel 4 clocked by Channel 3 output → 16-bit combined (Ch3+Ch4)
-///        0 = Channels 3 and 4 independent (8-bit each)
+///
+/// - 1 = Channel 4 clocked by Channel 3 output → 16-bit combined (Ch3+Ch4)
+/// - 0 = Channels 3 and 4 independent (8-bit each)
+///
 /// Bit 2: Enable high-pass filter on Channel 1
-///        1 = High-pass filter enabled on Ch1 (clocked by Ch3 output)
-///        0 = No high-pass filter on Ch1
+///
+/// - 1 = High-pass filter enabled on Ch1 (clocked by Ch3 output)
+/// - 0 = No high-pass filter on Ch1
+///
 /// Bit 1: Enable high-pass filter on Channel 2
-///        1 = High-pass filter enabled on Ch2 (clocked by Ch4 output)
-///        0 = No high-pass filter on Ch2
+///
+/// - 1 = High-pass filter enabled on Ch2 (clocked by Ch4 output)
+/// - 0 = No high-pass filter on Ch2
+///
 /// Bit 0: Select 15 kHz base clock instead of 64 kHz
-///        1 = Base clock = 15 kHz (affects channels not using 1.79 MHz)
-///        0 = Base clock = 64 kHz
+///
+/// - 1 = Base clock = 15 kHz (affects channels not using 1.79 MHz)
+/// - 0 = Base clock = 64 kHz
+///
 /// Note: Channels with 1.79 MHz clock (bits 5 or 6 set) ignore this bit
 #[derive(Debug, Clone)]
 pub struct PokeyState {

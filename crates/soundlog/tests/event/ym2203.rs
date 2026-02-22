@@ -190,9 +190,7 @@ fn test_ym2203_fm_keyon_and_tone_freq_matches_a4() {
 
     let doc = builder.finalize();
 
-    // ---------------------------------------------------------------
     // Optionally write the VGM artifact for manual verification
-    // ---------------------------------------------------------------
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2203_fm_a4.vgm", &vgm_bytes);
 

@@ -12,9 +12,6 @@ use crate::chip::event::{KeyState, StateEvent, ToneInfo};
 const SAA1099_CHANNELS: usize = 6;
 
 /// SAA1099 recommended storage (uses array storage with 256 entries to accommodate control writes)
-/// SAA1099 uses two-stage addressing where register >= 0x80 selects a register,
-/// and register < 0x80 writes data to the selected register.
-/// We store both control writes and data writes.
 pub type Saa1099Storage = ArrayStorage<u8, 256>;
 
 /// SAA1099 register state tracker

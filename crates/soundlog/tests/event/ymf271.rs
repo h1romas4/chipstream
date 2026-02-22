@@ -47,15 +47,15 @@ fn ymf271_select_slot(builder: &mut VgmBuilder, instance: Instance, slot: u8) {
 /// Relevant per-slot register offsets (after slot selection via reg >= 0x80):
 ///
 /// | Reg | Contents                                           |
-/// |-----|-----------------------------------------------------|
-/// |   0 | KeyOn (bit 0), external output enables              |
+/// |-----|----------------------------------------------------|
+/// |   0 | KeyOn (bit 0), external output enables             |
 /// |   1 | LFO reset / wave select (bits 7–4)                 |
 /// |   2 | Algorithm (bits 2–0), feedback (bits 5–3)          |
 /// |   8 | Operator 1 total-level (0 = loudest)               |
 /// |   9 | Operator 2 total-level                             |
 /// |  10 | Operator 3 total-level                             |
 /// |  11 | Operator 4 total-level                             |
-/// |  16 | OP1 AR (bits 7–4) / D1R (bits 3–0)                |
+/// |  16 | OP1 AR (bits 7–4) / D1R (bits 3–0)                 |
 /// |  24 | OP2 AR / D1R                                       |
 /// |  12 | Block (octave, bits 2–0)                           |
 /// |  13 | F-number high nibble (bits 3–0)                    |

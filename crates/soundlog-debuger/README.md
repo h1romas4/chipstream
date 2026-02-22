@@ -54,7 +54,7 @@ Options:
 
 ## Subcommands and usage
 
-### test
+### `test`
 
 Run a headless test / round-trip check on a VGM file. Useful for automated verification and CI.
 
@@ -86,7 +86,7 @@ Behavior:
 - The `test` subcommand re-parses the input using `soundlog`'s parser and performs round-trip checks. 
 - Input detection supports `.vgz`/`.gz` extensions and will attempt gzip decompression when appropriate.
 
-### redump
+### `redump`
 
 Expand DAC streams into explicit chip writes and re-serialize as a VGM file. This is useful when you need to expand synthesized DAC/digital streams into the sequence of chip register writes that represent them.
 
@@ -119,6 +119,88 @@ Notes:
 
 - The `redump` implementation copies header chip registration and some chip-specific configuration fields from the original header into the rebuilt document so the expanded output preserves timing and chip configuration where possible.
 - If `--diag` is specified the rebuilt bytes are re-parsed with the same parser used for input, and a comparison table or diagnostics are printed. This is helpful to validate that expansion and serialization did not change the command semantics.
+
+### `parse`
+
+Parse and display the VGM command stream with offsets and lengths.
+
+Synopsis:
+
+```bash
+${soundlog} parse <FILE>
+```
+
+- `<FILE>`: path to input VGM. Use `-` to read from stdin (gzipped input is detected automatically).
+- No additional options are required for basic parsing; use this command to inspect the serialized command stream, command offsets, and lengths within the VGM's data region.
+
+Behavior:
+
+- The `parse` subcommand reads the VGM file (or stdin), parses the command/data region into `VgmCommand` values, and prints a human-readable listing.
+- For each parsed command the tool prints:
+  - The absolute file offset (or offset relative to the data region),
+  - The command kind (e.g. `WaitSamples`, `Ym2612Write`, `DataBlock`),
+  - Any compact details (register, value, instance) and the command's serialized length in bytes.
+- `parse` is helpful for debugging file layout, verifying serialization round-trips, and locating specific commands or data blocks inside the file.
+
+Examples:
+
+- Parse a file and print the command list:
+
+```bash
+${soundlog} parse samples/example.vgz
+```
+
+- Feed gzipped input via stdin and parse:
+
+```bash
+cat samples/example.vgz | ${soundlog} parse -
+```
+
+Notes:
+
+- The output is intended as an inspection aid — it does not expand DAC streams (use `redump` for expansion) and does not perform state tracking (use `play` for event detection and state tracking).
+- When comparing parse output with `redump` or `play`, note that `redump` may reserialize the document with expanded stream writes and `play` will expand stream-generated writes on the timeline; use those commands accordingly for deeper inspection.
+
+### `play`
+
+Play a VGM file and display register writes with state events.
+
+Synopsis:
+
+```bash
+${soundlog} play <FILE> [--dry-run]
+```
+
+- `<FILE>`: path to input VGM. Use `-` to read from stdin.
+- `--dry-run`: parse and track events but suppress console output (useful for CI or scripted checks).
+
+Behavior:
+
+- The `play` subcommand uses `VgmCallbackStream` to process the VGM document, expand DAC streams where applicable, and perform per-chip state tracking.
+- For each register write emitted by the stream, `play` prints a concise one-line log containing:
+  - The sample offset (timeline position),
+  - A brief description of the register write (chip, port/register, value),
+  - Any detected events such as `KeyOn`, `KeyOff`, or `ToneChange`, including frequency information when available.
+- Output is oriented toward debugging and inspection rather than real-time audio playback; `play` does not produce sound. It is intended to help verify timing, register sequences, and event detection when developing or validating VGM streams and chip state trackers.
+
+Examples:
+
+- Play and print register logs to the terminal:
+
+```bash
+${soundlog} play samples/example.vgz
+```
+
+- Parse and track events but suppress printing (dry-run):
+
+```bash
+${soundlog} play samples/example.vgz --dry-run
+```
+
+Notes:
+
+- `play` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
+- The frequency values shown in `play` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
 
 ## GUI notes
 

@@ -1,4 +1,4 @@
-// Pokey event test. (WIP: NOISE)
+// Pokey event test.
 use std::sync::{Arc, Mutex};
 
 use soundlog::chip::event::StateEvent;

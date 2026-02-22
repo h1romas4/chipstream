@@ -1,8 +1,31 @@
 # Changelog
 
-## v0.6.0 (dev)
+## v0.6.0
 
 - Enable runtime ChipState tracking for a variety of sound chips and add unit/integration tests to validate state and event behavior (e.g. frequency/key events, VGM parsing).
+  - ay8910.rs
+  - gamegear.rs
+  - gb_dmg.rs
+  - huc6280.rs
+  - k051649.rs
+  - nes_apu.rs
+  - pokey.rs
+  - saa1099.rs
+  - sn76489.rs
+  - vsu.rs
+  - wonderswan.rs
+  - y8950.rs
+  - ym2151.rs
+  - ym2203.rs
+  - ym2413.rs
+  - ym2608.rs
+  - ym2610b.rs
+  - ym2612.rs
+  - ym3526.rs
+  - ym3812.rs
+  - ymf262.rs
+  - ymf271.rs (NOT WORKING)
+  - ymf278b.rs
 
 ## v0.5.0
 
