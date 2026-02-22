@@ -11,6 +11,8 @@ Contents:
 - Subcommand details and usage examples
   - `test`
   - `redump`
+  - `parse`
+  - `play`
 - GUI notes
 - Diagnostic flags and piping
 - Troubleshooting and caveats
@@ -58,7 +60,6 @@ Options:
 
 Run a headless test / round-trip check on a VGM file. Useful for automated verification and CI.
 
-Synopsis:
 
 ```bash
 ${soundlog} test <FILE> [--dry-run]
@@ -88,9 +89,10 @@ Behavior:
 
 ### `redump`
 
-Expand DAC streams into explicit chip writes and re-serialize as a VGM file. This is useful when you need to expand synthesized DAC/digital streams into the sequence of chip register writes that represent them.
+Expand DAC streams into explicit chip writes and re-serialize as a VGM file. 
+This converts synthesized DAC/digital streams into the equivalent sequence of chip register writes,
+and is also useful for producing data suitable for playback on memory-constrained microcontrollers.
 
-Synopsis:
 ```bash
 ${soundlog} redump <INPUT> <OUTPUT> [--loop-count <N>] [--fadeout-samples <SAMPLES>] [--diag]
 ```
@@ -123,8 +125,6 @@ Notes:
 ### `parse`
 
 Parse and display the VGM command stream with offsets and lengths.
-
-Synopsis:
 
 ```bash
 ${soundlog} parse <FILE>
@@ -164,8 +164,6 @@ Notes:
 ### `play`
 
 Play a VGM file and display register writes with state events.
-
-Synopsis:
 
 ```bash
 ${soundlog} play <FILE> [--dry-run]
