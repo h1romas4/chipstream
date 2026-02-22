@@ -37,6 +37,8 @@ Usage: soundlog [FILE] [COMMAND]
 Commands:
   test    Run in test / headless mode
   redump  Re-dump VGM file with DAC streams expanded to chip writes
+  parse   Parse and display VGM file commands with offsets and lengths
+  play    Play VGM file and display register writes with events
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -59,29 +61,29 @@ Run a headless test / round-trip check on a VGM file. Useful for automated verif
 Synopsis:
 
 ```bash
-${soundlog} test <FILE> [--diag]
+${soundlog} test <FILE> [--dry-run]
 ```
 
 - `<FILE>`: path to input binary. Use `-` to read from stdin.
-- `--diag`: enable more verbose diagnostics on mismatch or parse errors.
+- `--dry-run`: process the input and run the checks without printing the usual one-line result or diagnostic output. 
 
 Examples:
 
-- Run a test on a file:
+- Run a test on a file (prints a one-line result or diagnostics by default):
 
 ```bash
 ${soundlog} test samples/example.vgz
 ```
 
-- Read gzipped input from a pipe (stdin) and show diagnostics:
+- Read gzipped input from a pipe (stdin) and suppress normal output:
 
 ```bash
-cat samples/example.vgz | ${soundlog} test - --diag
+cat samples/example.vgz | ${soundlog} test - --dry-run
 ```
 
 Behavior:
 
-- The `test` subcommand re-parses the input using `soundlog`'s parser and performs round-trip checks. When `--diag` is provided it will print additional diagnostic output to stderr (or stdout depending on the implementation).
+- The `test` subcommand re-parses the input using `soundlog`'s parser and performs round-trip checks. 
 - Input detection supports `.vgz`/`.gz` extensions and will attempt gzip decompression when appropriate.
 
 ### redump

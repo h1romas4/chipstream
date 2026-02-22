@@ -326,9 +326,20 @@ pub struct ScspSpec {
 }
 
 /// WonderSwan memory write specification (16-bit offset).
+/// This spec corresponds to the VGM opcode that writes a value to a 16-bit
+/// memory offset (mm ll).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WonderSwanSpec {
     pub offset: u16,
+    pub value: u8,
+}
+
+/// WonderSwan register write specification (8-bit register).
+/// This spec corresponds to the alternate VGM opcode that writes a value to
+/// a single 8-bit register address (aa).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WonderSwanRegSpec {
+    pub register: u8,
     pub value: u8,
 }
 

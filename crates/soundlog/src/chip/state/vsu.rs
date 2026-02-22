@@ -76,6 +76,16 @@ impl VsuState {
         }
     }
 
+    /// Map a VGM-provided offset (mmll) into the actual VSU internal address.
+    ///
+    /// The reference implementation does: A = (mmll << 2) & 0x7FF
+    /// so the VGM mm/ll value is shifted left by two (4-byte granularity) and
+    /// masked to 11 bits. Return that absolute address together with the value.
+    pub fn map_vgm_to_vsu_register(offset: u16, value: u8) -> (u16, u8) {
+        let addr = ((offset as u32) << 2) & 0x07FF;
+        (addr as u16, value)
+    }
+
     /// Get a reference to a channel's state
     ///
     /// # Arguments
@@ -105,7 +115,7 @@ impl VsuState {
     /// Calculate frequency in Hz from VSU frequency value
     ///
     /// VSU frequency formula (simplified):
-    /// freq = master_clock / (2048 - frequency_value)
+    /// freq = master_clock / (32 * (2048 - frequency_value))
     ///
     /// # Arguments
     ///
@@ -124,7 +134,7 @@ impl VsuState {
             return 0.0f32;
         }
 
-        self.master_clock_hz / (divisor as f32)
+        self.master_clock_hz / (32.0f32 * (divisor as f32))
     }
 
     /// Extract tone from channel registers
@@ -319,26 +329,17 @@ impl ChipState for VsuState {
         register: Self::Register,
         value: Self::Value,
     ) -> Option<Vec<StateEvent>> {
-        // VSU uses addresses in the 0x400-0x57F range
-        // However, VGM files may use relative offsets (0x00-0x17F)
-        // Convert to absolute address if needed
-        let address = if register < 0x400 {
-            0x400 + register
-        } else {
-            register
-        };
-
         // Store all register writes in global storage with absolute address
-        self.registers.write(address, value);
+        self.registers.write(register, value);
 
         // Check if address is in valid range
-        if !(0x400..0x580).contains(&address) {
+        if !(0x400..0x580).contains(&register) {
             return None;
         }
 
         // Calculate channel and offset from the address
-        let channel = ((address - 0x400) / 0x40) as usize;
-        let offset = ((address - 0x400) % 0x40) / 4;
+        let channel = ((register - 0x400) / 0x40) as usize;
+        let offset = ((register - 0x400) % 0x40) / 4;
 
         if channel >= VSU_CHANNELS {
             return None;
@@ -487,5 +488,20 @@ mod tests {
         let events = event.as_ref().unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], StateEvent::KeyOff { channel: 0 }));
+    }
+
+    #[test]
+    fn test_map_vgm_to_vsu_register_compact() {
+        // mmll-based mapping: address = (mmll << 2) & 0x07FF
+        // To target 0x0400, mmll must be 0x0100
+        assert_eq!(VsuState::map_vgm_to_vsu_register(0x0100, 0x12).0, 0x0400);
+        // 0x0404 <- 0x0101
+        assert_eq!(VsuState::map_vgm_to_vsu_register(0x0101, 0x12).0, 0x0404);
+        // 0x0418 <- 0x0106
+        assert_eq!(VsuState::map_vgm_to_vsu_register(0x0106, 0x12).0, 0x0418);
+        // 0x0440 <- 0x0110
+        assert_eq!(VsuState::map_vgm_to_vsu_register(0x0110, 0x12).0, 0x0440);
+        // mmll 0x0180 -> (0x0180<<2)&0x07FF = 0x0600
+        assert_eq!(VsuState::map_vgm_to_vsu_register(0x0180, 0x12).0, 0x0600);
     }
 }

@@ -48,8 +48,6 @@ pub struct Saa1099State {
     master_clock_hz: f32,
     /// Global register storage for all written registers
     registers: Saa1099Storage,
-    /// Selected register for next data write
-    selected_register: u8,
     /// All channels enable flag (register 0x1C bit 0)
     all_channels_enable: bool,
 }
@@ -78,7 +76,6 @@ impl Saa1099State {
             channels: std::array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             registers: Saa1099Storage::default(),
-            selected_register: 0,
             all_channels_enable: false,
         }
     }
@@ -112,7 +109,7 @@ impl Saa1099State {
     /// Calculate frequency in Hz from SAA1099 frequency and octave values
     ///
     /// SAA1099 frequency formula:
-    /// freq_hz = master_clock / (256 * (511 - frequency) * 2^(8 - octave))
+    /// freq_hz = master_clock / ((511 - frequency) * 2^(8 - octave))
     ///
     /// # Arguments
     ///
@@ -123,14 +120,10 @@ impl Saa1099State {
     ///
     /// Frequency in Hz
     fn calculate_frequency(&self, frequency: u8, octave: u8) -> f32 {
-        if frequency == 255 {
-            // frequency = 255 would give (511 - 255) = 256, valid but very low
-            return self.master_clock_hz / (256.0_f32 * 256.0_f32 * (1 << (8 - octave)) as f32);
-        }
+        let divisor = (511 - frequency as i32).max(1) as f32;
+        let octave_shift = 2_f32.powi(8 - (octave & 0x07) as i32);
 
-        let divisor = (511 - frequency as i32) as f32;
-        let octave_shift = (1 << (8 - (octave & 0x07))) as f32;
-        self.master_clock_hz / (256.0_f32 * divisor * octave_shift)
+        self.master_clock_hz / (divisor * octave_shift)
     }
 
     /// Extract tone from channel registers
@@ -396,48 +389,6 @@ impl Saa1099State {
 
         None
     }
-
-    /// Handle data write to selected register
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Data value
-    ///
-    /// # Returns
-    ///
-    /// Some(StateEvent) if state changed, None otherwise
-    fn handle_data_write(&mut self, value: u8) -> Option<Vec<StateEvent>> {
-        match self.selected_register {
-            // Amplitude registers (0x00-0x05)
-            0x00..=0x05 => self.handle_amplitude_register(self.selected_register as usize),
-
-            // Frequency registers (0x08-0x0D)
-            0x08..=0x0D => {
-                let channel = (self.selected_register - 0x08) as usize;
-                self.handle_frequency_register(channel)
-            }
-
-            // Octave registers (0x10-0x12)
-            0x10..=0x12 => self.handle_octave_register(self.selected_register),
-
-            // Frequency enable (0x14)
-            0x14 => self.handle_frequency_enable_register(),
-
-            // Noise enable (0x15) - don't generate events
-            0x15 => None,
-
-            // Noise parameters (0x16) - don't generate events
-            0x16 => None,
-
-            // Envelope generators (0x18-0x19) - don't generate events
-            0x18..=0x19 => None,
-
-            // All channels enable (0x1C)
-            0x1C => self.handle_all_enable_register(value),
-
-            _ => None,
-        }
-    }
 }
 
 impl ChipState for Saa1099State {
@@ -453,21 +404,39 @@ impl ChipState for Saa1099State {
         register: Self::Register,
         value: Self::Value,
     ) -> Option<Vec<StateEvent>> {
-        // SAA1099 has two modes of register access:
-        // - If MSB is set (register >= 0x80), it's a control write (select register)
-        // - Otherwise, it's a data write to previously selected register
+        // Store all register writes in global storage
+        self.registers.write(register, value);
 
-        if register >= 0x80 {
-            // Control write - select register
-            // Store control writes in global storage
-            self.registers.write(register, value);
-            self.selected_register = value & 0x1F;
-            None
-        } else {
-            // Data write to selected register
-            // Store data write with selected_register as the key
-            self.registers.write(self.selected_register, value);
-            self.handle_data_write(value)
+        match register {
+            // Amplitude registers (0x00-0x05)
+            0x00..=0x05 => self.handle_amplitude_register(register as usize),
+
+            // Frequency registers (0x08-0x0D)
+            0x08..=0x0D => {
+                let channel = (register - 0x08) as usize;
+                self.handle_frequency_register(channel)
+            }
+
+            // Octave registers (0x10-0x12)
+            0x10..=0x12 => self.handle_octave_register(register),
+
+            // Frequency enable (0x14)
+            0x14 => self.handle_frequency_enable_register(),
+
+            // Noise enable (0x15) - don't generate events
+            0x15 => None,
+
+            // Noise parameters (0x16) - don't generate events
+            0x16 => None,
+
+            // Envelope generators (0x18-0x19) - don't generate events
+            0x18..=0x19 => None,
+
+            // All channels enable (0x1C) - handle inline
+            0x1C => self.handle_all_enable_register(value),
+
+            // Default: no event generation for other registers
+            _ => None,
         }
     }
 
@@ -475,7 +444,6 @@ impl ChipState for Saa1099State {
         for channel in &mut self.channels {
             channel.clear();
         }
-        self.selected_register = 0;
         self.all_channels_enable = false;
         self.registers.clear();
     }
@@ -494,23 +462,18 @@ mod tests {
         let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Set frequency for channel 0
-        state.on_register_write(0x80, 0x08); // Select freq register
-        state.on_register_write(0x00, 0x20); // Write frequency
+        state.on_register_write(0x08, 0x20); // Frequency register for ch0 = 0x20
 
         // Set octave for channel 0
-        state.on_register_write(0x80, 0x10); // Select octave register
-        state.on_register_write(0x00, 0x03); // Octave 3
+        state.on_register_write(0x10, 0x03); // Octave register
 
         // Enable all channels
-        state.on_register_write(0x80, 0x1C); // Select all enable
-        state.on_register_write(0x00, 0x01); // Enable all
+        state.on_register_write(0x1C, 0x01); // Enable all
 
         // Enable frequency for channel 0
-        state.on_register_write(0x80, 0x14); // Select freq enable
-        state.on_register_write(0x00, 0x01); // Enable ch 0
+        state.on_register_write(0x14, 0x01); // Enable ch 0
 
         // Set amplitude (this should trigger KeyOn)
-        state.on_register_write(0x80, 0x00); // Select amplitude
         let event = state.on_register_write(0x00, 0x88); // Volume 8/8
 
         assert!(event.is_some());
@@ -524,18 +487,14 @@ mod tests {
         let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Set up and enable channel 0
-        state.on_register_write(0x80, 0x08);
-        state.on_register_write(0x00, 0x20);
-        state.on_register_write(0x80, 0x1C);
-        state.on_register_write(0x00, 0x01);
-        state.on_register_write(0x80, 0x14);
-        state.on_register_write(0x00, 0x01);
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(0x00, 0x88);
+        state.on_register_write(0x08, 0x20); // freq
+        state.on_register_write(0x10, 0x03); // octave
+        state.on_register_write(0x1C, 0x01); // all enable
+        state.on_register_write(0x14, 0x01); // freq enable ch0
+        state.on_register_write(0x00, 0x88); // amplitude non-zero -> KeyOn
 
-        // Disable by setting amplitude to 0
-        state.on_register_write(0x80, 0x00);
-        let event = state.on_register_write(0x14, 0x00);
+        // Disable by clearing frequency enable for channel 0
+        let event = state.on_register_write(0x14, 0x00); // disable channel 0
 
         assert!(event.is_some());
         let events = event.as_ref().unwrap();
@@ -548,18 +507,14 @@ mod tests {
         let mut state = Saa1099State::new(8_000_000.0f32);
 
         // Enable channel 0
-        state.on_register_write(0x80, 0x08);
-        state.on_register_write(0x00, 0x20);
-        state.on_register_write(0x80, 0x1C);
-        state.on_register_write(0x00, 0x01);
-        state.on_register_write(0x80, 0x14);
-        state.on_register_write(0x00, 0x01);
-        state.on_register_write(0x80, 0x00);
+        state.on_register_write(0x08, 0x20);
+        state.on_register_write(0x10, 0x03);
+        state.on_register_write(0x1C, 0x01);
+        state.on_register_write(0x14, 0x01);
         state.on_register_write(0x00, 0x88);
 
         // Change frequency while enabled
-        state.on_register_write(0x80, 0x08);
-        let event = state.on_register_write(0x00, 0x40);
+        let event = state.on_register_write(0x08, 0x40);
 
         assert!(event.is_some());
         let events = event.as_ref().unwrap();
@@ -577,12 +532,11 @@ mod tests {
     fn test_saa1099_reset() {
         let mut state = Saa1099State::new(8_000_000.0f32);
 
-        state.on_register_write(0x80, 0x1C);
-        state.on_register_write(0x00, 0x01);
+        state.on_register_write(0x1C, 0x01);
 
         state.reset();
 
         assert!(!state.all_channels_enable);
-        assert_eq!(state.selected_register, 0);
+        assert!(state.read_register(0x1C).is_none());
     }
 }

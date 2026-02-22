@@ -24,9 +24,9 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
 
-        /// Print detailed diagnostics on mismatch
+        /// Dry-run: do not print standard one-line outputs; only emit errors/panics
         #[arg(long)]
-        diag: bool,
+        dry_run: bool,
     },
     /// Re-dump VGM file with DAC streams expanded to chip writes
     Redump {
@@ -122,11 +122,15 @@ fn main() {
 
     // Handle subcommands
     match args.command {
-        Some(Commands::Test { file, diag }) => {
+        Some(Commands::Test { file, dry_run }) => {
             // Read the input using the same logic as the GUI code path:
             // read raw bytes, detect gz/vgz by extension or header and decompress.
+            // The underlying `test_roundtrip` accepts a `dry_run: bool` which
+            // suppresses standard one-line and diagnostic output when true.
+            // Pass `dry_run` through directly so that `--dry-run` results in no
+            // normal/stdout output from the test helper.
             match load_bytes_from_path(&file) {
-                Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, diag) {
+                Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, dry_run) {
                     Ok(_) => std::process::exit(0),
                     Err(e) => {
                         eprintln!("test_roundtrip failed: {}", e);

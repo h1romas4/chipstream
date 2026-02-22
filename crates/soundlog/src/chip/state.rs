@@ -37,10 +37,11 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
-//! use soundlog::chip::state::{Ym2612State, ChipState, StateEvent};
+//! ```rust
+//! use soundlog::chip::state::{Ym2612State, ChipState};
+//! use soundlog::chip::event::StateEvent;
 //!
-//! let mut state = Ym2612State::new(7_670_454.0);
+//! let mut state = Ym2612State::new(7_670_454.0f32);
 //!
 //! // Set port for YM2612 (required for multi-port chips)
 //! state.set_port(0);
@@ -49,9 +50,13 @@
 //! state.on_register_write(0xA4, 0x22); // Block + fnum high
 //! state.on_register_write(0xA0, 0x6D); // Fnum low
 //!
-//! // Key on triggers an event
-//! if let Some(StateEvent::KeyOn { channel, tone }) = state.on_register_write(0x28, 0xF0) {
-//!     println!("Channel {} key on: fnum={}, block={}", channel, tone.fnum, tone.block);
+//! // Key on triggers events (on_register_write returns Option<Vec<StateEvent>>)
+//! if let Some(events) = state.on_register_write(0x28, 0xF0) {
+//!     for ev in events {
+//!         if let StateEvent::KeyOn { channel, tone } = ev {
+//!             println!("Channel {} key on: fnum={}, block={}", channel, tone.fnum, tone.block);
+//!         }
+//!     }
 //! }
 //! ```
 

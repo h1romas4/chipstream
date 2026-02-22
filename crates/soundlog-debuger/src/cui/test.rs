@@ -12,7 +12,7 @@ use soundlog::VgmDocument;
 /// The comparison is semantic: a roundtrip is considered successful if either the
 /// serialized bytes match exactly, or the parsed documents match except for
 /// placement-only differences (GD3/data offset).
-pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
+pub fn test_roundtrip(path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     // Prepare quoted full-path string for one-line outputs. Try to canonicalize to get absolute path,
     // but fall back to the provided path if canonicalize fails.
     let file_str = match path.canonicalize() {
@@ -40,7 +40,8 @@ pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
             let semantic_match =
                 crate::cui::vgm::docs_equal_allow_gd3_offset(&doc_orig, &doc_reparsed);
             if rebuilt == data || semantic_match {
-                if diag {
+                // Default behavior: print diagnostics unless user requested a dry-run.
+                if !dry_run {
                     crate::cui::vgm::print_diag_table(&doc_orig, &doc_reparsed);
                     if rebuilt == data {
                         println!(
@@ -51,21 +52,23 @@ pub fn test_roundtrip(path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
                 }
             } else {
                 // One-line error with filename as requested. Exit code remains zero.
+                // Inform user how to see detailed diagnostics: re-run without --dry-run.
                 println!(
-                    "\"{}\": roundtrip: MISMATCH (original {} bytes, serialized {} bytes) — run with --diag to see detailed diagnostics",
+                    "\"{}\": roundtrip: MISMATCH (original {} bytes, serialized {} bytes) — re-run without --dry-run to see detailed diagnostics",
                     file_str,
                     data.len(),
                     rebuilt.len()
                 );
-                if diag {
+                if !dry_run {
                     crate::cui::vgm::print_diag_compact(&doc_orig, &doc_reparsed, &data, &rebuilt);
                 }
             }
         }
         Err(e) => {
             // One-line error with filename; re-parse failed after serialization.
+            // Advise re-running without --dry-run to see serialized bytes/diagnostics.
             eprintln!(
-                "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — run with --diag to see serialized bytes and diagnostics",
+                "\"{}\": roundtrip: serialization produced bytes (len={}), but re-parse failed: {} — re-run without --dry-run to see serialized bytes and diagnostics",
                 file_str,
                 rebuilt.len(),
                 e

@@ -401,12 +401,11 @@ detecting key on/off events and extracting tone information from register writes
 | **Pokey** | 4 | ✅ | ✅ | Atari 8-bit computers | ✅ |
 | **QSound** | N/A | N/A | N/A | Capcom QSound | - |
 | **SCSP** | N/A | N/A | N/A | Sega Saturn SCSP | - |
-| **WonderSwan** | 4 | ✅ | ✅ | WonderSwan APU | ⬜ |
-| **VSU** | 6 | ✅ | ✅ | Virtual Boy VSU | ⬜ |
-| **SAA1099** | 6 | ✅ | ✅ | SAM Coupé, etc. | ⬜ |
+| **WonderSwan** | 4 | ✅ | ✅ | WonderSwan APU | ✅ |
+| **VSU** | 6 | ✅ | ✅ | Virtual Boy VSU | ✅ |
+| **SAA1099** | 6 | ✅ | ✅ | SAM Coupé, etc. | ✅ |
 | **ES5503** | N/A | N/A | N/A | Ensoniq ES5503 | - |
-| **ES5506U8** | N/A | N/A | N/A | Ensoniq ES5506 (8-bit) | - |
-| **ES5506U16** | N/A | N/A | N/A | Ensoniq ES5506 (16-bit) | - |
+| **ES5506** | N/A | N/A | N/A | Ensoniq ES5506 | - |
 | **X1010** | N/A | N/A | N/A | Setia X1-010 | - |
 | **C352** | N/A | N/A | N/A | Namco C352 | - |
 | **GA20** | N/A | N/A | N/A | Irem GA20 | - |

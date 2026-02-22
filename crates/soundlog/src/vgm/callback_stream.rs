@@ -175,6 +175,7 @@ mod sealed {
     impl Sealed for crate::chip::QsoundSpec {}
     impl Sealed for crate::chip::ScspSpec {}
     impl Sealed for crate::chip::WonderSwanSpec {}
+    impl Sealed for crate::chip::WonderSwanRegSpec {}
     impl Sealed for crate::chip::VsuSpec {}
     impl Sealed for crate::chip::Saa1099Spec {}
     impl Sealed for crate::chip::Es5503Spec {}
@@ -374,6 +375,7 @@ impl_callback_and_state!(
 );
 impl_write_callback_target_no_state!(chip::MultiPcmBankSpec, on_multi_pcm_bank_write);
 impl_write_callback_target_no_state!(chip::GameGearPsgSpec, on_game_gear_psg_write);
+impl_write_callback_target_no_state!(chip::WonderSwanRegSpec, on_wonder_swan_reg_write);
 
 /// State trackers for various sound chips
 /// Each chip type supports up to 2 instances (Primary and Secondary)
@@ -459,6 +461,7 @@ struct Callbacks<'a> {
     on_qsound_write: ChipCallback<'a, chip::QsoundSpec>,
     on_scsp_write: ChipCallback<'a, chip::ScspSpec>,
     on_wonder_swan_write: ChipCallback<'a, chip::WonderSwanSpec>,
+    on_wonder_swan_reg_write: ChipCallback<'a, chip::WonderSwanRegSpec>,
     on_vsu_write: ChipCallback<'a, chip::VsuSpec>,
     on_saa1099_write: ChipCallback<'a, chip::Saa1099Spec>,
     on_es5503_write: ChipCallback<'a, chip::Es5503Spec>,
@@ -1327,15 +1330,33 @@ impl<'a> VgmCallbackStream<'a> {
             VgmCommand::WonderSwanWrite(instance, spec) => {
                 let event = self.state_trackers.wonderswan[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.offset as u8, spec.value));
+                    .and_then(|state| state.on_waveform_write(spec.offset, spec.value));
                 if let Some(ref mut cb) = self.callbacks.on_wonder_swan_write {
                     cb(*instance, spec.clone(), sample, event);
                 }
             }
+            VgmCommand::WonderSwanRegWrite(instance, spec) => {
+                let (mapped_register, mapped_value) =
+                    crate::chip::state::wonderswan::WonderSwanState::map_vgm_to_wonderswan_register(
+                        spec.register,
+                        spec.value,
+                    );
+                let event = self.state_trackers.wonderswan[*instance as usize]
+                    .as_mut()
+                    .and_then(|state| state.on_register_write(mapped_register, mapped_value));
+                if let Some(ref mut cb) = self.callbacks.on_wonder_swan_reg_write {
+                    cb(*instance, spec.clone(), sample, event.clone());
+                }
+            }
             VgmCommand::VsuWrite(instance, spec) => {
+                let (mapped_register, mapped_value) =
+                    crate::chip::state::vsu::VsuState::map_vgm_to_vsu_register(
+                        spec.offset,
+                        spec.value,
+                    );
                 let event = self.state_trackers.vsu[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.offset, spec.value));
+                    .and_then(|state| state.on_register_write(mapped_register, mapped_value));
                 if let Some(ref mut cb) = self.callbacks.on_vsu_write {
                     cb(*instance, spec.clone(), sample, event);
                 }
@@ -1413,9 +1434,6 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::Scc1Write(instance, spec) => {
-                // Use the canonical mapping helper to convert VGM SCC1 (port, register,
-                // value) into the K051649 internal register space, then apply the
-                // resulting write to the K051649 state tracker.
                 let (mapped_register, mapped_value) =
                     crate::chip::state::k051649::K051649State::map_vgm_to_k051649_register(
                         spec.port,

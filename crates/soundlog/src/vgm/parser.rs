@@ -758,8 +758,9 @@ pub(crate) fn parse_chip_write(
             Ok((VgmCommand::PokeyWrite(instance, spec), n))
         }
         0xBC => {
-            let (spec, n) = <chip::WonderSwanSpec as CommandSpec>::parse(bytes, offset, opcode)?;
-            Ok((VgmCommand::WonderSwanWrite(instance, spec), n))
+            // 0xBC: WonderSwan register write (8-bit register form)
+            let (spec, n) = <chip::WonderSwanRegSpec as CommandSpec>::parse(bytes, offset, opcode)?;
+            Ok((VgmCommand::WonderSwanRegWrite(instance, spec), n))
         }
         0xBD => {
             let (spec, n) = <chip::Saa1099Spec as CommandSpec>::parse(bytes, offset, opcode)?;
@@ -797,7 +798,7 @@ pub(crate) fn parse_chip_write(
             let (spec, n) = <chip::ScspSpec as CommandSpec>::parse(bytes, offset, opcode)?;
             Ok((VgmCommand::ScspWrite(instance, spec), n))
         }
-        // TODO: WonderSwan, write value dd to memory offset mmll (mm - offset MSB, ll - offset LSB)
+        // WonderSwan, write value dd to memory offset mmll (mm - offset MSB, ll - offset LSB)
         0xC6 => {
             let (spec, n) = <chip::WonderSwanSpec as CommandSpec>::parse(bytes, offset, opcode)?;
             Ok((VgmCommand::WonderSwanWrite(instance, spec), n))

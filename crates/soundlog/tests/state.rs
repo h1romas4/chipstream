@@ -1519,35 +1519,36 @@ fn test_vsu_state_tracking() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(soundlog::chip::Chip::Vsu, Instance::Primary, 5_000_000);
 
-    // Set frequency for channel 0
+    // Write frequency low (relative offset 0x08)
     builder.add_chip_write(
         Instance::Primary,
         VsuSpec {
-            offset: 0x08,
-            value: 0x00,
+            offset: 0x0102,
+            value: 0xE5,
         },
     );
+    // Write frequency high (relative offset 0x0C) - lower 3 bits used
     builder.add_chip_write(
         Instance::Primary,
         VsuSpec {
-            offset: 0x0C,
-            value: 0x01,
+            offset: 0x0103,
+            value: 0x06,
         },
     );
-    // Enable channel 0
+    // Set volume for channel 0 (relative offset 0x04). Use non-zero -> key-on possible.
     builder.add_chip_write(
         Instance::Primary,
         VsuSpec {
-            offset: 0x00,
+            offset: 0x0101,
+            value: 0x88,
+        },
+    );
+    // Enable interval for channel 0 (relative offset 0x00 bit7)
+    builder.add_chip_write(
+        Instance::Primary,
+        VsuSpec {
+            offset: 0x0100,
             value: 0x80,
-        },
-    );
-    // Set volume
-    builder.add_chip_write(
-        Instance::Primary,
-        VsuSpec {
-            offset: 0x04,
-            value: 0x11,
         },
     );
 
@@ -1564,7 +1565,15 @@ fn test_vsu_state_tracking() {
     for result in stream {
         match result {
             Ok(StreamResult::Command(VgmCommand::VsuWrite(Instance::Primary, spec))) => {
-                if let Some(mut evs) = state.on_register_write(spec.offset, spec.value) {
+                // The VGM uses a compact per-channel offset encoding for VSU writes.
+                // Map the compact offset into an absolute VSU register address before
+                // passing it to the VSU state tracker.
+                let (mapped_register, mapped_value) =
+                    soundlog::chip::state::VsuState::map_vgm_to_vsu_register(
+                        spec.offset,
+                        spec.value,
+                    );
+                if let Some(mut evs) = state.on_register_write(mapped_register, mapped_value) {
                     events.append(&mut evs);
                 }
             }
@@ -1596,14 +1605,7 @@ fn test_saa1099_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         Saa1099Spec {
-            register: 0x80,
-            value: 0x08,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Saa1099Spec {
-            register: 0x00,
+            register: 0x08,
             value: 0x6D,
         },
     );
@@ -1611,14 +1613,7 @@ fn test_saa1099_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         Saa1099Spec {
-            register: 0x80,
-            value: 0x10,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Saa1099Spec {
-            register: 0x00,
+            register: 0x10,
             value: 0x03,
         },
     );
@@ -1626,14 +1621,7 @@ fn test_saa1099_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         Saa1099Spec {
-            register: 0x80,
-            value: 0x1C,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Saa1099Spec {
-            register: 0x00,
+            register: 0x1C,
             value: 0x01,
         },
     );
@@ -1641,25 +1629,11 @@ fn test_saa1099_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         Saa1099Spec {
-            register: 0x80,
-            value: 0x14,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Saa1099Spec {
-            register: 0x00,
+            register: 0x14,
             value: 0x01,
         },
     );
     // Set amplitude
-    builder.add_chip_write(
-        Instance::Primary,
-        Saa1099Spec {
-            register: 0x80,
-            value: 0x00,
-        },
-    );
     builder.add_chip_write(
         Instance::Primary,
         Saa1099Spec {
@@ -1703,12 +1677,11 @@ fn test_saa1099_state_tracking() {
     assert_eq!(state.channel_count(), 6);
 
     // Verify that registers are stored correctly
-    // SAA1099 uses two-stage addressing:
-    // - Control writes (register >= 0x80) select the target register
-    // - Data writes (register < 0x80) write to the selected register
-    // Both types of writes are stored in the register storage (ArrayStorage<u8, 256>)
-    assert_eq!(state.read_register(0x80), Some(0x00)); // Last control write (amplitude select)
-    assert_eq!(state.read_register(0x00), Some(0x88)); // Last data write to register 0x00 (amplitude)
+    // Under the new direct-write semantics the `register` field is the actual
+    // target register address. The previous control-select (0x80) idiom is not
+    // used, so no control-select byte should be stored.
+    assert_eq!(state.read_register(0x80), None); // No control-select writes stored
+    assert_eq!(state.read_register(0x00), Some(0x88)); // Last write to amplitude register
 }
 
 #[test]

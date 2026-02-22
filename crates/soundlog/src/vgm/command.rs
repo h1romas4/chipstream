@@ -346,6 +346,7 @@ pub enum VgmCommand {
     QsoundWrite(Instance, chip::QsoundSpec),
     ScspWrite(Instance, chip::ScspSpec),
     WonderSwanWrite(Instance, chip::WonderSwanSpec),
+    WonderSwanRegWrite(Instance, chip::WonderSwanRegSpec),
     VsuWrite(Instance, chip::VsuSpec),
     Saa1099Write(Instance, chip::Saa1099Spec),
     Es5503Write(Instance, chip::Es5503Spec),
@@ -1461,6 +1462,12 @@ impl From<(Instance, chip::WonderSwanSpec)> for VgmCommand {
     }
 }
 
+impl From<(Instance, chip::WonderSwanRegSpec)> for VgmCommand {
+    fn from(v: (Instance, chip::WonderSwanRegSpec)) -> Self {
+        VgmCommand::WonderSwanRegWrite(v.0, v.1)
+    }
+}
+
 impl From<(Instance, chip::VsuSpec)> for VgmCommand {
     fn from(v: (Instance, chip::VsuSpec)) -> Self {
         VgmCommand::VsuWrite(v.0, v.1)
@@ -2412,20 +2419,64 @@ impl CommandSpec for chip::WonderSwanSpec {
         dest.push(self.offset as u8);
         dest.push(self.value);
     }
+    fn parse(bytes: &[u8], off: usize, opcode: u8) -> Result<(Self, usize), ParseError>
+    where
+        Self: Sized,
+    {
+        // Parse according to opcode:
+        // - 0xC6: mm ll dd (16-bit offset + value) => consumes 3 bytes
+        // - if called for 0xBC (register form), gracefully fallback by reading aa dd and
+        //   placing the 8-bit register into the low byte of the offset (consumes 2 bytes).
+        if opcode == 0xC6 {
+            let hi = read_u8_at(bytes, off)?;
+            let lo = read_u8_at(bytes, off + 1)?;
+            let offv = ((hi as u16) << 8) | (lo as u16);
+            let val = read_u8_at(bytes, off + 2)?;
+            Ok((
+                chip::WonderSwanSpec {
+                    offset: offv,
+                    value: val,
+                },
+                3,
+            ))
+        } else {
+            // fallback for single-byte register form (aa dd)
+            let reg = read_u8_at(bytes, off)?;
+            let val = read_u8_at(bytes, off + 1)?;
+            let offv = reg as u16;
+            Ok((
+                chip::WonderSwanSpec {
+                    offset: offv,
+                    value: val,
+                },
+                2,
+            ))
+        }
+    }
+}
+
+impl CommandSpec for chip::WonderSwanRegSpec {
+    // WonderSwan, write value dd to register aa (8-bit register form)
+    fn opcode(&self) -> u8 {
+        0xBC
+    }
+    fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
+        dest.push(self.opcode());
+        dest.push(self.register);
+        dest.push(self.value);
+    }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
     where
         Self: Sized,
     {
-        let hi = read_u8_at(bytes, off)?;
-        let lo = read_u8_at(bytes, off + 1)?;
-        let offv = ((hi as u16) << 8) | (lo as u16);
-        let val = read_u8_at(bytes, off + 2)?;
+        let reg = read_u8_at(bytes, off)?;
+        let val = read_u8_at(bytes, off + 1)?;
         Ok((
-            chip::WonderSwanSpec {
-                offset: offv,
+            chip::WonderSwanRegSpec {
+                register: reg,
                 value: val,
             },
-            3,
+            2,
         ))
     }
 }
@@ -2779,6 +2830,7 @@ pub fn command_to_vgm_bytes(command: &VgmCommand) -> (Vec<u8>, usize) {
         QsoundWrite(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
         ScspWrite(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
         WonderSwanWrite(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
+        WonderSwanRegWrite(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
         VsuWrite(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
         Saa1099Write(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),
         Es5503Write(id, s) => spec_to_vgm_bytes(*id, s, &mut buf),

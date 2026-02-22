@@ -187,8 +187,8 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
 
 /// Print a rich side-by-side table of original vs. rebuilt document fields.
 ///
-/// This is used by `test_roundtrip --diag` when the roundtrip succeeds
-/// and the caller requested diag diagnostics.
+/// This is used by `test_roundtrip` to show diagnostics when the roundtrip
+/// succeeds and output is enabled (i.e. when the caller did not request --dry-run).
 pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
     // Build a field-aligned side-by-side table using summarize_doc but
     // split multi-line values into per-line rows so columns stay aligned.
@@ -248,8 +248,9 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
 
 /// Print a compact, fixed-width, unicode-aware diagnostic summary.
 ///
-/// This is used by `test_roundtrip --diag` on mismatch to print a compact
-/// textual comparison and report the first differing byte offset.
+/// This is used by `test_roundtrip` on mismatch to print a compact textual
+/// comparison and report the first differing byte offset when diagnostics are
+/// enabled (i.e. when the caller did not request --dry-run).
 pub(crate) fn print_diag_compact(
     orig: &VgmDocument,
     rebuilt: &VgmDocument,
@@ -419,33 +420,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     // Get command offsets and lengths
     let offsets_and_lengths = doc.command_offsets_and_lengths();
 
-    // Print header information
-    println!("=== VGM File: {} ===", file_path.display());
-    println!("Version: 0x{:08X}", doc.header.version);
-    println!("Total Samples: {}", doc.header.total_samples);
-    println!("Loop Offset: 0x{:08X}", doc.header.loop_offset);
-    println!("Loop Samples: {}", doc.header.loop_samples);
-
-    // Show loop command index if available
-    if let Some(loop_idx) = doc.loop_command_index() {
-        println!("Loop Command Index: {}", loop_idx);
-    }
-
-    println!("Total Commands: {}", doc.commands.len());
-
-    // Show chip instances and clocks
-    let instances = doc.header.chip_instances();
-    if !instances.is_empty() {
-        println!("Chips:");
-        for (inst, chip, _clock_hz) in &instances {
-            let raw_clock = doc.header.get_chip_clock(chip);
-            let clock = raw_clock & 0x7FFF_FFFF;
-            println!("  {:?} (instance {:?}): {} Hz", chip, inst, clock);
-        }
-    }
-
     // Print commands with offsets and lengths
-    println!("Command Listing:");
     println!("{:<8} {:<8} {:<80} Length", "Index", "Offset", "Command");
     println!("{}", "-".repeat(120));
 
@@ -710,6 +685,12 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
             format!(
                 "WonderSwanWrite({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
+            )
+        }
+        VgmCommand::WonderSwanRegWrite(inst, spec) => {
+            format!(
+                "WonderSwanRegWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
             )
         }
         VgmCommand::VsuWrite(inst, spec) => {

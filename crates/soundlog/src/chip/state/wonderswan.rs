@@ -5,14 +5,49 @@
 
 use super::channel::ChannelState;
 use super::chip_state::ChipState;
-use super::storage::{ArrayStorage, RegisterStorage};
+use super::storage::{ArrayStorage, RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
 
 /// Number of channels in WonderSwan
 const WONDERSWAN_CHANNELS: usize = 4;
 
 /// Register storage for WonderSwan channels
-type WonderSwanStorage = ArrayStorage<u8, 256>;
+///
+/// The WonderSwan protocol supports two write forms:
+/// - 16-bit memory offset writes (mm ll dd)
+/// - 8-bit register writes (aa dd)
+///
+/// We store both forms: a small array for 8-bit register writes and a sparse
+/// map for 16-bit memory writes. When reading a register we prefer the
+/// 16-bit memory value (if present) and fall back to the 8-bit register map.
+#[derive(Debug, Clone, Default)]
+struct WonderSwanStorage {
+    reg: ArrayStorage<u8, 256>,
+    mem: SparseStorage<u16, u8>,
+}
+
+impl WonderSwanStorage {
+    /// Write using 8-bit register addressing (aa)
+    fn write_reg(&mut self, register: u8, value: u8) {
+        self.reg.write(register, value);
+    }
+
+    /// Write using 16-bit memory offset addressing (mmll)
+    fn write_mem(&mut self, offset: u16, value: u8) {
+        self.mem.write(offset, value);
+    }
+
+    /// Read a logical 8-bit register value. Prefer 16-bit memory value if present
+    /// at the matching 16-bit offset (0x00XX), otherwise fall back to 8-bit regs.
+    fn read(&self, register: u8) -> Option<u8> {
+        self.reg.read(register)
+    }
+
+    fn clear(&mut self) {
+        self.reg.clear();
+        self.mem.clear();
+    }
+}
 
 /// WonderSwan state tracker
 ///
@@ -157,6 +192,42 @@ impl WonderSwanState {
 
         ToneInfo::new(freq, 0, freq_hz)
     }
+
+    /// Map a VGM-style (port, register, value) tuple into the internal GbDmg
+    /// register space used by `WonderSwanState`.
+    pub(crate) fn map_vgm_to_wonderswan_register(register: u8, value: u8) -> (u8, u8) {
+        let mapped_register = register.wrapping_add(0x80);
+        (mapped_register, value)
+    }
+
+    /// Handle a write after the storage has been updated. `register` is the
+    /// logical 8-bit register (low byte of any 16-bit offset) and `value` is
+    /// the byte written.
+    fn handle_write(&mut self, register: u8, value: u8) -> Option<Vec<StateEvent>> {
+        match register {
+            // Frequency registers (0x80-0x87)
+            0x80..=0x87 => {
+                let offset = register - 0x80;
+                let channel = offset >> 1;
+                self.handle_frequency_register(channel)
+            }
+            // Volume registers (0x88-0x8B)
+            0x88 => self.handle_volume_register(0, value),
+            0x89 => self.handle_volume_register(1, value),
+            0x8A => self.handle_volume_register(2, value),
+            0x8B => self.handle_volume_register(3, value),
+            // Audio control register (0x90)
+            0x90 => self.handle_audio_control(value),
+            _ => None,
+        }
+    }
+
+    /// Handle waveform (state only)
+    pub fn on_waveform_write(&mut self, offset: u16, value: u8) -> Option<Vec<StateEvent>> {
+        // waveform
+        self.registers.write_mem(offset, value);
+        None
+    }
 }
 
 impl ChipState for WonderSwanState {
@@ -172,40 +243,8 @@ impl ChipState for WonderSwanState {
         register: Self::Register,
         value: Self::Value,
     ) -> Option<Vec<StateEvent>> {
-        // Store all register writes in global storage
-        self.registers.write(register, value);
-
-        match register {
-            // Frequency registers (0x80-0x87)
-            0x80..=0x87 => {
-                let offset = register - 0x80;
-                let channel = offset >> 1;
-                self.handle_frequency_register(channel)
-            }
-            // Volume registers (0x88-0x8B)
-            0x88 => {
-                // Channel 0 volume (low byte)
-                self.handle_volume_register(0, value)
-            }
-            0x89 => {
-                // Channel 1 volume (high byte)
-                self.handle_volume_register(1, value)
-            }
-            0x8A => {
-                // Channel 2 volume (low byte)
-                self.handle_volume_register(2, value)
-            }
-            0x8B => {
-                // Channel 3 volume (high byte)
-                self.handle_volume_register(3, value)
-            }
-            // Audio control register (0x90)
-            0x90 => self.handle_audio_control(value),
-            _ => {
-                // Other registers - store but don't generate events
-                None
-            }
-        }
+        self.registers.write_reg(register, value);
+        self.handle_write(register, value)
     }
 
     fn reset(&mut self) {

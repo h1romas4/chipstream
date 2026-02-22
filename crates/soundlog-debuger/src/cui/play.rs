@@ -13,36 +13,15 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
         .try_into()
         .with_context(|| format!("failed to parse VGM file: {}", file_path.display()))?;
 
-    // Print header information
+    // Create stream and callback stream
+    let instances = doc.header.chip_instances();
+    let stream = VgmStream::from_document(doc);
+    let mut callback_stream = VgmCallbackStream::new(stream);
+
     if !dry_run {
-        println!("=== VGM File: {} ===", file_path.display());
-        println!("Version: 0x{:08X}", doc.header.version);
-        println!("Total Samples: {}", doc.header.total_samples);
-        println!("Loop Offset: 0x{:08X}", doc.header.loop_offset);
-        println!("Loop Samples: {}", doc.header.loop_samples);
-
-        // Show chip instances and clocks
-        let instances = doc.header.chip_instances();
-        if !instances.is_empty() {
-            println!("Chips:");
-            for (inst, chip, _clock_hz) in &instances {
-                let raw_clock = doc.header.get_chip_clock(chip);
-                let clock = raw_clock & 0x7FFF_FFFF;
-                println!("  {:?} (instance {:?}): {} Hz", chip, inst, clock);
-            }
-        }
-
-        println!();
-        println!("Register Write Log:");
         println!("{:<12} {:<40} Events", "Sample", "Register Write");
         println!("{}", "-".repeat(100));
     }
-
-    let instances = doc.header.chip_instances();
-
-    // Create stream and callback stream
-    let stream = VgmStream::from_document(doc);
-    let mut callback_stream = VgmCallbackStream::new(stream);
 
     // Track state for all chip types present in the file
     callback_stream.track_chips(&instances);
@@ -50,7 +29,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     // Register callbacks for all chip types
     callback_stream.on_write(
         |inst: Instance, spec: chip::PsgSpec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!("Sn76489[{:?}] 0x{:02X}", inst, spec.value);
+            let reg_info = format!("Sn76489Write({:?}, 0x{:02X})", inst, spec.value);
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
@@ -58,7 +37,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2413Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2413[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym2413Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -68,7 +47,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2612Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2612[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym2612Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -78,7 +57,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2151Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2151[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym2151Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -88,7 +67,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2203Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2203[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym2203Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -98,7 +77,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2608Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym2608[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
+                "Ym2608Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -107,8 +86,9 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym2610Spec, sample: u64, event: Option<Vec<StateEvent>>| {
+            // format_command_brief uses Ym2610bWrite for the Ym2610b command; keep the Write style
             let reg_info = format!(
-                "Ym2610[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
+                "Ym2610bWrite({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -118,7 +98,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym3812Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym3812[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym3812Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -128,7 +108,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ym3526Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ym3526[{:?}] 0x{:02X}=0x{:02X}",
+                "Ym3526Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -138,7 +118,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Y8950Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Y8950[{:?}] 0x{:02X}=0x{:02X}",
+                "Y8950Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -147,30 +127,21 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf262Spec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!(
-                "Ymf262[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
-                inst, spec.port, spec.register, spec.value
-            );
+            let reg_info = format!("Ymf262Write({:?}, {:?})", inst, spec);
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf278bSpec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!(
-                "Ymf278b[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
-                inst, spec.port, spec.register, spec.value
-            );
+            let reg_info = format!("Ymf278bWrite({:?}, {:?})", inst, spec);
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymf271Spec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!(
-                "Ymf271[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
-                inst, spec.port, spec.register, spec.value
-            );
+            let reg_info = format!("Ymf271Write({:?}, {:?})", inst, spec);
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
@@ -178,7 +149,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ymz280bSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ymz280b[{:?}] 0x{:02X}=0x{:02X}",
+                "Ymz280bWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -188,7 +159,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Rf5c68U8Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Rf5c68[{:?}] 0x{:02X}=0x{:02X}",
+                "Rf5c68U8Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -198,7 +169,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Rf5c68U16Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Rf5c68[{:?}] 0x{:04X}=0x{:02X}",
+                "Rf5c68U16Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -211,7 +182,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
          sample: u64,
          event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Rf5c164[{:?}] 0x{:04X}=0x{:02X}",
+                "Rf5c164U16Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -221,7 +192,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::SegaPcmSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "SegaPcm[{:?}] 0x{:04X}=0x{:02X}",
+                "SegaPcmWrite({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -231,7 +202,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::QsoundSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "QSound[{:?}] 0x{:02X}=0x{:04X}",
+                "QsoundWrite({:?}, 0x{:04X}=0x{:04X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -241,7 +212,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::ScspSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Scsp[{:?}] 0x{:04X}=0x{:04X}",
+                "ScspWrite({:?}, 0x{:04X}=0x{:04X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -254,7 +225,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
          sample: u64,
          event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "WonderSwan[{:?}] 0x{:04X}=0x{:02X}",
+                "WonderSwanWrite({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -262,8 +233,24 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     );
 
     callback_stream.on_write(
+        |inst: Instance,
+         spec: chip::WonderSwanRegSpec,
+         sample: u64,
+         event: Option<Vec<StateEvent>>| {
+            let reg_info = format!(
+                "WonderSwanRegWrite({:?}, 0x{:02X}=0x{:02X})",
+                inst, spec.register, spec.value
+            );
+            print_register_log(sample, &reg_info, event, dry_run);
+        },
+    );
+
+    callback_stream.on_write(
         |inst: Instance, spec: chip::VsuSpec, sample: u64, event: Option<Vec<StateEvent>>| {
-            let reg_info = format!("Vsu[{:?}] 0x{:04X}=0x{:02X}", inst, spec.offset, spec.value);
+            let reg_info = format!(
+                "VsuWrite({:?}, 0x{:04X}=0x{:02X})",
+                inst, spec.offset, spec.value
+            );
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
@@ -271,7 +258,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Saa1099Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Saa1099[{:?}] 0x{:02X}=0x{:02X}",
+                "Saa1099Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -281,7 +268,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Es5503Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Es5503[{:?}] 0x{:04X}=0x{:02X}",
+                "Es5503Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -291,7 +278,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Es5506U8Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Es5506[{:?}] 0x{:02X}=0x{:02X}",
+                "Es5506U8Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -301,7 +288,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Es5506U16Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Es5506[{:?}] 0x{:02X}=0x{:04X}",
+                "Es5506U16Write({:?}, 0x{:02X}=0x{:04X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -311,7 +298,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::X1010Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "X1010[{:?}] 0x{:04X}=0x{:02X}",
+                "X1010Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -321,7 +308,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::C352Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "C352[{:?}] 0x{:04X}=0x{:04X}",
+                "C352Write({:?}, 0x{:04X}=0x{:04X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -331,7 +318,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ga20Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ga20[{:?}] 0x{:02X}=0x{:02X}",
+                "Ga20Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -341,7 +328,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::MultiPcmSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "MultiPcm[{:?}] 0x{:02X}=0x{:02X}",
+                "MultiPcmWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -351,7 +338,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Upd7759Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Upd7759[{:?}] 0x{:02X}=0x{:02X}",
+                "Upd7759Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -361,7 +348,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Okim6258Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Okim6258[{:?}] 0x{:02X}=0x{:02X}",
+                "Okim6258Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -371,7 +358,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Okim6295Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Okim6295[{:?}] 0x{:02X}=0x{:02X}",
+                "Okim6295Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -381,17 +368,18 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::K054539Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "K054539[{:?}] 0x{:04X}=0x{:02X}",
+                "K054539Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
         },
     );
 
+    // Harmonize write naming with parse output (use XWrite form)
     callback_stream.on_write(
         |inst: Instance, spec: chip::Huc6280Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Huc6280[{:?}] 0x{:02X}=0x{:02X}",
+                "Huc6280Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -401,7 +389,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::C140Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "C140[{:?}] 0x{:04X}=0x{:02X}",
+                "C140Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -411,7 +399,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::K053260Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "K053260[{:?}] 0x{:02X}=0x{:02X}",
+                "K053260Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -421,7 +409,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::PokeySpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Pokey[{:?}] 0x{:02X}=0x{:02X}",
+                "PokeyWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -431,7 +419,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::Ay8910Spec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Ay8910[{:?}] 0x{:02X}=0x{:02X}",
+                "Ay8910Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -441,7 +429,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::GbDmgSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "GbDmg[{:?}] 0x{:02X}=0x{:02X}",
+                "GbDmgWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -451,7 +439,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::NesApuSpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "NesApu[{:?}] 0x{:02X}=0x{:02X}",
+                "NesApuWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -461,7 +449,7 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     callback_stream.on_write(
         |inst: Instance, spec: chip::MikeySpec, sample: u64, event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
-                "Mikey[{:?}] 0x{:02X}=0x{:02X}",
+                "MikeyWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -470,8 +458,9 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::Scc1Spec, sample: u64, event: Option<Vec<StateEvent>>| {
+            // Keep explicit Scc1Write format used by parse for readability
             let reg_info = format!(
-                "Scc1[{:?}] P0x{:02X}:0x{:02X}=0x{:02X}",
+                "Scc1Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                 inst, spec.port, spec.register, spec.value
             );
             print_register_log(sample, &reg_info, event, dry_run);
@@ -480,9 +469,12 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
 
     callback_stream.on_write(
         |inst: Instance, spec: chip::PwmSpec, sample: u64, event: Option<Vec<StateEvent>>| {
+            // Match parse's PwmWrite formatting (show register and 24-bit value)
             let reg_info = format!(
-                "Pwm[{:?}] 0x{:02X}=0x{:06X}",
-                inst, spec.register, spec.value
+                "PwmWrite({:?}, reg=0x{:02X}=0x{:06X})",
+                inst,
+                spec.register,
+                spec.value & 0x00FF_FFFF
             );
             print_register_log(sample, &reg_info, event, dry_run);
         },
@@ -508,11 +500,6 @@ pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
                 break;
             }
         }
-    }
-
-    if !dry_run {
-        println!();
-        println!("=== Playback Complete ===");
     }
 
     Ok(())

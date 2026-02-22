@@ -94,3 +94,12 @@ mod nes_apu;
 
 #[path = "event/huc6280.rs"]
 mod huc6280;
+
+#[path = "event/wonderswan.rs"]
+mod wonderswan;
+
+#[path = "event/vsu.rs"]
+mod vsu;
+
+#[path = "event/saa1099.rs"]
+mod saa1099;
