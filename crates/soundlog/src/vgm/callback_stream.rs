@@ -61,10 +61,10 @@ use crate::chip::event::StateEvent;
 use crate::chip::state::{
     Ay8910State, C140State, C352State, ChipState, Es5503State, Es5506State, Ga20State, GbDmgState,
     Huc6280State, K051649State, K053260State, K054539State, MikeyState, MultiPcmState, NesApuState,
-    Okim6258State, Okim6295State, PokeyState, QsoundState, Rf5c68State, Rf5c164State, Saa1099State,
-    ScspState, SegaPcmState, Sn76489State, Upd7759State, VsuState, WonderSwanState, X1010State,
-    Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState, Ym2612State,
-    Ym3526State, Ym3812State, Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
+    Okim6258State, Okim6295State, PokeyState, PwmState, QsoundState, Rf5c68State, Rf5c164State,
+    Saa1099State, ScspState, SegaPcmState, Sn76489State, Upd7759State, VsuState, WonderSwanState,
+    X1010State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
+    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
 };
 use crate::vgm::command::{
     Ay8910StereoMask, DataBlock, EndOfData, Instance, PcmRamWrite, ReservedU8, ReservedU16,
@@ -367,12 +367,7 @@ macro_rules! impl_write_callback_target_no_state {
         }
     };
 }
-impl_callback_and_state!(
-    chip::PwmSpec,
-    crate::chip::state::PwmState,
-    on_pwm_write,
-    pwm
-);
+impl_callback_and_state!(chip::PwmSpec, PwmState, on_pwm_write, pwm);
 impl_write_callback_target_no_state!(chip::MultiPcmBankSpec, on_multi_pcm_bank_write);
 impl_write_callback_target_no_state!(chip::GameGearPsgSpec, on_game_gear_psg_write);
 impl_write_callback_target_no_state!(chip::WonderSwanRegSpec, on_wonder_swan_reg_write);
@@ -1167,13 +1162,8 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::GbDmgWrite(instance, spec) => {
-                // Map VGM compact register encoding into the internal GbDmg register
-                // address space before applying the write to the state tracker.
                 let (mapped_register, mapped_value) =
-                    crate::chip::state::gb_dmg::GbDmgState::map_vgm_to_gbdmg_register(
-                        spec.register,
-                        spec.value,
-                    );
+                    GbDmgState::map_vgm_to_gbdmg_register(spec.register, spec.value);
                 let event = self.state_trackers.gb_dmg[*instance as usize]
                     .as_mut()
                     .and_then(|state| state.on_register_write(mapped_register, mapped_value));
@@ -1337,10 +1327,7 @@ impl<'a> VgmCallbackStream<'a> {
             }
             VgmCommand::WonderSwanRegWrite(instance, spec) => {
                 let (mapped_register, mapped_value) =
-                    crate::chip::state::wonderswan::WonderSwanState::map_vgm_to_wonderswan_register(
-                        spec.register,
-                        spec.value,
-                    );
+                    WonderSwanState::map_vgm_to_wonderswan_register(spec.register, spec.value);
                 let event = self.state_trackers.wonderswan[*instance as usize]
                     .as_mut()
                     .and_then(|state| state.on_register_write(mapped_register, mapped_value));
@@ -1350,10 +1337,7 @@ impl<'a> VgmCallbackStream<'a> {
             }
             VgmCommand::VsuWrite(instance, spec) => {
                 let (mapped_register, mapped_value) =
-                    crate::chip::state::vsu::VsuState::map_vgm_to_vsu_register(
-                        spec.offset,
-                        spec.value,
-                    );
+                    VsuState::map_vgm_to_vsu_register(spec.offset, spec.value);
                 let event = self.state_trackers.vsu[*instance as usize]
                     .as_mut()
                     .and_then(|state| state.on_register_write(mapped_register, mapped_value));
@@ -1435,11 +1419,7 @@ impl<'a> VgmCallbackStream<'a> {
             }
             VgmCommand::Scc1Write(instance, spec) => {
                 let (mapped_register, mapped_value) =
-                    crate::chip::state::k051649::K051649State::map_vgm_to_k051649_register(
-                        spec.port,
-                        spec.register,
-                        spec.value,
-                    );
+                    K051649State::map_vgm_to_k051649_register(spec.port, spec.register, spec.value);
                 let event = self.state_trackers.k051649[*instance as usize]
                     .as_mut()
                     .and_then(|state| state.on_register_write(mapped_register, mapped_value));

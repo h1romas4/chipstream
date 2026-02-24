@@ -34,12 +34,12 @@ Key features:
   `StopStream`) and will expand stream-generated writes into the output
   timeline at the correct sample positions.
 - It also supports YM2612 direct DAC writes and expands them into corresponding
-  `Ym2612Port0Address2AWriteAndWaitN` commands on the stream timeline.
-- During `Wait` commands, the internal scheduler finds upcoming stream-
-  generated writes and splits waits as necessary so that generated chip
-  writes are interleaved with parsed commands. This avoids emitting large
-  bursts and preserves per-sample timing when multiple DAC streams are
-  active concurrently.
+  `Ym2612Port0Address2AWriteAndWaitN`, `SeekOffset` commands on the stream timeline.
+- While processing `Wait*` commands, the internal scheduler computes the outputs of the DAC stream
+  (including YM2612 `Ym2612Port0Address2AWriteAndWaitN`) and normalises the timeline
+  into register-write commands and `WaitSamples`.
+  This process converts DAC stream events into explicit write commands and normalised waits,
+  thereby preserving per-sample timing when multiple streams are active concurrently.
 - DataBlock compression (e.g. bit-packed and DPCM streams) is automatically decompressed
   and expanded by the crate so compressed streams and their associated
   decompression tables are applied transparently.
@@ -128,8 +128,8 @@ parsed `VgmDocument` (for example: constructed programmatically via the
 `VgmBuilder`). The stream will expand DAC-stream-generated writes into
 the emitted command sequence and split waits so emitted writes are
 interleaved at the correct sample positions. All wait commands
-(WaitSamples, WaitNSample, Wait735Samples, Wait882Samples) are converted
-to WaitSamples for consistent processing.
+(`WaitSamples`, `WaitNSample`, `Wait735Samples`, `Wait882Samples`, `Ym2612Port0Address2AWriteAndWaitN`)
+are converted to `WaitSamples` for consistent processing.
 
 ```rust
 use soundlog::{VgmBuilder, VgmStream, VgmDocument};
@@ -171,13 +171,15 @@ while let Some(result) = stream.next() {
     match result {
         Ok(StreamResult::Command(cmd)) => match cmd {
             VgmCommand::WaitSamples(s) => {
-                // All wait commands (WaitSamples, WaitNSample, Wait735Samples, Wait882Samples)
-                // are converted to WaitSamples by VgmStream. Waits may also have been split
-                // to accommodate stream-generated writes.
+                // All wait commands
+                // (WaitSamples, WaitNSample, Wait735Samples, Wait882Samples, Ym2612Port0Address2AWriteAndWaitN)
+                // are converted to WaitSamples by VgmStream.
+                // Waits may also have been split to accommodate stream-generated writes.
                 println!("wait {} samples", s.0);
             }
             VgmCommand::Ym2612Write(inst, spec) => {
-                // Handle YM2612 writes here. For example, forward to a device API.
+                // We simply wait for WaitSamples and write to the register
+                // without needing to concern ourselves with DAC Stream.
                 println!("YM2612 write: {:?} {:?}", inst, spec);
             }
             VgmCommand::DataBlock(block) => {
@@ -187,8 +189,7 @@ while let Some(result) = stream.next() {
                 // - RomRamDump   (data_type 0x80..=0xBF)
                 // - RamWrite16   (data_type 0xC0..=0xDF)
                 // - RamWrite32   (data_type 0xE0..=0xFF)
-                // Additionally, `PcmRamWrite` commands may be returned to the caller instead of being stored; these appear as the VGM
-                // command `PcmRamWrite` (opcode 0x68).                
+                // The parse_data_block can parse the details of a DataBlock.
                 match parse_data_block(block) {
                     Ok(DataBlockType::RomRamDump(dump)) => {
                         println!(
@@ -205,6 +206,13 @@ while let Some(result) = stream.next() {
                     }
                 }
             }
+            VgmCommand::PcmRamWrite(write) => {
+                // And also `PcmRamWrite` commands (opcode 0x68) may be emitted by the stream
+                // instead of being stored as a DataBlock. Handle them here if you
+                // need to process PCM RAM writes directly.
+                println!("PCM RAM write: chip_type=0x{:02X} size={}", write.chip_type, write.size);
+                // Process or store the PCM RAM write as appropriate.
+            }
             other => {
                 // Write to the target chips here (e.g. SN76489).
                 // Implement actual playback / device I/O in this branch.                
@@ -219,18 +227,24 @@ while let Some(result) = stream.next() {
 
 ### `VgmStream` — feeding raw byte chunks
 
-Note: apart from providing input via `push_chunk`, handling the stream is the same as the `from_document` example above — iterate over the stream and handle `StreamResult` variants (`Command`, `NeedsMoreData`, `EndOfStream`, `Err`) in the same way.
+If you cannot generate the `VgmDocument` all at once, you can use `push_chunk`.
+This is useful when working with microcontrollers that have insufficient memory.
 
-Note: When using `push_chunk()`, provide chunks that start at the VGM header's `data_offset` — i.e. the serialized command/data region beginning at offset `0x34 + header.data_offset`.
+The required 'DataBlock' is allocated within the library. Please bear in mind the remaining memory.
 
-**Important**: Always set a loop count limit for untrusted input to prevent infinite loops.
+Providing input via `push_chunk` is the only difference from the from_document example above.
+As with that example, you should iterate over the stream and handle the StreamResult variants
+(`Command`, `NeedsMoreData`, `EndOfStream` and `Err`) in the same way.
+
+Note: When using `push_chunk`, ensure that the chunks start at the data_offset of the VGM header
+— i.e. the serialised command/data region that begins at offset `0x34` + `header.data_offset`.
 
 ```rust
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::stream::StreamResult;
 
 let mut parser = VgmStream::new();
-parser.set_loop_count(Some(2)); // Prevent infinite loops
+// Typically, the chunk size would be fixed at 1KB or similar.
 let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
 
 for chunk in chunks {
@@ -346,8 +360,8 @@ for result in callback_stream {
 
 ## Looping and EndOfData overview
 
-- VgmDocument is a data representation only: it encodes a loop offset and an EndOfData command, but it does not perform playback or looping itself. The document leaves loop behavior to the player. Note: when you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.
-- VgmStream is intended to act as a player-like processor. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. Its `set_loop_count()` API controls how many playthroughs are performed:
+- VgmDocument is a data representation only: When you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.
+- VgmStream is intended to act as a player-like iterator. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. Its `set_loop_count()` API controls how many playthroughs are performed:
   - `set_loop_count(Some(n))` — limit playback to `n` playthroughs (for example, `Some(1)` means play once and stop; `Some(2)` means play one full run and then one loop iteration).
   - `set_loop_count(None)` — infinite looping (the stream will jump back to the loop point on EndOfData and continue indefinitely).
 - When the stream reaches an `EndOfData` command it handles looping and end-of-stream semantics internally. If a finite loop count is configured and the limit is reached the stream will stop; if an infinite loop is configured it will jump to the loop point and continue.
@@ -362,6 +376,7 @@ detecting key on/off events and extracting tone information from register writes
 
 - Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
 - The specifications for key on/off detection — including total level extraction — are not yet stabilized.
+- The values returned by StateEvent shall not be compatible across versions. Please note that the timing and values of events may differ between versions.
 
 ### Implemented Chips
 

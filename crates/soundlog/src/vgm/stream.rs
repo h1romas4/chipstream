@@ -13,8 +13,12 @@
 //!
 use crate::VgmDocument;
 use crate::binutil::ParseError;
-use crate::vgm::command::DacStreamChipType;
-use crate::vgm::command::{DataBlock, VgmCommand, WaitSamples};
+use crate::chip;
+use crate::vgm::command::{
+    DacStreamChipType, DataBlock, Instance, SetStreamData, SetStreamFrequency, SetupStreamControl,
+    StartStream, StartStreamFastCall, StopStream, VgmCommand, WaitSamples,
+    Ym2612Port0Address2AWriteAndWaitN,
+};
 use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
@@ -710,14 +714,14 @@ impl VgmStream {
 
     fn handle_ym2612_port0_address_2a_write_and_wait_n(
         &mut self,
-        cmd: &crate::vgm::command::Ym2612Port0Address2AWriteAndWaitN,
+        cmd: &Ym2612Port0Address2AWriteAndWaitN,
     ) -> Result<StreamResult, ParseError> {
         let wait_samples = cmd.0 as u64;
 
         if let Some(data_byte) = self.read_pcm_data_bank_byte()? {
             let dac_write = VgmCommand::Ym2612Write(
-                crate::vgm::command::Instance::Primary,
-                crate::chip::Ym2612Spec {
+                Instance::Primary,
+                chip::Ym2612Spec {
                     port: 0,
                     register: 0x2A,
                     value: data_byte,
@@ -1194,7 +1198,7 @@ impl VgmStream {
     }
 
     /// Handles SetupStreamControl command (0x90).
-    fn handle_setup_stream_control(&mut self, setup: &crate::vgm::command::SetupStreamControl) {
+    fn handle_setup_stream_control(&mut self, setup: &SetupStreamControl) {
         let state = self
             .stream_states
             .entry(setup.stream_id)
@@ -1224,7 +1228,7 @@ impl VgmStream {
     }
 
     /// Handles SetStreamData command (0x91).
-    fn handle_set_stream_data(&mut self, data: &crate::vgm::command::SetStreamData) {
+    fn handle_set_stream_data(&mut self, data: &SetStreamData) {
         let state = self
             .stream_states
             .entry(data.stream_id)
@@ -1254,17 +1258,14 @@ impl VgmStream {
     }
 
     /// Handles SetStreamFrequency command (0x92).
-    fn handle_set_stream_frequency(&mut self, freq: &crate::vgm::command::SetStreamFrequency) {
+    fn handle_set_stream_frequency(&mut self, freq: &SetStreamFrequency) {
         if let Some(state) = self.stream_states.get_mut(&freq.stream_id) {
             state.frequency_hz = Some(freq.frequency);
         }
     }
 
     /// Handles StartStream command (0x93).
-    fn handle_start_stream(
-        &mut self,
-        start: &crate::vgm::command::StartStream,
-    ) -> Result<(), ParseError> {
+    fn handle_start_stream(&mut self, start: &StartStream) -> Result<(), ParseError> {
         if let Some(state) = self.stream_states.get_mut(&start.stream_id) {
             state.start_offset = Some(start.data_start_offset);
             state.length_mode = start.length_mode;
@@ -1293,7 +1294,7 @@ impl VgmStream {
     }
 
     /// Handles StopStream command (0x94).
-    fn handle_stop_stream(&mut self, stop: &crate::vgm::command::StopStream) {
+    fn handle_stop_stream(&mut self, stop: &StopStream) {
         if stop.stream_id == 0xFF {
             for state in self.stream_states.values_mut() {
                 state.active = false;
@@ -1306,7 +1307,7 @@ impl VgmStream {
     /// Handles StartStreamFastCall command (0x95).
     fn handle_start_stream_fast_call(
         &mut self,
-        fast: &crate::vgm::command::StartStreamFastCall,
+        fast: &StartStreamFastCall,
     ) -> Result<(), ParseError> {
         let (data_bank_id, step_base) = if let Some(state) = self.stream_states.get(&fast.stream_id)
         {
@@ -1602,9 +1603,6 @@ impl VgmStream {
         write_command: u8,
         data: u8,
     ) -> Option<VgmCommand> {
-        use crate::chip;
-        use crate::vgm::command::Instance;
-
         let instance = if chip_type & 0x80 != 0 {
             Instance::Secondary
         } else {
