@@ -390,7 +390,7 @@ pub struct SetStreamFrequency {
 pub struct StartStream {
     pub stream_id: u8,
     pub data_start_offset: i32,
-    pub length_mode: u8,
+    pub length_mode: LengthMode,
     pub data_length: u32,
 }
 
@@ -405,7 +405,52 @@ pub struct StopStream {
 pub struct StartStreamFastCall {
     pub stream_id: u8,
     pub block_id: u16,
-    pub flags: u8,
+    pub flags: StartStreamFastCallFlags,
+}
+
+/// Flags for `StartStreamFastCall`.
+///
+/// Encodes the on-disk 1-byte flags where:
+/// - bit 0 (0x01): Loop (matches StartStream length_mode loop bit 0x80 semantics)
+/// - bit 4 (0x10): Reverse Mode (matches StartStream length_mode reverse bit 0x10)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartStreamFastCallFlags {
+    pub reverse: bool,
+    pub looped: bool,
+}
+
+impl StartStreamFastCallFlags {
+    /// Construct flags from booleans (looped, reverse).
+    /// The signature preserves the historical `(looped, reverse)` ordering.
+    pub const fn new(looped: bool, reverse: bool) -> Self {
+        StartStreamFastCallFlags { reverse, looped }
+    }
+
+    /// Compute the raw underlying byte from fields.
+    pub fn to_vgm_byte(self) -> u8 {
+        let mut b = 0u8;
+        if self.looped {
+            b |= 0x01;
+        }
+        if self.reverse {
+            b |= 0x10;
+        }
+        b
+    }
+}
+
+impl From<u8> for StartStreamFastCallFlags {
+    fn from(b: u8) -> Self {
+        let reverse = (b & 0x10) != 0;
+        let looped = (b & 0x01) != 0;
+        StartStreamFastCallFlags { reverse, looped }
+    }
+}
+
+impl From<StartStreamFastCallFlags> for u8 {
+    fn from(f: StartStreamFastCallFlags) -> Self {
+        f.to_vgm_byte()
+    }
 }
 
 /// one operand, reserved for future use
@@ -454,6 +499,100 @@ pub struct UnknownSpec {
 /// in PCM data bank of data block type 0 (YM2612).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeekOffset(pub u32);
+
+/// Length mode for DAC stream StartStream.
+///
+/// Encodes the base length interpretation and optional flags:
+/// - base:
+///  - 0x00: ignore,
+///  - 0x01: length = number of commands,
+///  - 0x02: length in msec,
+///  - 0x03: play until end of data
+/// - bit 4 (0x10): Reverse mode
+/// - bit 7 (0x80): Loop (automatically restarts when finished)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthMode {
+    Ignore {
+        reverse: bool,
+        looped: bool,
+    },
+    CommandCount {
+        reverse: bool,
+        looped: bool,
+    },
+    Milliseconds {
+        reverse: bool,
+        looped: bool,
+    },
+    PlayUntilEnd {
+        reverse: bool,
+        looped: bool,
+    },
+    /// Unknown representation; preserves raw byte so round-tripping doesn't lose flags or reserved bits.
+    Unknown(u8),
+}
+
+impl From<u8> for LengthMode {
+    fn from(v: u8) -> Self {
+        let reverse = (v & 0x10) != 0;
+        let looped = (v & 0x80) != 0;
+        match v & 0x0F {
+            0x00 => LengthMode::Ignore { reverse, looped },
+            0x01 => LengthMode::CommandCount { reverse, looped },
+            0x02 => LengthMode::Milliseconds { reverse, looped },
+            0x03 => LengthMode::PlayUntilEnd { reverse, looped },
+            _ => LengthMode::Unknown(v),
+        }
+    }
+}
+
+impl From<LengthMode> for u8 {
+    fn from(lm: LengthMode) -> Self {
+        match lm {
+            LengthMode::Ignore { reverse, looped } => {
+                let mut b = 0x00u8;
+                if reverse {
+                    b |= 0x10;
+                }
+                if looped {
+                    b |= 0x80;
+                }
+                b
+            }
+            LengthMode::CommandCount { reverse, looped } => {
+                let mut b = 0x01u8;
+                if reverse {
+                    b |= 0x10;
+                }
+                if looped {
+                    b |= 0x80;
+                }
+                b
+            }
+            LengthMode::Milliseconds { reverse, looped } => {
+                let mut b = 0x02u8;
+                if reverse {
+                    b |= 0x10;
+                }
+                if looped {
+                    b |= 0x80;
+                }
+                b
+            }
+            LengthMode::PlayUntilEnd { reverse, looped } => {
+                let mut b = 0x03u8;
+                if reverse {
+                    b |= 0x10;
+                }
+                if looped {
+                    b |= 0x80;
+                }
+                b
+            }
+            LengthMode::Unknown(v) => v,
+        }
+    }
+}
 
 impl CommandSpec for Ay8910StereoMask {
     fn opcode(&self) -> u8 {
@@ -754,7 +893,8 @@ impl CommandSpec for StartStream {
         dest.push(self.opcode());
         dest.push(self.stream_id);
         dest.extend_from_slice(&self.data_start_offset.to_le_bytes());
-        dest.push(self.length_mode);
+        // Serialize length_mode via its u8 representation
+        dest.push(u8::from(self.length_mode));
         dest.extend_from_slice(&self.data_length.to_le_bytes());
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
@@ -763,13 +903,13 @@ impl CommandSpec for StartStream {
     {
         let stream_id = read_u8_at(bytes, off)?;
         let start_offset = read_i32_le_at(bytes, off + 1)?;
-        let length_mode = read_u8_at(bytes, off + 5)?;
+        let length_mode_byte = read_u8_at(bytes, off + 5)?;
         let data_length = read_u32_le_at(bytes, off + 6)?;
         Ok((
             StartStream {
                 stream_id,
                 data_start_offset: start_offset,
-                length_mode,
+                length_mode: LengthMode::from(length_mode_byte),
                 data_length,
             },
             1 + 4 + 1 + 4,
@@ -803,7 +943,8 @@ impl CommandSpec for StartStreamFastCall {
         dest.push(self.stream_id);
         dest.push(self.block_id as u8); // Little-endian: LSB first
         dest.push((self.block_id >> 8) as u8); // Then MSB
-        dest.push(self.flags);
+        // serialize flags via its u8 representation
+        dest.push(u8::from(self.flags));
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
     where
@@ -813,12 +954,12 @@ impl CommandSpec for StartStreamFastCall {
         let b0 = read_u8_at(bytes, off + 1)?;
         let b1 = read_u8_at(bytes, off + 2)?;
         let block_id = ((b1 as u16) << 8) | (b0 as u16); // Little-endian: LSB first
-        let flags = read_u8_at(bytes, off + 3)?;
+        let flags_byte = read_u8_at(bytes, off + 3)?;
         Ok((
             StartStreamFastCall {
                 stream_id,
                 block_id,
-                flags,
+                flags: StartStreamFastCallFlags::from(flags_byte),
             },
             4,
         ))

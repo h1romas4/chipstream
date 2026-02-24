@@ -15,8 +15,8 @@ use crate::VgmDocument;
 use crate::binutil::ParseError;
 use crate::chip;
 use crate::vgm::command::{
-    DacStreamChipType, DataBlock, Instance, SetStreamData, SetStreamFrequency, SetupStreamControl,
-    StartStream, StartStreamFastCall, StopStream, VgmCommand, WaitSamples,
+    DacStreamChipType, DataBlock, Instance, LengthMode, SetStreamData, SetStreamFrequency,
+    SetupStreamControl, StartStream, StartStreamFastCall, StopStream, VgmCommand, WaitSamples,
     Ym2612Port0Address2AWriteAndWaitN,
 };
 use crate::vgm::detail::{
@@ -96,7 +96,7 @@ struct StreamState {
     /// Start offset in the data block
     start_offset: Option<i32>,
     /// Length mode (0=ignore, 1=count commands, 2=milliseconds, 3=play until end)
-    length_mode: u8,
+    length_mode: LengthMode,
     /// Data length (interpretation depends on length_mode)
     data_length: u32,
     /// End position for the current block (used with FastCall and length_mode 3)
@@ -261,7 +261,7 @@ pub enum StreamResult {
 /// builder.add_vgm_command(StartStream {
 ///     stream_id: 0,
 ///     data_start_offset: 0,
-///     length_mode: 3,
+///     length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd { reverse: false, looped: false },
 ///     data_length: 0,
 /// });
 ///
@@ -1212,7 +1212,10 @@ impl VgmStream {
                 step_base: 0,
                 frequency_hz: None,
                 start_offset: None,
-                length_mode: 0,
+                length_mode: LengthMode::Ignore {
+                    reverse: false,
+                    looped: false,
+                },
                 data_length: 0,
                 block_end_pos: None,
                 active: false,
@@ -1242,7 +1245,10 @@ impl VgmStream {
                 step_base: 0,
                 frequency_hz: None,
                 start_offset: None,
-                length_mode: 0,
+                length_mode: LengthMode::Ignore {
+                    reverse: false,
+                    looped: false,
+                },
                 data_length: 0,
                 block_end_pos: None,
                 active: false,
@@ -1284,7 +1290,7 @@ impl VgmStream {
             state.next_write_sample = self.current_sample;
             state.sample_fraction = 0.0;
 
-            if state.length_mode == 1 {
+            if u8::from(state.length_mode) == 1 {
                 state.remaining_commands = Some(start.data_length);
             } else {
                 state.remaining_commands = None;
@@ -1325,7 +1331,10 @@ impl VgmStream {
             state.next_write_sample = self.current_sample;
             state.sample_fraction = 0.0;
             // Length mode 3 = play until end of block
-            state.length_mode = 3;
+            state.length_mode = LengthMode::PlayUntilEnd {
+                reverse: fast.flags.reverse,
+                looped: fast.flags.looped,
+            };
             state.remaining_commands = None;
         }
         Ok(())
@@ -1425,7 +1434,18 @@ impl VgmStream {
                     )
                 };
 
-                if length_mode == 1
+                // Length Mode (how the Data Length is calculated)
+                //  00 - ignore (just change current data position)
+                //  01 - length = number of commands (CommandCount)
+                //  02 - length in msec (TODO: NOT IMPLIMENTS)
+                //  03 - play until end of data (PlayUntilEnd)
+                //
+                //  1? - (bit 4) Reverse Mode  (TODO: NOT IMPLIMENTS)
+                //  8? - (bit 7) Loop (automatically restarts when finished)  (TODO: NOT IMPLIMENTS)
+
+                // If in CommandCount length mode, decrement remaining command counter.
+                // Collapse nested `if` using let-chains as suggested by clippy.
+                if matches!(length_mode, LengthMode::CommandCount { .. })
                     && let Some(remaining) = remaining_commands
                 {
                     if remaining == 0 {
@@ -1440,8 +1460,8 @@ impl VgmStream {
                     }
                 }
 
-                // Check if we've reached the block end (for FastCall with length_mode 3)
-                if length_mode == 3
+                // If in PlayUntilEnd mode, and we've reached the block end, stop the stream.
+                if matches!(length_mode, LengthMode::PlayUntilEnd { .. })
                     && block_end_pos.is_some()
                     && current_data_pos >= block_end_pos.unwrap()
                 {

@@ -374,14 +374,20 @@ fn add_command_start_stop_and_fastcall() {
     b.add_vgm_command(StartStream {
         stream_id: 7,
         data_start_offset: -1,
-        length_mode: 0,
+        length_mode: soundlog::vgm::command::LengthMode::Ignore {
+            reverse: false,
+            looped: false,
+        },
         data_length: 0,
     });
     b.add_vgm_command(StopStream { stream_id: 7 });
     b.add_vgm_command(StartStreamFastCall {
         stream_id: 8,
         block_id: 0x1234,
-        flags: 9,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: true,
+            looped: false,
+        },
     });
     let doc = b.finalize();
     // three commands + EndOfData
@@ -392,7 +398,10 @@ fn add_command_start_stop_and_fastcall() {
             StartStream {
                 stream_id: 7,
                 data_start_offset: -1,
-                length_mode: 0,
+                length_mode: soundlog::vgm::command::LengthMode::Ignore {
+                    reverse: false,
+                    looped: false
+                },
                 data_length: 0
             }
         ),
@@ -408,7 +417,10 @@ fn add_command_start_stop_and_fastcall() {
             StartStreamFastCall {
                 stream_id: 8,
                 block_id: 0x1234,
-                flags: 9
+                flags: soundlog::vgm::command::StartStreamFastCallFlags {
+                    reverse: true,
+                    looped: false,
+                }
             }
         ),
         other => panic!("unexpected: {:?}", other),

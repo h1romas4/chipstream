@@ -1036,7 +1036,10 @@ fn test_dac_stream_control_basic() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 1,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
         data_length: 4,
     });
 
@@ -1140,7 +1143,10 @@ fn test_dac_stream_control_stop_all_streams() {
         builder.add_vgm_command(soundlog::vgm::command::StartStream {
             stream_id,
             data_start_offset: 0,
-            length_mode: 3, // Play until end
+            length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+                reverse: false,
+                looped: false,
+            }, // Play until end
             data_length: 0,
         });
     }
@@ -1218,7 +1224,10 @@ fn test_dac_stream_control_fast_call() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 0,
         block_id: 0,
-        flags: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
     });
 
     // Wait
@@ -1309,7 +1318,10 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 0,
         block_id: 0,
-        flags: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
     });
     builder.add_vgm_command(WaitSamples(10));
 
@@ -1317,7 +1329,10 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 0,
         block_id: 1,
-        flags: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
     });
     builder.add_vgm_command(WaitSamples(10));
 
@@ -1325,7 +1340,7 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 0,
         block_id: 2,
-        flags: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags::new(false, false),
     });
     builder.add_vgm_command(WaitSamples(10));
 
@@ -1420,7 +1435,10 @@ fn test_start_stream_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 0,
+        length_mode: soundlog::vgm::command::LengthMode::Ignore {
+            reverse: false,
+            looped: false,
+        },
         data_length: 0,
     });
     builder.add_vgm_command(WaitSamples(10));
@@ -1430,7 +1448,10 @@ fn test_start_stream_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 5,
-        length_mode: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
         data_length: 0,
     });
     builder.add_vgm_command(WaitSamples(10));
@@ -1440,7 +1461,10 @@ fn test_start_stream_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 10,
-        length_mode: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
         data_length: 0,
     });
     builder.add_vgm_command(WaitSamples(10));
@@ -1535,7 +1559,10 @@ fn test_wait_expansion_with_stream_writes() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 1, // command count mode
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        }, // command count mode
         data_length: 4, // play 4 samples
     });
 
@@ -1681,7 +1708,10 @@ fn test_wait_splitting_with_stream_timing() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 1, // command count mode
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        }, // command count mode
         data_length: 2, // play 2 samples
     });
 
@@ -1869,7 +1899,10 @@ fn test_from_document_with_stream_control() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 1, // command count
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        }, // command count
         data_length: 3,
     });
 
@@ -2083,7 +2116,10 @@ fn test_fadeout_samples_with_stream_control() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
-        length_mode: 1,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
         data_length: 4,
     });
 
@@ -2330,7 +2366,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0, // This is the offset within the data bank, block 0 starts at 0
-        length_mode: 1,       // command count mode
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        }, // command count mode
         data_length: 10,
     });
 
@@ -2339,7 +2378,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 1,
         data_start_offset: 16, // Start of block 1 within data bank 0
-        length_mode: 1,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
         data_length: 15,
     });
 
@@ -2348,7 +2390,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 2,
         block_id: 2,
-        flags: 0x00,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
     });
 
     // Large Wait during which all streams are active

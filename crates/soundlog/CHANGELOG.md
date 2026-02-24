@@ -5,8 +5,9 @@
 - Refactor (Gd3): Rename locale-specific field suffix `_jp` to `_origin` to match the new Gd3 specification.
   - Public API change: `Gd3` struct field names (and any serde keys or helper accessors) that ended with `_jp` have been renamed to end with `_origin`. Update downstream code that referenced the old `_jp` names.
 - Extra header (v1.70+): introduce typed, round-trip-safe handling for extra-header entries by adding `soundlog::vgm::header::ChipClock` and `soundlog::vgm::header::ChipVolume`.
+- New function: `soundlog::vgm::detail::build_data_block(&DataBlockType, marker: u8, chip_instance: u8, data_type: u8) -> DataBlock` — constructs the on-disk `DataBlock` bytes from a parsed `DataBlockType`. This is the inverse of `parse_data_block` and preserves the VGM on-disk layout (compression headers, sizes, LE fields, etc.).
 - Detail parsing: add inverse serialization and round-trip tests for VGM DataBlock detail parsing.
-  - New function: `soundlog::vgm::detail::build_data_block(&DataBlockType, marker: u8, chip_instance: u8, data_type: u8) -> DataBlock` — constructs the on-disk `DataBlock` bytes from a parsed `DataBlockType`. This is the inverse of `parse_data_block` and preserves the VGM on-disk layout (compression headers, sizes, LE fields, etc.).
+- Public API Change: The DAC Stream command now has type-safe `LengthMode` and `StartStreamFastCallFlags`.
 
 ## v0.6.0
 
