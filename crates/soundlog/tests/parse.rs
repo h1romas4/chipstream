@@ -19,8 +19,16 @@ fn test_build_serialize_with_extra_header() {
         header_size: 0, // to_bytes computes and writes size; this field is not used directly.
         chip_clock_offset: 0,
         chip_vol_offset: 0,
-        chip_clocks: vec![(1u8, 12345u32)],
-        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+        chip_clocks: vec![soundlog::vgm::header::ChipClock::new(
+            soundlog::vgm::header::ChipId::from(1u8),
+            soundlog::vgm::command::Instance::Primary,
+            12345u32,
+        )],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
 
@@ -114,8 +122,16 @@ fn test_build_parse_build_with_extra_header_roundtrip() {
         header_size: 0, // to_bytes computes and writes size; this field is not used directly.
         chip_clock_offset: 0,
         chip_vol_offset: 0,
-        chip_clocks: vec![(1u8, 12345u32)],
-        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+        chip_clocks: vec![soundlog::vgm::header::ChipClock::new(
+            soundlog::vgm::header::ChipId::from(1u8),
+            soundlog::vgm::command::Instance::Primary,
+            12345u32,
+        )],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
 
     // Attach the extra header to the builder and finalize the document.
@@ -148,9 +164,21 @@ fn test_build_parse_build_with_extra_header_roundtrip() {
     );
     let parsed_extra = parsed.extra_header.unwrap();
     assert_eq!(parsed_extra.chip_clocks.len(), 1);
-    assert_eq!(parsed_extra.chip_clocks[0], (1u8, 12345u32));
+    assert_eq!(
+        parsed_extra.chip_clocks[0].chip_id,
+        soundlog::vgm::header::ChipId::from(1u8)
+    );
+    assert_eq!(parsed_extra.chip_clocks[0].clock, 12345u32);
     assert_eq!(parsed_extra.chip_volumes.len(), 1);
-    assert_eq!(parsed_extra.chip_volumes[0], (2u8, 0x01u8, 1000u16));
+    assert_eq!(
+        parsed_extra.chip_volumes[0].chip_id,
+        soundlog::vgm::header::ChipId::from(2u8)
+    );
+    assert_eq!(
+        parsed_extra.chip_volumes[0].instance,
+        soundlog::vgm::command::Instance::Secondary
+    );
+    assert_eq!(parsed_extra.chip_volumes[0].volume, 1000u16);
 }
 
 #[test]
@@ -164,11 +192,19 @@ fn test_parse_error_extra_header_offset_out_of_range() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(1));
     let extra = VgmExtraHeader {
-        header_size: 0,
+        header_size: 0, // to_bytes computes and writes size; this field is not used directly.
         chip_clock_offset: 0,
         chip_vol_offset: 0,
-        chip_clocks: vec![(1u8, 12345u32)],
-        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+        chip_clocks: vec![soundlog::vgm::header::ChipClock::new(
+            soundlog::vgm::header::ChipId::from(1u8),
+            soundlog::vgm::command::Instance::Primary,
+            12345u32,
+        )],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
@@ -219,8 +255,16 @@ fn test_parse_error_extra_header_chip_clock_offset_out_of_range() {
         header_size: 0,
         chip_clock_offset: 0,
         chip_vol_offset: 0,
-        chip_clocks: vec![(1u8, 12345u32)],
-        chip_volumes: vec![],
+        chip_clocks: vec![soundlog::vgm::header::ChipClock::new(
+            soundlog::vgm::header::ChipId::from(1u8),
+            soundlog::vgm::command::Instance::Primary,
+            12345u32,
+        )],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
@@ -263,7 +307,11 @@ fn test_parse_error_extra_header_chip_vol_offset_out_of_range() {
         chip_clock_offset: 0,
         chip_vol_offset: 0,
         chip_clocks: vec![],
-        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
@@ -427,7 +475,11 @@ fn test_parse_malformed_extra_header_chip_vol_offset_inside_header() {
         chip_clock_offset: 0,
         chip_vol_offset: 0,
         chip_clocks: vec![],
-        chip_volumes: vec![(2u8, 0x01u8, 1000u16)],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
@@ -456,7 +508,15 @@ fn test_parse_malformed_extra_header_chip_vol_offset_inside_header() {
 
     // The volume entry should be present and match the original data.
     assert_eq!(parsed_extra.chip_volumes.len(), 1);
-    assert_eq!(parsed_extra.chip_volumes[0], (2u8, 0x01u8, 1000u16));
+    assert_eq!(
+        parsed_extra.chip_volumes[0].chip_id,
+        soundlog::vgm::header::ChipId::from(2u8)
+    );
+    assert_eq!(
+        parsed_extra.chip_volumes[0].instance,
+        soundlog::vgm::command::Instance::Secondary
+    );
+    assert_eq!(parsed_extra.chip_volumes[0].volume, 1000u16);
 
     // The parser is expected to normalize header_size and chip_vol_offset so that
     // subsequent serialization will not corrupt header bytes. Ensure the
@@ -485,8 +545,16 @@ fn test_parse_malformed_extra_header_chip_clock_offset_inside_header() {
         header_size: 0,
         chip_clock_offset: 0,
         chip_vol_offset: 0,
-        chip_clocks: vec![(1u8, 12345u32)],
-        chip_volumes: vec![],
+        chip_clocks: vec![soundlog::vgm::header::ChipClock::new(
+            soundlog::vgm::header::ChipId::from(1u8),
+            soundlog::vgm::command::Instance::Primary,
+            12345u32,
+        )],
+        chip_volumes: vec![soundlog::vgm::header::ChipVolume::new(
+            soundlog::vgm::header::ChipId::from(2u8),
+            soundlog::vgm::command::Instance::Secondary,
+            1000u16,
+        )],
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
@@ -515,7 +583,11 @@ fn test_parse_malformed_extra_header_chip_clock_offset_inside_header() {
 
     // The clock entry should be present and match the original data.
     assert_eq!(parsed_extra.chip_clocks.len(), 1);
-    assert_eq!(parsed_extra.chip_clocks[0], (1u8, 12345u32));
+    assert_eq!(
+        parsed_extra.chip_clocks[0].chip_id,
+        soundlog::vgm::header::ChipId::from(1u8)
+    );
+    assert_eq!(parsed_extra.chip_clocks[0].clock, 12345u32);
 
     // The parser is expected to normalize header_size and chip_clock_offset so that
     // subsequent serialization will not corrupt header bytes. Ensure the

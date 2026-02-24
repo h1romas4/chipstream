@@ -2,6 +2,10 @@
 
 ## v0.7.0 (dev)
 
+- Refactor (Gd3): Rename locale-specific field suffix `_jp` to `_origin` to match the new Gd3 specification.
+  - Public API change: `Gd3` struct field names (and any serde keys or helper accessors) that ended with `_jp` have been renamed to end with `_origin`. Update downstream code that referenced the old `_jp` names.
+- Extra header (v1.70+): introduce typed, round-trip-safe handling for extra-header entries by adding `soundlog::vgm::header::ChipClock` and `soundlog::vgm::header::ChipVolume`.
+
 ## v0.6.0
 
 - Enable runtime ChipState tracking for a variety of sound chips and add unit/integration tests to validate state and event behavior (e.g. frequency/key events, VGM parsing).

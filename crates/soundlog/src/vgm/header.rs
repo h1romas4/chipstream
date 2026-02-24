@@ -1119,6 +1119,174 @@ impl TryFrom<&[u8]> for VgmHeader {
     }
 }
 
+/// `ChipId` is used to represent the 1-byte chip id values stored in the
+/// extra-header. It mirrors the values used by DAC stream chip identifiers but
+/// also preserves unknown/extension values via `Unknown(u8)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChipId {
+    Sn76489,
+    Ym2413,
+    Ym2612,
+    Ym2151,
+    SegaPcm,
+    Rf5c68,
+    Ym2203,
+    Ym2608,
+    Ym2610,
+    Ym3812,
+    Ym3526,
+    Y8950,
+    Ymf262,
+    Ymf278b,
+    Ymf271,
+    Ymz280b,
+    Rf5c164,
+    Pwm,
+    Ay8910,
+    GbDmg,
+    NesApu,
+    MultiPcm,
+    Upd7759,
+    Okim6258,
+    Okim6295,
+    K051649,
+    K054539,
+    Huc6280,
+    C140,
+    K053260,
+    Pokey,
+    Qsound,
+    Scsp,
+    WonderSwan,
+    Vsu,
+    Saa1099,
+    Es5503,
+    Es5506,
+    X1010,
+    C352,
+    Ga20,
+    Mikey,
+    /// Unknown or vendor-specific raw value
+    Unknown(u8),
+}
+
+impl ChipId {
+    /// Create a `ChipId` from a raw u8 as stored in VGM extra-header.
+    /// Instance bit (0x80) is preserved in the returned `Unknown(u8)` for
+    /// unknown values; known chip ids are returned without the instance bit
+    /// (the raw value's low 7 bits are matched).
+    pub fn from_u8(raw: u8) -> Self {
+        let chip = raw & 0x7F;
+        match chip {
+            0x00 => ChipId::Sn76489,
+            0x01 => ChipId::Ym2413,
+            0x02 => ChipId::Ym2612,
+            0x03 => ChipId::Ym2151,
+            0x04 => ChipId::SegaPcm,
+            0x05 => ChipId::Rf5c68,
+            0x06 => ChipId::Ym2203,
+            0x07 => ChipId::Ym2608,
+            0x08 => ChipId::Ym2610,
+            0x09 => ChipId::Ym3812,
+            0x0A => ChipId::Ym3526,
+            0x0B => ChipId::Y8950,
+            0x0C => ChipId::Ymf262,
+            0x0D => ChipId::Ymf278b,
+            0x0E => ChipId::Ymf271,
+            0x0F => ChipId::Ymz280b,
+            0x10 => ChipId::Rf5c164,
+            0x11 => ChipId::Pwm,
+            0x12 => ChipId::Ay8910,
+            0x13 => ChipId::GbDmg,
+            0x14 => ChipId::NesApu,
+            0x15 => ChipId::MultiPcm,
+            0x16 => ChipId::Upd7759,
+            0x17 => ChipId::Okim6258,
+            0x18 => ChipId::Okim6295,
+            0x19 => ChipId::K051649,
+            0x1A => ChipId::K054539,
+            0x1B => ChipId::Huc6280,
+            0x1C => ChipId::C140,
+            0x1D => ChipId::K053260,
+            0x1E => ChipId::Pokey,
+            0x1F => ChipId::Qsound,
+            0x20 => ChipId::Scsp,
+            0x21 => ChipId::WonderSwan,
+            0x22 => ChipId::Vsu,
+            0x23 => ChipId::Saa1099,
+            0x24 => ChipId::Es5503,
+            0x25 => ChipId::Es5506,
+            0x26 => ChipId::X1010,
+            0x27 => ChipId::C352,
+            0x28 => ChipId::Ga20,
+            0x29 => ChipId::Mikey,
+            _other => ChipId::Unknown(raw),
+        }
+    }
+
+    /// Convert the `ChipId` back to the raw `u8` value used on-disk.
+    /// For `Unknown(u8)` the original raw value is returned.
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            ChipId::Sn76489 => 0x00,
+            ChipId::Ym2413 => 0x01,
+            ChipId::Ym2612 => 0x02,
+            ChipId::Ym2151 => 0x03,
+            ChipId::SegaPcm => 0x04,
+            ChipId::Rf5c68 => 0x05,
+            ChipId::Ym2203 => 0x06,
+            ChipId::Ym2608 => 0x07,
+            ChipId::Ym2610 => 0x08,
+            ChipId::Ym3812 => 0x09,
+            ChipId::Ym3526 => 0x0A,
+            ChipId::Y8950 => 0x0B,
+            ChipId::Ymf262 => 0x0C,
+            ChipId::Ymf278b => 0x0D,
+            ChipId::Ymf271 => 0x0E,
+            ChipId::Ymz280b => 0x0F,
+            ChipId::Rf5c164 => 0x10,
+            ChipId::Pwm => 0x11,
+            ChipId::Ay8910 => 0x12,
+            ChipId::GbDmg => 0x13,
+            ChipId::NesApu => 0x14,
+            ChipId::MultiPcm => 0x15,
+            ChipId::Upd7759 => 0x16,
+            ChipId::Okim6258 => 0x17,
+            ChipId::Okim6295 => 0x18,
+            ChipId::K051649 => 0x19,
+            ChipId::K054539 => 0x1A,
+            ChipId::Huc6280 => 0x1B,
+            ChipId::C140 => 0x1C,
+            ChipId::K053260 => 0x1D,
+            ChipId::Pokey => 0x1E,
+            ChipId::Qsound => 0x1F,
+            ChipId::Scsp => 0x20,
+            ChipId::WonderSwan => 0x21,
+            ChipId::Vsu => 0x22,
+            ChipId::Saa1099 => 0x23,
+            ChipId::Es5503 => 0x24,
+            ChipId::Es5506 => 0x25,
+            ChipId::X1010 => 0x26,
+            ChipId::C352 => 0x27,
+            ChipId::Ga20 => 0x28,
+            ChipId::Mikey => 0x29,
+            ChipId::Unknown(v) => *v,
+        }
+    }
+}
+
+impl From<u8> for ChipId {
+    fn from(v: u8) -> Self {
+        ChipId::from_u8(v)
+    }
+}
+
+impl From<ChipId> for u8 {
+    fn from(id: ChipId) -> Self {
+        id.to_u8()
+    }
+}
+
 /// Extra header introduced in VGM v1.70.
 ///
 /// Format summary (see VGM specification):
@@ -1134,17 +1302,147 @@ pub struct VgmExtraHeader {
     pub chip_clock_offset: u32,
     /// Offset (relative to start of extra header) to chip volume list (0 if absent)
     pub chip_vol_offset: u32,
+    /// Parsed chip clock entries.
+    pub chip_clocks: Vec<ChipClock>,
+    /// Parsed chip volume entries.
+    pub chip_volumes: Vec<ChipVolume>,
+}
 
-    /// Parsed chip clock entries: (chip_id, clock)
-    /// chip_id is the 1-byte ID following the main header's chip order.
-    pub chip_clocks: Vec<(u8, u32)>,
+/// Representation of a chip clock entry in the extra header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChipClock {
+    /// Decoded chip id (known or Unknown(raw)).
+    pub chip_id: ChipId,
+    /// Stored raw chip-id byte as read/written on-disk (preserves instance bit).
+    pub raw_chip_id: u8,
+    /// Decoded instance derived from the raw_chip_id (bit 7: secondary).
+    pub instance: Instance,
+    /// Clock value (Hz) as stored on-disk.
+    pub clock: u32,
+}
 
-    /// Parsed chip volume entries: (chip_id_with_flags, flags, volume)
-    /// Each entry in the on-disk format is: 1 byte chip id, 1 byte flags, 2 bytes volume (LE).
-    pub chip_volumes: Vec<(u8, u8, u16)>,
+impl ChipClock {
+    pub fn new(chip_id: ChipId, instance: Instance, clock: u32) -> Self {
+        let mut raw = chip_id.to_u8();
+        if let Instance::Secondary = instance {
+            raw |= 0x80;
+        }
+        ChipClock {
+            chip_id,
+            raw_chip_id: raw,
+            instance,
+            clock,
+        }
+    }
+
+    pub fn from_raw(raw_chip_id: u8, clock: u32) -> Self {
+        let instance = if (raw_chip_id & 0x80) != 0 {
+            Instance::Secondary
+        } else {
+            Instance::Primary
+        };
+        ChipClock {
+            chip_id: ChipId::from_u8(raw_chip_id),
+            raw_chip_id,
+            instance,
+            clock,
+        }
+    }
+}
+
+/// Representation of a chip volume entry in the extra header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChipVolume {
+    /// Decoded chip id.
+    pub chip_id: ChipId,
+    /// Raw chip-id byte as read/written on-disk.
+    pub raw_chip_id: u8,
+    /// True if the raw chip-id byte had bit 7 set indicating a paired chip's volume.
+    pub paired_chip: bool,
+    /// Raw flags byte as read/written on-disk (preserves vendor-specific bits).
+    pub raw_flags: u8,
+    /// Decoded instance derived from raw_flags (bit 0: secondary).
+    pub instance: Instance,
+    /// Volume value
+    pub volume: u16,
+}
+
+impl ChipVolume {
+    pub fn new(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
+        let raw_chip = chip_id.to_u8();
+        let raw_flags = if let Instance::Secondary = instance {
+            0x01
+        } else {
+            0x00
+        };
+        ChipVolume {
+            chip_id,
+            raw_chip_id: raw_chip,
+            paired_chip: false,
+            raw_flags,
+            instance,
+            volume,
+        }
+    }
+
+    /// Construct a `ChipVolume` that will be serialized with the paired bit
+    /// (0x80) set in the chip-id byte.
+    pub fn new_paired(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
+        let mut raw_chip = chip_id.to_u8();
+        raw_chip |= 0x80;
+        let raw_flags = if let Instance::Secondary = instance {
+            0x01
+        } else {
+            0x00
+        };
+        ChipVolume {
+            chip_id,
+            raw_chip_id: raw_chip,
+            paired_chip: true,
+            raw_flags,
+            instance,
+            volume,
+        }
+    }
+
+    pub fn from_raw(raw_chip_id: u8, raw_flags: u8, volume: u16) -> Self {
+        let instance = if (raw_flags & 0x01) != 0 {
+            Instance::Secondary
+        } else {
+            Instance::Primary
+        };
+        // If bit 7 is set, it's the volume for a paired chip.
+        let paired = (raw_chip_id & 0x80) != 0;
+        ChipVolume {
+            chip_id: ChipId::from_u8(raw_chip_id & 0x7F),
+            raw_chip_id,
+            paired_chip: paired,
+            raw_flags,
+            instance,
+            volume,
+        }
+    }
 }
 
 impl VgmExtraHeader {
+    /// Interpret bit 0 of the on-disk flags byte as an `Instance`.
+    /// (bit 0 = 0 => Primary, bit 0 = 1 => Secondary)
+    pub fn instance_from_flags(flags: u8) -> Instance {
+        if (flags & 0x01) != 0 {
+            Instance::Secondary
+        } else {
+            Instance::Primary
+        }
+    }
+
+    /// Encode an `Instance` into the on-disk flags byte (uses bit 0).
+    pub fn flags_from_instance(instance: Instance) -> u8 {
+        match instance {
+            Instance::Primary => 0x00,
+            Instance::Secondary => 0x01,
+        }
+    }
+
     /// Serialize the extra header into bytes using the VGM extra-header format.
     ///
     /// The serializer constructs a canonical extra-header buffer from parsed
@@ -1180,9 +1478,10 @@ impl VgmExtraHeader {
                 if start + needed <= out_len {
                     buf[start] = self.chip_clocks.len() as u8;
                     let mut pos = start + 1;
-                    for (chip_id, clock) in &self.chip_clocks {
-                        buf[pos] = *chip_id;
-                        buf[pos + 1..pos + 5].copy_from_slice(&clock.to_le_bytes());
+                    for chip_clock in &self.chip_clocks {
+                        // Use the preserved raw_chip_id for on-disk representation.
+                        buf[pos] = chip_clock.raw_chip_id;
+                        buf[pos + 1..pos + 5].copy_from_slice(&chip_clock.clock.to_le_bytes());
                         pos += 5;
                     }
                 }
@@ -1196,10 +1495,11 @@ impl VgmExtraHeader {
                 if start + needed <= out_len {
                     buf[start] = self.chip_volumes.len() as u8;
                     let mut pos = start + 1;
-                    for (chip_id, flags, volume) in &self.chip_volumes {
-                        buf[pos] = *chip_id;
-                        buf[pos + 1] = *flags;
-                        buf[pos + 2..pos + 4].copy_from_slice(&volume.to_le_bytes());
+                    for chip_vol in &self.chip_volumes {
+                        // Use preserved raw bytes for on-disk representation.
+                        buf[pos] = chip_vol.raw_chip_id;
+                        buf[pos + 1] = chip_vol.raw_flags;
+                        buf[pos + 2..pos + 4].copy_from_slice(&chip_vol.volume.to_le_bytes());
                         pos += 4;
                     }
                 }
@@ -1217,9 +1517,9 @@ impl VgmExtraHeader {
             // count (1 byte)
             buf.push(self.chip_clocks.len() as u8);
             // entries: chip_id (1 byte) + clock (4 bytes LE)
-            for (chip_id, clock) in &self.chip_clocks {
-                buf.push(*chip_id);
-                buf.extend_from_slice(&clock.to_le_bytes());
+            for chip_clock in &self.chip_clocks {
+                buf.push(chip_clock.raw_chip_id);
+                buf.extend_from_slice(&chip_clock.clock.to_le_bytes());
             }
             off
         } else {
@@ -1232,10 +1532,10 @@ impl VgmExtraHeader {
             // count (1 byte)
             buf.push(self.chip_volumes.len() as u8);
             // entries: chip_id (1 byte) + flags (1 byte) + volume (2 bytes LE)
-            for (chip_id, flags, volume) in &self.chip_volumes {
-                buf.push(*chip_id);
-                buf.push(*flags);
-                buf.extend_from_slice(&volume.to_le_bytes());
+            for chip_vol in &self.chip_volumes {
+                buf.push(chip_vol.raw_chip_id);
+                buf.push(chip_vol.raw_flags);
+                buf.extend_from_slice(&chip_vol.volume.to_le_bytes());
             }
             off
         } else {

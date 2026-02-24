@@ -125,20 +125,20 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         if let Some(s) = &g.track_name_en {
             gd3_fields.push(("gd3.track_name_en".into(), s.clone()));
         }
-        if let Some(s) = &g.track_name_jp {
-            gd3_fields.push(("gd3.track_name_jp".into(), s.clone()));
+        if let Some(s) = &g.track_name_origin {
+            gd3_fields.push(("gd3.track_name_origin".into(), s.clone()));
         }
         if let Some(s) = &g.game_name_en {
             gd3_fields.push(("gd3.game_name_en".into(), s.clone()));
         }
-        if let Some(s) = &g.game_name_jp {
-            gd3_fields.push(("gd3.game_name_jp".into(), s.clone()));
+        if let Some(s) = &g.game_name_origin {
+            gd3_fields.push(("gd3.game_name_origin".into(), s.clone()));
         }
         if let Some(s) = &g.author_name_en {
             gd3_fields.push(("gd3.author_name_en".into(), s.clone()));
         }
-        if let Some(s) = &g.author_name_jp {
-            gd3_fields.push(("gd3.author_name_jp".into(), s.clone()));
+        if let Some(s) = &g.author_name_origin {
+            gd3_fields.push(("gd3.author_name_origin".into(), s.clone()));
         }
         if let Some(s) = &g.notes {
             gd3_fields.push(("gd3.notes".into(), s.clone()));

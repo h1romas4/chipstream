@@ -738,7 +738,7 @@ impl UiState {
             push_field(
                 &mut gd3_children,
                 "Track name (JP)",
-                &gd3_ref.track_name_jp,
+                &gd3_ref.track_name_origin,
                 &mut field_off,
             );
             push_field(
@@ -750,7 +750,7 @@ impl UiState {
             push_field(
                 &mut gd3_children,
                 "Game name (JP)",
-                &gd3_ref.game_name_jp,
+                &gd3_ref.game_name_origin,
                 &mut field_off,
             );
             push_field(
@@ -762,7 +762,7 @@ impl UiState {
             push_field(
                 &mut gd3_children,
                 "System name (JP)",
-                &gd3_ref.system_name_jp,
+                &gd3_ref.system_name_origin,
                 &mut field_off,
             );
             push_field(
@@ -774,7 +774,7 @@ impl UiState {
             push_field(
                 &mut gd3_children,
                 "Author (JP)",
-                &gd3_ref.author_name_jp,
+                &gd3_ref.author_name_origin,
                 &mut field_off,
             );
             push_field(

@@ -7,7 +7,7 @@ pub mod callback_stream;
 pub mod command;
 pub mod detail;
 mod document;
-mod header;
+pub mod header;
 pub mod parser;
 pub mod stream;
 

@@ -409,7 +409,10 @@ pub(crate) fn parse_vgm_extra_header(
         for _ in 0..count {
             let chip_id = read_u8_at(bytes, cur)?;
             let clock = read_u32_le_at(bytes, cur + 1)?;
-            extra.chip_clocks.push((chip_id, clock));
+            // Create a ChipClock preserving the raw chip-id byte and decoded instance.
+            extra
+                .chip_clocks
+                .push(crate::vgm::header::ChipClock::from_raw(chip_id, clock));
             cur = cur.wrapping_add(5);
         }
     }
@@ -463,7 +466,12 @@ pub(crate) fn parse_vgm_extra_header(
             let chip_id = read_u8_at(bytes, cur)?;
             let flags = read_u8_at(bytes, cur + 1)?;
             let volume = read_u16_le_at(bytes, cur + 2)?;
-            extra.chip_volumes.push((chip_id, flags, volume));
+            // Create a ChipVolume preserving raw bytes and decoded instance.
+            extra
+                .chip_volumes
+                .push(crate::vgm::header::ChipVolume::from_raw(
+                    chip_id, flags, volume,
+                ));
             cur = cur.wrapping_add(4);
         }
     }

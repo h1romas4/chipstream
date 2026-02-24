@@ -57,13 +57,13 @@
 //! let chip_id: u8 = DacStreamChipType::Ym2612.into();
 //! assert_eq!(chip_id, 0x02);
 //!
-//! // Try converting u8 to DacStreamChipType
-//! let chip_type: Result<DacStreamChipType, _> = 0x02u8.try_into();
-//! assert_eq!(chip_type, Ok(DacStreamChipType::Ym2612));
+//! // Convert u8 to ChipId using `from_u8` (low-7 bits are used for known IDs)
+//! let chip_type = soundlog::vgm::header::ChipId::from_u8(0x02u8);
+//! assert_eq!(chip_type, DacStreamChipType::Ym2612);
 //!
-//! // Invalid chip type returns Err
-//! let invalid: Result<DacStreamChipType, _> = 0xFFu8.try_into();
-//! assert!(invalid.is_err());
+//! // Unknown/invalid raw values return `ChipId::Unknown(raw)`
+//! let invalid = soundlog::vgm::header::ChipId::from_u8(0xFFu8);
+//! assert!(matches!(invalid, soundlog::vgm::header::ChipId::Unknown(_)));
 //! ```
 use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
@@ -72,6 +72,10 @@ use crate::chip;
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::VgmHeader;
 
+/// Alias for `vgm::header::ChipId` used as the chip ID type for DAC stream control.
+/// Re-exported here for convenient use in stream-related command types.
+pub use crate::vgm::header::ChipId as DacStreamChipType;
+
 /// VGM DAC Stream Control chip type enumeration.
 ///
 /// These values are used in SetupStreamControl commands to identify the target chip.
@@ -79,155 +83,9 @@ use crate::vgm::header::VgmHeader;
 /// values in DataBlock commands (chip_type and data_type use the same ID space).
 ///
 /// Note: When stored as u8 in VGM files, bit 7 (0x80) indicates secondary chip instance.
-/// Use [`DacStreamChipType::from_u8_with_instance`] and [`DacStreamChipType::to_u8_with_instance`] for conversion with instance flag support.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DacStreamChipType {
-    /// SN76489 PSG
-    Sn76489 = 0x00,
-    /// YM2413 OPLL
-    Ym2413 = 0x01,
-    /// YM2612 OPN2
-    Ym2612 = 0x02,
-    /// YM2151 OPM
-    Ym2151 = 0x03,
-    /// Sega PCM
-    SegaPcm = 0x04,
-    /// RF5C68
-    Rf5c68 = 0x05,
-    /// YM2203 OPN
-    Ym2203 = 0x06,
-    /// YM2608 OPNA
-    Ym2608 = 0x07,
-    /// YM2610/YM2610B OPNB
-    Ym2610 = 0x08,
-    /// YM3812 OPL2
-    Ym3812 = 0x09,
-    /// YM3526 OPL
-    Ym3526 = 0x0A,
-    /// Y8950 MSX-Audio
-    Y8950 = 0x0B,
-    /// YMF262 OPL3
-    Ymf262 = 0x0C,
-    /// YMF278B OPL4
-    Ymf278b = 0x0D,
-    /// YMF271 OPX
-    Ymf271 = 0x0E,
-    /// YMZ280B PCMD8
-    Ymz280b = 0x0F,
-    /// RF5C164
-    Rf5c164 = 0x10,
-    /// PWM (Sega 32X)
-    Pwm = 0x11,
-    /// AY8910
-    Ay8910 = 0x12,
-    /// GameBoy DMG
-    GbDmg = 0x13,
-    /// NES APU
-    NesApu = 0x14,
-    /// MultiPCM
-    MultiPcm = 0x15,
-    /// uPD7759
-    Upd7759 = 0x16,
-    /// OKIM6258
-    Okim6258 = 0x17,
-    /// OKIM6295
-    Okim6295 = 0x18,
-    /// K051649 / SCC1
-    K051649 = 0x19,
-    /// K054539
-    K054539 = 0x1A,
-    /// HuC6280
-    Huc6280 = 0x1B,
-    /// C140
-    C140 = 0x1C,
-    /// K053260
-    K053260 = 0x1D,
-    /// Pokey
-    Pokey = 0x1E,
-    /// QSound
-    Qsound = 0x1F,
-    /// SCSP
-    Scsp = 0x20,
-    /// WonderSwan
-    WonderSwan = 0x21,
-    /// VSU (Virtual Boy)
-    Vsu = 0x22,
-    /// SAA1099
-    Saa1099 = 0x23,
-    /// ES5503
-    Es5503 = 0x24,
-    /// ES5506
-    Es5506 = 0x25,
-    /// X1-010
-    X1010 = 0x26,
-    /// C352
-    C352 = 0x27,
-    /// GA20
-    Ga20 = 0x28,
-    /// Mikey (Atari Lynx)
-    Mikey = 0x29,
-}
-
+/// Use [`DacStreamChipType::from_u8_with_instance`] and [`DacStreamChipType::to_u8_with_instance`]
+/// for conversion with instance flag support.
 impl DacStreamChipType {
-    /// Convert from u8 value (without instance bit).
-    ///
-    /// Returns `None` if the value doesn't correspond to a known chip type.
-    pub fn from_u8(value: u8) -> Option<Self> {
-        // Strip instance bit (bit 7)
-        let chip_id = value & 0x7F;
-        match chip_id {
-            v if v == DacStreamChipType::Sn76489 as u8 => Some(DacStreamChipType::Sn76489),
-            v if v == DacStreamChipType::Ym2413 as u8 => Some(DacStreamChipType::Ym2413),
-            v if v == DacStreamChipType::Ym2612 as u8 => Some(DacStreamChipType::Ym2612),
-            v if v == DacStreamChipType::Ym2151 as u8 => Some(DacStreamChipType::Ym2151),
-            v if v == DacStreamChipType::SegaPcm as u8 => Some(DacStreamChipType::SegaPcm),
-            v if v == DacStreamChipType::Rf5c68 as u8 => Some(DacStreamChipType::Rf5c68),
-            v if v == DacStreamChipType::Ym2203 as u8 => Some(DacStreamChipType::Ym2203),
-            v if v == DacStreamChipType::Ym2608 as u8 => Some(DacStreamChipType::Ym2608),
-            v if v == DacStreamChipType::Ym2610 as u8 => Some(DacStreamChipType::Ym2610),
-            v if v == DacStreamChipType::Ym3812 as u8 => Some(DacStreamChipType::Ym3812),
-            v if v == DacStreamChipType::Ym3526 as u8 => Some(DacStreamChipType::Ym3526),
-            v if v == DacStreamChipType::Y8950 as u8 => Some(DacStreamChipType::Y8950),
-            v if v == DacStreamChipType::Ymf262 as u8 => Some(DacStreamChipType::Ymf262),
-            v if v == DacStreamChipType::Ymf278b as u8 => Some(DacStreamChipType::Ymf278b),
-            v if v == DacStreamChipType::Ymf271 as u8 => Some(DacStreamChipType::Ymf271),
-            v if v == DacStreamChipType::Ymz280b as u8 => Some(DacStreamChipType::Ymz280b),
-            v if v == DacStreamChipType::Rf5c164 as u8 => Some(DacStreamChipType::Rf5c164),
-            v if v == DacStreamChipType::Pwm as u8 => Some(DacStreamChipType::Pwm),
-            v if v == DacStreamChipType::Ay8910 as u8 => Some(DacStreamChipType::Ay8910),
-            v if v == DacStreamChipType::GbDmg as u8 => Some(DacStreamChipType::GbDmg),
-            v if v == DacStreamChipType::NesApu as u8 => Some(DacStreamChipType::NesApu),
-            v if v == DacStreamChipType::MultiPcm as u8 => Some(DacStreamChipType::MultiPcm),
-            v if v == DacStreamChipType::Upd7759 as u8 => Some(DacStreamChipType::Upd7759),
-            v if v == DacStreamChipType::Okim6258 as u8 => Some(DacStreamChipType::Okim6258),
-            v if v == DacStreamChipType::Okim6295 as u8 => Some(DacStreamChipType::Okim6295),
-            v if v == DacStreamChipType::K051649 as u8 => Some(DacStreamChipType::K051649),
-            v if v == DacStreamChipType::K054539 as u8 => Some(DacStreamChipType::K054539),
-            v if v == DacStreamChipType::Huc6280 as u8 => Some(DacStreamChipType::Huc6280),
-            v if v == DacStreamChipType::C140 as u8 => Some(DacStreamChipType::C140),
-            v if v == DacStreamChipType::K053260 as u8 => Some(DacStreamChipType::K053260),
-            v if v == DacStreamChipType::Pokey as u8 => Some(DacStreamChipType::Pokey),
-            v if v == DacStreamChipType::Qsound as u8 => Some(DacStreamChipType::Qsound),
-            v if v == DacStreamChipType::Scsp as u8 => Some(DacStreamChipType::Scsp),
-            v if v == DacStreamChipType::WonderSwan as u8 => Some(DacStreamChipType::WonderSwan),
-            v if v == DacStreamChipType::Vsu as u8 => Some(DacStreamChipType::Vsu),
-            v if v == DacStreamChipType::Saa1099 as u8 => Some(DacStreamChipType::Saa1099),
-            v if v == DacStreamChipType::Es5503 as u8 => Some(DacStreamChipType::Es5503),
-            v if v == DacStreamChipType::Es5506 as u8 => Some(DacStreamChipType::Es5506),
-            v if v == DacStreamChipType::X1010 as u8 => Some(DacStreamChipType::X1010),
-            v if v == DacStreamChipType::C352 as u8 => Some(DacStreamChipType::C352),
-            v if v == DacStreamChipType::Ga20 as u8 => Some(DacStreamChipType::Ga20),
-            v if v == DacStreamChipType::Mikey as u8 => Some(DacStreamChipType::Mikey),
-            _ => None,
-        }
-    }
-
-    /// Convert to u8 value (without instance bit).
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-
     /// Check if a u8 value represents a secondary chip instance (bit 7 set).
     pub fn is_secondary_instance(value: u8) -> bool {
         value & 0x80 != 0
@@ -235,33 +93,20 @@ impl DacStreamChipType {
 
     /// Extract chip type and instance from u8 value.
     ///
-    /// Returns `(chip_type, is_secondary)` tuple, or `None` if chip type is unknown.
+    /// Returns `(chip_type, is_secondary)` tuple. The canonical chip id is decoded
+    /// using the low 7 bits; the returned `ChipId` may be `Unknown(u8)` for
+    /// vendor-specific values.
     pub fn from_u8_with_instance(value: u8) -> Option<(Self, bool)> {
         let is_secondary = Self::is_secondary_instance(value);
-        Self::from_u8(value).map(|chip| (chip, is_secondary))
+        // Use the existing canonical decoder which matches on low 7 bits and
+        // preserves Unknown(raw) for extension values.
+        Some((Self::from_u8(value & 0x7F), is_secondary))
     }
 
     /// Combine chip type with instance flag to create u8 value.
     pub fn to_u8_with_instance(self, is_secondary: bool) -> u8 {
-        let base = self as u8;
+        let base = self.to_u8();
         if is_secondary { base | 0x80 } else { base }
-    }
-}
-
-/// Conversion from `DacStreamChipType` to the raw `u8` value used in VGM bytes.
-impl From<DacStreamChipType> for u8 {
-    fn from(chip_type: DacStreamChipType) -> Self {
-        chip_type as u8
-    }
-}
-
-/// Attempt to convert a raw `u8` value (from VGM bytes) into a `DacStreamChipType`.
-/// Returns `Err(())` if the value does not correspond to a known chip type.
-impl TryFrom<u8> for DacStreamChipType {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        DacStreamChipType::from_u8(value).ok_or(())
     }
 }
 
