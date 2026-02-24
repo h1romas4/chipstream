@@ -1,5 +1,7 @@
 # Changelog
 
+## v0.7.0 (dev)
+
 ## v0.6.0
 
 - Enable runtime ChipState tracking for a variety of sound chips and add unit/integration tests to validate state and event behavior (e.g. frequency/key events, VGM parsing).

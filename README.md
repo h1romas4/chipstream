@@ -7,14 +7,11 @@ This repository is organized as a monorepo containing multiple crates and provid
 utilities for building and parsing register-write logs such as the VGM
 (Video Game Music) format.
 
-## Contents
+## Quick start
 
 [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
-- `crates/soundlog` — a builder and parser for VGM documents (included in this repository).
-- Additional utilities and experimental crates for working with sound chips.
-
-## Quick start
+A debug frontend is provided for easily trying out the `soundlog` crate.
 
 Build all crates:
 
@@ -44,19 +41,9 @@ Options:
   -V, --version  Print version
 ```
 
-Run tests for the `soundlog` crate:
+For detailed usage instructions, please refer to [crates/soundlog-debuger](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-debuger/README.md).
 
-```bash
-cargo test -p soundlog
-```
-
-Optional: set the `SOUNDLOG_TEST_OUTPUT_VGM` environment variable to a non-empty path (relative to the crate root) to write VGM test artifacts when running tests. Example:
-
-```bash
-SOUNDLOG_TEST_OUTPUT_VGM=assets/vgm cargo test -p soundlog
-```
-
-When the variable is not set or is empty, no VGM test artifacts will be written.
+The documentation for the `soundlog` crate library is available at [crates/soundlog](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog/README.md).
 
 ## License
 
