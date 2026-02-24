@@ -376,7 +376,7 @@ detecting key on/off events and extracting tone information from register writes
 
 - Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
 - The specifications for key on/off detection — including total level extraction — are not yet stabilized.
-- The values returned by StateEvent shall not be compatible across versions. Please note that the timing and values of events may differ between versions.
+- The values returned by `StateEvent` shall not be compatible across versions. Please note that the timing and values of events may differ between versions.
 
 ### Implemented Chips
 
