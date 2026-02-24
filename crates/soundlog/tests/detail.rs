@@ -870,3 +870,113 @@ fn test_ay8910_stereo_mask_parse_ym2203() {
     assert!(mask.left_ch3);
     assert!(mask.right_ch3);
 }
+
+#[test]
+fn test_roundtrip_uncompressed_stream() {
+    let original = DataBlockType::UncompressedStream(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x01, 0x02, 0x03, 0x04],
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0x00); // data_type 0x00 = uncompressed YM2612
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_compressed_bit_packing() {
+    let bp = BitPackingCompression {
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        sub_type: BitPackingSubType::Copy,
+        add_value: 0x0010,
+        data: vec![0x12, 0x34, 0x56],
+    };
+    let original = DataBlockType::CompressedStream(CompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        compression_type: CompressionType::BitPacking,
+        uncompressed_size: 0x00001000,
+        compression: CompressedStreamData::BitPacking(bp),
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0x40); // data_type 0x40 = compressed YM2612
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_compressed_dpcm() {
+    let dpcm = DpcmCompression {
+        bits_decompressed: 16,
+        bits_compressed: 8,
+        reserved: 0,
+        start_value: 0x0080,
+        data: vec![0xAA, 0xBB],
+    };
+    let original = DataBlockType::CompressedStream(CompressedStream {
+        chip_type: StreamChipType::ScspPcm,
+        compression_type: CompressionType::Dpcm,
+        uncompressed_size: 0x00002000,
+        compression: CompressedStreamData::Dpcm(dpcm),
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0x46); // data_type 0x46 = compressed SCSP
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_decompression_table() {
+    let original = DataBlockType::DecompressionTable(DecompressionTable {
+        compression_type: CompressionType::BitPacking,
+        sub_type: 0x02,
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        value_count: 4,
+        table_data: vec![10, 11, 12, 13],
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0x7F); // data_type 0x7F = table
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_rom_ram_dump() {
+    let original = DataBlockType::RomRamDump(RomRamDump {
+        chip_type: RomRamChipType::SegaPcmRom,
+        rom_size: 0x00001000,
+        start_address: 0x00002000,
+        data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0x80); // data_type 0x80 = Sega PCM ROM
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_ram_write_16() {
+    let original = DataBlockType::RamWrite16(RamWrite16 {
+        chip_type: RamWrite16ChipType::Rf5c68,
+        start_address: 0x1234,
+        data: vec![0x11, 0x22, 0x33],
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0xC0); // data_type 0xC0 = RF5C68 RAM write
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_roundtrip_ram_write_32() {
+    let original = DataBlockType::RamWrite32(RamWrite32 {
+        chip_type: RamWrite32ChipType::Scsp,
+        start_address: 0x0001_0000,
+        data: vec![0x01, 0x02, 0x03, 0x04],
+    });
+
+    let block = build_data_block(&original, 0x66, 0, 0xE0); // data_type 0xE0 = SCSP RAM write
+    let parsed = parse_data_block(block).expect("Round-trip parse failed");
+    assert_eq!(parsed, original);
+}

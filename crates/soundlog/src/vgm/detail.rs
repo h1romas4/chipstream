@@ -747,6 +747,109 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, (DataBlock, P
     }
 }
 
+/// Build a `DataBlock` (on-disk layout) from a parsed `DataBlockType`.
+///
+/// The caller provides the `marker`, `chip_instance`, and the `data_type`
+/// (on-disk byte). This function performs the inverse of `parse_data_block`
+/// for all supported variants, constructing the `data: Vec<u8>` according to
+/// the VGM on-disk layout and returning a `DataBlock`.
+pub fn build_data_block(
+    data_block_type: &DataBlockType,
+    marker: u8,
+    chip_instance: u8,
+    data_type: u8,
+) -> DataBlock {
+    let mut data: Vec<u8> = Vec::new();
+
+    match data_block_type {
+        DataBlockType::UncompressedStream(stream) => {
+            data = stream.data.clone();
+        }
+
+        DataBlockType::CompressedStream(stream) => {
+            // compression type byte
+            let compression_type_byte: u8 = match stream.compression_type {
+                CompressionType::BitPacking => 0x00,
+                CompressionType::Dpcm => 0x01,
+                CompressionType::Unknown(v) => v,
+            };
+            data.push(compression_type_byte);
+            // uncompressed size (LE)
+            data.extend_from_slice(&stream.uncompressed_size.to_le_bytes());
+
+            match &stream.compression {
+                CompressedStreamData::BitPacking(bp) => {
+                    data.push(bp.bits_decompressed);
+                    data.push(bp.bits_compressed);
+                    let sub_type_byte = match bp.sub_type {
+                        BitPackingSubType::Copy => 0x00,
+                        BitPackingSubType::ShiftLeft => 0x01,
+                        BitPackingSubType::UseTable => 0x02,
+                        BitPackingSubType::Unknown(v) => v,
+                    };
+                    data.push(sub_type_byte);
+                    data.extend_from_slice(&bp.add_value.to_le_bytes());
+                    data.extend_from_slice(&bp.data);
+                }
+                CompressedStreamData::Dpcm(dpcm) => {
+                    data.push(dpcm.bits_decompressed);
+                    data.push(dpcm.bits_compressed);
+                    data.push(dpcm.reserved);
+                    data.extend_from_slice(&dpcm.start_value.to_le_bytes());
+                    data.extend_from_slice(&dpcm.data);
+                }
+                CompressedStreamData::Unknown {
+                    compression_type: _,
+                    data: payload,
+                } => {
+                    // For unknown compression types, the parser treated bytes after
+                    // offset 5 as payload. We already wrote compression_type and
+                    // uncompressed_size, so append the payload directly.
+                    data.extend_from_slice(payload);
+                }
+            }
+        }
+
+        DataBlockType::DecompressionTable(table) => {
+            let comp_byte = match table.compression_type {
+                CompressionType::BitPacking => 0x00,
+                CompressionType::Dpcm => 0x01,
+                CompressionType::Unknown(v) => v,
+            };
+            data.push(comp_byte);
+            data.push(table.sub_type);
+            data.push(table.bits_decompressed);
+            data.push(table.bits_compressed);
+            data.extend_from_slice(&table.value_count.to_le_bytes());
+            data.extend_from_slice(&table.table_data);
+        }
+
+        DataBlockType::RomRamDump(dump) => {
+            data.extend_from_slice(&dump.rom_size.to_le_bytes());
+            data.extend_from_slice(&dump.start_address.to_le_bytes());
+            data.extend_from_slice(&dump.data);
+        }
+
+        DataBlockType::RamWrite16(write) => {
+            data.extend_from_slice(&write.start_address.to_le_bytes());
+            data.extend_from_slice(&write.data);
+        }
+
+        DataBlockType::RamWrite32(write) => {
+            data.extend_from_slice(&write.start_address.to_le_bytes());
+            data.extend_from_slice(&write.data);
+        }
+    }
+
+    DataBlock {
+        marker,
+        chip_instance,
+        data_type,
+        size: data.len() as u32,
+        data,
+    }
+}
+
 /// MSB-first bitstream reader.
 struct BitStreamReader<'a> {
     data: &'a [u8],
