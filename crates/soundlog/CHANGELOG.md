@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 (dev)
+## v0.7.0
 
 - Improve `DataBlock` type-safety.
   - New function: `soundlog::vgm::detail::build_data_block(data_block_type: &DataBlockType) -> DataBlock` — constructs the on-disk `DataBlock` bytes from a parsed `DataBlockType`.
