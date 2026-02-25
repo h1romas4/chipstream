@@ -143,7 +143,10 @@ are converted to `WaitSamples` for consistent processing.
 ```rust
 use soundlog::{VgmBuilder, VgmStream, VgmDocument};
 use soundlog::vgm::stream::StreamResult;
-use soundlog::vgm::command::{VgmCommand, WaitSamples, WaitNSample, Wait735Samples, Wait882Samples, SetupStreamControl, StartStream, Instance};
+use soundlog::vgm::command::{
+    VgmCommand, WaitSamples, WaitNSample, Wait735Samples,
+    Wait882Samples, SetupStreamControl, StartStream, Instance
+};
 use soundlog::chip::Ym2612Spec;
 use soundlog::vgm::detail::{parse_data_block, DataBlockType};
 
@@ -181,7 +184,8 @@ while let Some(result) = stream.next() {
         Ok(StreamResult::Command(cmd)) => match cmd {
             VgmCommand::WaitSamples(s) => {
                 // All wait commands
-                // (WaitSamples, WaitNSample, Wait735Samples, Wait882Samples, Ym2612Port0Address2AWriteAndWaitN)
+                // (WaitSamples, WaitNSample, Wait735Samples,
+                //  Wait882Samples, Ym2612Port0Address2AWriteAndWaitN)
                 // are converted to WaitSamples by VgmStream.
                 // Waits may also have been split to accommodate stream-generated writes.
                 println!("wait {} samples", s.0);
@@ -201,11 +205,11 @@ while let Some(result) = stream.next() {
                 // The parse_data_block can parse the details of a DataBlock.
                 match parse_data_block(block) {
                     Ok(DataBlockType::RomRamDump(dump)) => {
+                        // Handle ROM/RAM dump here 
                         println!(
                             "ROM/RAM dump: {:?}, size {}, start 0x{:08X}",
                             dump.chip_type, dump.rom_size, dump.start_address
                         );
-                        // Handle ROM/RAM dump here (e.g. save to file or load into emulated memory)
                     }
                     Ok(_) => {
                         println!("DataBlock parsed (non-ROM/RAM)");
@@ -302,18 +306,22 @@ See also: the **Chip State Tracking** section below for current implementation s
 
 ```rust
 use soundlog::{VgmBuilder, VgmCallbackStream};
-use soundlog::vgm::command::Instance;
+use soundlog::vgm::command::{Instance, WaitSamples, VgmCommand, EndOfData};
 use soundlog::chip::{event::StateEvent, Ym2612Spec};
 
 // Build a simple VGM document with YM2612 commands
 let mut b = VgmBuilder::new();
 b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
-// YM2612 initialization: LFO off
-b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x22, value: 0x00 });
+// Sound chip initialisation
+// ..snip..
 // Key on channel 1
-b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x28, value: 0xF0 });
-b.add_vgm_command(soundlog::vgm::command::WaitSamples(100));
-b.add_vgm_command(soundlog::vgm::command::VgmCommand::EndOfData(soundlog::vgm::command::EndOfData {}));
+b.add_chip_write(Instance::Primary, Ym2612Spec {
+    port: 0,
+    register: 0x28,
+    value: 0xF0
+});
+b.add_vgm_command(VgmCommand::WaitSamples(WaitSamples(100)));
+b.add_vgm_command(VgmCommand::EndOfData(EndOfData));
 let doc = b.finalize();
 
 // Grab the header's chip instances.
