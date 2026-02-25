@@ -1,5 +1,5 @@
 use soundlog::ParseError;
-use soundlog::vgm::command::{Ay8910StereoMask, DataBlock};
+use soundlog::vgm::command::{Ay8910StereoMask, DataBlock, Instance};
 use soundlog::vgm::detail::*;
 
 // Maximum decompressed size for tests (32 MiB, matching default VgmStream limit)
@@ -9,7 +9,7 @@ const TEST_MAX_DECOMPRESS_SIZE: usize = 32 * 1024 * 1024;
 fn test_parse_uncompressed_stream_ym2612() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x00, // YM2612 PCM
         size: 4,
         data: vec![0x01, 0x02, 0x03, 0x04],
@@ -30,7 +30,7 @@ fn test_parse_uncompressed_stream_ym2612() {
 fn test_parse_uncompressed_stream_rf5c68() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x01, // RF5C68 PCM
         size: 3,
         data: vec![0xAA, 0xBB, 0xCC],
@@ -51,7 +51,7 @@ fn test_parse_uncompressed_stream_rf5c68() {
 fn test_parse_uncompressed_stream_unknown() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x20, // Unknown stream type
         size: 2,
         data: vec![0xFF, 0xEE],
@@ -72,7 +72,7 @@ fn test_parse_uncompressed_stream_unknown() {
 fn test_parse_compressed_stream_bit_packing() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x40, // Compressed YM2612 PCM
         size: 14,
         data: vec![
@@ -113,7 +113,7 @@ fn test_parse_compressed_stream_bit_packing() {
 fn test_parse_compressed_stream_dpcm() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x46, // Compressed SCSP PCM
         size: 13,
         data: vec![
@@ -154,7 +154,7 @@ fn test_parse_compressed_stream_dpcm() {
 fn test_parse_compressed_stream_unknown_compression() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x45, // Compressed HuC6280 PCM
         size: 10,
         data: vec![
@@ -190,7 +190,7 @@ fn test_parse_compressed_stream_unknown_compression() {
 fn test_parse_decompression_table() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x7F, // Decompression table
         size: 12,
         data: vec![
@@ -222,7 +222,7 @@ fn test_parse_decompression_table() {
 fn test_parse_rom_ram_dump_sega_pcm() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x80, // Sega PCM ROM
         size: 16,
         data: vec![
@@ -252,7 +252,7 @@ fn test_parse_rom_ram_dump_sega_pcm() {
 fn test_parse_rom_ram_dump_ym2608() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x81, // YM2608 DELTA-T ROM
         size: 12,
         data: vec![
@@ -279,7 +279,7 @@ fn test_parse_rom_ram_dump_ym2608() {
 fn test_parse_rom_ram_dump_unknown() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xA0, // Unknown ROM type
         size: 10,
         data: vec![
@@ -306,7 +306,7 @@ fn test_parse_rom_ram_dump_unknown() {
 fn test_parse_ram_write_16bit_rf5c68() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xC0, // RF5C68 RAM write
         size: 6,
         data: vec![
@@ -331,7 +331,7 @@ fn test_parse_ram_write_16bit_rf5c68() {
 fn test_parse_ram_write_16bit_nes_apu() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xC2, // NES APU RAM write
         size: 4,
         data: vec![
@@ -356,7 +356,7 @@ fn test_parse_ram_write_16bit_nes_apu() {
 fn test_parse_ram_write_16bit_unknown() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xD0, // Unknown RAM write
         size: 5,
         data: vec![
@@ -381,7 +381,7 @@ fn test_parse_ram_write_16bit_unknown() {
 fn test_parse_ram_write_32bit_scsp() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xE0, // SCSP RAM write
         size: 8,
         data: vec![
@@ -406,7 +406,7 @@ fn test_parse_ram_write_32bit_scsp() {
 fn test_parse_ram_write_32bit_es5503() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xE1, // ES5503 RAM write
         size: 6,
         data: vec![
@@ -431,7 +431,7 @@ fn test_parse_ram_write_32bit_es5503() {
 fn test_parse_ram_write_32bit_unknown() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0xF0, // Unknown RAM write
         size: 7,
         data: vec![
@@ -456,7 +456,7 @@ fn test_parse_ram_write_32bit_unknown() {
 fn test_parse_error_insufficient_data_compressed() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x40, // Compressed stream
         size: 3,
         data: vec![0x00, 0x01, 0x02], // Too short for compressed stream header
@@ -470,7 +470,7 @@ fn test_parse_error_insufficient_data_compressed() {
 fn test_parse_error_insufficient_data_rom_dump() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x80, // ROM dump
         size: 4,
         data: vec![0x00, 0x01, 0x02, 0x03], // Too short for ROM dump header
@@ -484,7 +484,7 @@ fn test_parse_error_insufficient_data_rom_dump() {
 fn test_parse_empty_data_uncompressed() {
     let block = DataBlock {
         marker: 0x66,
-        chip_instance: 0,
+        chip_instance: Instance::Primary as u8,
         data_type: 0x00, // YM2612 PCM
         size: 0,
         data: vec![],
@@ -878,7 +878,7 @@ fn test_roundtrip_uncompressed_stream() {
         data: vec![0x01, 0x02, 0x03, 0x04],
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0x00); // data_type 0x00 = uncompressed YM2612
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -899,7 +899,7 @@ fn test_roundtrip_compressed_bit_packing() {
         compression: CompressedStreamData::BitPacking(bp),
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0x40); // data_type 0x40 = compressed YM2612
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -920,7 +920,7 @@ fn test_roundtrip_compressed_dpcm() {
         compression: CompressedStreamData::Dpcm(dpcm),
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0x46); // data_type 0x46 = compressed SCSP
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -936,7 +936,7 @@ fn test_roundtrip_decompression_table() {
         table_data: vec![10, 11, 12, 13],
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0x7F); // data_type 0x7F = table
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -950,7 +950,7 @@ fn test_roundtrip_rom_ram_dump() {
         data: vec![0xDE, 0xAD, 0xBE, 0xEF],
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0x80); // data_type 0x80 = Sega PCM ROM
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -963,7 +963,7 @@ fn test_roundtrip_ram_write_16() {
         data: vec![0x11, 0x22, 0x33],
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0xC0); // data_type 0xC0 = RF5C68 RAM write
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }
@@ -976,7 +976,7 @@ fn test_roundtrip_ram_write_32() {
         data: vec![0x01, 0x02, 0x03, 0x04],
     });
 
-    let block = build_data_block(&original, 0x66, 0, 0xE0); // data_type 0xE0 = SCSP RAM write
+    let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
 }

@@ -1,9 +1,12 @@
 use soundlog::chip::*;
 use soundlog::vgm::command::{
-    Ay8910StereoMask, DataBlock, Instance, PcmRamWrite, SeekOffset, SetStreamFrequency,
-    SetupStreamControl, StartStream, StartStreamFastCall, StopStream, VgmCommand, Wait735Samples,
-    Wait882Samples, WaitNSample, WaitSamples, Ym2612Port0Address2AWriteAndWaitN,
+    Ay8910StereoMask, DacStreamChipType, DataBlock, Instance, PcmRamWrite, SeekOffset,
+    SetStreamFrequency, SetupStreamControl, StartStream, StartStreamFastCall, StopStream,
+    VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
+    Ym2612Port0Address2AWriteAndWaitN,
 };
+use soundlog::vgm::detail::StreamChipType;
+use soundlog::vgm::header::ChipId;
 use soundlog::{VgmBuilder, VgmDocument, VgmHeader};
 
 #[test]
@@ -253,7 +256,7 @@ fn add_command_pcm_ram_write() {
     let mut b = VgmBuilder::new();
     let spec = PcmRamWrite {
         marker: 0x66,
-        chip_type: 0x66,
+        chip_type: StreamChipType::Unknown(0x66),
         read_offset: 0x010203,
         write_offset: 0x030201,
         size: 3,
@@ -345,7 +348,10 @@ fn add_command_stream_controls() {
     let mut b = VgmBuilder::new();
     let setup = SetupStreamControl {
         stream_id: 1,
-        chip_type: 2,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 3,
         write_command: 4,
     };

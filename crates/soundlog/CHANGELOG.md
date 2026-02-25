@@ -2,11 +2,12 @@
 
 ## v0.7.0 (dev)
 
+- Improve `DataBlock` type-safety.
+  - New function: `soundlog::vgm::detail::build_data_block(data_block_type: &DataBlockType) -> DataBlock` — constructs the on-disk `DataBlock` bytes from a parsed `DataBlockType`.
+  - Public API Change: The DAC Stream command now has type-safe `LengthMode`, `StreamChipType`, `DacStreamChipType` and `StartStreamFastCallFlags`.
+- Extra header (v1.70+): introduce typed, round-trip-safe handling for extra-header entries by adding `soundlog::vgm::header::ChipClock` and `soundlog::vgm::header::ChipVolume`.
 - Refactor (Gd3): Rename locale-specific field suffix `_jp` to `_origin` to match the new Gd3 specification.
   - Public API change: `Gd3` struct field names (and any serde keys or helper accessors) that ended with `_jp` have been renamed to end with `_origin`. Update downstream code that referenced the old `_jp` names.
-- Extra header (v1.70+): introduce typed, round-trip-safe handling for extra-header entries by adding `soundlog::vgm::header::ChipClock` and `soundlog::vgm::header::ChipVolume`.
-- New function: `soundlog::vgm::detail::build_data_block(&DataBlockType, marker: u8, chip_instance: u8, data_type: u8) -> DataBlock` — constructs the on-disk `DataBlock` bytes from a parsed `DataBlockType`. This is the inverse of `parse_data_block` and preserves the VGM on-disk layout (compression headers, sizes, LE fields, etc.).
-- Public API Change: The DAC Stream command now has type-safe `LengthMode` and `StartStreamFastCallFlags`.
 
 ## v0.6.0
 
@@ -70,7 +71,7 @@
   - Add `reset()` to clear parser state and buffers.
   - Add `get_uncompressed_stream()` and `get_decompression_table()` to inspect stored stream data.
 - **New**: Add `VgmHeader::from_bytes(&[u8])` helper function to parse VGM headers from byte slices with detailed error reporting (`HeaderTooShort`, `InvalidIdent`, `OffsetOutOfRange`). `TryFrom<&[u8]>` for `VgmHeader` is implemented using this helper.
-- **New**: Add `DacStreamChipType` enum to provide type-safe chip type values for DAC stream control commands. Includes conversion methods `from_u8()` / `to_u8()` / `to_u8_with_instance()` and `TryFrom<u8>` / `Into<u8>` implementations.
+- **New**: Add `DacStreamChipType` enum to provide type-safe chip type values for DAC stream control commands.
 - **Breaking change**: `VgmStream::push_chunk()` now returns `Result<(), ParseError>` instead of being infallible, to support buffer size limit enforcement and proper error handling.
 - **Breaking change**: `Ay8910StereoMask` is now a regular struct with fields (`chip_instance`, `is_ym2203`, `left_ch1`, `right_ch1`, etc.) instead of a tuple struct wrapping `u8`. Access fields directly via `mask.chip_instance`, `mask.left_ch1`, etc. `Ay8910StereoMaskDetail` has been removed (merged into `Ay8910StereoMask`). The `parse_ay8910_stereo_mask()` function has been removed as it's no longer needed—use `Ay8910StereoMask::from_mask()` to parse from a byte.
 - **Fix**: VGM header parsing updated to follow the VGM specification. Main-header fields are only read when defined by the file's declared VGM version; `data_offset` is used only for VGM >= 1.50; extra-header (v1.70+) offsets are interpreted relative to the extra-header start. Serialization was adjusted for round-trip compatibility and unit tests were added to cover these cases.

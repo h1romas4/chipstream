@@ -15,14 +15,15 @@ use crate::VgmDocument;
 use crate::binutil::ParseError;
 use crate::chip;
 use crate::vgm::command::{
-    DacStreamChipType, DataBlock, Instance, LengthMode, SetStreamData, SetStreamFrequency,
-    SetupStreamControl, StartStream, StartStreamFastCall, StopStream, VgmCommand, WaitSamples,
+    DataBlock, Instance, LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl,
+    StartStream, StartStreamFastCall, StopStream, VgmCommand, WaitSamples,
     Ym2612Port0Address2AWriteAndWaitN,
 };
 use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
 };
+use crate::vgm::header::ChipId;
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
 
@@ -79,8 +80,10 @@ enum VgmStreamSource {
 struct StreamState {
     /// Stream ID (kept for debugging, prefixed with _ to avoid unused warning)
     _stream_id: u8,
-    /// Chip type to write to (determines which chip write command to generate)
-    chip_type: u8,
+    /// Typed DAC stream chip id to write to
+    chip_type: ChipId,
+    /// Instance of the chip (Primary/Secondary)
+    instance: Instance,
     /// Port/register to write to (pp in VGM spec)
     write_port: u8,
     /// Write command/register (cc in VGM spec)
@@ -216,8 +219,11 @@ pub enum StreamResult {
 /// use soundlog::{VgmBuilder, vgm::stream::VgmStream};
 /// use soundlog::vgm::stream::StreamResult;
 /// use soundlog::vgm::command::{
-///     WaitSamples, DataBlock, SetupStreamControl, SetStreamData, SetStreamFrequency, StartStream,
+///     DacStreamChipType, DataBlock,
+///     SetupStreamControl, SetStreamData, SetStreamFrequency, StartStream,
+///     WaitSamples, Instance,
 /// };
+/// use soundlog::vgm::header::ChipId;
 ///
 /// // Build a VGM document that contains:
 /// // - a DataBlock with an uncompressed PCM stream (data_type 0x00)
@@ -238,7 +244,10 @@ pub enum StreamResult {
 /// // Configure stream 0 to write to YM2612 (chip id 0x02), register 0x2A
 /// builder.add_vgm_command(SetupStreamControl {
 ///     stream_id: 0,
-///     chip_type: 0x02, // YM2612 (DacStreamChipType::Ym2612)
+///     chip_type: DacStreamChipType {
+///         chip_id: ChipId::Ym2612,
+///         instance: Instance::Primary,
+///     },
 ///     write_port: 0,
 ///     write_command: 0x2A,
 /// });
@@ -1204,7 +1213,8 @@ impl VgmStream {
             .entry(setup.stream_id)
             .or_insert_with(|| StreamState {
                 _stream_id: setup.stream_id,
-                chip_type: 0,
+                chip_type: ChipId::from_u8(0),
+                instance: Instance::Primary,
                 write_port: 0,
                 write_command: 0,
                 data_bank_id: 0,
@@ -1225,7 +1235,10 @@ impl VgmStream {
                 remaining_commands: None,
             });
 
-        state.chip_type = setup.chip_type;
+        // `SetupStreamControl.chip_type` carries both chip id and instance.
+        // Store the header `ChipId` in state and preserve the instance separately.
+        state.chip_type = setup.chip_type.chip_id;
+        state.instance = setup.chip_type.instance;
         state.write_port = setup.write_port;
         state.write_command = setup.write_command;
     }
@@ -1237,7 +1250,8 @@ impl VgmStream {
             .entry(data.stream_id)
             .or_insert_with(|| StreamState {
                 _stream_id: data.stream_id,
-                chip_type: 0,
+                chip_type: ChipId::from_u8(0),
+                instance: Instance::Primary,
                 write_port: 0,
                 write_command: 0,
                 data_bank_id: 0,
@@ -1413,7 +1427,8 @@ impl VgmStream {
             if next_write_sample <= self.current_sample && active {
                 let (
                     data_bank_id,
-                    chip_type,
+                    chip_id,
+                    instance,
                     write_port,
                     write_command,
                     step_size,
@@ -1425,6 +1440,7 @@ impl VgmStream {
                     (
                         state.data_bank_id,
                         state.chip_type,
+                        state.instance,
                         state.write_port,
                         state.write_command,
                         state.step_size,
@@ -1476,7 +1492,8 @@ impl VgmStream {
 
                 if let Some(data) = data_byte {
                     if let Some(cmd) = Self::create_stream_write_command_static(
-                        chip_type,
+                        chip_id,
+                        instance,
                         write_port,
                         write_command,
                         data,
@@ -1618,31 +1635,25 @@ impl VgmStream {
     ///
     /// This is a static method to avoid borrowing conflicts during stream generation.
     fn create_stream_write_command_static(
-        chip_type: u8,
+        chip_id: ChipId,
+        instance: Instance,
         write_port: u8,
         write_command: u8,
         data: u8,
     ) -> Option<VgmCommand> {
-        let instance = if chip_type & 0x80 != 0 {
-            Instance::Secondary
-        } else {
-            Instance::Primary
-        };
-        let chip_id = chip_type & 0x7F;
-
-        match DacStreamChipType::from_u8(chip_id) {
-            DacStreamChipType::Sn76489 => Some(VgmCommand::Sn76489Write(
+        match chip_id {
+            ChipId::Sn76489 => Some(VgmCommand::Sn76489Write(
                 instance,
                 chip::PsgSpec { value: data },
             )),
-            DacStreamChipType::Ym2413 => Some(VgmCommand::Ym2413Write(
+            ChipId::Ym2413 => Some(VgmCommand::Ym2413Write(
                 instance,
                 chip::Ym2413Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym2612 => Some(VgmCommand::Ym2612Write(
+            ChipId::Ym2612 => Some(VgmCommand::Ym2612Write(
                 instance,
                 chip::Ym2612Spec {
                     port: write_port,
@@ -1650,35 +1661,35 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym2151 => Some(VgmCommand::Ym2151Write(
+            ChipId::Ym2151 => Some(VgmCommand::Ym2151Write(
                 instance,
                 chip::Ym2151Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::SegaPcm => Some(VgmCommand::SegaPcmWrite(
+            ChipId::SegaPcm => Some(VgmCommand::SegaPcmWrite(
                 instance,
                 chip::SegaPcmSpec {
                     offset: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::Rf5c68 => Some(VgmCommand::Rf5c68U8Write(
+            ChipId::Rf5c68 => Some(VgmCommand::Rf5c68U8Write(
                 instance,
                 chip::Rf5c68U8Spec {
                     offset: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym2203 => Some(VgmCommand::Ym2203Write(
+            ChipId::Ym2203 => Some(VgmCommand::Ym2203Write(
                 instance,
                 chip::Ym2203Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym2608 => Some(VgmCommand::Ym2608Write(
+            ChipId::Ym2608 => Some(VgmCommand::Ym2608Write(
                 instance,
                 chip::Ym2608Spec {
                     port: write_port,
@@ -1686,7 +1697,7 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym2610 => Some(VgmCommand::Ym2610bWrite(
+            ChipId::Ym2610 => Some(VgmCommand::Ym2610bWrite(
                 instance,
                 chip::Ym2610Spec {
                     port: write_port,
@@ -1694,28 +1705,28 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym3812 => Some(VgmCommand::Ym3812Write(
+            ChipId::Ym3812 => Some(VgmCommand::Ym3812Write(
                 instance,
                 chip::Ym3812Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Ym3526 => Some(VgmCommand::Ym3526Write(
+            ChipId::Ym3526 => Some(VgmCommand::Ym3526Write(
                 instance,
                 chip::Ym3526Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Y8950 => Some(VgmCommand::Y8950Write(
+            ChipId::Y8950 => Some(VgmCommand::Y8950Write(
                 instance,
                 chip::Y8950Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Ymf262 => Some(VgmCommand::Ymf262Write(
+            ChipId::Ymf262 => Some(VgmCommand::Ymf262Write(
                 instance,
                 chip::Ymf262Spec {
                     port: write_port,
@@ -1723,7 +1734,7 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ymf278b => Some(VgmCommand::Ymf278bWrite(
+            ChipId::Ymf278b => Some(VgmCommand::Ymf278bWrite(
                 instance,
                 chip::Ymf278bSpec {
                     port: write_port,
@@ -1731,7 +1742,7 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ymf271 => Some(VgmCommand::Ymf271Write(
+            ChipId::Ymf271 => Some(VgmCommand::Ymf271Write(
                 instance,
                 chip::Ymf271Spec {
                     port: write_port,
@@ -1739,77 +1750,77 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::Ymz280b => Some(VgmCommand::Ymz280bWrite(
+            ChipId::Ymz280b => Some(VgmCommand::Ymz280bWrite(
                 instance,
                 chip::Ymz280bSpec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Rf5c164 => Some(VgmCommand::Rf5c164U8Write(
+            ChipId::Rf5c164 => Some(VgmCommand::Rf5c164U8Write(
                 instance,
                 chip::Rf5c164U8Spec {
                     offset: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Pwm => Some(VgmCommand::PwmWrite(
+            ChipId::Pwm => Some(VgmCommand::PwmWrite(
                 instance,
                 chip::PwmSpec {
                     register: write_port & 0x0F,
                     value: ((write_command as u32) << 8) | (data as u32),
                 },
             )),
-            DacStreamChipType::Ay8910 => Some(VgmCommand::Ay8910Write(
+            ChipId::Ay8910 => Some(VgmCommand::Ay8910Write(
                 instance,
                 chip::Ay8910Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::GbDmg => Some(VgmCommand::GbDmgWrite(
+            ChipId::GbDmg => Some(VgmCommand::GbDmgWrite(
                 instance,
                 chip::GbDmgSpec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::NesApu => Some(VgmCommand::NesApuWrite(
+            ChipId::NesApu => Some(VgmCommand::NesApuWrite(
                 instance,
                 chip::NesApuSpec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::MultiPcm => Some(VgmCommand::MultiPcmWrite(
+            ChipId::MultiPcm => Some(VgmCommand::MultiPcmWrite(
                 instance,
                 chip::MultiPcmSpec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Upd7759 => Some(VgmCommand::Upd7759Write(
+            ChipId::Upd7759 => Some(VgmCommand::Upd7759Write(
                 instance,
                 chip::Upd7759Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Okim6258 => Some(VgmCommand::Okim6258Write(
+            ChipId::Okim6258 => Some(VgmCommand::Okim6258Write(
                 instance,
                 chip::Okim6258Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Okim6295 => Some(VgmCommand::Okim6295Write(
+            ChipId::Okim6295 => Some(VgmCommand::Okim6295Write(
                 instance,
                 chip::Okim6295Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::K051649 => Some(VgmCommand::Scc1Write(
+            ChipId::K051649 => Some(VgmCommand::Scc1Write(
                 instance,
                 chip::Scc1Spec {
                     port: write_port,
@@ -1817,112 +1828,112 @@ impl VgmStream {
                     value: data,
                 },
             )),
-            DacStreamChipType::K054539 => Some(VgmCommand::K054539Write(
+            ChipId::K054539 => Some(VgmCommand::K054539Write(
                 instance,
                 chip::K054539Spec {
                     register: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::Huc6280 => Some(VgmCommand::Huc6280Write(
+            ChipId::Huc6280 => Some(VgmCommand::Huc6280Write(
                 instance,
                 chip::Huc6280Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::C140 => Some(VgmCommand::C140Write(
+            ChipId::C140 => Some(VgmCommand::C140Write(
                 instance,
                 chip::C140Spec {
                     register: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::K053260 => Some(VgmCommand::K053260Write(
+            ChipId::K053260 => Some(VgmCommand::K053260Write(
                 instance,
                 chip::K053260Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Pokey => Some(VgmCommand::PokeyWrite(
+            ChipId::Pokey => Some(VgmCommand::PokeyWrite(
                 instance,
                 chip::PokeySpec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Qsound => Some(VgmCommand::QsoundWrite(
+            ChipId::Qsound => Some(VgmCommand::QsoundWrite(
                 instance,
                 chip::QsoundSpec {
                     register: write_command,
                     value: ((write_port as u16) << 8) | (data as u16),
                 },
             )),
-            DacStreamChipType::Scsp => Some(VgmCommand::ScspWrite(
+            ChipId::Scsp => Some(VgmCommand::ScspWrite(
                 instance,
                 chip::ScspSpec {
                     offset: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::WonderSwan => Some(VgmCommand::WonderSwanWrite(
+            ChipId::WonderSwan => Some(VgmCommand::WonderSwanWrite(
                 instance,
                 chip::WonderSwanSpec {
                     offset: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::Vsu => Some(VgmCommand::VsuWrite(
+            ChipId::Vsu => Some(VgmCommand::VsuWrite(
                 instance,
                 chip::VsuSpec {
                     offset: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::Saa1099 => Some(VgmCommand::Saa1099Write(
+            ChipId::Saa1099 => Some(VgmCommand::Saa1099Write(
                 instance,
                 chip::Saa1099Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Es5503 => Some(VgmCommand::Es5503Write(
+            ChipId::Es5503 => Some(VgmCommand::Es5503Write(
                 instance,
                 chip::Es5503Spec {
                     register: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::Es5506 => Some(VgmCommand::Es5506BEWrite(
+            ChipId::Es5506 => Some(VgmCommand::Es5506BEWrite(
                 instance,
                 chip::Es5506U8Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::X1010 => Some(VgmCommand::X1010Write(
+            ChipId::X1010 => Some(VgmCommand::X1010Write(
                 instance,
                 chip::X1010Spec {
                     offset: ((write_port as u16) << 8) | (write_command as u16),
                     value: data,
                 },
             )),
-            DacStreamChipType::C352 => Some(VgmCommand::C352Write(
+            ChipId::C352 => Some(VgmCommand::C352Write(
                 instance,
                 chip::C352Spec {
                     register: ((write_port as u16) << 8) | (write_command as u16),
                     value: data as u16,
                 },
             )),
-            DacStreamChipType::Ga20 => Some(VgmCommand::Ga20Write(
+            ChipId::Ga20 => Some(VgmCommand::Ga20Write(
                 instance,
                 chip::Ga20Spec {
                     register: write_command,
                     value: data,
                 },
             )),
-            DacStreamChipType::Mikey => Some(VgmCommand::MikeyWrite(
+            ChipId::Mikey => Some(VgmCommand::MikeyWrite(
                 instance,
                 chip::MikeySpec {
                     register: write_command,

@@ -104,6 +104,7 @@
 
 use crate::binutil::ParseError;
 use crate::vgm::command::DataBlock;
+use crate::vgm::command::Instance;
 
 /// Stream chip type for uncompressed/compressed streams (data block types 0x00-0x3F and 0x40-0x7E).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +144,23 @@ impl From<u8> for StreamChipType {
             0x07 => StreamChipType::NesApuDpcm,
             0x08 => StreamChipType::MikeyPcm,
             _ => StreamChipType::Unknown(value & 0x3F),
+        }
+    }
+}
+
+impl From<StreamChipType> for u8 {
+    fn from(s: StreamChipType) -> Self {
+        match s {
+            StreamChipType::Ym2612Pcm => 0x00u8,
+            StreamChipType::Rf5c68Pcm => 0x01u8,
+            StreamChipType::Rf5c164Pcm => 0x02u8,
+            StreamChipType::PwmPcm => 0x03u8,
+            StreamChipType::Okim6258Adpcm => 0x04u8,
+            StreamChipType::Huc6280Pcm => 0x05u8,
+            StreamChipType::ScspPcm => 0x06u8,
+            StreamChipType::NesApuDpcm => 0x07u8,
+            StreamChipType::MikeyPcm => 0x08u8,
+            StreamChipType::Unknown(v) => v & 0x3F,
         }
     }
 }
@@ -747,18 +765,29 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, (DataBlock, P
     }
 }
 
-/// Build a `DataBlock` (on-disk layout) from a parsed `DataBlockType`.
+/// Build a `DataBlock` from `DataBlockType`.
 ///
-/// The caller provides the `marker`, `chip_instance`, and the `data_type`
-/// (on-disk byte). This function performs the inverse of `parse_data_block`
-/// for all supported variants, constructing the `data: Vec<u8>` according to
-/// the VGM on-disk layout and returning a `DataBlock`.
-pub fn build_data_block(
-    data_block_type: &DataBlockType,
-    marker: u8,
-    chip_instance: u8,
-    data_type: u8,
-) -> DataBlock {
+/// # Examples
+///
+/// ```rust
+/// use soundlog::vgm::detail::{build_data_block, DataBlockType, UncompressedStream, StreamChipType};
+/// use soundlog::vgm::command::Instance;
+///
+/// let mut builder = soundlog::VgmBuilder::new();
+///
+/// // Construct a data block detail
+/// let uncompressd_stream = DataBlockType::UncompressedStream(UncompressedStream {
+///     chip_type: StreamChipType::Ym2612Pcm,
+///     data: vec![0x01, 0x02],
+/// });
+///
+/// // Build DataBlock
+/// let block = build_data_block(&uncompressd_stream);
+///
+/// // Add the constructed `DataBlock` into the builder using `add_vgm_command`.
+/// builder.add_vgm_command(soundlog::vgm::command::VgmCommand::DataBlock(block));
+/// ```
+pub fn build_data_block(data_block_type: &DataBlockType) -> DataBlock {
     let mut data: Vec<u8> = Vec::new();
 
     match data_block_type {
@@ -842,11 +871,59 @@ pub fn build_data_block(
     }
 
     DataBlock {
-        marker,
-        chip_instance,
-        data_type,
+        marker: 0x66,
+        chip_instance: Instance::Primary as u8,
+        data_type: data_block_type_to_u8(data_block_type),
         size: data.len() as u32,
         data,
+    }
+}
+
+fn data_block_type_to_u8(data_block_type: &DataBlockType) -> u8 {
+    match data_block_type {
+        DataBlockType::UncompressedStream(s) => {
+            // UncompressedStream -> u8 (0x00..0x3F)
+            u8::from(s.chip_type) & 0x3F
+        }
+        DataBlockType::CompressedStream(s) => {
+            // CompressedStream -> u8 (0x40..0x7E)
+            (u8::from(s.chip_type) & 0x3F) + 0x40
+        }
+        DataBlockType::DecompressionTable(_) => 0x7F,
+        DataBlockType::RomRamDump(d) => match d.chip_type {
+            RomRamChipType::SegaPcmRom => 0x80,
+            RomRamChipType::Ym2608DeltaTRom => 0x81,
+            RomRamChipType::Ym2610AdpcmRom => 0x82,
+            RomRamChipType::Ym2610DeltaTRom => 0x83,
+            RomRamChipType::Ymf278bRom => 0x84,
+            RomRamChipType::Ymf271Rom => 0x85,
+            RomRamChipType::Ymz280bRom => 0x86,
+            RomRamChipType::Ymf278bRam => 0x87,
+            RomRamChipType::Y8950DeltaTRom => 0x88,
+            RomRamChipType::MultiPcmRom => 0x89,
+            RomRamChipType::Upd7759Rom => 0x8A,
+            RomRamChipType::Okim6295Rom => 0x8B,
+            RomRamChipType::K054539Rom => 0x8C,
+            RomRamChipType::C140Rom => 0x8D,
+            RomRamChipType::K053260Rom => 0x8E,
+            RomRamChipType::QsoundRom => 0x8F,
+            RomRamChipType::Es5505Rom => 0x90,
+            RomRamChipType::X1010Rom => 0x91,
+            RomRamChipType::C352Rom => 0x92,
+            RomRamChipType::Ga20Rom => 0x93,
+            RomRamChipType::Unknown(v) => v,
+        },
+        DataBlockType::RamWrite16(w) => match w.chip_type {
+            RamWrite16ChipType::Rf5c68 => 0xC0,
+            RamWrite16ChipType::Rf5c164 => 0xC1,
+            RamWrite16ChipType::NesApu => 0xC2,
+            RamWrite16ChipType::Unknown(v) => v,
+        },
+        DataBlockType::RamWrite32(w) => match w.chip_type {
+            RamWrite32ChipType::Scsp => 0xE0,
+            RamWrite32ChipType::Es5503 => 0xE1,
+            RamWrite32ChipType::Unknown(v) => v,
+        },
     }
 }
 

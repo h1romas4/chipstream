@@ -4,6 +4,7 @@ use soundlog::vgm::command::DacStreamChipType;
 use soundlog::vgm::command::{
     EndOfData, Instance, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
 };
+use soundlog::vgm::header::ChipId;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 use soundlog::{VgmCallbackStream, chip};
 use std::cell::RefCell;
@@ -1013,7 +1014,10 @@ fn test_dac_stream_control_basic() {
     // SetupStreamControl (0x90): stream_id=0, chip_type=YM2612, port=0, register=0x2A
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1123,7 +1127,10 @@ fn test_dac_stream_control_stop_all_streams() {
     for stream_id in 0u8..2u8 {
         builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
             stream_id,
-            chip_type: 0x02,
+            chip_type: DacStreamChipType {
+                chip_id: ChipId::Ym2612,
+                instance: Instance::Primary,
+            },
             write_port: 0,
             write_command: 0x2A,
         });
@@ -1203,7 +1210,10 @@ fn test_dac_stream_control_fast_call() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1297,7 +1307,10 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     // Setup stream for OKIM6258 (chip_type 0x17)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: 0x17, // OKIM6258
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Okim6258,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x01,
     });
@@ -1414,7 +1427,10 @@ fn test_start_stream_with_multiple_blocks() {
     // Setup stream for OKIM6258
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: 0x17, // OKIM6258
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Okim6258,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x01,
     });
@@ -1537,7 +1553,10 @@ fn test_wait_expansion_with_stream_writes() {
     // Setup stream control for YM2612 DAC (chip_type=0x02, port=0, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A,
     });
@@ -1686,7 +1705,10 @@ fn test_wait_splitting_with_stream_timing() {
     // Setup stream control
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A, // DAC register
     });
@@ -1879,7 +1901,10 @@ fn test_from_document_with_stream_control() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A, // DAC register
     });
@@ -2096,7 +2121,10 @@ fn test_fadeout_samples_with_stream_control() {
     // Setup stream
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A,
     });
@@ -2305,7 +2333,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 0: YM2612 DAC (chip_type=YM2612, port=0, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 0,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x2A,
     });
@@ -2325,7 +2356,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 2: YM2151 (chip_type=YM2151, port=0, register=0x08)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 2,
-        chip_type: DacStreamChipType::Ym2151.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2151,
+            instance: Instance::Primary,
+        },
         write_port: 0,
         write_command: 0x08,
     });
@@ -2345,7 +2379,10 @@ fn test_multiple_dac_streams_wait_interleaving() {
     // Setup stream 1: YM2612 Port 1 (chip_type=YM2612, port=1, register=0x2A)
     builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
         stream_id: 1,
-        chip_type: DacStreamChipType::Ym2612.into(),
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
         write_port: 1,
         write_command: 0x2A,
     });

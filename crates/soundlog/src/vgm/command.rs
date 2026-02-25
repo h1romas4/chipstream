@@ -22,27 +22,38 @@
 //!
 //! ```
 //! use soundlog::vgm::command::{SetupStreamControl, DacStreamChipType};
+//! use soundlog::vgm::header::ChipId;
+//! use soundlog::vgm::command::Instance;
 //!
-//! // Using struct literal with DacStreamChipType enum
+//! // Using struct literal with DacStreamChipType
 //! let setup = SetupStreamControl {
 //!     stream_id: 0,
-//!     chip_type: DacStreamChipType::Ym2612.into(),  // .into() converts to u8
+//!     chip_type: DacStreamChipType {
+//!         chip_id: ChipId::Ym2612,
+//!         instance: Instance::Primary
+//!     },
 //!     write_port: 0,
 //!     write_command: 0x2A,
 //! };
 //!
-//! // For secondary chip instances, use to_u8_with_instance()
+//! // For secondary chip instances
 //! let setup_secondary = SetupStreamControl {
 //!     stream_id: 0,
-//!     chip_type: DacStreamChipType::Ym2612.to_u8_with_instance(true),
+//!     chip_type: DacStreamChipType {
+//!         chip_id: ChipId::Ym2612,
+//!         instance: Instance::Secondary
+//!     },
 //!     write_port: 0,
 //!     write_command: 0x2A,
 //! };
 //!
-//! // You can still use u8 directly if needed
+//! // You can still use u8 directly if needed (use the numeric raw value where appropriate)
 //! let setup_raw = SetupStreamControl {
 //!     stream_id: 0,
-//!     chip_type: 0x02u8,
+//!     chip_type: DacStreamChipType {
+//!         chip_id: ChipId::Ym2612,
+//!         instance: Instance::Primary
+//!     },
 //!     write_port: 0,
 //!     write_command: 0x2A,
 //! };
@@ -52,61 +63,90 @@
 //!
 //! ```
 //! use soundlog::vgm::command::DacStreamChipType;
+//! use soundlog::vgm::header::ChipId;
+//! use soundlog::vgm::command::Instance;
 //!
 //! // Convert DacStreamChipType to u8
-//! let chip_id: u8 = DacStreamChipType::Ym2612.into();
+//! let chip_id: u8 = DacStreamChipType {
+//!     chip_id: ChipId::Ym2612,
+//!     instance: Instance::Primary
+//! }.into();
 //! assert_eq!(chip_id, 0x02);
 //!
-//! // Convert u8 to ChipId using `from_u8` (low-7 bits are used for known IDs)
-//! let chip_type = soundlog::vgm::header::ChipId::from_u8(0x02u8);
-//! assert_eq!(chip_type, DacStreamChipType::Ym2612);
+//! // Convert u8 to DacStreamChipType using `from_u8` (preserves instance bit)
+//! let chip_type = DacStreamChipType::from_u8(0x02u8);
+//! assert_eq!(chip_type, DacStreamChipType {
+//!     chip_id: ChipId::Ym2612,
+//!     instance: Instance::Primary
+//! });
 //!
 //! // Unknown/invalid raw values return `ChipId::Unknown(raw)`
-//! let invalid = soundlog::vgm::header::ChipId::from_u8(0xFFu8);
-//! assert!(matches!(invalid, soundlog::vgm::header::ChipId::Unknown(_)));
+//! let invalid = ChipId::from_u8(0xFFu8);
+//! assert!(matches!(invalid, ChipId::Unknown(_)));
 //! ```
 use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
 use crate::chip;
+use crate::vgm::detail::StreamChipType;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::VgmHeader;
+use crate::vgm::header::{ChipId, VgmHeader};
 
-/// Alias for `vgm::header::ChipId` used as the chip ID type for DAC stream control.
-/// Re-exported here for convenient use in stream-related command types.
-pub use crate::vgm::header::ChipId as DacStreamChipType;
+/// Typed representation of a DAC stream chip + instance.
+///
+/// Historically `DacStreamChipType` was an alias to `ChipId`. To preserve both
+/// the canonical chip id and the primary/secondary instance flag we represent
+/// it as a small struct containing both pieces of information.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct DacStreamChipType {
+    pub chip_id: ChipId,
+    pub instance: Instance,
+}
 
-/// VGM DAC Stream Control chip type enumeration.
-///
-/// These values are used in SetupStreamControl commands to identify the target chip.
-/// They correspond to the chip order in VGM headers and are also used as data_type
-/// values in DataBlock commands (chip_type and data_type use the same ID space).
-///
-/// Note: When stored as u8 in VGM files, bit 7 (0x80) indicates secondary chip instance.
-/// Use [`DacStreamChipType::from_u8_with_instance`] and [`DacStreamChipType::to_u8_with_instance`]
-/// for conversion with instance flag support.
 impl DacStreamChipType {
-    /// Check if a u8 value represents a secondary chip instance (bit 7 set).
-    pub fn is_secondary_instance(value: u8) -> bool {
+    /// Construct a new typed value.
+    pub const fn new(chip_id: ChipId, instance: Instance) -> Self {
+        DacStreamChipType { chip_id, instance }
+    }
+
+    /// Create a typed value from the raw on-disk u8 (preserves instance bit).
+    pub fn from_u8(raw: u8) -> Self {
+        let instance = if Self::is_secondary_instance(raw) {
+            Instance::Secondary
+        } else {
+            Instance::Primary
+        };
+        let chip = ChipId::from_u8(raw & 0x7F);
+        DacStreamChipType {
+            chip_id: chip,
+            instance,
+        }
+    }
+
+    /// Convert typed value back to the raw on-disk u8 (includes instance bit).
+    pub fn to_u8(&self) -> u8 {
+        let base = self.chip_id.to_u8();
+        match self.instance {
+            Instance::Primary => base,
+            Instance::Secondary => base | 0x80,
+        }
+    }
+
+    /// Check if a raw u8 value represents a secondary chip instance (bit 7 set).
+    fn is_secondary_instance(value: u8) -> bool {
         value & 0x80 != 0
     }
+}
 
-    /// Extract chip type and instance from u8 value.
-    ///
-    /// Returns `(chip_type, is_secondary)` tuple. The canonical chip id is decoded
-    /// using the low 7 bits; the returned `ChipId` may be `Unknown(u8)` for
-    /// vendor-specific values.
-    pub fn from_u8_with_instance(value: u8) -> Option<(Self, bool)> {
-        let is_secondary = Self::is_secondary_instance(value);
-        // Use the existing canonical decoder which matches on low 7 bits and
-        // preserves Unknown(raw) for extension values.
-        Some((Self::from_u8(value & 0x7F), is_secondary))
+impl From<u8> for DacStreamChipType {
+    fn from(v: u8) -> Self {
+        DacStreamChipType::from_u8(v)
     }
+}
 
-    /// Combine chip type with instance flag to create u8 value.
-    pub fn to_u8_with_instance(self, is_secondary: bool) -> u8 {
-        let base = self.to_u8();
-        if is_secondary { base | 0x80 } else { base }
+impl From<DacStreamChipType> for u8 {
+    fn from(d: DacStreamChipType) -> Self {
+        d.to_u8()
     }
 }
 
@@ -294,6 +334,10 @@ pub struct Wait882Samples;
 pub struct EndOfData;
 
 /// VGM command 0x67 specifies a data block.
+///
+/// Note: prefer constructing a `DataBlock` via
+/// `soundlog::vgm::detail::build_data_block` (see `crate::vgm::detail::build_data_block`)
+/// instead of instantiating this struct by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
     pub marker: u8,
@@ -305,18 +349,15 @@ pub struct DataBlock {
 
 /// VGM command 0x68 specifies a PCM RAM write.
 ///
-/// The `chip_type` field is stored as a `u8` in VGM bytes, but when
-/// constructing this struct you can use the `DacStreamChipType` enum and
-/// convert it with `.into()` to produce the required `u8`.
-///
 /// Example:
 ///
 /// ```rust
-/// use soundlog::vgm::command::{PcmRamWrite, DacStreamChipType};
+/// use soundlog::vgm::command::PcmRamWrite;
+/// use soundlog::vgm::detail::StreamChipType;
 ///
 /// let p = PcmRamWrite {
 ///     marker: 0x66,
-///     chip_type: DacStreamChipType::Ym2608.into(), // use the enum and call `.into()`
+///     chip_type: StreamChipType::Ym2612Pcm,
 ///     read_offset: 0,
 ///     write_offset: 0,
 ///     size: 0,
@@ -326,7 +367,7 @@ pub struct DataBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PcmRamWrite {
     pub marker: u8,
-    pub chip_type: u8,
+    pub chip_type: StreamChipType,
     pub read_offset: u32,
     pub write_offset: u32,
     pub size: u32,
@@ -356,7 +397,7 @@ pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 ///
 /// let s = SetupStreamControl {
 ///     stream_id: 0,
-///     chip_type: DacStreamChipType::Ym2612.into(), // use the enum and call `.into()`
+///     chip_type: DacStreamChipType { chip_id: soundlog::vgm::header::ChipId::Ym2612, instance: soundlog::vgm::command::Instance::Primary }, // use the struct literal
 ///     write_port: 0,
 ///     write_command: 0x2A,
 /// };
@@ -364,7 +405,7 @@ pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupStreamControl {
     pub stream_id: u8,
-    pub chip_type: u8,
+    pub chip_type: DacStreamChipType,
     pub write_port: u8,
     pub write_command: u8,
 }
@@ -724,7 +765,7 @@ impl CommandSpec for PcmRamWrite {
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
         dest.push(self.marker);
-        dest.push(self.chip_type);
+        dest.push(self.chip_type.into());
         let o = self.read_offset & 0x00FF_FFFF;
         dest.push(((o >> 16) & 0xFF) as u8);
         dest.push(((o >> 8) & 0xFF) as u8);
@@ -746,7 +787,8 @@ impl CommandSpec for PcmRamWrite {
         // Expect offset to point at the marker byte. Preserve marker value,
         // do not validate it here; caller (parser) may choose to validate or not.
         let marker = read_u8_at(bytes, offset)?;
-        let chip_type = read_u8_at(bytes, offset + 1)?;
+        let chip_raw = read_u8_at(bytes, offset + 1)?;
+        let chip_type = StreamChipType::from(chip_raw);
         let read_off = read_u24_be_at(bytes, offset + 2)?;
         let write_off = read_u24_be_at(bytes, offset + 5)?;
         let size = read_u24_be_at(bytes, offset + 8)?;
@@ -805,7 +847,7 @@ impl CommandSpec for SetupStreamControl {
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
         dest.push(self.stream_id);
-        dest.push(self.chip_type);
+        dest.push(self.chip_type.into());
         dest.push(self.write_port);
         dest.push(self.write_command);
     }
@@ -814,7 +856,10 @@ impl CommandSpec for SetupStreamControl {
         Self: Sized,
     {
         let stream_id = read_u8_at(bytes, off)?;
-        let chip_type = read_u8_at(bytes, off + 1)?;
+        // Raw on-disk value may include an instance bit in bit 7; preserve instance
+        // and construct a typed `DacStreamChipType`.
+        let chip_raw = read_u8_at(bytes, off + 1)?;
+        let chip_type = DacStreamChipType::from_u8(chip_raw);
         let write_port = read_u8_at(bytes, off + 2)?;
         let write_command = read_u8_at(bytes, off + 3)?;
         Ok((

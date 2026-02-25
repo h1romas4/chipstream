@@ -1122,7 +1122,7 @@ impl TryFrom<&[u8]> for VgmHeader {
 /// `ChipId` is used to represent the 1-byte chip id values stored in the
 /// extra-header. It mirrors the values used by DAC stream chip identifiers but
 /// also preserves unknown/extension values via `Unknown(u8)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ChipId {
     Sn76489,
     Ym2413,

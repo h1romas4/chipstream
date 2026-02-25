@@ -210,7 +210,7 @@ while let Some(result) = stream.next() {
                 // And also `PcmRamWrite` commands (opcode 0x68) may be emitted by the stream
                 // instead of being stored as a DataBlock. Handle them here if you
                 // need to process PCM RAM writes directly.
-                println!("PCM RAM write: chip_type=0x{:02X} size={}", write.chip_type, write.size);
+                println!("PCM RAM write: chip_type={:?} size={}", write.chip_type, write.size);
                 // Process or store the PCM RAM write as appropriate.
             }
             other => {
