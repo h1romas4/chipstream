@@ -1170,10 +1170,8 @@ pub enum ChipId {
 }
 
 impl ChipId {
-    /// Create a `ChipId` from a raw u8 as stored in VGM extra-header.
-    /// Instance bit (0x80) is preserved in the returned `Unknown(u8)` for
-    /// unknown values; known chip ids are returned without the instance bit
-    /// (the raw value's low 7 bits are matched).
+    /// Create a `ChipId` from a raw u8 as stored in VGM extra-header and DAC Stream.
+    /// This number is clock-order in VGM header.
     pub fn from_u8(raw: u8) -> Self {
         let chip = raw & 0x7F;
         match chip {
@@ -1312,12 +1310,12 @@ pub struct VgmExtraHeader {
 pub struct ChipClock {
     /// Decoded chip id (known or Unknown(raw)).
     pub chip_id: ChipId,
-    /// Stored raw chip-id byte as read/written on-disk (preserves instance bit).
-    pub raw_chip_id: u8,
     /// Decoded instance derived from the raw_chip_id (bit 7: secondary).
     pub instance: Instance,
     /// Clock value (Hz) as stored on-disk.
     pub clock: u32,
+    /// Stored raw chip-id byte as read/written on-disk (preserves instance bit).
+    raw_chip_id: u8,
 }
 
 impl ChipClock {
@@ -1354,16 +1352,16 @@ impl ChipClock {
 pub struct ChipVolume {
     /// Decoded chip id.
     pub chip_id: ChipId,
-    /// Raw chip-id byte as read/written on-disk.
-    pub raw_chip_id: u8,
     /// True if the raw chip-id byte had bit 7 set indicating a paired chip's volume.
     pub paired_chip: bool,
-    /// Raw flags byte as read/written on-disk (preserves vendor-specific bits).
-    pub raw_flags: u8,
     /// Decoded instance derived from raw_flags (bit 0: secondary).
     pub instance: Instance,
     /// Volume value
     pub volume: u16,
+    /// Raw chip-id byte as read/written on-disk.
+    raw_chip_id: u8,
+    /// Raw flags byte as read/written on-disk (preserves vendor-specific bits).
+    raw_flags: u8,
 }
 
 impl ChipVolume {
@@ -1548,5 +1546,59 @@ impl VgmExtraHeader {
         buf[8..12].copy_from_slice(&chip_vol_offset.to_le_bytes());
 
         buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chipvolume_from_raw_decodes_paired_and_instance() {
+        // Use Ym2203 (0x06) with paired bit set and flags indicating secondary.
+        let raw_chip = 0x80 | 0x06;
+        let raw_flags = 0x01; // bit0 = secondary
+        let volume: u16 = 1234;
+
+        let cv = ChipVolume::from_raw(raw_chip, raw_flags, volume);
+
+        // Paired bit should be detected.
+        assert!(cv.paired_chip);
+        // Instance should be decoded from flags (bit 0).
+        assert_eq!(cv.instance, Instance::Secondary);
+        // Decoded chip id should ignore the paired bit.
+        assert_eq!(cv.chip_id, ChipId::Ym2203);
+        // Raw fields should be preserved for round-trip.
+        assert_eq!(cv.raw_chip_id, raw_chip);
+        assert_eq!(cv.raw_flags, raw_flags);
+        assert_eq!(cv.volume, volume);
+    }
+
+    #[test]
+    fn test_chipvolume_new_paired_sets_raw_bit() {
+        // Construct a paired ChipVolume via helper and verify raw byte has bit 7.
+        let cv = ChipVolume::new_paired(ChipId::Ay8910, Instance::Primary, 500u16);
+
+        assert!(cv.paired_chip);
+        assert_eq!(cv.chip_id, ChipId::Ay8910);
+        assert_eq!(cv.instance, Instance::Primary);
+        // Raw chip id should include the paired bit.
+        assert_eq!(cv.raw_chip_id & 0x80, 0x80);
+    }
+
+    #[test]
+    fn test_chipclock_new_and_from_raw_instance_roundtrip() {
+        // Secondary instance should set bit 7 on raw_chip_id in ChipClock::new
+        let cc = ChipClock::new(ChipId::Ym2612, Instance::Secondary, 44100u32);
+
+        assert_eq!(cc.instance, Instance::Secondary);
+        assert_eq!(cc.chip_id, ChipId::Ym2612);
+        assert_eq!(cc.raw_chip_id & 0x80, 0x80);
+
+        // Now decode from raw and ensure we get the same semantic fields.
+        let decoded = ChipClock::from_raw(cc.raw_chip_id, cc.clock);
+        assert_eq!(decoded.instance, Instance::Secondary);
+        assert_eq!(decoded.chip_id, ChipId::Ym2612);
+        assert_eq!(decoded.clock, 44100u32);
     }
 }

@@ -7,11 +7,11 @@
 // generated writes are associated with the Secondary instance.
 
 use soundlog::VgmBuilder;
+use soundlog::vgm::command::ChipId;
 use soundlog::vgm::command::{
     DacStreamChipType, DataBlock, EndOfData, Instance, LengthMode, SetStreamData,
     SetStreamFrequency, SetupStreamControl, StartStream, StopStream, VgmCommand, WaitSamples,
 };
-use soundlog::vgm::header::ChipId;
 use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 

@@ -15,9 +15,11 @@ use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
 use crate::chip;
-use crate::vgm::detail::StreamChipType;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::{ChipId, VgmHeader};
+use crate::vgm::header::VgmHeader;
+// re-export
+pub use crate::vgm::detail::StreamChipType;
+pub use crate::vgm::header::ChipId;
 
 /// Typed representation of a DAC stream chip + instance.
 ///
@@ -311,6 +313,11 @@ pub struct WaitNSample(pub u8);
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 
+/// Stream identifier for DAC stream commands.
+pub type StreamId = u8;
+pub type DataBankId = u8;
+pub type BlockId = u16;
+
 /// DAC Stream Control Write: Setup Stream Control
 ///
 /// Example:
@@ -332,7 +339,7 @@ pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupStreamControl {
-    pub stream_id: u8,
+    pub stream_id: StreamId,
     pub chip_type: DacStreamChipType,
     pub write_port: u8,
     pub write_command: u8,
@@ -341,8 +348,8 @@ pub struct SetupStreamControl {
 /// DAC Stream Control Write: Set Stream Data
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStreamData {
-    pub stream_id: u8,
-    pub data_bank_id: u8,
+    pub stream_id: StreamId,
+    pub data_bank_id: DataBankId,
     pub step_size: u8,
     pub step_base: u8,
 }
@@ -350,7 +357,7 @@ pub struct SetStreamData {
 /// DAC Stream Control Write: Set Stream Frequency
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStreamFrequency {
-    pub stream_id: u8,
+    pub stream_id: StreamId,
     pub frequency: u32,
 }
 
@@ -373,7 +380,7 @@ pub struct SetStreamFrequency {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStream {
-    pub stream_id: u8,
+    pub stream_id: StreamId,
     pub data_start_offset: i32,
     pub length_mode: LengthMode,
     pub data_length: u32,
@@ -382,7 +389,7 @@ pub struct StartStream {
 /// DAC Stream Control Write: Stop Stream
 #[derive(Debug, Clone, PartialEq)]
 pub struct StopStream {
-    pub stream_id: u8,
+    pub stream_id: StreamId,
 }
 
 /// DAC Stream Control Write: Start Stream (fast call)
@@ -403,8 +410,8 @@ pub struct StopStream {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStreamFastCall {
-    pub stream_id: u8,
-    pub block_id: u16,
+    pub stream_id: StreamId,
+    pub block_id: BlockId,
     pub flags: StartStreamFastCallFlags,
 }
 
