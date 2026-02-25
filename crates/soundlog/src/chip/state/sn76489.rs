@@ -32,8 +32,6 @@ pub type Sn76489Storage = ArrayStorage<u8, 16>;
 /// Frequency is 10-bit for tone channels.
 /// Volume is 4-bit attenuation (0 = max, 15 = silent).
 ///
-/// # TODO: Key on/off detection details
-///
 /// The SN76489 doesn't have explicit key on/off commands.
 /// Key state is inferred from volume changes:
 /// - Volume set to non-silent (0-14) after being silent (15) = key on
@@ -205,8 +203,6 @@ impl Sn76489State {
     }
 
     /// Handle volume/attenuation change
-    ///
-    /// # TODO: Key on/off heuristic
     ///
     /// Currently uses a simple heuristic:
     /// - Setting volume to non-silent (0-14) when previously silent = key on

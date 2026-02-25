@@ -195,7 +195,7 @@ impl WonderSwanState {
 
     /// Map a VGM-style (port, register, value) tuple into the internal GbDmg
     /// register space used by `WonderSwanState`.
-    pub(crate) fn map_vgm_to_wonderswan_register(register: u8, value: u8) -> (u8, u8) {
+    pub fn map_vgm_to_wonderswan_register(register: u8, value: u8) -> (u8, u8) {
         let mapped_register = register.wrapping_add(0x80);
         (mapped_register, value)
     }

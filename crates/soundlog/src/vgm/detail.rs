@@ -101,7 +101,6 @@
 //!     _ => panic!("Expected compressed stream"),
 //! }
 //! ```
-
 use crate::binutil::ParseError;
 use crate::vgm::command::DataBlock;
 use crate::vgm::command::Instance;

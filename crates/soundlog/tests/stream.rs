@@ -1353,7 +1353,10 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
     builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
         stream_id: 0,
         block_id: 2,
-        flags: soundlog::vgm::command::StartStreamFastCallFlags::new(false, false),
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
     });
     builder.add_vgm_command(WaitSamples(10));
 

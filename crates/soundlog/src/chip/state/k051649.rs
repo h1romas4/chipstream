@@ -290,7 +290,7 @@ impl K051649State {
     ///  0x04 - waveform (0x00 used to do SCC access, 0x04 SCC+)
     ///  0x05 - test register
     /// Returns (mapped_register, mapped_value).
-    pub(crate) fn map_vgm_to_k051649_register(port: u8, register: u8, value: u8) -> (u8, u8) {
+    pub fn map_vgm_to_k051649_register(port: u8, register: u8, value: u8) -> (u8, u8) {
         match port {
             // Waveform RAM (0x00 - 0x7F) and SCC+ waveform (0x04) map directly.
             0x00 | 0x04 => (register, value),

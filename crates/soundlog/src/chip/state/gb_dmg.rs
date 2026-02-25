@@ -396,7 +396,7 @@ impl GbDmgState {
     ///
     /// For registers not listed above the helper falls back to returning the
     /// raw register/value unchanged.
-    pub(crate) fn map_vgm_to_gbdmg_register(register: u8, value: u8) -> (u8, u8) {
+    pub fn map_vgm_to_gbdmg_register(register: u8, value: u8) -> (u8, u8) {
         let mapped_register = match register {
             0x00 => 0x10,  // NR10
             0x01 => 0x11,  // NR11

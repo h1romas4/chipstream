@@ -44,7 +44,15 @@ pub struct ToneInfo {
     ///
     /// This field is reserved for future use (and for documentation purposes).
     /// Existing constructors leave this as `None`.
-    pub total_level: Option<f32>,
+    pub total_level: Option<TotalLevel>,
+}
+
+/// TotalLevel information extracted from register state.
+/// This is reserved for future use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TotalLevel {
+    tlnum: u16,
+    db: Option<f32>,
 }
 
 impl ToneInfo {
@@ -80,7 +88,7 @@ impl ToneInfo {
         fnum: u16,
         block: u8,
         freq_hz: Option<f32>,
-        total_level: Option<f32>,
+        total_level: Option<TotalLevel>,
     ) -> Self {
         Self {
             fnum,

@@ -11,79 +11,6 @@
 //!   stream and serialize back to VGM bytes.
 //! - Helpers to convert single commands to bytes (`command_to_vgm_bytes`)
 //!   and compute per-command offsets/lengths used by `VgmDocument`.
-//!
-//! Most items are crate-visible; the module is intended for internal use.
-//! The public surface exposes the command enum and associated specs so
-//! other VGM components (parser, document, header) can interoperate.
-//!
-//! # Examples
-//!
-//! ## Creating stream control commands with type-safe chip types
-//!
-//! ```
-//! use soundlog::vgm::command::{SetupStreamControl, DacStreamChipType};
-//! use soundlog::vgm::header::ChipId;
-//! use soundlog::vgm::command::Instance;
-//!
-//! // Using struct literal with DacStreamChipType
-//! let setup = SetupStreamControl {
-//!     stream_id: 0,
-//!     chip_type: DacStreamChipType {
-//!         chip_id: ChipId::Ym2612,
-//!         instance: Instance::Primary
-//!     },
-//!     write_port: 0,
-//!     write_command: 0x2A,
-//! };
-//!
-//! // For secondary chip instances
-//! let setup_secondary = SetupStreamControl {
-//!     stream_id: 0,
-//!     chip_type: DacStreamChipType {
-//!         chip_id: ChipId::Ym2612,
-//!         instance: Instance::Secondary
-//!     },
-//!     write_port: 0,
-//!     write_command: 0x2A,
-//! };
-//!
-//! // You can still use u8 directly if needed (use the numeric raw value where appropriate)
-//! let setup_raw = SetupStreamControl {
-//!     stream_id: 0,
-//!     chip_type: DacStreamChipType {
-//!         chip_id: ChipId::Ym2612,
-//!         instance: Instance::Primary
-//!     },
-//!     write_port: 0,
-//!     write_command: 0x2A,
-//! };
-//! ```
-//!
-//! ## Converting between DacStreamChipType and u8
-//!
-//! ```
-//! use soundlog::vgm::command::DacStreamChipType;
-//! use soundlog::vgm::header::ChipId;
-//! use soundlog::vgm::command::Instance;
-//!
-//! // Convert DacStreamChipType to u8
-//! let chip_id: u8 = DacStreamChipType {
-//!     chip_id: ChipId::Ym2612,
-//!     instance: Instance::Primary
-//! }.into();
-//! assert_eq!(chip_id, 0x02);
-//!
-//! // Convert u8 to DacStreamChipType using `from_u8` (preserves instance bit)
-//! let chip_type = DacStreamChipType::from_u8(0x02u8);
-//! assert_eq!(chip_type, DacStreamChipType {
-//!     chip_id: ChipId::Ym2612,
-//!     instance: Instance::Primary
-//! });
-//!
-//! // Unknown/invalid raw values return `ChipId::Unknown(raw)`
-//! let invalid = ChipId::from_u8(0xFFu8);
-//! assert!(matches!(invalid, ChipId::Unknown(_)));
-//! ```
 use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
@@ -386,18 +313,19 @@ pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
 
 /// DAC Stream Control Write: Setup Stream Control
 ///
-/// The `chip_type` field is stored as a `u8` in VGM bytes, but when
-/// constructing this struct you can use the `DacStreamChipType` enum and
-/// convert it with `.into()` to produce the required `u8`.
-///
 /// Example:
 ///
 /// ```rust
 /// use soundlog::vgm::command::{SetupStreamControl, DacStreamChipType};
+/// use soundlog::vgm::header::ChipId;
+/// use soundlog::vgm::command::Instance;
 ///
 /// let s = SetupStreamControl {
 ///     stream_id: 0,
-///     chip_type: DacStreamChipType { chip_id: soundlog::vgm::header::ChipId::Ym2612, instance: soundlog::vgm::command::Instance::Primary }, // use the struct literal
+///     chip_type: DacStreamChipType {
+///         chip_id: ChipId::Ym2612,
+///         instance: Instance::Primary,
+///     },
 ///     write_port: 0,
 ///     write_command: 0x2A,
 /// };
@@ -427,6 +355,22 @@ pub struct SetStreamFrequency {
 }
 
 /// DAC Stream Control Write: Start Stream
+///
+/// Example:
+///
+/// ```rust
+/// use soundlog::vgm::command::{StartStream, LengthMode};
+///
+/// let s = StartStream {
+///     stream_id: 0,
+///     data_start_offset: 0,
+///     length_mode: LengthMode::PlayUntilEnd {
+///         reverse: false,
+///         looped: false
+///     },
+///     data_length: 0,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStream {
     pub stream_id: u8,
@@ -442,6 +386,21 @@ pub struct StopStream {
 }
 
 /// DAC Stream Control Write: Start Stream (fast call)
+///
+/// Example:
+///
+/// ```rust
+/// use soundlog::vgm::command::{StartStreamFastCall, StartStreamFastCallFlags};
+///
+/// let f = StartStreamFastCall {
+///     stream_id: 0,
+///     block_id: 1,
+///     flags: StartStreamFastCallFlags {
+///         reverse: false,
+///         looped: false,
+///     },
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStreamFastCall {
     pub stream_id: u8,
@@ -451,33 +410,22 @@ pub struct StartStreamFastCall {
 
 /// Flags for `StartStreamFastCall`.
 ///
-/// Encodes the on-disk 1-byte flags where:
-/// - bit 0 (0x01): Loop (matches StartStream length_mode loop bit 0x80 semantics)
-/// - bit 4 (0x10): Reverse Mode (matches StartStream length_mode reverse bit 0x10)
+/// Example:
+///
+/// ```rust
+/// use soundlog::vgm::command::StartStreamFastCallFlags;
+///
+/// let flags = StartStreamFastCallFlags {
+///     reverse: false,
+///     looped: true,
+/// };
+/// assert!(flags.looped);
+/// assert!(!flags.reverse);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartStreamFastCallFlags {
     pub reverse: bool,
     pub looped: bool,
-}
-
-impl StartStreamFastCallFlags {
-    /// Construct flags from booleans (looped, reverse).
-    /// The signature preserves the historical `(looped, reverse)` ordering.
-    pub const fn new(looped: bool, reverse: bool) -> Self {
-        StartStreamFastCallFlags { reverse, looped }
-    }
-
-    /// Compute the raw underlying byte from fields.
-    pub fn to_vgm_byte(self) -> u8 {
-        let mut b = 0u8;
-        if self.looped {
-            b |= 0x01;
-        }
-        if self.reverse {
-            b |= 0x10;
-        }
-        b
-    }
 }
 
 impl From<u8> for StartStreamFastCallFlags {
@@ -490,7 +438,14 @@ impl From<u8> for StartStreamFastCallFlags {
 
 impl From<StartStreamFastCallFlags> for u8 {
     fn from(f: StartStreamFastCallFlags) -> Self {
-        f.to_vgm_byte()
+        let mut b = 0u8;
+        if f.looped {
+            b |= 0x01;
+        }
+        if f.reverse {
+            b |= 0x10;
+        }
+        b
     }
 }
 
@@ -542,15 +497,6 @@ pub struct UnknownSpec {
 pub struct SeekOffset(pub u32);
 
 /// Length mode for DAC stream StartStream.
-///
-/// Encodes the base length interpretation and optional flags:
-/// - base:
-///  - 0x00: ignore,
-///  - 0x01: length = number of commands,
-///  - 0x02: length in msec,
-///  - 0x03: play until end of data
-/// - bit 4 (0x10): Reverse mode
-/// - bit 7 (0x80): Loop (automatically restarts when finished)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthMode {
     Ignore {
@@ -574,6 +520,14 @@ pub enum LengthMode {
 }
 
 impl From<u8> for LengthMode {
+    /// Encodes the base length interpretation and optional flags:
+    /// - base:
+    ///   - 0x00: ignore,
+    ///   - 0x01: length = number of commands,
+    ///   - 0x02: length in msec,
+    ///   - 0x03: play until end of data
+    /// - bit 4 (0x10): Reverse mode
+    /// - bit 7 (0x80): Loop (automatically restarts when finished)
     fn from(v: u8) -> Self {
         let reverse = (v & 0x10) != 0;
         let looped = (v & 0x80) != 0;
@@ -2630,7 +2584,6 @@ impl CommandSpec for chip::Es5506U16Spec {
         0xD6
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
-        // TODO: Support 16-bit data write
         dest.push(self.opcode());
         dest.push(self.register);
         dest.push(((self.value >> 8) & 0xFF) as u8);
