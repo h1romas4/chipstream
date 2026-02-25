@@ -208,7 +208,7 @@ impl Ym2612State {
     ///
     /// # Returns
     ///
-    /// Some(Vec<StateEvent>) if key state changed, None otherwise
+    /// Some(`Vec<StateEvent>`) if key state changed, None otherwise
     fn handle_key_on_off(&mut self, value: u8) -> Option<Vec<StateEvent>> {
         // Extract channel from bits 0-2
         // Bit 2 effectively selects the port, bits 0-1 select channel within port
