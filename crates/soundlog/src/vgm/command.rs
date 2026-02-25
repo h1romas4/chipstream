@@ -282,7 +282,7 @@ pub struct DataBlock {
 ///
 /// ```rust
 /// use soundlog::vgm::command::PcmRamWrite;
-/// use soundlog::vgm::detail::StreamChipType;
+/// use soundlog::vgm::command::StreamChipType;
 ///
 /// let p = PcmRamWrite {
 ///     marker: 0x66,
