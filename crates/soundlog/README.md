@@ -54,7 +54,7 @@ Key features:
 ```rust
 use soundlog::chip::{Chip, Ym2612Spec};
 use soundlog::meta::Gd3;
-use soundlog::vgm::command::{Instance, StreamChipType, VgmCommand, WaitSamples};
+use soundlog::vgm::command::{Instance, StreamChipType,  WaitSamples};
 use soundlog::vgm::detail::UncompressedStream;
 use soundlog::{VgmBuilder, VgmDocument};
 
@@ -62,6 +62,11 @@ let mut builder = VgmBuilder::new();
 
 // Register the chip's master clock in the VGM header (in Hz)
 builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+// Attach a VGM DataBlock
+builder.attach_data_block(UncompressedStream {
+    chip_type: StreamChipType::Ym2612Pcm,
+    data: vec![0x01, 0x02],
+});
 // Add chip register writes using a chip-specific spec
 builder.add_chip_write(
     Instance::Primary,
@@ -71,14 +76,11 @@ builder.add_chip_write(
         value: 0x91,
     },
 );
-// Add a VGM DataBlock
-builder.attach_data_block(UncompressedStream {
-    chip_type: StreamChipType::Ym2612Pcm,
-    data: vec![0x01, 0x02],
-});
-// Add a VGM command (example: wait)
 builder.add_vgm_command(WaitSamples(44100));
 // ... add more commands
+
+// Set loop offset (1: WaitSamples(44100))
+builder.set_loop_offset(1);
 
 // Set GD3 metadata for the document
 builder.set_gd3(Gd3 {
@@ -87,7 +89,7 @@ builder.set_gd3(Gd3 {
     ..Default::default()
 });
 
-// Finalize the document
+// Finalize the document (An `EndOfData` tag is automatically added)
 let document: VgmDocument = builder.finalize();
 // `into()` converts the finalized `VgmDocument` into VGM-format binary bytes
 let _bytes: Vec<u8> = document.into();

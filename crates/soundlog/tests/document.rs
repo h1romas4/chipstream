@@ -514,3 +514,85 @@ fn common_case_ten_datablocks_ten_commands_loop_offset_four() {
         other => panic!("unexpected command at loop index: {:?}", other),
     }
 }
+
+#[test]
+fn readme_example_vgmbuilder() {
+    //
+    // README.md ->
+    //
+    use soundlog::chip::{Chip, Ym2612Spec};
+    use soundlog::meta::Gd3;
+    use soundlog::vgm::command::{Instance, StreamChipType, WaitSamples};
+    use soundlog::vgm::detail::UncompressedStream;
+    use soundlog::{VgmBuilder, VgmDocument};
+    use std::path::PathBuf;
+
+    let mut builder = VgmBuilder::new();
+
+    // Register the chip's master clock in the VGM header (in Hz)
+    builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+    // Attach a VGM DataBlock
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x01, 0x02],
+    });
+    // Add chip register writes using a chip-specific spec
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x22,
+            value: 0x91,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(44100));
+    // ... add more commands
+
+    // Set loop offset (1: WaitSamples(44100))
+    builder.set_loop_offset(1);
+
+    // Set GD3 metadata for the document
+    builder.set_gd3(Gd3 {
+        track_name_en: Some("Example Track".to_string()),
+        game_name_en: Some("soundlog examples".to_string()),
+        ..Default::default()
+    });
+
+    // Finalize the document (An `EndOfData` tag is automatically added)
+    let document: VgmDocument = builder.finalize();
+    // `into()` converts the finalized `VgmDocument` into VGM-format binary bytes
+    let _bytes: Vec<u8> = document.into();
+    //
+    // <- README.md
+    //
+
+    //
+    // tests
+    //
+    maybe_write_vgm("REMDME.vgm", &_bytes);
+
+    //
+    pub fn output_vgm_dir() -> Option<PathBuf> {
+        match std::env::var("SOUNDLOG_TEST_OUTPUT_VGM") {
+            Ok(s) if !s.is_empty() => Some(PathBuf::from(s)),
+            _ => None,
+        }
+    }
+
+    pub fn maybe_write_vgm(filename: &str, bytes: &[u8]) {
+        if let Some(dir) = output_vgm_dir() {
+            let manifest = env!("CARGO_MANIFEST_DIR");
+            let out_dir = std::path::Path::new(manifest).join(dir);
+            if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                eprintln!("warning: could not create output dir {:?}: {}", out_dir, e);
+            } else {
+                let out_path = out_dir.join(filename);
+                if let Err(e) = std::fs::write(&out_path, bytes) {
+                    eprintln!("warning: failed to write vgm file {:?}: {}", out_path, e);
+                } else {
+                    eprintln!("Wrote test VGM to {:?}", out_path);
+                }
+            }
+        }
+    }
+}
