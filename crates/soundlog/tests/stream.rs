@@ -21,7 +21,7 @@ fn create_test_vgm_with_loop() -> Vec<u8> {
     builder.add_vgm_command(WaitNSample(5));
 
     // Set loop point at the second command (index 1)
-    builder.set_loop_offset(1);
+    builder.set_loop_index(1);
 
     // Add end of data command
     builder.add_vgm_command(EndOfData);
@@ -2232,7 +2232,7 @@ fn test_loop_point_is_respected() {
     builder.add_vgm_command(EndOfData); // Index 4
 
     // Set loop point at index 2
-    builder.set_loop_offset(2);
+    builder.set_loop_index(2);
 
     let doc = builder.finalize();
 
@@ -2896,7 +2896,7 @@ fn test_push_data_with_loop() {
     builder.add_vgm_command(WaitSamples(200));
 
     // Set loop point here
-    builder.set_loop_offset(2);
+    builder.set_loop_index(2);
 
     // Commands in loop
     builder.add_vgm_command(WaitSamples(300));

@@ -156,7 +156,7 @@ pub fn redump_vgm(
 
     // Set loop offset if we're preserving the original loop structure
     if let Some(index) = output_loop_index {
-        builder.set_loop_offset(index);
+        builder.set_loop_index(index);
     }
 
     // Set version and sample_rate from original header BEFORE finalize()

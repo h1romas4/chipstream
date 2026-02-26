@@ -55,8 +55,7 @@ Key features:
 use soundlog::chip::{Chip, Ym2612Spec};
 use soundlog::meta::Gd3;
 use soundlog::vgm::command::{Instance, StreamChipType, VgmCommand, WaitSamples};
-use soundlog::vgm::detail::build_data_block;
-use soundlog::vgm::detail::{DataBlockType, UncompressedStream};
+use soundlog::vgm::detail::UncompressedStream;
 use soundlog::{VgmBuilder, VgmDocument};
 
 let mut builder = VgmBuilder::new();
@@ -73,12 +72,10 @@ builder.add_chip_write(
     },
 );
 // Add a VGM DataBlock
-builder.add_vgm_command(VgmCommand::DataBlock(build_data_block(
-    &DataBlockType::UncompressedStream(UncompressedStream {
-        chip_type: StreamChipType::Ym2612Pcm,
-        data: vec![0x01, 0x02],
-    }),
-)));
+builder.attach_data_block(UncompressedStream {
+    chip_type: StreamChipType::Ym2612Pcm,
+    data: vec![0x01, 0x02],
+});
 // Add a VGM command (example: wait)
 builder.add_vgm_command(WaitSamples(44100));
 // ... add more commands
@@ -164,7 +161,7 @@ b.add_chip_write(
     },
 );
 // (pseudo-code) append data block, configure stream and start it
-// b.add_data_block(...);
+// b.attach_data_block(...);
 // b.add_vgm_command(SetupStreamControl { /* ... */ });
 // b.add_vgm_command(StartStream { /* ... */ });
 b.add_vgm_command(WaitSamples(8));

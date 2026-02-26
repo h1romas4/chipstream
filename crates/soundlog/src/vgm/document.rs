@@ -90,13 +90,50 @@ impl VgmBuilder {
             .set_chip_clock(ch, instance, master_clock);
     }
 
-    /// Set the loop point by command index.
+    /// Set the loop point by `VgmDocument` index.
     ///
-    /// `idx` is an index into `doc.commands` indicating the command at which
+    /// `document_index` is an index into `doc.commands` indicating the command at which
     /// playback should loop. The header's `loop_offset` will be computed in
     /// `finalize()` as a relative offset from 0x1C.
-    pub fn set_loop_offset(&mut self, document_index: usize) -> &mut Self {
+    ///
+    /// This method is used when you want to specify a command index directly
+    /// into the `VgmDocument`'s `commands` vector. In most cases prefer
+    /// `set_loop_offset`, which interprets its argument relative to the first
+    /// non-`DataBlock` command so callers do not need to account for
+    /// DataBlock relocation performed during finalization.
+    ///
+    /// Also note that if `document_index` points to a `DataBlock`, the actual
+    /// `loop_offset` value computed during `finalize()` may not correctly
+    /// correspond to the intended playback position.
+    pub fn set_loop_index(&mut self, document_index: usize) -> &mut Self {
         self.loop_index = Some(document_index);
+        self
+    }
+
+    /// Set the loop point by `VgmDocument` index.
+    ///
+    /// `index` is an index into `doc.commands` indicating the command at which
+    /// playback should loop. The header's `loop_offset` will be computed in
+    /// `finalize()` as a relative offset from 0x1C.
+    ///
+    /// NOTE: The builder treats the first non-`DataBlock` command in the
+    /// document as offset 0. `index` is therefore interpreted as an offset
+    /// relative to that first non-`DataBlock` command (i.e. passing 0
+    /// targets the first non-`DataBlock` command). This avoids callers needing
+    /// to account for DataBlock entries that are relocated to the start of the
+    /// finalized document.
+    pub fn set_loop_offset(&mut self, index: usize) -> &mut Self {
+        // Find the index of the first command that is not a DataBlock. If none
+        // exist, fall back to index 0 so the requested offset is applied from
+        // the start of the command stream.
+        let base = self
+            .document
+            .commands
+            .iter()
+            .position(|c| !matches!(c, VgmCommand::DataBlock(_)))
+            .unwrap_or(0);
+
+        self.loop_index = Some(base.saturating_add(index));
         self
     }
 
@@ -138,6 +175,43 @@ impl VgmBuilder {
         (Instance, C): Into<VgmCommand>,
     {
         self.document.commands.push((instance.into(), spec).into());
+        self
+    }
+
+    /// Attach a `DataBlock` described by a typed detail into the builder.
+    ///
+    /// Generic convenience helper that accepts any type convertible into
+    /// `DataBlockType` (for example `UncompressedStream`) and appends the
+    /// constructed on-disk `DataBlock` into the document under construction.
+    ///
+    /// Note:
+    ///
+    /// - If you pass ownership (preferred) the `DataBlock` detail is moved and no clone occurs:
+    /// - If you pass a reference (`&T`) the library will use the `From<&T>` implementation
+    ///   which clones the detail. This is convenient but will duplicate payload data:
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// use soundlog::vgm::detail::UncompressedStream;
+    /// use soundlog::vgm::command::StreamChipType;
+    /// use soundlog::VgmBuilder;
+    ///
+    /// let mut builder = VgmBuilder::new();
+    /// builder.attach_data_block(UncompressedStream {
+    ///     chip_type: StreamChipType::Ym2612Pcm,
+    ///     data: vec![0x01, 0x02],
+    /// });
+    /// ```
+    pub fn attach_data_block<D>(&mut self, data_block_detail: D) -> &mut Self
+    where
+        D: Into<crate::vgm::detail::DataBlockType>,
+    {
+        let dbt: crate::vgm::detail::DataBlockType = data_block_detail.into();
+        let block = crate::vgm::detail::build_data_block(&dbt);
+        self.document
+            .commands
+            .push(crate::vgm::command::VgmCommand::DataBlock(block));
         self
     }
 
@@ -186,6 +260,13 @@ impl VgmBuilder {
     /// convenience layer that guarantees a finalized document is properly
     /// terminated for common programmatic construction flows.
     ///
+    /// Note: DataBlock commands (`VgmCommand::DataBlock`, opcode 0x67) are
+    /// relocated to the start of the command stream during finalization so
+    /// that DataBlock entries appear at the beginning of the serialized VGM.
+    /// DecompressionTable DataBlocks (those with `data_type == 0x7F`)
+    /// are promoted ahead of other DataBlocks and thus placed at the very
+    /// start of the serialized document.
+    ///
     /// The method returns the complete document ready for serialization via
     /// `VgmDocument::to_bytes()`.
     pub fn finalize(mut self) -> VgmDocument {
@@ -200,6 +281,11 @@ impl VgmBuilder {
                 .commands
                 .push(VgmCommand::EndOfData(crate::vgm::command::EndOfData {}));
         }
+
+        // Phase 1 (B): Extract DataBlocks that occur at-or-after loop_index,
+        // adjust loop_index accordingly, but do NOT yet reinsert them at the front.
+        // This extraction is now performed by a dedicated private helper.
+        self.relocate_data_block();
 
         // compute total samples
         let total_sample = self.document.total_samples();
@@ -258,6 +344,71 @@ impl VgmBuilder {
         }
 
         self.document
+    }
+
+    // Relocate DataBlock in `VgmDocument`.
+    //
+    // Behavior:
+    // - If a valid `loop_index` exists, remove (move out of `document.commands`)
+    //   every `VgmCommand::DataBlock(_)` whose original index is >= loop_index.
+    // - Adjust `loop_index` by adding the number of removed DataBlocks so that
+    //   after a future prepend/aggregation the loop index will point to the same
+    //   logical command.
+    // - Do not specify the positions of DataBlock entries via `loop_index`.
+    //
+    // Returns the number of DataBlocks that were removed.
+    fn relocate_data_block(&mut self) {
+        // Count DataBlocks after loop_index
+        let move_count = if let Some(loop_index) = self.loop_index {
+            self.document
+                .commands
+                .iter()
+                .enumerate()
+                .skip(loop_index)
+                .filter(|(_i, cmd)| matches!(cmd, VgmCommand::DataBlock(_)))
+                .count()
+        } else {
+            0
+        };
+
+        if let Some(loop_index) = self.loop_index {
+            self.loop_index = Some(loop_index + move_count);
+        }
+
+        // Collect all DataBlock commands.
+        let mut data_blocks = Vec::new();
+        let mut i = 0;
+        while i < self.document.commands.len() {
+            if matches!(self.document.commands[i], VgmCommand::DataBlock(_)) {
+                data_blocks.push(self.document.commands.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+
+        // Prepend DecompressionTable blocks (data_type == 0x7F /* TODO: */) tables
+        // to the front of data_blocks
+        let mut decompression_tables: Vec<VgmCommand> = Vec::new();
+        let mut i = 0;
+        while i < data_blocks.len() {
+            match &data_blocks[i] {
+                VgmCommand::DataBlock(db) if db.data_type == 0x7F => {
+                    decompression_tables.push(data_blocks.remove(i));
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        data_blocks.splice(0..0, decompression_tables);
+
+        // Remove DataBlock commands from the document, keeping other commands.
+        self.document
+            .commands
+            .retain(|cmd| !matches!(cmd, VgmCommand::DataBlock(_)));
+
+        // Prepend the collected DataBlocks to the front of the command list.
+        self.document.commands.splice(0..0, data_blocks);
     }
 }
 

@@ -673,7 +673,7 @@ fn test_loop_offset_serialized_matches_header() {
     // two commands, set loop to the second one (index 1)
     b.add_vgm_command(WaitSamples(1));
     b.add_vgm_command(WaitSamples(2));
-    b.set_loop_offset(1usize);
+    b.set_loop_index(1usize);
     let doc = b.finalize();
 
     // header field computed by finalize

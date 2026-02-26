@@ -544,6 +544,81 @@ pub enum DataBlockType {
     RamWrite32(RamWrite32),
 }
 
+/// Convenience `From` impls so callers can pass inner detail types directly
+/// where a `DataBlockType` is expected. Both owned and borrowed (cloning)
+/// variants are provided for ergonomic construction.
+impl From<UncompressedStream> for DataBlockType {
+    fn from(v: UncompressedStream) -> Self {
+        DataBlockType::UncompressedStream(v)
+    }
+}
+
+impl From<&UncompressedStream> for DataBlockType {
+    fn from(v: &UncompressedStream) -> Self {
+        DataBlockType::UncompressedStream(v.clone())
+    }
+}
+
+impl From<CompressedStream> for DataBlockType {
+    fn from(v: CompressedStream) -> Self {
+        DataBlockType::CompressedStream(v)
+    }
+}
+
+impl From<&CompressedStream> for DataBlockType {
+    fn from(v: &CompressedStream) -> Self {
+        DataBlockType::CompressedStream(v.clone())
+    }
+}
+
+impl From<DecompressionTable> for DataBlockType {
+    fn from(v: DecompressionTable) -> Self {
+        DataBlockType::DecompressionTable(v)
+    }
+}
+
+impl From<&DecompressionTable> for DataBlockType {
+    fn from(v: &DecompressionTable) -> Self {
+        DataBlockType::DecompressionTable(v.clone())
+    }
+}
+
+impl From<RomRamDump> for DataBlockType {
+    fn from(v: RomRamDump) -> Self {
+        DataBlockType::RomRamDump(v)
+    }
+}
+
+impl From<&RomRamDump> for DataBlockType {
+    fn from(v: &RomRamDump) -> Self {
+        DataBlockType::RomRamDump(v.clone())
+    }
+}
+
+impl From<RamWrite16> for DataBlockType {
+    fn from(v: RamWrite16) -> Self {
+        DataBlockType::RamWrite16(v)
+    }
+}
+
+impl From<&RamWrite16> for DataBlockType {
+    fn from(v: &RamWrite16) -> Self {
+        DataBlockType::RamWrite16(v.clone())
+    }
+}
+
+impl From<RamWrite32> for DataBlockType {
+    fn from(v: RamWrite32) -> Self {
+        DataBlockType::RamWrite32(v)
+    }
+}
+
+impl From<&RamWrite32> for DataBlockType {
+    fn from(v: &RamWrite32) -> Self {
+        DataBlockType::RamWrite32(v.clone())
+    }
+}
+
 /// Parse a VGM data block into its detailed type.
 ///
 /// This function consumes the input `DataBlock` to avoid copying large data payloads.

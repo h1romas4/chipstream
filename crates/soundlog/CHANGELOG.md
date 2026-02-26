@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.0
+
+- Add: `VgmBuilder::attach_data_block` helper (generic) for ergonomic DataBlock construction and addition.
+- Change: `VgmBuilder::finalize()` relocates all `DataBlock` commands (VGM opcode `0x67`) to the start of the finalized command stream. In addition, DecompressionTable DataBlocks (those with `data_type == 0x7F`) are promoted ahead of other DataBlocks. The `loop_index` set as before is correctly tracked.
+- Change: `VgmBuilder::set_loop_offset` behavior updated — the method now treats its argument as the Nth non-DataBlock command (0-based). This lets callers specify loop points without accounting for DataBlock commands that the builder relocates to the start of the finalized document.
+  - Note / Migration: The prior behavior (specifying a loop by an index into the raw `VgmDocument::commands` vector, including DataBlock entries) is preserved under `VgmBuilder::set_loop_index`. However, as `finalize` may cause DataBlock movement, the use of `set_loop_offset` is recommended.
+
 ## v0.7.0
 
 - Improve `DataBlock` type-safety.
