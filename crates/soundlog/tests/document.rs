@@ -531,7 +531,7 @@ fn readme_example_vgmbuilder() {
 
     // Register the chip's master clock in the VGM header (in Hz)
     builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
-    // Attach a VGM DataBlock
+    // Attach a DataBlock detail
     builder.attach_data_block(UncompressedStream {
         chip_type: StreamChipType::Ym2612Pcm,
         data: vec![0x01, 0x02],
@@ -570,8 +570,12 @@ fn readme_example_vgmbuilder() {
     // tests
     //
     maybe_write_vgm("REMDME.vgm", &_bytes);
+    let document: VgmDocument = (_bytes.as_slice())
+        .try_into()
+        .expect("failed to parse serialized VGM");
+    assert!(document.header.loop_offset == 0xd8);
+    assert!(document.header.loop_samples == 44100);
 
-    //
     pub fn output_vgm_dir() -> Option<PathBuf> {
         match std::env::var("SOUNDLOG_TEST_OUTPUT_VGM") {
             Ok(s) if !s.is_empty() => Some(PathBuf::from(s)),

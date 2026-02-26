@@ -288,7 +288,7 @@ impl VgmBuilder {
         self.relocate_data_block();
 
         // compute total samples
-        let total_sample = self.document.total_samples();
+        let total_sample = self.document.total_samples(0);
         self.document.header.total_samples = total_sample;
 
         // compute data_offset the same way as VgmDocument::to_bytes
@@ -329,17 +329,12 @@ impl VgmBuilder {
         if let Some(index) = self.loop_index
             && index < self.document.commands.len()
         {
-            // Use the updated data_offset from the header (which may have been modified by extra_header processing)
-            let final_data_offset = self.document.header.data_offset;
-            let header_len = self.document.header.to_bytes(0, final_data_offset).len() as u32;
-
-            let offsets = self.document.command_offsets_and_lengths();
+            let offsets = self.document.sourcemap();
             if index < offsets.len() {
                 let (cmd_offset, _cmd_len) = offsets[index];
-                let loop_abs = header_len.wrapping_add(cmd_offset as u32);
-                let computed_loop_offset = loop_abs.wrapping_sub(0x1C);
-
-                self.document.header.loop_offset = computed_loop_offset;
+                let computed_loop_offset = cmd_offset.wrapping_sub(0x1C);
+                self.document.header.loop_offset = computed_loop_offset as u32;
+                self.document.header.loop_samples = self.document.total_samples(index);
             }
         }
 

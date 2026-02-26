@@ -54,15 +54,16 @@ Key features:
 ```rust
 use soundlog::chip::{Chip, Ym2612Spec};
 use soundlog::meta::Gd3;
-use soundlog::vgm::command::{Instance, StreamChipType,  WaitSamples};
+use soundlog::vgm::command::{Instance, StreamChipType, WaitSamples};
 use soundlog::vgm::detail::UncompressedStream;
 use soundlog::{VgmBuilder, VgmDocument};
+use std::path::PathBuf;
 
 let mut builder = VgmBuilder::new();
 
 // Register the chip's master clock in the VGM header (in Hz)
 builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
-// Attach a VGM DataBlock
+// Attach a DataBlock detail
 builder.attach_data_block(UncompressedStream {
     chip_type: StreamChipType::Ym2612Pcm,
     data: vec![0x01, 0x02],

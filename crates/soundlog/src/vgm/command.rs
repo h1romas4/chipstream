@@ -2868,9 +2868,10 @@ impl VgmDocument {
     ///
     /// Returns the summed sample counts from wait and special wait-like
     /// commands; does not modify the document.
-    pub(crate) fn total_samples(&self) -> u32 {
+    pub(crate) fn total_samples(&self, index: usize) -> u32 {
         self.commands
             .iter()
+            .skip(index)
             .map(|cmd| match cmd {
                 VgmCommand::WaitSamples(s) => s.0 as u32,
                 VgmCommand::Wait735Samples(_) => 735,
