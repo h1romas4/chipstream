@@ -358,8 +358,8 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     } else {
         0
     };
-    h.ay_chip_type = if should_read(VgmHeaderField::AyChipType) {
-        read_u8_at(bytes, VgmHeaderField::AyChipType.offset())?
+    h.ay_chip_type = if should_read(VgmHeaderField::Ay8910ChipType) {
+        read_u8_at(bytes, VgmHeaderField::Ay8910ChipType.offset())?
     } else {
         0
     };
@@ -465,11 +465,6 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     };
     h.c140_clock = if should_read(VgmHeaderField::C140Clock) {
         read_u32_le_at(bytes, VgmHeaderField::C140Clock.offset())?
-    } else {
-        0
-    };
-    h.reserved_97 = if should_read(VgmHeaderField::Reserved97) {
-        read_u8_at(bytes, VgmHeaderField::Reserved97.offset())?
     } else {
         0
     };

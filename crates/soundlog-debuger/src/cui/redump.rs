@@ -177,11 +177,14 @@ pub fn redump_vgm(
     doc_rebuilt.header.sn76489_feedback = doc_orig.header.sn76489_feedback;
     doc_rebuilt.header.sn76489_shift_register_width = doc_orig.header.sn76489_shift_register_width;
     doc_rebuilt.header.sn76489_flags = doc_orig.header.sn76489_flags;
+    doc_rebuilt.header.ay_chip_type = doc_orig.header.ay_chip_type;
     doc_rebuilt.header.ay8910_flags = doc_orig.header.ay8910_flags;
     doc_rebuilt.header.ym2203_ay8910_flags = doc_orig.header.ym2203_ay8910_flags;
     doc_rebuilt.header.ym2608_ay8910_flags = doc_orig.header.ym2608_ay8910_flags;
     doc_rebuilt.header.spcm_interface = doc_orig.header.spcm_interface;
     doc_rebuilt.header.okim6258_flags = doc_orig.header.okim6258_flags;
+    doc_rebuilt.header.k054539_flags = doc_orig.header.k054539_flags;
+    doc_rebuilt.header.c140_chip_type = doc_orig.header.c140_chip_type;
     doc_rebuilt.header.es5503_output_channels = doc_orig.header.es5503_output_channels;
     doc_rebuilt.header.es5506_output_channels = doc_orig.header.es5506_output_channels;
     doc_rebuilt.header.c352_clock_divider = doc_orig.header.c352_clock_divider;

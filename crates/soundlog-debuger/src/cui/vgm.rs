@@ -58,6 +58,8 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     };
     let header_size = format!("{} (0x{:08X})", header_size_val, header_size_val);
     let loop_offset = format!("0x{:08X}", header.loop_offset);
+    let loop_base = format!("0x{:08X}", header.loop_base);
+    let loop_modifier = format!("0x{:08X}", header.loop_modifier);
     let data_offset = format!("0x{:08X}", header.data_offset);
     let total_samples = format!("{}", header.total_samples);
 
@@ -169,6 +171,8 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         ("version".into(), version),
         ("header_size".into(), header_size),
         ("loop_offset".into(), loop_offset),
+        ("loop_base".into(), loop_base),
+        ("loop_modifier".into(), loop_modifier),
         ("data_offset".into(), data_offset),
         ("total_samples".into(), total_samples),
         ("waits_total".into(), waits_total),

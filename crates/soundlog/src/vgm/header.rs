@@ -100,7 +100,7 @@ pub enum VgmHeaderField {
     Rf5c164Clock,
     PwmClock,
     Ay8910Clock,
-    AyChipType,
+    Ay8910ChipType,
     Ay8910Flags,
     Ym2203Ay8910Flags,
     Ym2608Ay8910Flags,
@@ -178,7 +178,7 @@ impl VgmHeaderField {
             VgmHeaderField::Rf5c164Clock => 0x6C,
             VgmHeaderField::PwmClock => 0x70,
             VgmHeaderField::Ay8910Clock => 0x74,
-            VgmHeaderField::AyChipType => 0x78,
+            VgmHeaderField::Ay8910ChipType => 0x78,
             VgmHeaderField::Ay8910Flags => 0x79,
             VgmHeaderField::Ym2203Ay8910Flags => 0x7A,
             VgmHeaderField::Ym2608Ay8910Flags => 0x7B,
@@ -257,7 +257,7 @@ impl VgmHeaderField {
             VgmHeaderField::Rf5c164Clock => 4,
             VgmHeaderField::PwmClock => 4,
             VgmHeaderField::Ay8910Clock => 4,
-            VgmHeaderField::AyChipType => 1,
+            VgmHeaderField::Ay8910ChipType => 1,
             VgmHeaderField::Ay8910Flags => 1,
             VgmHeaderField::Ym2203Ay8910Flags => 1,
             VgmHeaderField::Ym2608Ay8910Flags => 1,
@@ -349,7 +349,7 @@ impl VgmHeaderField {
             VgmHeaderField::Rf5c164Clock => 0x00000151,
             VgmHeaderField::PwmClock => 0x00000151,
             VgmHeaderField::Ay8910Clock => 0x00000151,
-            VgmHeaderField::AyChipType => 0x00000151,
+            VgmHeaderField::Ay8910ChipType => 0x00000151,
             VgmHeaderField::Ay8910Flags => 0x00000151,
             VgmHeaderField::Ym2203Ay8910Flags => 0x00000151,
             VgmHeaderField::Ym2608Ay8910Flags => 0x00000151,
@@ -760,7 +760,7 @@ impl VgmHeader {
         // AY8910 Chip Type (0x78)
         write_u8(
             &mut buf,
-            VgmHeaderField::AyChipType.offset(),
+            VgmHeaderField::Ay8910ChipType.offset(),
             self.ay_chip_type,
         );
         // AY8910 Flags (0x79)
