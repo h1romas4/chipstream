@@ -4,6 +4,8 @@
 //! headers, command streams, and optional GD3 metadata) into the
 //! crate-internal data structures used by the `soundlog` crate.
 //!
+//! Reference: <https://vgmrips.net/wiki/VGM_Specification>
+//!
 //! Public (crate-visible) entry points:
 //! - `parse_vgm(bytes)` — parse an entire VGM file into a `VgmDocument`.
 //! - `parse_vgm_header(bytes)` — parse only the VGM header and return
@@ -27,10 +29,6 @@
 //! - GD3 metadata, when present, is parsed via `crate::meta::parse_gd3`.
 //!   GD3 parsing errors are propagated to the caller when parsing the
 //!   full document.
-//!
-//! This module is intended for internal/crate use; most functions are
-//! `pub(crate)` to allow use across the crate while avoiding a
-//! wide public API surface.
 use crate::binutil::{ParseError, read_slice, read_u8_at, read_u16_le_at, read_u32_le_at};
 use crate::chip;
 use crate::meta::parse_gd3;
@@ -41,7 +39,7 @@ use crate::vgm::command::{
     Wait735Samples, Wait882Samples, WaitNSample, WaitSamples, Ym2612Port0Address2AWriteAndWaitN,
 };
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::{VgmExtraHeader, VgmHeader};
+use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 
 /// Parse a complete VGM file from a byte slice into a `VgmDocument`.
 ///
@@ -151,7 +149,6 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
 /// is the number of bytes consumed by the header. On failure returns a
 /// `ParseError` (for example `HeaderTooShort`, `InvalidIdent`, or
 /// `UnexpectedEof`).
-#[rustfmt::skip]
 pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), ParseError> {
     if bytes.len() < 0x34 {
         return Err(ParseError::HeaderTooShort("vgm: base header (0x34)".into()));
@@ -251,9 +248,9 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     h.loop_offset = read_u32_le_at(bytes, 0x1C)?;
     h.loop_samples = read_u32_le_at(bytes, 0x20)?;
     h.sample_rate = read_u32_le_at(bytes, 0x24)?;
-    h.sn_fb = read_u16_le_at(bytes, 0x28)?;
-    h.snw = read_u8_at(bytes, 0x2A)?;
-    h.sf = read_u8_at(bytes, 0x2B)?;
+    h.sn76489_feedback = read_u16_le_at(bytes, 0x28)?;
+    h.sn76489_shift_register_width = read_u8_at(bytes, 0x2A)?;
+    h.sn76489_flags = read_u8_at(bytes, 0x2B)?;
     h.ym2612_clock = read_u32_le_at(bytes, 0x2C)?;
     h.ym2151_clock = read_u32_le_at(bytes, 0x30)?;
     h.data_offset = data_offset;
@@ -267,7 +264,10 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     // The `should_read` check implements the VGM spec requirement for reading
     // fields based on version and available space. Fields that don't meet the
     // criteria are treated as zero.
-    let should_read = |off: usize, sz: usize, min_ver: u32| -> bool {
+    let should_read = |field: VgmHeaderField| -> bool {
+        let off = field.offset();
+        let sz = field.len();
+        let min_ver = field.min_version();
         let has_space = header_size_for_fields >= off + sz;
         if version >= 0x00000150 {
             // VGM 1.50+: Read if space is available (limited to version-defined fields)
@@ -277,61 +277,311 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
             has_space && version >= min_ver
         }
     };
-    h.sega_pcm_clock = if should_read(0x38, 4, 0x00000151) { read_u32_le_at(bytes, 0x38)? } else { 0 };
-    h.spcm_interface = if should_read(0x3C, 4, 0x00000151) { read_u32_le_at(bytes, 0x3C)? } else { 0 };
-    h.rf5c68_clock = if should_read(0x40, 4, 0x00000151) { read_u32_le_at(bytes, 0x40)? } else { 0 };
-    h.ym2203_clock = if should_read(0x44, 4, 0x00000151) { read_u32_le_at(bytes, 0x44)? } else { 0 };
-    h.ym2608_clock = if should_read(0x48, 4, 0x00000151) { read_u32_le_at(bytes, 0x48)? } else { 0 };
-    h.ym2610b_clock = if should_read(0x4C, 4, 0x00000151) { read_u32_le_at(bytes, 0x4C)? } else { 0 };
-    h.ym3812_clock = if should_read(0x50, 4, 0x00000151) { read_u32_le_at(bytes, 0x50)? } else { 0 };
-    h.ym3526_clock = if should_read(0x54, 4, 0x00000151) { read_u32_le_at(bytes, 0x54)? } else { 0 };
-    h.y8950_clock = if should_read(0x58, 4, 0x00000151) { read_u32_le_at(bytes, 0x58)? } else { 0 };
-    h.ymf262_clock = if should_read(0x5C, 4, 0x00000151) { read_u32_le_at(bytes, 0x5C)? } else { 0 };
-    h.ymf278b_clock = if should_read(0x60, 4, 0x00000151) { read_u32_le_at(bytes, 0x60)? } else { 0 };
-    h.ymf271_clock = if should_read(0x64, 4, 0x00000151) { read_u32_le_at(bytes, 0x64)? } else { 0 };
-    h.ymz280b_clock = if should_read(0x68, 4, 0x00000151) { read_u32_le_at(bytes, 0x68)? } else { 0 };
-    h.rf5c164_clock = if should_read(0x6C, 4, 0x00000151) { read_u32_le_at(bytes, 0x6C)? } else { 0 };
-    h.pwm_clock = if should_read(0x70, 4, 0x00000151) { read_u32_le_at(bytes, 0x70)? } else { 0 };
-    h.ay8910_clock = if should_read(0x74, 4, 0x00000151) { read_u32_le_at(bytes, 0x74)? } else { 0 };
-    h.ay_misc = if should_read(0x78, 8, 0x00000151) {
-        let s = read_slice(bytes, 0x78, 8)?;
-        let mut a = [0u8; 8]; a.copy_from_slice(s); a } else { [0u8; 8] };
-    h.gb_dmg_clock = if should_read(0x80, 4, 0x00000161) { read_u32_le_at(bytes, 0x80)? } else { 0 };
-    h.nes_apu_clock = if should_read(0x84, 4, 0x00000161) { read_u32_le_at(bytes, 0x84)? } else { 0 };
-    h.multipcm_clock = if should_read(0x88, 4, 0x00000161) { read_u32_le_at(bytes, 0x88)? } else { 0 };
-    h.upd7759_clock = if should_read(0x8C, 4, 0x00000161) { read_u32_le_at(bytes, 0x8C)? } else { 0 };
-    h.okim6258_clock = if should_read(0x90, 4, 0x00000161) { read_u32_le_at(bytes, 0x90)? } else { 0 };
-    h.okim6258_flags = if should_read(0x94, 4, 0x00000161) {
-        let s = read_slice(bytes, 0x94, 4)?;
-        let mut a = [0u8; 4]; a.copy_from_slice(s); a } else { [0u8; 4] };
-    h.okim6295_clock = if should_read(0x98, 4, 0x00000161) { read_u32_le_at(bytes, 0x98)? } else { 0 };
-    h.k051649_clock = if should_read(0x9C, 4, 0x00000161) { read_u32_le_at(bytes, 0x9C)? } else { 0 };
-    h.k054539_clock = if should_read(0xA0, 4, 0x00000161) { read_u32_le_at(bytes, 0xA0)? } else { 0 };
-    h.huc6280_clock = if should_read(0xA4, 4, 0x00000161) { read_u32_le_at(bytes, 0xA4)? } else { 0 };
-    h.c140_clock = if should_read(0xA8, 4, 0x00000161) { read_u32_le_at(bytes, 0xA8)? } else { 0 };
-    h.k053260_clock = if should_read(0xAC, 4, 0x00000161) { read_u32_le_at(bytes, 0xAC)? } else { 0 };
-    h.pokey_clock = if should_read(0xB0, 4, 0x00000161) { read_u32_le_at(bytes, 0xB0)? } else { 0 };
-    h.qsound_clock = if should_read(0xB4, 4, 0x00000161) { read_u32_le_at(bytes, 0xB4)? } else { 0 };
-    h.scsp_clock = if should_read(0xB8, 4, 0x00000171) { read_u32_le_at(bytes, 0xB8)? } else { 0 };
-    h.extra_header_offset = if should_read(0xBC, 4, 0x00000170) { read_u32_le_at(bytes, 0xBC)? } else { 0 };
-    h.wonderswan_clock = if should_read(0xC0, 4, 0x00000171) { read_u32_le_at(bytes, 0xC0)? } else { 0 };
-    h.vsu_clock = if should_read(0xC4, 4, 0x00000171) { read_u32_le_at(bytes, 0xC4)? } else { 0 };
-    h.saa1099_clock = if should_read(0xC8, 4, 0x00000171) { read_u32_le_at(bytes, 0xC8)? } else { 0 };
-    h.es5503_clock = if should_read(0xCC, 4, 0x00000171) { read_u32_le_at(bytes, 0xCC)? } else { 0 };
-    h.es5506_clock = if should_read(0xD0, 4, 0x00000171) { read_u32_le_at(bytes, 0xD0)? } else { 0 };
-    h.es5506_channels = if should_read(0xD4, 2, 0x00000171) { read_u16_le_at(bytes, 0xD4)? } else { 0 };
-    h.es5506_cd = if should_read(0xD6, 1, 0x00000171) { read_u8_at(bytes, 0xD6)? } else { 0 };
-    h.es5506_reserved = if should_read(0xD7, 1, 0x00000171) { read_u8_at(bytes, 0xD7)? } else { 0 };
-    h.x1_010_clock = if should_read(0xD8, 4, 0x00000171) { read_u32_le_at(bytes, 0xD8)? } else { 0 };
-    h.c352_clock = if should_read(0xDC, 4, 0x00000171) { read_u32_le_at(bytes, 0xDC)? } else { 0 };
-    h.ga20_clock = if should_read(0xE0, 4, 0x00000171) { read_u32_le_at(bytes, 0xE0)? } else { 0 };
-    h.mikey_clock = if should_read(0xE4, 4, 0x00000172) { read_u32_le_at(bytes, 0xE4)? } else { 0 };
-    h.reserved_e8_ef = if should_read(0xE8, 8, 0x00000172) {
-        let s = read_slice(bytes, 0xE8, 8)?;
-        let mut a = [0u8; 8]; a.copy_from_slice(s); a } else { [0u8; 8] };
-    h.reserved_f0_ff = if should_read(0xF0, 16, 0x00000172) {
-        let s = read_slice(bytes, 0xF0, 16)?;
-        let mut a = [0u8; 16]; a.copy_from_slice(s); a } else { [0u8; 16] };
+
+    h.sega_pcm_clock = if should_read(VgmHeaderField::SegaPcmClock) {
+        read_u32_le_at(bytes, VgmHeaderField::SegaPcmClock.offset())?
+    } else {
+        0
+    };
+    h.spcm_interface = if should_read(VgmHeaderField::SpcmInterface) {
+        read_u32_le_at(bytes, VgmHeaderField::SpcmInterface.offset())?
+    } else {
+        0
+    };
+    h.rf5c68_clock = if should_read(VgmHeaderField::Rf5c68Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Rf5c68Clock.offset())?
+    } else {
+        0
+    };
+    h.ym2203_clock = if should_read(VgmHeaderField::Ym2203Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ym2203Clock.offset())?
+    } else {
+        0
+    };
+    h.ym2608_clock = if should_read(VgmHeaderField::Ym2608Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ym2608Clock.offset())?
+    } else {
+        0
+    };
+    h.ym2610b_clock = if should_read(VgmHeaderField::Ym2610bClock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ym2610bClock.offset())?
+    } else {
+        0
+    };
+    h.ym3812_clock = if should_read(VgmHeaderField::Ym3812Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ym3812Clock.offset())?
+    } else {
+        0
+    };
+    h.ym3526_clock = if should_read(VgmHeaderField::Ym3526Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ym3526Clock.offset())?
+    } else {
+        0
+    };
+    h.y8950_clock = if should_read(VgmHeaderField::Y8950Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Y8950Clock.offset())?
+    } else {
+        0
+    };
+    h.ymf262_clock = if should_read(VgmHeaderField::Ymf262Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ymf262Clock.offset())?
+    } else {
+        0
+    };
+    h.ymf278b_clock = if should_read(VgmHeaderField::Ymf278bClock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ymf278bClock.offset())?
+    } else {
+        0
+    };
+    h.ymf271_clock = if should_read(VgmHeaderField::Ymf271Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ymf271Clock.offset())?
+    } else {
+        0
+    };
+    h.ymz280b_clock = if should_read(VgmHeaderField::Ymz280bClock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ymz280bClock.offset())?
+    } else {
+        0
+    };
+    h.rf5c164_clock = if should_read(VgmHeaderField::Rf5c164Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Rf5c164Clock.offset())?
+    } else {
+        0
+    };
+    h.pwm_clock = if should_read(VgmHeaderField::PwmClock) {
+        read_u32_le_at(bytes, VgmHeaderField::PwmClock.offset())?
+    } else {
+        0
+    };
+    h.ay8910_clock = if should_read(VgmHeaderField::Ay8910Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Ay8910Clock.offset())?
+    } else {
+        0
+    };
+    h.ay_chip_type = if should_read(VgmHeaderField::AyChipType) {
+        read_u8_at(bytes, VgmHeaderField::AyChipType.offset())?
+    } else {
+        0
+    };
+    h.ay8910_flags = if should_read(VgmHeaderField::Ay8910Flags) {
+        read_u8_at(bytes, VgmHeaderField::Ay8910Flags.offset())?
+    } else {
+        0
+    };
+    h.ym2203_ay8910_flags = if should_read(VgmHeaderField::Ym2203Ay8910Flags) {
+        read_u8_at(bytes, VgmHeaderField::Ym2203Ay8910Flags.offset())?
+    } else {
+        0
+    };
+    h.ym2608_ay8910_flags = if should_read(VgmHeaderField::Ym2608Ay8910Flags) {
+        read_u8_at(bytes, VgmHeaderField::Ym2608Ay8910Flags.offset())?
+    } else {
+        0
+    };
+    h.volume_modifier = if should_read(VgmHeaderField::VolumeModifier) {
+        read_u8_at(bytes, VgmHeaderField::VolumeModifier.offset())?
+    } else {
+        0
+    };
+    h.reserved_7d = if should_read(VgmHeaderField::Reserved7D) {
+        read_u8_at(bytes, VgmHeaderField::Reserved7D.offset())?
+    } else {
+        0
+    };
+    h.loop_base = if should_read(VgmHeaderField::LoopBase) {
+        read_u8_at(bytes, VgmHeaderField::LoopBase.offset())?
+    } else {
+        0
+    };
+    h.loop_modifier = if should_read(VgmHeaderField::LoopModifier) {
+        read_u8_at(bytes, VgmHeaderField::LoopModifier.offset())?
+    } else {
+        0
+    };
+    h.gb_dmg_clock = if should_read(VgmHeaderField::GbDmgClock) {
+        read_u32_le_at(bytes, VgmHeaderField::GbDmgClock.offset())?
+    } else {
+        0
+    };
+    h.nes_apu_clock = if should_read(VgmHeaderField::NesApuClock) {
+        read_u32_le_at(bytes, VgmHeaderField::NesApuClock.offset())?
+    } else {
+        0
+    };
+    h.multipcm_clock = if should_read(VgmHeaderField::MultipcmClock) {
+        read_u32_le_at(bytes, VgmHeaderField::MultipcmClock.offset())?
+    } else {
+        0
+    };
+    h.upd7759_clock = if should_read(VgmHeaderField::Upd7759Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Upd7759Clock.offset())?
+    } else {
+        0
+    };
+    h.okim6258_clock = if should_read(VgmHeaderField::Okim6258Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Okim6258Clock.offset())?
+    } else {
+        0
+    };
+    h.okim6258_flags = if should_read(VgmHeaderField::Okim6258Flags) {
+        read_u8_at(bytes, VgmHeaderField::Okim6258Flags.offset())?
+    } else {
+        0
+    };
+    h.k054539_flags = if should_read(VgmHeaderField::K054539Flags) {
+        read_u8_at(bytes, VgmHeaderField::K054539Flags.offset())?
+    } else {
+        0
+    };
+    h.c140_chip_type = if should_read(VgmHeaderField::C140ChipType) {
+        read_u8_at(bytes, VgmHeaderField::C140ChipType.offset())?
+    } else {
+        0
+    };
+    h.reserved_97 = if should_read(VgmHeaderField::Reserved97) {
+        read_u8_at(bytes, VgmHeaderField::Reserved97.offset())?
+    } else {
+        0
+    };
+    h.okim6295_clock = if should_read(VgmHeaderField::Okim6295Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Okim6295Clock.offset())?
+    } else {
+        0
+    };
+    h.k051649_clock = if should_read(VgmHeaderField::K051649Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::K051649Clock.offset())?
+    } else {
+        0
+    };
+    h.k054539_clock = if should_read(VgmHeaderField::K054539Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::K054539Clock.offset())?
+    } else {
+        0
+    };
+    h.huc6280_clock = if should_read(VgmHeaderField::Huc6280Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::Huc6280Clock.offset())?
+    } else {
+        0
+    };
+    h.c140_clock = if should_read(VgmHeaderField::C140Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::C140Clock.offset())?
+    } else {
+        0
+    };
+    h.reserved_97 = if should_read(VgmHeaderField::Reserved97) {
+        read_u8_at(bytes, VgmHeaderField::Reserved97.offset())?
+    } else {
+        0
+    };
+    h.k053260_clock = if should_read(VgmHeaderField::K053260Clock) {
+        read_u32_le_at(bytes, VgmHeaderField::K053260Clock.offset())?
+    } else {
+        0
+    };
+    h.pokey_clock = if should_read(VgmHeaderField::PokeyClock) {
+        read_u32_le_at(bytes, VgmHeaderField::PokeyClock.offset())?
+    } else {
+        0
+    };
+    h.qsound_clock = if should_read(VgmHeaderField::QsoundClock) {
+        read_u32_le_at(bytes, VgmHeaderField::QsoundClock.offset())?
+    } else {
+        0
+    };
+    h.scsp_clock = if should_read(VgmHeaderField::ScspClock) {
+        read_u32_le_at(bytes, VgmHeaderField::ScspClock.offset())?
+    } else {
+        0
+    };
+    h.extra_header_offset = if should_read(VgmHeaderField::ExtraHeaderOffset) {
+        read_u32_le_at(bytes, VgmHeaderField::ExtraHeaderOffset.offset())?
+    } else {
+        0
+    };
+    h.wonderswan_clock = if should_read(VgmHeaderField::WonderSwan) {
+        read_u32_le_at(bytes, VgmHeaderField::WonderSwan.offset())?
+    } else {
+        0
+    };
+    h.vsu_clock = if should_read(VgmHeaderField::Vsu) {
+        read_u32_le_at(bytes, VgmHeaderField::Vsu.offset())?
+    } else {
+        0
+    };
+    h.saa1099_clock = if should_read(VgmHeaderField::Saa1099) {
+        read_u32_le_at(bytes, VgmHeaderField::Saa1099.offset())?
+    } else {
+        0
+    };
+    h.es5503_clock = if should_read(VgmHeaderField::Es5503) {
+        read_u32_le_at(bytes, VgmHeaderField::Es5503.offset())?
+    } else {
+        0
+    };
+    h.es5506_clock = if should_read(VgmHeaderField::Es5506) {
+        read_u32_le_at(bytes, VgmHeaderField::Es5506.offset())?
+    } else {
+        0
+    };
+    h.es5503_output_channels = if should_read(VgmHeaderField::Es5503OutputChannels) {
+        read_u8_at(bytes, VgmHeaderField::Es5503OutputChannels.offset())?
+    } else {
+        0
+    };
+    h.es5506_output_channels = if should_read(VgmHeaderField::Es5506OutputChannels) {
+        read_u8_at(bytes, VgmHeaderField::Es5506OutputChannels.offset())?
+    } else {
+        0
+    };
+    h.c352_clock_divider = if should_read(VgmHeaderField::C352ClockDivider) {
+        read_u8_at(bytes, VgmHeaderField::C352ClockDivider.offset())?
+    } else {
+        0
+    };
+    h.x1_010_clock = if should_read(VgmHeaderField::X1_010) {
+        read_u32_le_at(bytes, VgmHeaderField::X1_010.offset())?
+    } else {
+        0
+    };
+    h.c352_clock = if should_read(VgmHeaderField::C352) {
+        read_u32_le_at(bytes, VgmHeaderField::C352.offset())?
+    } else {
+        0
+    };
+    h.ga20_clock = if should_read(VgmHeaderField::Ga20) {
+        read_u32_le_at(bytes, VgmHeaderField::Ga20.offset())?
+    } else {
+        0
+    };
+    h.mikey_clock = if should_read(VgmHeaderField::Mikey) {
+        read_u32_le_at(bytes, VgmHeaderField::Mikey.offset())?
+    } else {
+        0
+    };
+    h.reserved_e8_ef = if should_read(VgmHeaderField::ReservedE8EF) {
+        let s = read_slice(
+            bytes,
+            VgmHeaderField::ReservedE8EF.offset(),
+            VgmHeaderField::ReservedE8EF.len(),
+        )?;
+        let mut a = [0u8; 8];
+        a.copy_from_slice(s);
+        a
+    } else {
+        [0u8; 8]
+    };
+    h.reserved_f0_ff = if should_read(VgmHeaderField::ReservedF0FF) {
+        let s = read_slice(
+            bytes,
+            VgmHeaderField::ReservedF0FF.offset(),
+            VgmHeaderField::ReservedF0FF.len(),
+        )?;
+        let mut a = [0u8; 16];
+        a.copy_from_slice(s);
+        a
+    } else {
+        [0u8; 16]
+    };
 
     Ok((h, total_header_size))
 }

@@ -285,14 +285,23 @@ impl UiState {
                 format!("{}", doc.header.sample_rate),
             ));
         }
-        if doc.header.sn_fb != 0 {
-            header_children.push(AstNode::new("SN FB", format!("{}", doc.header.sn_fb)));
+        if doc.header.sn76489_feedback != 0 {
+            header_children.push(AstNode::new(
+                "SN76489 Feedback",
+                format!("{}", doc.header.sn76489_feedback),
+            ));
         }
-        if doc.header.snw != 0 {
-            header_children.push(AstNode::new("SNW", format!("{}", doc.header.snw)));
+        if doc.header.sn76489_shift_register_width != 0 {
+            header_children.push(AstNode::new(
+                "SN76489 Shift Register Width",
+                format!("{}", doc.header.sn76489_shift_register_width),
+            ));
         }
-        if doc.header.sf != 0 {
-            header_children.push(AstNode::new("SF", format!("{}", doc.header.sf)));
+        if doc.header.sn76489_flags != 0 {
+            header_children.push(AstNode::new(
+                "SN76489 Flags",
+                format!("{}", doc.header.sn76489_flags),
+            ));
         }
         if doc.header.ym2612_clock != 0 {
             header_children.push(AstNode::new(
@@ -408,10 +417,10 @@ impl UiState {
                 format!("{}", doc.header.ay8910_clock),
             ));
         }
-        if doc.header.ay_misc != [0u8; 8] {
+        if doc.header.ay8910_flags != 0 {
             header_children.push(AstNode::new(
-                "AY miscellaneous",
-                format!("{:?}", doc.header.ay_misc),
+                "AY Flags",
+                format!("{:?}", doc.header.ay8910_flags),
             ));
         }
         if doc.header.gb_dmg_clock != 0 {
@@ -444,7 +453,7 @@ impl UiState {
                 format!("{}", doc.header.okim6258_clock),
             ));
         }
-        if doc.header.okim6258_flags != [0u8; 4] {
+        if doc.header.okim6258_flags != 0 {
             header_children.push(AstNode::new(
                 "OKIM6258 flags",
                 format!("{:?}", doc.header.okim6258_flags),
@@ -540,22 +549,16 @@ impl UiState {
                 format!("{}", doc.header.es5506_clock),
             ));
         }
-        if doc.header.es5506_channels != 0 {
+        if doc.header.es5503_output_channels != 0 {
             header_children.push(AstNode::new(
                 "ES5506 channels",
-                format!("{}", doc.header.es5506_channels),
+                format!("{}", doc.header.es5503_output_channels),
             ));
         }
-        if doc.header.es5506_cd != 0 {
+        if doc.header.c352_clock_divider != 0 {
             header_children.push(AstNode::new(
                 "ES5506 CD flags",
-                format!("{}", doc.header.es5506_cd),
-            ));
-        }
-        if doc.header.es5506_reserved != 0 {
-            header_children.push(AstNode::new(
-                "ES5506 reserved",
-                format!("{}", doc.header.es5506_reserved),
+                format!("{}", doc.header.c352_clock_divider),
             ));
         }
         if doc.header.x1_010_clock != 0 {
@@ -610,9 +613,9 @@ impl UiState {
             ("Loop offset", VgmHeaderField::LoopOffset),
             ("Loop samples", VgmHeaderField::LoopSamples),
             ("Sample rate", VgmHeaderField::SampleRate),
-            ("SN FB", VgmHeaderField::SnFb),
-            ("SNW", VgmHeaderField::Snw),
-            ("SF", VgmHeaderField::Sf),
+            ("SN FB", VgmHeaderField::Sn76489Feedback),
+            ("SNW", VgmHeaderField::Sn76489ShiftRegisterWidth),
+            ("SF", VgmHeaderField::Sn76489Flags),
             ("YM2612 clock", VgmHeaderField::Ym2612Clock),
             ("YM2151 clock", VgmHeaderField::Ym2151Clock),
             ("Data offset", VgmHeaderField::DataOffset),
@@ -632,7 +635,13 @@ impl UiState {
             ("RF5C164 clock", VgmHeaderField::Rf5c164Clock),
             ("PWM clock", VgmHeaderField::PwmClock),
             ("AY8910 clock", VgmHeaderField::Ay8910Clock),
-            ("AY miscellaneous", VgmHeaderField::AyMisc),
+            ("AY ChipType", VgmHeaderField::AyChipType),
+            ("Ay8910Flags", VgmHeaderField::Ay8910Flags),
+            ("Ym2203Ay8910Flags", VgmHeaderField::Ym2203Ay8910Flags),
+            ("Ym2608Ay8910Flags", VgmHeaderField::Ym2608Ay8910Flags),
+            ("VolumeModifier", VgmHeaderField::VolumeModifier),
+            ("LoopBase", VgmHeaderField::LoopBase),
+            ("LoopModifier", VgmHeaderField::LoopModifier),
             ("GB DMG clock", VgmHeaderField::GbDmgClock),
             ("NES APU clock", VgmHeaderField::NesApuClock),
             ("MultiPCM clock", VgmHeaderField::MultipcmClock),
@@ -654,9 +663,9 @@ impl UiState {
             ("SAA1099 clock", VgmHeaderField::Saa1099),
             ("ES5503 clock", VgmHeaderField::Es5503),
             ("ES5506 clock", VgmHeaderField::Es5506),
-            ("ES5506 channels", VgmHeaderField::Es5506Channels),
-            ("ES5506 CD flags", VgmHeaderField::Es5506Cd),
-            ("ES5506 reserved", VgmHeaderField::Es5506Reserved),
+            ("ES5506 channels", VgmHeaderField::Es5503OutputChannels),
+            ("ES5506 channels", VgmHeaderField::Es5506OutputChannels),
+            ("C352 clock divider", VgmHeaderField::C352ClockDivider),
             ("X1-010 clock", VgmHeaderField::X1_010),
             ("C352 clock", VgmHeaderField::C352),
             ("GA20 clock", VgmHeaderField::Ga20),

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 (dev)
+
+- [ ] Change: `VgmHeader`: improve type-safety.
+- [ ] Add: `VgmStream`: `from_vgm`, which uses raw VGM as storage.
+- [ ] Fix: `VgmStream`: respect VGM loop modifier.
+- [ ] Fix: `VgmStream`: respect DAC stream `LengthMode`(`Milliseconds`, `reverse`, `looped`).
+- [ ] Internal: `VgmDocument`: reduction in memory usage.
+
 ## v0.8.0
 
 - Add: `VgmBuilder::attach_data_block` helper (generic) for ergonomic DataBlock construction and addition.

@@ -174,15 +174,17 @@ pub fn redump_vgm(
 
     // Copy chip-specific configuration fields from original header
     // (these are not copied by register_chip and contain important chip behavior flags)
-    doc_rebuilt.header.sn_fb = doc_orig.header.sn_fb;
-    doc_rebuilt.header.snw = doc_orig.header.snw;
-    doc_rebuilt.header.sf = doc_orig.header.sf;
-    doc_rebuilt.header.ay_misc = doc_orig.header.ay_misc;
+    doc_rebuilt.header.sn76489_feedback = doc_orig.header.sn76489_feedback;
+    doc_rebuilt.header.sn76489_shift_register_width = doc_orig.header.sn76489_shift_register_width;
+    doc_rebuilt.header.sn76489_flags = doc_orig.header.sn76489_flags;
+    doc_rebuilt.header.ay8910_flags = doc_orig.header.ay8910_flags;
+    doc_rebuilt.header.ym2203_ay8910_flags = doc_orig.header.ym2203_ay8910_flags;
+    doc_rebuilt.header.ym2608_ay8910_flags = doc_orig.header.ym2608_ay8910_flags;
     doc_rebuilt.header.spcm_interface = doc_orig.header.spcm_interface;
     doc_rebuilt.header.okim6258_flags = doc_orig.header.okim6258_flags;
-    doc_rebuilt.header.es5506_channels = doc_orig.header.es5506_channels;
-    doc_rebuilt.header.es5506_cd = doc_orig.header.es5506_cd;
-    doc_rebuilt.header.es5506_reserved = doc_orig.header.es5506_reserved;
+    doc_rebuilt.header.es5503_output_channels = doc_orig.header.es5503_output_channels;
+    doc_rebuilt.header.es5506_output_channels = doc_orig.header.es5506_output_channels;
+    doc_rebuilt.header.c352_clock_divider = doc_orig.header.c352_clock_divider;
 
     let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
 
