@@ -61,12 +61,16 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     let gd3_offset = format!("0x{:08X}", header.gd3_offset);
     let extra_header_offset = format!("0x{:08X}", header.extra_header_offset);
     let loop_offset = format!("0x{:08X}", header.loop_offset);
-    let loop_base = format!("0x{:08X}", header.loop_base);
-    let loop_modifier = format!("0x{:08X}", header.loop_modifier);
+    let loop_base = format!("{}", header.loop_base);
+    let loop_modifier = format!("{}", header.loop_modifier);
     let sn76489_feedback = format!("{:?}", header.sn76489_feedback);
     let data_offset = format!("0x{:08X}", header.data_offset);
-    let volume_modifier = format!("{:02}", header.volume_modifier);
-    let sn76489_shift_register_width = format!("{:?}", header.sn76489_shift_register_width);
+    let volume_modifier = format!("{}", header.volume_modifier);
+    let sn76489_shift_register_width = format!(
+        "{:?}({})",
+        header.sn76489_shift_register_width,
+        u8::from(header.sn76489_shift_register_width)
+    );
     let sn76489_flags = format!("{:?}", header.sn76489_flags);
     let ay_chip_type = format!("{:?}", header.ay_chip_type);
     let ay8910_flags = format!("{:?}", header.ay8910_flags);
@@ -193,7 +197,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         ("loop_modifier".into(), loop_modifier),
         ("volume_modifier".into(), volume_modifier),
         ("total_samples".into(), total_samples),
-        ("waits_total".into(), waits_total),
+        ("waits_total (calc)".into(), waits_total),
         ("data_blocks".into(), data_blocks),
         ("data_block_types".into(), data_block_types),
     ];
