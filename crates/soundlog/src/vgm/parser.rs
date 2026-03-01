@@ -399,7 +399,7 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
         0
     };
     h.loop_base = if should_read(VgmHeaderField::LoopBase) {
-        read_u8_at(bytes, VgmHeaderField::LoopBase.offset())?
+        read_u8_at(bytes, VgmHeaderField::LoopBase.offset())? as i8
     } else {
         0
     };

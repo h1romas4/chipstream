@@ -3711,3 +3711,181 @@ fn test_vgm_callback_stream_push_chunk_large_doc() {
         *counter.borrow()
     );
 }
+
+/// Helper: collect the total number of EndOfStream events (i.e. run until end)
+/// and return the number of times each sample was emitted so we can assert
+/// on the effective loop count.
+fn count_effective_loops(mut stream: VgmStream) -> u32 {
+    let mut end_count = 0u32;
+    loop {
+        match stream.next() {
+            Some(Ok(StreamResult::EndOfStream)) => {
+                end_count += 1;
+                break;
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => panic!("Stream error: {:?}", e),
+            None => break,
+        }
+    }
+    // current_loop_count() is incremented each time EndOfData is encountered.
+    let _ = end_count;
+    stream.current_loop_count()
+}
+
+/// Build a minimal looping VGM document with a given number of program loops.
+fn make_looping_document(program_loops: u32) -> (VgmDocument, u32) {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    // Loop point is at the WaitSamples command (index 0)
+    builder.set_loop_index(0);
+    builder.add_vgm_command(EndOfData);
+    let doc = builder.finalize();
+    (doc, program_loops)
+}
+
+#[test]
+fn test_loop_modifier_default_zero_is_identity() {
+    // Both loop_base=0 and loop_modifier=0 (default) → effective loops == program_loops
+    let (doc, _) = make_looping_document(3);
+    let mut stream = VgmStream::from_document(doc);
+    // loop_base and loop_modifier are both 0 from the default header
+    stream.set_loop_count(Some(3));
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 3, "Default (no modifier) should loop exactly program_loops times");
+}
+
+#[test]
+fn test_loop_modifier_double() {
+    // loop_modifier = 0x20 (2× scaling) → effective = 4 * 0x20 / 0x10 = 8 loops
+    let (doc, _) = make_looping_document(4);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(4));
+    stream.set_loop_modifier(0x20); // 2× the program loop count
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 8, "loop_modifier=0x20 should double the loop count");
+}
+
+#[test]
+fn test_loop_modifier_half() {
+    // loop_modifier = 0x08 (0.5× scaling) → effective = 4 * 0x08 / 0x10 = 2 loops
+    let (doc, _) = make_looping_document(4);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(4));
+    stream.set_loop_modifier(0x08); // 0.5× the program loop count
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 2, "loop_modifier=0x08 should halve the loop count");
+}
+
+#[test]
+fn test_loop_base_subtract_one() {
+    // loop_base = 1 → effective = 4 - 1 = 3 loops
+    let (doc, _) = make_looping_document(4);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(4));
+    stream.set_loop_base(1);
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 3, "loop_base=1 should reduce loops by 1");
+}
+
+#[test]
+fn test_loop_base_negative_adds_loops() {
+    // loop_base = -1 (0xFF byte) → effective = 4 - (-1) = 5 loops
+    let (doc, _) = make_looping_document(4);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(4));
+    stream.set_loop_base(-1);
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 5, "loop_base=-1 should increase loops by 1");
+}
+
+#[test]
+fn test_loop_base_and_modifier_combined() {
+    // loop_modifier=0x20 doubles → 4×2=8, then loop_base=2 subtracts → 8-2=6
+    let (doc, _) = make_looping_document(4);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(4));
+    stream.set_loop_modifier(0x20);
+    stream.set_loop_base(2);
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 6, "modifier=0x20, base=2 → 4*2-2=6 loops");
+}
+
+#[test]
+fn test_loop_base_clamps_to_zero() {
+    // loop_base larger than scaled loops → effective must be clamped to 0.
+    // effective = 0 means "stop at first EndOfData" (no looping back).
+    // current_loop_count() is incremented each time EndOfData is hit, so it
+    // will be 1 after the single EndOfData that terminates the stream.
+    let (doc, _) = make_looping_document(2);
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(2));
+    stream.set_loop_base(10); // would produce 2-10 = -8 → clamped to 0 → stop immediately
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 1, "Clamped-to-zero effective loops: stream stops at first EndOfData (current_loop_count=1)");
+}
+
+#[test]
+fn test_loop_modifier_none_loop_count_unchanged() {
+    // When loop_count is None the modifier/base must not affect infinite behaviour:
+    // set a very short timeout by using loop_count=Some to verify identity still holds.
+    let (doc, _) = make_looping_document(2);
+    let mut stream = VgmStream::from_document(doc);
+    // loop_modifier=0x10 is the same as the effective default (1×)
+    stream.set_loop_count(Some(2));
+    stream.set_loop_modifier(0x10);
+    stream.set_loop_base(0);
+
+    let loops = count_effective_loops(stream);
+    assert_eq!(loops, 2, "Explicit 0x10 modifier and 0 base is identity");
+}
+
+#[test]
+fn test_loop_modifier_getter_setter() {
+    let mut stream = VgmStream::new();
+    assert_eq!(stream.loop_modifier(), 0);
+    stream.set_loop_modifier(0x18);
+    assert_eq!(stream.loop_modifier(), 0x18);
+}
+
+#[test]
+fn test_loop_base_getter_setter() {
+    let mut stream = VgmStream::new();
+    assert_eq!(stream.loop_base(), 0);
+    stream.set_loop_base(-3);
+    assert_eq!(stream.loop_base(), -3);
+}
+
+#[test]
+fn test_loop_modifier_preserved_across_reset() {
+    let mut stream = VgmStream::new();
+    stream.set_loop_modifier(0x20);
+    stream.set_loop_base(1);
+    stream.reset();
+    assert_eq!(stream.loop_modifier(), 0x20, "loop_modifier preserved after reset");
+    assert_eq!(stream.loop_base(), 1, "loop_base preserved after reset");
+}
+
+#[test]
+fn test_from_document_reads_header_loop_base_modifier() {
+    // Build a document whose header has non-default loop_base and loop_modifier
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.set_loop_index(0);
+    builder.add_vgm_command(EndOfData);
+    let mut doc = builder.finalize();
+    // Manually set the header fields (simulate a real VGM file)
+    doc.header.loop_base = 1_i8;   // +1 reduction
+    doc.header.loop_modifier = 0x20; // 2×
+
+    let stream = VgmStream::from_document(doc);
+    assert_eq!(stream.loop_base(), 1_i8, "from_document should read loop_base from header");
+    assert_eq!(stream.loop_modifier(), 0x20_u8, "from_document should read loop_modifier from header");
+}

@@ -852,7 +852,7 @@ pub struct VgmHeader {
     pub ym2608_ay8910_flags: Ym2608AyFlags,
     pub volume_modifier: u8,
     pub reserved_7d: u8,
-    pub loop_base: u8,
+    pub loop_base: i8,
     pub loop_modifier: u8,
     pub gb_dmg_clock: u32,
     pub nes_apu_clock: u32,
@@ -1219,7 +1219,7 @@ impl VgmHeader {
             self.reserved_7d,
         );
         // Loop Base (0x7E)
-        write_u8(&mut buf, VgmHeaderField::LoopBase.offset(), self.loop_base);
+        write_u8(&mut buf, VgmHeaderField::LoopBase.offset(), self.loop_base as u8);
         // Loop Modifier (0x7F)
         write_u8(
             &mut buf,

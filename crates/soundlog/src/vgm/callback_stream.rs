@@ -631,6 +631,30 @@ impl<'a> VgmCallbackStream<'a> {
         self.stream.set_loop_count(count);
     }
 
+    /// Sets the loop base value.
+    ///
+    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_loop_base` for details.
+    pub fn set_loop_base(&mut self, value: i8) {
+        self.stream.set_loop_base(value);
+    }
+
+    /// Gets the current loop base value.
+    pub fn loop_base(&self) -> i8 {
+        self.stream.loop_base()
+    }
+
+    /// Sets the loop modifier value.
+    ///
+    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_loop_modifier` for details.
+    pub fn set_loop_modifier(&mut self, value: u8) {
+        self.stream.set_loop_modifier(value);
+    }
+
+    /// Gets the current loop modifier value.
+    pub fn loop_modifier(&self) -> u8 {
+        self.stream.loop_modifier()
+    }
+
     /// Push raw VGM bytes into the underlying stream parser.
     ///
     /// This is a convenience wrapper that forwards to `VgmStream::push_chunk`.

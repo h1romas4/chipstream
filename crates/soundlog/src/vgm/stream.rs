@@ -361,6 +361,14 @@ pub struct VgmStream {
     total_data_block_size: usize,
     /// Maximum allowed size for the internal parsing buffer
     max_buffer_size: usize,
+    /// VGM header loop_base field (signed: 0x80..0xFF = -128..-1)
+    /// Subtracts from the effective loop count:
+    ///  NumLoops = (ProgramNumLoops * modifier / 0x10) - loop_base
+    loop_base: i8,
+    /// VGM header loop_modifier field (0 is treated as 0x10, i.e. no scaling)
+    /// Scales the effective loop count:
+    ///  NumLoops = ProgramNumLoops * loop_modifier / 0x10
+    loop_modifier: u8,
 }
 
 impl VgmStream {
@@ -436,6 +444,8 @@ impl VgmStream {
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
+            loop_base: 0,
+            loop_modifier: 0,
         }
     }
 
@@ -478,6 +488,8 @@ impl VgmStream {
     /// ```
     pub fn from_document(document: VgmDocument) -> Self {
         let loop_index = Self::calculate_loop_index(&document);
+        let loop_base = document.header.loop_base;
+        let loop_modifier = document.header.loop_modifier;
         Self {
             source: VgmStreamSource::Commands {
                 document: Box::new(document),
@@ -503,6 +515,8 @@ impl VgmStream {
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
+            loop_base,
+            loop_modifier,
         }
     }
 
@@ -781,6 +795,48 @@ impl VgmStream {
         self.current_loops
     }
 
+    /// Sets the loop base value from the VGM header (`loop_base` field, offset `0x7E`).
+    ///
+    /// This is normally read automatically from the document header when using
+    /// `from_document()`. Call this when building a stream via `new()` + `push_chunk()`
+    /// and you have parsed the VGM header separately.
+    ///
+    /// The value is a signed byte: `0x80`..`0xFF` decode as -128..-1.
+    /// It is subtracted from the effective loop count after the modifier is applied:
+    ///
+    /// `NumLoops = (program_loops * modifier / 0x10) - loop_base`
+    ///
+    /// Default is `0` (no adjustment).
+    pub fn set_loop_base(&mut self, value: i8) {
+        self.loop_base = value;
+    }
+
+    /// Gets the current loop base value.
+    pub fn loop_base(&self) -> i8 {
+        self.loop_base
+    }
+
+    /// Sets the loop modifier value from the VGM header (`loop_modifier` field, offset `0x7F`).
+    ///
+    /// This is normally read automatically from the document header when using
+    /// `from_document()`. Call this when building a stream via `new()` + `push_chunk()`
+    /// and you have parsed the VGM header separately.
+    ///
+    /// A value of `0` is treated as `0x10` (multiplier 1.0, no scaling).
+    /// The effective loop count is computed as:
+    ///
+    /// `NumLoops = (program_loops * modifier / 0x10) - loop_base`
+    ///
+    /// Default is `0` (no scaling).
+    pub fn set_loop_modifier(&mut self, value: u8) {
+        self.loop_modifier = value;
+    }
+
+    /// Gets the current loop modifier value.
+    pub fn loop_modifier(&self) -> u8 {
+        self.loop_modifier
+    }
+
     /// Sets the fadeout grace period in samples after loop end.
     ///
     /// When set, the stream will continue processing commands for the specified
@@ -931,13 +987,15 @@ impl VgmStream {
         self.loop_end_sample = None;
         self.pcm_data_offset = 0;
         self.total_data_block_size = 0;
+        // loop_base and loop_modifier are header-derived configuration and are
+        // intentionally preserved across reset() calls.
     }
 
     /// Handles end of data command, potentially starting a new loop.
     fn handle_end_of_data(&mut self) {
         self.current_loops += 1;
 
-        if let Some(max_loops) = self.loop_count {
+        if let Some(max_loops) = self.effective_loop_count() {
             if self.current_loops >= max_loops {
                 self.encountered_end = true;
                 if self.fadeout_samples.is_some() {
@@ -953,6 +1011,29 @@ impl VgmStream {
         } else {
             self.encountered_end = true;
         }
+    }
+
+    /// Computes the effective loop count by applying `loop_modifier` and `loop_base`
+    /// from the VGM header specification.
+    ///
+    /// When `loop_count` is `None` (infinite), returns `None` unchanged.
+    ///
+    /// The specification formula is:
+    /// ```text
+    /// modifier = if loop_modifier == 0 { 0x10 } else { loop_modifier as u32 }
+    /// effective = (program_loops * modifier / 0x10).saturating_sub_signed(loop_base)
+    /// effective = effective.max(0)
+    /// ```
+    fn effective_loop_count(&self) -> Option<u32> {
+        let program_loops = self.loop_count?;
+        let modifier = if self.loop_modifier == 0 {
+            0x10_u32
+        } else {
+            self.loop_modifier as u32
+        };
+        let scaled = (program_loops as u64 * modifier as u64 / 0x10) as i64;
+        let effective = scaled - self.loop_base as i64;
+        Some(effective.max(0) as u32)
     }
 
     /// Jumps to the loop point in the command stream.

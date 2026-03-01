@@ -116,7 +116,7 @@ fn test_vgm_header_roundtrip_all_fields() {
         ym2608_ay8910_flags: Ym2608AyFlags::from(0x03),
         volume_modifier: 0x04,
         reserved_7d: 0x05,
-        loop_base: 0x06,
+        loop_base: 0x06_i8,
         loop_modifier: 0x07,
         gb_dmg_clock: 0x1300_0000,
         nes_apu_clock: 0x1400_0000,
