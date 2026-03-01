@@ -57,10 +57,28 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         0x34usize + header.data_offset as usize
     };
     let header_size = format!("{} (0x{:08X})", header_size_val, header_size_val);
+    let eof_offset = format!("0x{:08X}", header.eof_offset);
+    let gd3_offset = format!("0x{:08X}", header.gd3_offset);
+    let extra_header_offset = format!("0x{:08X}", header.extra_header_offset);
     let loop_offset = format!("0x{:08X}", header.loop_offset);
     let loop_base = format!("0x{:08X}", header.loop_base);
     let loop_modifier = format!("0x{:08X}", header.loop_modifier);
+    let sn76489_feedback = format!("{:?}", header.sn76489_feedback);
+    let sn76489_shift_register_width = format!("{:?}", header.sn76489_shift_register_width);
+    let sn76489_flags = format!("0x{:02X}", u8::from(header.sn76489_flags));
     let data_offset = format!("0x{:08X}", header.data_offset);
+    let ay_chip_type = format!("0x{:02X}", u8::from(header.ay_chip_type));
+    let ay8910_flags = format!("0x{:02X}", u8::from(header.ay8910_flags));
+    let ym2203_ay8910_flags = format!("0x{:02X}", u8::from(header.ym2203_ay8910_flags));
+    let ym2608_ay8910_flags = format!("0x{:02X}", u8::from(header.ym2608_ay8910_flags));
+    let volume_modifier = format!("0x{:02X}", header.volume_modifier);
+    let reserved_7d = format!("0x{:02X}", header.reserved_7d);
+    let okim6258_flags = format!("0x{:02X}", u8::from(header.okim6258_flags));
+    let k054539_flags = format!("0x{:02X}", u8::from(header.k054539_flags));
+    let c140_chip_type = format!("0x{:02X}", u8::from(header.c140_chip_type));
+    let reserved_97 = format!("0x{:02X}", header.reserved_97);
+    let reserved_e8_ef = format!("{:?}", header.reserved_e8_ef);
+    let reserved_f0_ff = format!("{:?}", header.reserved_f0_ff);
     let total_samples = format!("{}", header.total_samples);
 
     // waits total
@@ -170,10 +188,31 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         ("chips".into(), chips_value),
         ("version".into(), version),
         ("header_size".into(), header_size),
+        ("eof_offset".into(), eof_offset),
+        ("gd3_offset".into(), gd3_offset),
+        ("extra_header_offset".into(), extra_header_offset),
         ("loop_offset".into(), loop_offset),
         ("loop_base".into(), loop_base),
         ("loop_modifier".into(), loop_modifier),
+        ("sn76489_feedback".into(), sn76489_feedback),
+        (
+            "sn76489_shift_register_width".into(),
+            sn76489_shift_register_width,
+        ),
+        ("sn76489_flags".into(), sn76489_flags),
         ("data_offset".into(), data_offset),
+        ("ay_chip_type".into(), ay_chip_type),
+        ("ay8910_flags".into(), ay8910_flags),
+        ("ym2203_ay8910_flags".into(), ym2203_ay8910_flags),
+        ("ym2608_ay8910_flags".into(), ym2608_ay8910_flags),
+        ("volume_modifier".into(), volume_modifier),
+        ("reserved_7d".into(), reserved_7d),
+        ("okim6258_flags".into(), okim6258_flags),
+        ("k054539_flags".into(), k054539_flags),
+        ("c140_chip_type".into(), c140_chip_type),
+        ("reserved_97".into(), reserved_97),
+        ("reserved_e8_ef".into(), reserved_e8_ef),
+        ("reserved_f0_ff".into(), reserved_f0_ff),
         ("total_samples".into(), total_samples),
         ("waits_total".into(), waits_total),
         ("data_blocks".into(), data_blocks),

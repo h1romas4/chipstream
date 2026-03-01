@@ -57,7 +57,6 @@ use soundlog::meta::Gd3;
 use soundlog::vgm::command::{Instance, StreamChipType, WaitSamples};
 use soundlog::vgm::detail::UncompressedStream;
 use soundlog::{VgmBuilder, VgmDocument};
-use std::path::PathBuf;
 
 let mut builder = VgmBuilder::new();
 

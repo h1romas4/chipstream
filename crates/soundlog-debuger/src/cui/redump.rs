@@ -173,7 +173,8 @@ pub fn redump_vgm(
     }
 
     // Copy chip-specific configuration fields from original header
-    // (these are not copied by register_chip and contain important chip behavior flags)
+    // (these are not copied by register_chip and contain important chip behavior flags,
+    // and include typed fields such as `ay_chip_type` and `c140_chip_type`)
     doc_rebuilt.header.sn76489_feedback = doc_orig.header.sn76489_feedback;
     doc_rebuilt.header.sn76489_shift_register_width = doc_orig.header.sn76489_shift_register_width;
     doc_rebuilt.header.sn76489_flags = doc_orig.header.sn76489_flags;
@@ -181,6 +182,8 @@ pub fn redump_vgm(
     doc_rebuilt.header.ay8910_flags = doc_orig.header.ay8910_flags;
     doc_rebuilt.header.ym2203_ay8910_flags = doc_orig.header.ym2203_ay8910_flags;
     doc_rebuilt.header.ym2608_ay8910_flags = doc_orig.header.ym2608_ay8910_flags;
+    doc_rebuilt.header.volume_modifier = doc_orig.header.volume_modifier;
+    doc_rebuilt.header.reserved_7d = doc_orig.header.reserved_7d;
     doc_rebuilt.header.spcm_interface = doc_orig.header.spcm_interface;
     doc_rebuilt.header.okim6258_flags = doc_orig.header.okim6258_flags;
     doc_rebuilt.header.k054539_flags = doc_orig.header.k054539_flags;

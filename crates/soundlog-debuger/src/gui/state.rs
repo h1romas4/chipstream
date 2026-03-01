@@ -285,22 +285,22 @@ impl UiState {
                 format!("{}", doc.header.sample_rate),
             ));
         }
-        if doc.header.sn76489_feedback != 0 {
+        if u16::from(doc.header.sn76489_feedback) != 0 {
             header_children.push(AstNode::new(
                 "SN76489 Feedback",
-                format!("{}", doc.header.sn76489_feedback),
+                format!("{:?}", doc.header.sn76489_feedback),
             ));
         }
-        if doc.header.sn76489_shift_register_width != 0 {
+        if u8::from(doc.header.sn76489_shift_register_width) != 0 {
             header_children.push(AstNode::new(
                 "SN76489 Shift Register Width",
-                format!("{}", doc.header.sn76489_shift_register_width),
+                format!("{:?}", doc.header.sn76489_shift_register_width),
             ));
         }
-        if doc.header.sn76489_flags != 0 {
+        if u8::from(doc.header.sn76489_flags) != 0 {
             header_children.push(AstNode::new(
                 "SN76489 Flags",
-                format!("{}", doc.header.sn76489_flags),
+                format!("0x{:02X}", u8::from(doc.header.sn76489_flags)),
             ));
         }
         if doc.header.ym2612_clock != 0 {
@@ -417,10 +417,10 @@ impl UiState {
                 format!("{}", doc.header.ay8910_clock),
             ));
         }
-        if doc.header.ay8910_flags != 0 {
+        if u8::from(doc.header.ay8910_flags) != 0 {
             header_children.push(AstNode::new(
-                "AY Flags",
-                format!("{:?}", doc.header.ay8910_flags),
+                "Ay8910Flags",
+                format!("0x{:02X}", u8::from(doc.header.ay8910_flags)),
             ));
         }
         if doc.header.gb_dmg_clock != 0 {
@@ -453,10 +453,10 @@ impl UiState {
                 format!("{}", doc.header.okim6258_clock),
             ));
         }
-        if doc.header.okim6258_flags != 0 {
+        if u8::from(doc.header.okim6258_flags) != 0 {
             header_children.push(AstNode::new(
                 "OKIM6258 flags",
-                format!("{:?}", doc.header.okim6258_flags),
+                format!("0x{:02X}", u8::from(doc.header.okim6258_flags)),
             ));
         }
         if doc.header.okim6295_clock != 0 {

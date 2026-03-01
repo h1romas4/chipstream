@@ -39,7 +39,10 @@ use crate::vgm::command::{
     Wait735Samples, Wait882Samples, WaitNSample, WaitSamples, Ym2612Port0Address2AWriteAndWaitN,
 };
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
+use crate::vgm::header::{
+    Ay8910ChipType, Ay8910Flags, C140ChipType, K054539Flags, Okim6258Flags, Sn76489Flags,
+    VgmExtraHeader, VgmHeader, VgmHeaderField, Ym2203AyFlags, Ym2608AyFlags,
+};
 
 /// Parse a complete VGM file from a byte slice into a `VgmDocument`.
 ///
@@ -248,9 +251,10 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     h.loop_offset = read_u32_le_at(bytes, 0x1C)?;
     h.loop_samples = read_u32_le_at(bytes, 0x20)?;
     h.sample_rate = read_u32_le_at(bytes, 0x24)?;
-    h.sn76489_feedback = read_u16_le_at(bytes, 0x28)?;
-    h.sn76489_shift_register_width = read_u8_at(bytes, 0x2A)?;
-    h.sn76489_flags = read_u8_at(bytes, 0x2B)?;
+    h.sn76489_feedback = read_u16_le_at(bytes, 0x28)?.into();
+    let width_u8 = read_u8_at(bytes, 0x2A)?;
+    h.sn76489_shift_register_width = width_u8.into();
+    h.sn76489_flags = Sn76489Flags::from(read_u8_at(bytes, 0x2B)?);
     h.ym2612_clock = read_u32_le_at(bytes, 0x2C)?;
     h.ym2151_clock = read_u32_le_at(bytes, 0x30)?;
     h.data_offset = data_offset;
@@ -359,24 +363,30 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
         0
     };
     h.ay_chip_type = if should_read(VgmHeaderField::Ay8910ChipType) {
-        read_u8_at(bytes, VgmHeaderField::Ay8910ChipType.offset())?
+        Ay8910ChipType::from(read_u8_at(bytes, VgmHeaderField::Ay8910ChipType.offset())?)
     } else {
-        0
+        Ay8910ChipType::from(0)
     };
     h.ay8910_flags = if should_read(VgmHeaderField::Ay8910Flags) {
-        read_u8_at(bytes, VgmHeaderField::Ay8910Flags.offset())?
+        Ay8910Flags::from(read_u8_at(bytes, VgmHeaderField::Ay8910Flags.offset())?)
     } else {
-        0
+        Ay8910Flags::from(0)
     };
     h.ym2203_ay8910_flags = if should_read(VgmHeaderField::Ym2203Ay8910Flags) {
-        read_u8_at(bytes, VgmHeaderField::Ym2203Ay8910Flags.offset())?
+        Ym2203AyFlags::from(read_u8_at(
+            bytes,
+            VgmHeaderField::Ym2203Ay8910Flags.offset(),
+        )?)
     } else {
-        0
+        Ym2203AyFlags::from(0)
     };
     h.ym2608_ay8910_flags = if should_read(VgmHeaderField::Ym2608Ay8910Flags) {
-        read_u8_at(bytes, VgmHeaderField::Ym2608Ay8910Flags.offset())?
+        Ym2608AyFlags::from(read_u8_at(
+            bytes,
+            VgmHeaderField::Ym2608Ay8910Flags.offset(),
+        )?)
     } else {
-        0
+        Ym2608AyFlags::from(0)
     };
     h.volume_modifier = if should_read(VgmHeaderField::VolumeModifier) {
         read_u8_at(bytes, VgmHeaderField::VolumeModifier.offset())?
@@ -424,19 +434,29 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
         0
     };
     h.okim6258_flags = if should_read(VgmHeaderField::Okim6258Flags) {
-        read_u8_at(bytes, VgmHeaderField::Okim6258Flags.offset())?
+        Okim6258Flags::from(read_u8_at(bytes, VgmHeaderField::Okim6258Flags.offset())?)
     } else {
-        0
+        Okim6258Flags {
+            clock_divider: 0,
+            adpcm_3bit_select: false,
+            output_12bit: false,
+            reserved: 0,
+        }
     };
     h.k054539_flags = if should_read(VgmHeaderField::K054539Flags) {
-        read_u8_at(bytes, VgmHeaderField::K054539Flags.offset())?
+        K054539Flags::from(read_u8_at(bytes, VgmHeaderField::K054539Flags.offset())?)
     } else {
-        0
+        K054539Flags {
+            reverse_stereo: false,
+            disable_reverb: false,
+            update_at_keyon: false,
+            reserved: 0,
+        }
     };
     h.c140_chip_type = if should_read(VgmHeaderField::C140ChipType) {
-        read_u8_at(bytes, VgmHeaderField::C140ChipType.offset())?
+        C140ChipType::from(read_u8_at(bytes, VgmHeaderField::C140ChipType.offset())?)
     } else {
-        0
+        C140ChipType::from(0)
     };
     h.reserved_97 = if should_read(VgmHeaderField::Reserved97) {
         read_u8_at(bytes, VgmHeaderField::Reserved97.offset())?

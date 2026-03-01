@@ -143,6 +143,393 @@ pub enum VgmHeaderField {
     ReservedF0FF,
 }
 
+/// SN76489 feedback variants used in the header (u16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sn76489Feedback {
+    /// 0x0003: SN76489 (SN94624)
+    Sn94624,
+    /// 0x0006: Sometimes (incorrectly) used to refer to SN76489A / SN76494 / SN76496 / Y204
+    /// in combination with LFSR width 16. The correct combination for those parts is
+    /// feedback 0x000C with LFSR width 17 (reflects the extra latency bit).
+    IncorrectA,
+    /// 0x0009: Sega Master System 2 / Game Gear / Mega Drive (SN76489/SN76496 integrated into VDP)
+    SegaVdp,
+    /// 0x000C: SN76489A, SN76494, SN76496, Y204
+    Sn76489a,
+    /// 0x0022: NCR8496, PSSJ3
+    Ncr8496,
+    /// Unknown(x) preserves unknown raw value.
+    Unknown(u16),
+}
+
+impl From<u16> for Sn76489Feedback {
+    fn from(value: u16) -> Self {
+        match value {
+            0x0003 => Sn76489Feedback::Sn94624,
+            0x0006 => Sn76489Feedback::IncorrectA,
+            0x0009 => Sn76489Feedback::SegaVdp,
+            0x000C => Sn76489Feedback::Sn76489a,
+            0x0022 => Sn76489Feedback::Ncr8496,
+            other => Sn76489Feedback::Unknown(other),
+        }
+    }
+}
+
+impl From<Sn76489Feedback> for u16 {
+    fn from(feedback: Sn76489Feedback) -> Self {
+        match feedback {
+            Sn76489Feedback::Sn94624 => 0x0003,
+            Sn76489Feedback::IncorrectA => 0x0006,
+            Sn76489Feedback::SegaVdp => 0x0009,
+            Sn76489Feedback::Sn76489a => 0x000C,
+            Sn76489Feedback::Ncr8496 => 0x0022,
+            Sn76489Feedback::Unknown(value) => value,
+        }
+    }
+}
+
+/// SN76489 shift register width codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sn76489ShiftRegisterWidth {
+    /// 15: SN76489, SN94624
+    Sn94624,
+    /// 16: Sega Master System 2 / Game Gear / Mega Drive
+    /// (SN76489 / SN76496 integrated into Sega VDP chip),
+    /// NCR8496, PSSJ3
+    SegaVdp,
+    /// 17: SN76489A, SN76494, SN76496, Y204
+    Sn76489a,
+    /// Unknown(x) preserves unknown raw value.
+    Unknown(u8),
+}
+
+impl From<u8> for Sn76489ShiftRegisterWidth {
+    fn from(value: u8) -> Self {
+        match value {
+            15 => Sn76489ShiftRegisterWidth::Sn94624,
+            16 => Sn76489ShiftRegisterWidth::SegaVdp,
+            17 => Sn76489ShiftRegisterWidth::Sn76489a,
+            other => Sn76489ShiftRegisterWidth::Unknown(other),
+        }
+    }
+}
+
+impl From<Sn76489ShiftRegisterWidth> for u8 {
+    fn from(width: Sn76489ShiftRegisterWidth) -> Self {
+        match width {
+            Sn76489ShiftRegisterWidth::Sn94624 => 15,
+            Sn76489ShiftRegisterWidth::SegaVdp => 16,
+            Sn76489ShiftRegisterWidth::Sn76489a => 17,
+            Sn76489ShiftRegisterWidth::Unknown(value) => value,
+        }
+    }
+}
+
+/// AY/8910 chip type enumerations used in the header (1 byte)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ay8910ChipType {
+    /// 0x00: AY8910
+    Ay8910,
+    /// 0x01: AY8912
+    Ay8912,
+    /// 0x02: AY8913
+    Ay8913,
+    /// 0x03: AY8930
+    Ay8930,
+    /// 0x04: AY8914
+    Ay8914,
+    /// 0x10: YM2149
+    Ym2149,
+    /// 0x11: YM3439
+    Ym3439,
+    /// 0x12: YMZ284
+    Ymz284,
+    /// 0x13: YMZ294
+    Ymz294,
+    /// Unknown(x) preserves unknown raw value.
+    Unknown(u8),
+}
+
+impl From<u8> for Ay8910ChipType {
+    fn from(value: u8) -> Self {
+        match value {
+            0x00 => Ay8910ChipType::Ay8910,
+            0x01 => Ay8910ChipType::Ay8912,
+            0x02 => Ay8910ChipType::Ay8913,
+            0x03 => Ay8910ChipType::Ay8930,
+            0x04 => Ay8910ChipType::Ay8914,
+            0x10 => Ay8910ChipType::Ym2149,
+            0x11 => Ay8910ChipType::Ym3439,
+            0x12 => Ay8910ChipType::Ymz284,
+            0x13 => Ay8910ChipType::Ymz294,
+            other => Ay8910ChipType::Unknown(other),
+        }
+    }
+}
+
+impl From<Ay8910ChipType> for u8 {
+    fn from(t: Ay8910ChipType) -> Self {
+        match t {
+            Ay8910ChipType::Ay8910 => 0x00,
+            Ay8910ChipType::Ay8912 => 0x01,
+            Ay8910ChipType::Ay8913 => 0x02,
+            Ay8910ChipType::Ay8930 => 0x03,
+            Ay8910ChipType::Ay8914 => 0x04,
+            Ay8910ChipType::Ym2149 => 0x10,
+            Ay8910ChipType::Ym3439 => 0x11,
+            Ay8910ChipType::Ymz284 => 0x12,
+            Ay8910ChipType::Ymz294 => 0x13,
+            Ay8910ChipType::Unknown(v) => v,
+        }
+    }
+}
+
+/// C140 chip type enumerations used in the header (1 byte)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum C140ChipType {
+    /// 0x00: C140, Namco System 2
+    C140System2,
+    /// 0x01: C140, Namco System 21
+    C140System21,
+    /// 0x02: 219 ASIC, Namco NA-1/2
+    Asic219Na12,
+    /// Unknown(x) preserves unknown raw value.
+    Unknown(u8),
+}
+
+impl From<u8> for C140ChipType {
+    fn from(value: u8) -> Self {
+        match value {
+            0x00 => C140ChipType::C140System2,
+            0x01 => C140ChipType::C140System21,
+            0x02 => C140ChipType::Asic219Na12,
+            other => C140ChipType::Unknown(other),
+        }
+    }
+}
+
+impl From<C140ChipType> for u8 {
+    fn from(t: C140ChipType) -> Self {
+        match t {
+            C140ChipType::C140System2 => 0x00,
+            C140ChipType::C140System21 => 0x01,
+            C140ChipType::Asic219Na12 => 0x02,
+            C140ChipType::Unknown(v) => v,
+        }
+    }
+}
+
+/// OKIM6258 flags stored in the VGM header (1 byte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Okim6258Flags {
+    /// bits 0-1: Clock Divider (values select divider; common dividers: 1024, 768, 512, 512)
+    pub clock_divider: u8,
+    /// bit  2: 3/4-bit ADPCM select (default is 4-bit; may not be fully supported)
+    pub adpcm_3bit_select: bool,
+    /// bit  3: 10/12-bit output select (default is 10-bit)
+    pub output_12bit: bool,
+    /// bits 4-7: reserved (must be zero)
+    pub reserved: u8,
+}
+
+impl From<u8> for Okim6258Flags {
+    fn from(value: u8) -> Self {
+        let clock_divider = value & 0x03;
+        let adpcm_3bit_select = (value & (1 << 2)) != 0;
+        let output_12bit = (value & (1 << 3)) != 0;
+        let reserved = value >> 4;
+        Okim6258Flags {
+            clock_divider,
+            adpcm_3bit_select,
+            output_12bit,
+            reserved,
+        }
+    }
+}
+
+impl From<Okim6258Flags> for u8 {
+    fn from(flags: Okim6258Flags) -> Self {
+        let mut value = flags.clock_divider & 0x03;
+        if flags.adpcm_3bit_select {
+            value |= 1 << 2;
+        }
+        if flags.output_12bit {
+            value |= 1 << 3;
+        }
+        value |= flags.reserved << 4;
+        value
+    }
+}
+
+/// SN76489 flags stored in the VGM header (1 byte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sn76489Flags {
+    /// bit 0: Frequency 0 is 0x400 (should be set for all chips except SEGA PSG)
+    pub frequency_0_is_400: bool,
+    /// bit 1: Output negate flag
+    pub output_negate: bool,
+    /// bit 2: GameGear stereo on/off (on when bit clear)
+    pub gamegear_stereo: bool,
+    /// bit 3: /8 Clock Divider on/off (on when bit clear)
+    pub clock_divider_8: bool,
+    /// bit 4: XNOR noise mode (for NCR8496/PSSJ-3)
+    pub xnor_noise_mode: bool,
+    /// bit 5-7: reserved (must be zero)
+    pub reserved: u8,
+}
+
+impl From<u8> for Sn76489Flags {
+    fn from(value: u8) -> Self {
+        let frequency_0_is_400 = (value & (1 << 0)) != 0;
+        let output_negate = (value & (1 << 1)) != 0;
+        let gamegear_stereo = (value & (1 << 2)) == 0; // on when bit clear
+        let clock_divider_8 = (value & (1 << 3)) == 0; // on when bit clear
+        let xnor_noise_mode = (value & (1 << 4)) != 0;
+        let reserved = value >> 5;
+        Sn76489Flags {
+            frequency_0_is_400,
+            output_negate,
+            gamegear_stereo,
+            clock_divider_8,
+            xnor_noise_mode,
+            reserved,
+        }
+    }
+}
+
+impl From<Sn76489Flags> for u8 {
+    fn from(flags: Sn76489Flags) -> Self {
+        let mut value = 0u8;
+        if flags.frequency_0_is_400 {
+            value |= 1 << 0;
+        }
+        if flags.output_negate {
+            value |= 1 << 1;
+        }
+        if !flags.gamegear_stereo {
+            value |= 1 << 2;
+        }
+        if !flags.clock_divider_8 {
+            value |= 1 << 3;
+        }
+        if flags.xnor_noise_mode {
+            value |= 1 << 4;
+        }
+        value |= flags.reserved << 5;
+        value
+    }
+}
+
+/// AY/8910 flags stored in the VGM header (1 byte)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ay8910Flags {
+    /// bit 0: Legacy Output (Spec default: true)
+    pub legacy_output: bool,
+    /// bit 1: Single Output
+    pub single_output: bool,
+    /// bit 2: Discrete Output
+    pub discrete_output: bool,
+    /// bit 3: RAW Output
+    pub raw_output: bool,
+    /// bit 4: YMxxxx pin 26 (clock divider) low
+    pub ym_pin26_low: bool,
+    /// bit 5-7: reserved
+    pub reserved: u8,
+}
+
+impl From<u8> for Ay8910Flags {
+    fn from(value: u8) -> Self {
+        let legacy_output = (value & (1 << 0)) != 0;
+        let single_output = (value & (1 << 1)) != 0;
+        let discrete_output = (value & (1 << 2)) != 0;
+        let raw_output = (value & (1 << 3)) != 0;
+        let ym_pin26_low = (value & (1 << 4)) != 0;
+        let reserved = value >> 5;
+        Ay8910Flags {
+            legacy_output,
+            single_output,
+            discrete_output,
+            raw_output,
+            ym_pin26_low,
+            reserved,
+        }
+    }
+}
+
+impl From<Ay8910Flags> for u8 {
+    fn from(flags: Ay8910Flags) -> Self {
+        let mut value = 0u8;
+        if flags.legacy_output {
+            value |= 1 << 0;
+        }
+        if flags.single_output {
+            value |= 1 << 1;
+        }
+        if flags.discrete_output {
+            value |= 1 << 2;
+        }
+        if flags.raw_output {
+            value |= 1 << 3;
+        }
+        if flags.ym_pin26_low {
+            value |= 1 << 4;
+        }
+        value |= flags.reserved << 5;
+        value
+    }
+}
+
+/// AY/8910 flags stored in the VGM header (1 byte)
+pub type Ym2203AyFlags = Ay8910Flags;
+
+/// AY/8910 flags stored in the VGM header (1 byte)
+pub type Ym2608AyFlags = Ay8910Flags;
+
+/// K054539 flags stored in the VGM header (1 byte)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct K054539Flags {
+    /// bit 0: Reverse Stereo (Spec default: true)
+    pub reverse_stereo: bool,
+    /// bit 1: Disable Reverb
+    pub disable_reverb: bool,
+    /// bit 2: Update at KeyOn
+    pub update_at_keyon: bool,
+    /// bit 3-7: reserved
+    pub reserved: u8,
+}
+
+impl From<u8> for K054539Flags {
+    fn from(value: u8) -> Self {
+        let reverse_stereo = (value & (1 << 0)) != 0;
+        let disable_reverb = (value & (1 << 1)) != 0;
+        let update_at_keyon = (value & (1 << 2)) != 0;
+        let reserved = value >> 3;
+        K054539Flags {
+            reverse_stereo,
+            disable_reverb,
+            update_at_keyon,
+            reserved,
+        }
+    }
+}
+
+impl From<K054539Flags> for u8 {
+    fn from(flags: K054539Flags) -> Self {
+        let mut value = 0u8;
+        if flags.reverse_stereo {
+            value |= 1 << 0;
+        }
+        if flags.disable_reverb {
+            value |= 1 << 1;
+        }
+        if flags.update_at_keyon {
+            value |= 1 << 2;
+        }
+        value |= flags.reserved << 3;
+        value
+    }
+}
+
 impl VgmHeaderField {
     pub fn offset(self) -> usize {
         match self {
@@ -437,9 +824,9 @@ pub struct VgmHeader {
     pub loop_offset: u32,
     pub loop_samples: u32,
     pub sample_rate: u32,
-    pub sn76489_feedback: u16,
-    pub sn76489_shift_register_width: u8,
-    pub sn76489_flags: u8,
+    pub sn76489_feedback: Sn76489Feedback,
+    pub sn76489_shift_register_width: Sn76489ShiftRegisterWidth,
+    pub sn76489_flags: Sn76489Flags,
     pub ym2612_clock: u32,
     pub ym2151_clock: u32,
     pub data_offset: u32,
@@ -459,10 +846,10 @@ pub struct VgmHeader {
     pub rf5c164_clock: u32,
     pub pwm_clock: u32,
     pub ay8910_clock: u32,
-    pub ay_chip_type: u8,
-    pub ay8910_flags: u8,
-    pub ym2203_ay8910_flags: u8,
-    pub ym2608_ay8910_flags: u8,
+    pub ay_chip_type: Ay8910ChipType,
+    pub ay8910_flags: Ay8910Flags,
+    pub ym2203_ay8910_flags: Ym2203AyFlags,
+    pub ym2608_ay8910_flags: Ym2608AyFlags,
     pub volume_modifier: u8,
     pub reserved_7d: u8,
     pub loop_base: u8,
@@ -472,9 +859,9 @@ pub struct VgmHeader {
     pub multipcm_clock: u32,
     pub upd7759_clock: u32,
     pub okim6258_clock: u32,
-    pub okim6258_flags: u8,
-    pub k054539_flags: u8,
-    pub c140_chip_type: u8,
+    pub okim6258_flags: Okim6258Flags,
+    pub k054539_flags: K054539Flags,
+    pub c140_chip_type: C140ChipType,
     pub okim6295_clock: u32,
     pub k051649_clock: u32,
     pub k054539_clock: u32,
@@ -515,9 +902,16 @@ impl Default for VgmHeader {
             loop_offset: 0,
             loop_samples: 0,
             sample_rate: 44100,
-            sn76489_feedback: 0,
-            sn76489_shift_register_width: 0,
-            sn76489_flags: 0,
+            sn76489_feedback: Sn76489Feedback::Unknown(0),
+            sn76489_shift_register_width: Sn76489ShiftRegisterWidth::Unknown(0),
+            sn76489_flags: Sn76489Flags {
+                frequency_0_is_400: false,
+                output_negate: false,
+                gamegear_stereo: true,
+                clock_divider_8: true,
+                xnor_noise_mode: false,
+                reserved: 0,
+            },
             ym2612_clock: 0,
             ym2151_clock: 0,
             data_offset: 0,
@@ -537,10 +931,17 @@ impl Default for VgmHeader {
             rf5c164_clock: 0,
             pwm_clock: 0,
             ay8910_clock: 0,
-            ay_chip_type: 0,
-            ay8910_flags: 0,
-            ym2203_ay8910_flags: 0,
-            ym2608_ay8910_flags: 0,
+            ay_chip_type: Ay8910ChipType::from(0),
+            ay8910_flags: Ay8910Flags {
+                legacy_output: false,
+                single_output: false,
+                discrete_output: false,
+                raw_output: false,
+                ym_pin26_low: false,
+                reserved: 0,
+            },
+            ym2203_ay8910_flags: Ym2203AyFlags::from(0),
+            ym2608_ay8910_flags: Ym2608AyFlags::from(0),
             volume_modifier: 0,
             reserved_7d: 0,
             loop_base: 0,
@@ -550,9 +951,19 @@ impl Default for VgmHeader {
             multipcm_clock: 0,
             upd7759_clock: 0,
             okim6258_clock: 0,
-            okim6258_flags: 0,
-            k054539_flags: 0,
-            c140_chip_type: 0,
+            okim6258_flags: Okim6258Flags {
+                clock_divider: 0,
+                adpcm_3bit_select: false,
+                output_12bit: false,
+                reserved: 0,
+            },
+            k054539_flags: K054539Flags {
+                reverse_stereo: false,
+                disable_reverb: false,
+                update_at_keyon: false,
+                reserved: 0,
+            },
+            c140_chip_type: C140ChipType::from(0),
             okim6295_clock: 0,
             k051649_clock: 0,
             k054539_clock: 0,
@@ -637,19 +1048,19 @@ impl VgmHeader {
         write_u16(
             &mut buf,
             VgmHeaderField::Sn76489Feedback.offset(),
-            self.sn76489_feedback,
+            u16::from(self.sn76489_feedback),
         );
         // SN76489 shift register width (0x2A)
         write_u8(
             &mut buf,
             VgmHeaderField::Sn76489ShiftRegisterWidth.offset(),
-            self.sn76489_shift_register_width,
+            u8::from(self.sn76489_shift_register_width),
         );
         // SN76489 flags (0x2B)
         write_u8(
             &mut buf,
             VgmHeaderField::Sn76489Flags.offset(),
-            self.sn76489_flags,
+            u8::from(self.sn76489_flags),
         );
         // YM2612 clock (0x2C)
         write_u32(
@@ -761,25 +1172,25 @@ impl VgmHeader {
         write_u8(
             &mut buf,
             VgmHeaderField::Ay8910ChipType.offset(),
-            self.ay_chip_type,
+            u8::from(self.ay_chip_type),
         );
         // AY8910 Flags (0x79)
         write_u8(
             &mut buf,
             VgmHeaderField::Ay8910Flags.offset(),
-            self.ay8910_flags,
+            u8::from(self.ay8910_flags),
         );
         // YM2203/AY8910 Flags (0x7A)
         write_u8(
             &mut buf,
             VgmHeaderField::Ym2203Ay8910Flags.offset(),
-            self.ym2203_ay8910_flags,
+            u8::from(self.ym2203_ay8910_flags),
         );
         // YM2608/AY8910 Flags (0x7B)
         write_u8(
             &mut buf,
             VgmHeaderField::Ym2608Ay8910Flags.offset(),
-            self.ym2608_ay8910_flags,
+            u8::from(self.ym2608_ay8910_flags),
         );
         // Volume Modifier (0x7C)
         write_u8(
@@ -835,19 +1246,19 @@ impl VgmHeader {
         write_u8(
             &mut buf,
             VgmHeaderField::Okim6258Flags.offset(),
-            self.okim6258_flags,
+            u8::from(self.okim6258_flags),
         );
         // K054539 Flags (0x95)
         write_u8(
             &mut buf,
             VgmHeaderField::K054539Flags.offset(),
-            self.k054539_flags,
+            u8::from(self.k054539_flags),
         );
         // C140 Chip Type (0x96)
         write_u8(
             &mut buf,
             VgmHeaderField::C140ChipType.offset(),
-            self.c140_chip_type,
+            u8::from(self.c140_chip_type),
         );
         // Reserved (0x97)
         write_u8(

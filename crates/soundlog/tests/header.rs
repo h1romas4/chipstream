@@ -1,5 +1,9 @@
 use soundlog::vgm::command::Instance;
-use soundlog::vgm::header::{ChipClock, ChipId, ChipVolume};
+use soundlog::vgm::header::{
+    Ay8910ChipType, Ay8910Flags, C140ChipType, ChipClock, ChipId, ChipVolume, K054539Flags,
+    Okim6258Flags, Sn76489Feedback, Sn76489Flags, Sn76489ShiftRegisterWidth, Ym2203AyFlags,
+    Ym2608AyFlags,
+};
 
 #[test]
 fn test_chipid_masks_paired_bit() {
@@ -83,9 +87,9 @@ fn test_vgm_header_roundtrip_all_fields() {
         loop_offset: 0x0000_5678,
         loop_samples: 0x0000_6789,
         sample_rate: 48000,
-        sn76489_feedback: 0x55AA,
-        sn76489_shift_register_width: 0x7F,
-        sn76489_flags: 0x01,
+        sn76489_feedback: Sn76489Feedback::Sn76489a,
+        sn76489_shift_register_width: Sn76489ShiftRegisterWidth::Unknown(0x7F),
+        sn76489_flags: Sn76489Flags::from(0x01),
         ym2612_clock: 0x0100_0000,
         ym2151_clock: 0x0200_0000,
         data_offset: 0,
@@ -105,10 +109,10 @@ fn test_vgm_header_roundtrip_all_fields() {
         rf5c164_clock: 0x1000_0000,
         pwm_clock: 0x1100_0000,
         ay8910_clock: 0x1200_0000,
-        ay_chip_type: 0x9A,
-        ay8910_flags: 0x01,
-        ym2203_ay8910_flags: 0x02,
-        ym2608_ay8910_flags: 0x03,
+        ay_chip_type: Ay8910ChipType::from(0x9A),
+        ay8910_flags: Ay8910Flags::from(0x01),
+        ym2203_ay8910_flags: Ym2203AyFlags::from(0x02),
+        ym2608_ay8910_flags: Ym2608AyFlags::from(0x03),
         volume_modifier: 0x04,
         reserved_7d: 0x05,
         loop_base: 0x06,
@@ -118,14 +122,14 @@ fn test_vgm_header_roundtrip_all_fields() {
         multipcm_clock: 0x1500_0000,
         upd7759_clock: 0x1600_0000,
         okim6258_clock: 0x1700_0000,
-        okim6258_flags: 0x0A,
+        okim6258_flags: Okim6258Flags::from(0x0A),
         okim6295_clock: 0x1800_0000,
         k051649_clock: 0x1900_0000,
         k054539_clock: 0x1A00_0000,
-        k054539_flags: 0x0C,
+        k054539_flags: K054539Flags::from(0x0C),
         huc6280_clock: 0x1B00_0000,
         c140_clock: 0x1C00_0000,
-        c140_chip_type: 0x0D,
+        c140_chip_type: C140ChipType::from(0x0D),
         reserved_97: 0x0B,
         k053260_clock: 0x1D00_0000,
         pokey_clock: 0x1E00_0000,
