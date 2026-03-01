@@ -114,6 +114,194 @@ struct StreamState {
     sample_fraction: f32,
     /// Remaining commands to write (used when length_mode == 1)
     remaining_commands: Option<u32>,
+    /// Start position in the data bank for this stream.
+    /// Used as the loop-restart position for forward playback and as the lower bound
+    /// beyond which reverse playback has ended.
+    start_data_pos: usize,
+    /// Sample position at which a `Milliseconds`-mode stream expires.
+    /// `None` for all other modes.
+    stream_end_sample: Option<u64>,
+}
+
+/// Mutable working copy of a single DAC stream's playback state for one tick.
+///
+/// Created from [`StreamState`] at the start of each [`VgmStream::generate_stream_writes`]
+/// call and written back at the end.  Keeping it separate avoids long-lived
+/// mutable borrows of the `stream_states` map while intermediate computations
+/// still need access to other parts of `VgmStream` (e.g. `uncompressed_streams`).
+struct StreamSnapshot {
+    freq: u32,
+    sample_interval: f32,
+    active: bool,
+    next_write_sample: u64,
+    sample_fraction: f32,
+    current_data_pos: usize,
+    data_bank_id: u8,
+    chip_id: ChipId,
+    instance: Instance,
+    write_port: u8,
+    write_command: u8,
+    step_size: u8,
+    length_mode: LengthMode,
+    remaining_commands: Option<u32>,
+    block_end_pos: Option<usize>,
+    start_data_pos: usize,
+    stream_end_sample: Option<u64>,
+    data_length: u32,
+    /// Pre-fetched total byte length of the data bank (used for reverse / loop bounds).
+    data_bank_end: usize,
+}
+
+impl StreamSnapshot {
+    /// Build a snapshot from `state` and pre-fetched `data_bank_end`.
+    /// Returns `None` if the stream is inactive or has no valid frequency.
+    fn from_state(state: &StreamState, data_bank_end: usize) -> Option<Self> {
+        if !state.active {
+            return None;
+        }
+        let freq = match state.frequency_hz {
+            Some(f) if f > 0 => f,
+            _ => return None,
+        };
+        Some(Self {
+            freq,
+            sample_interval: 44100.0 / freq as f32,
+            active: true,
+            next_write_sample: state.next_write_sample,
+            sample_fraction: state.sample_fraction,
+            current_data_pos: state.current_data_pos,
+            data_bank_id: state.data_bank_id,
+            chip_id: state.chip_type,
+            instance: state.instance,
+            write_port: state.write_port,
+            write_command: state.write_command,
+            step_size: state.step_size,
+            length_mode: state.length_mode,
+            remaining_commands: state.remaining_commands,
+            block_end_pos: state.block_end_pos,
+            start_data_pos: state.start_data_pos,
+            stream_end_sample: state.stream_end_sample,
+            data_length: state.data_length,
+            data_bank_end,
+        })
+    }
+
+    /// Write modified fields back to the live `StreamState`.
+    fn write_back(&self, state: &mut StreamState) {
+        state.active = self.active;
+        state.next_write_sample = self.next_write_sample;
+        state.sample_fraction = self.sample_fraction;
+        state.current_data_pos = self.current_data_pos;
+        state.remaining_commands = self.remaining_commands;
+        state.stream_end_sample = self.stream_end_sample;
+    }
+
+    /// Returns `true` if the stream has reached its end condition *before* reading
+    /// the current byte.
+    ///
+    /// - [`LengthMode::CommandCount`]: remaining command counter has hit zero.
+    /// - [`LengthMode::Milliseconds`]: wall-clock deadline has elapsed.
+    /// - [`LengthMode::PlayUntilEnd`] (forward only): current position reached the
+    ///   block end.  The reverse-end for `PlayUntilEnd` is detected *after*
+    ///   reading, inside [`step_position`](Self::step_position).
+    fn at_end_before_read(&self, current_sample: u64) -> bool {
+        let (is_reverse, _) = self.length_mode.flags();
+        match self.length_mode {
+            LengthMode::CommandCount { .. } => self.remaining_commands == Some(0),
+            LengthMode::Milliseconds { .. } => {
+                self.stream_end_sample
+                    .map_or(false, |end| current_sample >= end)
+            }
+            LengthMode::PlayUntilEnd { .. } if !is_reverse => self
+                .block_end_pos
+                .map_or(false, |end| self.current_data_pos >= end),
+            _ => false,
+        }
+    }
+
+    /// Computes the loop-restart position.
+    ///
+    /// - Forward playback: always `start_data_pos`.
+    /// - Reverse playback: end of the mode-specific playback range.
+    fn loop_restart_pos(&self, is_reverse: bool) -> usize {
+        if !is_reverse {
+            return self.start_data_pos;
+        }
+        match self.length_mode {
+            LengthMode::CommandCount { .. } => {
+                if self.data_length > 0 {
+                    self.start_data_pos
+                        + (self.data_length as usize - 1) * self.step_size as usize
+                } else {
+                    self.start_data_pos
+                }
+            }
+            LengthMode::Milliseconds { .. } => {
+                let n = (self.freq as u64 * self.data_length as u64 / 1000) as usize;
+                if n > 0 {
+                    self.start_data_pos + (n - 1) * self.step_size as usize
+                } else {
+                    self.start_data_pos
+                }
+            }
+            _ => self
+                .block_end_pos
+                .unwrap_or(self.data_bank_end)
+                .saturating_sub(self.step_size as usize),
+        }
+    }
+
+    /// Resets `current_data_pos` to the loop-restart position, extends the
+    /// `Milliseconds` deadline by one period, and resets the `CommandCount` counter.
+    fn apply_loop_restart(&mut self, is_reverse: bool) {
+        self.current_data_pos = self.loop_restart_pos(is_reverse);
+        if matches!(self.length_mode, LengthMode::Milliseconds { .. }) {
+            self.stream_end_sample = self
+                .stream_end_sample
+                .map(|e| e + self.data_length as u64 * 44100 / 1000);
+        }
+        if matches!(self.length_mode, LengthMode::CommandCount { .. }) {
+            self.remaining_commands = Some(self.data_length);
+        }
+    }
+
+    /// Advances `next_write_sample` by one step, propagating the sub-sample
+    /// fraction to avoid cumulative rounding errors from integer truncation.
+    fn advance_sample_clock(&mut self) {
+        self.next_write_sample += self.sample_interval as u64;
+        self.sample_fraction += self.sample_interval.fract();
+        if self.sample_fraction >= 1.0 {
+            self.next_write_sample += 1;
+            self.sample_fraction -= 1.0;
+        }
+    }
+
+    /// Advances the data position by one `step_size` step.
+    ///
+    /// For **reverse** playback, detects the reverse-end condition
+    /// (`current_data_pos < start_data_pos + step_size`):
+    /// - `is_looped`: applies a loop restart back to the end of the range.
+    /// - otherwise: marks the stream inactive.
+    ///
+    /// For **forward** playback, simply increments the position.
+    fn step_position(&mut self, is_reverse: bool, is_looped: bool) {
+        if is_reverse {
+            let at_reverse_end = self.step_size > 0
+                && self.current_data_pos < self.start_data_pos + self.step_size as usize;
+            if at_reverse_end {
+                if is_looped {
+                    self.apply_loop_restart(true);
+                } else {
+                    self.active = false;
+                }
+            } else {
+                // Safe: at_reverse_end is false, so pos >= start_data_pos + step_size.
+                self.current_data_pos -= self.step_size as usize;
+            }
+        } else {
+            self.current_data_pos += self.step_size as usize;
+        }
+    }
 }
 
 /// Result type for stream parsing operations.
@@ -1314,6 +1502,8 @@ impl VgmStream {
                 next_write_sample: 0,
                 sample_fraction: 0.0,
                 remaining_commands: None,
+                start_data_pos: 0,
+                stream_end_sample: None,
             });
 
         // `SetupStreamControl.chip_type` carries both chip id and instance.
@@ -1351,6 +1541,8 @@ impl VgmStream {
                 next_write_sample: 0,
                 sample_fraction: 0.0,
                 remaining_commands: None,
+                start_data_pos: 0,
+                stream_end_sample: None,
             });
 
         state.data_bank_id = data.data_bank_id;
@@ -1367,29 +1559,85 @@ impl VgmStream {
 
     /// Handles StartStream command (0x93).
     fn handle_start_stream(&mut self, start: &StartStream) -> Result<(), ParseError> {
+        if !self.stream_states.contains_key(&start.stream_id) {
+            return Ok(());
+        }
+
+        // Pre-read values needed to compute the initial position before mutably borrowing state.
+        let (data_bank_id, step_size, step_base, frequency_hz) = {
+            let state = self.stream_states.get(&start.stream_id).unwrap();
+            (state.data_bank_id, state.step_size, state.step_base, state.frequency_hz)
+        };
+        let data_bank_end = self
+            .uncompressed_streams
+            .get(&data_bank_id)
+            .map(|s| s.data.len())
+            .unwrap_or(0);
+
+        let base_offset = if start.data_start_offset >= 0 {
+            start.data_start_offset as usize
+        } else {
+            0
+        };
+        let start_data_pos = base_offset + step_base as usize;
+
+        let (is_reverse, _) = start.length_mode.flags();
+
+        // For reverse mode, compute the initial position as the END of the playback range.
+        let initial_data_pos = if is_reverse {
+            match start.length_mode {
+                LengthMode::CommandCount { .. } => {
+                    if start.data_length > 0 {
+                        start_data_pos + (start.data_length as usize - 1) * step_size as usize
+                    } else {
+                        start_data_pos
+                    }
+                }
+                LengthMode::Milliseconds { .. } => {
+                    let n = frequency_hz
+                        .map(|f| (f as u64 * start.data_length as u64 / 1000) as usize)
+                        .unwrap_or(0);
+                    if n > 0 {
+                        start_data_pos + (n - 1) * step_size as usize
+                    } else {
+                        start_data_pos
+                    }
+                }
+                LengthMode::PlayUntilEnd { .. } => {
+                    // Start at the last byte of the data bank.
+                    data_bank_end.saturating_sub(step_size as usize)
+                }
+                _ => start_data_pos, // Ignore, Unknown
+            }
+        } else {
+            start_data_pos
+        };
+
+        // For Milliseconds mode, record the sample at which the stream expires.
+        let stream_end_sample = match start.length_mode {
+            LengthMode::Milliseconds { .. } => {
+                Some(self.current_sample + start.data_length as u64 * 44100 / 1000)
+            }
+            _ => None,
+        };
+
+        let remaining_commands = match start.length_mode {
+            LengthMode::CommandCount { .. } => Some(start.data_length),
+            _ => None,
+        };
+
         if let Some(state) = self.stream_states.get_mut(&start.stream_id) {
             state.start_offset = Some(start.data_start_offset);
             state.length_mode = start.length_mode;
             state.data_length = start.data_length;
-            state.block_end_pos = None; // StartStream doesn't set block boundaries
+            state.block_end_pos = None; // StartStream doesn't use block boundaries
             state.active = true;
-
-            // Calculate initial data position
-            let base_offset = if start.data_start_offset >= 0 {
-                start.data_start_offset as usize
-            } else {
-                0
-            };
-            state.current_data_pos = base_offset + state.step_base as usize;
-
+            state.start_data_pos = start_data_pos;
+            state.current_data_pos = initial_data_pos;
             state.next_write_sample = self.current_sample;
             state.sample_fraction = 0.0;
-
-            if u8::from(state.length_mode) == 1 {
-                state.remaining_commands = Some(start.data_length);
-            } else {
-                state.remaining_commands = None;
-            }
+            state.remaining_commands = remaining_commands;
+            state.stream_end_sample = stream_end_sample;
         }
         Ok(())
     }
@@ -1410,27 +1658,39 @@ impl VgmStream {
         &mut self,
         fast: &StartStreamFastCall,
     ) -> Result<(), ParseError> {
-        let (data_bank_id, step_base) = if let Some(state) = self.stream_states.get(&fast.stream_id)
-        {
-            (state.data_bank_id, state.step_base)
-        } else {
-            return Ok(());
-        };
+        let (data_bank_id, step_base, step_size) =
+            if let Some(state) = self.stream_states.get(&fast.stream_id) {
+                (state.data_bank_id, state.step_base, state.step_size)
+            } else {
+                return Ok(());
+            };
 
         let (block_offset, block_size) =
             self.get_block_offset_and_size(data_bank_id, fast.block_id)?;
+        let block_end = block_offset + block_size;
+        let start_data_pos = block_offset + step_base as usize;
+
+        // Reverse mode: start reading from the last byte of the block.
+        let initial_data_pos = if fast.flags.reverse {
+            block_end.saturating_sub(step_size as usize)
+        } else {
+            start_data_pos
+        };
+
         if let Some(state) = self.stream_states.get_mut(&fast.stream_id) {
             state.active = true;
-            state.current_data_pos = block_offset + step_base as usize;
-            state.block_end_pos = Some(block_offset + block_size);
+            state.start_data_pos = start_data_pos;
+            state.current_data_pos = initial_data_pos;
+            state.block_end_pos = Some(block_end);
             state.next_write_sample = self.current_sample;
             state.sample_fraction = 0.0;
-            // Length mode 3 = play until end of block
+            // FastCall always uses PlayUntilEnd
             state.length_mode = LengthMode::PlayUntilEnd {
                 reverse: fast.flags.reverse,
                 looped: fast.flags.looped,
             };
             state.remaining_commands = None;
+            state.stream_end_sample = None;
         }
         Ok(())
     }
@@ -1464,141 +1724,102 @@ impl VgmStream {
 
     /// Generates stream write commands for all active streams that are due.
     ///
-    /// This method is called after processing Wait commands. It checks all active streams
-    /// and generates chip write commands for any streams whose next write time has been
-    /// reached based on the current sample position.
-    ///
-    /// The generated commands are stored in `pending_stream_writes` and will be returned
-    /// by the iterator before the next parsed command.
+    /// Called after each Wait command.  For every active stream whose
+    /// `next_write_sample` has been reached, one byte is read from the data bank,
+    /// a chip-write command is emitted, and the playback position is advanced.
+    /// All [`LengthMode`] variants—including `reverse` and `looped` flags—are
+    /// handled via [`StreamSnapshot`] helper methods.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
         let mut writes = Vec::new();
 
         let stream_ids: Vec<u8> = self.stream_states.keys().copied().collect();
         for stream_id in stream_ids {
-            let (
-                _freq,
-                sample_interval,
-                mut active,
-                mut next_write_sample,
-                mut sample_fraction,
-                mut current_data_pos,
-            ) = {
-                let state = match self.stream_states.get(&stream_id) {
-                    Some(s) => s,
+            // Build a snapshot; skip inactive / frequency-less streams.
+            // data_bank_end must be fetched before the snapshot borrow.
+            let data_bank_end = {
+                let data_bank_id = match self.stream_states.get(&stream_id) {
+                    Some(s) => s.data_bank_id,
                     None => continue,
                 };
-                if !state.active {
-                    continue;
-                }
-                let freq = match state.frequency_hz {
-                    Some(f) if f > 0 => f,
-                    _ => continue, // Skip streams without valid frequency
-                };
-                let sample_interval = 44100.0 / freq as f32;
-                (
-                    freq,
-                    sample_interval,
-                    state.active,
-                    state.next_write_sample,
-                    state.sample_fraction,
-                    state.current_data_pos,
-                )
+                self.uncompressed_streams
+                    .get(&data_bank_id)
+                    .map(|s| s.data.len())
+                    .unwrap_or(0)
+            };
+            let mut snap = match self
+                .stream_states
+                .get(&stream_id)
+                .and_then(|s| StreamSnapshot::from_state(s, data_bank_end))
+            {
+                Some(s) => s,
+                None => continue,
             };
 
-            if next_write_sample <= self.current_sample && active {
-                let (
-                    data_bank_id,
-                    chip_id,
-                    instance,
-                    write_port,
-                    write_command,
-                    step_size,
-                    length_mode,
-                    remaining_commands,
-                    block_end_pos,
-                ) = {
-                    let state = self.stream_states.get(&stream_id).unwrap();
-                    (
-                        state.data_bank_id,
-                        state.chip_type,
-                        state.instance,
-                        state.write_port,
-                        state.write_command,
-                        state.step_size,
-                        state.length_mode,
-                        state.remaining_commands,
-                        state.block_end_pos,
-                    )
-                };
+            if snap.next_write_sample > self.current_sample {
+                // Not due yet
+                continue;
+            }
 
-                // Length Mode (how the Data Length is calculated)
-                //  00 - ignore (just change current data position)
-                //  01 - length = number of commands (CommandCount)
-                //  02 - length in msec (TODO: NOT IMPLIMENTS)
-                //  03 - play until end of data (PlayUntilEnd)
-                //
-                //  1? - (bit 4) Reverse Mode  (TODO: NOT IMPLIMENTS)
-                //  8? - (bit 7) Loop (automatically restarts when finished)  (TODO: NOT IMPLIMENTS)
+            let (is_reverse, is_looped) = snap.length_mode.flags();
 
-                // If in CommandCount length mode, decrement remaining command counter.
-                // Collapse nested `if` using let-chains as suggested by clippy.
-                if matches!(length_mode, LengthMode::CommandCount { .. })
-                    && let Some(remaining) = remaining_commands
-                {
-                    if remaining == 0 {
-                        // Stop the stream - no more commands to generate
-                        if let Some(state) = self.stream_states.get_mut(&stream_id) {
-                            state.active = false;
-                        }
-                        continue;
-                    }
-                    if let Some(state) = self.stream_states.get_mut(&stream_id) {
-                        state.remaining_commands = Some(remaining - 1);
-                    }
-                }
-
-                // If in PlayUntilEnd mode, and we've reached the block end, stop the stream.
-                if matches!(length_mode, LengthMode::PlayUntilEnd { .. })
-                    && block_end_pos.is_some()
-                    && current_data_pos >= block_end_pos.unwrap()
-                {
-                    // Reached end of block
+            // End-condition check (before read)
+            if snap.at_end_before_read(self.current_sample) {
+                if is_looped {
+                    snap.apply_loop_restart(is_reverse);
+                    // Fall through: read at the restarted position.
+                } else {
                     if let Some(state) = self.stream_states.get_mut(&stream_id) {
                         state.active = false;
                     }
                     continue;
                 }
+            }
 
-                let data_byte = self.read_stream_byte_at(data_bank_id, current_data_pos)?;
-
-                if let Some(data) = data_byte {
-                    if let Some(cmd) = Self::create_stream_write_command_static(
-                        chip_id,
-                        instance,
-                        write_port,
-                        write_command,
-                        data,
-                    ) {
-                        writes.push(cmd);
-                    }
-
-                    current_data_pos += step_size as usize;
-                    next_write_sample += sample_interval as u64;
-                    sample_fraction += sample_interval.fract();
-                    if sample_fraction >= 1.0 {
-                        next_write_sample += 1;
-                        sample_fraction -= 1.0;
-                    }
-                } else {
-                    active = false;
+            // Decrement CommandCount
+            if matches!(snap.length_mode, LengthMode::CommandCount { .. }) {
+                if let Some(ref mut r) = snap.remaining_commands {
+                    *r = r.saturating_sub(1);
                 }
             }
 
+            // Read byte and emit write
+            if let Some(data) =
+                self.read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
+            {
+                if let Some(cmd) = Self::create_stream_write_command_static(
+                    snap.chip_id,
+                    snap.instance,
+                    snap.write_port,
+                    snap.write_command,
+                    data,
+                ) {
+                    writes.push(cmd);
+                }
+                snap.step_position(is_reverse, is_looped);
+                snap.advance_sample_clock();
+            } else {
+                // Natural end: position ran past the available data.
+                if is_looped {
+                    snap.current_data_pos = if is_reverse {
+                        snap.block_end_pos
+                            .unwrap_or(snap.data_bank_end)
+                            .saturating_sub(snap.step_size as usize)
+                    } else {
+                        snap.start_data_pos
+                    };
+                    if matches!(snap.length_mode, LengthMode::Milliseconds { .. }) {
+                        snap.stream_end_sample = snap
+                            .stream_end_sample
+                            .map(|e| e + snap.data_length as u64 * 44100 / 1000);
+                    }
+                } else {
+                    snap.active = false;
+                }
+            }
+
+            // Write back
             if let Some(state) = self.stream_states.get_mut(&stream_id) {
-                state.active = active;
-                state.next_write_sample = next_write_sample;
-                state.sample_fraction = sample_fraction;
-                state.current_data_pos = current_data_pos;
+                snap.write_back(state);
             }
         }
         self.pending_stream_writes.append(&mut writes);

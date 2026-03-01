@@ -3855,6 +3855,251 @@ fn test_loop_modifier_getter_setter() {
     assert_eq!(stream.loop_modifier(), 0x18);
 }
 
+// ── LengthMode tests ────────────────────────────────────────────────────────
+
+/// Helper: build a VgmBuilder pre-loaded with a DAC stream setup.
+///
+/// * `data`         – raw sample bytes added to the data block (type 0x00)
+/// * `stream_data`  – data block bytes
+/// * `freq`         – stream frequency in Hz
+/// * `step_size`    – byte stride between consecutive reads
+/// * `step_base`    – initial byte offset within each step
+///
+/// Returns the builder (caller adds StartStream / StartStreamFastCall then waits).
+fn build_dac_setup_builder(
+    stream_data: Vec<u8>,
+    freq: u32,
+    step_size: u8,
+    step_base: u8,
+) -> VgmBuilder {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: stream_data.len() as u32,
+        data: stream_data,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
+        stream_id: 0,
+        chip_type: soundlog::vgm::command::DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: soundlog::vgm::command::Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0,
+        step_size,
+        step_base,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamFrequency {
+        stream_id: 0,
+        frequency: freq,
+    });
+    builder
+}
+
+/// Collect all YM2612 DAC writes (register 0x2A) from an assembled VGM document.
+fn collect_dac_writes(doc: VgmDocument) -> Vec<u8> {
+    let vgm_bytes: Vec<u8> = (&doc).into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&vgm_bytes).expect("push chunk");
+    let mut values = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, spec)))
+                if spec.register == 0x2A =>
+            {
+                values.push(spec.value);
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+            _ => {}
+        }
+    }
+    values
+}
+
+/// LengthMode::Milliseconds – stream stops exactly at the specified duration.
+///
+/// Setup: freq=100 Hz, data_length=30 ms → stream_end_sample = 30*44100/1000 = 1323.
+/// sample_interval = 44100/100 = 441.
+/// Writes at samples 0, 441, 882; next would be at 1323 which hits the deadline → stop.
+/// Expected: exactly 3 writes [0x10, 0x20, 0x30].
+#[test]
+fn test_length_mode_milliseconds_stops_at_duration() {
+    let data = vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    let mut builder = build_dac_setup_builder(data, 100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::Milliseconds {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 30, // 30 ms
+    });
+    // Wait long enough to cover the full 30 ms (1323 samples) and a bit beyond.
+    builder.add_vgm_command(WaitSamples(2000));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(writes, vec![0x10, 0x20, 0x30], "Milliseconds mode: expected exactly 3 writes");
+}
+
+/// LengthMode::Milliseconds with looped=true – stream restarts automatically.
+///
+/// Same setup (100 Hz, 30 ms, 3 writes per loop).  We wait ≥ 2 full loops + 1 extra write:
+/// write 4 fires at the loop-restart sample (1323) → [0x10, 0x20, 0x30, 0x10, 0x20, 0x30, 0x10].
+#[test]
+fn test_length_mode_milliseconds_looped() {
+    let data = vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    let mut builder = build_dac_setup_builder(data, 100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::Milliseconds {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 30, // 30 ms per loop
+    });
+    // 2650 samples covers 2 full loops (1323×2 = 2646) and the restart write.
+    builder.add_vgm_command(WaitSamples(2650));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    // Pattern: [0x10, 0x20, 0x30] repeating.  After 2 650 samples we expect 7 writes.
+    assert_eq!(
+        writes,
+        vec![0x10, 0x20, 0x30, 0x10, 0x20, 0x30, 0x10],
+        "Milliseconds looped: expected two-and-a-half loops of the 3-byte pattern"
+    );
+}
+
+/// LengthMode::CommandCount with looped=true – stream repeats the sample sequence.
+///
+/// data=[0x10, 0x20, 0x30, 0x40], count=4, freq=44100 (1 write/sample).
+/// After 4 writes remaining hit 0 → loop restart → writes continue from the beginning.
+/// WaitSamples(N) fires writes at samples 0..=N (N+1 writes).
+/// WaitSamples(8) → 9 writes: [0x10,0x20,0x30,0x40,0x10,0x20,0x30,0x40,0x10].
+#[test]
+fn test_length_mode_command_count_looped() {
+    let data = vec![0x10, 0x20, 0x30, 0x40];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 4,
+    });
+    // WaitSamples(N) fires writes at samples 0 through N inclusive = N+1 writes.
+    builder.add_vgm_command(WaitSamples(8));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x10, 0x20, 0x30, 0x40, 0x10, 0x20, 0x30, 0x40, 0x10],
+        "CommandCount looped: data should repeat from the start after 4 writes"
+    );
+}
+
+/// LengthMode::CommandCount with reverse=true – bytes read backwards.
+///
+/// data=[0x10, 0x20, 0x30, 0x40], reverse, count=4.
+/// Initial position = end of range (index 3).
+/// Expected: [0x40, 0x30, 0x20, 0x10].
+#[test]
+fn test_length_mode_reverse_command_count() {
+    let data = vec![0x10, 0x20, 0x30, 0x40];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: true,
+            looped: false,
+        },
+        data_length: 4,
+    });
+    builder.add_vgm_command(WaitSamples(10));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x40, 0x30, 0x20, 0x10],
+        "CommandCount reverse: expected data read backwards"
+    );
+}
+
+/// StartStreamFastCall with reverse=true (PlayUntilEnd reverse) – plays block backwards.
+///
+/// Data block [0xA0, 0xB0, 0xC0, 0xD0], FastCall block_id=0, reverse.
+/// Initial position is set to block_end - step_size = 3.
+/// Expected: [0xD0, 0xC0, 0xB0, 0xA0].
+#[test]
+fn test_length_mode_reverse_fast_call() {
+    let data = vec![0xA0, 0xB0, 0xC0, 0xD0];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: true,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(10));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0xD0, 0xC0, 0xB0, 0xA0],
+        "FastCall reverse: expected block played backwards"
+    );
+}
+
+/// StartStreamFastCall with looped=true (PlayUntilEnd looped) – block repeats.
+///
+/// Data block [0x01, 0x02, 0x03, 0x04], FastCall block_id=0, looped.
+/// After reaching block_end the stream restarts from the beginning of the block.
+/// WaitSamples(N) fires writes at samples 0..=N (N+1 writes).
+/// WaitSamples(9) → 10 writes: [0x01,0x02,0x03,0x04,0x01,0x02,0x03,0x04,0x01,0x02].
+#[test]
+fn test_length_mode_play_until_end_looped_fast_call() {
+    let data = vec![0x01, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: true,
+        },
+    });
+    // WaitSamples(N) fires writes at samples 0 through N inclusive = N+1 writes.
+    builder.add_vgm_command(WaitSamples(9));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02],
+        "FastCall PlayUntilEnd looped: block should repeat from the beginning"
+    );
+}
+
+// ── end of LengthMode tests ─────────────────────────────────────────────────
+
 #[test]
 fn test_loop_base_getter_setter() {
     let mut stream = VgmStream::new();

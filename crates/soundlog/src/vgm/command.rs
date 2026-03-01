@@ -596,6 +596,20 @@ impl From<LengthMode> for u8 {
     }
 }
 
+impl LengthMode {
+    /// Returns `(reverse, looped)` flags extracted from the length mode variant.
+    /// `Unknown` variants return `(false, false)`.
+    pub fn flags(&self) -> (bool, bool) {
+        match self {
+            LengthMode::Ignore { reverse, looped }
+            | LengthMode::CommandCount { reverse, looped }
+            | LengthMode::Milliseconds { reverse, looped }
+            | LengthMode::PlayUntilEnd { reverse, looped } => (*reverse, *looped),
+            LengthMode::Unknown(_) => (false, false),
+        }
+    }
+}
+
 impl CommandSpec for Ay8910StereoMask {
     fn opcode(&self) -> u8 {
         0x31
