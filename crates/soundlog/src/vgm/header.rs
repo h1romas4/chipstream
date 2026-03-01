@@ -931,7 +931,7 @@ impl Default for VgmHeader {
             rf5c164_clock: 0,
             pwm_clock: 0,
             ay8910_clock: 0,
-            ay_chip_type: Ay8910ChipType::from(0),
+            ay_chip_type: Ay8910ChipType::Unknown(0),
             ay8910_flags: Ay8910Flags {
                 legacy_output: false,
                 single_output: false,
@@ -940,8 +940,22 @@ impl Default for VgmHeader {
                 ym_pin26_low: false,
                 reserved: 0,
             },
-            ym2203_ay8910_flags: Ym2203AyFlags::from(0),
-            ym2608_ay8910_flags: Ym2608AyFlags::from(0),
+            ym2203_ay8910_flags: Ym2203AyFlags {
+                legacy_output: false,
+                single_output: false,
+                discrete_output: false,
+                raw_output: false,
+                ym_pin26_low: false,
+                reserved: 0,
+            },
+            ym2608_ay8910_flags: Ym2608AyFlags {
+                legacy_output: false,
+                single_output: false,
+                discrete_output: false,
+                raw_output: false,
+                ym_pin26_low: false,
+                reserved: 0,
+            },
             volume_modifier: 0,
             reserved_7d: 0,
             loop_base: 0,
@@ -963,7 +977,7 @@ impl Default for VgmHeader {
                 update_at_keyon: false,
                 reserved: 0,
             },
-            c140_chip_type: C140ChipType::from(0),
+            c140_chip_type: C140ChipType::Unknown(0),
             okim6295_clock: 0,
             k051649_clock: 0,
             k054539_clock: 0,
@@ -1527,10 +1541,23 @@ impl VgmHeader {
             }
         };
 
+        // Heuristics for older VGM versions where YM2413 clock may carry YM2612/YM2151 info.
+        let misc = self.misc();
+        // Allow misc-derived substitution of YM2413 clock for YM2612/YM2151.
+        // The secondary chip shall be treated as non-existent.
+        let mut ym2612_clock = self.ym2612_clock;
+        if let Some(clock) = misc.use_ym2413_clock_for_ym2612 {
+            ym2612_clock = clock;
+        }
+        let mut ym2151_clock = self.ym2151_clock;
+        if let Some(clock) = misc.use_ym2413_clock_for_ym2151 {
+            ym2151_clock = clock;
+        }
+
         push(self.sn76489_clock, chip::Chip::Sn76489);
         push(self.ym2413_clock, chip::Chip::Ym2413);
-        push(self.ym2612_clock, chip::Chip::Ym2612);
-        push(self.ym2151_clock, chip::Chip::Ym2151);
+        push(ym2612_clock, chip::Chip::Ym2612);
+        push(ym2151_clock, chip::Chip::Ym2151);
         push(self.sega_pcm_clock, chip::Chip::SegaPcm);
         push(self.rf5c68_clock, chip::Chip::Rf5c68);
         push(self.ym2203_clock, chip::Chip::Ym2203);
@@ -2091,6 +2118,103 @@ impl VgmExtraHeader {
         buf
     }
 }
+/// Miscellaneous derived/interpretation results for a parsed `VgmHeader`.
+///
+/// Fields are `Option<u32>` for clock-derivation hints and `Option<bool>` for
+/// presence/variant hints. For the `use_ym2413_clock_for_*` fields:
+/// - `None` = interpretation not applicable or explicitly determined to not apply
+///   (do not use YM2413).
+/// - `Some(x)` where `x != 0` = `x` is the YM2413 clock value that should be
+///   used as the derived clock for the corresponding chip.
+///
+/// These entries capture cases where on-disk header fields are overloaded (a single
+/// stored clock/flag bit can change the effective meaning of another header field).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VgmHeaderMisc {
+    /// True when the header indicates the T6W28 PSG variant (Neo Geo Pocket).
+    pub t6w28_detected: Option<bool>,
+    /// For old VGM versions (<= 1.01): when applicable, returns the YM2413
+    /// clock value that should be used for YM2612. `None` = not applicable or
+    /// undetermined, `Some(0)` = explicitly determined to not apply,
+    /// `Some(x)` where `x != 0` = use `x` as the derived clock.
+    pub use_ym2413_clock_for_ym2612: Option<u32>,
+    /// For old VGM versions (<= 1.01): when applicable, returns the YM2413
+    /// clock value that should be used for YM2151. Same `Option<u32>`
+    /// semantics as `use_ym2413_clock_for_ym2612`.
+    pub use_ym2413_clock_for_ym2151: Option<u32>,
+    /// Whether the YM2610 is the 'B' variant (bit 31 convention).
+    pub ym2610b_detected: Option<bool>,
+    /// Whether the FDS sound addon is present/enabled (bit 31 convention).
+    pub fds_detected: Option<bool>,
+    /// Whether the chip is ES5506 (bit 31 set) or ES5505 (bit 31 clear).
+    /// `Some(true)` means ES5506, `Some(false)` means ES5505.
+    pub is_es5506: Option<bool>,
+}
+
+impl VgmHeader {
+    /// Produce a `VgmHeaderMisc` by deriving interpretation hints from the raw header.
+    ///
+    /// This is intentionally conservative: fields are `None` when the header
+    /// doesn't provide information for the given interpretation. Where the
+    /// header encodes a variant via the high bit (0x8000_0000) of a stored
+    /// clock field, this method exposes that as `Some(true/false)`.
+    pub fn misc(&self) -> VgmHeaderMisc {
+        let mut misc = VgmHeaderMisc::default();
+
+        // Heuristics for older VGM versions where YM2413 clock may carry YM2612/YM2151 info.
+        if self.version <= 0x00000101 && self.ym2413_clock != 0 {
+            // If YM2612 is not explicitly present and the YM2413 clock is
+            // large (strictly greater than 5_000_000 Hz = 5 MHz), some
+            // real-world files used the YM2413's clock value for YM2612.
+            if self.ym2612_clock == 0 && self.ym2413_clock > 5_000_000 {
+                // Use the YM2413 clock value for YM2612. Mask off the high bit
+                // here: substitutions should not carry the secondary-instance
+                // high-bit. misc() returns a raw clock value with the high bit
+                // cleared.
+                misc.use_ym2413_clock_for_ym2612 = Some(self.ym2413_clock & 0x7FFF_FFFF);
+            } else if self.ym2612_clock != 0 {
+                // Explicitly present: do not substitute YM2413 (represented as `None`).
+                misc.use_ym2413_clock_for_ym2612 = None;
+            }
+            // Similarly for YM2151: some older files used the YM2413 clock
+            // for YM2151 when the YM2413 clock is small (strictly less than
+            // 5_000_000 Hz = 5 MHz).
+            if self.ym2151_clock == 0 && self.ym2413_clock < 5_000_000 {
+                // Use the YM2413 clock value for YM2151. Mask off the high bit
+                // here so the substitution is a plain clock value without the
+                // secondary-instance indicator.
+                misc.use_ym2413_clock_for_ym2151 = Some(self.ym2413_clock & 0x7FFF_FFFF);
+            } else if self.ym2151_clock != 0 {
+                // Explicitly present: do not substitute YM2413 (represented as `None`).
+                misc.use_ym2413_clock_for_ym2151 = None;
+            }
+        }
+
+        // YM2610B: bit 31 on the stored ym2610b_clock indicates B variant when present.
+        if self.ym2610b_clock != 0 {
+            misc.ym2610b_detected = Some((self.ym2610b_clock & 0x8000_0000) != 0);
+        }
+
+        // FDS addon: encoded in the NES APU clock high bit in some files.
+        if self.nes_apu_clock != 0 {
+            misc.fds_detected = Some((self.nes_apu_clock & 0x8000_0000) != 0);
+        }
+
+        // ES5506 vs ES5505: check ES5503 clock's high bit when present in header.
+        if self.es5503_clock != 0 {
+            misc.is_es5506 = Some((self.es5503_clock & 0x8000_0000) != 0);
+        }
+
+        // T6W28 detection: the SN76489 clock's high bit (0x8000_0000) is used as
+        // a dual-chip indicator for the T6W28 PSG variant. When the SN76489 clock
+        // field is present, expose the high-bit as the detected flag.
+        if self.sn76489_clock != 0 {
+            misc.t6w28_detected = Some((self.sn76489_clock & 0x8000_0000) != 0);
+        }
+
+        misc
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2143,5 +2267,62 @@ mod tests {
         assert_eq!(decoded.instance, Instance::Secondary);
         assert_eq!(decoded.chip_id, ChipId::Ym2612);
         assert_eq!(decoded.clock, 44100u32);
+    }
+
+    #[test]
+    fn test_misc_ym2413_to_ym2612_and_ym2151() {
+        // YM2413 -> YM2612 (legacy behavior, threshold > 5_000_000)
+        let mut h = VgmHeader {
+            version: 0x00000101,
+            ym2413_clock: 6_000_000,
+            ym2612_clock: 0,
+            ..Default::default()
+        };
+        let misc1 = h.misc();
+        assert_eq!(misc1.use_ym2413_clock_for_ym2612, Some(6_000_000u32));
+
+        // If YM2612 clock is explicitly present, do not substitute YM2413 (None).
+        h.ym2612_clock = 7_000_000;
+        let misc2 = h.misc();
+        assert_eq!(misc2.use_ym2413_clock_for_ym2612, None);
+
+        // YM2413 -> YM2151 (legacy behavior, threshold < 5_000_000)
+        h.ym2413_clock = 4_000_000;
+        h.ym2151_clock = 0;
+        h.ym2612_clock = 0; // reset to not interfere
+        let misc3 = h.misc();
+        assert_eq!(misc3.use_ym2413_clock_for_ym2151, Some(4_000_000u32));
+
+        // If YM2151 is explicitly present, do not substitute YM2413 (None).
+        h.ym2151_clock = 3_000_000;
+        let misc4 = h.misc();
+        assert_eq!(misc4.use_ym2413_clock_for_ym2151, None);
+    }
+
+    #[test]
+    fn test_misc_variant_bits_detection() {
+        let mut h = VgmHeader {
+            ..Default::default()
+        };
+
+        // T6W28 detection: SN76489 clock high bit indicates variant when present.
+        h.sn76489_clock = 0x8000_0000;
+        let misc = h.misc();
+        assert_eq!(misc.t6w28_detected, Some(true));
+
+        // YM2610B detection via ym2610b_clock high bit.
+        h.ym2610b_clock = 0x8000_0001;
+        let misc = h.misc();
+        assert_eq!(misc.ym2610b_detected, Some(true));
+
+        // FDS addon detection via nes_apu_clock high bit.
+        h.nes_apu_clock = 0x8000_0002;
+        let misc = h.misc();
+        assert_eq!(misc.fds_detected, Some(true));
+
+        // ES5506 detection via es5503_clock high bit.
+        h.es5503_clock = 0x8000_0003;
+        let misc = h.misc();
+        assert_eq!(misc.is_es5506, Some(true));
     }
 }

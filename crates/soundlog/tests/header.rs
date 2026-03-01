@@ -1,3 +1,4 @@
+use soundlog::chip::Chip;
 use soundlog::vgm::command::Instance;
 use soundlog::vgm::header::{
     Ay8910ChipType, Ay8910Flags, C140ChipType, ChipClock, ChipId, ChipVolume, K054539Flags,
@@ -244,4 +245,66 @@ fn test_vgm_header_roundtrip_all_fields() {
     // Trancate
     // assert_eq!(ph.reserved_e8_ef, h.reserved_e8_ef);
     // assert_eq!(ph.reserved_f0_ff, h.reserved_f0_ff);
+}
+
+#[test]
+fn test_chip_instances_substitute_ym2413_for_ym2612() {
+    // Legacy behavior: when version <= 1.01 and ym2413_clock > 5_000_000 and ym2612_clock == 0,
+    // misc() suggests substituting the YM2413 clock for YM2612. Verify chip_instances()
+    // reflects that substitution.
+    let h = soundlog::VgmHeader {
+        version: 0x00000101,
+        ym2413_clock: 6_000_000u32,
+        ym2612_clock: 0u32,
+        ..Default::default()
+    };
+    let instances = h.chip_instances();
+    let mut found = false;
+    for (inst, ch, clock_hz) in instances.iter() {
+        if *ch == Chip::Ym2612 {
+            // Expect primary instance with substituted clock ~ 6_000_000
+            assert_eq!(*inst, Instance::Primary);
+            assert!(
+                ((*clock_hz) - 6_000_000.0).abs() < 0.1,
+                "unexpected clock for Ym2612: {}",
+                clock_hz
+            );
+            found = true;
+        }
+    }
+    assert!(
+        found,
+        "Expected Ym2612 instance derived from YM2413 substitution"
+    );
+}
+
+#[test]
+fn test_chip_instances_substitute_ym2413_for_ym2151() {
+    // Legacy behavior: when version <= 1.01 and ym2413_clock < 5_000_000 and ym2151_clock == 0,
+    // misc() suggests substituting the YM2413 clock for YM2151. Verify chip_instances()
+    // reflects that substitution.
+    let h = soundlog::VgmHeader {
+        version: 0x00000101,
+        ym2413_clock: 4_000_000u32,
+        ym2151_clock: 0u32,
+        ..Default::default()
+    };
+    let instances = h.chip_instances();
+    let mut found = false;
+    for (inst, ch, clock_hz) in instances.iter() {
+        if *ch == Chip::Ym2151 {
+            // Expect primary instance with substituted clock ~ 4_000_000
+            assert_eq!(*inst, Instance::Primary);
+            assert!(
+                ((*clock_hz) - 4_000_000.0).abs() < 0.1,
+                "unexpected clock for Ym2151: {}",
+                clock_hz
+            );
+            found = true;
+        }
+    }
+    assert!(
+        found,
+        "Expected Ym2151 instance derived from YM2413 substitution"
+    );
 }

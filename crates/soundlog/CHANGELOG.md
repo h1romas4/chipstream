@@ -3,7 +3,7 @@
 ## v0.9.0 (dev)
 
 - [x] Change: `VgmHeader`: improve type-safety.
-- [ ] Add: `VgmHeaderMics` struct. Expresses various other determinations made by VgmHeader.
+- [x] Add: `VgmHeaderMisc` struct. Expresses various other determinations made by VgmHeader.
 - [ ] Add: `VgmStream`: `from_vgm`, which uses raw VGM as storage.
 - [ ] Fix: `VgmStream`: respect VGM loop modifier.
 - [ ] Fix: `VgmStream`: respect DAC stream `LengthMode`(`Milliseconds`, `reverse`, `looped`).
