@@ -4134,3 +4134,227 @@ fn test_from_document_reads_header_loop_base_modifier() {
     assert_eq!(stream.loop_base(), 1_i8, "from_document should read loop_base from header");
     assert_eq!(stream.loop_modifier(), 0x20_u8, "from_document should read loop_modifier from header");
 }
+
+// ── from_vgm tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_from_vgm_basic_commands() {
+    // Build a minimal VGM and round-trip it through from_vgm.
+    let raw: Vec<u8> = create_vgm_with_various_commands();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm should parse header");
+    stream.set_loop_count(Some(1));
+
+    let mut commands: Vec<VgmCommand> = Vec::new();
+    for result in &mut stream {
+        match result {
+            Ok(StreamResult::Command(c)) => commands.push(c),
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(_) => break,
+        }
+    }
+
+    // Wait735Samples/Wait882Samples are normalised to WaitSamples by the stream processor.
+    assert!(commands.iter().any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 735)));
+    assert!(commands.iter().any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 882)));
+    assert!(!commands.is_empty());
+}
+
+#[test]
+fn test_from_vgm_loops() {
+    // Build a document with a loop point, serialise it, then stream via from_vgm.
+    let raw: Vec<u8> = create_test_vgm_with_loop();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm should parse header");
+    stream.set_loop_count(Some(2));
+
+    let mut end_count = 0u32;
+    for result in &mut stream {
+        match result {
+            Ok(StreamResult::EndOfStream) => { end_count += 1; break; }
+            Err(e) => panic!("unexpected error: {e}"),
+            _ => {}
+        }
+    }
+    assert_eq!(end_count, 1, "stream should end exactly once");
+    // After 2 loops the sample counter should be non-zero.
+    assert!(stream.current_sample() > 0);
+}
+
+#[test]
+fn test_from_vgm_reset() {
+    let raw: Vec<u8> = create_vgm_with_various_commands();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    // Drain the stream.
+    for r in &mut stream {
+        if matches!(r, Ok(StreamResult::EndOfStream)) {
+            break;
+        }
+    }
+
+    // Reset and drain again — should yield the same commands.
+    stream.reset();
+    let mut count = 0usize;
+    for result in &mut stream {
+        match result.expect("no error after reset") {
+            StreamResult::Command(_) => count += 1,
+            StreamResult::EndOfStream => break,
+            StreamResult::NeedsMoreData => break,
+        }
+    }
+    assert!(count > 0, "should replay commands after reset");
+}
+
+#[test]
+fn test_from_vgm_reads_loop_base_modifier() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(EndOfData);
+    let mut doc = builder.finalize();
+    doc.header.loop_base = -2_i8;
+    doc.header.loop_modifier = 0x08;
+    let raw: Vec<u8> = doc.into();
+
+    let stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    assert_eq!(stream.loop_base(), -2_i8);
+    assert_eq!(stream.loop_modifier(), 0x08_u8);
+}
+
+#[test]
+fn test_from_vgm_push_chunk_error() {
+    let raw: Vec<u8> = create_vgm_with_various_commands();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    // push_chunk must return an error for Vgm-source streams.
+    assert!(stream.push_chunk(&[0x62]).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// from_vgm + loop + fadeout tests
+// ---------------------------------------------------------------------------
+
+/// Build a minimal VGM byte sequence with a loop point using VgmBuilder.
+/// The loop is placed at the first WaitSamples command (index 0) so the
+/// entire body repeats.
+fn create_looped_vgm_bytes() -> Vec<u8> {
+    let mut b = VgmBuilder::new();
+    b.add_vgm_command(WaitSamples(735));
+    b.add_vgm_command(WaitSamples(882));
+    b.set_loop_index(0); // loop back to the first WaitSamples
+    b.add_vgm_command(EndOfData);
+    b.finalize().into()
+}
+
+#[test]
+fn test_from_vgm_basic() {
+    // from_vgm parses successfully and yields WaitSamples commands.
+    let raw = create_looped_vgm_bytes();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    let mut waits: Vec<u16> = Vec::new();
+    for item in &mut stream {
+        match item.expect("no error") {
+            StreamResult::Command(VgmCommand::WaitSamples(w)) => waits.push(w.0),
+            StreamResult::EndOfStream => break,
+            StreamResult::NeedsMoreData => break,
+            _ => {}
+        }
+    }
+    // With loop_count=1 the body plays once: 735 + 882 samples.
+    assert!(waits.contains(&735), "expected WaitSamples(735)");
+    assert!(waits.contains(&882), "expected WaitSamples(882)");
+}
+
+#[test]
+fn test_from_vgm_loop_count() {
+    // With loop_count=2 the stream should perform 2 full passes and then stop.
+    let raw = create_looped_vgm_bytes();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(2));
+
+    let mut total_samples: u64 = 0;
+    for item in &mut stream {
+        match item.expect("no error") {
+            StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                total_samples += w.0 as u64;
+            }
+            StreamResult::EndOfStream => break,
+            StreamResult::NeedsMoreData => break,
+            _ => {}
+        }
+    }
+    // Body = 735 + 882 = 1617 samples; 2 passes = 3234 samples.
+    assert_eq!(total_samples, 1617 * 2, "expected exactly 2 pass worth of samples");
+    assert_eq!(stream.current_loop_count(), 2);
+}
+
+#[test]
+fn test_from_vgm_fadeout() {
+    // With a finite loop count and a fadeout grace period the stream continues
+    // emitting commands after the loop ends and then stops at EndOfStream.
+    let raw = create_looped_vgm_bytes();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+    stream.set_fadeout_samples(Some(44100)); // 1 second grace period
+
+    let mut total_samples: u64 = 0;
+    let mut reached_end = false;
+    for item in &mut stream {
+        match item.expect("no error") {
+            StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                total_samples += w.0 as u64;
+            }
+            StreamResult::EndOfStream => {
+                reached_end = true;
+                break;
+            }
+            StreamResult::NeedsMoreData => break,
+            _ => {}
+        }
+    }
+    // The stream must have advanced beyond a single 1617-sample pass because of
+    // the fadeout continuation, and must eventually report EndOfStream.
+    assert!(reached_end, "stream should reach EndOfStream after fadeout");
+    assert!(
+        total_samples >= 1617 + 44100,
+        "stream should continue for at least the fadeout period; got {}",
+        total_samples
+    );
+}
+
+#[test]
+fn test_from_vgm_callback_stream_loop_and_fadeout() {
+    // End-to-end test: VgmCallbackStream::from_vgm with loop + fadeout.
+    // Confirm that the iterator terminates (returns None) after the fadeout
+    // and that the on_write callback is invoked for chip writes.
+    use soundlog::chip::Ym2612Spec;
+    use soundlog::vgm::command::Instance;
+    use soundlog::VgmCallbackStream;
+
+    let mut b = VgmBuilder::new();
+    b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x28, value: 0xF0 });
+    b.add_vgm_command(WaitSamples(735));
+    b.set_loop_index(0);
+    b.add_vgm_command(EndOfData);
+    let raw: Vec<u8> = b.finalize().into();
+
+    let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
+    cs.set_loop_count(Some(1));
+    cs.set_fadeout_samples(Some(735)); // short fadeout
+
+    let write_count = Rc::new(RefCell::new(0u32));
+    let wc = write_count.clone();
+    cs.on_write(move |_inst, _spec: Ym2612Spec, _sample, _events| {
+        *wc.borrow_mut() += 1;
+    });
+
+    // Drain the iterator; it must terminate naturally.
+    let mut iter_count = 0u32;
+    for _result in &mut cs {
+        iter_count += 1;
+        assert!(iter_count < 100_000, "iterator did not terminate");
+    }
+
+    assert!(*write_count.borrow() >= 1, "on_write callback should have been invoked");
+}

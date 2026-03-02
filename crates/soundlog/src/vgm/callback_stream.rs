@@ -599,6 +599,33 @@ impl<'a> VgmCallbackStream<'a> {
         Self::new(stream)
     }
 
+    /// Creates a new [`VgmCallbackStream`] from a complete raw VGM file.
+    ///
+    /// This is a convenience wrapper around [`VgmStream::from_vgm`] and [`VgmCallbackStream::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the VGM header cannot be parsed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::vgm::VgmCallbackStream;
+    /// use soundlog::VgmBuilder;
+    /// use soundlog::vgm::command::WaitSamples;
+    ///
+    /// let mut builder = VgmBuilder::new();
+    /// builder.add_vgm_command(WaitSamples(735));
+    /// let raw: Vec<u8> = builder.finalize().into();
+    ///
+    /// let mut callback_stream = VgmCallbackStream::from_vgm(raw).expect("valid VGM");
+    /// callback_stream.set_loop_count(Some(1));
+    /// ```
+    pub fn from_vgm(data: impl Into<Vec<u8>>) -> Result<Self, ParseError> {
+        let stream = VgmStream::from_vgm(data)?;
+        Ok(Self::new(stream))
+    }
+
     /// Returns a reference to the underlying stream.
     pub fn stream(&self) -> &VgmStream {
         &self.stream
@@ -653,6 +680,18 @@ impl<'a> VgmCallbackStream<'a> {
     /// Gets the current loop modifier value.
     pub fn loop_modifier(&self) -> u8 {
         self.stream.loop_modifier()
+    }
+
+    /// Sets the fadeout grace period in samples after loop end.
+    ///
+    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_fadeout_samples` for details.
+    pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
+        self.stream.set_fadeout_samples(samples);
+    }
+
+    /// Gets the current fadeout grace period.
+    pub fn fadeout_samples(&self) -> Option<u64> {
+        self.stream.fadeout_samples()
     }
 
     /// Push raw VGM bytes into the underlying stream parser.

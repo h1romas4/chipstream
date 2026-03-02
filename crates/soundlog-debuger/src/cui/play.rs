@@ -4,18 +4,34 @@ use anyhow::{Context, Result};
 use soundlog::chip::event::StateEvent;
 use soundlog::vgm::command::Instance;
 use soundlog::vgm::stream::StreamResult;
-use soundlog::{VgmCallbackStream, VgmDocument, VgmStream, chip};
+use soundlog::{VgmCallbackStream, VgmHeader, VgmStream, chip};
 
 /// Play VGM file using VgmCallbackStream and output register logs with events
-pub fn play_vgm(file_path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
-    // Parse VGM document
-    let doc: VgmDocument = (&data[..])
-        .try_into()
-        .with_context(|| format!("failed to parse VGM file: {}", file_path.display()))?;
+pub fn play_vgm(
+    file_path: &Path,
+    data: Vec<u8>,
+    dry_run: bool,
+    loop_count: Option<u32>,
+    loop_modifier: Option<u8>,
+    loop_base: Option<i8>,
+) -> Result<()> {
+    // Parse header only (for chip instance configuration)
+    let header = VgmHeader::from_bytes(&data)
+        .with_context(|| format!("failed to parse VGM header: {}", file_path.display()))?;
+    let instances = header.chip_instances();
 
     // Create stream and callback stream
-    let instances = doc.header.chip_instances();
-    let stream = VgmStream::from_document(doc);
+    let mut stream = VgmStream::from_vgm(data)
+        .with_context(|| format!("failed to create VGM stream: {}", file_path.display()))?;
+    if let Some(n) = loop_count {
+        stream.set_loop_count(Some(n));
+    }
+    if let Some(m) = loop_modifier {
+        stream.set_loop_modifier(m);
+    }
+    if let Some(b) = loop_base {
+        stream.set_loop_base(b);
+    }
     let mut callback_stream = VgmCallbackStream::new(stream);
 
     if !dry_run {

@@ -42,18 +42,33 @@ const MIN_CAP_TO_SHRINK: usize = 64 * 1024; // 64 KiB
 #[derive(Debug)]
 enum VgmStreamSource {
     /// Raw byte stream that needs to be parsed into commands.
-    Bytes {
+    Buffer {
         /// Buffer containing incomplete or unparsed VGM data.
         buffer: Vec<u8>,
     },
     /// Pre-parsed commands from a VgmDocument.
-    Commands {
+    Document {
         /// Reference to the original document (boxed to avoid large enum variant size)
         document: Box<VgmDocument>,
         /// Current command index
         current_index: usize,
         /// Loop point command index (None if no loop)
         loop_index: Option<usize>,
+    },
+    /// Raw VGM file bytes owned by the stream (created via `VgmStream::from_vgm`).
+    ///
+    /// Unlike `Buffer`, the full file is stored and commands are parsed on-demand
+    /// by advancing `current_pos` through `data`.  No secondary command buffer is
+    /// required, so memory usage is roughly the file size only.
+    File {
+        /// Complete raw VGM file (including header).
+        data: Vec<u8>,
+        /// Absolute byte offset of the first command (0x34 + data_offset).
+        command_start: usize,
+        /// Current parse position within `data`.
+        current_pos: usize,
+        /// Absolute byte offset of the loop point, or `None` if the file has no loop.
+        loop_pos: Option<usize>,
     },
 }
 
@@ -613,7 +628,7 @@ impl VgmStream {
     /// ```
     pub fn new() -> Self {
         Self {
-            source: VgmStreamSource::Bytes {
+            source: VgmStreamSource::Buffer {
                 buffer: Vec::with_capacity(MIN_CAP_TO_SHRINK),
             },
             uncompressed_streams: HashMap::new(),
@@ -683,34 +698,103 @@ impl VgmStream {
         let loop_base = document.header.loop_base;
         let loop_modifier = document.header.loop_modifier;
         Self {
-            source: VgmStreamSource::Commands {
+            source: VgmStreamSource::Document {
                 document: Box::new(document),
                 current_index: 0,
                 loop_index,
             },
-            uncompressed_streams: HashMap::new(),
-            block_id_map: Vec::new(),
-            block_sizes: HashMap::new(),
-            decompression_tables: HashMap::new(),
-            loop_count: None,
-            current_loops: 0,
-            encountered_end: false,
-            loop_byte_offset: None,
-            pending_data_block: None,
-            stream_states: HashMap::new(),
-            current_sample: 0,
-            pending_stream_writes: Vec::new(),
-            pending_wait: None,
-            fadeout_samples: None,
-            loop_end_sample: None,
-            pcm_data_offset: 0,
-            max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
-            total_data_block_size: 0,
-            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
             loop_base,
             loop_modifier,
-            stream_id_scratch: Vec::new(),
+            ..Self::default()
         }
+    }
+
+    /// Creates a new VGM stream processor from a complete raw VGM file.
+    ///
+    /// Unlike [`new`](Self::new) + [`push_chunk`](Self::push_chunk), this constructor
+    /// accepts the full VGM file (including header) at once and parses commands
+    /// on demand without building an intermediate command list.  It is simpler to
+    /// use than the push-chunk API and more memory-efficient than
+    /// [`from_document`](Self::from_document) (which retains the entire parsed
+    /// `VgmDocument`).  The raw bytes are kept in memory for random-access looping,
+    /// but no duplicate buffer or command object tree is created.
+    ///
+    /// # Arguments
+    /// * `data` — Complete raw VGM file bytes (uncompressed; if you have a `.vgz`
+    ///   file, decompress it first).
+    ///
+    /// # Errors
+    /// Returns [`ParseError`] if the VGM header cannot be parsed (invalid magic,
+    /// truncated header, etc.).
+    ///
+    /// # Loop Handling
+    ///
+    /// **Warning**: By default, the stream will loop infinitely if the VGM file
+    /// contains a loop point. Always call `set_loop_count(Some(n))` for untrusted
+    /// input or non-interactive playback.
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::{VgmBuilder, vgm::stream::{VgmStream, StreamResult}};
+    /// use soundlog::vgm::command::WaitSamples;
+    ///
+    /// # let mut builder = VgmBuilder::new();
+    /// # builder.add_vgm_command(WaitSamples(735));
+    /// # let raw: Vec<u8> = builder.finalize().into();
+    ///
+    /// let mut stream = VgmStream::from_vgm(raw).expect("valid VGM");
+    /// stream.set_loop_count(Some(1));
+    /// for item in &mut stream {
+    ///     match item {
+    ///         Ok(StreamResult::Command(_cmd)) => {}
+    ///         Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+    ///         Err(_) => break,
+    ///     }
+    /// }
+    /// ```
+    pub fn from_vgm(
+        data: impl Into<Vec<u8>>,
+    ) -> Result<Self, ParseError> {
+        use crate::vgm::header::VgmHeader;
+        let data = data.into();
+        let header = VgmHeader::from_bytes(&data)?;
+
+        // Absolute byte offset of the first command.
+        // If data_offset is 0 the file predates VGM 1.50; fall back to the
+        // version-specific header size.
+        let command_start = if header.data_offset == 0 {
+            VgmHeader::fallback_header_size_for_version(header.version)
+        } else {
+            0x34_usize.wrapping_add(header.data_offset as usize)
+        };
+
+        // Absolute loop position: field at 0x1C is relative to that offset.
+        // Validate that it actually falls within the command region.
+        let loop_pos = if header.loop_offset != 0 {
+            let abs = 0x1C_usize.wrapping_add(header.loop_offset as usize);
+            if abs >= command_start && abs < data.len() {
+                Some(abs)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let loop_base = header.loop_base;
+        let loop_modifier = header.loop_modifier;
+
+        Ok(Self {
+            source: VgmStreamSource::File {
+                data,
+                command_start,
+                current_pos: command_start,
+                loop_pos,
+            },
+            loop_base,
+            loop_modifier,
+            ..Self::default()
+        })
     }
 
     /// Calculates the command index corresponding to loop_offset in the header.
@@ -758,7 +842,7 @@ impl VgmStream {
     /// a document.
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer } => {
+            VgmStreamSource::Buffer { buffer } => {
                 if buffer.len() + chunk.len() > self.max_buffer_size {
                     return Err(ParseError::Other(format!(
                         "Buffer size limit exceeded: current {} bytes, chunk {} bytes, limit {} bytes",
@@ -771,8 +855,11 @@ impl VgmStream {
                 buffer.extend_from_slice(chunk);
                 Ok(())
             }
-            VgmStreamSource::Commands { .. } => Err(ParseError::Other(
+            VgmStreamSource::Document { .. } => Err(ParseError::Other(
                 "push_chunk() cannot be called on a VgmStream created from a document".into(),
+            )),
+            VgmStreamSource::File { .. } => Err(ParseError::Other(
+                "push_chunk() cannot be called on a VgmStream created from VgmStream::from_vgm".into(),
             )),
         }
     }
@@ -829,7 +916,7 @@ impl VgmStream {
     /// Gets the next raw command from the internal source.
     fn get_next_raw_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer, .. } => {
+            VgmStreamSource::Buffer { buffer, .. } => {
                 // If buffer is empty, we need more data
                 if buffer.is_empty() {
                     return Ok(None);
@@ -851,7 +938,7 @@ impl VgmStream {
                     Err(e) => Err(e),
                 }
             }
-            VgmStreamSource::Commands {
+            VgmStreamSource::Document {
                 document,
                 current_index,
                 ..
@@ -863,6 +950,18 @@ impl VgmStream {
                     Ok(Some(cmd))
                 } else {
                     Ok(None)
+                }
+            }
+            VgmStreamSource::File { data, current_pos, .. } => {
+                if *current_pos >= data.len() {
+                    return Ok(None);
+                }
+                match parse_vgm_command(data, *current_pos) {
+                    Ok((command, consumed)) => {
+                        *current_pos += consumed;
+                        Ok(Some(command))
+                    }
+                    Err(e) => Err(e),
                 }
             }
         }
@@ -1124,7 +1223,7 @@ impl VgmStream {
 
     /// Shrinks the buffer if it has grown too large relative to its usage.
     fn shrink_buffer_if_needed(&mut self) {
-        if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source
+        if let VgmStreamSource::Buffer { buffer, .. } = &mut self.source
             && buffer.capacity() > MIN_CAP_TO_SHRINK
             && buffer.len() < buffer.capacity() / 4
         {
@@ -1136,8 +1235,11 @@ impl VgmStream {
     #[doc(hidden)]
     pub fn buffer_size(&self) -> usize {
         match &self.source {
-            VgmStreamSource::Bytes { buffer, .. } => buffer.len(),
-            VgmStreamSource::Commands { .. } => 0,
+            VgmStreamSource::Buffer { buffer, .. } => buffer.len(),
+            VgmStreamSource::Document { .. } => 0,
+            VgmStreamSource::File { data, current_pos, .. } => {
+                data.len().saturating_sub(*current_pos)
+            }
         }
     }
 
@@ -1145,7 +1247,7 @@ impl VgmStream {
     #[doc(hidden)]
     pub fn optimize_memory(&mut self) {
         self.cleanup_unused_data_blocks();
-        if let VgmStreamSource::Bytes { buffer, .. } = &mut self.source {
+        if let VgmStreamSource::Buffer { buffer, .. } = &mut self.source {
             buffer.shrink_to_fit();
         }
     }
@@ -1154,15 +1256,22 @@ impl VgmStream {
     /// Resets the stream parser to its initial state.
     pub fn reset(&mut self) {
         match &mut self.source {
-            VgmStreamSource::Bytes { buffer } => {
+            VgmStreamSource::Buffer { buffer } => {
                 buffer.clear();
             }
-            VgmStreamSource::Commands {
+            VgmStreamSource::Document {
                 current_index,
                 loop_index: _,
                 document: _,
             } => {
                 *current_index = 0;
+            }
+            VgmStreamSource::File {
+                current_pos,
+                command_start,
+                ..
+            } => {
+                *current_pos = *command_start;
             }
         }
         self.uncompressed_streams.clear();
@@ -1232,7 +1341,7 @@ impl VgmStream {
     /// Jumps to the loop point in the command stream.
     fn jump_to_loop_point(&mut self) {
         match &mut self.source {
-            VgmStreamSource::Commands {
+            VgmStreamSource::Document {
                 current_index,
                 loop_index,
                 ..
@@ -1243,9 +1352,17 @@ impl VgmStream {
                     *current_index = 0;
                 }
             }
-            VgmStreamSource::Bytes { .. } => {
+            VgmStreamSource::Buffer { .. } => {
                 // For byte stream, looping is handled by re-pushing data
                 // We just mark that we're ready to loop
+            }
+            VgmStreamSource::File {
+                current_pos,
+                loop_pos,
+                command_start,
+                ..
+            } => {
+                *current_pos = loop_pos.unwrap_or(*command_start);
             }
         }
     }

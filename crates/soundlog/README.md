@@ -24,6 +24,61 @@ Key features:
 - Chip state tracking: Monitor register writes to track key on/off events and
   extract tone information (frequency, pitch) from sound chip registers in real-time.
 
+## Quick start — building a VGM player
+
+```rust
+use soundlog::{VgmBuilder, VgmCallbackStream, VgmHeader};
+use soundlog::chip::{self, event::StateEvent};
+use soundlog::vgm::command::{Instance, WaitSamples};
+use soundlog::vgm::stream::StreamResult;
+
+// Load a .vgm file from disk
+// let vgm_bytes: Vec<u8> = 
+//     std::fs::read(PathBuf::from("song.vgm")).expect("failed to read file");
+let vgm_bytes = Vec::<u8>::new();
+
+# // Build a minimal VGM in memory (or load a .vgm file as Vec<u8>)
+# let mut builder = VgmBuilder::new();
+# builder.add_vgm_command(WaitSamples(735));
+# let vgm_bytes: Vec<u8> = builder.finalize().into();
+
+// Parse the header to obtain chip configuration
+let header = VgmHeader::from_bytes(&vgm_bytes).expect("valid VGM");
+let instances = header.chip_instances();
+
+// Create a callback stream directly from the raw bytes
+let mut callback_stream = VgmCallbackStream::from_vgm(vgm_bytes).expect("valid VGM");
+// play once; omit for infinite loop
+callback_stream.set_loop_count(Some(1));
+// 2-second fadeout at 44.1 kHz after final loop
+callback_stream.set_fadeout_samples(Some(44100 * 2));
+// Enable state tracking for every chip registered in the VGM header.
+// Only chips that are actually enabled (non-zero clock) in the header are tracked.
+callback_stream.track_chips(&instances);
+
+// Register a callback for YM2612 register writes.
+// DAC Stream and DataBlock details are handled internally by VgmCallbackStream —
+// just write the register values directly to your sound chip hardware here.
+callback_stream.on_write(
+    |inst: Instance, spec: chip::Ym2612Spec, sample: u64, events: Option<Vec<StateEvent>>| {
+        println!(
+            "Ym2612Write({:?}, P{}:0x{:02X}=0x{:02X}) @ sample {}",
+            inst, spec.port, spec.register, spec.value, sample
+        );
+    },
+);
+
+// Drive the stream until EndOfStream.
+// The stream loops up to the configured loop count, then continues for the
+// fadeout period (if set) before ending.
+for result in &mut callback_stream {
+    match result {
+        Ok(_) => {}  // callbacks already invoked; WaitSamples etc. can be used for timing
+        Err(e) => { eprintln!("stream error: {:?}", e); break; }
+    }
+}
+```
+
 ## VgmStream overview
 
 `VgmStream` is designed for streaming/real-time consumption of VGM data:

@@ -65,6 +65,18 @@ enum Commands {
         /// Dry-run mode: process the file without printing output (only errors/panics)
         #[arg(long)]
         dry_run: bool,
+
+        /// Loop count limit (None = use file default, which loops infinitely if a loop point exists)
+        #[arg(long)]
+        loop_count: Option<u32>,
+
+        /// VGM loop_modifier override (0 = use file default; see VGM spec §loop_modifier)
+        #[arg(long)]
+        loop_modifier: Option<u8>,
+
+        /// VGM loop_base override (see VGM spec §loop_base)
+        #[arg(long)]
+        loop_base: Option<i8>,
     },
 }
 
@@ -200,12 +212,12 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Play { file, dry_run }) => {
+        Some(Commands::Play { file, dry_run, loop_count, loop_modifier, loop_base }) => {
             // Load file
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
                     // Call play_vgm
-                    match crate::cui::play::play_vgm(&file, bytes, dry_run) {
+                    match crate::cui::play::play_vgm(&file, bytes, dry_run, loop_count, loop_modifier, loop_base) {
                         Ok(_) => {
                             std::process::exit(0);
                         }
