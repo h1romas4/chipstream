@@ -4,6 +4,7 @@
 
 - [ ] Add: Playback support for concatenated VGM files.
 - [ ] Internal: `VgmDocument`: reduction in memory usage.
+- [ ] Change: Changed the parts where u64 was mistakenly used to usize.
 
 ## v0.9.0
 
