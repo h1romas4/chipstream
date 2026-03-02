@@ -557,6 +557,9 @@ pub struct VgmStream {
     /// Scales the effective loop count:
     ///  NumLoops = ProgramNumLoops * loop_modifier / 0x10
     loop_modifier: u8,
+    /// Scratch buffer reused across `generate_stream_writes` calls to avoid
+    /// repeated allocation when collecting active stream IDs.
+    stream_id_scratch: Vec<u8>,
 }
 
 impl VgmStream {
@@ -634,6 +637,7 @@ impl VgmStream {
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
             loop_base: 0,
             loop_modifier: 0,
+            stream_id_scratch: Vec::new(),
         }
     }
 
@@ -705,6 +709,7 @@ impl VgmStream {
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
             loop_base,
             loop_modifier,
+            stream_id_scratch: Vec::new(),
         }
     }
 
@@ -1730,10 +1735,11 @@ impl VgmStream {
     /// All [`LengthMode`] variants—including `reverse` and `looped` flags—are
     /// handled via [`StreamSnapshot`] helper methods.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
-        let mut writes = Vec::new();
+        self.stream_id_scratch.clear();
+        self.stream_id_scratch.extend(self.stream_states.keys().copied());
 
-        let stream_ids: Vec<u8> = self.stream_states.keys().copied().collect();
-        for stream_id in stream_ids {
+        for i in 0..self.stream_id_scratch.len() {
+            let stream_id = self.stream_id_scratch[i];
             // Build a snapshot; skip inactive / frequency-less streams.
             // data_bank_end must be fetched before the snapshot borrow.
             let data_bank_end = {
@@ -1793,7 +1799,7 @@ impl VgmStream {
                     snap.write_command,
                     data,
                 ) {
-                    writes.push(cmd);
+                    self.pending_stream_writes.push(cmd);
                 }
                 snap.step_position(is_reverse, is_looped);
                 snap.advance_sample_clock();
@@ -1822,7 +1828,6 @@ impl VgmStream {
                 snap.write_back(state);
             }
         }
-        self.pending_stream_writes.append(&mut writes);
 
         Ok(())
     }
