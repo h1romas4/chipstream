@@ -12,9 +12,9 @@ Key features:
 - Type-safe APIs: chip specifications and VGM commands are modeled as
   Rust types to help prevent invalid register writes at compile time.
 - Stream processing: `VgmStream` provides a low-memory, iterator-based
-  processor that can accept either chunked binary input (via `push_chunk`)
-  or a pre-parsed `VgmDocument` (via `from_document`) and yields parsed
-  `VgmCommand` values as they become available.
+  processor that can accept either chunked binary input (via `push_chunk`),
+  raw VGM bytes (via `from_vgm`), or a pre-parsed `VgmDocument` (via `from_document`),
+  and yields parsed `VgmCommand` values as they become available.
 - Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
   callback registration for chip register writes with automatic state tracking
   and event detection (KeyOn, KeyOff, ToneChange).
