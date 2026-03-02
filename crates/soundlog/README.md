@@ -29,14 +29,13 @@ Key features:
 ```rust
 use soundlog::{VgmBuilder, VgmCallbackStream, VgmHeader};
 use soundlog::chip::{self, event::StateEvent};
-use soundlog::vgm::command::{Instance, WaitSamples};
+use soundlog::vgm::command::{Instance, VgmCommand, WaitSamples};
 use soundlog::vgm::stream::StreamResult;
 
 // Load a .vgm file from disk
 // let vgm_bytes: Vec<u8> = 
 //     std::fs::read(PathBuf::from("song.vgm")).expect("failed to read file");
 let vgm_bytes = Vec::<u8>::new();
-
 # // Build a minimal VGM in memory (or load a .vgm file as Vec<u8>)
 # let mut builder = VgmBuilder::new();
 # builder.add_vgm_command(WaitSamples(735));
@@ -73,7 +72,18 @@ callback_stream.on_write(
 // fadeout period (if set) before ending.
 for result in &mut callback_stream {
     match result {
-        Ok(_) => {}  // callbacks already invoked; WaitSamples etc. can be used for timing
+        Ok(StreamResult::Command(cmd)) => {
+            // Callbacks for chip register writes are already invoked above.
+            // Handle other commands here as needed; most commonly WaitSamples,
+            // which carries the number of audio samples to render before the
+            // next register write.
+            if let VgmCommand::WaitSamples(wait) = cmd {
+                // Advance your audio renderer by `wait.0` samples here.
+                // For example: render_audio(wait.0 as usize);
+                let _samples = wait.0;
+            }
+        }
+        Ok(_) => {}
         Err(e) => { eprintln!("stream error: {:?}", e); break; }
     }
 }
