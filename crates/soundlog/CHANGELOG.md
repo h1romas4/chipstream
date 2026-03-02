@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- [ ] Add: Playback support for concatenated VGM files.
+- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization (header re-read) is actually required, we will limit ourselves to providing an example.)
 - [ ] Internal: `VgmDocument`: reduction in memory usage.
 - [ ] Change: Changed the parts where u64 was mistakenly used to usize.
 
