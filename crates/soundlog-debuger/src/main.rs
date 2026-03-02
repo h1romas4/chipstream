@@ -44,7 +44,7 @@ enum Commands {
 
         /// Fadeout grace period in samples after loop end (default: 0)
         #[arg(long, default_value_t = 0)]
-        fadeout_samples: u64,
+        fadeout_samples: usize,
 
         /// Print diagnostic output after redump (re-parse output and show diagnostics)
         #[arg(long)]

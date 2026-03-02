@@ -59,7 +59,7 @@ callback_stream.track_chips(&instances);
 // DAC Stream and DataBlock details are handled internally by VgmCallbackStream —
 // just write the register values directly to your sound chip hardware here.
 callback_stream.on_write(
-    |inst: Instance, spec: chip::Ym2612Spec, sample: u64, events: Option<Vec<StateEvent>>| {
+    |inst: Instance, spec: chip::Ym2612Spec, sample: usize, events: Option<Vec<StateEvent>>| {
         println!(
             "Ym2612Write({:?}, P{}:0x{:02X}=0x{:02X}) @ sample {}",
             inst, spec.port, spec.register, spec.value, sample

@@ -612,7 +612,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
             let fnum_max = if spec.fnum_bits == 32 {
                 u32::MAX
             } else {
-                ((1_u64 << spec.fnum_bits as usize) - 1) as u32
+                (1_u32 << spec.fnum_bits as usize) - 1
             };
 
             for delta in -1..=1 {
@@ -730,7 +730,7 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
     let fnum_max = if spec.fnum_bits == 32 {
         u32::MAX
     } else {
-        ((1u64 << spec.fnum_bits as usize) - 1) as u32
+        (1_u32 << spec.fnum_bits as usize) - 1
     };
 
     let mut cand = start_fnum.saturating_add(1);

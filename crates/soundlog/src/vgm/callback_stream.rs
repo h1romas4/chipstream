@@ -73,10 +73,10 @@ use crate::vgm::command::{
 use crate::vgm::header::ChipInstances;
 use crate::vgm::stream::{StreamResult, VgmStream};
 
-type ChipCallback<'a, S> = Option<Box<dyn FnMut(Instance, S, u64, Option<Vec<StateEvent>>) + 'a>>;
-type CommandCallback<'a, S> = Option<Box<dyn FnMut(S, u64, Option<Vec<StateEvent>>) + 'a>>;
-type CommandRefCallback<'a, S> = Option<Box<dyn FnMut(&S, u64, Option<Vec<StateEvent>>) + 'a>>;
-type AnyCallback<'a> = Option<Box<dyn FnMut(&VgmCommand, u64) + 'a>>;
+type ChipCallback<'a, S> = Option<Box<dyn FnMut(Instance, S, usize, Option<Vec<StateEvent>>) + 'a>>;
+type CommandCallback<'a, S> = Option<Box<dyn FnMut(S, usize, Option<Vec<StateEvent>>) + 'a>>;
+type CommandRefCallback<'a, S> = Option<Box<dyn FnMut(&S, usize, Option<Vec<StateEvent>>) + 'a>>;
+type AnyCallback<'a> = Option<Box<dyn FnMut(&VgmCommand, usize) + 'a>>;
 
 /// Trait for chip specifications that can register write callbacks.
 ///
@@ -106,7 +106,7 @@ pub trait WriteCallbackTarget: sealed::Sealed + 'static {
     #[doc(hidden)]
     fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
     where
-        F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
         Self: Sized;
 }
 
@@ -243,7 +243,7 @@ macro_rules! impl_callback_and_state {
         impl WriteCallbackTarget for $spec_type {
             fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
             where
-                F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+                F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
             {
                 callbacks.$callback_field = Some(Box::new(callback));
             }
@@ -324,7 +324,7 @@ impl_callback_and_state!(chip::Scc1Spec, K051649State, on_scc1_write, k051649);
 impl WriteCallbackTarget for chip::Rf5c68U16Spec {
     fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
     where
-        F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
     {
         callbacks.on_rf5c68_u16_write = Some(Box::new(callback));
     }
@@ -339,7 +339,7 @@ impl_callback_and_state!(
 impl WriteCallbackTarget for chip::Rf5c164U16Spec {
     fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
     where
-        F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
     {
         callbacks.on_rf5c164_u16_write = Some(Box::new(callback));
     }
@@ -348,7 +348,7 @@ impl WriteCallbackTarget for chip::Rf5c164U16Spec {
 impl WriteCallbackTarget for chip::Es5506U16Spec {
     fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
     where
-        F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
     {
         callbacks.on_es5506_u16_write = Some(Box::new(callback));
     }
@@ -360,7 +360,7 @@ macro_rules! impl_write_callback_target_no_state {
         impl WriteCallbackTarget for $spec_type {
             fn register_callback<'a, F>(callbacks: &mut Callbacks<'a>, callback: F)
             where
-                F: FnMut(Instance, Self, u64, Option<Vec<StateEvent>>) + 'a,
+                F: FnMut(Instance, Self, usize, Option<Vec<StateEvent>>) + 'a,
             {
                 callbacks.$callback_field = Some(Box::new(callback));
             }
@@ -685,12 +685,12 @@ impl<'a> VgmCallbackStream<'a> {
     /// Sets the fadeout grace period in samples after loop end.
     ///
     /// Forwarded to the underlying `VgmStream`. See [`VgmStream::set_fadeout_samples`] for details.
-    pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
+    pub fn set_fadeout_samples(&mut self, samples: Option<usize>) {
         self.stream.set_fadeout_samples(samples);
     }
 
     /// Gets the current fadeout grace period.
-    pub fn fadeout_samples(&self) -> Option<u64> {
+    pub fn fadeout_samples(&self) -> Option<usize> {
         self.stream.fadeout_samples()
     }
 
@@ -956,7 +956,7 @@ impl<'a> VgmCallbackStream<'a> {
     pub fn on_write<C, F>(&mut self, callback: F)
     where
         C: WriteCallbackTarget,
-        F: FnMut(Instance, C, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Instance, C, usize, Option<Vec<StateEvent>>) + 'a,
     {
         C::register_callback(&mut self.callbacks, callback);
     }
@@ -1003,7 +1003,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for AY8910 stereo mask commands.
     pub fn on_ay8910_stereo_mask<F>(&mut self, callback: F)
     where
-        F: FnMut(Ay8910StereoMask, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(Ay8910StereoMask, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_ay8910_stereo_mask = Some(Box::new(callback));
     }
@@ -1011,7 +1011,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for reserved U8 commands.
     pub fn on_reserved_u8_write<F>(&mut self, callback: F)
     where
-        F: FnMut(ReservedU8, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(ReservedU8, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_reserved_u8_write = Some(Box::new(callback));
     }
@@ -1019,7 +1019,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for reserved U16 commands.
     pub fn on_reserved_u16_write<F>(&mut self, callback: F)
     where
-        F: FnMut(ReservedU16, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(ReservedU16, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_reserved_u16_write = Some(Box::new(callback));
     }
@@ -1027,7 +1027,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for reserved U24 commands.
     pub fn on_reserved_u24_write<F>(&mut self, callback: F)
     where
-        F: FnMut(ReservedU24, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(ReservedU24, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_reserved_u24_write = Some(Box::new(callback));
     }
@@ -1035,7 +1035,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for reserved U32 commands.
     pub fn on_reserved_u32_write<F>(&mut self, callback: F)
     where
-        F: FnMut(ReservedU32, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(ReservedU32, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_reserved_u32_write = Some(Box::new(callback));
     }
@@ -1043,7 +1043,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for unknown commands.
     pub fn on_unknown_command<F>(&mut self, callback: F)
     where
-        F: FnMut(UnknownSpec, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(UnknownSpec, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_unknown_command = Some(Box::new(callback));
     }
@@ -1051,7 +1051,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for wait samples commands.
     pub fn on_wait<F>(&mut self, callback: F)
     where
-        F: FnMut(WaitSamples, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(WaitSamples, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_wait_samples = Some(Box::new(callback));
     }
@@ -1059,7 +1059,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for data block commands.
     pub fn on_data_block<F>(&mut self, callback: F)
     where
-        F: FnMut(&DataBlock, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(&DataBlock, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_data_block = Some(Box::new(callback));
     }
@@ -1071,7 +1071,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// and terminates before this callback can be called.
     pub fn on_end_of_data<F>(&mut self, callback: F)
     where
-        F: FnMut(EndOfData, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(EndOfData, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_end_of_data = Some(Box::new(callback));
     }
@@ -1079,7 +1079,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// Register a callback for PCM RAM write commands.
     pub fn on_pcm_ram_write<F>(&mut self, callback: F)
     where
-        F: FnMut(&PcmRamWrite, u64, Option<Vec<StateEvent>>) + 'a,
+        F: FnMut(&PcmRamWrite, usize, Option<Vec<StateEvent>>) + 'a,
     {
         self.callbacks.on_pcm_ram_write = Some(Box::new(callback));
     }
@@ -1108,7 +1108,7 @@ impl<'a> VgmCallbackStream<'a> {
     /// ```
     pub fn on_any_command<F>(&mut self, callback: F)
     where
-        F: FnMut(&VgmCommand, u64) + 'a,
+        F: FnMut(&VgmCommand, usize) + 'a,
     {
         self.callbacks.on_any_command = Some(Box::new(callback));
     }

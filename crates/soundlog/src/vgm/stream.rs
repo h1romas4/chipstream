@@ -124,7 +124,7 @@ struct StreamState {
     /// Current read position in the data block (byte offset)
     current_data_pos: usize,
     /// Next sample number when a write should occur (at 44100 Hz sample rate)
-    next_write_sample: u64,
+    next_write_sample: usize,
     /// Fractional accumulator for sample interval (tracks fractional part to avoid rounding errors)
     sample_fraction: f32,
     /// Remaining commands to write (used when length_mode == 1)
@@ -135,7 +135,7 @@ struct StreamState {
     start_data_pos: usize,
     /// Sample position at which a `Milliseconds`-mode stream expires.
     /// `None` for all other modes.
-    stream_end_sample: Option<u64>,
+    stream_end_sample: Option<usize>,
 }
 
 /// Mutable working copy of a single DAC stream's playback state for one tick.
@@ -148,7 +148,7 @@ struct StreamSnapshot {
     freq: u32,
     sample_interval: f32,
     active: bool,
-    next_write_sample: u64,
+    next_write_sample: usize,
     sample_fraction: f32,
     current_data_pos: usize,
     data_bank_id: u8,
@@ -161,7 +161,7 @@ struct StreamSnapshot {
     remaining_commands: Option<u32>,
     block_end_pos: Option<usize>,
     start_data_pos: usize,
-    stream_end_sample: Option<u64>,
+    stream_end_sample: Option<usize>,
     data_length: u32,
     /// Pre-fetched total byte length of the data bank (used for reverse / loop bounds).
     data_bank_end: usize,
@@ -219,7 +219,7 @@ impl StreamSnapshot {
     /// - [`LengthMode::PlayUntilEnd`] (forward only): current position reached the
     ///   block end.  The reverse-end for `PlayUntilEnd` is detected *after*
     ///   reading, inside [`step_position`](Self::step_position).
-    fn at_end_before_read(&self, current_sample: u64) -> bool {
+    fn at_end_before_read(&self, current_sample: usize) -> bool {
         let (is_reverse, _) = self.length_mode.flags();
         match self.length_mode {
             LengthMode::CommandCount { .. } => self.remaining_commands == Some(0),
@@ -250,7 +250,9 @@ impl StreamSnapshot {
                 }
             }
             LengthMode::Milliseconds { .. } => {
-                let n = (self.freq as u64 * self.data_length as u64 / 1000) as usize;
+                // Divide freq by 1000 first to avoid overflow on 32-bit (e.g. 44100*97391 > u32::MAX)
+                let n = (self.freq / 1000).saturating_mul(self.data_length) as usize
+                    + (self.freq % 1000).saturating_mul(self.data_length) as usize / 1000;
                 if n > 0 {
                     self.start_data_pos + (n - 1) * self.step_size as usize
                 } else {
@@ -269,9 +271,10 @@ impl StreamSnapshot {
     fn apply_loop_restart(&mut self, is_reverse: bool) {
         self.current_data_pos = self.loop_restart_pos(is_reverse);
         if matches!(self.length_mode, LengthMode::Milliseconds { .. }) {
-            self.stream_end_sample = self
-                .stream_end_sample
-                .map(|e| e + self.data_length as u64 * 44100 / 1000);
+            self.stream_end_sample = self.stream_end_sample.map(|e| {
+                e + (self.data_length / 1000).saturating_mul(44100) as usize
+                    + (self.data_length % 1000).saturating_mul(44100) as usize / 1000
+            });
         }
         if matches!(self.length_mode, LengthMode::CommandCount { .. }) {
             self.remaining_commands = Some(self.data_length);
@@ -281,7 +284,7 @@ impl StreamSnapshot {
     /// Advances `next_write_sample` by one step, propagating the sub-sample
     /// fraction to avoid cumulative rounding errors from integer truncation.
     fn advance_sample_clock(&mut self) {
-        self.next_write_sample += self.sample_interval as u64;
+        self.next_write_sample += self.sample_interval as usize;
         self.sample_fraction += self.sample_interval.fract();
         if self.sample_fraction >= 1.0 {
             self.next_write_sample += 1;
@@ -545,15 +548,15 @@ pub struct VgmStream {
     /// DAC stream states indexed by stream ID
     stream_states: HashMap<u8, StreamState>,
     /// Current sample position (at 44100 Hz)
-    current_sample: u64,
+    current_sample: usize,
     /// Pending stream write commands to emit
     pending_stream_writes: Vec<VgmCommand>,
     /// Pending wait time that hasn't been emitted yet (in samples)
     pending_wait: Option<u16>,
     /// Fadeout grace period in samples after loop end (None = no fadeout)
-    fadeout_samples: Option<u64>,
+    fadeout_samples: Option<usize>,
     /// Sample position when the loop ended (for fadeout tracking)
-    loop_end_sample: Option<u64>,
+    loop_end_sample: Option<usize>,
     /// Current read offset in PCM data bank (type 0x00) for 0x8n commands
     pcm_data_offset: usize,
     /// Maximum allowed total size for accumulated data blocks
@@ -871,7 +874,7 @@ impl VgmStream {
         }
 
         if let Some(wait_samples) = self.pending_wait.take() {
-            return self.process_wait_with_streams(wait_samples as u64);
+            return self.process_wait_with_streams(wait_samples as usize);
         }
 
         if let Some(block) = self.pending_data_block.take() {
@@ -882,15 +885,16 @@ impl VgmStream {
             if let (Some(fadeout_samples), Some(loop_end_sample)) =
                 (self.fadeout_samples, self.loop_end_sample)
             {
-                if self.current_sample >= loop_end_sample + fadeout_samples {
+                let fadeout_end = loop_end_sample.saturating_add(fadeout_samples);
+                if self.current_sample >= fadeout_end {
                     return Ok(StreamResult::EndOfStream);
                 }
                 let command = match self.get_next_raw_command()? {
                     Some(cmd) => cmd,
                     None => {
                         // No more data, generate a wait to advance to end of fadeout
-                        let remaining = (loop_end_sample + fadeout_samples) - self.current_sample;
-                        let wait_amount = remaining.min(u16::MAX as u64) as u16;
+                        let remaining = fadeout_end.saturating_sub(self.current_sample);
+                        let wait_amount = remaining.min(u16::MAX as usize) as u16;
                         VgmCommand::WaitSamples(WaitSamples(wait_amount))
                     }
                 };
@@ -999,7 +1003,7 @@ impl VgmStream {
                 return self.next_command();
             }
             VgmCommand::WaitSamples(w) => {
-                return self.process_wait_with_streams(w.0 as u64);
+                return self.process_wait_with_streams(w.0 as usize);
             }
             VgmCommand::Wait735Samples(_) => {
                 return self.process_wait_with_streams(735);
@@ -1008,7 +1012,7 @@ impl VgmStream {
                 return self.process_wait_with_streams(882);
             }
             VgmCommand::WaitNSample(w) => {
-                let samples = w.0 as u64;
+                let samples = w.0 as usize;
                 return self.process_wait_with_streams(samples);
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
@@ -1028,7 +1032,7 @@ impl VgmStream {
         &mut self,
         cmd: &Ym2612Port0Address2AWriteAndWaitN,
     ) -> Result<StreamResult, ParseError> {
-        let wait_samples = cmd.0 as u64;
+        let wait_samples = cmd.0 as usize;
 
         if let Some(data_byte) = self.read_pcm_data_bank_byte()? {
             let dac_write = VgmCommand::Ym2612Write(
@@ -1143,12 +1147,12 @@ impl VgmStream {
     /// stream.set_loop_count(Some(2));
     /// stream.set_fadeout_samples(Some(44100)); // 1 second fadeout at 44.1kHz
     /// ```
-    pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
+    pub fn set_fadeout_samples(&mut self, samples: Option<usize>) {
         self.fadeout_samples = samples;
     }
 
     /// Gets the current fadeout grace period.
-    pub fn fadeout_samples(&self) -> Option<u64> {
+    pub fn fadeout_samples(&self) -> Option<usize> {
         self.fadeout_samples
     }
 
@@ -1165,7 +1169,7 @@ impl VgmStream {
     /// let stream = VgmStream::from_document(doc);
     /// let position = stream.current_sample();
     /// ```
-    pub fn current_sample(&self) -> u64 {
+    pub fn current_sample(&self) -> usize {
         self.current_sample
     }
 
@@ -1291,7 +1295,7 @@ impl VgmStream {
 
     /// Handles end of data command, potentially starting a new loop.
     fn handle_end_of_data(&mut self) {
-        self.current_loops += 1;
+        self.current_loops = self.current_loops.saturating_add(1);
 
         if let Some(max_loops) = self.effective_loop_count() {
             if self.current_loops >= max_loops {
@@ -1302,7 +1306,9 @@ impl VgmStream {
             } else {
                 self.jump_to_loop_point();
                 self.reset_loop_state();
-                if self.current_loops + 1 == max_loops && self.fadeout_samples.is_some() {
+                if self.current_loops.saturating_add(1) == max_loops
+                    && self.fadeout_samples.is_some()
+                {
                     self.loop_end_sample = Some(self.current_sample);
                 }
             }
@@ -1329,8 +1335,8 @@ impl VgmStream {
         } else {
             self.loop_modifier as u32
         };
-        let scaled = (program_loops as u64 * modifier as u64 / 0x10) as i64;
-        let effective = scaled - self.loop_base as i64;
+        let scaled = (program_loops as usize).saturating_mul(modifier as usize) / 0x10;
+        let effective = scaled as isize - self.loop_base as isize;
         Some(effective.max(0) as u32)
     }
 
@@ -1718,7 +1724,11 @@ impl VgmStream {
                 }
                 LengthMode::Milliseconds { .. } => {
                     let n = frequency_hz
-                        .map(|f| (f as u64 * start.data_length as u64 / 1000) as usize)
+                        .map(|f| {
+                            // Divide by 1000 first to avoid overflow on 32-bit
+                            (f / 1000).saturating_mul(start.data_length) as usize
+                                + (f % 1000).saturating_mul(start.data_length) as usize / 1000
+                        })
                         .unwrap_or(0);
                     if n > 0 {
                         start_data_pos + (n - 1) * step_size as usize
@@ -1739,7 +1749,10 @@ impl VgmStream {
         // For Milliseconds mode, record the sample at which the stream expires.
         let stream_end_sample = match start.length_mode {
             LengthMode::Milliseconds { .. } => {
-                Some(self.current_sample + start.data_length as u64 * 44100 / 1000)
+                // Divide by 1000 first to avoid overflow on 32-bit
+                let dur = (start.data_length / 1000).saturating_mul(44100) as usize
+                    + (start.data_length % 1000).saturating_mul(44100) as usize / 1000;
+                Some(self.current_sample + dur)
             }
             _ => None,
         };
@@ -1933,9 +1946,10 @@ impl VgmStream {
                         snap.start_data_pos
                     };
                     if matches!(snap.length_mode, LengthMode::Milliseconds { .. }) {
-                        snap.stream_end_sample = snap
-                            .stream_end_sample
-                            .map(|e| e + snap.data_length as u64 * 44100 / 1000);
+                        snap.stream_end_sample = snap.stream_end_sample.map(|e| {
+                            e + (snap.data_length / 1000).saturating_mul(44100) as usize
+                                + (snap.data_length % 1000).saturating_mul(44100) as usize / 1000
+                        });
                     }
                 } else {
                     snap.active = false;
@@ -1958,8 +1972,11 @@ impl VgmStream {
     /// 2. Emitting a partial wait up to that point
     /// 3. Generating the stream write
     /// 4. Saving remaining wait time for later emission
-    fn process_wait_with_streams(&mut self, wait_samples: u64) -> Result<StreamResult, ParseError> {
-        let target_sample = self.current_sample + wait_samples;
+    fn process_wait_with_streams(
+        &mut self,
+        wait_samples: usize,
+    ) -> Result<StreamResult, ParseError> {
+        let target_sample = self.current_sample.saturating_add(wait_samples);
 
         let next_stream_write_sample = self.find_next_stream_write_sample(target_sample);
 
@@ -1973,12 +1990,12 @@ impl VgmStream {
 
             let remaining_wait = target_sample.saturating_sub(next_write_sample);
             if remaining_wait > 0 {
-                self.pending_wait = Some(remaining_wait.min(u16::MAX as u64) as u16);
+                self.pending_wait = Some(remaining_wait.min(u16::MAX as usize) as u16);
             }
 
             if wait_until_write > 0 {
                 return Ok(StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(
-                    wait_until_write.min(u16::MAX as u64) as u16,
+                    wait_until_write.min(u16::MAX as usize) as u16,
                 ))));
             } else if !self.pending_stream_writes.is_empty() {
                 let cmd = self.pending_stream_writes.remove(0);
@@ -1989,13 +2006,13 @@ impl VgmStream {
         self.pending_wait = None;
 
         Ok(StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(
-            wait_samples.min(u16::MAX as u64) as u16,
+            wait_samples.min(u16::MAX as usize) as u16,
         ))))
     }
 
     /// Finds the next stream write sample position that is after current_sample and at or before target_sample.
-    fn find_next_stream_write_sample(&self, target_sample: u64) -> Option<u64> {
-        let mut earliest: Option<u64> = None;
+    fn find_next_stream_write_sample(&self, target_sample: usize) -> Option<usize> {
+        let mut earliest: Option<usize> = None;
 
         for state in self.stream_states.values() {
             if !state.active {

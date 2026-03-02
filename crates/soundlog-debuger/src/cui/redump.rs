@@ -18,7 +18,7 @@ pub fn redump_vgm(
     output_path: &Path,
     data: Vec<u8>,
     loop_count: Option<u32>,
-    fadeout_samples: Option<u64>,
+    fadeout_samples: Option<usize>,
     diag: bool,
 ) -> Result<()> {
     // Parse original VGM document

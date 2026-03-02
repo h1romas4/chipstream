@@ -3753,7 +3753,10 @@ fn test_loop_modifier_default_zero_is_identity() {
     stream.set_loop_count(Some(3));
 
     let loops = count_effective_loops(stream);
-    assert_eq!(loops, 3, "Default (no modifier) should loop exactly program_loops times");
+    assert_eq!(
+        loops, 3,
+        "Default (no modifier) should loop exactly program_loops times"
+    );
 }
 
 #[test]
@@ -3829,7 +3832,10 @@ fn test_loop_base_clamps_to_zero() {
     stream.set_loop_base(10); // would produce 2-10 = -8 → clamped to 0 → stop immediately
 
     let loops = count_effective_loops(stream);
-    assert_eq!(loops, 1, "Clamped-to-zero effective loops: stream stops at first EndOfData (current_loop_count=1)");
+    assert_eq!(
+        loops, 1,
+        "Clamped-to-zero effective loops: stream stops at first EndOfData (current_loop_count=1)"
+    );
 }
 
 #[test]
@@ -3947,7 +3953,11 @@ fn test_length_mode_milliseconds_stops_at_duration() {
     builder.add_vgm_command(EndOfData);
 
     let writes = collect_dac_writes(builder.finalize());
-    assert_eq!(writes, vec![0x10, 0x20, 0x30], "Milliseconds mode: expected exactly 3 writes");
+    assert_eq!(
+        writes,
+        vec![0x10, 0x20, 0x30],
+        "Milliseconds mode: expected exactly 3 writes"
+    );
 }
 
 /// LengthMode::Milliseconds with looped=true – stream restarts automatically.
@@ -4114,7 +4124,11 @@ fn test_loop_modifier_preserved_across_reset() {
     stream.set_loop_modifier(0x20);
     stream.set_loop_base(1);
     stream.reset();
-    assert_eq!(stream.loop_modifier(), 0x20, "loop_modifier preserved after reset");
+    assert_eq!(
+        stream.loop_modifier(),
+        0x20,
+        "loop_modifier preserved after reset"
+    );
     assert_eq!(stream.loop_base(), 1, "loop_base preserved after reset");
 }
 
@@ -4127,12 +4141,20 @@ fn test_from_document_reads_header_loop_base_modifier() {
     builder.add_vgm_command(EndOfData);
     let mut doc = builder.finalize();
     // Manually set the header fields (simulate a real VGM file)
-    doc.header.loop_base = 1_i8;   // +1 reduction
+    doc.header.loop_base = 1_i8; // +1 reduction
     doc.header.loop_modifier = 0x20; // 2×
 
     let stream = VgmStream::from_document(doc);
-    assert_eq!(stream.loop_base(), 1_i8, "from_document should read loop_base from header");
-    assert_eq!(stream.loop_modifier(), 0x20_u8, "from_document should read loop_modifier from header");
+    assert_eq!(
+        stream.loop_base(),
+        1_i8,
+        "from_document should read loop_base from header"
+    );
+    assert_eq!(
+        stream.loop_modifier(),
+        0x20_u8,
+        "from_document should read loop_modifier from header"
+    );
 }
 
 // ── from_vgm tests ──────────────────────────────────────────────────────────
@@ -4154,8 +4176,16 @@ fn test_from_vgm_basic_commands() {
     }
 
     // Wait735Samples/Wait882Samples are normalised to WaitSamples by the stream processor.
-    assert!(commands.iter().any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 735)));
-    assert!(commands.iter().any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 882)));
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 735))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, VgmCommand::WaitSamples(w) if w.0 == 882))
+    );
     assert!(!commands.is_empty());
 }
 
@@ -4169,7 +4199,10 @@ fn test_from_vgm_loops() {
     let mut end_count = 0u32;
     for result in &mut stream {
         match result {
-            Ok(StreamResult::EndOfStream) => { end_count += 1; break; }
+            Ok(StreamResult::EndOfStream) => {
+                end_count += 1;
+                break;
+            }
             Err(e) => panic!("unexpected error: {e}"),
             _ => {}
         }
@@ -4284,7 +4317,11 @@ fn test_from_vgm_loop_count() {
         }
     }
     // Body = 735 + 882 = 1617 samples; 2 passes = 3234 samples.
-    assert_eq!(total_samples, 1617 * 2, "expected exactly 2 pass worth of samples");
+    assert_eq!(
+        total_samples,
+        1617 * 2,
+        "expected exactly 2 pass worth of samples"
+    );
     assert_eq!(stream.current_loop_count(), 2);
 }
 
@@ -4327,13 +4364,20 @@ fn test_from_vgm_callback_stream_loop_and_fadeout() {
     // End-to-end test: VgmCallbackStream::from_vgm with loop + fadeout.
     // Confirm that the iterator terminates (returns None) after the fadeout
     // and that the on_write callback is invoked for chip writes.
+    use soundlog::VgmCallbackStream;
     use soundlog::chip::Ym2612Spec;
     use soundlog::vgm::command::Instance;
-    use soundlog::VgmCallbackStream;
 
     let mut b = VgmBuilder::new();
     b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
-    b.add_chip_write(Instance::Primary, Ym2612Spec { port: 0, register: 0x28, value: 0xF0 });
+    b.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0,
+        },
+    );
     b.add_vgm_command(WaitSamples(735));
     b.set_loop_index(0);
     b.add_vgm_command(EndOfData);
@@ -4356,5 +4400,8 @@ fn test_from_vgm_callback_stream_loop_and_fadeout() {
         assert!(iter_count < 100_000, "iterator did not terminate");
     }
 
-    assert!(*write_count.borrow() >= 1, "on_write callback should have been invoked");
+    assert!(
+        *write_count.borrow() >= 1,
+        "on_write callback should have been invoked"
+    );
 }
