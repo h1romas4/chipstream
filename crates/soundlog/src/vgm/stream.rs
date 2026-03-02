@@ -1143,7 +1143,6 @@ impl VgmStream {
     /// stream.set_loop_count(Some(2));
     /// stream.set_fadeout_samples(Some(44100)); // 1 second fadeout at 44.1kHz
     /// ```
-    /// Sets the fadeout grace period in samples (at 44.1 kHz).
     pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
         self.fadeout_samples = samples;
     }

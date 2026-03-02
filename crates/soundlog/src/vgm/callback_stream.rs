@@ -660,7 +660,7 @@ impl<'a> VgmCallbackStream<'a> {
 
     /// Sets the loop base value.
     ///
-    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_loop_base` for details.
+    /// Forwarded to the underlying `VgmStream`. See [`VgmStream::set_loop_base`] for details.
     pub fn set_loop_base(&mut self, value: i8) {
         self.stream.set_loop_base(value);
     }
@@ -672,7 +672,7 @@ impl<'a> VgmCallbackStream<'a> {
 
     /// Sets the loop modifier value.
     ///
-    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_loop_modifier` for details.
+    /// Forwarded to the underlying `VgmStream`. See [`VgmStream::set_loop_modifier`] for details.
     pub fn set_loop_modifier(&mut self, value: u8) {
         self.stream.set_loop_modifier(value);
     }
@@ -684,7 +684,7 @@ impl<'a> VgmCallbackStream<'a> {
 
     /// Sets the fadeout grace period in samples after loop end.
     ///
-    /// Forwarded to the underlying `VgmStream`. See `VgmStream::set_fadeout_samples` for details.
+    /// Forwarded to the underlying `VgmStream`. See [`VgmStream::set_fadeout_samples`] for details.
     pub fn set_fadeout_samples(&mut self, samples: Option<u64>) {
         self.stream.set_fadeout_samples(samples);
     }
