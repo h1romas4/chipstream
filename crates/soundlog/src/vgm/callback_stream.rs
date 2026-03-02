@@ -403,7 +403,7 @@ struct StateTrackers {
     sega_pcm: [Option<SegaPcmState>; 2],
     rf5c68: [Option<Rf5c68State>; 2],
     rf5c164: [Option<Rf5c164State>; 2],
-    pwm: [Option<crate::chip::state::PwmState>; 2],
+    pwm: [Option<PwmState>; 2],
     multi_pcm: [Option<MultiPcmState>; 2],
     upd7759: [Option<Upd7759State>; 2],
     okim6258: [Option<Okim6258State>; 2],
@@ -901,8 +901,7 @@ impl<'a> VgmCallbackStream<'a> {
                 }
                 chip::Chip::Pwm => {
                     // Initialize PWM state tracker
-                    self.state_trackers.pwm[*instance as usize] =
-                        Some(crate::chip::state::PwmState::new(*clock_hz));
+                    self.state_trackers.pwm[*instance as usize] = Some(PwmState::new(*clock_hz));
                 }
                 chip::Chip::GameGearPsg => {
                     // Initialize Game Gear PSG state tracker

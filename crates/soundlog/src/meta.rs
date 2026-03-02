@@ -190,7 +190,7 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
 /// a `crate::binutil::ParseError` on failure. Use `Gd3::try_from(bytes)` or
 /// call `parse_gd3(bytes)` directly to handle parse errors explicitly.
 impl std::convert::TryFrom<&[u8]> for Gd3 {
-    type Error = crate::binutil::ParseError;
+    type Error = ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         parse_gd3(bytes)

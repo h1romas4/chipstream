@@ -23,6 +23,7 @@ use crate::chip;
 use crate::meta::Gd3;
 use crate::vgm::command::Instance;
 use crate::vgm::command::VgmCommand;
+use crate::vgm::detail;
 use crate::vgm::header::{VgmExtraHeader, VgmHeader};
 use crate::vgm::parser;
 use std::convert::TryFrom;
@@ -205,13 +206,11 @@ impl VgmBuilder {
     /// ```
     pub fn attach_data_block<D>(&mut self, data_block_detail: D) -> &mut Self
     where
-        D: Into<crate::vgm::detail::DataBlockType>,
+        D: Into<detail::DataBlockType>,
     {
-        let dbt: crate::vgm::detail::DataBlockType = data_block_detail.into();
-        let block = crate::vgm::detail::build_data_block(&dbt);
-        self.document
-            .commands
-            .push(crate::vgm::command::VgmCommand::DataBlock(block));
+        let dbt: detail::DataBlockType = data_block_detail.into();
+        let block = detail::build_data_block(&dbt);
+        self.document.commands.push(VgmCommand::DataBlock(block));
         self
     }
 

@@ -23,7 +23,7 @@ use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
 };
-use crate::vgm::header::ChipId;
+use crate::vgm::header::{ChipId, VgmHeader};
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
 
@@ -223,13 +223,12 @@ impl StreamSnapshot {
         let (is_reverse, _) = self.length_mode.flags();
         match self.length_mode {
             LengthMode::CommandCount { .. } => self.remaining_commands == Some(0),
-            LengthMode::Milliseconds { .. } => {
-                self.stream_end_sample
-                    .map_or(false, |end| current_sample >= end)
-            }
+            LengthMode::Milliseconds { .. } => self
+                .stream_end_sample
+                .is_some_and(|end| current_sample >= end),
             LengthMode::PlayUntilEnd { .. } if !is_reverse => self
                 .block_end_pos
-                .map_or(false, |end| self.current_data_pos >= end),
+                .is_some_and(|end| self.current_data_pos >= end),
             _ => false,
         }
     }
@@ -245,8 +244,7 @@ impl StreamSnapshot {
         match self.length_mode {
             LengthMode::CommandCount { .. } => {
                 if self.data_length > 0 {
-                    self.start_data_pos
-                        + (self.data_length as usize - 1) * self.step_size as usize
+                    self.start_data_pos + (self.data_length as usize - 1) * self.step_size as usize
                 } else {
                     self.start_data_pos
                 }
@@ -752,10 +750,7 @@ impl VgmStream {
     ///     }
     /// }
     /// ```
-    pub fn from_vgm(
-        data: impl Into<Vec<u8>>,
-    ) -> Result<Self, ParseError> {
-        use crate::vgm::header::VgmHeader;
+    pub fn from_vgm(data: impl Into<Vec<u8>>) -> Result<Self, ParseError> {
         let data = data.into();
         let header = VgmHeader::from_bytes(&data)?;
 
@@ -804,7 +799,6 @@ impl VgmStream {
         }
 
         let data_offset = if doc.header.data_offset == 0 {
-            use crate::vgm::header::VgmHeader;
             (VgmHeader::fallback_header_size_for_version(doc.header.version) - 0x34) as u32
         } else {
             doc.header.data_offset
@@ -859,7 +853,8 @@ impl VgmStream {
                 "push_chunk() cannot be called on a VgmStream created from a document".into(),
             )),
             VgmStreamSource::File { .. } => Err(ParseError::Other(
-                "push_chunk() cannot be called on a VgmStream created from VgmStream::from_vgm".into(),
+                "push_chunk() cannot be called on a VgmStream created from VgmStream::from_vgm"
+                    .into(),
             )),
         }
     }
@@ -952,7 +947,9 @@ impl VgmStream {
                     Ok(None)
                 }
             }
-            VgmStreamSource::File { data, current_pos, .. } => {
+            VgmStreamSource::File {
+                data, current_pos, ..
+            } => {
                 if *current_pos >= data.len() {
                     return Ok(None);
                 }
@@ -1237,9 +1234,9 @@ impl VgmStream {
         match &self.source {
             VgmStreamSource::Buffer { buffer, .. } => buffer.len(),
             VgmStreamSource::Document { .. } => 0,
-            VgmStreamSource::File { data, current_pos, .. } => {
-                data.len().saturating_sub(*current_pos)
-            }
+            VgmStreamSource::File {
+                data, current_pos, ..
+            } => data.len().saturating_sub(*current_pos),
         }
     }
 
@@ -1688,7 +1685,12 @@ impl VgmStream {
         // Pre-read values needed to compute the initial position before mutably borrowing state.
         let (data_bank_id, step_size, step_base, frequency_hz) = {
             let state = self.stream_states.get(&start.stream_id).unwrap();
-            (state.data_bank_id, state.step_size, state.step_base, state.frequency_hz)
+            (
+                state.data_bank_id,
+                state.step_size,
+                state.step_base,
+                state.frequency_hz,
+            )
         };
         let data_bank_end = self
             .uncompressed_streams
@@ -1853,7 +1855,8 @@ impl VgmStream {
     /// handled via [`StreamSnapshot`] helper methods.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
         self.stream_id_scratch.clear();
-        self.stream_id_scratch.extend(self.stream_states.keys().copied());
+        self.stream_id_scratch
+            .extend(self.stream_states.keys().copied());
 
         for i in 0..self.stream_id_scratch.len() {
             let stream_id = self.stream_id_scratch[i];
@@ -1899,10 +1902,10 @@ impl VgmStream {
             }
 
             // Decrement CommandCount
-            if matches!(snap.length_mode, LengthMode::CommandCount { .. }) {
-                if let Some(ref mut r) = snap.remaining_commands {
-                    *r = r.saturating_sub(1);
-                }
+            if matches!(snap.length_mode, LengthMode::CommandCount { .. })
+                && let Some(ref mut r) = snap.remaining_commands
+            {
+                *r = r.saturating_sub(1);
             }
 
             // Read byte and emit write

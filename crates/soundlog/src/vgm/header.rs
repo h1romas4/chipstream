@@ -15,9 +15,10 @@
 //! - The module exposes `VGM_MAX_HEADER_SIZE` constant and preserves the
 //!   writer/reader convention where `data_offset == 0` falls back to the
 //!   legacy header size.
-use crate::binutil::{write_slice, write_u8, write_u16, write_u32};
+use crate::binutil::{ParseError, write_slice, write_u8, write_u16, write_u32};
 use crate::chip;
 use crate::vgm::command::Instance;
+use crate::vgm::parser::parse_vgm_header;
 use std::convert::TryFrom;
 
 // For unknown/future versions, use the maximum header size
@@ -1219,7 +1220,11 @@ impl VgmHeader {
             self.reserved_7d,
         );
         // Loop Base (0x7E)
-        write_u8(&mut buf, VgmHeaderField::LoopBase.offset(), self.loop_base as u8);
+        write_u8(
+            &mut buf,
+            VgmHeaderField::LoopBase.offset(),
+            self.loop_base as u8,
+        );
         // Loop Modifier (0x7F)
         write_u8(
             &mut buf,
@@ -1674,14 +1679,14 @@ impl VgmHeader {
     /// let short_data = vec![0u8; 16];
     /// assert!(VgmHeader::from_bytes(&short_data).is_err());
     /// ```
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::binutil::ParseError> {
-        crate::vgm::parser::parse_vgm_header(bytes).map(|(h, _)| h)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        parse_vgm_header(bytes).map(|(h, _)| h)
     }
 }
 
 /// Attempt to convert a raw VGM byte slice into a `VgmHeader`.
 impl TryFrom<&[u8]> for VgmHeader {
-    type Error = crate::binutil::ParseError;
+    type Error = ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         VgmHeader::from_bytes(bytes)

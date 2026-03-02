@@ -40,8 +40,8 @@ use crate::vgm::command::{
 };
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::{
-    Ay8910ChipType, Ay8910Flags, C140ChipType, K054539Flags, Okim6258Flags, Sn76489Flags,
-    VgmExtraHeader, VgmHeader, VgmHeaderField, Ym2203AyFlags, Ym2608AyFlags,
+    Ay8910ChipType, Ay8910Flags, C140ChipType, ChipClock, ChipVolume, K054539Flags, Okim6258Flags,
+    Sn76489Flags, VgmExtraHeader, VgmHeader, VgmHeaderField, Ym2203AyFlags, Ym2608AyFlags,
 };
 
 /// Parse a complete VGM file from a byte slice into a `VgmDocument`.
@@ -675,9 +675,7 @@ pub(crate) fn parse_vgm_extra_header(
             let chip_id = read_u8_at(bytes, cur)?;
             let clock = read_u32_le_at(bytes, cur + 1)?;
             // Create a ChipClock preserving the raw chip-id byte and decoded instance.
-            extra
-                .chip_clocks
-                .push(crate::vgm::header::ChipClock::from_raw(chip_id, clock));
+            extra.chip_clocks.push(ChipClock::from_raw(chip_id, clock));
             cur = cur.wrapping_add(5);
         }
     }
@@ -734,9 +732,7 @@ pub(crate) fn parse_vgm_extra_header(
             // Create a ChipVolume preserving raw bytes and decoded instance.
             extra
                 .chip_volumes
-                .push(crate::vgm::header::ChipVolume::from_raw(
-                    chip_id, flags, volume,
-                ));
+                .push(ChipVolume::from_raw(chip_id, flags, volume));
             cur = cur.wrapping_add(4);
         }
     }
