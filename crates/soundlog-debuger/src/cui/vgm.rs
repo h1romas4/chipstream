@@ -480,8 +480,8 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     // Get command offsets and lengths
     let offsets_and_lengths = doc.command_offsets_and_lengths();
 
-    // Print commands with offsets and lengths
-    println!("{:<8} {:<8} {:<80} Length", "Index", "Offset", "Command");
+    // Print commands with offsets and lengths (Length moved after Offset)
+    println!("{:<8} {:<10} {:<8} {:<80}", "Index", "Offset", "Length", "Command");
     println!("{}", "-".repeat(120));
 
     for (index, (cmd, (offset, length))) in doc
@@ -491,7 +491,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
         .enumerate()
     {
         let cmd_str = format_command_brief(cmd);
-        println!("{:<8} 0x{:06X} {:<80} {}", index, offset, cmd_str, length);
+        println!("{:<8} 0x{:06X} {:<8} {:<80}", index, offset, length, cmd_str);
     }
 
     Ok(())
