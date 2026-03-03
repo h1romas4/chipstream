@@ -6,6 +6,7 @@
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.
   - [ ] Fix: YMF271(OPX) state tracking.
+  - [ ] Fix: Unify the state of ES5506.
 - [ ] Semantic versioning.
 - [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
 
