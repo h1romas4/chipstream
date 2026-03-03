@@ -47,8 +47,8 @@ let instances = header.chip_instances();
 
 // Create a callback stream directly from the raw bytes
 let mut callback_stream = VgmCallbackStream::from_vgm(vgm_bytes).expect("valid VGM");
-// play once; omit for infinite loop
-callback_stream.set_loop_count(Some(1));
+// play twice; omit for infinite loop
+callback_stream.set_loop_count(Some(2));
 // 2-second fadeout at 44.1 kHz after final loop
 callback_stream.set_fadeout_samples(Some(44100 * 2));
 // Enable state tracking for every chip registered in the VGM header.
@@ -443,12 +443,14 @@ for result in callback_stream {
 
 - VgmDocument is a data representation only: When you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.
 - VgmStream is intended to act as a player-like iterator. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. Its `set_loop_count()` API controls how many playthroughs are performed:
-  - `set_loop_count(Some(n))` — limit playback to `n` playthroughs (for example, `Some(1)` means play once and stop; `Some(2)` means play one full run and then one loop iteration).
+  - `set_loop_count(Some(n))` — limit playback to `n` playthroughs (for example, `Some(1)` means play once and stop; `Some(2)` means play one full run and then one loop iteration). Passing `Some(0)` is treated the same as `Some(1)` (It's a bit strange, but both mean "play once and stop").
   - `set_loop_count(None)` — infinite looping (the stream will jump back to the loop point on EndOfData and continue indefinitely).
+- `VgmStream` prioritizes writing to the sound chip registers and performs loop processing based on `EndOfData` without checking the `loop_samples` field in the `VgmHeader`. It is generally considered to perform the same operation, but depending on the data, it may behave differently.
 - When the stream reaches an `EndOfData` command it handles looping and end-of-stream semantics internally. If a finite loop count is configured and the limit is reached the stream will stop; if an infinite loop is configured it will jump to the loop point and continue.
 - Bytes-mode (raw chunk input via `push_chunk`) does not implicitly rewind or re-feed earlier bytes. The parser maintains a small internal buffer and parses incrementally; it does not replay previously-consumed bytes for you. If you feed the stream using `push_chunk()` and want to loop playback, you must re-supply the bytes starting at the loop point yourself (reset your chunk source to that offset and call `push_chunk` again). See the byte-feeding example above for a usage pattern.
 - `VgmCallbackStream` wraps `VgmStream` and invokes callbacks for register writes and other commands as they are emitted. Note that `VgmStream` consumes the `EndOfData` command internally while implementing loop behavior; as a result the `on_end_of_data` callback registered on `VgmCallbackStream` will not be invoked in normal operation. To detect playback termination observe the iterator reaching `EndOfStream` (or the iterator returning `None` in the callback wrapper).
 - Fadeout support: configure `set_fadeout_samples(Some(n))` on the stream to allow the stream to continue emitting commands for `n` samples after the final loop end, which can be used to implement graceful fadeouts. When fadeout is active the stream records the loop end sample and will keep yielding commands (or generated waits) until the fadeout period elapses, after which `EndOfStream` is returned.
+  - Writing to the sound chip's registers may cause the key-on state to persist. Therefore, either gradually reduce the external output level to zero within the fade-out sample time, or write to the sound chip's registers to lower the total level.
 
 ## Chip State Tracking (WIP)
 

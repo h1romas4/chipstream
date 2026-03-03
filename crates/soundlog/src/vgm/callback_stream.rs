@@ -636,24 +636,9 @@ impl<'a> VgmCallbackStream<'a> {
         &mut self.stream
     }
 
-    /// Set the loop count for the underlying stream.
+    /// Sets the loop count value.
     ///
-    /// This controls how many times the stream will loop when it reaches the loop point.
-    /// `None` means infinite loops, `Some(n)` means loop n times.
-    ///
-    /// # Arguments
-    ///
-    /// * `count` - The number of loops, or `None` for infinite
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use soundlog::vgm::VgmCallbackStream;
-    /// # let mut doc = soundlog::VgmDocument::default();
-    /// # doc.commands.push(soundlog::vgm::command::VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
-    /// let mut callback_stream = VgmCallbackStream::from_document(doc);
-    /// callback_stream.set_loop_count(Some(1)); // Play once, no loops
-    /// ```
+    /// Forwarded to the underlying `VgmStream`. See [`VgmStream::set_loop_count`] for details.
     pub fn set_loop_count(&mut self, count: Option<u32>) {
         self.stream.set_loop_count(count);
     }

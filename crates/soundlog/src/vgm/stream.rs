@@ -1072,6 +1072,16 @@ impl VgmStream {
     /// # Arguments
     /// * `count` - Maximum number of loops to process (None for infinite, Some(n) to limit)
     ///
+    /// # Normalization
+    ///
+    /// Passing `Some(0)` is treated the same as `Some(1)`. Historically callers
+    /// have used `Some(0)` to indicate "play once and stop"; to avoid surprising
+    /// behavior we normalise zero to one when storing the value.
+    ///
+    /// Examples:
+    /// - `set_loop_count(Some(1))` — play once and stop at the first `EndOfData`.
+    /// - `set_loop_count(Some(0))` — equivalent to `Some(1)` and also stops at the first `EndOfData`.
+    ///
     /// # Examples
     /// ```
     /// use soundlog::vgm::VgmStream;
@@ -1080,7 +1090,12 @@ impl VgmStream {
     /// stream.set_loop_count(Some(2)); // Play intro + 1 loop
     /// ```
     pub fn set_loop_count(&mut self, count: Option<u32>) {
-        self.loop_count = count;
+        // Normalise `Some(0)` to `Some(1)` so callers that historically used
+        // zero to mean "play once" behave as expected.
+        self.loop_count = match count {
+            Some(0) => Some(1),
+            _ => count,
+        };
     }
 
     /// Gets the current loop iteration count.

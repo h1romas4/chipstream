@@ -3,7 +3,12 @@
 ## Unreleased
 
 - [ ] Add: Playback support for concatenated VGM files. (Since chip initialization (header re-read) is actually required, we will limit ourselves to providing an example.)
-- [ ] Internal: `VgmDocument`: reduction in memory usage.
+- [ ] Internal: `VgmDocument`: Reduction in memory usage.
+- [ ] Semantic versioning.
+
+## v0.9.2
+
+- [x] Change: `set_loop_count`: Normalise `Some(0)` to `Some(1)` and documented.
 
 ## v0.9.1
 
