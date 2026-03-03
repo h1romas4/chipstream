@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization (header re-read) is actually required, we will limit ourselves to providing an example.)
-- [ ] Internal: `VgmDocument`: Reduction in memory usage.
+- [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
+- [ ] Chip state
+  - [ ] Fix: SegaPCM secondly address mapping.
+  - [ ] Fix: YMF271(OPX) state tracking.
 - [ ] Semantic versioning.
+- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
 
 ## v0.9.2
 
