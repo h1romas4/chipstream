@@ -23,6 +23,8 @@ use eframe::egui;
 
 use soundlog::VgmDocument;
 use soundlog::vgm::VgmHeaderField;
+use soundlog::vgm::detail::parse_data_block;
+use soundlog::vgm::command::VgmCommand;
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -300,7 +302,7 @@ impl UiState {
         if u8::from(doc.header.sn76489_flags) != 0 {
             header_children.push(AstNode::new(
                 "SN76489 Flags",
-                format!("0x{:02X}", u8::from(doc.header.sn76489_flags)),
+                format!("{:?}", doc.header.sn76489_flags),
             ));
         }
         if doc.header.ym2612_clock != 0 {
@@ -417,10 +419,28 @@ impl UiState {
                 format!("{}", doc.header.ay8910_clock),
             ));
         }
+        if u8::from(doc.header.ay_chip_type) != 0 {
+            header_children.push(AstNode::new(
+                "AY8910 chipType",
+                format!("{:?}", doc.header.ay_chip_type),
+            ));
+        }
         if u8::from(doc.header.ay8910_flags) != 0 {
             header_children.push(AstNode::new(
                 "Ay8910Flags",
-                format!("0x{:02X}", u8::from(doc.header.ay8910_flags)),
+                format!("{:?}", doc.header.ay8910_flags),
+            ));
+        }
+        if u8::from(doc.header.ym2203_ay8910_flags) != 0 {
+            header_children.push(AstNode::new(
+                "Ym2203Ay8910Flags",
+                format!("{:?}", doc.header.ym2203_ay8910_flags),
+            ));
+        }
+        if u8::from(doc.header.ym2608_ay8910_flags) != 0 {
+            header_children.push(AstNode::new(
+                "Ym2608Ay8910Flags",
+                format!("{:?}", doc.header.ym2608_ay8910_flags),
             ));
         }
         if doc.header.gb_dmg_clock != 0 {
@@ -456,7 +476,7 @@ impl UiState {
         if u8::from(doc.header.okim6258_flags) != 0 {
             header_children.push(AstNode::new(
                 "OKIM6258 flags",
-                format!("0x{:02X}", u8::from(doc.header.okim6258_flags)),
+                format!("{:?}", doc.header.okim6258_flags),
             ));
         }
         if doc.header.okim6295_clock != 0 {
@@ -477,6 +497,12 @@ impl UiState {
                 format!("{}", doc.header.k054539_clock),
             ));
         }
+        if u8::from(doc.header.k054539_flags) != 0 {
+            header_children.push(AstNode::new(
+                "K054539 flags",
+                format!("{:?}", doc.header.k054539_flags),
+            ));
+        }
         if doc.header.huc6280_clock != 0 {
             header_children.push(AstNode::new(
                 "HuC6280 clock",
@@ -487,6 +513,12 @@ impl UiState {
             header_children.push(AstNode::new(
                 "C140 clock",
                 format!("{}", doc.header.c140_clock),
+            ));
+        }
+        if u8::from(doc.header.c140_chip_type) != 0 {
+            header_children.push(AstNode::new(
+                "C140 chipType",
+                format!("{:?}", doc.header.c140_chip_type),
             ));
         }
         if doc.header.k053260_clock != 0 {
@@ -654,7 +686,9 @@ impl UiState {
             ("OKIM6295 clock", VgmHeaderField::Okim6295Clock),
             ("K051649 clock", VgmHeaderField::K051649Clock),
             ("K054539 clock", VgmHeaderField::K054539Clock),
+            ("K054539 flags", VgmHeaderField::K054539Flags),
             ("HuC6280 clock", VgmHeaderField::Huc6280Clock),
+            ("C140 chipType", VgmHeaderField::C140ChipType),
             ("C140 clock", VgmHeaderField::C140Clock),
             ("K053260 clock", VgmHeaderField::K053260Clock),
             ("Pokey clock", VgmHeaderField::PokeyClock),
@@ -678,9 +712,10 @@ impl UiState {
         ];
 
         for node in &mut header_children {
-            if let Some((_, hf)) = mappings.iter().find(|(title, _)| *title == node.title)
-                && let Some((start, len)) =
-                    hf.byte_range(doc.header.version, doc.header.data_offset)
+            if let Some((_, hf)) = mappings
+                .iter()
+                .find(|(title, _)| title.eq_ignore_ascii_case(&node.title))
+                && let Some((start, len)) = hf.byte_range(doc.header.version, doc.header.data_offset)
             {
                 node.byte_range = Some((start, len));
             }
@@ -1015,8 +1050,20 @@ impl UiState {
                     // to the returned AstNodes so the UI can highlight the exact bytes.
                     let abs_ranges = doc.sourcemap();
                     for (abs_i, cmd) in doc.iter().enumerate().take(end).skip(absolute_start) {
-                        let title = format!("{}: {:?}", abs_i, cmd);
-                        let detail = format!("{:?}", cmd);
+                        // Prefer showing a parsed DataBlock summary both in the
+                        // title and detail when available so the left-pane doesn't
+                        // show the raw `DataBlock(...)` debug blob.
+                        let (title, detail) = match cmd {
+                            VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
+                                Ok(dbt) => (format!("{}: {:?}", abs_i, dbt), format!("{:?}", dbt)),
+                                Err((_orig, err)) => (
+                                    format!("{}: DataBlock(parse error)", abs_i),
+                                    format!("<DataBlock parse error: {:?}>", err),
+                                ),
+                            },
+                            _ => (format!("{}: {:?}", abs_i, cmd), format!("{:?}", cmd)),
+                        };
+
                         if let Some((off, len)) = abs_ranges.get(abs_i).copied() {
                             nodes.push(AstNode::new(title, detail).with_byte_range(off, len));
                         } else {
@@ -1299,6 +1346,10 @@ fn draw_ast_node(ui: &mut egui::Ui, node: &AstNode, path: Vec<usize>, state: &mu
                 if let Some((cstart, clen)) = node.byte_range {
                     let cend = cstart.saturating_add(clen).saturating_sub(1);
                     state.hex_viewer.set_outline_ranges(vec![(cstart, cend)]);
+                    // Also show a reference marker and scroll to the child field
+                    // so the cursor appears at the child's address within the header.
+                    state.hex_viewer.set_reference_markers(vec![cstart]);
+                    state.hex_viewer.set_pending_scroll_to(cstart, cend);
                 } else {
                     state.hex_viewer.clear_outline_ranges();
                 }
@@ -1375,6 +1426,10 @@ fn draw_ast_node(ui: &mut egui::Ui, node: &AstNode, path: Vec<usize>, state: &mu
                 if let Some((cstart, clen)) = node.byte_range {
                     let cend = cstart.saturating_add(clen).saturating_sub(1);
                     state.hex_viewer.set_outline_ranges(vec![(cstart, cend)]);
+                    // Also move the reference marker and pending scroll to the child
+                    // so the cursor appears at the child's address within the header.
+                    state.hex_viewer.set_reference_markers(vec![cstart]);
+                    state.hex_viewer.set_pending_scroll_to(cstart, cend);
                 } else {
                     state.hex_viewer.clear_outline_ranges();
                 }
