@@ -23,7 +23,7 @@ use eframe::egui;
 
 use soundlog::VgmDocument;
 use soundlog::vgm::VgmHeaderField;
-use soundlog::vgm::detail::parse_data_block;
+use soundlog::vgm::detail::{parse_data_block, DataBlockType};
 use soundlog::vgm::command::VgmCommand;
 
 use std::collections::HashMap;
@@ -1055,8 +1055,18 @@ impl UiState {
                         // show the raw `DataBlock(...)` debug blob.
                         let (title, detail) = match cmd {
                             VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
-                                Ok(dbt) => (format!("{}: {:?}", abs_i, dbt), format!("{:?}", dbt)),
-                                Err((_orig, err)) => (
+                                Ok(dbt) => {
+                                    let inner_dbg = match dbt {
+                                        DataBlockType::UncompressedStream(s) => format!("{:?}", s),
+                                        DataBlockType::CompressedStream(c) => format!("{:?}", c),
+                                        DataBlockType::DecompressionTable(t) => format!("{:?}", t),
+                                        DataBlockType::RomRamDump(r) => format!("{:?}", r),
+                                        DataBlockType::RamWrite16(rw) => format!("{:?}", rw),
+                                        DataBlockType::RamWrite32(rw) => format!("{:?}", rw),
+                                    };
+                                    (format!("{}: {}", abs_i, inner_dbg), inner_dbg.clone())
+                                }
+                                Err((_, err)) => (
                                     format!("{}: DataBlock(parse error)", abs_i),
                                     format!("<DataBlock parse error: {:?}>", err),
                                 ),
