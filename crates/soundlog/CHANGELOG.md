@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- [ ] Add: Callback interface to control iterator playback start/stop.
+- [ ] Add: Callback interface to control iterator playback start/stop/resume.
 - [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.
