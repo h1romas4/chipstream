@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- [ ] Add: Callback interface to control iterator playback start/stop/resume.
+- [x] Add: `VgmStream::seek_to_sample(target)` — rewinds to the loop point and fast-forwards to the given sample position within the current loop iteration.
+- [x] Add: `VgmCallbackStream::seek_to_sample(target)` — same as `VgmStream::seek_to_sample` but also rebuilds chip state trackers correctly; user callbacks are suppressed during fast-forward.
 - [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.

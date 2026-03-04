@@ -4532,3 +4532,569 @@ fn test_from_vgm_callback_stream_loop_and_fadeout() {
         "on_write callback should have been invoked"
     );
 }
+
+// ---------------------------------------------------------------------------
+// seek_to_sample / reset_to_loop_point tests
+// ---------------------------------------------------------------------------
+
+/// Build a raw VGM bytes that have an *intro* section before the loop point.
+///
+/// Layout (measured from the loop-point sample-counter, which resets to 0):
+///   intro : WaitSamples(500)                ← before loop point
+///   ── loop point ──
+///   body  : WaitSamples(300) + WaitSamples(400) + EndOfData  (700 samples/loop)
+///
+/// This is the canonical test fixture for "loop_offset != start of command stream".
+fn create_intro_plus_loop_vgm() -> Vec<u8> {
+    let mut b = VgmBuilder::new();
+    b.add_vgm_command(WaitSamples(500)); // intro (command index 0)
+    b.set_loop_index(1);                 // loop point → command index 1
+    b.add_vgm_command(WaitSamples(300)); // loop body: 300 samples
+    b.add_vgm_command(WaitSamples(400)); // loop body: 400 samples
+    b.add_vgm_command(EndOfData);
+    b.finalize().into()
+}
+
+/// Collect total wait-sample count from a `VgmStream` until EndOfStream or NeedsMoreData.
+fn collect_total_wait_samples(stream: &mut VgmStream) -> u64 {
+    let mut total: u64 = 0;
+    loop {
+        match stream.next().unwrap().unwrap() {
+            StreamResult::Command(VgmCommand::WaitSamples(w)) => total += w.0 as u64,
+            StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+            _ => {}
+        }
+    }
+    total
+}
+
+// --- VgmStream::reset_to_loop_point ---
+
+#[test]
+fn test_reset_to_loop_point_from_document() {
+    // seek_to_sample(0) on a from_document stream should succeed and position
+    // the cursor at the loop point with current_sample reset to 0.
+    let raw = create_intro_plus_loop_vgm();
+    let doc = soundlog::VgmDocument::try_from(raw.as_slice()).expect("parse doc");
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(1));
+
+    // Partially advance into the intro.
+    match stream.next().unwrap().unwrap() {
+        StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+            assert_eq!(w.0, 500, "first command should be the intro wait");
+        }
+        other => panic!("unexpected: {:?}", other),
+    }
+    assert_eq!(stream.current_sample(), 500);
+
+    // seek_to_sample(0) must bring us back to the loop point (not the start of the file).
+    stream.seek_to_sample(0).expect("seek_to_sample(0) failed");
+    assert_eq!(
+        stream.current_sample(),
+        0,
+        "sample counter must be 0 after seek_to_sample(0)"
+    );
+
+    // The first command after seek must be the first loop-body command.
+    match stream.next().unwrap().unwrap() {
+        StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+            assert_eq!(
+                w.0, 300,
+                "first command after seek_to_sample(0) must be the first loop-body command"
+            );
+        }
+        other => panic!("unexpected after seek: {:?}", other),
+    }
+}
+
+#[test]
+fn test_reset_to_loop_point_from_vgm() {
+    // Same as above but using VgmStream::from_vgm.
+    let raw = create_intro_plus_loop_vgm();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    // Consume the intro wait.
+    let _ = stream.next();
+    assert_eq!(stream.current_sample(), 500);
+
+    stream.seek_to_sample(0).expect("seek_to_sample(0) failed");
+    assert_eq!(stream.current_sample(), 0);
+
+    match stream.next().unwrap().unwrap() {
+        StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+            assert_eq!(w.0, 300, "must start at loop-body after seek_to_sample(0)");
+        }
+        other => panic!("unexpected: {:?}", other),
+    }
+}
+
+#[test]
+fn test_reset_to_loop_point_push_chunk_is_unsupported() {
+    // Buffer-backed (push_chunk) streams cannot seek; seek_to_sample(0) must return Err.
+    let mut stream = VgmStream::new();
+    stream.set_loop_count(Some(1));
+    assert!(
+        stream.seek_to_sample(0).is_err(),
+        "seek_to_sample(0) on a push_chunk stream must return Err"
+    );
+}
+
+// --- VgmStream::seek_to_sample ---
+
+#[test]
+fn test_seek_to_sample_from_document_basic() {
+    // Seek to a target that falls midway through the first loop-body wait.
+    let raw = create_intro_plus_loop_vgm();
+    let doc = soundlog::VgmDocument::try_from(raw.as_slice()).expect("parse doc");
+    let mut stream = VgmStream::from_document(doc);
+    stream.set_loop_count(Some(1));
+
+    // Target 150 is within the first loop-body wait (0..300).  The seek consumes
+    // that wait in one step, so current_sample ends at 300.
+    stream.seek_to_sample(150).expect("seek failed");
+    assert!(
+        stream.current_sample() >= 150,
+        "current_sample ({}) must be >= target 150",
+        stream.current_sample()
+    );
+}
+
+#[test]
+fn test_seek_to_sample_from_vgm_basic() {
+    let raw = create_intro_plus_loop_vgm();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    stream.seek_to_sample(150).expect("seek failed");
+    assert!(stream.current_sample() >= 150);
+}
+
+#[test]
+fn test_seek_to_sample_push_chunk_is_unsupported() {
+    let mut stream = VgmStream::new();
+    assert!(
+        stream.seek_to_sample(0).is_err(),
+        "seek_to_sample on a push_chunk stream must return Err"
+    );
+}
+
+#[test]
+fn test_seek_to_sample_zero_is_at_loop_point() {
+    // seek_to_sample(0) is equivalent to reset_to_loop_point: the cursor moves to
+    // the loop point (no fast-forward) and current_sample stays at 0.
+    let raw = create_intro_plus_loop_vgm();
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    // Advance past the intro.
+    let _ = stream.next();
+    assert_eq!(stream.current_sample(), 500);
+
+    stream.seek_to_sample(0).expect("seek failed");
+    assert_eq!(
+        stream.current_sample(),
+        0,
+        "seek_to_sample(0) must yield current_sample 0"
+    );
+
+    // Next command must be the loop-body start, not the intro.
+    match stream.next().unwrap().unwrap() {
+        StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+            assert_eq!(
+                w.0, 300,
+                "after seek_to_sample(0) the first command must be the first loop-body command"
+            );
+        }
+        other => panic!("unexpected: {:?}", other),
+    }
+}
+
+/// KEY TEST — loop_offset is NOT at the start of the command stream.
+///
+/// Verifies that after `seek_to_sample`:
+///   1. The intro commands are skipped (not replayed).
+///   2. The sample counter is measured from 0 at the loop point.
+///   3. Playback continues correctly from the seeked position.
+#[test]
+fn test_seek_to_sample_loop_offset_not_at_data_start() {
+    // Build a VGM where the loop point is clearly NOT at the beginning.
+    // Intro: WaitSamples(1000) — one full command before the loop point.
+    // Loop body: WaitSamples(400) + WaitSamples(600) + EndOfData (1000 samples/loop).
+    let mut b = VgmBuilder::new();
+    b.add_vgm_command(WaitSamples(1000)); // intro (will produce a non-zero loop_offset)
+    b.set_loop_index(1);                  // loop point → command index 1
+    b.add_vgm_command(WaitSamples(400));  // loop body part A
+    b.add_vgm_command(WaitSamples(600));  // loop body part B
+    b.add_vgm_command(EndOfData);
+    let raw: Vec<u8> = b.finalize().into();
+
+    // Sanity: when played fully from the beginning with 1 loop, total wait =
+    // intro 1000 + body 400 + 600 = 2000.
+    {
+        let mut s = VgmStream::from_vgm(raw.clone()).expect("from_vgm");
+        s.set_loop_count(Some(1));
+        let total = collect_total_wait_samples(&mut s);
+        assert_eq!(
+            total, 2000,
+            "full drain without seek must sum to intro+body = 2000"
+        );
+    }
+
+    // After seek_to_sample(0), the intro is skipped and we replay only the loop body.
+    {
+        let mut s = VgmStream::from_vgm(raw.clone()).expect("from_vgm");
+        s.set_loop_count(Some(1));
+        s.seek_to_sample(0).expect("seek failed");
+        assert_eq!(
+            s.current_sample(),
+            0,
+            "current_sample must be 0 at loop point"
+        );
+
+        // Next command is the first loop-body command (400 samples), NOT the intro (1000).
+        match s.next().unwrap().unwrap() {
+            StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                assert_eq!(
+                    w.0, 400,
+                    "first command after seek(0) must be loop-body WaitSamples(400), not intro"
+                );
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    // After seek_to_sample(500), the first loop-body wait (400) is consumed, leaving
+    // us positioned before the second wait (600).  current_sample ends exactly at 400
+    // (since the 400-sample wait overshoots the target of 500 ... wait, 400 < 500).
+    // Actually: 400 < 500 so seek consumes 400 and then 600 → lands at 1000 >= 500.
+    // Verify: current_sample >= 500 and the entire body has been consumed (EndOfData next).
+    {
+        let mut s = VgmStream::from_vgm(raw.clone()).expect("from_vgm");
+        s.set_loop_count(Some(1));
+        s.seek_to_sample(500).expect("seek failed");
+        assert!(
+            s.current_sample() >= 500,
+            "current_sample ({}) must be >= 500",
+            s.current_sample()
+        );
+        // The intro (1000 samples) must NOT have been included in current_sample:
+        // the loop body is only 1000 samples total, so current_sample must be < 1000 + 1000.
+        // More precisely, since the loop body is 400+600=1000 samples and no intro was replayed,
+        // current_sample must be <= 1000.
+        assert!(
+            s.current_sample() <= 1000,
+            "current_sample ({}) must not include the intro 1000 samples",
+            s.current_sample()
+        );
+    }
+
+    // After seek_to_sample(200), only the partial first wait is consumed.
+    // WaitSamples(400) is the first command; since 400 >= 200 the seek stops there.
+    {
+        let mut s = VgmStream::from_vgm(raw.clone()).expect("from_vgm");
+        s.set_loop_count(Some(1));
+        s.seek_to_sample(200).expect("seek failed");
+        // current_sample is 400 (the first loop-body wait consumed atomically)
+        assert_eq!(
+            s.current_sample(),
+            400,
+            "after seek(200): WaitSamples(400) is consumed atomically → current_sample=400"
+        );
+    }
+}
+
+// --- VgmCallbackStream::seek_to_sample ---
+
+#[test]
+fn test_callback_stream_seek_suppresses_user_callbacks() {
+    use soundlog::chip::Ym2612Spec;
+
+    // Build VGM: loop body contains a YM2612 write followed by a long wait.
+    // The seek target is AFTER the chip write, so the write is consumed during
+    // fast-forward — but the user's on_write must NOT be invoked.
+    let mut b = VgmBuilder::new();
+    b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    b.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0,
+        },
+    );
+    b.add_vgm_command(WaitSamples(735));
+    b.set_loop_index(0); // loop starts at the very first command (no intro)
+    b.add_vgm_command(EndOfData);
+    let raw: Vec<u8> = b.finalize().into();
+
+    let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
+    cs.set_loop_count(Some(1));
+
+    let callback_count = Rc::new(RefCell::new(0u32));
+    let cc = callback_count.clone();
+    cs.on_write(move |_inst, _spec: Ym2612Spec, _sample, _events| {
+        *cc.borrow_mut() += 1;
+    });
+
+    // Seek past the only chip write.  Callback must NOT fire during seek.
+    cs.seek_to_sample(1).expect("seek failed");
+    assert_eq!(
+        *callback_count.borrow(),
+        0,
+        "on_write must NOT fire during seek_to_sample"
+    );
+
+    // After seek, the normal iterator must still work and eventually terminate.
+    let mut iterated = 0u32;
+    for _result in &mut cs {
+        iterated += 1;
+        assert!(iterated < 10_000, "iterator did not terminate");
+    }
+}
+
+#[test]
+fn test_callback_stream_seek_maintains_chip_state() {
+    use soundlog::chip::Ym2612Spec;
+    use soundlog::chip::state::Ym2612State;
+    use soundlog::chip::event::StateEvent;
+
+    // Build VGM whose loop body contains a key-on write that produces a
+    // StateEvent::KeyOn.  After seek_to_sample(1) the state tracker must have
+    // processed the write (so it fires KeyOn on the *next* matching key-on write
+    // after the seek), and the user callback must not have fired during seek.
+    //
+    // Layout:
+    //   loop body:
+    //     YM2612 reg 0x28 = 0xF6  (key-on ch2-slot4, produces KeyOn event)
+    //     WaitSamples(735)
+    //     EndOfData
+    let mut b = VgmBuilder::new();
+    b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    b.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF6, // key-on
+        },
+    );
+    b.add_vgm_command(WaitSamples(735));
+    b.set_loop_index(0);
+    b.add_vgm_command(EndOfData);
+    let raw: Vec<u8> = b.finalize().into();
+
+    let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
+    cs.set_loop_count(Some(1));
+    cs.track_state::<Ym2612State>(Instance::Primary, 7_670_454.0);
+
+    // Count how many times the on_write fires during seek (must be 0).
+    let seek_fires = Rc::new(RefCell::new(0u32));
+    let sf = seek_fires.clone();
+    cs.on_write(move |_inst, _spec: Ym2612Spec, _sample, _events| {
+        *sf.borrow_mut() += 1;
+    });
+
+    cs.seek_to_sample(1).expect("seek_to_sample failed");
+
+    assert_eq!(
+        *seek_fires.borrow(),
+        0,
+        "on_write must not fire during seek_to_sample"
+    );
+
+    // After seek, replacing the callback collects events from subsequent iteration.
+    // The chip-write (with sample still < 735) was consumed by the seek fast-forward,
+    // so no more chip writes happen in this pass → on_write fires 0 times after seek.
+    let post_fires = Rc::new(RefCell::new(0u32));
+    let pf = post_fires.clone();
+    let key_on_after = Rc::new(RefCell::new(false));
+    let ka = key_on_after.clone();
+    cs.on_write(move |_inst, _spec: Ym2612Spec, _sample, events| {
+        *pf.borrow_mut() += 1;
+        if events.is_some_and(|evs| evs.iter().any(|e| matches!(e, StateEvent::KeyOn { .. }))) {
+            *ka.borrow_mut() = true;
+        }
+    });
+
+    let mut iterated = 0u32;
+    for _result in &mut cs {
+        iterated += 1;
+        assert!(iterated < 10_000, "iterator did not terminate");
+    }
+    // chip write was consumed during seek; the remainder of the single loop pass
+    // contains only the wait and end-of-data, so post-seek on_write count is 0.
+    assert_eq!(
+        *post_fires.borrow(),
+        0,
+        "no chip writes remain after seek in this single-pass test"
+    );
+}
+
+#[test]
+fn test_callback_stream_seek_replays_correctly_from_loop_point_with_intro() {
+    // Verify that seek_to_sample on a VGM with an intro section correctly starts
+    // from the loop point, not from the beginning.
+    //
+    // Layout:
+    //   intro : WaitSamples(1000)           ← before loop point, sample NOT in loop counter
+    //   ── loop point ──
+    //   body  : WaitSamples(300) + WaitSamples(400) + EndOfData  (700 samples/loop)
+
+    let raw = create_intro_plus_loop_vgm();
+
+    // Count samples gathered AFTER seek_to_sample(0).  Must equal 700 (loop body only).
+    let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
+    cs.set_loop_count(Some(1));
+
+    cs.seek_to_sample(0).expect("seek failed");
+    assert_eq!(
+        cs.stream().current_sample(),
+        0,
+        "after seek(0) the sample counter must be 0 (loop-point relative)"
+    );
+
+    let mut samples_after_seek: u64 = 0;
+    for result in &mut cs {
+        if let Ok(StreamResult::Command(VgmCommand::WaitSamples(w))) = result {
+            samples_after_seek += w.0 as u64;
+        }
+    }
+    assert_eq!(
+        samples_after_seek, 700,
+        "after seek(0) only the 700-sample loop body should be played, not the 500-sample intro"
+    );
+}
+
+#[test]
+fn test_seek_to_sample_beyond_stream_end_reaches_eos() {
+    // Seeking past the total loop-body length should consume all commands and reach
+    // EndOfStream without panicking.
+    let raw = create_intro_plus_loop_vgm(); // body = 700 samples
+    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
+    stream.set_loop_count(Some(1));
+
+    // A target larger than the loop body (700 samples).
+    stream.seek_to_sample(99_999).expect("seek failed");
+    // Stream must be at end (next call should be EndOfStream or None).
+    let result = stream.next();
+    assert!(
+        matches!(
+            result,
+            Some(Ok(StreamResult::EndOfStream)) | None
+        ),
+        "after seeking past end, stream must report EndOfStream; got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_callback_stream_stop_at_sample_via_on_write_then_seek_to_resume() {
+    use soundlog::chip::Ym2612Spec;
+
+    // VGM layout (loop body = entire body, loop_index = 0):
+    //   Write A: reg=0x28 val=0xF0  ← at sample 0
+    //   WaitSamples(300)             → sample advances to 300
+    //   Write B: reg=0x28 val=0xF6  ← at sample 300
+    //   WaitSamples(400)             → sample advances to 700
+    //   EndOfData
+    let mut b = VgmBuilder::new();
+    b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    b.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF0,
+        },
+    );
+    b.add_vgm_command(WaitSamples(300));
+    b.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xF6,
+        },
+    );
+    b.add_vgm_command(WaitSamples(400));
+    b.set_loop_index(0); // entire body is the loop (no intro)
+    b.add_vgm_command(EndOfData);
+    let raw: Vec<u8> = b.finalize().into();
+
+    let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
+    cs.set_loop_count(Some(1));
+
+    // Phase 1: iterate; stop when on_write fires at sample > 100
+    // Write A fires at sample 0  (< 100 → continue)
+    // Write B fires at sample 300 (> 100 → stop and capture)
+    const STOP_THRESHOLD: usize = 100;
+    let stop_flag = Rc::new(RefCell::new(false));
+    let captured_sample: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    {
+        let sf = stop_flag.clone();
+        let cap = captured_sample.clone();
+        cs.on_write(move |_inst, _spec: Ym2612Spec, sample, _events| {
+            if sample > STOP_THRESHOLD && cap.borrow().is_none() {
+                *cap.borrow_mut() = Some(sample);
+                *sf.borrow_mut() = true;
+            }
+        });
+    }
+
+    for result in &mut cs {
+        if let Err(e) = result {
+            panic!("stream error in phase 1: {:?}", e);
+        }
+        if *stop_flag.borrow() {
+            break;
+        }
+    }
+
+    // Write B (sample 300) must have triggered the stop — 300 > 100.
+    let captured = captured_sample.borrow().expect("on_write must have fired with sample > 100");
+    assert_eq!(captured, 300, "Write B fires at sample 300 (> threshold 100)");
+
+    // Phase 2: seek to the captured sample position
+    // seek_to_sample rewinds to the loop point then fast-forwards to `captured`,
+    // consuming any prior commands silently (user callbacks suppressed).
+    cs.seek_to_sample(captured).expect("seek_to_sample(captured) failed");
+    assert!(
+        cs.stream().current_sample() >= captured,
+        "current_sample ({}) must be >= captured sample {} after seek",
+        cs.stream().current_sample(),
+        captured
+    );
+
+    // Phase 3: resume from the captured sample; install a new callback
+    let phase3_writes: Rc<RefCell<Vec<(u8, u8)>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let pw = phase3_writes.clone();
+        cs.on_write(move |_inst, spec: Ym2612Spec, _sample, _events| {
+            pw.borrow_mut().push((spec.register, spec.value));
+        });
+    }
+
+    let mut iter_count = 0u32;
+    for _result in &mut cs {
+        iter_count += 1;
+        assert!(iter_count < 10_000, "iterator did not terminate");
+    }
+
+    let writes = phase3_writes.borrow();
+    // Write A (val=0xF0, sample 0) must NOT appear: seek fast-forwarded past it.
+    assert!(
+        !writes.iter().any(|&(reg, val)| reg == 0x28 && val == 0xF0),
+        "Write A (val=0xF0) must not fire after seeking past sample {}; got {:?}",
+        captured,
+        *writes
+    );
+    // Write B (val=0xF6) MUST appear: seek landed at sample 300 and Write B is next.
+    assert!(
+        writes.iter().any(|&(reg, val)| reg == 0x28 && val == 0xF6),
+        "Write B (val=0xF6) must fire after resuming from seek at sample {}; got {:?}",
+        captured,
+        *writes
+    );
+}

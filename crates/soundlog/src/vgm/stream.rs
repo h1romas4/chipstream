@@ -1305,6 +1305,77 @@ impl VgmStream {
         // intentionally preserved across reset() calls.
     }
 
+    /// Resets the stream position to the loop point (or start if no loop point exists),
+    /// clearing per-loop state such as the sample counter, pending waits, and DAC stream
+    /// positions.
+    ///
+    /// Unlike [`reset`](Self::reset), this method preserves accumulated data blocks,
+    /// decompression tables, and all other pre-flight state that was established by
+    /// processing the intro section. Only the read cursor and loop-specific runtime
+    /// state are affected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Other`] if called on a stream created with
+    /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed
+    /// stream), since those streams have no random-accessible loop position.
+    pub(crate) fn reset_to_loop_point(&mut self) -> Result<(), ParseError> {
+        match &self.source {
+            VgmStreamSource::Buffer { .. } => {
+                return Err(ParseError::Other(
+                    "seek_to_sample() is not supported for streams created with push_chunk()"
+                        .into(),
+                ));
+            }
+            _ => {}
+        }
+        self.jump_to_loop_point();
+        self.reset_loop_state();
+        Ok(())
+    }
+
+    /// Moves the stream to the specified sample position within the current loop iteration.
+    ///
+    /// Because the sample counter resets to 0 at the start of each loop, `target` refers
+    /// to a position within one loop iteration (measured in 44100 Hz samples, starting
+    /// from 0 at the loop point).  The stream is rewound to the loop point and then
+    /// commands are consumed silently until the sample counter reaches `target`.
+    ///
+    /// All internal state (DAC streams, PCM offsets, stream states, etc.) is correctly
+    /// maintained during fast-forward, so the stream is fully ready for playback
+    /// immediately after this call returns.
+    ///
+    /// When used with [`VgmCallbackStream`](crate::vgm::VgmCallbackStream), prefer
+    /// calling [`VgmCallbackStream::seek_to_sample`](crate::vgm::VgmCallbackStream::seek_to_sample)
+    /// instead, which additionally keeps chip state trackers consistent.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` — Target sample position (0-based, resets to 0 at each loop iteration).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Other`] if called on a stream created with
+    /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk).
+    ///
+    /// # Notes
+    ///
+    /// If `target` exceeds the total sample length of the loop iteration, the stream
+    /// is positioned at `EndOfStream`.
+    pub fn seek_to_sample(&mut self, target: usize) -> Result<(), ParseError> {
+        self.reset_to_loop_point()?;
+        loop {
+            if self.current_sample >= target {
+                break;
+            }
+            match self.next_command()? {
+                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                StreamResult::Command(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Handles end of data command, potentially starting a new loop.
     fn handle_end_of_data(&mut self) {
         self.current_loops = self.current_loops.saturating_add(1);

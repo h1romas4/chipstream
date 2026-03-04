@@ -530,6 +530,9 @@ pub struct VgmCallbackStream<'a> {
     state_trackers: StateTrackers,
     /// Registered callbacks
     callbacks: Callbacks<'a>,
+    /// Stored tracker configurations so state can be re-initialized after a seek.
+    /// Each entry re-creates one tracker with its original instance and clock.
+    tracker_initializers: Vec<Box<dyn Fn(&mut StateTrackers) + 'static>>,
 }
 
 impl<'a> VgmCallbackStream<'a> {
@@ -553,6 +556,7 @@ impl<'a> VgmCallbackStream<'a> {
             stream,
             state_trackers: StateTrackers::default(),
             callbacks: Callbacks::default(),
+            tracker_initializers: Vec::new(),
         }
     }
 
@@ -698,6 +702,70 @@ impl<'a> VgmCallbackStream<'a> {
     /// ```
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         self.stream.push_chunk(chunk)
+    }
+
+    /// Moves the stream to the specified sample position within the current loop iteration.
+    ///
+    /// Since the sample counter resets to 0 at the start of each loop, `target` refers
+    /// to a position within one loop iteration (measured in 44100 Hz samples from 0).
+    ///
+    /// This method:
+    /// 1. Resets all registered chip state trackers to their freshly-configured state.
+    /// 2. Rewinds the underlying [`VgmStream`] to the loop point (or stream start if no
+    ///    loop point is defined).
+    /// 3. Fast-forwards to `target` by consuming commands and updating chip state trackers
+    ///    without firing any user-registered callbacks (`on_write`, `on_wait`, etc.).
+    ///
+    /// On return, [`current_sample`](Self::current_sample) is `>= target`.  It may be
+    /// slightly higher if the command that crosses the target boundary also advances the
+    /// sample counter past it in one step (e.g., a long `WaitSamples` command).
+    ///
+    /// # Arguments
+    ///
+    /// * `target` — Target sample position within the current loop iteration (0-based).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Other`] if the underlying stream was created with
+    /// [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed stream that has no
+    /// random-accessible position).
+    pub fn seek_to_sample(&mut self, target: usize) -> Result<(), ParseError> {
+        // Reset the inner stream cursor to the loop point.
+        // This also validates that the source is seekable (returns Err for Buffer).
+        self.stream.reset_to_loop_point()?;
+
+        // Rebuild state trackers from scratch so that fast-forward starts from a
+        // clean state rather than accumulating on top of the previous playback position.
+        self.state_trackers = StateTrackers::default();
+        for init_fn in &self.tracker_initializers {
+            init_fn(&mut self.state_trackers);
+        }
+
+        // Suppress all user-facing callbacks during fast-forward by swapping them out.
+        // State trackers (separate from callbacks) continue to receive every write.
+        let mut saved_callbacks = Callbacks::default();
+        std::mem::swap(&mut self.callbacks, &mut saved_callbacks);
+
+        let mut seek_result = Ok(());
+        loop {
+            if self.stream.current_sample() >= target {
+                break;
+            }
+            match Iterator::next(self) {
+                None => break,
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Err(e)) => {
+                    seek_result = Err(e);
+                    break;
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+
+        // Always restore callbacks, even on error.
+        std::mem::swap(&mut self.callbacks, &mut saved_callbacks);
+
+        seek_result
     }
 
     /// Enable state tracking for all chips in the given chip instances list.
@@ -983,6 +1051,9 @@ impl<'a> VgmCallbackStream<'a> {
         S: StateTracker,
     {
         S::init_tracker(&mut self.state_trackers, instance, clock);
+        // Store the initializer so seek_to_sample can rebuild the tracker after rewinding.
+        self.tracker_initializers
+            .push(Box::new(move |trackers| S::init_tracker(trackers, instance, clock)));
     }
 
     /// Register a callback for AY8910 stereo mask commands.
