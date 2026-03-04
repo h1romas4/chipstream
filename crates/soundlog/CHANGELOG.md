@@ -13,7 +13,7 @@
 ## v0.9.3
 
 - [x] Internal: Aggregation of VgmHeader Offset Position Calculation.
-- [ ] Fix: Setting an infinite loop using `set_loop_count`.
+- [x] Fix: Setting an infinite loop using `set_loop_count`.
 
 ## v0.9.2
 

@@ -121,6 +121,66 @@ fn test_stream_parser_with_loop_limit() {
 }
 
 #[test]
+fn test_stream_parser_none_infinite_loop() {
+    // This test verifies that setting loop_count to None enables infinite looping
+    // behavior for a stream created from a parsed VgmDocument (document-backed source).
+    //
+    // To keep the test bounded we break after observing ~10 command events and assert
+    // that we were able to observe that many commands (i.e., the stream continued
+    // looping rather than terminating immediately).
+    let vgm_data = create_test_vgm_with_loop();
+
+    // Parse into a VgmDocument and create a document-backed stream so the stream
+    // can internally jump back to the loop index on EndOfData.
+    let doc: VgmDocument = (&vgm_data[..]).try_into().expect("parse document");
+    let mut parser = VgmStream::from_document(doc);
+
+    // Enable infinite loop behavior
+    parser.set_loop_count(None);
+
+    // Feed is not needed for document-backed streams, but keep counter to break the test.
+    let mut command_count = 0usize;
+    let target = 10usize;
+
+    // Iterate and count commands, breaking when we have observed enough.
+    // Use a safety loop limit to avoid an actual infinite loop in pathological failures.
+    let mut iterations = 0usize;
+    let max_iterations = 1000usize;
+
+    loop {
+        iterations += 1;
+        assert!(
+            iterations < max_iterations,
+            "Exceeded max iterations while testing infinite loop behavior"
+        );
+
+        match parser.next().unwrap().unwrap() {
+            StreamResult::Command(_cmd) => {
+                command_count += 1;
+                if command_count >= target {
+                    break;
+                }
+            }
+            StreamResult::NeedsMoreData => {
+                // Document-backed streams should not request more data, but break if they do.
+                break;
+            }
+            StreamResult::EndOfStream => {
+                // If the stream ended, infinite loop behavior is not present.
+                break;
+            }
+        }
+    }
+
+    assert!(
+        command_count >= target,
+        "Expected to observe at least {} commands when loop_count is None (infinite loop); observed {}",
+        target,
+        command_count
+    );
+}
+
+#[test]
 fn test_stream_parser_incremental_data() {
     let vgm_data = create_test_vgm_with_loop();
     // Verify VGM header parses from the full document bytes before incremental feeding

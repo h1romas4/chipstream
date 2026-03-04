@@ -590,15 +590,18 @@ impl VgmStream {
     ///
     /// # Loop Handling
     ///
-    /// **Warning**: By default, the stream will loop infinitely if the VGM file
-    /// contains a loop point. For untrusted input or non-interactive playback,
-    /// always call `set_loop_count(Some(n))` to prevent infinite loops:
+    /// Default: the stream will play once (loop count = 1). To change loop behavior,
+    /// call `set_loop_count(Some(n))` to play a finite number of times, or
+    /// `set_loop_count(None)` to enable infinite looping. For untrusted input or
+    /// non-interactive playback, prefer a finite loop count to avoid accidental
+    /// infinite loops.
     ///
     /// ```
     /// use soundlog::vgm::VgmStream;
     ///
     /// let mut stream = VgmStream::new();
-    /// stream.set_loop_count(Some(2)); // Limit to 2 loop iterations
+    /// stream.set_loop_count(Some(2)); // Play twice
+    /// stream.set_loop_count(None); // Infinite loop
     /// ```
     ///
     /// # Examples
@@ -636,7 +639,7 @@ impl VgmStream {
             block_id_map: Vec::new(),
             block_sizes: HashMap::new(),
             decompression_tables: HashMap::new(),
-            loop_count: None,
+            loop_count: Some(1),
             current_loops: 0,
             encountered_end: false,
             loop_byte_offset: None,
@@ -1322,7 +1325,11 @@ impl VgmStream {
                 }
             }
         } else {
-            self.encountered_end = true;
+            // No finite loop limit configured -> infinite loop behavior.
+            // Jump to the configured loop point and reset loop-specific state
+            // so playback continues indefinitely.
+            self.jump_to_loop_point();
+            self.reset_loop_state();
         }
     }
 
