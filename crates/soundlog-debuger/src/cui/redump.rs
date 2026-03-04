@@ -8,30 +8,21 @@ use soundlog::VgmBuilder;
 use soundlog::VgmDocument;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 
-/// Redump VGM file with DAC streams expanded to chip writes.
-///
-/// This function parses the input VGM, processes it through VgmStream (which expands
-/// DAC Stream Control commands into actual chip writes), and writes the result to
-/// a new VGM file. This is useful for verifying that stream expansion works correctly.
-pub fn redump_vgm(
-    input_path: &Path,
-    output_path: &Path,
-    data: Vec<u8>,
-    loop_count: Option<u32>,
-    fadeout_samples: Option<usize>,
-    diag: bool,
-) -> Result<()> {
+// Redump VGM file with DAC streams expanded to chip writes.
+//
+// This function parses the input VGM, processes it through VgmStream (which expands
+// DAC Stream Control commands into actual chip writes), and writes the result to
+// a new VGM file. This is useful for verifying that stream expansion works correctly.
+pub fn redump_vgm(input_path: &Path, output_path: &Path, data: Vec<u8>, diag: bool) -> Result<()> {
     // Parse original VGM document
     let doc_orig: VgmDocument = (&data[..])
         .try_into()
         .with_context(|| format!("failed to parse input VGM: {}", input_path.display()))?;
 
     // Calculate the original loop command index from the header's loop_offset
-    let original_loop_index = if loop_count.is_none() {
-        doc_orig.loop_command_index()
-    } else {
-        None
-    };
+    // Always compute the original loop index so we preserve the original loop
+    // structure in the redumped output.
+    let original_loop_index = doc_orig.loop_command_index();
 
     // Determine loop offset in expanded output by processing intro commands
     let output_loop_index = if let Some(orig_loop_idx) = original_loop_index {
@@ -87,17 +78,8 @@ pub fn redump_vgm(
     // Create VgmStream from document for full expansion
     let mut stream = VgmStream::from_document(doc_orig.clone());
 
-    // Configure stream settings
-    // If loop_count is specified, use it to expand loops
-    // If not specified, set to 1 to preserve original loop structure (intro + one loop iteration)
-    if let Some(count) = loop_count {
-        stream.set_loop_count(Some(count));
-    } else {
-        stream.set_loop_count(Some(1));
-    }
-    if let Some(samples) = fadeout_samples {
-        stream.set_fadeout_samples(Some(samples));
-    }
+    // Redump after a single playback
+    stream.set_loop_count(Some(1));
 
     // Collect all commands from stream
     let mut commands = Vec::new();
@@ -164,13 +146,8 @@ pub fn redump_vgm(
     builder.set_version(doc_orig.header.version);
     builder.set_sample_rate(doc_orig.header.sample_rate);
 
-    // Finalize and serialize
+    // Finalize and serialize (calc loop_offser, loop_samples and total_samples)
     let mut doc_rebuilt = builder.finalize();
-
-    // If we're preserving loop, copy loop_samples from original
-    if loop_count.is_none() && doc_orig.header.loop_offset != 0 {
-        doc_rebuilt.header.loop_samples = doc_orig.header.loop_samples;
-    }
 
     // Copy chip-specific configuration fields from original header
     // (these are not copied by register_chip and contain important chip behavior flags,

@@ -61,6 +61,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     let gd3_offset = format!("0x{:08X}", header.gd3_offset);
     let extra_header_offset = format!("0x{:08X}", header.extra_header_offset);
     let loop_offset = format!("0x{:08X}", header.loop_offset);
+    let loop_samples = format!("{}", header.loop_samples);
     let loop_base = format!("{}", header.loop_base);
     let loop_modifier = format!("{}", header.loop_modifier);
     let sn76489_feedback = format!("{:?}", header.sn76489_feedback);
@@ -193,6 +194,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         ("extra_header_offset".into(), extra_header_offset),
         ("data_offset".into(), data_offset),
         ("loop_offset".into(), loop_offset),
+        ("loop_samples".into(), loop_samples),
         ("loop_base".into(), loop_base),
         ("loop_modifier".into(), loop_modifier),
         ("volume_modifier".into(), volume_modifier),

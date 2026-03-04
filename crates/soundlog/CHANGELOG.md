@@ -3,13 +3,17 @@
 ## Unreleased
 
 - [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
-- [X] Internal: Aggregation of VgmHeader Offset Position Calculation.
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.
   - [ ] Fix: YMF271(OPX) state tracking.
   - [ ] Fix: Unify the state of ES5506.
 - [ ] Semantic versioning.
 - [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
+
+## v0.9.3
+
+- [x] Internal: Aggregation of VgmHeader Offset Position Calculation.
+- [ ] Fix: Setting an infinite loop using `set_loop_count`.
 
 ## v0.9.2
 

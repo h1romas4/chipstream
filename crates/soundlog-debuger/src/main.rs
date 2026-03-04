@@ -38,14 +38,6 @@ enum Commands {
         #[arg(value_name = "OUTPUT")]
         output: PathBuf,
 
-        /// Loop count limit (if not specified, original loop settings are preserved)
-        #[arg(long)]
-        loop_count: Option<u32>,
-
-        /// Fadeout grace period in samples after loop end (default: 0)
-        #[arg(long, default_value_t = 0)]
-        fadeout_samples: usize,
-
         /// Print diagnostic output after redump (re-parse output and show diagnostics)
         #[arg(long)]
         diag: bool,
@@ -66,7 +58,8 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Loop count limit (None = use file default, which loops infinitely if a loop point exists)
+        /// Loop count limit (default: 1 when unspecified — play once).
+        /// Pass an explicit value to override (e.g. `--loop-count 2` to play twice).
         #[arg(long)]
         loop_count: Option<u32>,
 
@@ -158,22 +151,13 @@ fn main() {
         Some(Commands::Redump {
             input,
             output,
-            loop_count,
-            fadeout_samples,
             diag,
         }) => {
             // Load input bytes
             match load_bytes_from_path(&input) {
                 Ok(bytes) => {
-                    // Call redump_vgm (passes verbose through)
-                    match crate::cui::vgm::redump_vgm(
-                        &input,
-                        &output,
-                        bytes,
-                        loop_count,
-                        Some(fadeout_samples),
-                        diag,
-                    ) {
+                    // Call redump_vgm (preserves original loop and fadeout information from the file)
+                    match crate::cui::vgm::redump_vgm(&input, &output, bytes, diag) {
                         Ok(_) => {
                             // redump succeeded; diagnostics (if diag) are produced inside `redump_vgm`.
                             // Exit success here.
@@ -212,12 +196,27 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Play { file, dry_run, loop_count, loop_modifier, loop_base }) => {
+        Some(Commands::Play {
+            file,
+            dry_run,
+            loop_count,
+            loop_modifier,
+            loop_base,
+        }) => {
             // Load file
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
+                    // Default loop_count to Some(1) when unspecified
+                    let loop_count = loop_count.or(Some(1));
                     // Call play_vgm
-                    match crate::cui::play::play_vgm(&file, bytes, dry_run, loop_count, loop_modifier, loop_base) {
+                    match crate::cui::play::play_vgm(
+                        &file,
+                        bytes,
+                        dry_run,
+                        loop_count,
+                        loop_modifier,
+                        loop_base,
+                    ) {
                         Ok(_) => {
                             std::process::exit(0);
                         }
