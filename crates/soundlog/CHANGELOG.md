@@ -2,9 +2,8 @@
 
 ## Unreleased
 
+- [ ] Add: Callback interface to control iterator playback start/stop.
 - [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
-- [ ] Document: Updated Quick Start examples in the documentation to use all callbacks.
-- [ ] Document: Updated `VgmCallbackStream` examples in the documentation to use all callbacks.
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.
   - [ ] Fix: YMF271(OPX) state tracking.

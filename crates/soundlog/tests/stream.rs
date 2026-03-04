@@ -180,6 +180,73 @@ fn test_stream_parser_none_infinite_loop() {
     );
 }
 
+// Run this single test and show stdout:
+// cargo test test_callback_stream_iteration_borrowing -p soundlog -- --nocapture
+#[test]
+fn test_callback_stream_iteration_borrowing() {
+    use soundlog::VgmBuilder;
+    use soundlog::VgmCallbackStream;
+    use soundlog::chip;
+    use soundlog::vgm::command::Instance;
+    use std::cell::RefCell;
+
+    // Build a small VGM with a chip write so callbacks will be invoked
+    let mut b = VgmBuilder::new();
+    b.register_chip(soundlog::chip::Chip::Ym2612, Instance::Primary, 7_670_454);
+    b.add_chip_write(
+        Instance::Primary,
+        chip::Ym2612Spec {
+            port: 0,
+            register: 0x22,
+            value: 0x91,
+        },
+    );
+    // Add an EndOfData to terminate
+    b.add_vgm_command(soundlog::vgm::command::EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+
+    // Counter to be incremented by callback
+    let invoked = RefCell::new(0usize);
+
+    let mut cb_stream = VgmCallbackStream::from_vgm(raw).expect("valid VGM");
+
+    // Print sizes to help reason about overhead
+    println!(
+        "size_of::<VgmCommand>() = {}",
+        std::mem::size_of::<VgmCommand>()
+    );
+    println!(
+        "size_of::<StreamResult>() = {}",
+        std::mem::size_of::<StreamResult>()
+    );
+
+    // Register a write callback that increments the counter. This callback
+    // captures nothing heavy and should be invoked even if the iterator's
+    // consumer does not take ownership of the yielded VgmCommand.
+    cb_stream.on_write(
+        |_inst: Instance, _spec: chip::Ym2612Spec, _sample: usize, _event| {
+            *invoked.borrow_mut() += 1;
+        },
+    );
+
+    // Iterate using as_ref() / borrow so we don't move the yielded StreamResult's inner command.
+    for result in &mut cb_stream {
+        match result.as_ref().unwrap() {
+            StreamResult::Command(_) => {
+                // Do not move or examine the command; callbacks already handled work.
+            }
+            StreamResult::EndOfStream => break,
+            StreamResult::NeedsMoreData => break,
+        }
+    }
+
+    assert!(
+        *invoked.borrow() > 0,
+        "Expected callback to be invoked at least once"
+    );
+}
+
 #[test]
 fn test_stream_parser_incremental_data() {
     let vgm_data = create_test_vgm_with_loop();
