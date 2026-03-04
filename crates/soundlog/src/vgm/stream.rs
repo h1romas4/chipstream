@@ -23,7 +23,7 @@ use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
     UncompressedStream, parse_data_block,
 };
-use crate::vgm::header::{ChipId, VgmHeader};
+use crate::vgm::header::{ChipId, VgmHeader, VgmHeaderField};
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
 
@@ -758,18 +758,15 @@ impl VgmStream {
         let header = VgmHeader::from_bytes(&data)?;
 
         // Absolute byte offset of the first command.
-        // If data_offset is 0 the file predates VGM 1.50; fall back to the
-        // version-specific header size.
-        let command_start = if header.data_offset == 0 {
-            VgmHeader::fallback_header_size_for_version(header.version)
-        } else {
-            0x34_usize.wrapping_add(header.data_offset as usize)
-        };
+        // Use the VgmHeader helper to compute the command start consistently.
+        let command_start = VgmHeader::command_start(header.version, header.data_offset);
 
         // Absolute loop position: field at 0x1C is relative to that offset.
         // Validate that it actually falls within the command region.
         let loop_pos = if header.loop_offset != 0 {
-            let abs = 0x1C_usize.wrapping_add(header.loop_offset as usize);
+            let abs = VgmHeaderField::LoopOffset
+                .offset()
+                .wrapping_add(header.loop_offset as usize);
             if abs >= command_start && abs < data.len() {
                 Some(abs)
             } else {
@@ -801,17 +798,14 @@ impl VgmStream {
             return None;
         }
 
-        let data_offset = if doc.header.data_offset == 0 {
-            (VgmHeader::fallback_header_size_for_version(doc.header.version) - 0x34) as u32
-        } else {
-            doc.header.data_offset
-        };
+        let data_offset = VgmHeader::data_offset(doc.header.version, doc.header.data_offset);
 
         let mut header_len = doc.header.to_bytes(0, data_offset).len() as u32;
         if let Some(ref extra) = doc.extra_header {
             header_len += extra.to_bytes().len() as u32;
         }
-        let loop_abs_offset = 0x1C_u32.wrapping_add(doc.header.loop_offset);
+        let loop_abs_offset =
+            (VgmHeaderField::LoopOffset.offset() as u32).wrapping_add(doc.header.loop_offset);
         let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
 
         let offsets = doc.command_offsets_and_lengths();
@@ -828,7 +822,7 @@ impl VgmStream {
     ///
     /// Note: this method does not parse or strip the VGM header. When you have
     /// a full VGM file, feed only the serialized command/data region starting at
-    /// the command stream offset: `0x34 + header.data_offset`.
+    /// the command stream offset: `VgmHeader::compute_command_start(header.version, header.data_offset)`.
     ///
     /// # Arguments
     /// * `chunk` - Raw VGM command/data bytes to add to the parsing buffer

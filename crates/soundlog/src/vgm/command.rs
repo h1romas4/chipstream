@@ -16,7 +16,7 @@ use crate::binutil::{
 };
 use crate::chip;
 use crate::vgm::document::VgmDocument;
-use crate::vgm::header::VgmHeader;
+use crate::vgm::header::{VgmHeader, VgmHeaderField};
 // re-export
 pub use crate::vgm::detail::StreamChipType;
 pub use crate::vgm::header::ChipId;
@@ -2916,22 +2916,9 @@ impl VgmDocument {
         // If an EndOfData opcode is required, it must be present in `self.commands`
         // before calling `to_bytes()`.
 
-        // data offset (0x34)
-        // When header.data_offset is 0, compute it based on the version-defined header size
-        let data_offset: u32 = match self.header.data_offset {
-            0 => {
-                let version_header_size =
-                    VgmHeader::fallback_header_size_for_version(self.header.version);
-                // For very old versions where header size < 0x34, use 0x40 as minimum data start
-                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start)
-                if version_header_size < 0x34 {
-                    0x0C // 0x34 + 0x0C = 0x40 (64 bytes, minimum VGM data start)
-                } else {
-                    (version_header_size as u32).wrapping_sub(0x34)
-                }
-            }
-            v => v,
-        };
+        // data offset (DataOffset)
+        // Compute effective data_offset using VgmHeader helper.
+        let data_offset: u32 = VgmHeader::data_offset(self.header.version, self.header.data_offset);
 
         // Build header bytes
         let mut header = self.header.to_bytes(0, data_offset);
@@ -2939,7 +2926,9 @@ impl VgmDocument {
         let header_size: usize = if self.header.data_offset == 0 {
             VgmHeader::fallback_header_size_for_version(self.header.version)
         } else {
-            0x34_usize.wrapping_add(data_offset as usize)
+            VgmHeaderField::DataOffset
+                .offset()
+                .wrapping_add(data_offset as usize)
         };
 
         // Build extra_header bytes
@@ -2947,17 +2936,21 @@ impl VgmDocument {
             let extra_bytes = extra_header.to_bytes();
             if self.header.extra_header_offset != 0 {
                 let stored_offset = self.header.extra_header_offset;
-                let desired_start = stored_offset.wrapping_add(0xBC) as usize;
+                let desired_start = stored_offset
+                    .wrapping_add(VgmHeaderField::ExtraHeaderOffset.offset() as u32)
+                    as usize;
 
                 // Ensure extra header placement doesn't overlap the data; clear stored offset if so.
-                let allowed_header_size = 0x34_usize.wrapping_add(data_offset as usize);
+                let allowed_header_size = header_size;
                 if desired_start >= allowed_header_size {
-                    let needed = 0xBC_usize + 4;
+                    let needed = VgmHeaderField::ExtraHeaderOffset.offset() + 4;
                     if header_size >= needed {
                         if header.len() < needed {
                             header.resize(needed, 0);
                         }
-                        header[0xBC..0xC0].copy_from_slice(&0_u32.to_le_bytes());
+                        header[VgmHeaderField::ExtraHeaderOffset.offset()
+                            ..VgmHeaderField::ExtraHeaderOffset.offset() + 4]
+                            .copy_from_slice(&0_u32.to_le_bytes());
                     }
                 } else {
                     // Place extra header at desired_start; write into reserved area or resize/append.

@@ -153,23 +153,23 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
 /// `ParseError` (for example `HeaderTooShort`, `InvalidIdent`, or
 /// `UnexpectedEof`).
 pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), ParseError> {
-    if bytes.len() < 0x34 {
+    if bytes.len() < VgmHeaderField::DataOffset.offset() {
         return Err(ParseError::HeaderTooShort("vgm: base header (0x34)".into()));
     }
 
-    let ident_slice = read_slice(bytes, 0x00, 4)?;
+    let ident_slice = read_slice(bytes, VgmHeaderField::Ident.offset(), 4)?;
     if ident_slice != b"Vgm " {
         let mut id: [u8; 4] = [0; 4];
         id.copy_from_slice(ident_slice);
         return Err(ParseError::InvalidIdent(id));
     }
 
-    let version = read_u32_le_at(bytes, 0x08)?;
+    let version = read_u32_le_at(bytes, VgmHeaderField::Version.offset())?;
 
     // For VGM < 1.50, the data_offset field was not defined (it was added in 1.50).
     // Only read it if version >= 1.50, otherwise it may not exist in the file.
     let data_offset = if version >= 0x00000150 {
-        read_u32_le_at(bytes, 0x34)?
+        read_u32_le_at(bytes, VgmHeaderField::DataOffset.offset())?
     } else {
         0
     };
@@ -224,7 +224,7 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     // stored data_offset is zero we compute an effective offset from the
     // chosen fallback header size.
     if data_offset == 0 {
-        version_max_header_size.wrapping_sub(0x34)
+        version_max_header_size.wrapping_sub(VgmHeaderField::DataOffset.offset())
     } else {
         data_offset as usize
     };
@@ -241,22 +241,25 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     let mut h = VgmHeader::default();
 
     // Core fields always present
-    h.ident.copy_from_slice(&bytes[0x00..0x04]);
-    h.eof_offset = read_u32_le_at(bytes, 0x04)?;
+    let ident_off = VgmHeaderField::Ident.offset();
+    let ident_len = VgmHeaderField::Ident.len();
+    h.ident
+        .copy_from_slice(&bytes[ident_off..ident_off + ident_len]);
+    h.eof_offset = read_u32_le_at(bytes, VgmHeaderField::EofOffset.offset())?;
     h.version = version;
-    h.sn76489_clock = read_u32_le_at(bytes, 0x0C)?;
-    h.ym2413_clock = read_u32_le_at(bytes, 0x10)?;
-    h.gd3_offset = read_u32_le_at(bytes, 0x14)?;
-    h.total_samples = read_u32_le_at(bytes, 0x18)?;
-    h.loop_offset = read_u32_le_at(bytes, 0x1C)?;
-    h.loop_samples = read_u32_le_at(bytes, 0x20)?;
-    h.sample_rate = read_u32_le_at(bytes, 0x24)?;
-    h.sn76489_feedback = read_u16_le_at(bytes, 0x28)?.into();
-    let width_u8 = read_u8_at(bytes, 0x2A)?;
+    h.sn76489_clock = read_u32_le_at(bytes, VgmHeaderField::Sn76489Clock.offset())?;
+    h.ym2413_clock = read_u32_le_at(bytes, VgmHeaderField::Ym2413Clock.offset())?;
+    h.gd3_offset = read_u32_le_at(bytes, VgmHeaderField::Gd3Offset.offset())?;
+    h.total_samples = read_u32_le_at(bytes, VgmHeaderField::TotalSamples.offset())?;
+    h.loop_offset = read_u32_le_at(bytes, VgmHeaderField::LoopOffset.offset())?;
+    h.loop_samples = read_u32_le_at(bytes, VgmHeaderField::LoopSamples.offset())?;
+    h.sample_rate = read_u32_le_at(bytes, VgmHeaderField::SampleRate.offset())?;
+    h.sn76489_feedback = read_u16_le_at(bytes, VgmHeaderField::Sn76489Feedback.offset())?.into();
+    let width_u8 = read_u8_at(bytes, VgmHeaderField::Sn76489ShiftRegisterWidth.offset())?;
     h.sn76489_shift_register_width = width_u8.into();
-    h.sn76489_flags = Sn76489Flags::from(read_u8_at(bytes, 0x2B)?);
-    h.ym2612_clock = read_u32_le_at(bytes, 0x2C)?;
-    h.ym2151_clock = read_u32_le_at(bytes, 0x30)?;
+    h.sn76489_flags = Sn76489Flags::from(read_u8_at(bytes, VgmHeaderField::Sn76489Flags.offset())?);
+    h.ym2612_clock = read_u32_le_at(bytes, VgmHeaderField::Ym2612Clock.offset())?;
+    h.ym2151_clock = read_u32_le_at(bytes, VgmHeaderField::Ym2151Clock.offset())?;
     h.data_offset = data_offset;
     // Following fields are part of the extended header region.
     // For VGM 1.50+: All header sizes are valid as long as header has at least

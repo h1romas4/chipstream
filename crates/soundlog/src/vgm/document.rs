@@ -24,7 +24,7 @@ use crate::meta::Gd3;
 use crate::vgm::command::Instance;
 use crate::vgm::command::VgmCommand;
 use crate::vgm::detail;
-use crate::vgm::header::{VgmExtraHeader, VgmHeader};
+use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 use crate::vgm::parser;
 use std::convert::TryFrom;
 
@@ -297,12 +297,14 @@ impl VgmBuilder {
                     crate::vgm::header::VgmHeader::fallback_header_size_for_version(
                         self.document.header.version,
                     );
-                // For very old versions where header size < 0x34, use 0x40 as minimum data start
-                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start)
-                if version_header_size < 0x34 {
-                    0x0C // 0x34 + 0x0C = 0x40 (64 bytes, minimum VGM data start)
+                // For very old versions where header size < DataOffset, use 0x40 as minimum data start.
+                // This ensures data_offset is always valid (>= 0x0C for 0x40 data start).
+                if version_header_size < VgmHeaderField::DataOffset.offset() {
+                    // DataOffset + 0x0C = 0x40 (64 bytes, minimum VGM data start)
+                    0x0C
                 } else {
-                    (version_header_size as u32).wrapping_sub(0x34)
+                    (version_header_size as u32)
+                        .wrapping_sub(VgmHeaderField::DataOffset.offset() as u32)
                 }
             }
             v => v,
@@ -311,13 +313,15 @@ impl VgmBuilder {
         // handle extra header offset
         if self.document.extra_header.is_some() && self.document.header.extra_header_offset == 0 {
             let header_len = self.document.header.to_bytes(0, data_offset).len() as u32;
-            let extra_offset = header_len.wrapping_sub(0xBC_u32);
+            let extra_offset =
+                header_len.wrapping_sub(VgmHeaderField::ExtraHeaderOffset.offset() as u32);
             self.document.header.extra_header_offset = extra_offset;
 
             if let Some(eh) = &self.document.extra_header {
                 let extra_bytes_len = eh.to_bytes().len() as u32;
                 let new_header_len = header_len.wrapping_add(extra_bytes_len);
-                let new_data_offset = new_header_len.wrapping_sub(0x34_u32);
+                let new_data_offset =
+                    new_header_len.wrapping_sub(VgmHeaderField::DataOffset.offset() as u32);
                 self.document.header.data_offset = new_data_offset;
             }
         } else if self.document.header.data_offset == 0 {
@@ -331,7 +335,8 @@ impl VgmBuilder {
             let offsets = self.document.sourcemap();
             if index < offsets.len() {
                 let (cmd_offset, _cmd_len) = offsets[index];
-                let computed_loop_offset = cmd_offset.wrapping_sub(0x1C);
+                let computed_loop_offset =
+                    cmd_offset.wrapping_sub(VgmHeaderField::LoopOffset.offset());
                 self.document.header.loop_offset = computed_loop_offset as u32;
                 self.document.header.loop_samples = self.document.total_samples(index);
             }
@@ -476,15 +481,17 @@ impl VgmDocument {
 
         let data_offset = if self.header.data_offset == 0 {
             use crate::vgm::header::VgmHeader;
-            (VgmHeader::fallback_header_size_for_version(self.header.version) - 0x34) as u32
+            (VgmHeader::fallback_header_size_for_version(self.header.version)
+                .wrapping_sub(VgmHeaderField::DataOffset.offset())) as u32
         } else {
             self.header.data_offset
         };
 
         // Calculate actual header length from data_offset
-        // data_offset is relative to 0x34, so actual header length is 0x34 + data_offset
-        let header_len = 0x34_u32.wrapping_add(data_offset);
-        let loop_abs_offset = 0x1C_u32.wrapping_add(self.header.loop_offset);
+        // data_offset is relative to DataOffset, so actual header length is DataOffset + data_offset
+        let header_len = (VgmHeaderField::DataOffset.offset() as u32).wrapping_add(data_offset);
+        let loop_abs_offset =
+            (VgmHeaderField::LoopOffset.offset() as u32).wrapping_add(self.header.loop_offset);
         let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
 
         let offsets = self.command_offsets_and_lengths();

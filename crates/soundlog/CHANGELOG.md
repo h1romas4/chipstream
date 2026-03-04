@@ -3,6 +3,7 @@
 ## Unreleased
 
 - [ ] Internal: `VgmDocument`: Reduction in memory usage.(The `size_of` of `VgmCommand` is 40 bytes)
+- [X] Internal: Aggregation of VgmHeader Offset Position Calculation.
 - [ ] Chip state
   - [ ] Fix: SegaPCM secondly address mapping.
   - [ ] Fix: YMF271(OPX) state tracking.

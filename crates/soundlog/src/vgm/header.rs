@@ -1641,6 +1641,68 @@ impl VgmHeader {
         }
     }
 
+    /// Compute an effective `data_offset` value to use when serializing or
+    /// interpreting a VGM file.
+    ///
+    /// This applies the crate's fallback rules for the on-disk `data_offset`
+    /// field:
+    /// - If the stored `data_offset` is non-zero, that value is returned.
+    /// - If the stored `data_offset` is zero, compute an effective offset by
+    ///   subtracting the `DataOffset` field base (0x34) from the version's
+    ///   legacy header size as returned by `fallback_header_size_for_version`.
+    /// - For very old versions where the fallback header size is smaller than
+    ///   the serialized `DataOffset` position, a safe minimum is chosen so
+    ///   the command stream begins no earlier than 0x40 (64 bytes).
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - VGM header `version` value (u32).
+    /// * `data_offset` - stored `data_offset` field read from the header (may be 0).
+    ///
+    /// # Returns
+    ///
+    /// Effective `data_offset` value to use for computing header layout and
+    /// command-start offsets (u32).
+    pub fn data_offset(version: u32, data_offset: u32) -> u32 {
+        // Mirrors the logic used elsewhere: when stored data_offset is 0,
+        // compute an effective data_offset based on the legacy fallback header size.
+        if data_offset == 0 {
+            let version_header_size = VgmHeader::fallback_header_size_for_version(version);
+            // For very old versions where the fallback header is smaller than the
+            // serialized DataOffset position, choose a safe minimum so that the
+            // resulting data start is at least 0x40 (64 bytes).
+            if version_header_size < VgmHeaderField::DataOffset.offset() {
+                // DataOffset + 0x0C = 0x40 (64 bytes)
+                (0x40usize - VgmHeaderField::DataOffset.offset()) as u32
+            } else {
+                (version_header_size as u32)
+                    .wrapping_sub(VgmHeaderField::DataOffset.offset() as u32)
+            }
+        } else {
+            data_offset
+        }
+    }
+
+    /// Compute the total serialized header size (in bytes) for the given
+    /// version and stored `data_offset` value. This returns the number of
+    /// bytes that should be treated as header in a serialized file.
+    pub fn total_header_size(version: u32, data_offset: u32) -> usize {
+        if data_offset == 0 {
+            VgmHeader::fallback_header_size_for_version(version)
+        } else {
+            VgmHeaderField::DataOffset
+                .offset()
+                .wrapping_add(data_offset as usize)
+        }
+    }
+
+    /// Compute the absolute byte offset (within a serialized file) where the
+    /// command stream begins, given a header `version` and stored `data_offset`.
+    /// This is equivalent to `DataOffset + data_offset`.
+    pub fn command_start(version: u32, data_offset: u32) -> usize {
+        Self::total_header_size(version, data_offset)
+    }
+
     /// Parse a VGM header from a byte slice.
     ///
     /// This helper function parses a `VgmHeader` from the provided byte slice.
