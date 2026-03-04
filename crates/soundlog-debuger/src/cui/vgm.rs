@@ -236,6 +236,22 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         rows.push(("c140_chip_type".into(), c140_chip_type));
     }
 
+    // Insert vgmheader_misc row: if any derived misc field is Some(...) display the debug
+    // representation of the struct; otherwise display "(none)".
+    let vgm_misc = header.misc();
+    let vgm_misc_has_some = vgm_misc.t6w28_detected.is_some()
+        || vgm_misc.use_ym2413_clock_for_ym2612.is_some()
+        || vgm_misc.use_ym2413_clock_for_ym2151.is_some()
+        || vgm_misc.ym2610b_detected.is_some()
+        || vgm_misc.fds_detected.is_some()
+        || vgm_misc.is_es5506.is_some();
+
+    if vgm_misc_has_some {
+        rows.push(("vgmheader_misc".into(), format!("{:?}", vgm_misc)));
+    } else {
+        rows.push(("vgmheader_misc".into(), "(none)".to_string()));
+    }
+
     // Append individual GD3 fields (one row per field) to keep columns aligned.
     for (k, v) in gd3_fields.into_iter() {
         rows.push((k, v));
@@ -481,7 +497,10 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
     let offsets_and_lengths = doc.command_offsets_and_lengths();
 
     // Print commands with offsets and lengths (Length moved after Offset)
-    println!("{:<8} {:<10} {:<8} {:<80}", "Index", "Offset", "Length", "Command");
+    println!(
+        "{:<8} {:<10} {:<8} {:<80}",
+        "Index", "Offset", "Length", "Command"
+    );
     println!("{}", "-".repeat(120));
 
     for (index, (cmd, (offset, length))) in doc
@@ -491,7 +510,10 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>) -> Result<()> {
         .enumerate()
     {
         let cmd_str = format_command_brief(cmd);
-        println!("{:<8} 0x{:06X} {:<8} {:<80}", index, offset, length, cmd_str);
+        println!(
+            "{:<8} 0x{:06X} {:<8} {:<80}",
+            index, offset, length, cmd_str
+        );
     }
 
     Ok(())
