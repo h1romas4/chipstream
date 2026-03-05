@@ -9,6 +9,10 @@
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
 
+## v0.10.1
+
+- [x] Fix: `README.md` - `VgmStream` — feeding raw byte chunks
+
 ## v0.10.0
 
 - [x] Add: `VgmStream::seek_to_sample(target)` — rewinds to the loop point and fast-forwards to the given sample position within the current loop iteration.

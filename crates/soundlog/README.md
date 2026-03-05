@@ -310,6 +310,17 @@ The stream already has the full VGM bytes as its backing storage, `push_chunk` i
 
 ### `VgmStream` — feeding raw byte chunks
 
+If you cannot generate the `VgmDocument` all at once, you can use `push_chunk`.
+This is useful when working with microcontrollers that have insufficient memory.
+
+The required 'DataBlock' is allocated within the library. Please bear in mind the remaining memory.
+
+Providing input via `push_chunk` is the only difference from the from_document example above.
+As with that example, you should iterate over the stream and handle the StreamResult variants
+
+`NeedsMoreData` is special in chunked mode: when the iterator yields `NeedsMoreData` you must supply additional bytes to the parser by calling `push_chunk` before continuing iteration.
+
+Note that when the parser returns `EndOfStream` in chunked mode it means the parser has consumed all bytes you supplied; to loop playback you must re-supply the bytes starting at the documented loop offset yourself (reset your chunk source to the loop point and call `push_chunk` again).
 
 ```rust
 use soundlog::vgm::VgmStream;
