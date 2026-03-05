@@ -209,3 +209,16 @@ ${soundlog} samples/example.vgz
 ```
 
 - The GUI is a simple inspector for parsed VGM documents and command streams. It is intended for interactive debugging and visualization, not for production conversion pipelines.
+
+---
+
+## Test Heaptrack
+
+Ubuntu:
+
+```
+sudo apt install heaptrack heaptrack-gui
+RUSTFLAGS="-C debuginfo=2" cargo build --release
+heaptrack target/release/soundlog play crates/soundlog/assets/vgm/REMDME.vgm
+heaptrack_gui heaptrack.<pid>.gz
+```

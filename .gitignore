@@ -2,4 +2,5 @@
 *.vgm
 *.vgz
 *.wav
+*.zst
 !crates/soundlog/assets/vgm/*.vgm
