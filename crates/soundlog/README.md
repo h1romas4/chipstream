@@ -310,17 +310,6 @@ The stream already has the full VGM bytes as its backing storage, `push_chunk` i
 
 ### `VgmStream` — feeding raw byte chunks
 
-If you cannot generate the `VgmDocument` all at once, you can use `push_chunk`.
-This is useful when working with microcontrollers that have insufficient memory.
-
-The required 'DataBlock' is allocated within the library. Please bear in mind the remaining memory.
-
-Providing input via `push_chunk` is the only difference from the from_document example above.
-As with that example, you should iterate over the stream and handle the StreamResult variants
-(`Command`, `NeedsMoreData`, `EndOfStream` and `Err`) in the same way.
-
-Note: When using `push_chunk`, ensure that the chunks start at the data_offset of the VGM header
-— i.e. the serialised command/data region that begins at offset `0x34` + `header.data_offset`.
 
 ```rust
 use soundlog::vgm::VgmStream;
