@@ -718,9 +718,9 @@ impl<'a> VgmCallbackStream<'a> {
     /// 3. Fast-forwards to `target` by consuming commands and updating chip state trackers
     ///    without firing any user-registered callbacks (`on_write`, `on_wait`, etc.).
     ///
-    /// On return, [`current_sample`](Self::current_sample) is `>= target`.  It may be
-    /// slightly higher if the command that crosses the target boundary also advances the
-    /// sample counter past it in one step (e.g., a long `WaitSamples` command).
+    /// On return, the underlying stream's [`current_sample()`](VgmStream::current_sample) is `>= target`.
+    /// It may be slightly higher if the command that crosses the target boundary
+    /// also advances the sample counter past it in one step (e.g., a long `WaitSamples` command).
     ///
     /// # Arguments
     ///
