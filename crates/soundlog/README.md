@@ -302,6 +302,12 @@ while let Some(result) = stream.next() {
 }
 ```
 
+### `VgmStream::from_vgm`
+
+`VgmStream::from_vgm` constructs a stream directly from a complete, serialized VGM byte buffer (for example a `Vec<u8>`). Functionally, it is the same as `VgmStream::from_document` in every respect except for how the input is supplied and stored: the raw VGM bytes you provide become the stream's internal storage and the stream parses and schedules commands from those bytes.
+
+The stream already has the full VGM bytes as its backing storage, `push_chunk` is not supported. Calling `push_chunk` on a `from_vgm`-created stream will return an error — use `push_chunk` only when you construct the stream for incremental, chunked parsing (see below).
+
 ### `VgmStream` — feeding raw byte chunks
 
 If you cannot generate the `VgmDocument` all at once, you can use `push_chunk`.
