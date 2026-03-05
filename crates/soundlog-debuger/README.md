@@ -1,8 +1,9 @@
 # soundlog-debuger
 
-Important: `soundlog-debuger` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading.
+`soundlog-debuger` provides a GUI and a small CLI to inspect, test, and re-dump VGM files processed by the `soundlog` library. 
 
-`soundlog-debuger` provides a lightweight GUI and a small CLI to inspect, test, and re-dump VGM files processed by the `soundlog` library. It is intended for debugging and development use.
+> [!IMPORTANT]
+> `soundlog-debuger` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
 
 Contents:
 
@@ -60,7 +61,6 @@ Options:
 
 Run a headless test / round-trip check on a VGM file. Useful for automated verification and CI.
 
-
 ```bash
 ${soundlog} test <FILE> [--dry-run]
 ```
@@ -93,14 +93,14 @@ Expand DAC streams into explicit chip writes and re-serialize as a VGM file.
 This converts synthesized DAC/digital streams into the equivalent sequence of chip register writes,
 and is also useful for producing data suitable for playback on memory-constrained microcontrollers.
 
+Please note that the Wait command will not be restructured or optimized.
+
 ```bash
-${soundlog} redump <INPUT> <OUTPUT> [--loop-count <N>] [--fadeout-samples <SAMPLES>] [--diag]
+${soundlog} redump <INPUT> <OUTPUT> [--diag]
 ```
 
 - `<INPUT>`: path to input VGM. `-` for stdin is supported (useful with pipes).
 - `<OUTPUT>`: path to write the rebuilt VGM. If `<OUTPUT>` is `-`, the program writes the raw rebuilt VGM bytes to stdout.
-- `--loop-count <N>`: override loop expansion count. If omitted, original behavior is preserved (intro + one loop iteration by default when expanding).
-- `--fadeout-samples <SAMPLES>`: specify additional fadeout sample count appended after loop(s).
 - `--diag`: after creating the rebuilt VGM, re-parse it and print diagnostics comparing original vs rebuilt output.
 
 Examples:

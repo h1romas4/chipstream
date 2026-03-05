@@ -2,18 +2,21 @@
 
 ## Unreleased
 
+- [ ] Chip State
+  - [ ] Fix: SegaPCM secondly address mapping.
+  - [ ] Fix: YMF271(OPX) state tracking.
+  - [ ] Fix: Unify the state of ES5506.
+- [ ] Semantic versioning and API Stabilization.
+- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
+
+## v0.10.0
+
 - [x] Add: `VgmStream::seek_to_sample(target)` — rewinds to the loop point and fast-forwards to the given sample position within the current loop iteration.
 - [x] Add: `VgmCallbackStream::seek_to_sample(target)` — same as `VgmStream::seek_to_sample` but also rebuilds chip state trackers correctly; user callbacks are suppressed during fast-forward.
 - [x] Change: Reduce `VgmCommand` / `StreamResult` size from 40 to 24 bytes by boxing the `DataBlock` and `PcmRamWrite` variants.
   - Migration: `parse_data_block` continues to accept an owned `DataBlock`. When matching on `VgmCommand::DataBlock(db)`, `db` is now `Box<DataBlock>`; deref to pass it to `parse_data_block`:
     - Before: `parse_data_block(db)`
     - After: `parse_data_block(*db)` (or `parse_data_block(*db.clone())` if you need to keep the box)
-- [ ] Chip state
-  - [ ] Fix: SegaPCM secondly address mapping.
-  - [ ] Fix: YMF271(OPX) state tracking.
-  - [ ] Fix: Unify the state of ES5506.
-- [ ] Semantic versioning.
-- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
 
 ## v0.9.3
 
