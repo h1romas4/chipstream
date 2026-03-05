@@ -3161,7 +3161,7 @@ fn test_data_block_size_tracking() {
         size: 1000,
         data: vec![0u8; 1000],
     };
-    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::DataBlock(Box::new(block)));
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
@@ -3199,7 +3199,7 @@ fn test_data_block_size_limit_exceeded() {
         size: block_size as u32,
         data: vec![0u8; block_size],
     };
-    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::DataBlock(Box::new(block)));
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
@@ -3250,7 +3250,7 @@ fn test_data_block_size_reset() {
         size: 500,
         data: vec![0u8; 500],
     };
-    builder.add_vgm_command(VgmCommand::DataBlock(block));
+    builder.add_vgm_command(VgmCommand::DataBlock(Box::new(block)));
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
@@ -3299,7 +3299,7 @@ fn test_multiple_data_blocks_cumulative_size() {
             size: 100,
             data: vec![0u8; 100],
         };
-        builder.add_vgm_command(VgmCommand::DataBlock(block));
+        builder.add_vgm_command(VgmCommand::DataBlock(Box::new(block)));
     }
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 

@@ -875,7 +875,9 @@ impl VgmStream {
         }
 
         if let Some(block) = self.pending_data_block.take() {
-            return Ok(StreamResult::Command(VgmCommand::DataBlock(block)));
+            return Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                block,
+            ))));
         }
 
         if self.encountered_end {
@@ -973,7 +975,7 @@ impl VgmStream {
                 return self.next_command();
             }
             VgmCommand::DataBlock(block) => {
-                return self.handle_data_block(block.clone());
+                return self.handle_data_block(*block.clone());
             }
             VgmCommand::SetupStreamControl(setup) => {
                 self.handle_setup_stream_control(setup);
@@ -1472,6 +1474,7 @@ impl VgmStream {
 
     /// Handles a data block command by parsing it and storing or returning it.
     fn handle_data_block(&mut self, block: DataBlock) -> Result<StreamResult, ParseError> {
+        // block is passed by value (unboxed at call site)
         let block_size = block.size as usize;
         let block_data_type = block.data_type;
         let data_type = block.data_type;
@@ -1540,7 +1543,9 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                            block,
+                        ))))
                     }
                     DataBlockType::RamWrite16(write) => {
                         // For RamWrite16, reconstruct DataBlock and return
@@ -1562,7 +1567,9 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                            block,
+                        ))))
                     }
                     DataBlockType::RamWrite32(write) => {
                         // For RamWrite32, reconstruct DataBlock and return
@@ -1584,7 +1591,9 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(block)))
+                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                            block,
+                        ))))
                     }
                 }
             }
@@ -1595,7 +1604,9 @@ impl VgmStream {
                     .push((block_data_type, current_offset, block_size));
                 *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                 self.total_data_block_size += data_len;
-                Ok(StreamResult::Command(VgmCommand::DataBlock(original_block)))
+                Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                    original_block,
+                ))))
             }
         }
     }

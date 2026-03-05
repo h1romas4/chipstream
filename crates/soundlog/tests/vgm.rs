@@ -246,7 +246,7 @@ fn add_command_data_block() {
     // data block + terminator
     assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
-        VgmCommand::DataBlock(s) => assert_eq!(s.data, data),
+        VgmCommand::DataBlock(s) => assert_eq!(s.data, data), // Deref via Box is transparent
         other => panic!("unexpected command: {:?}", other),
     }
 }
@@ -267,7 +267,7 @@ fn add_command_pcm_ram_write() {
     // pcm ram write + terminator
     assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
-        VgmCommand::PcmRamWrite(s) => assert_eq!(s, spec),
+        VgmCommand::PcmRamWrite(s) => assert_eq!(*s, spec),
         other => panic!("unexpected command: {:?}", other),
     }
 }

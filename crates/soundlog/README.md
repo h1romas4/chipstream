@@ -267,7 +267,7 @@ while let Some(result) = stream.next() {
                 // - RamWrite16   (data_type 0xC0..=0xDF)
                 // - RamWrite32   (data_type 0xE0..=0xFF)
                 // The parse_data_block can parse the details of a DataBlock.
-                match parse_data_block(block) {
+                match parse_data_block(*block) {
                     Ok(DataBlockType::RomRamDump(dump)) => {
                         // Handle ROM/RAM dump here 
                         println!(

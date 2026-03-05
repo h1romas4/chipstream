@@ -116,7 +116,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     let mut db_type_counts: HashMap<String, usize> = HashMap::new();
     for c in &doc.commands {
         if let soundlog::vgm::command::VgmCommand::DataBlock(db) = c {
-            match parse_data_block(db.clone()) {
+            match parse_data_block(*db.clone()) {
                 Ok(data_type) => {
                     let type_name = format_data_block_type(&data_type);
                     *db_type_counts.entry(type_name).or_insert(0) += 1;
@@ -532,7 +532,7 @@ fn format_command_brief(cmd: &soundlog::VgmCommand) -> String {
         VgmCommand::Wait882Samples(_) => "Wait882Samples".to_string(),
         VgmCommand::WaitNSample(w) => format!("WaitNSample({})", w.0),
         VgmCommand::EndOfData(_) => "EndOfData".to_string(),
-        VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
+        VgmCommand::DataBlock(db) => match parse_data_block(*db.clone()) {
             Ok(data_type) => format!(
                 "DataBlock({}, size={})",
                 format_data_block_type(&data_type),

@@ -112,8 +112,8 @@ pub enum VgmCommand {
     Wait735Samples(Wait735Samples),
     Wait882Samples(Wait882Samples),
     EndOfData(EndOfData),
-    DataBlock(DataBlock),
-    PcmRamWrite(PcmRamWrite),
+    DataBlock(Box<DataBlock>),
+    PcmRamWrite(Box<PcmRamWrite>),
     WaitNSample(WaitNSample),
     YM2612Port0Address2AWriteAndWaitN(Ym2612Port0Address2AWriteAndWaitN),
     SetupStreamControl(SetupStreamControl),
@@ -1153,13 +1153,13 @@ impl From<EndOfData> for VgmCommand {
 
 impl From<DataBlock> for VgmCommand {
     fn from(s: DataBlock) -> Self {
-        VgmCommand::DataBlock(s)
+        VgmCommand::DataBlock(Box::new(s))
     }
 }
 
 impl From<PcmRamWrite> for VgmCommand {
     fn from(s: PcmRamWrite) -> Self {
-        VgmCommand::PcmRamWrite(s)
+        VgmCommand::PcmRamWrite(Box::new(s))
     }
 }
 

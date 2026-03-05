@@ -210,7 +210,9 @@ impl VgmBuilder {
     {
         let dbt: detail::DataBlockType = data_block_detail.into();
         let block = detail::build_data_block(&dbt);
-        self.document.commands.push(VgmCommand::DataBlock(block));
+        self.document
+            .commands
+            .push(VgmCommand::DataBlock(Box::new(block)));
         self
     }
 

@@ -859,7 +859,7 @@ pub fn parse_data_block(block: DataBlock) -> Result<DataBlockType, (DataBlock, P
 /// let block = build_data_block(&uncompressd_stream);
 ///
 /// // Add the constructed `DataBlock` into the builder using `add_vgm_command`.
-/// builder.add_vgm_command(soundlog::vgm::command::VgmCommand::DataBlock(block));
+/// builder.add_vgm_command(soundlog::vgm::command::VgmCommand::DataBlock(Box::new(block)));
 /// ```
 pub fn build_data_block(data_block_type: &DataBlockType) -> DataBlock {
     let mut data: Vec<u8> = Vec::new();

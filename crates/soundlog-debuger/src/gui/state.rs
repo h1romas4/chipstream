@@ -1055,7 +1055,7 @@ impl UiState {
                         // title and detail when available so the left-pane doesn't
                         // show the raw `DataBlock(...)` debug blob.
                         let (title, detail) = match cmd {
-                            VgmCommand::DataBlock(db) => match parse_data_block(db.clone()) {
+                            VgmCommand::DataBlock(db) => match parse_data_block(*db.clone()) {
                                 Ok(dbt) => {
                                     let inner_dbg = match dbt {
                                         DataBlockType::UncompressedStream(s) => format!("{:?}", s),

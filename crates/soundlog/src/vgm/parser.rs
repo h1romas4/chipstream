@@ -810,12 +810,12 @@ pub(crate) fn parse_vgm_command(
         0x67 => {
             let (db, n) = DataBlock::parse(bytes, cur, opcode)?;
             cur += n;
-            Ok((VgmCommand::DataBlock(db), cur - off))
+            Ok((VgmCommand::DataBlock(Box::new(db)), cur - off))
         }
         0x68 => {
             let (pr, n) = PcmRamWrite::parse(bytes, cur, opcode)?;
             cur += n;
-            Ok((VgmCommand::PcmRamWrite(pr), cur - off))
+            Ok((VgmCommand::PcmRamWrite(Box::new(pr)), cur - off))
         }
         0x70..=0x7F => {
             let (v, n) = WaitNSample::parse(bytes, cur, opcode)?;
