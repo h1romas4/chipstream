@@ -173,7 +173,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Rf5c68U8Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Rf5c68U8Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Rf5c68U8Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.offset, spec.value
@@ -183,7 +186,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Rf5c68U16Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Rf5c68U16Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Rf5c68U16Write({:?}, 0x{:04X}=0x{:02X})",
                 inst, spec.offset, spec.value
@@ -292,7 +298,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Es5506U8Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Es5506U8Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Es5506U8Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
@@ -302,7 +311,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Es5506U16Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Es5506U16Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Es5506U16Write({:?}, 0x{:02X}=0x{:04X})",
                 inst, spec.register, spec.value
@@ -342,7 +354,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::MultiPcmSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::MultiPcmSpec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "MultiPcmWrite({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
@@ -362,7 +377,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Okim6258Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Okim6258Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Okim6258Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
@@ -372,7 +390,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Okim6295Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance,
+         spec: chip::Okim6295Spec,
+         sample: usize,
+         event: Option<Vec<StateEvent>>| {
             let reg_info = format!(
                 "Okim6295Write({:?}, 0x{:02X}=0x{:02X})",
                 inst, spec.register, spec.value
@@ -522,7 +543,12 @@ pub fn play_vgm(
 }
 
 /// Helper function to print register log line with events
-fn print_register_log(sample: usize, reg_info: &str, events: Option<Vec<StateEvent>>, dry_run: bool) {
+fn print_register_log(
+    sample: usize,
+    reg_info: &str,
+    events: Option<Vec<StateEvent>>,
+    dry_run: bool,
+) {
     let event_str = if let Some(evs) = events {
         if evs.is_empty() {
             String::new()

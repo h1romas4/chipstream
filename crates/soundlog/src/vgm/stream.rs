@@ -1320,14 +1320,10 @@ impl VgmStream {
     /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed
     /// stream), since those streams have no random-accessible loop position.
     pub(crate) fn reset_to_loop_point(&mut self) -> Result<(), ParseError> {
-        match &self.source {
-            VgmStreamSource::Buffer { .. } => {
-                return Err(ParseError::Other(
-                    "seek_to_sample() is not supported for streams created with push_chunk()"
-                        .into(),
-                ));
-            }
-            _ => {}
+        if let VgmStreamSource::Buffer { .. } = &self.source {
+            return Err(ParseError::Other(
+                "seek_to_sample() is not supported for streams created with push_chunk()".into(),
+            ));
         }
         self.jump_to_loop_point();
         self.reset_loop_state();

@@ -23,8 +23,8 @@ use eframe::egui;
 
 use soundlog::VgmDocument;
 use soundlog::vgm::VgmHeaderField;
-use soundlog::vgm::detail::{parse_data_block, DataBlockType};
 use soundlog::vgm::command::VgmCommand;
+use soundlog::vgm::detail::{DataBlockType, parse_data_block};
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -715,7 +715,8 @@ impl UiState {
             if let Some((_, hf)) = mappings
                 .iter()
                 .find(|(title, _)| title.eq_ignore_ascii_case(&node.title))
-                && let Some((start, len)) = hf.byte_range(doc.header.version, doc.header.data_offset)
+                && let Some((start, len)) =
+                    hf.byte_range(doc.header.version, doc.header.data_offset)
             {
                 node.byte_range = Some((start, len));
             }

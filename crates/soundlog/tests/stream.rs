@@ -4548,7 +4548,7 @@ fn test_from_vgm_callback_stream_loop_and_fadeout() {
 fn create_intro_plus_loop_vgm() -> Vec<u8> {
     let mut b = VgmBuilder::new();
     b.add_vgm_command(WaitSamples(500)); // intro (command index 0)
-    b.set_loop_index(1);                 // loop point → command index 1
+    b.set_loop_index(1); // loop point → command index 1
     b.add_vgm_command(WaitSamples(300)); // loop body: 300 samples
     b.add_vgm_command(WaitSamples(400)); // loop body: 400 samples
     b.add_vgm_command(EndOfData);
@@ -4724,9 +4724,9 @@ fn test_seek_to_sample_loop_offset_not_at_data_start() {
     // Loop body: WaitSamples(400) + WaitSamples(600) + EndOfData (1000 samples/loop).
     let mut b = VgmBuilder::new();
     b.add_vgm_command(WaitSamples(1000)); // intro (will produce a non-zero loop_offset)
-    b.set_loop_index(1);                  // loop point → command index 1
-    b.add_vgm_command(WaitSamples(400));  // loop body part A
-    b.add_vgm_command(WaitSamples(600));  // loop body part B
+    b.set_loop_index(1); // loop point → command index 1
+    b.add_vgm_command(WaitSamples(400)); // loop body part A
+    b.add_vgm_command(WaitSamples(600)); // loop body part B
     b.add_vgm_command(EndOfData);
     let raw: Vec<u8> = b.finalize().into();
 
@@ -4857,8 +4857,8 @@ fn test_callback_stream_seek_suppresses_user_callbacks() {
 #[test]
 fn test_callback_stream_seek_maintains_chip_state() {
     use soundlog::chip::Ym2612Spec;
-    use soundlog::chip::state::Ym2612State;
     use soundlog::chip::event::StateEvent;
+    use soundlog::chip::state::Ym2612State;
 
     // Build VGM whose loop body contains a key-on write that produces a
     // StateEvent::KeyOn.  After seek_to_sample(1) the state tracker must have
@@ -4980,10 +4980,7 @@ fn test_seek_to_sample_beyond_stream_end_reaches_eos() {
     // Stream must be at end (next call should be EndOfStream or None).
     let result = stream.next();
     assert!(
-        matches!(
-            result,
-            Some(Ok(StreamResult::EndOfStream)) | None
-        ),
+        matches!(result, Some(Ok(StreamResult::EndOfStream)) | None),
         "after seeking past end, stream must report EndOfStream; got {:?}",
         result
     );
@@ -5053,13 +5050,19 @@ fn test_callback_stream_stop_at_sample_via_on_write_then_seek_to_resume() {
     }
 
     // Write B (sample 300) must have triggered the stop — 300 > 100.
-    let captured = captured_sample.borrow().expect("on_write must have fired with sample > 100");
-    assert_eq!(captured, 300, "Write B fires at sample 300 (> threshold 100)");
+    let captured = captured_sample
+        .borrow()
+        .expect("on_write must have fired with sample > 100");
+    assert_eq!(
+        captured, 300,
+        "Write B fires at sample 300 (> threshold 100)"
+    );
 
     // Phase 2: seek to the captured sample position
     // seek_to_sample rewinds to the loop point then fast-forwards to `captured`,
     // consuming any prior commands silently (user callbacks suppressed).
-    cs.seek_to_sample(captured).expect("seek_to_sample(captured) failed");
+    cs.seek_to_sample(captured)
+        .expect("seek_to_sample(captured) failed");
     assert!(
         cs.stream().current_sample() >= captured,
         "current_sample ({}) must be >= captured sample {} after seek",

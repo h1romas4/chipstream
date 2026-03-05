@@ -532,8 +532,10 @@ pub struct VgmCallbackStream<'a> {
     callbacks: Callbacks<'a>,
     /// Stored tracker configurations so state can be re-initialized after a seek.
     /// Each entry re-creates one tracker with its original instance and clock.
-    tracker_initializers: Vec<Box<dyn Fn(&mut StateTrackers) + 'static>>,
+    tracker_initializers: Vec<TrackerInitializer>,
 }
+
+type TrackerInitializer = Box<dyn Fn(&mut StateTrackers) + 'static>;
 
 impl<'a> VgmCallbackStream<'a> {
     /// Creates a new callback stream from a VGM stream.
@@ -1052,8 +1054,9 @@ impl<'a> VgmCallbackStream<'a> {
     {
         S::init_tracker(&mut self.state_trackers, instance, clock);
         // Store the initializer so seek_to_sample can rebuild the tracker after rewinding.
-        self.tracker_initializers
-            .push(Box::new(move |trackers| S::init_tracker(trackers, instance, clock)));
+        self.tracker_initializers.push(Box::new(move |trackers| {
+            S::init_tracker(trackers, instance, clock)
+        }));
     }
 
     /// Register a callback for AY8910 stereo mask commands.
