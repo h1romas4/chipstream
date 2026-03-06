@@ -6,6 +6,7 @@
 
 mod cui;
 mod gui;
+mod logger;
 
 // CLI parsing and file handling
 use anyhow::Context;
@@ -14,6 +15,9 @@ use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
+
+use crate::logger::Logger;
+use std::sync::Arc;
 
 /// Simple CLI: optional subcommand `test`, otherwise optional file path to display
 #[derive(Subcommand, Debug)]
@@ -124,6 +128,8 @@ fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
 fn main() {
     // Parse CLI args early so we can load the initial bytes before creating the UI.
     let args = Args::parse();
+    // Create a default logger; some subcommands will override this based on their dry_run flags.
+    let mut logger = Arc::new(Logger::new_stdout(false));
 
     // Handle subcommands
     match args.command {
@@ -132,18 +138,20 @@ fn main() {
             // read raw bytes, detect gz/vgz by extension or header and decompress.
             // The underlying `test_roundtrip` accepts a `dry_run: bool` which
             // suppresses standard one-line and diagnostic output when true.
+            // Configure logger according to dry_run so main's messages respect it.
+            logger = Arc::new(Logger::new_stdout(dry_run));
             // Pass `dry_run` through directly so that `--dry-run` results in no
             // normal/stdout output from the test helper.
             match load_bytes_from_path(&file) {
                 Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, dry_run) {
                     Ok(_) => std::process::exit(0),
                     Err(e) => {
-                        eprintln!("test_roundtrip failed: {}", e);
+                        log_error!(&*logger, "test_roundtrip failed: {}", e);
                         std::process::exit(1);
                     }
                 },
                 Err(e) => {
-                    eprintln!("failed to read input for test: {}", e);
+                    log_error!(&*logger, "failed to read input for test: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -164,13 +172,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            eprintln!("redump failed: {}", e);
+                            log_error!(&*logger, "redump failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("failed to read input for redump: {}", e);
+                    log_error!(&*logger, "failed to read input for redump: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -179,19 +187,19 @@ fn main() {
             // Load file
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
-                    // Call parse_vgm
-                    match crate::cui::vgm::parse_vgm(&file, bytes) {
+                    // Call parse_vgm (pass logger Arc so the parse path can use centralized logging)
+                    match crate::cui::vgm::parse_vgm(&file, bytes, logger.clone()) {
                         Ok(_) => {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            eprintln!("parse failed: {}", e);
+                            log_error!(&*logger, "parse failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("failed to read file: {}", e);
+                    log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -204,6 +212,8 @@ fn main() {
             loop_base,
         }) => {
             // Load file
+            // Configure logger according to dry_run so main-level messages respect it.
+            logger = Arc::new(Logger::new_stdout(dry_run));
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
                     // Default loop_count to Some(1) when unspecified
@@ -212,7 +222,7 @@ fn main() {
                     match crate::cui::play::play_vgm(
                         &file,
                         bytes,
-                        dry_run,
+                        logger.clone(),
                         loop_count,
                         loop_modifier,
                         loop_base,
@@ -221,13 +231,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            eprintln!("play failed: {}", e);
+                            log_error!(&*logger, "play failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("failed to read file: {}", e);
+                    log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -240,7 +250,7 @@ fn main() {
     if let Some(path) = args.file {
         match load_bytes_from_path(&path) {
             Ok(data) => initial_bytes = data,
-            Err(e) => eprintln!("failed to read file: {}", e),
+            Err(e) => log_error!(&logger, "failed to read file: {}", e),
         }
     }
 

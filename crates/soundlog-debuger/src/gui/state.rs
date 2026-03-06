@@ -747,11 +747,11 @@ impl UiState {
     /// Returns Some(AstNode) when GD3 metadata exists and at least one child field
     /// is non-empty; otherwise returns None.
     fn build_gd3_node(doc: &VgmDocument) -> Option<AstNode> {
-        if doc.gd3.is_some() && doc.header.gd3_offset != 0 {
+        if doc.header.gd3_offset != 0 {
             let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
             // Fields start after the 12-byte Gd3 header (ident+version+len).
             let mut field_off = gd3_start + 12_usize;
-            let gd3_ref = doc.gd3.as_ref().unwrap();
+            let gd3_ref = doc.gd3.as_ref()?;
             let mut gd3_children: Vec<AstNode> = Vec::new();
 
             // Helper to push a field node and advance the running offset.

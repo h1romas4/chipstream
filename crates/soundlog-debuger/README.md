@@ -219,6 +219,6 @@ Ubuntu:
 ```
 sudo apt install heaptrack heaptrack-gui
 RUSTFLAGS="-C debuginfo=2" cargo build --release
-heaptrack target/release/soundlog play crates/soundlog/assets/vgm/REMDME.vgm
+heaptrack target/release/soundlog play --dry-run crates/soundlog/assets/vgm/REMDME.vgm
 heaptrack_gui heaptrack.<pid>.gz
 ```
