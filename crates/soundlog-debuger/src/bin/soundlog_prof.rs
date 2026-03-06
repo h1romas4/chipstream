@@ -16,7 +16,84 @@ use soundlog::vgm::stream::StreamResult;
 /// `soundlog` crate's assets.
 static REMDME_VGM: &[u8] = include_bytes!("../../../soundlog/assets/vgm/REMDME.vgm");
 
+// Main - Switch to parser mode to retrieve the profile.
 fn main() {
+    push_chunk();
+    // from_vgm();
+}
+
+#[allow(dead_code)]
+fn push_chunk() {
+    // Obtain raw pointer/length (demonstrate an unsafe access to the static bytes)
+    let ptr = REMDME_VGM.as_ptr();
+    let len = REMDME_VGM.len();
+
+    // SAFETY: `ptr`/`len` reference a valid `'static` byte slice (from `include_bytes!`).
+    // We create a temporary slice via `from_raw_parts` and then clone it into a Vec<u8>.
+    // This copies the data into an owned buffer so we avoid any unsafe ownership/UB issues.
+    let data_vec: Vec<u8> = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+
+    // Construct an empty stream and feed it incrementally with push_chunk (2048-byte chunks).
+    let mut stream = VgmStream::new();
+
+    // Ensure the stream does not loop infinitely on VGM files with loop points.
+    stream.set_loop_count(Some(1));
+
+    // Iterate over the source bytes in 2048-byte chunks and feed them into the stream.
+    let chunk_size = 4096;
+    let mut finished = false;
+
+    for chunk in data_vec.chunks(chunk_size) {
+        if let Err(_e) = stream.push_chunk(chunk) {
+            // On parse error while adding chunk, quietly exit the binary (for profiling).
+            return;
+        }
+
+        // Consume any commands now available after pushing the chunk.
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(cmd))) => {
+                    // Observe the `cmd` on the stack so the compiler cannot
+                    // optimize away the parsing/stack/register traffic. Do not print it.
+                    black_box(cmd);
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => {
+                    // Need more bytes: stop draining and continue feeding next chunk.
+                    break;
+                }
+                Some(Ok(StreamResult::EndOfStream)) => {
+                    // Stream ended: finish processing.
+                    finished = true;
+                    break;
+                }
+                Some(Err(_)) => {
+                    // On parse error while iterating, finish silently.
+                    finished = true;
+                    break;
+                }
+                None => {
+                    // Iterator returned None unexpectedly; treat as finished.
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        if finished {
+            break;
+        }
+    }
+
+    // If there are remaining commands after feeding all chunks, attempt a final drain.
+    if !finished {
+        while let Some(Ok(StreamResult::Command(cmd))) = stream.next() {
+            black_box(cmd);
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn from_vgm() {
     // Obtain raw pointer/length (demonstrate an unsafe access to the static bytes)
     let ptr = REMDME_VGM.as_ptr();
     let len = REMDME_VGM.len();
