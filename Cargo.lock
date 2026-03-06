@@ -2500,7 +2500,7 @@ version = "0.10.1"
 
 [[package]]
 name = "soundlog-debuger"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "anyhow",
  "clap",

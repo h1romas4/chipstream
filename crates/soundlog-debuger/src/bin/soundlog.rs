@@ -4,20 +4,19 @@
 //! left AST pane and a right hex viewer; here we initialize the placeholder
 //! state and call into the module each frame.
 
-mod cui;
-mod gui;
-mod logger;
-
-// CLI parsing and file handling
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
-
-use crate::logger::Logger;
 use std::sync::Arc;
+
+// Use the library crate's modules and types. The library crate (this package)
+// exposes `cui`, `gui`, `logger` and the logging macros via `lib.rs`.
+use soundlog_debuger::cui;
+use soundlog_debuger::gui;
+use soundlog_debuger::logger::Logger;
 
 /// Simple CLI: optional subcommand `test`, otherwise optional file path to display
 #[derive(Subcommand, Debug)]
@@ -79,11 +78,11 @@ enum Commands {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "soundlog",
-    author = env!("CARGO_PKG_AUTHORS"),
-    version = env!("CARGO_PKG_VERSION"),
-    about = env!("CARGO_PKG_DESCRIPTION"),
-)]
+     name = "soundlog",
+     author = env!("CARGO_PKG_AUTHORS"),
+     version = env!("CARGO_PKG_VERSION"),
+     about = env!("CARGO_PKG_DESCRIPTION"),
+ )]
 struct Args {
     /// Subcommand to run (e.g., `test`)
     #[command(subcommand)]
@@ -122,9 +121,9 @@ fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     }
 }
 
-/// GUI runner moved to `ui::run_gui`.
+/// Entry point.
 ///
-/// The function used to live in this file but has been moved into the UI
+/// This binary uses the library crate's modules and the exported logging macros.
 fn main() {
     // Parse CLI args early so we can load the initial bytes before creating the UI.
     let args = Args::parse();
@@ -134,24 +133,22 @@ fn main() {
     // Handle subcommands
     match args.command {
         Some(Commands::Test { file, dry_run }) => {
-            // Read the input using the same logic as the GUI code path:
-            // read raw bytes, detect gz/vgz by extension or header and decompress.
-            // The underlying `test_roundtrip` accepts a `dry_run: bool` which
-            // suppresses standard one-line and diagnostic output when true.
             // Configure logger according to dry_run so main's messages respect it.
             logger = Arc::new(Logger::new_stdout(dry_run));
-            // Pass `dry_run` through directly so that `--dry-run` results in no
-            // normal/stdout output from the test helper.
+            // Pass `dry_run` through directly so that `--dry-run` results in no normal/stdout output
             match load_bytes_from_path(&file) {
-                Ok(bytes) => match crate::cui::vgm::test_roundtrip(&file, bytes, dry_run) {
-                    Ok(_) => std::process::exit(0),
-                    Err(e) => {
-                        log_error!(&*logger, "test_roundtrip failed: {}", e);
-                        std::process::exit(1);
+                Ok(bytes) => {
+                    match cui::vgm::test_roundtrip(&file, bytes, dry_run) {
+                        Ok(_) => std::process::exit(0),
+                        Err(e) => {
+                            // Qualify macro with crate name so the exported macro is resolved.
+                            soundlog_debuger::log_error!(&*logger, "test_roundtrip failed: {}", e);
+                            std::process::exit(1);
+                        }
                     }
-                },
+                }
                 Err(e) => {
-                    log_error!(&*logger, "failed to read input for test: {}", e);
+                    soundlog_debuger::log_error!(&*logger, "failed to read input for test: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -165,20 +162,23 @@ fn main() {
             match load_bytes_from_path(&input) {
                 Ok(bytes) => {
                     // Call redump_vgm (preserves original loop and fadeout information from the file)
-                    match crate::cui::vgm::redump_vgm(&input, &output, bytes, diag) {
+                    match cui::vgm::redump_vgm(&input, &output, bytes, diag) {
                         Ok(_) => {
                             // redump succeeded; diagnostics (if diag) are produced inside `redump_vgm`.
-                            // Exit success here.
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            log_error!(&*logger, "redump failed: {}", e);
+                            soundlog_debuger::log_error!(&*logger, "redump failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    log_error!(&*logger, "failed to read input for redump: {}", e);
+                    soundlog_debuger::log_error!(
+                        &*logger,
+                        "failed to read input for redump: {}",
+                        e
+                    );
                     std::process::exit(1);
                 }
             }
@@ -188,18 +188,18 @@ fn main() {
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
                     // Call parse_vgm (pass logger Arc so the parse path can use centralized logging)
-                    match crate::cui::vgm::parse_vgm(&file, bytes, logger.clone()) {
+                    match cui::vgm::parse_vgm(&file, bytes, logger.clone()) {
                         Ok(_) => {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            log_error!(&*logger, "parse failed: {}", e);
+                            soundlog_debuger::log_error!(&*logger, "parse failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_debuger::log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -211,7 +211,6 @@ fn main() {
             loop_modifier,
             loop_base,
         }) => {
-            // Load file
             // Configure logger according to dry_run so main-level messages respect it.
             logger = Arc::new(Logger::new_stdout(dry_run));
             match load_bytes_from_path(&file) {
@@ -219,7 +218,7 @@ fn main() {
                     // Default loop_count to Some(1) when unspecified
                     let loop_count = loop_count.or(Some(1));
                     // Call play_vgm
-                    match crate::cui::play::play_vgm(
+                    match cui::play::play_vgm(
                         &file,
                         bytes,
                         logger.clone(),
@@ -231,13 +230,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            log_error!(&*logger, "play failed: {}", e);
+                            soundlog_debuger::log_error!(&*logger, "play failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_debuger::log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -250,10 +249,10 @@ fn main() {
     if let Some(path) = args.file {
         match load_bytes_from_path(&path) {
             Ok(data) => initial_bytes = data,
-            Err(e) => log_error!(&logger, "failed to read file: {}", e),
+            Err(e) => soundlog_debuger::log_error!(&logger, "failed to read file: {}", e),
         }
     }
 
-    // Launch GUI in a separate function (implementation moved to `ui::run_gui`).
+    // Launch GUI in a separate function (implementation is provided by the gui module).
     gui::run_gui(initial_bytes);
 }

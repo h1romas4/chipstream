@@ -66,6 +66,12 @@ pub struct HexViewer {
     rebuilt_bytes: Option<Vec<u8>>,
 }
 
+impl Default for HexViewer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HexViewer {
     /// Create a new HexViewer with default settings.
     pub fn new() -> Self {

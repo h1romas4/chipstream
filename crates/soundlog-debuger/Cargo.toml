@@ -1,6 +1,6 @@
 [package]
 name = "soundlog-debuger"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 description = "GUI/CLI frontend for soundlog for debug"
 license = "MIT"
@@ -21,4 +21,8 @@ soundlog = { path = "../soundlog" }
 
 [[bin]]
 name = "soundlog"
-path = "src/main.rs"
+path = "src/bin/soundlog.rs"
+
+[[bin]]
+name = "soundlog-prof"
+path = "src/bin/soundlog_prof.rs"
