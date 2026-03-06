@@ -24,14 +24,9 @@ fn main() {
 
 #[allow(dead_code)]
 fn push_chunk() {
-    // Obtain raw pointer/length (demonstrate an unsafe access to the static bytes)
-    let ptr = REMDME_VGM.as_ptr();
-    let len = REMDME_VGM.len();
-
-    // SAFETY: `ptr`/`len` reference a valid `'static` byte slice (from `include_bytes!`).
-    // We create a temporary slice via `from_raw_parts` and then clone it into a Vec<u8>.
-    // This copies the data into an owned buffer so we avoid any unsafe ownership/UB issues.
-    let data_vec: Vec<u8> = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    // Create an owned `Vec<u8>` by copying the embedded bytes.
+    // `to_vec()` performs an efficient memcpy.
+    let data_vec: Vec<u8> = REMDME_VGM.to_vec();
 
     // Construct an empty stream and feed it incrementally with push_chunk (2048-byte chunks).
     let mut stream = VgmStream::new();
@@ -94,14 +89,9 @@ fn push_chunk() {
 
 #[allow(dead_code)]
 fn from_vgm() {
-    // Obtain raw pointer/length (demonstrate an unsafe access to the static bytes)
-    let ptr = REMDME_VGM.as_ptr();
-    let len = REMDME_VGM.len();
-
-    // SAFETY: `ptr`/`len` reference a valid `'static` byte slice (from `include_bytes!`).
-    // We create a temporary slice via `from_raw_parts` and then clone it into a Vec<u8>.
-    // This copies the data into an owned buffer so we avoid any unsafe ownership/UB issues.
-    let data_vec: Vec<u8> = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    // Create an owned `Vec<u8>` by copying the embedded bytes.
+    // `to_vec()` performs an efficient memcpy.
+    let data_vec: Vec<u8> = REMDME_VGM.to_vec();
 
     // Build the VgmStream from the owned Vec<u8>.
     let mut stream = match VgmStream::from_vgm(data_vec) {
