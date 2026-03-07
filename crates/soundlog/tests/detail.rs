@@ -695,6 +695,94 @@ fn test_bit_packing_decompress_size_limit() {
 }
 
 #[test]
+fn test_bit_packing_read_too_many_bits() {
+    // If a compression asks to read more than 32 bits in a single read,
+    // BitStreamReader::read_bits should return an Other error propagated here.
+    let mut compression = BitPackingCompression {
+        bits_decompressed: 64,
+        bits_compressed: 33, // > 32 -> should trigger error from read_bits
+        sub_type: BitPackingSubType::Copy,
+        add_value: 0,
+        data: vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF], // sufficient bits available
+    };
+
+    let res = compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE);
+    match res {
+        Err(ParseError::Other(ref s)) => {
+            assert!(
+                s.contains("Cannot read more than 32 bits"),
+                "unexpected message: {}",
+                s
+            );
+        }
+        other => panic!(
+            "expected Other(Cannot read more than 32 bits), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_bit_packing_unknown_subtype_error() {
+    // Unknown sub-type should produce an Other error indicating unknown sub-type.
+    let mut compression = BitPackingCompression {
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        sub_type: BitPackingSubType::Unknown(0xFF),
+        add_value: 0,
+        data: vec![0x12, 0x34], // some data to ensure read_bits would be attempted
+    };
+
+    let res = compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE);
+    match res {
+        Err(ParseError::Other(ref s)) => {
+            assert!(
+                s.contains("Unknown bit packing sub-type"),
+                "unexpected message: {}",
+                s
+            );
+        }
+        other => panic!(
+            "expected Other(Unknown bit packing sub-type), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_bit_packing_use_table_index_oob() {
+    // Using a table where an index references beyond table bounds should return DataInconsistency.
+    let table = DecompressionTable {
+        compression_type: CompressionType::BitPacking,
+        sub_type: 0x02,
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        value_count: 2,
+        table_data: vec![10, 11], // only two values available
+    };
+
+    // Construct data that yields an index of 3 (0x30 -> 3,0)
+    let mut compression = BitPackingCompression {
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        sub_type: BitPackingSubType::UseTable,
+        add_value: 0,
+        data: vec![0x30],
+    };
+
+    let res = compression.decompress(Some(&table), TEST_MAX_DECOMPRESS_SIZE);
+    match res {
+        Err(ParseError::DataInconsistency(ref s)) => {
+            assert!(s.contains("Table index"), "unexpected message: {}", s);
+        }
+        other => panic!(
+            "expected DataInconsistency(Table index out of bounds), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
 fn test_dpcm_decompress_size_limit() {
     let table = DecompressionTable {
         compression_type: CompressionType::Dpcm,
@@ -979,4 +1067,137 @@ fn test_roundtrip_ram_write_32() {
     let block = build_data_block(&original); // data_type inferred from parsed type
     let parsed = parse_data_block(block).expect("Round-trip parse failed");
     assert_eq!(parsed, original);
+}
+
+#[test]
+fn test_stream_chip_type_variants_roundtrip() {
+    // Ensure known numeric values map to StreamChipType and back to u8 as expected.
+    let mapping = [
+        (0x00u8, StreamChipType::Ym2612Pcm),
+        (0x01u8, StreamChipType::Rf5c68Pcm),
+        (0x02u8, StreamChipType::Rf5c164Pcm),
+        (0x03u8, StreamChipType::PwmPcm),
+        (0x04u8, StreamChipType::Okim6258Adpcm),
+        (0x05u8, StreamChipType::Huc6280Pcm),
+        (0x06u8, StreamChipType::ScspPcm),
+        (0x07u8, StreamChipType::NesApuDpcm),
+        (0x08u8, StreamChipType::MikeyPcm),
+        (0x3Fu8, StreamChipType::Unknown(0x3F)),
+    ];
+
+    for (byte, expected) in &mapping {
+        let s = StreamChipType::from(*byte);
+        assert_eq!(&s, expected);
+        let back: u8 = u8::from(s);
+        // When converting back, values are masked to low 6 bits.
+        assert_eq!(back & 0x3F, *byte & 0x3F);
+    }
+}
+
+#[test]
+fn test_build_data_block_mappings_for_rom_and_ram() {
+    // Rom mapping: K054539Rom -> 0x8C
+    let rom = DataBlockType::RomRamDump(RomRamDump {
+        chip_type: RomRamChipType::K054539Rom,
+        rom_size: 0x1000,
+        start_address: 0x0,
+        data: vec![0xAA],
+    });
+    let block = build_data_block(&rom);
+    assert_eq!(block.data_type, 0x8C);
+
+    // RAM write 16: NesApu -> 0xC2
+    let ram16 = DataBlockType::RamWrite16(RamWrite16 {
+        chip_type: RamWrite16ChipType::NesApu,
+        start_address: 0x1234,
+        data: vec![0x01],
+    });
+    let block16 = build_data_block(&ram16);
+    assert_eq!(block16.data_type, 0xC2);
+
+    // RAM write 32: Es5503 -> 0xE1
+    let ram32 = DataBlockType::RamWrite32(RamWrite32 {
+        chip_type: RamWrite32ChipType::Es5503,
+        start_address: 0x1000,
+        data: vec![0x02],
+    });
+    let block32 = build_data_block(&ram32);
+    assert_eq!(block32.data_type, 0xE1);
+}
+
+#[test]
+fn test_compressed_unknown_payload_roundtrip() {
+    // Unknown compression-type payload should be preserved in roundtrip build/parse.
+    let unknown = CompressedStream {
+        chip_type: StreamChipType::Huc6280Pcm,
+        compression_type: CompressionType::Unknown(0xFE),
+        uncompressed_size: 0x0100,
+        compression: CompressedStreamData::Unknown {
+            compression_type: 0xFE,
+            data: vec![0x11, 0x22, 0x33],
+        },
+    };
+    let original = DataBlockType::CompressedStream(unknown.clone());
+    let block = build_data_block(&original);
+    let parsed = parse_data_block(block).expect("parse failed");
+    match parsed {
+        DataBlockType::CompressedStream(parsed_stream) => {
+            assert_eq!(parsed_stream.chip_type, unknown.chip_type);
+            assert_eq!(parsed_stream.compression_type, unknown.compression_type);
+            match parsed_stream.compression {
+                CompressedStreamData::Unknown {
+                    compression_type,
+                    data,
+                } => {
+                    assert_eq!(compression_type, 0xFE);
+                    assert_eq!(data, vec![0x11, 0x22, 0x33]);
+                }
+                _ => panic!("expected Unknown compression payload"),
+            }
+        }
+        _ => panic!("expected CompressedStream"),
+    }
+}
+
+#[test]
+fn test_bit_packing_decompress_24bit_values() {
+    // Verify multi-byte (3-byte / 24-bit) write ordering via decompress path.
+    // bits_decompressed = 24, bits_compressed = 8 -> each input byte becomes one 24-bit value.
+    let mut compression = BitPackingCompression {
+        bits_decompressed: 24,
+        bits_compressed: 8,
+        sub_type: BitPackingSubType::Copy,
+        add_value: 0x0000,
+        data: vec![0x01, 0x02], // values: 1, 2
+    };
+
+    compression
+        .decompress(None, TEST_MAX_DECOMPRESS_SIZE)
+        .expect("Decompression failed");
+
+    // Each value stored little-endian across 3 bytes:
+    // 1 -> [0x01, 0x00, 0x00], 2 -> [0x02, 0x00, 0x00]
+    assert_eq!(compression.data, vec![0x01, 0x00, 0x00, 0x02, 0x00, 0x00]);
+}
+
+#[test]
+fn test_bitstream_reader_unexpected_eof_via_parse() {
+    // Ensure parse_data_block properly reports UnexpectedEof for compressed stream headers that are too short.
+    let block = DataBlock {
+        marker: 0x66,
+        chip_instance: Instance::Primary as u8,
+        data_type: 0x40, // compressed stream
+        size: 2,
+        data: vec![0x00, 0x01], // insufficient for header (needs at least 5)
+    };
+    let res = parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
 }

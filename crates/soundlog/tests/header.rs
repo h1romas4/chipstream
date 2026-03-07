@@ -308,3 +308,252 @@ fn test_chip_instances_substitute_ym2413_for_ym2151() {
         "Expected Ym2151 instance derived from YM2413 substitution"
     );
 }
+
+#[test]
+fn test_gd3_tryfrom_short_header() {
+    // Fewer than 12 bytes should yield a HeaderTooShort("gd3") error.
+    let bytes: &[u8] = &[0u8; 8];
+    let res = soundlog::meta::Gd3::try_from(bytes);
+    match res {
+        Err(soundlog::ParseError::HeaderTooShort(ref s)) => {
+            assert_eq!(s, "gd3");
+        }
+        other => panic!("expected HeaderTooShort(\"gd3\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_gd3_tryfrom_invalid_ident() {
+    // A 12-byte header with wrong ident should produce InvalidIdent.
+    let mut bytes = vec![0u8; 12];
+    bytes[0..4].copy_from_slice(b"BAD!");
+    let res = soundlog::meta::Gd3::try_from(bytes.as_slice());
+    match res {
+        Err(soundlog::ParseError::InvalidIdent(id)) => {
+            assert_eq!(&id, b"BAD!");
+        }
+        other => panic!("expected InvalidIdent, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_gd3_truncated_utf16_fields_yields_none() {
+    // Construct a Gd3 header that claims 1 byte of data (which is truncated for UTF-16).
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"Gd3 ");
+    bytes.extend_from_slice(&0x00000100u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // length = 1 byte (truncated)
+    bytes.push(0xAA); // single data byte -> truncated stream
+
+    let gd3 = soundlog::meta::Gd3::try_from(bytes.as_slice())
+        .expect("expected parse to succeed despite truncation");
+    // All string fields should be None due to truncation semantics.
+    assert_eq!(gd3.track_name_en, None);
+    assert_eq!(gd3.notes, None);
+    assert_eq!(gd3.version, 0x00000100);
+}
+
+#[test]
+fn test_gd3_invalid_utf16_yields_other_error() {
+    // Provide a field with an unpaired surrogate (0xD800) followed by terminator.
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"Gd3 ");
+    bytes.extend_from_slice(&0x00000100u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&4u32.to_le_bytes()); // length = 4 bytes (one u16 + terminator)
+
+    // Append invalid UTF-16: single unpaired high surrogate 0xD800, then 0x0000 terminator.
+    bytes.extend_from_slice(&0xD800u16.to_le_bytes());
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+
+    let res = soundlog::meta::Gd3::try_from(bytes.as_slice());
+    match res {
+        Err(soundlog::ParseError::Other(ref s)) => {
+            assert!(
+                s.contains("invalid utf16 in gd3"),
+                "unexpected message: {}",
+                s
+            );
+        }
+        other => panic!("expected Other(invalid utf16), got {:?}", other),
+    }
+}
+
+//
+// Additional UnexpectedEof tests for data block parsing branches.
+// These ensure parse_data_block returns ParseError::UnexpectedEof
+// when the provided data buffer is too short for the declared type.
+//
+
+#[test]
+fn test_parse_data_block_unexpected_eof_compressed_short_header() {
+    // Compressed stream requires at least 5 bytes for the header.
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0x40, // compressed stream
+        size: 2,
+        data: vec![0x00, 0x01], // insufficient for header (needs at least 5)
+    };
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_bitpacking_inner_header() {
+    // Compressed stream with BitPacking: outer header present (>=5 bytes), but
+    // BitPacking requires >=11 bytes total. Use length 8 to trigger inner EOF.
+    let mut data: Vec<u8> = Vec::new();
+    data.push(0x00); // compression type = BitPacking
+    data.extend_from_slice(&0u32.to_le_bytes()); // uncompressed size (4 bytes)
+    // leave the rest short so total length < 11
+    data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // partial fields
+
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0x40, // compressed stream
+        size: data.len() as u32,
+        data,
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_dpcm_inner_header() {
+    // Compressed stream with DPCM: outer header present (>=5 bytes), but
+    // DPCM requires >=10 bytes total. Use length 9 to trigger inner EOF.
+    let mut data: Vec<u8> = Vec::new();
+    data.push(0x01); // compression type = Dpcm
+    data.extend_from_slice(&0u32.to_le_bytes()); // uncompressed size (4 bytes)
+    // leave the rest short so total length < 10
+    data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // partial fields (still short)
+
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0x40, // compressed stream
+        size: data.len() as u32,
+        data,
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_decompression_table() {
+    // Decompression table (0x7F) requires at least 6 bytes.
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0x7F,
+        size: 4,
+        data: vec![0x00, 0x01, 0x02, 0x03], // too short (needs at least 6)
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_romram_dump() {
+    // ROM/RAM dump (0x80..=0xBF) requires at least 8 bytes for rom_size/start_address.
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0x80,
+        size: 4,
+        data: vec![0x00, 0x01, 0x02, 0x03], // too short (needs at least 8)
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_ramwrite16() {
+    // RAM write 16-bit (0xC0..=0xDF) requires at least 2 bytes for start_address.
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0xC0,
+        size: 1,
+        data: vec![0xFF], // too short (needs at least 2)
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}
+
+#[test]
+fn test_parse_data_block_unexpected_eof_ramwrite32() {
+    // RAM write 32-bit (0xE0..=0xFF) requires at least 4 bytes for start_address.
+    let block = soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: soundlog::vgm::command::Instance::Primary as u8,
+        data_type: 0xE0,
+        size: 2,
+        data: vec![0xAA, 0xBB], // too short (needs at least 4)
+    };
+
+    let res = soundlog::vgm::detail::parse_data_block(block);
+    assert!(res.is_err());
+    if let Err((_blk, e)) = res {
+        match e {
+            soundlog::ParseError::UnexpectedEof => { /* expected */ }
+            other => panic!("expected UnexpectedEof, got {:?}", other),
+        }
+    } else {
+        panic!("expected error");
+    }
+}

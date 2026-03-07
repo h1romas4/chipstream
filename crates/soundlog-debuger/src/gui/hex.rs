@@ -10,15 +10,6 @@
 //! The widget is intentionally lightweight and does not (yet) implement:
 //!  - keyboard selection/drag selection,
 //!  - highly optimized rendering of extremely large buffers.
-//!
-//! Usage example:
-//! ```ignore
-//! let mut viewer = hex_viewer::HexViewer::new();
-//! viewer.show(ui, &bytes);
-//! if let Some(idx) = viewer.selected() { /* use selected byte idx */ }
-//! viewer.set_selection_range(0x100, 0x1FF);
-//! viewer.set_reference_markers(vec![0x120, 0x180]);
-//! ```
 #![allow(clippy::manual_div_ceil)]
 use eframe::egui;
 

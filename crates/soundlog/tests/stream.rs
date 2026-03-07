@@ -4177,6 +4177,64 @@ fn test_length_mode_reverse_command_count() {
     );
 }
 
+#[test]
+fn test_length_mode_command_count_looped_reverse() {
+    // LengthMode::CommandCount reverse + looped
+    // data = [0x10,0x20,0x30,0x40], data_length = 4, freq = 44100 (1 write/sample)
+    // WaitSamples(8) => 9 writes at samples 0..8 inclusive
+    // Reverse pattern [0x40,0x30,0x20,0x10] repeating -> expect:
+    // [0x40,0x30,0x20,0x10, 0x40,0x30,0x20,0x10, 0x40]
+    let data = vec![0x10, 0x20, 0x30, 0x40];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: true,
+            looped: true,
+        },
+        data_length: 4,
+    });
+    // WaitSamples(N) fires writes at samples 0..=N (N+1 writes).
+    builder.add_vgm_command(WaitSamples(8));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x40, 0x30, 0x20, 0x10, 0x40, 0x30, 0x20, 0x10, 0x40],
+        "CommandCount looped reverse: expected reversed pattern repeating"
+    );
+}
+
+#[test]
+fn test_length_mode_play_until_end_looped_reverse_fast_call() {
+    // StartStreamFastCall (PlayUntilEnd) reverse + looped
+    // Data block [0x01,0x02,0x03,0x04], FastCall block_id=0, looped=true, reverse=true
+    // WaitSamples(9) -> 10 writes expected; reversed repeating pattern:
+    // [0x04,0x03,0x02,0x01, 0x04,0x03,0x02,0x01, 0x04,0x03]
+    let data = vec![0x01, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: true,
+            looped: true,
+        },
+    });
+    // WaitSamples(9) fires writes at samples 0..=9 = 10 writes.
+    builder.add_vgm_command(WaitSamples(9));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01, 0x04, 0x03],
+        "PlayUntilEnd (FastCall) looped reverse: expected reversed block repeating"
+    );
+}
+
 /// StartStreamFastCall with reverse=true (PlayUntilEnd reverse) – plays block backwards.
 ///
 /// Data block [0xA0, 0xB0, 0xC0, 0xD0], FastCall block_id=0, reverse.
