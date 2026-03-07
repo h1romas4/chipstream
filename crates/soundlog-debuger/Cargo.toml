@@ -26,3 +26,7 @@ path = "src/bin/soundlog.rs"
 [[bin]]
 name = "soundlog-prof"
 path = "src/bin/soundlog_prof.rs"
+
+[[bin]]
+name = "soundlog-micro"
+path = "src/bin/soundlog_micro.rs"

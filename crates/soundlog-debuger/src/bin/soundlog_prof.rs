@@ -2,6 +2,7 @@
 //! Profiling binary for soundlog: feeds a bundled VGM into `VgmStream` incrementally.
 //!
 //! This binary is intentionally minimal and designed for profiling. It:
+//! - primarily intended to verify performance for microcomputers
 //! - embeds a VGM file with `include_bytes!`
 //! - parses the VGM header and uses the header `eof_offset` and `loop_offset`
 //! - feeds the VGM command/data region into `VgmStream` in fixed-size chunks
