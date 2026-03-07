@@ -1703,6 +1703,64 @@ impl VgmHeader {
         Self::total_header_size(version, data_offset)
     }
 
+    /// Compute the loop restart position as a byte offset **relative to the
+    /// start of the command region**, given the raw header fields and the total
+    /// file length.
+    ///
+    /// The VGM spec stores `loop_offset` as a value relative to the field's own
+    /// position (`0x1C`), so the absolute position is
+    /// `VgmHeaderField::LoopOffset.offset() + loop_offset`.  This helper
+    /// validates the result against `[command_start, file_len)` and returns it
+    /// as an offset within the command region so callers can use it directly as
+    /// a `push_chunk` restart position.
+    ///
+    /// Returns `None` when:
+    /// - `loop_offset` is `0` (no loop point defined), or
+    /// - the computed absolute position falls outside the command region.
+    ///
+    /// # Arguments
+    /// * `version`      — `header.version`.
+    /// * `loop_offset`  — `header.loop_offset` (raw stored value).
+    /// * `data_offset`  — `header.data_offset`.
+    /// * `file_len`     — total byte length of the VGM file (`data.len()`).
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::VgmHeader;
+    ///
+    /// let raw = soundlog::VgmBuilder::new().finalize();
+    /// let bytes: Vec<u8> = raw.into();
+    /// let header = VgmHeader::from_bytes(&bytes).unwrap();
+    /// let command_start = VgmHeader::command_start(header.version, header.data_offset);
+    /// let loop_pos = VgmHeader::loop_pos_in_commands(
+    ///     header.version,
+    ///     header.loop_offset,
+    ///     header.data_offset,
+    ///     bytes.len(),
+    /// );
+    /// // A document with no explicit loop point returns None.
+    /// assert_eq!(loop_pos, None);
+    /// ```
+    pub fn loop_pos_in_commands(
+        version: u32,
+        loop_offset: u32,
+        data_offset: u32,
+        file_len: usize,
+    ) -> Option<usize> {
+        if loop_offset == 0 {
+            return None;
+        }
+        let command_start = Self::command_start(version, data_offset);
+        let abs = VgmHeaderField::LoopOffset
+            .offset()
+            .wrapping_add(loop_offset as usize);
+        if abs >= command_start && abs < file_len {
+            Some(abs - command_start)
+        } else {
+            None
+        }
+    }
+
     /// Parse a VGM header from a byte slice.
     ///
     /// This helper function parses a `VgmHeader` from the provided byte slice.

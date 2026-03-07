@@ -5101,3 +5101,248 @@ fn test_callback_stream_stop_at_sample_via_on_write_then_seek_to_resume() {
         *writes
     );
 }
+
+// Regression tests: Buffer-source multi-loop via chunked push_chunk
+//
+// These tests cover the bug where `jump_to_loop_point()` on a Buffer source
+// did not call `buffer.clear()`, causing stale tail bytes to be re-parsed as
+// commands on the second (and later) loop iterations, which produced a
+// `ParseError` and surfaced as `PushError::IterParse` in the profiling binary.
+
+/// Build a minimal looping VGM as raw bytes.
+/// Layout:
+///   intro:  WaitSamples(100), WaitSamples(200)
+///   <loop point set here>
+///   loop:   WaitSamples(300), WaitSamples(400)
+///   EndOfData
+fn create_chunked_loop_vgm() -> Vec<u8> {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_vgm_command(WaitSamples(200));
+    // loop point is placed at index 2, i.e. the WaitSamples(300) command
+    builder.set_loop_index(2);
+    builder.add_vgm_command(WaitSamples(300));
+    builder.add_vgm_command(WaitSamples(400));
+    builder.add_vgm_command(EndOfData);
+    builder.finalize().into()
+}
+
+/// Parse the command region and loop restart position from raw VGM bytes.
+/// Returns `(command_region, restart_pos)` where `restart_pos` is a byte
+/// offset within `command_region`.
+fn parse_command_region(vgm_bytes: &[u8]) -> (&[u8], usize) {
+    let header = soundlog::VgmHeader::from_bytes(vgm_bytes).expect("parse header");
+    // eof_offset stores (file_size - 4), so absolute EOF = eof_offset + 4.
+    let eof = header.eof_offset as usize + 4;
+    assert!(eof > 0 && eof <= vgm_bytes.len(), "invalid eof_offset");
+    let command_start = soundlog::VgmHeader::command_start(header.version, header.data_offset);
+    let region = &vgm_bytes[command_start..eof];
+    let restart = soundlog::VgmHeader::loop_pos_in_commands(
+        header.version,
+        header.loop_offset,
+        header.data_offset,
+        eof,
+    )
+    .unwrap_or(0);
+    (region, restart)
+}
+
+/// Collect all `WaitSamples` values from a `Buffer`-backed `VgmStream` that is
+/// fed `command_region` in fixed-size chunks.
+///
+/// `NeedsMoreData` has two distinct meanings in the Buffer source:
+///
+/// 1. **Mid-command split** – a chunk boundary landed inside a multi-byte
+///    command; the stream just needs the next consecutive bytes.
+///    → advance `offset` by `chunk_size` as normal.
+///
+/// 2. **Post-loop buffer clear** – `jump_to_loop_point()` cleared the buffer
+///    after an internal `EndOfData`; the stream needs data re-fed from the
+///    loop point.
+///    → rewind `offset` to `restart_pos`.
+///
+/// We distinguish the two cases by watching `current_loop_count()`: if it
+/// increased since the last push the stream completed a loop iteration and
+/// cleared its buffer, so we rewind; otherwise we just advance.
+fn collect_waits_chunked(
+    command_region: &[u8],
+    restart_pos: usize,
+    loop_count: Option<u32>,
+    chunk_size: usize,
+) -> Result<Vec<u16>, String> {
+    let mut stream = VgmStream::new();
+    stream.set_loop_count(loop_count);
+
+    let data_len = command_region.len();
+    let mut offset = 0usize;
+    let mut waits = Vec::new();
+    let mut finished = false;
+    let mut iteration_guard = 0u32;
+
+    while offset < data_len {
+        iteration_guard += 1;
+        assert!(
+            iteration_guard < 100_000,
+            "collect_waits_chunked: iteration limit exceeded (infinite loop?)"
+        );
+
+        let end = (offset + chunk_size).min(data_len);
+        // Snapshot loop count before push to detect post-loop buffer clears.
+        let loops_before_push = stream.current_loop_count();
+        stream
+            .push_chunk(&command_region[offset..end])
+            .map_err(|e| format!("push_chunk error: {e:?}"))?;
+
+        let mut needs_more = false;
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(VgmCommand::WaitSamples(w)))) => {
+                    waits.push(w.0);
+                }
+                Some(Ok(StreamResult::Command(_))) => {}
+                Some(Ok(StreamResult::NeedsMoreData)) => {
+                    needs_more = true;
+                    break;
+                }
+                Some(Ok(StreamResult::EndOfStream)) => {
+                    finished = true;
+                    break;
+                }
+                Some(Err(e)) => return Err(format!("stream error: {e:?}")),
+                None => {
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        if finished {
+            break;
+        }
+
+        if needs_more {
+            // Distinguish the two NeedsMoreData causes:
+            // - loop count increased → jump_to_loop_point() cleared the buffer;
+            //   rewind to restart_pos so next push re-feeds from the loop point.
+            // - loop count unchanged → mid-command split; advance normally.
+            if stream.current_loop_count() > loops_before_push {
+                offset = restart_pos;
+            } else {
+                offset = end;
+            }
+        } else {
+            offset = end;
+        }
+    }
+
+    Ok(waits)
+}
+
+/// Regression test: `Some(1)` (single playthrough, no actual looping) must
+/// succeed without any parse error.
+#[test]
+fn test_push_chunk_loop1_no_error() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    let waits =
+        collect_waits_chunked(region, restart, Some(1), 16).expect("Some(1) must not error");
+
+    // intro (100, 200) + loop section (300, 400) played once → no second loop
+    assert_eq!(
+        waits,
+        vec![100, 200, 300, 400],
+        "Some(1): expected intro + one loop section"
+    );
+}
+
+/// Regression test (primary): `Some(2)` previously triggered `PushError::IterParse`
+/// because stale tail bytes remained in the buffer after the first `EndOfData`.
+/// After the fix (`buffer.clear()` in `jump_to_loop_point`), this must succeed.
+#[test]
+fn test_push_chunk_loop2_regression_no_parse_error() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    let waits =
+        collect_waits_chunked(region, restart, Some(2), 16).expect("Some(2) must not error");
+
+    // intro once (100, 200) + loop section twice (300, 400, 300, 400)
+    assert_eq!(
+        waits,
+        vec![100, 200, 300, 400, 300, 400],
+        "Some(2): expected intro + loop section played twice"
+    );
+}
+
+/// Same regression with `Some(3)`: three total playthroughs.
+#[test]
+fn test_push_chunk_loop3_regression_no_parse_error() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    let waits =
+        collect_waits_chunked(region, restart, Some(3), 16).expect("Some(3) must not error");
+
+    // intro once + loop section three times
+    assert_eq!(
+        waits,
+        vec![100, 200, 300, 400, 300, 400, 300, 400],
+        "Some(3): expected intro + loop section played three times"
+    );
+}
+
+/// Vary the chunk size to 1 byte: ensures the fix holds even when `EndOfData`
+/// straddles chunk boundaries in every possible alignment.
+#[test]
+fn test_push_chunk_loop2_tiny_chunks_regression() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    let waits = collect_waits_chunked(region, restart, Some(2), 1)
+        .expect("Some(2) with 1-byte chunks must not error");
+
+    assert_eq!(
+        waits,
+        vec![100, 200, 300, 400, 300, 400],
+        "1-byte chunks / Some(2): expected intro + loop section played twice"
+    );
+}
+
+/// Vary the chunk size to 4096 bytes (same as `soundlog_prof.rs`): ensures the
+/// fix matches exactly what the profiling binary does.
+#[test]
+fn test_push_chunk_loop2_prof_chunk_size_regression() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    let waits = collect_waits_chunked(region, restart, Some(2), 4096)
+        .expect("Some(2) with 4096-byte chunks must not error");
+
+    assert_eq!(
+        waits,
+        vec![100, 200, 300, 400, 300, 400],
+        "4096-byte chunks / Some(2): expected intro + loop section played twice"
+    );
+}
+
+/// Verify that after `jump_to_loop_point` clears the buffer, the stream
+/// accepts fresh data and produces exactly the loop-section commands again —
+/// i.e. no duplicate or garbled commands from residual bytes.
+/// Sweeps multiple chunk sizes so that `EndOfData` lands at different alignments
+/// within a chunk, maximising the chance of catching any residual-byte issue.
+#[test]
+fn test_push_chunk_loop2_command_sequence_is_clean() {
+    let vgm = create_chunked_loop_vgm();
+    let (region, restart) = parse_command_region(&vgm);
+
+    for chunk_size in [1usize, 3, 7, 13, 32, 128, 4096] {
+        let waits = collect_waits_chunked(region, restart, Some(2), chunk_size)
+            .unwrap_or_else(|e| panic!("chunk_size={chunk_size}: {e}"));
+        assert_eq!(
+            waits,
+            vec![100, 200, 300, 400, 300, 400],
+            "chunk_size={chunk_size}: command sequence must be clean across loop boundary"
+        );
+    }
+}

@@ -1439,9 +1439,13 @@ impl VgmStream {
                     *current_index = 0;
                 }
             }
-            VgmStreamSource::Buffer { .. } => {
-                // For byte stream, looping is handled by re-pushing data
-                // We just mark that we're ready to loop
+            VgmStreamSource::Buffer { buffer } => {
+                // For byte stream, the caller is responsible for re-pushing data
+                // from the loop point after each loop iteration.
+                // Clear any residual bytes so the next push_chunk starts from a
+                // clean state and the stale tail bytes are not re-parsed as
+                // valid commands.
+                buffer.clear();
             }
             VgmStreamSource::File {
                 current_pos,

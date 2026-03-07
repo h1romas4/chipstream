@@ -7,7 +7,9 @@
   - [ ] Fix: YMF271(OPX) state tracking.
   - [ ] Fix: Unify the state of ES5506.
 - [ ] Semantic versioning and API Stabilization.
-- [ ] Add: Playback support for concatenated VGM files. (Since chip initialization is actually required, provide examples)
+- [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+- [x] Fix: `VgmStream` (Buffer source) — fixed a `ParseError` (`IterParse`) occurring on the second and subsequent loop iterations (`loop_count >= Some(2)`). `jump_to_loop_point()` now clears the internal buffer so stale bytes after `EndOfData` are not re-parsed as commands.
+- [x] Fix: `VgmStream` (Buffer source) — `eof_offset` is now correctly interpreted as `eof_offset + 4` to obtain the absolute EOF byte index, per the VGM spec (`file_size − 4` is stored at offset `0x04`).
 
 ## v0.10.1
 
