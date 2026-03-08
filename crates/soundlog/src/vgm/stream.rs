@@ -216,9 +216,12 @@ impl StreamSnapshot {
     ///
     /// - [`LengthMode::CommandCount`]: remaining command counter has hit zero.
     /// - [`LengthMode::Milliseconds`]: wall-clock deadline has elapsed.
-    /// - [`LengthMode::PlayUntilEnd`] (forward only): current position reached the
-    ///   block end.  The reverse-end for `PlayUntilEnd` is detected *after*
-    ///   reading, inside [`step_position`](Self::step_position).
+    /// - [`LengthMode::PlayUntilEnd`] (forward only): current position has reached
+    ///   the block end.  `block_end_pos` is used when set (FastCall path); otherwise
+    ///   `data_bank_end` is used as a fallback (StartStream path, matching libvgm
+    ///   `DCTRL_LMODE_TOEND` which computes `CmdsToSend` from `DataLen - DataStart`).
+    ///   The reverse-end for `PlayUntilEnd` is detected *after* reading, inside
+    ///   [`step_position`](Self::step_position).
     fn at_end_before_read(&self, current_sample: usize) -> bool {
         let (is_reverse, _) = self.length_mode.flags();
         match self.length_mode {
@@ -226,9 +229,13 @@ impl StreamSnapshot {
             LengthMode::Milliseconds { .. } => self
                 .stream_end_sample
                 .is_some_and(|end| current_sample >= end),
-            LengthMode::PlayUntilEnd { .. } if !is_reverse => self
-                .block_end_pos
-                .is_some_and(|end| self.current_data_pos >= end),
+            LengthMode::PlayUntilEnd { .. } if !is_reverse => {
+                // Use block_end_pos when available (FastCall sets it to the exact block
+                // boundary).  For StartStream, block_end_pos is None and we fall back to
+                // data_bank_end, which mirrors libvgm's DCTRL_LMODE_TOEND behaviour.
+                let end = self.block_end_pos.unwrap_or(self.data_bank_end);
+                self.current_data_pos >= end
+            }
             _ => false,
         }
     }
@@ -2049,27 +2056,19 @@ impl VgmStream {
                                 + (snap.data_length % 1000).saturating_mul(44100) as usize / 1000
                         });
                     }
-                    // After loop-restart, immediately attempt to read and emit a byte.
-                    // This handles the case where the current position was past the end
-                    // and the stream should restart (loop) and produce a write in the
-                    // same generate_stream_writes invocation.
-                    if let Some(data) =
-                        self.read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
+                    // Position has been reset to the loop-restart point.  Do NOT read or
+                    // emit a byte here: libvgm (daccontrol_update) resets RemainCmds and
+                    // RealPos but does not call daccontrol_SendCommand until the *next*
+                    // update tick.  Deferring the write avoids both a spurious extra write
+                    // in the current sample slot and a double advance_sample_clock call
+                    // that would shift all subsequent writes by one sample.
+                    //
+                    // If the data bank is genuinely empty after restart, mark inactive to
+                    // avoid spinning.
+                    if self
+                        .read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
+                        .is_none()
                     {
-                        if let Some(cmd) = Self::create_stream_write_command_static(
-                            snap.chip_id,
-                            snap.instance,
-                            snap.write_port,
-                            snap.write_command,
-                            data,
-                        ) {
-                            self.pending_stream_writes.push(cmd);
-                        }
-                        snap.step_position(is_reverse, is_looped);
-                        snap.advance_sample_clock();
-                    } else {
-                        // If there's still no data after restart, mark inactive to avoid
-                        // spinning on an empty bank.
                         snap.active = false;
                     }
                 } else {

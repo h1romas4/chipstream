@@ -4549,7 +4549,6 @@ fn test_length_mode_play_until_end_looped_fast_call() {
         "FastCall PlayUntilEnd looped: block should repeat from the beginning"
     );
 }
-
 // ── end of LengthMode tests ─────────────────────────────────────────────────
 
 // Natural-end loop-restart tests:
@@ -4588,10 +4587,23 @@ fn test_natural_end_loop_restart_forward_step_size_larger_than_bank() {
 
 #[test]
 fn test_natural_end_loop_restart_reverse_step_size_larger_than_bank() {
-    // Reverse + looped + CommandCount where initial reverse position calculation
-    // may put the current_data_pos past the available bank. The code should
-    // handle an initial None read by applying the loop-restart logic and then
-    // proceed to emit data from the restarted position.
+    // Reverse + looped + CommandCount where the initial reverse position lands
+    // outside the data bank (step_size=2, data=[0xAA], so initial pos = 4 which
+    // is >= data.len()=1).
+    //
+    // libvgm behaviour: daccontrol_SendCommand guards with
+    //   `if (chip->DataStart + chip->RealPos >= chip->DataLen) return;`
+    // so every update tick where RealPos is out of range emits nothing.  The
+    // stream still decrements RemainCmds and eventually stops – it never
+    // restarts into valid data.  No writes are produced.
+    //
+    // soundlog must match: when read_stream_byte_at returns None the natural-end
+    // branch now only resets the position and defers the write to the next tick
+    // (no immediate re-read).  Because the initial pos is already out of range
+    // and the loop-restart pos for reverse CommandCount is
+    //   start_data_pos + (data_length-1)*step_size = 0 + 2*2 = 4  (still out of range)
+    // every subsequent read also returns None, so the stream becomes inactive
+    // immediately and no writes are produced.
     let data = vec![0xAAu8];
     // step_size = 2 to force positions outside the single-byte bank.
     let mut builder = build_dac_setup_builder(data, 44100, 2, 0);
@@ -4602,18 +4614,17 @@ fn test_natural_end_loop_restart_reverse_step_size_larger_than_bank() {
             reverse: true,
             looped: true,
         },
-        data_length: 3, // request 3 writes total
+        data_length: 3,
     });
-    // Wait enough for 3 writes
     builder.add_vgm_command(WaitSamples(2));
     builder.add_vgm_command(EndOfData);
 
     let writes = collect_dac_writes(builder.finalize());
-    // Expect the single byte repeated 3 times after the loop-restart corrects the out-of-range pos.
+    // libvgm emits nothing when every RealPos is out of range – match that here.
     assert_eq!(
         writes,
-        vec![0xAA, 0xAA, 0xAA],
-        "Reverse natural-end loop-restart: expected repeated single-byte pattern"
+        vec![] as Vec<u8>,
+        "Reverse natural-end loop-restart with out-of-range pos: no writes expected (matches libvgm)"
     );
 }
 
@@ -5725,4 +5736,280 @@ fn test_push_chunk_loop2_command_sequence_is_clean() {
             "chunk_size={chunk_size}: command sequence must be clean across loop boundary"
         );
     }
+}
+
+// ── PlayUntilEnd + looped (StartStream) regression tests ────────────────────
+//
+// Issue #3: StartStream sets block_end_pos = None, so at_end_before_read always
+// returns false for PlayUntilEnd forward mode.  The stream falls through to the
+// natural-end path instead of using the pre-read end check.
+//
+// Issue #4: In the natural-end loop path an extra write was immediately emitted
+// at the same sample slot as the wrap.  libvgm defers the first post-restart
+// write until the next update tick, so the instant write is wrong.
+
+/// StartStream with PlayUntilEnd + looped=true (forward, non-FastCall).
+///
+/// Unlike FastCall, StartStream leaves `block_end_pos = None`.  The stream must
+/// still detect end-of-bank and loop back to `start_data_pos`, matching the
+/// libvgm `DCTRL_LMODE_TOEND` + loop-bit behaviour.
+///
+/// data=[0x01,0x02,0x03,0x04], freq=44100 (1 write/sample), looped.
+/// WaitSamples(9) => 10 writes: [0x01,0x02,0x03,0x04,0x01,0x02,0x03,0x04,0x01,0x02].
+#[test]
+fn test_length_mode_play_until_end_looped_start_stream() {
+    let data = vec![0x01u8, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(9));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02],
+        "PlayUntilEnd looped (StartStream): block should repeat from start_data_pos"
+    );
+}
+
+/// StartStream with PlayUntilEnd + looped=true (forward) must not emit two writes
+/// in the same sample slot when wrapping at the natural end of the data bank.
+///
+/// At 44100 Hz with a 4-byte block, write #5 (sample index 4) is the first write
+/// of the second loop.  Each sample slot must contain exactly one write.
+#[test]
+fn test_length_mode_play_until_end_looped_start_stream_no_double_write_on_wrap() {
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::vgm::stream::StreamResult;
+
+    let data = vec![0xA0u8, 0xB0, 0xC0, 0xD0];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 0,
+    });
+    // Cover one full loop plus a few extra writes.
+    builder.add_vgm_command(WaitSamples(6));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&vgm_bytes).expect("push chunk");
+
+    // Collect (sample_slot, value) by counting Wait splits before each write.
+    let mut sample: usize = 0;
+    let mut writes_with_sample: Vec<(usize, u8)> = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(w))) => {
+                sample += w.0 as usize;
+            }
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, spec)))
+                if spec.register == 0x2A =>
+            {
+                writes_with_sample.push((sample, spec.value));
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+            _ => {}
+        }
+    }
+
+    // No two writes should share the same sample slot.
+    let mut seen_samples = std::collections::HashSet::new();
+    for (s, v) in &writes_with_sample {
+        assert!(
+            seen_samples.insert(*s),
+            "double write at sample {s} (value 0x{v:02X}): {writes_with_sample:?}"
+        );
+    }
+
+    // Values must follow the repeating forward pattern.
+    let values: Vec<u8> = writes_with_sample.iter().map(|(_, v)| *v).collect();
+    assert_eq!(
+        values,
+        vec![0xA0, 0xB0, 0xC0, 0xD0, 0xA0, 0xB0, 0xC0],
+        "PlayUntilEnd looped (StartStream): wrong value sequence"
+    );
+}
+
+/// PlayUntilEnd + looped (StartStream, forward): verify per-sample timing across
+/// the natural-end wrap boundary.
+///
+/// At 44100 Hz with a 4-byte block each byte is written on consecutive samples
+/// 0, 1, 2, 3.  After the natural end the stream wraps and the first byte of the
+/// second loop must appear at sample 4 — not sample 5 (which would happen if
+/// `advance_sample_clock` were called twice inside the natural-end branch).
+///
+/// Expected sample → value mapping:
+///   0→0x01, 1→0x02, 2→0x03, 3→0x04, 4→0x01, 5→0x02, 6→0x03
+#[test]
+fn test_length_mode_play_until_end_looped_start_stream_timing() {
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::vgm::stream::StreamResult;
+
+    let data = vec![0x01u8, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 0,
+    });
+    // WaitSamples(6) covers samples 0..=6 (7 writes).
+    builder.add_vgm_command(WaitSamples(6));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&vgm_bytes).expect("push chunk");
+
+    // Reconstruct the sample slot for every write by accumulating Wait splits.
+    let mut sample: usize = 0;
+    let mut writes_with_sample: Vec<(usize, u8)> = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(w))) => {
+                sample += w.0 as usize;
+            }
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, spec)))
+                if spec.register == 0x2A =>
+            {
+                writes_with_sample.push((sample, spec.value));
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+            _ => {}
+        }
+    }
+
+    // Each write must land on the expected sample slot with no gaps or skips.
+    // If advance_sample_clock() fires twice on the wrap tick, the post-wrap
+    // writes would be shifted by one sample.
+    let expected: Vec<(usize, u8)> = vec![
+        (0, 0x01),
+        (1, 0x02),
+        (2, 0x03),
+        (3, 0x04),
+        (4, 0x01), // first write of second loop – must be sample 4, not 5
+        (5, 0x02),
+        (6, 0x03),
+    ];
+    assert_eq!(
+        writes_with_sample, expected,
+        "PlayUntilEnd looped (StartStream): sample timing shifted after natural-end wrap"
+    );
+}
+
+/// Diagnostic: dump the raw command sequence for PlayUntilEnd looped (StartStream)
+/// around the natural-end wrap to see exactly what pending_stream_writes produces.
+///
+/// data=[0x01,0x02,0x03,0x04], freq=44100.  We collect *every* command item
+/// (both WaitSamples splits and Ym2612 writes) in order so the interleaving is
+/// visible.  This lets us verify that no extra write is squeezed into sample 3
+/// (the wrap tick) before sample 4 starts.
+///
+/// Expected sequence of items (sample_before → value or wait_n):
+///   Wait(0) then write 0x01  @ sample 0
+///   Wait(1) then write 0x02  @ sample 1
+///   Wait(1) then write 0x03  @ sample 2
+///   Wait(1) then write 0x04  @ sample 3
+///   Wait(1) then write 0x01  @ sample 4   ← loop restart, no double write at 3
+///   Wait(1) then write 0x02  @ sample 5
+///
+/// If the natural-end branch emits an immediate extra write then we would see
+/// two consecutive Ym2612Write items without an intervening WaitSamples.
+#[test]
+fn test_length_mode_play_until_end_looped_start_stream_raw_sequence() {
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::vgm::stream::StreamResult;
+
+    #[derive(Debug, PartialEq)]
+    enum Item {
+        Wait(u16),
+        Write(u8),
+    }
+
+    let data = vec![0x01u8, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 0,
+    });
+    // Cover the wrap boundary and a couple of writes into the second loop.
+    builder.add_vgm_command(WaitSamples(5));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&vgm_bytes).expect("push chunk");
+
+    let mut items: Vec<Item> = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(w))) => {
+                items.push(Item::Wait(w.0));
+            }
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, spec)))
+                if spec.register == 0x2A =>
+            {
+                items.push(Item::Write(spec.value));
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+            _ => {}
+        }
+    }
+
+    // The write for the loop-restart (0x01 second time) must be preceded by a
+    // WaitSamples, not immediately follow the last write of the first loop (0x04).
+    // Two consecutive Write items would indicate the double-write bug.
+    let consecutive_writes: Vec<_> = items
+        .windows(2)
+        .filter(|w| matches!(w, [Item::Write(_), Item::Write(_)]))
+        .collect();
+    assert!(
+        consecutive_writes.is_empty(),
+        "double write (no Wait between): {items:?}"
+    );
+
+    // Also verify the exact item sequence.
+    let expected = vec![
+        Item::Write(0x01), // sample 0 – no Wait prefix when current_sample == next_write_sample
+        Item::Wait(1),
+        Item::Write(0x02), // sample 1
+        Item::Wait(1),
+        Item::Write(0x03), // sample 2
+        Item::Wait(1),
+        Item::Write(0x04), // sample 3
+        Item::Wait(1),
+        Item::Write(0x01), // sample 4 – loop restart
+        Item::Wait(1),
+        Item::Write(0x02), // sample 5
+    ];
+    assert_eq!(items, expected, "raw command sequence mismatch: {items:?}");
 }
