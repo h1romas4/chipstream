@@ -21,7 +21,7 @@ use crate::vgm::command::{
 };
 use crate::vgm::detail::{
     BitPackingSubType, CompressedStream, CompressedStreamData, DataBlockType, DecompressionTable,
-    UncompressedStream, parse_data_block,
+    StreamChipType, UncompressedStream, parse_data_block,
 };
 use crate::vgm::header::{ChipId, VgmHeader, VgmHeaderField};
 use crate::vgm::parser::parse_vgm_command;
@@ -557,7 +557,7 @@ pub struct VgmStream {
     fadeout_samples: Option<usize>,
     /// Sample position when the loop ended (for fadeout tracking)
     loop_end_sample: Option<usize>,
-    /// Current read offset in PCM data bank (type 0x00) for 0x8n commands
+    /// Current read offset in PCM data bank (StreamChipType::Ym2612Pcm) for 0x8n commands
     pcm_data_offset: usize,
     /// Maximum allowed total size for accumulated data blocks
     max_data_block_size: usize,
@@ -2049,6 +2049,29 @@ impl VgmStream {
                                 + (snap.data_length % 1000).saturating_mul(44100) as usize / 1000
                         });
                     }
+                    // After loop-restart, immediately attempt to read and emit a byte.
+                    // This handles the case where the current position was past the end
+                    // and the stream should restart (loop) and produce a write in the
+                    // same generate_stream_writes invocation.
+                    if let Some(data) =
+                        self.read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
+                    {
+                        if let Some(cmd) = Self::create_stream_write_command_static(
+                            snap.chip_id,
+                            snap.instance,
+                            snap.write_port,
+                            snap.write_command,
+                            data,
+                        ) {
+                            self.pending_stream_writes.push(cmd);
+                        }
+                        snap.step_position(is_reverse, is_looped);
+                        snap.advance_sample_clock();
+                    } else {
+                        // If there's still no data after restart, mark inactive to avoid
+                        // spinning on an empty bank.
+                        snap.active = false;
+                    }
                 } else {
                     snap.active = false;
                 }
@@ -2159,7 +2182,7 @@ impl VgmStream {
     fn read_pcm_data_bank_byte(&self) -> Result<Option<u8>, ParseError> {
         if let Some(stream) = self
             .uncompressed_streams
-            .get(&0x00)
+            .get(&u8::from(StreamChipType::Ym2612Pcm))
             .filter(|stream| self.pcm_data_offset < stream.data.len())
         {
             return Ok(Some(stream.data[self.pcm_data_offset]));

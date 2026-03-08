@@ -30,6 +30,62 @@ fn create_test_vgm_with_loop() -> Vec<u8> {
     document.into()
 }
 
+#[test]
+fn test_ym2612_0x8n_and_seekoffset_attach_datablock() {
+    // This test verifies the 0x8n YM2612 DAC command expansion path when:
+    // - an uncompressed PCM data block for YM2612 is attached via `attach_data_block`
+    // - a `SeekOffset` is present to set the PCM read cursor
+    // - successive `Ym2612Port0Address2AWriteAndWaitN` commands read bytes from the PCM bank
+    //
+    // We build a tiny PCM bank [0x11, 0x22], explicitly seek to offset 0 and issue two
+    // 0x8n commands. We expect two Ym2612 write commands with values 0x11 and 0x22 in order.
+    use soundlog::vgm::command::{SeekOffset, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    // Attach PCM bank for YM2612 (data block type 0x00)
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x11u8, 0x22u8],
+    });
+
+    // Explicitly set PCM cursor to 0 via SeekOffset
+    b.add_vgm_command(SeekOffset(0u32));
+
+    // Two 0x8n commands: each should read one byte and emit a Ym2612 write
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+
+    // Terminate
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&raw).expect("push chunk");
+
+    // Collect encountered Ym2612 write values
+    let mut values = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(cmd)) => {
+                if let VgmCommand::Ym2612Write(_inst, spec) = cmd {
+                    values.push(spec.value);
+                }
+            }
+            Ok(StreamResult::NeedsMoreData) | Ok(StreamResult::EndOfStream) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+        }
+    }
+
+    assert_eq!(
+        values,
+        vec![0x11u8, 0x22u8],
+        "Ym2612 writes should match PCM bank bytes after SeekOffset(0)"
+    );
+}
+
 /// Helper function to create a VGM document with various commands
 fn create_vgm_with_various_commands() -> Vec<u8> {
     let mut builder = VgmBuilder::new();
@@ -43,6 +99,149 @@ fn create_vgm_with_various_commands() -> Vec<u8> {
 
     let document = builder.finalize();
     document.into()
+}
+
+/// Test A: data exists + wait > 0
+///
+/// Exercises the branch in `handle_ym2612_port0_address_2a_write_and_wait_n` where
+/// a PCM byte is available and wait_samples > 0. The function should emit a
+/// Ym2612 write (value read from PCM bank) as part of stream processing.
+#[test]
+fn test_ym2612_0x8n_with_data_and_wait_gt_zero() {
+    use soundlog::vgm::command::{SeekOffset, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    // Attach PCM bank for YM2612 (data block type 0x00)
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0xAAu8],
+    });
+
+    // Seek to offset 0
+    b.add_vgm_command(SeekOffset(0u32));
+
+    // Issue 0x8n with wait > 0
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(3u8));
+
+    // Terminate
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&raw).expect("push chunk");
+
+    // Ensure Ym2612Write with value 0xAA is produced
+    let mut found = false;
+    for res in &mut parser {
+        match res {
+            Ok(StreamResult::Command(cmd)) => {
+                if let VgmCommand::Ym2612Write(_inst, spec) = cmd {
+                    assert_eq!(spec.value, 0xAAu8);
+                    found = true;
+                    break;
+                }
+            }
+            Ok(StreamResult::NeedsMoreData) | Ok(StreamResult::EndOfStream) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+        }
+    }
+    assert!(
+        found,
+        "Expected Ym2612Write produced from PCM byte when wait>0"
+    );
+}
+
+/// Test B: no data + wait > 0
+///
+/// Exercises the branch where no PCM data is available and wait_samples > 0.
+/// In this case the handler should delegate to `process_wait_with_streams` and
+/// a `WaitSamples` command should be returned (no Ym2612 write).
+#[test]
+fn test_ym2612_0x8n_no_data_and_wait_gt_zero() {
+    use soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN;
+
+    let mut b = VgmBuilder::new();
+
+    // No PCM bank attached.
+    // Emit 0x8n with wait > 0
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(5u8));
+    // Terminate
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&raw).expect("push chunk");
+
+    // The first emitted command should be a WaitSamples (because there's no PCM byte).
+    let mut saw_wait = false;
+    for res in &mut parser {
+        match res {
+            Ok(StreamResult::Command(cmd)) => {
+                if let VgmCommand::WaitSamples(ws) = cmd {
+                    // wait value should be the requested samples (clipped to u16 max)
+                    assert_eq!(ws.0 as usize, 5usize);
+                    saw_wait = true;
+                    break;
+                } else if let VgmCommand::Ym2612Write(_, _) = cmd {
+                    panic!("Unexpected Ym2612Write when no PCM data should be available");
+                }
+            }
+            Ok(StreamResult::NeedsMoreData) | Ok(StreamResult::EndOfStream) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+        }
+    }
+    assert!(
+        saw_wait,
+        "Expected a WaitSamples command when no PCM data and wait>0"
+    );
+}
+
+/// Test C: no data + wait == 0
+///
+/// Exercises the branch where no PCM data is available and wait_samples == 0.
+/// The handler should call `next_command()` to continue parsing the following
+/// command; if the following command is a `WaitSamples`, it will be emitted.
+#[test]
+fn test_ym2612_0x8n_no_data_and_wait_zero() {
+    use soundlog::vgm::command::{WaitSamples, Ym2612Port0Address2AWriteAndWaitN};
+
+    let mut b = VgmBuilder::new();
+
+    // No PCM bank attached.
+    // Emit 0x8n with wait == 0, followed by an explicit wait so that next_command()
+    // advances to a known command that we can assert on.
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+    b.add_vgm_command(WaitSamples(2u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    parser.push_chunk(&raw).expect("push chunk");
+
+    // We expect to observe the explicit WaitSamples(2) as the handler should have
+    // advanced to the next command when there was no PCM data and wait == 0.
+    let mut saw_wait2 = false;
+    for res in &mut parser {
+        match res {
+            Ok(StreamResult::Command(cmd)) => {
+                if let VgmCommand::WaitSamples(ws) = cmd {
+                    assert_eq!(ws.0, 2u16);
+                    saw_wait2 = true;
+                    break;
+                } else if let VgmCommand::Ym2612Write(_, _) = cmd {
+                    panic!("Unexpected Ym2612Write when no PCM data and wait==0");
+                }
+            }
+            Ok(StreamResult::NeedsMoreData) | Ok(StreamResult::EndOfStream) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+        }
+    }
+    assert!(
+        saw_wait2,
+        "Expected the following WaitSamples(2) to be emitted after next_command()"
+    );
 }
 
 #[test]
@@ -4208,6 +4407,64 @@ fn test_length_mode_command_count_looped_reverse() {
 }
 
 #[test]
+fn test_length_mode_milliseconds_looped_reverse() {
+    // LengthMode::Milliseconds reverse + looped
+    // Setup mirrors test_length_mode_milliseconds_looped but with reverse=true.
+    // freq=100 Hz, data_length=30 ms -> 3 writes per loop (values [0x10,0x20,0x30]).
+    // Reverse repeating pattern -> expect [0x30,0x20,0x10, 0x30,0x20,0x10, 0x30]
+    let data = vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    let mut builder = build_dac_setup_builder(data, 100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::Milliseconds {
+            reverse: true,
+            looped: true,
+        },
+        data_length: 30, // 30 ms per loop
+    });
+    // 2650 samples covers 2 full loops (1323×2 = 2646) and the restart write.
+    builder.add_vgm_command(WaitSamples(2650));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x30, 0x20, 0x10, 0x30, 0x20, 0x10, 0x30],
+        "Milliseconds looped reverse: expected reversed pattern repeating"
+    );
+}
+
+#[test]
+fn test_length_mode_play_until_end_looped_reverse() {
+    // StartStream PlayUntilEnd reverse + looped (non-FastCall)
+    // Data block [0x01,0x02,0x03,0x04], PlayUntilEnd reverse + looped.
+    // WaitSamples(9) -> 10 writes expected; reversed repeating pattern:
+    // [0x04,0x03,0x02,0x01, 0x04,0x03,0x02,0x01, 0x04,0x03]
+    let data = vec![0x01, 0x02, 0x03, 0x04];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: true,
+            looped: true,
+        },
+        data_length: 0,
+    });
+    // WaitSamples(9) fires writes at samples 0..=9 = 10 writes.
+    builder.add_vgm_command(WaitSamples(9));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    assert_eq!(
+        writes,
+        vec![0x04, 0x03, 0x02, 0x01, 0x04, 0x03, 0x02, 0x01, 0x04, 0x03],
+        "PlayUntilEnd looped reverse: expected reversed data repeating (StartStream)"
+    );
+}
+
+#[test]
 fn test_length_mode_play_until_end_looped_reverse_fast_call() {
     // StartStreamFastCall (PlayUntilEnd) reverse + looped
     // Data block [0x01,0x02,0x03,0x04], FastCall block_id=0, looped=true, reverse=true
@@ -4294,6 +4551,71 @@ fn test_length_mode_play_until_end_looped_fast_call() {
 }
 
 // ── end of LengthMode tests ─────────────────────────────────────────────────
+
+// Natural-end loop-restart tests:
+// These exercise the branch where a read returns `None` because the current
+// data position ran past the available data (e.g. when `step_size` > data.len()).
+// When `looped = true` the stream should restart correctly (loop-restart branch).
+#[test]
+fn test_natural_end_loop_restart_forward_step_size_larger_than_bank() {
+    // Single-byte data, but step_size = 2. After the first read the position
+    // will advance to 2 which is past the end -> read returns None and the
+    // loop-restart path should reset current_data_pos to start and continue.
+    let data = vec![0x10u8];
+    // step_size = 2, so position will jump beyond the bank after one read.
+    let mut builder = build_dac_setup_builder(data, 44100, 2, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 3, // request 3 writes total
+    });
+    // WaitSamples(2) -> 3 writes at samples 0..=2
+    builder.add_vgm_command(WaitSamples(2));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    // Expect the single byte repeated 3 times due to loop-restart when the pos runs past end.
+    assert_eq!(
+        writes,
+        vec![0x10, 0x10, 0x10],
+        "Forward natural-end loop-restart: expected repeated single-byte pattern"
+    );
+}
+
+#[test]
+fn test_natural_end_loop_restart_reverse_step_size_larger_than_bank() {
+    // Reverse + looped + CommandCount where initial reverse position calculation
+    // may put the current_data_pos past the available bank. The code should
+    // handle an initial None read by applying the loop-restart logic and then
+    // proceed to emit data from the restarted position.
+    let data = vec![0xAAu8];
+    // step_size = 2 to force positions outside the single-byte bank.
+    let mut builder = build_dac_setup_builder(data, 44100, 2, 0);
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: true,
+            looped: true,
+        },
+        data_length: 3, // request 3 writes total
+    });
+    // Wait enough for 3 writes
+    builder.add_vgm_command(WaitSamples(2));
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+    // Expect the single byte repeated 3 times after the loop-restart corrects the out-of-range pos.
+    assert_eq!(
+        writes,
+        vec![0xAA, 0xAA, 0xAA],
+        "Reverse natural-end loop-restart: expected repeated single-byte pattern"
+    );
+}
 
 #[test]
 fn test_loop_base_getter_setter() {

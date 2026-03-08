@@ -8,6 +8,7 @@
   - [ ] Fix: Unify the state of ES5506.
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+- [x] Fix: VgmStream — ensure looped PlayUntilEnd streams emit a write immediately after looping (avoid stopping at data end)
 
 ## v0.10.2
 
