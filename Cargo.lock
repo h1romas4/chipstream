@@ -2496,11 +2496,11 @@ dependencies = [
 
 [[package]]
 name = "soundlog"
-version = "0.10.3"
+version = "0.10.4"
 
 [[package]]
 name = "soundlog-debuger"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "clap",

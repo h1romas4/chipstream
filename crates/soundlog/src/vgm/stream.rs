@@ -88,9 +88,21 @@ enum VgmStreamSource {
 ///
 /// State of a DAC stream for stream control commands.
 ///
-/// This structure tracks the complete state of a VGM DAC stream, which converts
-/// PCM data from data blocks into chip register writes at specific sample rates.
-/// The stream state machine is controlled by VGM stream control commands (0x90-0x95).
+/// This structure holds only the **static configuration** established by the
+/// VGM stream-control commands (0x90–0x95) plus two anchor values that are set
+/// when playback starts (`stream_start_sample` and `start_data_pos`).  All
+/// dynamic playback quantities — current data position, next write sample,
+/// remaining commands, etc. — are **derived on-demand** from these anchors by
+/// [`StreamSnapshot`] rather than being mutated step-by-step.
+///
+/// ## `LengthMode::Ignore`
+///
+/// Per the VGM spec (command 0x93, `mm = 0x00`):
+/// > "ignore (just change current data position)"
+///
+/// A stream started with `Ignore` mode becomes active and its `start_data_pos`
+/// is updated, but **no chip writes are generated**.  The stream remains active
+/// until an explicit `StopStream` command (0x94) is received.
 #[derive(Debug, Clone)]
 struct StreamState {
     /// Stream ID (kept for debugging, prefixed with _ to avoid unused warning)
@@ -111,7 +123,7 @@ struct StreamState {
     step_base: u8,
     /// Stream frequency in Hz (determines write rate)
     frequency_hz: Option<u32>,
-    /// Start offset in the data block
+    /// Start offset in the data block (stored for reference)
     start_offset: Option<i32>,
     /// Length mode (0=ignore, 1=count commands, 2=milliseconds, 3=play until end)
     length_mode: LengthMode,
@@ -121,57 +133,65 @@ struct StreamState {
     block_end_pos: Option<usize>,
     /// Whether the stream is currently active/playing
     active: bool,
-    /// Current read position in the data block (byte offset)
-    current_data_pos: usize,
-    /// Next sample number when a write should occur (at 44100 Hz sample rate)
-    next_write_sample: usize,
-    /// Fractional accumulator for sample interval (tracks fractional part to avoid rounding errors)
-    sample_fraction: f32,
-    /// Remaining commands to write (used when length_mode == 1)
-    remaining_commands: Option<u32>,
-    /// Start position in the data bank for this stream.
-    /// Used as the loop-restart position for forward playback and as the lower bound
-    /// beyond which reverse playback has ended.
+    /// Byte offset in the data bank where this stream's playback begins.
+    /// Forward playback starts here; reverse playback uses this as its lower bound.
     start_data_pos: usize,
-    /// Sample position at which a `Milliseconds`-mode stream expires.
-    /// `None` for all other modes.
-    stream_end_sample: Option<usize>,
+    /// The value of `VgmStream::current_sample` at the moment this stream was started.
+    /// All timing calculations are relative to this anchor.
+    stream_start_sample: usize,
+    /// The step index (0-based) of the last byte that was emitted to the chip.
+    /// `None` means no byte has been emitted yet since the stream was started.
+    /// Used by [`StreamCalc`] to determine which step is next without re-emitting
+    /// an already-written byte.
+    last_emitted_step: Option<usize>,
 }
 
-/// Mutable working copy of a single DAC stream's playback state for one tick.
+/// Read-only computed view of a single active DAC stream for one `generate_stream_writes` call.
 ///
-/// Created from [`StreamState`] at the start of each [`VgmStream::generate_stream_writes`]
-/// call and written back at the end.  Keeping it separate avoids long-lived
-/// mutable borrows of the `stream_states` map while intermediate computations
-/// still need access to other parts of `VgmStream` (e.g. `uncompressed_streams`).
+/// Built from [`StreamState`] at the start of each call; all playback positions
+/// and write-sample numbers are derived from the static configuration and the
+/// `stream_start_sample` anchor rather than being stored as mutable state.
+/// The only value written back to [`StreamState`] is `active` (set to `false`
+/// when the stream reaches its natural end).
 struct StreamSnapshot {
+    /// Stream frequency in Hz.
     freq: u32,
-    sample_interval: f32,
-    active: bool,
-    next_write_sample: usize,
-    sample_fraction: f32,
-    current_data_pos: usize,
+    /// Data bank to read from.
     data_bank_id: u8,
+    /// Chip write target.
     chip_id: ChipId,
     instance: Instance,
     write_port: u8,
     write_command: u8,
+    /// Bytes advanced per step.
     step_size: u8,
+    /// Current length mode (carries `reverse` / `looped` flags).
     length_mode: LengthMode,
-    remaining_commands: Option<u32>,
+    /// Optional hard block boundary (set by FastCall).
     block_end_pos: Option<usize>,
+    /// Loop / range start in the data bank.
     start_data_pos: usize,
-    stream_end_sample: Option<usize>,
+    /// Data length parameter (units depend on `length_mode`).
     data_length: u32,
-    /// Pre-fetched total byte length of the data bank (used for reverse / loop bounds).
+    /// Total byte length of the data bank (pre-fetched to avoid re-borrowing).
     data_bank_end: usize,
+    /// `VgmStream::current_sample` when the stream was started.
+    stream_start_sample: usize,
+    /// Step index of the last byte already emitted (`None` = nothing emitted yet).
+    last_emitted_step: Option<usize>,
 }
 
 impl StreamSnapshot {
-    /// Build a snapshot from `state` and pre-fetched `data_bank_end`.
-    /// Returns `None` if the stream is inactive or has no valid frequency.
+    /// Build a snapshot view from `state` and pre-fetched `data_bank_end`.
+    /// Returns `None` if the stream is inactive, has no valid frequency, or is
+    /// in `Ignore` mode (which moves the data position but never emits writes).
     fn from_state(state: &StreamState, data_bank_end: usize) -> Option<Self> {
         if !state.active {
+            return None;
+        }
+        // LengthMode::Ignore means "just change current data position" — no
+        // chip writes are generated, so there is nothing for StreamCalc to do.
+        if matches!(state.length_mode, LengthMode::Ignore { .. }) {
             return None;
         }
         let freq = match state.frequency_hz {
@@ -180,11 +200,6 @@ impl StreamSnapshot {
         };
         Some(Self {
             freq,
-            sample_interval: 44100.0 / freq as f32,
-            active: true,
-            next_write_sample: state.next_write_sample,
-            sample_fraction: state.sample_fraction,
-            current_data_pos: state.current_data_pos,
             data_bank_id: state.data_bank_id,
             chip_id: state.chip_type,
             instance: state.instance,
@@ -192,137 +207,226 @@ impl StreamSnapshot {
             write_command: state.write_command,
             step_size: state.step_size,
             length_mode: state.length_mode,
-            remaining_commands: state.remaining_commands,
             block_end_pos: state.block_end_pos,
             start_data_pos: state.start_data_pos,
-            stream_end_sample: state.stream_end_sample,
             data_length: state.data_length,
             data_bank_end,
+            stream_start_sample: state.stream_start_sample,
+            last_emitted_step: state.last_emitted_step,
         })
     }
 
-    /// Write modified fields back to the live `StreamState`.
-    fn write_back(&self, state: &mut StreamState) {
-        state.active = self.active;
-        state.next_write_sample = self.next_write_sample;
-        state.sample_fraction = self.sample_fraction;
-        state.current_data_pos = self.current_data_pos;
-        state.remaining_commands = self.remaining_commands;
-        state.stream_end_sample = self.stream_end_sample;
+    /// Number of steps in one period of `CommandCount` or `Milliseconds` mode.
+    ///
+    /// For `CommandCount` this is simply `data_length`.
+    /// For `Milliseconds` this is `freq * data_length / 1000` (integer, rounded
+    /// down), split to avoid 32-bit overflow.
+    fn period_steps(&self) -> usize {
+        match self.length_mode {
+            LengthMode::CommandCount { .. } => self.data_length as usize,
+            LengthMode::Milliseconds { .. } => {
+                // Split to avoid overflow: freq * ms / 1000
+                (self.freq as usize / 1000) * self.data_length as usize
+                    + (self.freq as usize % 1000) * self.data_length as usize / 1000
+            }
+            _ => 0,
+        }
     }
 
-    /// Returns `true` if the stream has reached its end condition *before* reading
-    /// the current byte.
+    /// Number of steps available in `PlayUntilEnd` mode (one period).
+    fn play_until_end_steps(&self) -> usize {
+        let end = self.block_end_pos.unwrap_or(self.data_bank_end);
+        if self.step_size == 0 {
+            return 0;
+        }
+        let range = end.saturating_sub(self.start_data_pos);
+        range / self.step_size as usize
+    }
+
+    /// Sample number at which write #`n` (0-based) should be emitted.
     ///
-    /// - [`LengthMode::CommandCount`]: remaining command counter has hit zero.
-    /// - [`LengthMode::Milliseconds`]: wall-clock deadline has elapsed.
-    /// - [`LengthMode::PlayUntilEnd`] (forward only): current position has reached
-    ///   the block end.  `block_end_pos` is used when set (FastCall path); otherwise
-    ///   `data_bank_end` is used as a fallback (StartStream path, matching libvgm
-    ///   `DCTRL_LMODE_TOEND` which computes `CmdsToSend` from `DataLen - DataStart`).
-    ///   The reverse-end for `PlayUntilEnd` is detected *after* reading, inside
-    ///   [`step_position`](Self::step_position).
-    fn at_end_before_read(&self, current_sample: usize) -> bool {
-        let (is_reverse, _) = self.length_mode.flags();
+    /// Uses the formula  `start + n * 44100 / freq`  (integer arithmetic) which
+    /// guarantees that every write lands at the nearest integer sample boundary
+    /// without floating-point accumulation error.
+    fn write_sample_for_step(&self, n: usize) -> usize {
+        self.stream_start_sample + n * 44100 / self.freq as usize
+    }
+
+    /// Position computation
+    ///
+    /// Translates a raw step index (possibly spanning multiple loop periods) into a
+    /// byte offset in the data bank, respecting the current `length_mode`.
+    ///
+    /// Returns `None` when the stream has permanently ended (no loop, past end).
+    fn data_pos_for_step(&self, raw_step: usize) -> Option<usize> {
+        let (is_reverse, is_looped) = self.length_mode.flags();
         match self.length_mode {
-            LengthMode::CommandCount { .. } => self.remaining_commands == Some(0),
-            LengthMode::Milliseconds { .. } => self
-                .stream_end_sample
-                .is_some_and(|end| current_sample >= end),
-            LengthMode::PlayUntilEnd { .. } if !is_reverse => {
-                // Use block_end_pos when available (FastCall sets it to the exact block
-                // boundary).  For StartStream, block_end_pos is None and we fall back to
-                // data_bank_end, which mirrors libvgm's DCTRL_LMODE_TOEND behaviour.
+            LengthMode::CommandCount { .. } | LengthMode::Milliseconds { .. } => {
+                let period = self.period_steps();
+                if period == 0 {
+                    return None;
+                }
+                let (loop_count, step_in_period) = (raw_step / period, raw_step % period);
+                if loop_count > 0 && !is_looped {
+                    return None; // past end, not looping
+                }
+                let pos = if is_reverse {
+                    // Reverse: step 0 reads the last byte of the range, step 1 the
+                    // second-to-last, etc.
+                    let range_end = self.start_data_pos + (period - 1) * self.step_size as usize;
+                    range_end.saturating_sub(step_in_period * self.step_size as usize)
+                } else {
+                    self.start_data_pos + step_in_period * self.step_size as usize
+                };
+                // If the computed position is out of the data bank this is a "dry"
+                // slot caused by step_size > available data.  For looped streams,
+                // libvgm restarts from the beginning on the very next update tick
+                // (same sample if possible), so we fold the position back to the
+                // loop-restart point rather than returning None.  For non-looped
+                // streams there is genuinely nothing to read.
+                if pos >= self.data_bank_end {
+                    if is_looped {
+                        // Fold back: use the loop-restart position for this step.
+                        let restart = if is_reverse {
+                            // Reverse restart is the far end of the range.
+                            self.start_data_pos + (period - 1) * self.step_size as usize
+                        } else {
+                            self.start_data_pos
+                        };
+                        // If the restart position is also out of range the data
+                        // bank is genuinely unusable; return None to deactivate.
+                        if restart >= self.data_bank_end {
+                            return None;
+                        }
+                        return Some(restart);
+                    }
+                    return None;
+                }
+                Some(pos)
+            }
+            LengthMode::PlayUntilEnd { .. } => {
+                let period = self.play_until_end_steps();
+                if period == 0 {
+                    return None;
+                }
+                let (loop_count, step_in_period) = (raw_step / period, raw_step % period);
+                if loop_count > 0 && !is_looped {
+                    return None;
+                }
                 let end = self.block_end_pos.unwrap_or(self.data_bank_end);
-                self.current_data_pos >= end
+                let pos = if is_reverse {
+                    // Reverse: step 0 reads the last byte of the block.
+                    let range_end = end.saturating_sub(self.step_size as usize);
+                    range_end.saturating_sub(step_in_period * self.step_size as usize)
+                } else {
+                    self.start_data_pos + step_in_period * self.step_size as usize
+                };
+                // Bounds check: position must be within the data bank.
+                if pos >= self.data_bank_end {
+                    if is_looped {
+                        return Some(if is_reverse {
+                            end.saturating_sub(self.step_size as usize)
+                        } else {
+                            self.start_data_pos
+                        });
+                    }
+                    return None;
+                }
+                Some(pos)
+            }
+            // Unknown: no automatic writes.
+            _ => None,
+        }
+    }
+
+    /// Returns the step index of the next un-emitted step that is due at or
+    /// before `current_sample`, or `None` if no step is due yet or the stream
+    /// has permanently ended.
+    ///
+    /// A step is "due" purely based on its scheduled sample time; whether the
+    /// corresponding byte position is inside the data bank is not checked here.
+    fn due_step(&self, current_sample: usize) -> Option<usize> {
+        let next_step = match self.last_emitted_step {
+            Some(last) => last + 1,
+            None => 0,
+        };
+        if !self.step_is_in_range(next_step) {
+            return None; // stream permanently ended
+        }
+        let scheduled = self.write_sample_for_step(next_step);
+        if scheduled > current_sample {
+            return None; // not due yet
+        }
+        Some(next_step)
+    }
+
+    /// Returns `(data_pos, step_index)` for the next un-emitted step that is
+    /// due **and** has a valid (in-bank) data position, or `None` if nothing
+    /// is due or the stream has ended.
+    ///
+    /// Steps whose computed position is outside the data bank are "dry" slots:
+    /// they occupy a time-slot but produce no byte.  Callers that need to
+    /// advance the clock over dry slots should use [`due_step`] directly.
+    fn due_write(&self, current_sample: usize) -> Option<(usize, usize)> {
+        let next_step = self.due_step(current_sample)?;
+        let pos = self.data_pos_for_step(next_step)?;
+        Some((pos, next_step))
+    }
+
+    /// The sample number at which the next un-emitted write is scheduled,
+    /// or `None` if the stream has permanently ended.
+    ///
+    /// Unlike `due_write`, this method does **not** require the step to have a
+    /// valid data position — it only checks whether the step index is within the
+    /// stream's logical range (i.e. `data_pos_for_step` returns Some for a
+    /// representative step).  Out-of-bank dry slots still occupy a time-slot and
+    /// must be tracked so the sample clock advances correctly.
+    fn next_write_sample(&self, current_sample: usize) -> Option<usize> {
+        let next_step = match self.last_emitted_step {
+            Some(last) => last + 1,
+            None => 0,
+        };
+        // Check whether the stream has any more logical steps at all.
+        // We probe with a period-wrapped version: for looped streams any step in
+        // [0, period) is always valid, so we check next_step % period (or
+        // next_step itself for non-looped streams — if it is past the end,
+        // data_pos_for_step returns None and the stream is done).
+        //
+        // To handle out-of-bank dry slots we use a small helper that checks the
+        // *logical* range independently of whether the position is in-bank.
+        if !self.step_is_in_range(next_step) {
+            return None; // stream permanently ended
+        }
+        let scheduled = self.write_sample_for_step(next_step);
+        // If overdue (should have been processed already), return current_sample
+        // so the caller picks it up immediately.
+        Some(scheduled.max(current_sample))
+    }
+
+    /// Returns true when `raw_step` is within the logical range of this stream
+    /// (i.e. the stream has not permanently ended), regardless of whether the
+    /// byte position falls inside the data bank.
+    fn step_is_in_range(&self, raw_step: usize) -> bool {
+        let (_, is_looped) = self.length_mode.flags();
+        match self.length_mode {
+            LengthMode::CommandCount { .. } | LengthMode::Milliseconds { .. } => {
+                let period = self.period_steps();
+                if period == 0 {
+                    return false;
+                }
+                let loop_count = raw_step / period;
+                // step 0 is always in range; subsequent loops require is_looped.
+                loop_count == 0 || is_looped
+            }
+            LengthMode::PlayUntilEnd { .. } => {
+                let period = self.play_until_end_steps();
+                if period == 0 {
+                    return false;
+                }
+                let loop_count = raw_step / period;
+                loop_count == 0 || is_looped
             }
             _ => false,
-        }
-    }
-
-    /// Computes the loop-restart position.
-    ///
-    /// - Forward playback: always `start_data_pos`.
-    /// - Reverse playback: end of the mode-specific playback range.
-    fn loop_restart_pos(&self, is_reverse: bool) -> usize {
-        if !is_reverse {
-            return self.start_data_pos;
-        }
-        match self.length_mode {
-            LengthMode::CommandCount { .. } => {
-                if self.data_length > 0 {
-                    self.start_data_pos + (self.data_length as usize - 1) * self.step_size as usize
-                } else {
-                    self.start_data_pos
-                }
-            }
-            LengthMode::Milliseconds { .. } => {
-                // Divide freq by 1000 first to avoid overflow on 32-bit (e.g. 44100*97391 > u32::MAX)
-                let n = (self.freq / 1000).saturating_mul(self.data_length) as usize
-                    + (self.freq % 1000).saturating_mul(self.data_length) as usize / 1000;
-                if n > 0 {
-                    self.start_data_pos + (n - 1) * self.step_size as usize
-                } else {
-                    self.start_data_pos
-                }
-            }
-            _ => self
-                .block_end_pos
-                .unwrap_or(self.data_bank_end)
-                .saturating_sub(self.step_size as usize),
-        }
-    }
-
-    /// Resets `current_data_pos` to the loop-restart position, extends the
-    /// `Milliseconds` deadline by one period, and resets the `CommandCount` counter.
-    fn apply_loop_restart(&mut self, is_reverse: bool) {
-        self.current_data_pos = self.loop_restart_pos(is_reverse);
-        if matches!(self.length_mode, LengthMode::Milliseconds { .. }) {
-            self.stream_end_sample = self.stream_end_sample.map(|e| {
-                e + (self.data_length / 1000).saturating_mul(44100) as usize
-                    + (self.data_length % 1000).saturating_mul(44100) as usize / 1000
-            });
-        }
-        if matches!(self.length_mode, LengthMode::CommandCount { .. }) {
-            self.remaining_commands = Some(self.data_length);
-        }
-    }
-
-    /// Advances `next_write_sample` by one step, propagating the sub-sample
-    /// fraction to avoid cumulative rounding errors from integer truncation.
-    fn advance_sample_clock(&mut self) {
-        self.next_write_sample += self.sample_interval as usize;
-        self.sample_fraction += self.sample_interval.fract();
-        if self.sample_fraction >= 1.0 {
-            self.next_write_sample += 1;
-            self.sample_fraction -= 1.0;
-        }
-    }
-
-    /// Advances the data position by one `step_size` step.
-    ///
-    /// For **reverse** playback, detects the reverse-end condition
-    /// (`current_data_pos < start_data_pos + step_size`):
-    /// - `is_looped`: applies a loop restart back to the end of the range.
-    /// - otherwise: marks the stream inactive.
-    ///
-    /// For **forward** playback, simply increments the position.
-    fn step_position(&mut self, is_reverse: bool, is_looped: bool) {
-        if is_reverse {
-            let at_reverse_end = self.step_size > 0
-                && self.current_data_pos < self.start_data_pos + self.step_size as usize;
-            if at_reverse_end {
-                if is_looped {
-                    self.apply_loop_restart(true);
-                } else {
-                    self.active = false;
-                }
-            } else {
-                // Safe: at_reverse_end is false, so pos >= start_data_pos + step_size.
-                self.current_data_pos -= self.step_size as usize;
-            }
-        } else {
-            self.current_data_pos += self.step_size as usize;
         }
     }
 }
@@ -1474,9 +1578,8 @@ impl VgmStream {
 
         for state in self.stream_states.values_mut() {
             state.active = false;
-            state.current_data_pos = 0;
-            state.next_write_sample = self.current_sample;
-            state.remaining_commands = None;
+            state.stream_start_sample = 0;
+            state.last_emitted_step = None;
         }
 
         self.pending_stream_writes.clear();
@@ -1727,12 +1830,9 @@ impl VgmStream {
                 data_length: 0,
                 block_end_pos: None,
                 active: false,
-                current_data_pos: 0,
-                next_write_sample: 0,
-                sample_fraction: 0.0,
-                remaining_commands: None,
                 start_data_pos: 0,
-                stream_end_sample: None,
+                stream_start_sample: 0,
+                last_emitted_step: None,
             });
 
         // `SetupStreamControl.chip_type` carries both chip id and instance.
@@ -1766,12 +1866,9 @@ impl VgmStream {
                 data_length: 0,
                 block_end_pos: None,
                 active: false,
-                current_data_pos: 0,
-                next_write_sample: 0,
-                sample_fraction: 0.0,
-                remaining_commands: None,
                 start_data_pos: 0,
-                stream_end_sample: None,
+                stream_start_sample: 0,
+                last_emitted_step: None,
             });
 
         state.data_bank_id = data.data_bank_id;
@@ -1792,20 +1889,10 @@ impl VgmStream {
             return Ok(());
         }
 
-        // Pre-read values needed to compute the initial position before mutably borrowing state.
-        let (data_bank_id, step_size, step_base, frequency_hz) = {
-            let state = self.stream_states.get(&start.stream_id).unwrap();
-            (
-                state.data_bank_id,
-                state.step_size,
-                state.step_base,
-                state.frequency_hz,
-            )
-        };
-        let data_bank_end = self
-            .uncompressed_streams
-            .get(&data_bank_id)
-            .map(|s| s.data.len())
+        let step_base = self
+            .stream_states
+            .get(&start.stream_id)
+            .map(|s| s.step_base)
             .unwrap_or(0);
 
         let base_offset = if start.data_start_offset >= 0 {
@@ -1815,58 +1902,6 @@ impl VgmStream {
         };
         let start_data_pos = base_offset + step_base as usize;
 
-        let (is_reverse, _) = start.length_mode.flags();
-
-        // For reverse mode, compute the initial position as the END of the playback range.
-        let initial_data_pos = if is_reverse {
-            match start.length_mode {
-                LengthMode::CommandCount { .. } => {
-                    if start.data_length > 0 {
-                        start_data_pos + (start.data_length as usize - 1) * step_size as usize
-                    } else {
-                        start_data_pos
-                    }
-                }
-                LengthMode::Milliseconds { .. } => {
-                    let n = frequency_hz
-                        .map(|f| {
-                            // Divide by 1000 first to avoid overflow on 32-bit
-                            (f / 1000).saturating_mul(start.data_length) as usize
-                                + (f % 1000).saturating_mul(start.data_length) as usize / 1000
-                        })
-                        .unwrap_or(0);
-                    if n > 0 {
-                        start_data_pos + (n - 1) * step_size as usize
-                    } else {
-                        start_data_pos
-                    }
-                }
-                LengthMode::PlayUntilEnd { .. } => {
-                    // Start at the last byte of the data bank.
-                    data_bank_end.saturating_sub(step_size as usize)
-                }
-                _ => start_data_pos, // Ignore, Unknown
-            }
-        } else {
-            start_data_pos
-        };
-
-        // For Milliseconds mode, record the sample at which the stream expires.
-        let stream_end_sample = match start.length_mode {
-            LengthMode::Milliseconds { .. } => {
-                // Divide by 1000 first to avoid overflow on 32-bit
-                let dur = (start.data_length / 1000).saturating_mul(44100) as usize
-                    + (start.data_length % 1000).saturating_mul(44100) as usize / 1000;
-                Some(self.current_sample + dur)
-            }
-            _ => None,
-        };
-
-        let remaining_commands = match start.length_mode {
-            LengthMode::CommandCount { .. } => Some(start.data_length),
-            _ => None,
-        };
-
         if let Some(state) = self.stream_states.get_mut(&start.stream_id) {
             state.start_offset = Some(start.data_start_offset);
             state.length_mode = start.length_mode;
@@ -1874,11 +1909,8 @@ impl VgmStream {
             state.block_end_pos = None; // StartStream doesn't use block boundaries
             state.active = true;
             state.start_data_pos = start_data_pos;
-            state.current_data_pos = initial_data_pos;
-            state.next_write_sample = self.current_sample;
-            state.sample_fraction = 0.0;
-            state.remaining_commands = remaining_commands;
-            state.stream_end_sample = stream_end_sample;
+            state.stream_start_sample = self.current_sample;
+            state.last_emitted_step = None;
         }
         Ok(())
     }
@@ -1899,39 +1931,29 @@ impl VgmStream {
         &mut self,
         fast: &StartStreamFastCall,
     ) -> Result<(), ParseError> {
-        let (data_bank_id, step_base, step_size) =
-            if let Some(state) = self.stream_states.get(&fast.stream_id) {
-                (state.data_bank_id, state.step_base, state.step_size)
-            } else {
-                return Ok(());
-            };
+        let (data_bank_id, step_base) = if let Some(state) = self.stream_states.get(&fast.stream_id)
+        {
+            (state.data_bank_id, state.step_base)
+        } else {
+            return Ok(());
+        };
 
         let (block_offset, block_size) =
             self.get_block_offset_and_size(data_bank_id, fast.block_id)?;
         let block_end = block_offset + block_size;
         let start_data_pos = block_offset + step_base as usize;
 
-        // Reverse mode: start reading from the last byte of the block.
-        let initial_data_pos = if fast.flags.reverse {
-            block_end.saturating_sub(step_size as usize)
-        } else {
-            start_data_pos
-        };
-
         if let Some(state) = self.stream_states.get_mut(&fast.stream_id) {
             state.active = true;
             state.start_data_pos = start_data_pos;
-            state.current_data_pos = initial_data_pos;
             state.block_end_pos = Some(block_end);
-            state.next_write_sample = self.current_sample;
-            state.sample_fraction = 0.0;
+            state.stream_start_sample = self.current_sample;
+            state.last_emitted_step = None;
             // FastCall always uses PlayUntilEnd
             state.length_mode = LengthMode::PlayUntilEnd {
                 reverse: fast.flags.reverse,
                 looped: fast.flags.looped,
             };
-            state.remaining_commands = None;
-            state.stream_end_sample = None;
         }
         Ok(())
     }
@@ -1965,11 +1987,12 @@ impl VgmStream {
 
     /// Generates stream write commands for all active streams that are due.
     ///
-    /// Called after each Wait command.  For every active stream whose
-    /// `next_write_sample` has been reached, one byte is read from the data bank,
-    /// a chip-write command is emitted, and the playback position is advanced.
-    /// All [`LengthMode`] variants—including `reverse` and `looped` flags—are
-    /// handled via [`StreamSnapshot`] helper methods.
+    /// Called after each Wait command.  For every active stream whose next
+    /// scheduled write has been reached, the data-bank byte at the computed
+    /// position is read, a chip-write command is emitted, and — if the stream
+    /// has permanently ended — the `active` flag is cleared.  All playback
+    /// positions and timing are derived from [`StreamCalc`] rather than being
+    /// stored as mutable per-step state.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
         self.stream_id_scratch.clear();
         self.stream_id_scratch
@@ -1977,8 +2000,8 @@ impl VgmStream {
 
         for i in 0..self.stream_id_scratch.len() {
             let stream_id = self.stream_id_scratch[i];
-            // Build a snapshot; skip inactive / frequency-less streams.
-            // data_bank_end must be fetched before the snapshot borrow.
+
+            // Pre-fetch data_bank_end before borrowing stream_states.
             let data_bank_end = {
                 let data_bank_id = match self.stream_states.get(&stream_id) {
                     Some(s) => s.data_bank_id,
@@ -1989,96 +2012,77 @@ impl VgmStream {
                     .map(|s| s.data.len())
                     .unwrap_or(0)
             };
-            let mut snap = match self
+
+            // Build the snapshot view; skip inactive / no-frequency streams.
+            let snapshot = match self
                 .stream_states
                 .get(&stream_id)
                 .and_then(|s| StreamSnapshot::from_state(s, data_bank_end))
             {
-                Some(s) => s,
+                Some(c) => c,
                 None => continue,
             };
 
-            if snap.next_write_sample > self.current_sample {
-                // Not due yet
-                continue;
-            }
+            // Determine which step is due at current_sample.
+            //
+            // `due_step` tells us whether a step's time-slot has arrived,
+            // independently of whether the byte position is in-bank.
+            // `due_write` additionally requires an in-bank position.
+            //
+            // Possible outcomes:
+            //  - due_step = None, next_write_sample = None  → permanently ended
+            //  - due_step = None, next_write_sample = Some  → not yet due
+            //  - due_step = Some, due_write = None          → dry slot (out-of-bank)
+            //  - due_step = Some, due_write = Some          → normal emit
+            let due_s = snapshot.due_step(self.current_sample);
+            let due_w = snapshot.due_write(self.current_sample);
 
-            let (is_reverse, is_looped) = snap.length_mode.flags();
-
-            // End-condition check (before read)
-            if snap.at_end_before_read(self.current_sample) {
-                if is_looped {
-                    snap.apply_loop_restart(is_reverse);
-                    // Fall through: read at the restarted position.
-                } else {
-                    if let Some(state) = self.stream_states.get_mut(&stream_id) {
+            match (due_s, due_w) {
+                (None, _) => {
+                    // Either not due yet or permanently ended.
+                    if snapshot.next_write_sample(self.current_sample).is_none()
+                        && let Some(state) = self.stream_states.get_mut(&stream_id)
+                    {
                         state.active = false;
                     }
                     continue;
                 }
-            }
-
-            // Decrement CommandCount
-            if matches!(snap.length_mode, LengthMode::CommandCount { .. })
-                && let Some(ref mut r) = snap.remaining_commands
-            {
-                *r = r.saturating_sub(1);
-            }
-
-            // Read byte and emit write
-            if let Some(data) =
-                self.read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
-            {
-                if let Some(cmd) = Self::create_stream_write_command_static(
-                    snap.chip_id,
-                    snap.instance,
-                    snap.write_port,
-                    snap.write_command,
-                    data,
-                ) {
-                    self.pending_stream_writes.push(cmd);
+                (Some(dry_step), None) => {
+                    // Dry slot: time-slot is consumed but no byte is in-bank.
+                    // Advance last_emitted_step so the clock moves forward,
+                    // but do NOT emit anything.
+                    if let Some(state) = self.stream_states.get_mut(&stream_id) {
+                        state.last_emitted_step = Some(dry_step);
+                    }
+                    continue;
                 }
-                snap.step_position(is_reverse, is_looped);
-                snap.advance_sample_clock();
-            } else {
-                // Natural end: position ran past the available data.
-                if is_looped {
-                    snap.current_data_pos = if is_reverse {
-                        snap.block_end_pos
-                            .unwrap_or(snap.data_bank_end)
-                            .saturating_sub(snap.step_size as usize)
+                (Some(_), Some((data_pos, step))) => {
+                    // Normal emit: read byte from data bank and emit chip-write command.
+                    if let Some(data) = self.read_stream_byte_at(snapshot.data_bank_id, data_pos)? {
+                        if let Some(cmd) = Self::create_stream_write_command_static(
+                            snapshot.chip_id,
+                            snapshot.instance,
+                            snapshot.write_port,
+                            snapshot.write_command,
+                            data,
+                        ) {
+                            self.pending_stream_writes.push(cmd);
+                        }
+                        // Record that this step has been emitted regardless of whether
+                        // create_stream_write_command_static produced a command (the
+                        // chip type may be unmapped, but the position must still advance).
+                        if let Some(state) = self.stream_states.get_mut(&stream_id) {
+                            state.last_emitted_step = Some(step);
+                        }
                     } else {
-                        snap.start_data_pos
-                    };
-                    if matches!(snap.length_mode, LengthMode::Milliseconds { .. }) {
-                        snap.stream_end_sample = snap.stream_end_sample.map(|e| {
-                            e + (snap.data_length / 1000).saturating_mul(44100) as usize
-                                + (snap.data_length % 1000).saturating_mul(44100) as usize / 1000
-                        });
+                        // read_stream_byte_at returned None even though data_pos_for_step
+                        // said the position was valid — should not normally happen, but
+                        // treat it as a permanent end to avoid spinning.
+                        if let Some(state) = self.stream_states.get_mut(&stream_id) {
+                            state.active = false;
+                        }
                     }
-                    // Position has been reset to the loop-restart point.  Do NOT read or
-                    // emit a byte here: libvgm (daccontrol_update) resets RemainCmds and
-                    // RealPos but does not call daccontrol_SendCommand until the *next*
-                    // update tick.  Deferring the write avoids both a spurious extra write
-                    // in the current sample slot and a double advance_sample_clock call
-                    // that would shift all subsequent writes by one sample.
-                    //
-                    // If the data bank is genuinely empty after restart, mark inactive to
-                    // avoid spinning.
-                    if self
-                        .read_stream_byte_at(snap.data_bank_id, snap.current_data_pos)?
-                        .is_none()
-                    {
-                        snap.active = false;
-                    }
-                } else {
-                    snap.active = false;
                 }
-            }
-
-            // Write back
-            if let Some(state) = self.stream_states.get_mut(&stream_id) {
-                snap.write_back(state);
             }
         }
 
@@ -2138,19 +2142,22 @@ impl VgmStream {
             if !state.active {
                 continue;
             }
-
-            if state.frequency_hz.is_none() || state.frequency_hz == Some(0) {
-                continue;
-            }
-
-            if state.next_write_sample >= self.current_sample
-                && state.next_write_sample <= target_sample
+            let data_bank_end = self
+                .uncompressed_streams
+                .get(&state.data_bank_id)
+                .map(|s| s.data.len())
+                .unwrap_or(0);
+            let calc = match StreamSnapshot::from_state(state, data_bank_end) {
+                Some(c) => c,
+                None => continue,
+            };
+            if let Some(next) = calc.next_write_sample(self.current_sample)
+                && next >= self.current_sample
+                && next <= target_sample
             {
                 match earliest {
-                    None => earliest = Some(state.next_write_sample),
-                    Some(e) if state.next_write_sample < e => {
-                        earliest = Some(state.next_write_sample);
-                    }
+                    None => earliest = Some(next),
+                    Some(e) if next < e => earliest = Some(next),
                     _ => {}
                 }
             }

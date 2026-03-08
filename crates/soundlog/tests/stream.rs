@@ -1848,14 +1848,16 @@ fn test_start_stream_with_multiple_blocks() {
         }
     }
 
-    // Verify we got data from correct offsets across concatenated blocks
-    // Offset 0: should read 0x11 (block 0, position 0)
+    // VGM spec (command 0x93, mm=0x00): "ignore (just change current data position)"
+    // The first StartStream uses LengthMode::Ignore, which only moves the data
+    // position — no chip writes are generated.  0x11 must NOT appear.
+    assert!(
+        !chip_writes.contains(&0x11),
+        "Ignore mode must not produce writes (offset 0 / block 0)"
+    );
+    // The second and third StartStream use PlayUntilEnd, so writes are expected.
     // Offset 5: should read 0x66 (block 1, position 1)
     // Offset 10: should read 0xBB (block 2, position 2)
-    assert!(
-        chip_writes.contains(&0x11),
-        "Should read from offset 0 (block 0)"
-    );
     assert!(
         chip_writes.contains(&0x66),
         "Should read from offset 5 (block 1)"
@@ -6027,4 +6029,565 @@ fn test_length_mode_play_until_end_looped_start_stream_raw_sequence() {
         Item::Write(0x02), // sample 5
     ];
     assert_eq!(items, expected, "raw command sequence mismatch: {items:?}");
+}
+
+// ── Real-world: same stream re-triggered multiple times ──────────────────────
+
+/// Scenario: drum machine pattern.
+///
+/// A single YM2612 DAC stream (stream 0) is used to play short PCM drum hits.
+/// Each hit is triggered with `StartStreamFastCall` using `PlayUntilEnd` (no loop).
+/// The stream is re-triggered mid-playback — the new `StartStreamFastCall` resets
+/// `stream_start_sample` so the new hit starts cleanly from the block beginning.
+///
+/// Data bank (type 0x00) contains two concatenated blocks:
+///   Block 0 (block_id 0): [0x10, 0x20, 0x30, 0x40]  – kick drum
+///   Block 1 (block_id 1): [0xA0, 0xB0, 0xC0]         – snare drum
+///
+/// Timeline (44100 Hz, stream freq = 44100 → 1 write/sample):
+///   sample 0: StartStreamFastCall block 0 (kick)
+///   wait 2 → writes 0x10, 0x20 at samples 0, 1
+///   sample 2: StartStreamFastCall block 1 (snare) – interrupts kick
+///   wait 4 → writes 0xA0, 0xB0, 0xC0 at samples 2, 3, 4  (stream ends)
+///   wait 2 → no writes (stream ended)
+#[test]
+fn test_real_world_drum_retrigger() {
+    let kick_data = vec![0x10u8, 0x20, 0x30, 0x40];
+    let snare_data = vec![0xA0u8, 0xB0, 0xC0];
+
+    let mut builder = VgmBuilder::new();
+
+    // Block 0: kick
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: kick_data.len() as u32,
+        data: kick_data,
+    });
+    // Block 1: snare
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: snare_data.len() as u32,
+        data: snare_data,
+    });
+
+    // Setup stream 0 → YM2612 register 0x2A
+    builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+
+    // Trigger kick (block 0)
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    // WaitSamples(2) covers samples 0, 1, 2  (step 0 is due at stream_start_sample=0,
+    // and the wait advances current_sample by 2 so steps 0..=2 all fire).
+    // → 0x10 at sample 0, 0x20 at sample 1, 0x30 at sample 2
+    builder.add_vgm_command(WaitSamples(2));
+
+    // Re-trigger with snare (block 1) — interrupts kick mid-playback.
+    // At this point the kick has emitted 3 bytes; 0x40 will NOT appear.
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 1,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    // Snare: 0xA0 at sample 3, 0xB0 at sample 4, 0xC0 at sample 5, then silent
+    builder.add_vgm_command(WaitSamples(4));
+
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+
+    // Kick byte 0x40 must NOT appear — the snare interrupted before it fired.
+    assert!(
+        !writes.contains(&0x40),
+        "last kick byte must be absent after retrigger: {writes:?}"
+    );
+    // The three kick bytes that were already scheduled appear first.
+    assert_eq!(
+        &writes[..3],
+        &[0x10, 0x20, 0x30],
+        "first three kick bytes: {writes:?}"
+    );
+    // Full snare must appear immediately after.
+    assert_eq!(&writes[3..], &[0xA0, 0xB0, 0xC0], "snare bytes: {writes:?}");
+}
+
+/// Scenario: sequential sample playback with the same stream ID.
+///
+/// Many games re-use a single stream ID to play a series of voice samples one
+/// after the other.  Each new sample is kicked off by a `StartStream` command
+/// once the previous one finishes (the VGM encoder guarantees timing).
+///
+/// Data bank (type 0x00):
+///   Block A (bytes 0-3): [0x01, 0x02, 0x03, 0x04]
+///   Block B (bytes 4-6): [0x11, 0x12, 0x13]
+///   Block C (bytes 7-9): [0x21, 0x22, 0x23]
+///
+/// Each segment is played with `PlayUntilEnd` (non-looped) via `StartStream`
+/// with the corresponding `data_start_offset`.  A `StopStream` between segments
+/// ensures clean state, matching real VGM encoder output.
+#[test]
+fn test_real_world_sequential_voice_samples() {
+    let bank: Vec<u8> = vec![
+        0x01, 0x02, 0x03, 0x04, // segment A
+        0x11, 0x12, 0x13, // segment B
+        0x21, 0x22, 0x23, // segment C
+    ];
+
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: bank.len() as u32,
+        data: bank,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+
+    // ── Segment A ────────────────────────────────────────────────
+    // Step 0 fires at stream_start_sample (= current_sample at StartStream time).
+    // WaitSamples(N) covers N+1 steps (step 0 at sample T, steps 1..N at T+1..T+N).
+    // Segment A has 4 bytes → WaitSamples(3) covers steps 0..3.
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(3));
+    builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+
+    // ── Segment B ────────────────────────────────────────────────
+    // Segment B has 3 bytes → WaitSamples(2) covers steps 0..2.
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 4,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(2));
+    builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+
+    // ── Segment C ────────────────────────────────────────────────
+    // Segment C has 3 bytes → WaitSamples(2) covers steps 0..2.
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 7,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(2));
+
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+
+    assert_eq!(
+        writes,
+        vec![0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23],
+        "sequential segments must play in order without gaps or repeats: {writes:?}"
+    );
+}
+
+/// Scenario: frequency change between restarts.
+///
+/// Some games adjust the sample rate of a stream mid-song (e.g. a pitch-shifted
+/// voice effect).  The stream is stopped, `SetStreamFrequency` is called with a
+/// new rate, then `StartStream` is used to restart playback.
+///
+/// Data bank: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60] (6 bytes)
+///
+/// First run:  freq = 44100 Hz → 1 write/sample, 3 samples → [0x10, 0x20, 0x30]
+/// Second run: freq = 22050 Hz → 1 write/2 samples, wait 6 samples → 3 writes
+///             [0x10, 0x20, 0x30] (same data, different timing)
+#[test]
+fn test_real_world_stream_restart_with_frequency_change() {
+    let data = vec![0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+
+    // ── First run at 44100 Hz ─────────────────────────────────────
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 3,
+    });
+    // 3 writes at samples 0, 1, 2
+    builder.add_vgm_command(WaitSamples(3));
+    builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+
+    // Change frequency to 22050 Hz (half speed)
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamFrequency {
+        stream_id: 0,
+        frequency: 22050,
+    });
+
+    // ── Second run at 22050 Hz ────────────────────────────────────
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 3,
+    });
+    // At 22050 Hz: writes at relative samples 0, 2, 4 → wait 6 covers all
+    builder.add_vgm_command(WaitSamples(6));
+
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+
+    // Both runs play bytes 0x10..0x30; 6 writes total in order.
+    assert_eq!(
+        writes,
+        vec![0x10, 0x20, 0x30, 0x10, 0x20, 0x30],
+        "two runs with different frequencies: {writes:?}"
+    );
+}
+
+/// Scenario: looped BGM stream interrupted by a one-shot SFX on the same stream ID.
+///
+/// A looping background music stream (CommandCount + looped) is playing when a
+/// sound effect fires on the same stream ID.  The SFX uses `StartStream` with a
+/// different offset and `PlayUntilEnd` (non-looped), which resets `stream_start_sample`
+/// and replaces the BGM entirely.  After the SFX finishes the stream goes silent —
+/// the original BGM loop does NOT resume (it was overwritten).
+///
+/// Data bank:
+///   bytes 0-3: [0xAA, 0xBB, 0xCC, 0xDD]  – BGM pattern (looped, 4-write period)
+///   bytes 4-5: [0xE1, 0xE2]               – SFX (2 bytes, one-shot)
+#[test]
+fn test_real_world_bgm_loop_interrupted_by_sfx() {
+    let bank = vec![0xAAu8, 0xBB, 0xCC, 0xDD, 0xE1, 0xE2];
+
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x00,
+        size: bank.len() as u32,
+        data: bank,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(soundlog::vgm::command::SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+
+    // ── BGM loop starts ───────────────────────────────────────────
+    // CommandCount(4) + looped → pattern [AA BB CC DD] repeats.
+    // Step 0 fires at stream_start_sample; WaitSamples(N) covers steps 0..N.
+    // WaitSamples(6) → 7 steps: AA BB CC DD AA BB CC
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: soundlog::vgm::command::LengthMode::CommandCount {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 4,
+    });
+    // 7 BGM writes: AA BB CC DD AA BB CC
+    builder.add_vgm_command(WaitSamples(6));
+
+    // ── SFX interrupts BGM on the same stream ID ──────────────────
+    // StartStream resets stream_start_sample; step 0 of SFX is immediately due.
+    // WaitSamples(3) covers SFX steps 0..3, but SFX only has 2 bytes → 2 writes.
+    builder.add_vgm_command(soundlog::vgm::command::StartStream {
+        stream_id: 0,
+        data_start_offset: 4,
+        length_mode: soundlog::vgm::command::LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(3)); // covers SFX + silence
+
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+
+    // BGM portion: 7 writes (one full loop AA..DD + AA BB CC)
+    assert_eq!(
+        &writes[..7],
+        &[0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC],
+        "BGM loop portion: {writes:?}"
+    );
+    // SFX portion: exactly 2 writes, no BGM bytes after
+    assert_eq!(
+        &writes[7..],
+        &[0xE1, 0xE2],
+        "SFX must follow BGM without BGM bytes resuming: {writes:?}"
+    );
+}
+
+/// Scenario: rapid re-trigger (same block, same stream) — e.g. a hi-hat.
+///
+/// The same block is re-triggered faster than its natural playback length,
+/// meaning each `StartStreamFastCall` cuts off the previous one.  This is
+/// common for hi-hat or cymbal sounds in rhythm games.
+///
+/// Block 0: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]  (8 bytes)
+/// freq = 44100 Hz → natural length = 8 samples.
+/// Re-trigger every 3 samples: each call resets the position to byte 0.
+/// After 3 re-triggers with 3-sample gaps, last trigger plays until its end.
+///
+/// Expected writes pattern:
+///   trigger 0 @ sample 0 → 0x01 0x02 0x03 (then overwritten)
+///   trigger 1 @ sample 3 → 0x01 0x02 0x03 (then overwritten)
+///   trigger 2 @ sample 6 → 0x01 0x02 0x03 (then overwritten)
+///   trigger 3 @ sample 9 → 0x01..0x08 plays to end
+#[test]
+fn test_real_world_rapid_retrigger_same_block() {
+    let data: Vec<u8> = (0x01..=0x08).collect();
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+
+    // WaitSamples(N) with freq=44100 Hz covers steps 0..N (N+1 steps total,
+    // because step 0 fires at stream_start_sample == current_sample).
+    // WaitSamples(3) → steps 0,1,2,3 → 4 bytes per burst: [01 02 03 04].
+    for _ in 0..3 {
+        builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+            stream_id: 0,
+            block_id: 0,
+            flags: soundlog::vgm::command::StartStreamFastCallFlags {
+                reverse: false,
+                looped: false,
+            },
+        });
+        // Each burst: WaitSamples(3) → 4 writes [01 02 03 04] before next retrigger
+        builder.add_vgm_command(WaitSamples(3));
+    }
+
+    // Final trigger plays to natural end (8 bytes)
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(8));
+
+    builder.add_vgm_command(EndOfData);
+
+    let writes = collect_dac_writes(builder.finalize());
+
+    // Every trigger starts fresh from 0x01.
+    // 3 bursts × [01 02 03 04] + final [01 02 03 04 05 06 07 08] = 20 writes.
+    let expected: Vec<u8> = vec![
+        0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03,
+        0x04, 0x05, 0x06, 0x07, 0x08,
+    ];
+    assert_eq!(writes, expected, "rapid retrigger same block: {writes:?}");
+}
+
+/// Scenario: chip reset register write immediately before `StartStreamFastCall`.
+///
+/// In real-world VGM files it is common to write a reset value to a chip register
+/// (e.g. key-off, volume reset, DAC enable) just before triggering a PCM stream.
+/// The register write and the `StartStreamFastCall` both happen at the same
+/// `current_sample` — there is no `WaitSamples` between them.
+///
+/// The iterator **must** yield the register write *before* the first stream byte,
+/// otherwise the chip would start playing before the reset takes effect, causing
+/// audible glitches (e.g. a note playing at the wrong pitch or volume).
+///
+/// Sequence under test (freq = 44100 Hz, block = [0x10, 0x20, 0x30]):
+///
+///   SetupStreamControl / SetStreamData / SetStreamFrequency  (stream config)
+///   Ym2612Write  port=0  reg=0x2B  val=0x80   ← DAC enable / chip reset
+///   StartStreamFastCall  block_id=0
+///   WaitSamples(3)
+///   EndOfData
+///
+/// Expected command order from the iterator:
+///   1. Ym2612Write(reg=0x2B, val=0x80)   ← register write comes first
+///   2. Ym2612Write(reg=0x2A, val=0x10)   ← stream byte 0
+///   3. WaitSamples(1)
+///   4. Ym2612Write(reg=0x2A, val=0x20)   ← stream byte 1
+///   5. WaitSamples(1)
+///   6. Ym2612Write(reg=0x2A, val=0x30)   ← stream byte 2
+///   7. WaitSamples(1)
+#[test]
+fn test_real_world_register_write_before_fast_call_ordering() {
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::vgm::stream::StreamResult;
+
+    let data = vec![0x10u8, 0x20, 0x30];
+    let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
+
+    // Chip reset / DAC enable — written at the same sample as the stream trigger.
+    // reg=0x2B val=0x80 is the standard YM2612 DAC-enable register write.
+    builder.add_vgm_command(VgmCommand::Ym2612Write(
+        Instance::Primary,
+        soundlog::chip::Ym2612Spec {
+            port: 0,
+            register: 0x2B,
+            value: 0x80,
+        },
+    ));
+
+    // Stream trigger immediately after — no WaitSamples between them.
+    builder.add_vgm_command(soundlog::vgm::command::StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: soundlog::vgm::command::StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(3));
+    builder.add_vgm_command(EndOfData);
+
+    let doc = builder.finalize();
+    let vgm_bytes: Vec<u8> = (&doc).into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &vgm_bytes);
+
+    #[derive(Debug, PartialEq)]
+    enum Item {
+        RegWrite { register: u8, value: u8 },
+        StreamByte(u8),
+        Wait(u16),
+    }
+
+    let mut items: Vec<Item> = Vec::new();
+    for result in &mut parser {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, spec))) => {
+                if spec.register == 0x2A {
+                    items.push(Item::StreamByte(spec.value));
+                } else {
+                    items.push(Item::RegWrite {
+                        register: spec.register,
+                        value: spec.value,
+                    });
+                }
+            }
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(w))) => {
+                items.push(Item::Wait(w.0));
+            }
+            Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
+            Err(e) => panic!("parse error: {e:?}"),
+            _ => {}
+        }
+    }
+
+    // The register write must be the very first item.
+    assert_eq!(
+        items.first(),
+        Some(&Item::RegWrite {
+            register: 0x2B,
+            value: 0x80
+        }),
+        "chip reset register write must precede all stream bytes: {items:?}"
+    );
+
+    // The stream bytes must follow in order.
+    let stream_bytes: Vec<u8> = items
+        .iter()
+        .filter_map(|i| {
+            if let Item::StreamByte(v) = i {
+                Some(*v)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        stream_bytes,
+        vec![0x10, 0x20, 0x30],
+        "stream bytes must be complete and in order: {items:?}"
+    );
+
+    // No stream byte appears before the register write.
+    let first_stream_pos = items
+        .iter()
+        .position(|i| matches!(i, Item::StreamByte(_)))
+        .expect("at least one stream byte");
+    let reset_pos = items
+        .iter()
+        .position(|i| matches!(i, Item::RegWrite { .. }))
+        .expect("register write present");
+    assert!(
+        reset_pos < first_stream_pos,
+        "register write (pos {reset_pos}) must come before first stream byte (pos {first_stream_pos}): {items:?}"
+    );
 }
