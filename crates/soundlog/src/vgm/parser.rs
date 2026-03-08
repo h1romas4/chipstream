@@ -853,28 +853,140 @@ pub(crate) fn parse_vgm_command(
             let (v, n) = SeekOffset::parse(bytes, cur, opcode)?;
             Ok((VgmCommand::SeekOffset(v), 1 + n))
         }
-        other => {
-            // Try to parse as a chip write (primary or secondary instance).
-            for &instance in &[Instance::Primary, Instance::Secondary] {
-                let opcode = match instance {
-                    Instance::Primary => other,
-                    Instance::Secondary => match other {
-                        // The second SN76489 PSG uses 0x30 (0x3F for GG Stereo).
-                        0x30 | 0x3F => 0x50,
-                        // All chips of the YM-family that use command 0x5n use 0xAn for the second chip.
-                        0xA0..=0xAF => other.wrapping_sub(0x50),
-                        // All other chips use bit 7 (0x80) of the first parameter byte
-                        // to distinguish between the 1st and 2nd chip.
-                        0x80..=0xFF => other.wrapping_sub(0x80),
-                        // Fallback to the older heuristic (subtract 0x50).
-                        _ => other.wrapping_sub(0x50),
+        // AY8910 (0xA0): Dual Chip Support #2 — the opcode is always 0xA0 for both
+        // chip instances. Bit 7 of the first parameter byte (register) selects the
+        // second chip instance (0x00-0x7F = chip 1, 0x80-0xFF = chip 2).
+        0xA0 => {
+            let reg_byte = read_u8_at(bytes, cur)?;
+            let instance = if reg_byte & 0x80 != 0 {
+                Instance::Secondary
+            } else {
+                Instance::Primary
+            };
+            // Strip the instance bit so the spec sees the real register number.
+            let patched_reg = reg_byte & 0x7F;
+            let val = read_u8_at(bytes, cur + 1)?;
+            Ok((
+                VgmCommand::Ay8910Write(
+                    instance,
+                    chip::Ay8910Spec {
+                        register: patched_reg,
+                        value: val,
                     },
-                };
-                match parse_chip_write(opcode, instance, bytes, cur) {
+                ),
+                3,
+            ))
+        }
+        other => {
+            // Dual Chip Support #1: secondary PSG uses opcode 0x30 / 0x3F.
+            // Map back to the primary opcode and parse as Secondary.
+            if other == 0x30 || other == 0x3F {
+                let primary_opcode = 0x50u8;
+                match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                    Err(ParseError::Other(_)) => continue,
+                    Err(ParseError::Other(_)) => {}
                     Err(e) => return Err(e),
                 }
+            }
+
+            // Dual Chip Support #1: YM-family chips with opcode 0xAn (n = 1..=F)
+            // are the secondary instances of the corresponding 0x5n primary commands.
+            // (0xA0 is AY8910 and is handled above as an explicit match arm.)
+            if matches!(other, 0xA1..=0xAF) {
+                let primary_opcode = other.wrapping_sub(0x50);
+                match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
+                    Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
+                    Err(ParseError::Other(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+
+            // Dual Chip Support #2: chips that support two instances use bit 7 of the
+            // *first* parameter byte to select the second chip instance. The opcode
+            // itself does not change.
+            //
+            // Only chips explicitly listed in the VGM spec as supporting dual-chip are
+            // included here. Single-instance-only chips (Mikey 0x40, GGPsg 0x4F,
+            // RF5C68 0xB0/0xC1, RF5C164 0xB1/0xC2, PWM 0xB2, QSound 0xC4) are
+            // intentionally excluded so their parameter bytes are never misread as
+            // instance selectors.
+            //
+            // Special case: SegaPCM (0xC0) uses bit 7 of the *second* parameter byte
+            // (the high byte of the address).
+            //
+            // Covered opcodes (primary opcode = secondary opcode):
+            //   0xB3 GbDmg, 0xB4 NesApu, 0xB5 MultiPcm, 0xB6 Upd7759,
+            //   0xB7 Okim6258, 0xB8 Okim6295, 0xB9 Huc6280, 0xBA K053260,
+            //   0xBB Pokey, 0xBC WonderSwanReg, 0xBD Saa1099, 0xBE Es5506U8,
+            //   0xBF Ga20,
+            //   0xC0 SegaPcm (bit7 on 2nd param), 0xC3 MultiPcmBank,
+            //   0xC5 Scsp, 0xC6 WonderSwan, 0xC7 Vsu, 0xC8 X1010,
+            //   0xD0 Ymf278b, 0xD1 Ymf271, 0xD2 Scc1, 0xD3 K054539,
+            //   0xD4 C140, 0xD5 Es5503, 0xD6 Es5506U16,
+            //   0xE1 C352
+            if matches!(
+                other,
+                0xB3..=0xBF | 0xC0 | 0xC3 | 0xC5..=0xC8 | 0xD0..=0xD6 | 0xE1
+            ) {
+                // Peek at the first parameter byte to determine the chip instance.
+                // For SegaPCM (0xC0) the instance bit is in the *second* parameter byte.
+                let instance = if other == 0xC0 {
+                    // SegaPCM: the VGM spec states the 2nd-chip-bit is in the
+                    // "high byte of the address parameter". The wire format is
+                    // `0xC0 bb aa dd` where `bb` is the address high byte and
+                    // is the *first* parameter byte (at `cur`), so we read from
+                    // `cur`, not `cur + 1`.
+                    match read_u8_at(bytes, cur) {
+                        Ok(b) if b & 0x80 != 0 => Instance::Secondary,
+                        Ok(_) => Instance::Primary,
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    match read_u8_at(bytes, cur) {
+                        Ok(b) if b & 0x80 != 0 => Instance::Secondary,
+                        Ok(_) => Instance::Primary,
+                        Err(e) => return Err(e),
+                    }
+                };
+
+                // Build a patched parameter buffer with bit 7 stripped so that
+                // the chip-specific parse implementations receive the real value.
+                // We need at most a handful of bytes; copy enough to cover the
+                // longest possible payload (4 bytes is sufficient for all 0xBx-0xDx
+                // commands).
+                const MAX_PAYLOAD: usize = 8;
+                let avail = bytes.len().saturating_sub(cur).min(MAX_PAYLOAD);
+                let mut patched = [0u8; MAX_PAYLOAD];
+                patched[..avail].copy_from_slice(&bytes[cur..cur + avail]);
+                if instance == Instance::Secondary {
+                    if other == 0xC0 {
+                        // Strip instance bit from first parameter byte (bb = high address byte).
+                        if avail >= 1 {
+                            patched[0] &= 0x7F;
+                        }
+                    } else {
+                        // Strip instance bit from first parameter byte.
+                        if avail >= 1 {
+                            patched[0] &= 0x7F;
+                        }
+                    }
+                }
+
+                match parse_chip_write(other, instance, &patched, 0) {
+                    Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
+                    Err(ParseError::Other(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+
+            // Fallback: try parsing as a Primary chip write using the raw opcode.
+            // This covers opcodes such as 0x50-0x5F (YM-family primary), 0x40, 0x4F,
+            // and any other primary-only commands that were not matched by the
+            // Secondary-specific branches above.
+            match parse_chip_write(other, Instance::Primary, bytes, cur) {
+                Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
+                Err(ParseError::Other(_)) => {}
+                Err(e) => return Err(e),
             }
 
             // If no chip write matched, try reserved opcode ranges as a fallback.

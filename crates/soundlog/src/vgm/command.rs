@@ -2126,9 +2126,9 @@ impl CommandSpec for chip::MultiPcmSpec {
 }
 
 impl CommandSpec for chip::MultiPcmBankSpec {
-    // MultiPCM, write value dd to register aa
+    // MultiPCM, write set bank offset aabb to channel cc
     fn opcode(&self) -> u8 {
-        0xB5
+        0xC3
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
@@ -2863,18 +2863,38 @@ pub fn command_to_vgm_bytes(command: &VgmCommand) -> (Vec<u8>, usize) {
 fn spec_to_vgm_bytes<C: CommandSpec + ?Sized>(chip_id: Instance, spec: &C, cmd_buf: &mut Vec<u8>) {
     let start = cmd_buf.len();
     spec.to_vgm_bytes(cmd_buf);
-    cmd_buf[start] = match chip_id {
-        Instance::Primary => cmd_buf[start],
+    match chip_id {
+        Instance::Primary => {}
         Instance::Secondary => {
             let primary = cmd_buf[start];
             match primary {
-                0x50 => 0x30,
-                0x51..=0x5F => primary.wrapping_add(0x50),
-                0x00..=0x7F => primary.wrapping_add(0x80),
-                _ => primary.wrapping_add(0x50),
+                // Dual Chip Support #1: SN76489 PSG uses a separate opcode.
+                0x50 => cmd_buf[start] = 0x30,
+                // Dual Chip Support #1: YM-family chips with opcode 0x5n use 0xAn
+                // for the second chip instance.
+                0x51..=0x5F => cmd_buf[start] = primary.wrapping_add(0x50),
+                // Dual Chip Support #2: AY8910 (0xA0) — opcode stays 0xA0,
+                // but bit 7 of the first parameter byte (register aa) is set to
+                // select the second chip instance.
+                0xA0 => {
+                    cmd_buf[start + 1] |= 0x80;
+                }
+                // Dual Chip Support #2: SegaPCM (0xC0) is a special case — the
+                // second-chip bit lives in the *high* byte of the address parameter.
+                // The wire format is `0xC0 bb aa dd` where `bb` is the address high
+                // byte and is stored at cmd_buf[start + 1] (the first param byte).
+                0xC0 => {
+                    cmd_buf[start + 1] |= 0x80;
+                }
+                // Dual Chip Support #2: all other chips (0x40-0x4F, 0xB0-0xFF
+                // excluding 0xA0 and 0xC0 above) keep their opcode unchanged and
+                // set bit 7 of the first parameter byte to select the second chip.
+                _ => {
+                    cmd_buf[start + 1] |= 0x80;
+                }
             }
         }
-    };
+    }
 }
 
 impl VgmDocument {
