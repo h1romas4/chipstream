@@ -7,6 +7,9 @@
   - [ ] Fix: Unify the state of ES5506.
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+
+## v0.10.3
+
 - [x] Fix: `VgmStream` DAC stream — `PlayUntilEnd` + `looped` via `StartStream`: end-of-bank was not detected when `block_end_pos` is `None` (now falls back to `data_bank_end`); removed spurious immediate re-read after natural-end loop restart so the post-wrap write is deferred to the next tick, matching libvgm `daccontrol_update` behaviour.
 - [x] Fix: `vgm::command` (`spec_to_vgm_bytes`) — corrected dual-chip (secondary instance) encoding for all chip families: AY8910 secondary now sets bit 7 of the register byte instead of modifying the opcode; SegaPCM secondary now sets bit 7 of the address high byte; PSG secondary uses opcode `0x30`; YM-family secondary maps `0x5n` → `0xAn`; all other dual-chip-capable chips set bit 7 of the first parameter byte. Also fixed `MultiPcmBankSpec` opcode (`0xC3`).
 - [x] Fix: `vgm::parser` (`parse_vgm_command`) — corrected dual-chip (secondary instance) decoding to match the encoding above: AY8910 (`0xA0`) now detects secondary via bit 7 of the register byte and strips the bit before building the spec; SegaPCM secondary detection uses bit 7 of the address high byte; YM-family `0xAn` opcodes are mapped back to their primary counterparts with `Instance::Secondary`; other dual-chip-capable chips derive instance from bit 7 of the first parameter byte.
