@@ -4,7 +4,419 @@ use std::rc::Rc;
 
 use soundlog::VgmBuilder;
 use soundlog::VgmCallbackStream;
+use soundlog::chip::Chip;
 use soundlog::vgm::command::{Instance, VgmCommand};
+
+#[test]
+fn test_typed_callbacks_for_state_tracker_chips_invoked() {
+    use soundlog::chip;
+
+    // Build a simple VGM document that contains one representative write
+    // for each of the state-tracker chips we want to validate.
+    let mut builder = VgmBuilder::new();
+
+    builder.register_chip(Chip::SegaPcm, Instance::Primary, 0x1);
+    builder.register_chip(Chip::Rf5c68, Instance::Primary, 0x2);
+    builder.register_chip(Chip::Rf5c164, Instance::Primary, 0x3);
+    builder.register_chip(Chip::Pwm, Instance::Primary, 0x4);
+    builder.register_chip(Chip::MultiPcm, Instance::Primary, 0x5);
+    builder.register_chip(Chip::Upd7759, Instance::Primary, 0x6);
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 0x7);
+    builder.register_chip(Chip::Okim6295, Instance::Primary, 0x8);
+    builder.register_chip(Chip::K054539, Instance::Primary, 0x9);
+    builder.register_chip(Chip::C140, Instance::Primary, 0xa);
+    builder.register_chip(Chip::C352, Instance::Primary, 0xb);
+    builder.register_chip(Chip::K053260, Instance::Primary, 0xc);
+    builder.register_chip(Chip::Qsound, Instance::Primary, 0xd);
+    builder.register_chip(Chip::Scsp, Instance::Primary, 0xe);
+    builder.register_chip(Chip::Es5503, Instance::Primary, 0xf);
+    builder.register_chip(Chip::Es5506U16, Instance::Primary, 0x10);
+    builder.register_chip(Chip::Es5506U8, Instance::Primary, 0x11);
+    builder.register_chip(Chip::X1010, Instance::Primary, 0x12);
+    builder.register_chip(Chip::Ga20, Instance::Primary, 0x13);
+    builder.register_chip(Chip::Ymz280b, Instance::Primary, 0x14);
+
+    // Add one write per chip (Primary instance) with minimal/sample data.
+    builder.add_vgm_command(VgmCommand::SegaPcmWrite(
+        Instance::Primary,
+        chip::SegaPcmSpec {
+            offset: 0x1234,
+            value: 0x7F,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Rf5c68U8Write(
+        Instance::Primary,
+        chip::Rf5c68U8Spec {
+            offset: 0x10,
+            value: 0x21,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Rf5c164U8Write(
+        Instance::Primary,
+        chip::Rf5c164U8Spec {
+            offset: 0x05,
+            value: 0x23,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::PwmWrite(
+        Instance::Primary,
+        chip::PwmSpec {
+            register: 0x01,
+            value: 0x0FFFu32,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::MultiPcmWrite(
+        Instance::Primary,
+        chip::MultiPcmSpec {
+            register: 0x0C,
+            value: 0x44,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Upd7759Write(
+        Instance::Primary,
+        chip::Upd7759Spec {
+            register: 0x0D,
+            value: 0x45,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Okim6258Write(
+        Instance::Primary,
+        chip::Okim6258Spec {
+            register: 0x0E,
+            value: 0x46,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Okim6295Write(
+        Instance::Primary,
+        chip::Okim6295Spec {
+            register: 0x0F,
+            value: 0x47,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::K054539Write(
+        Instance::Primary,
+        chip::K054539Spec {
+            register: 0x33,
+            value: 0x63,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::C140Write(
+        Instance::Primary,
+        chip::C140Spec {
+            register: 0x34,
+            value: 0x64,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::C352Write(
+        Instance::Primary,
+        chip::C352Spec {
+            register: 0x40,
+            value: 0x66,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::K053260Write(
+        Instance::Primary,
+        chip::K053260Spec {
+            register: 0x12,
+            value: 0x49,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::QsoundWrite(
+        Instance::Primary,
+        chip::QsoundSpec {
+            register: 0x01,
+            value: 0x50,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::ScspWrite(
+        Instance::Primary,
+        chip::ScspSpec {
+            offset: 0x20,
+            value: 0x51,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Es5503Write(
+        Instance::Primary,
+        chip::Es5503Spec {
+            register: 0x35,
+            value: 0x65,
+        },
+    ));
+    // Use the U16 variant example used elsewhere in the tests.
+    builder.add_vgm_command(VgmCommand::Es5506D6Write(
+        Instance::Primary,
+        chip::Es5506U16Spec {
+            register: 0x36,
+            value: 0x1234,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::X1010Write(
+        Instance::Primary,
+        chip::X1010Spec {
+            offset: 0x22,
+            value: 0x54,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Ga20Write(
+        Instance::Primary,
+        chip::Ga20Spec {
+            register: 0x17,
+            value: 0x4E,
+        },
+    ));
+    builder.add_vgm_command(VgmCommand::Ymz280bWrite(
+        Instance::Primary,
+        chip::Ymz280bSpec {
+            register: 0x08,
+            value: 0xC2,
+        },
+    ));
+
+    let doc = builder.finalize();
+    let instances = doc.header.chip_instances();
+
+    let mut callback_stream = VgmCallbackStream::from_document(doc);
+    callback_stream.track_chips(&instances);
+
+    // Create invocation flags for each typed callback we will register.
+    let sega_pcm_called = Rc::new(RefCell::new(false));
+    let rf5c68_called = Rc::new(RefCell::new(false));
+    let rf5c164_called = Rc::new(RefCell::new(false));
+    let pwm_called = Rc::new(RefCell::new(false));
+    let multi_pcm_called = Rc::new(RefCell::new(false));
+    let upd7759_called = Rc::new(RefCell::new(false));
+    let okim6258_called = Rc::new(RefCell::new(false));
+    let okim6295_called = Rc::new(RefCell::new(false));
+    let k054539_called = Rc::new(RefCell::new(false));
+    let c140_called = Rc::new(RefCell::new(false));
+    let c352_called = Rc::new(RefCell::new(false));
+    let k053260_called = Rc::new(RefCell::new(false));
+    let qsound_called = Rc::new(RefCell::new(false));
+    let scsp_called = Rc::new(RefCell::new(false));
+    let es5503_called = Rc::new(RefCell::new(false));
+    let es5506_called = Rc::new(RefCell::new(false));
+    let x1010_called = Rc::new(RefCell::new(false));
+    let ga20_called = Rc::new(RefCell::new(false));
+    let ymz280b_called = Rc::new(RefCell::new(false));
+
+    // Register typed callbacks. Each one sets its flag to true when invoked.
+    {
+        let f = sega_pcm_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::SegaPcmSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = rf5c68_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Rf5c68U8Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = rf5c164_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Rf5c164U8Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = pwm_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::PwmSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = multi_pcm_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::MultiPcmSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = upd7759_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Upd7759Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = okim6258_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Okim6258Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = okim6295_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Okim6295Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = k054539_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::K054539Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = c140_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::C140Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = c352_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::C352Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = k053260_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::K053260Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = qsound_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::QsoundSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = scsp_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::ScspSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = es5503_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Es5503Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = es5506_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Es5506U16Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = x1010_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::X1010Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = ga20_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Ga20Spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = ymz280b_called.clone();
+        callback_stream.on_write(move |_inst, _spec: chip::Ymz280bSpec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+
+    // Drain the stream to trigger callbacks.
+    for _ in &mut callback_stream {}
+
+    // Verify each typed callback was invoked at least once.
+    assert!(
+        *sega_pcm_called.borrow(),
+        "SegaPcm typed callback should be invoked"
+    );
+    assert!(
+        *rf5c68_called.borrow(),
+        "Rf5c68 typed callback should be invoked"
+    );
+    assert!(
+        *rf5c164_called.borrow(),
+        "Rf5c164 typed callback should be invoked"
+    );
+    assert!(*pwm_called.borrow(), "Pwm typed callback should be invoked");
+    assert!(
+        *multi_pcm_called.borrow(),
+        "MultiPcm typed callback should be invoked"
+    );
+    assert!(
+        *upd7759_called.borrow(),
+        "Upd7759 typed callback should be invoked"
+    );
+    assert!(
+        *okim6258_called.borrow(),
+        "Okim6258 typed callback should be invoked"
+    );
+    assert!(
+        *okim6295_called.borrow(),
+        "Okim6295 typed callback should be invoked"
+    );
+    assert!(
+        *k054539_called.borrow(),
+        "K054539 typed callback should be invoked"
+    );
+    assert!(
+        *c140_called.borrow(),
+        "C140 typed callback should be invoked"
+    );
+    assert!(
+        *c352_called.borrow(),
+        "C352 typed callback should be invoked"
+    );
+    assert!(
+        *k053260_called.borrow(),
+        "K053260 typed callback should be invoked"
+    );
+    assert!(
+        *qsound_called.borrow(),
+        "QSound typed callback should be invoked"
+    );
+    assert!(
+        *scsp_called.borrow(),
+        "SCSP typed callback should be invoked"
+    );
+    assert!(
+        *es5503_called.borrow(),
+        "ES5503 typed callback should be invoked"
+    );
+    assert!(
+        *es5506_called.borrow(),
+        "ES5506 typed callback should be invoked"
+    );
+    assert!(
+        *x1010_called.borrow(),
+        "X1010 typed callback should be invoked"
+    );
+    assert!(
+        *ga20_called.borrow(),
+        "GA20 typed callback should be invoked"
+    );
+    assert!(
+        *ymz280b_called.borrow(),
+        "YMZ280B typed callback should be invoked"
+    );
+}
+
+#[test]
+fn test_setters_getters_loop_and_fadeout() {
+    // Create an empty VGM document and a callback stream from it.
+    let builder = VgmBuilder::new();
+    let doc = builder.finalize();
+    let mut callback_stream = VgmCallbackStream::from_document(doc);
+
+    // Loop base setter/getter (i8)
+    callback_stream.set_loop_base(5);
+    assert_eq!(callback_stream.loop_base(), 5);
+    callback_stream.set_loop_base(-7);
+    assert_eq!(callback_stream.loop_base(), -7);
+
+    // Loop modifier setter/getter (u8)
+    callback_stream.set_loop_modifier(42);
+    assert_eq!(callback_stream.loop_modifier(), 42u8);
+
+    // Fadeout samples setter/getter (Option<usize>)
+    callback_stream.set_fadeout_samples(Some(12345usize));
+    assert_eq!(callback_stream.fadeout_samples(), Some(12345usize));
+    callback_stream.set_fadeout_samples(None);
+    assert_eq!(callback_stream.fadeout_samples(), None);
+}
 
 /// Construct a VGM command list that covers the wide set of chip-write
 /// variants exercised by the parser / callback stream. This mirrors the
@@ -1384,5 +1796,208 @@ fn test_track_chips_enables_state_tracking_for_all_chips() {
     assert!(
         *key_on_detected.borrow(),
         "YM2612 state tracker must be active after track_chips: expected a KeyOn event"
+    );
+}
+
+/// Verify miscellaneous non-chip callbacks are invoked when the corresponding
+/// `VgmCommand` variants are present. This covers:
+/// - AY8910 stereo mask
+/// - Reserved U8/U16/U24/U32 writes
+/// - UnknownCommand
+/// - WaitSamples
+/// - DataBlock
+/// - PcmRamWrite
+/// - EndOfData (assert it is not invoked in practice)
+#[test]
+fn test_misc_callbacks_invoked() {
+    use soundlog::vgm::command::{
+        Ay8910StereoMask, EndOfData, PcmRamWrite, ReservedU8, ReservedU16, ReservedU24,
+        ReservedU32, UnknownSpec, VgmCommand, WaitSamples,
+    };
+    use soundlog::vgm::detail::{RomRamChipType, RomRamDump};
+    use soundlog::{VgmBuilder, VgmCallbackStream};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut builder = VgmBuilder::new();
+
+    // AY8910 stereo mask (opcode 0xD0 style)
+    let ay_mask = Ay8910StereoMask {
+        chip_instance: 0,
+        is_ym2203: false,
+        left_ch1: true,
+        right_ch1: false,
+        left_ch2: true,
+        right_ch2: false,
+        left_ch3: true,
+        right_ch3: false,
+    };
+    builder.add_vgm_command(VgmCommand::AY8910StereoMask(ay_mask.clone()));
+
+    // Reserved U8 / U16 / U24 / U32 writes (use arbitrary dd bytes/opcodes)
+    builder.add_vgm_command(VgmCommand::ReservedU8Write(ReservedU8 {
+        opcode: 0xC0,
+        dd: 0x11,
+    }));
+    builder.add_vgm_command(VgmCommand::ReservedU16Write(ReservedU16 {
+        opcode: 0xC1,
+        dd1: 0x22,
+        dd2: 0x33,
+    }));
+    builder.add_vgm_command(VgmCommand::ReservedU24Write(ReservedU24 {
+        opcode: 0xC2,
+        dd1: 0x44,
+        dd2: 0x55,
+        dd3: 0x66,
+    }));
+    builder.add_vgm_command(VgmCommand::ReservedU32Write(ReservedU32 {
+        opcode: 0xE3,
+        dd1: 0x77,
+        dd2: 0x88,
+        dd3: 0x99,
+        dd4: 0xAA,
+    }));
+
+    // Unknown command
+    builder.add_vgm_command(VgmCommand::UnknownCommand(UnknownSpec {
+        opcode: 0xAB,
+        offset: 0,
+    }));
+
+    // WaitSamples
+    builder.add_vgm_command(VgmCommand::WaitSamples(WaitSamples(123)));
+
+    // DataBlock
+    builder.attach_data_block(RomRamDump {
+        chip_type: RomRamChipType::C140Rom,
+        rom_size: 3,
+        start_address: 0,
+        data: vec![0x01, 0x02, 0x03],
+    });
+
+    // PCM RAM write (boxed)
+    let pcm = PcmRamWrite {
+        marker: 0x66,
+        chip_type: soundlog::vgm::detail::StreamChipType::Unknown(0x7F),
+        read_offset: 0,
+        write_offset: 0,
+        size: 2,
+        data: vec![0xAA, 0xBB],
+    };
+    builder.add_vgm_command(VgmCommand::PcmRamWrite(Box::new(pcm)));
+
+    // Explicit EndOfData
+    builder.add_vgm_command(VgmCommand::EndOfData(EndOfData));
+
+    let doc = builder.finalize();
+    let mut callback_stream = VgmCallbackStream::from_document(doc);
+
+    // Flags to detect callback invocations
+    let ay_invoked = Rc::new(RefCell::new(false));
+    let reserved_u8_invoked = Rc::new(RefCell::new(false));
+    let reserved_u16_invoked = Rc::new(RefCell::new(false));
+    let reserved_u24_invoked = Rc::new(RefCell::new(false));
+    let reserved_u32_invoked = Rc::new(RefCell::new(false));
+    let unknown_invoked = Rc::new(RefCell::new(false));
+    let wait_invoked = Rc::new(RefCell::new(false));
+    let data_block_invoked = Rc::new(RefCell::new(false));
+    let pcm_invoked = Rc::new(RefCell::new(false));
+    let end_of_data_invoked = Rc::new(RefCell::new(false));
+
+    {
+        let f = ay_invoked.clone();
+        callback_stream.on_ay8910_stereo_mask(move |_mask, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = reserved_u8_invoked.clone();
+        callback_stream.on_reserved_u8_write(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = reserved_u16_invoked.clone();
+        callback_stream.on_reserved_u16_write(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = reserved_u24_invoked.clone();
+        callback_stream.on_reserved_u24_write(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = reserved_u32_invoked.clone();
+        callback_stream.on_reserved_u32_write(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = unknown_invoked.clone();
+        callback_stream.on_unknown_command(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = wait_invoked.clone();
+        callback_stream.on_wait(move |_spec, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = data_block_invoked.clone();
+        callback_stream.on_data_block(move |_db, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = pcm_invoked.clone();
+        callback_stream.on_pcm_ram_write(move |_p, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+    {
+        let f = end_of_data_invoked.clone();
+        callback_stream.on_end_of_data(move |_e, _sample, _ev| {
+            *f.borrow_mut() = true;
+        });
+    }
+
+    // Drain the stream to trigger callbacks
+    for _ in &mut callback_stream {}
+
+    // Assertions
+    assert!(*ay_invoked.borrow(), "AY8910 stereo mask callback must run");
+    assert!(
+        *reserved_u8_invoked.borrow(),
+        "Reserved U8 callback must run"
+    );
+    assert!(
+        *reserved_u16_invoked.borrow(),
+        "Reserved U16 callback must run"
+    );
+    assert!(
+        *reserved_u24_invoked.borrow(),
+        "Reserved U24 callback must run"
+    );
+    assert!(
+        *reserved_u32_invoked.borrow(),
+        "Reserved U32 callback must run"
+    );
+    assert!(
+        *unknown_invoked.borrow(),
+        "UnknownCommand callback must run"
+    );
+    assert!(*wait_invoked.borrow(), "WaitSamples callback must run");
+    assert!(*data_block_invoked.borrow(), "DataBlock callback must run");
+    assert!(*pcm_invoked.borrow(), "PcmRamWrite callback must run");
+
+    // EndOfData callback is reserved and not invoked in practice (iterator ends
+    // before the callback can be called); assert it remains false.
+    assert!(
+        !*end_of_data_invoked.borrow(),
+        "EndOfData callback is reserved and should not be invoked by iteration"
     );
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_return)]
 //! PCM chip state implementations.
 //!
 //! This module provides state trackers for PCM-based chips that don't
@@ -576,5 +577,189 @@ mod tests {
         // K054539 has u16 register
         state.on_register_write(0x0200, 0x42);
         assert_eq!(state.read_register(0x0200), Some(0x42));
+    }
+
+    // New comprehensive test: verify Default and reset behavior across all PCM chips.
+    #[test]
+    fn test_default_and_reset_for_all_pcm_chips() {
+        // SegaPcmState (u16 register -> u8 value)
+        {
+            let mut s = SegaPcmState::default();
+            assert_eq!(
+                SegaPcmState::default().channel_count(),
+                SegaPcmState::new(0.0f32).channel_count()
+            );
+            assert_eq!(s.read_register(0x0010u16), None);
+            s.on_register_write(0x0010u16, 0x42u8);
+            assert_eq!(s.read_register(0x0010u16), Some(0x42u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0010u16), None);
+        }
+
+        // Rf5c68State (u16 -> u8)
+        {
+            let mut s = Rf5c68State::default();
+            assert_eq!(
+                Rf5c68State::default().channel_count(),
+                Rf5c68State::new(0.0f32).channel_count()
+            );
+            s.on_register_write(0x0010u16, 0x11u8);
+            assert_eq!(s.read_register(0x0010u16), Some(0x11u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0010u16), None);
+        }
+
+        // Rf5c164State (u16 -> u8)
+        {
+            let mut s = Rf5c164State::default();
+            s.on_register_write(0x0010u16, 0x22u8);
+            assert_eq!(s.read_register(0x0010u16), Some(0x22u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0010u16), None);
+        }
+
+        // Ymz280bState (u8 -> u8)
+        {
+            let mut s = Ymz280bState::default();
+            s.on_register_write(0x10u8, 0x33u8);
+            assert_eq!(s.read_register(0x10u8), Some(0x33u8));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // MultiPcmState (u8 -> u8)
+        {
+            let mut s = MultiPcmState::default();
+            s.on_register_write(0x10u8, 0x44u8);
+            assert_eq!(s.read_register(0x10u8), Some(0x44u8));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // Upd7759State (u8 -> u8)
+        {
+            let mut s = Upd7759State::default();
+            s.on_register_write(0x01u8, 0x55u8);
+            assert_eq!(s.read_register(0x01u8), Some(0x55u8));
+            s.reset();
+            assert_eq!(s.read_register(0x01u8), None);
+        }
+
+        // Okim6258State (u8 -> u8)
+        {
+            let mut s = Okim6258State::default();
+            s.on_register_write(0x10u8, 0x66u8);
+            assert_eq!(s.read_register(0x10u8), Some(0x66u8));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // Okim6295State (u8 -> u8)
+        {
+            let mut s = Okim6295State::default();
+            s.on_register_write(0x10u8, 0x77u8);
+            assert_eq!(s.read_register(0x10u8), Some(0x77u8));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // K054539State (u16 -> u8)
+        {
+            let mut s = K054539State::default();
+            s.on_register_write(0x0200u16, 0x88u8);
+            assert_eq!(s.read_register(0x0200u16), Some(0x88u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0200u16), None);
+        }
+
+        // C140State (u16 -> u8)
+        {
+            let mut s = C140State::default();
+            s.on_register_write(0x0030u16, 0x99u8);
+            assert_eq!(s.read_register(0x0030u16), Some(0x99u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0030u16), None);
+        }
+
+        // C352State (u16 -> u16)
+        {
+            let mut s = C352State::default();
+            s.on_register_write(0x0100u16, 0x1234u16);
+            assert_eq!(s.read_register(0x0100u16), Some(0x1234u16));
+            s.reset();
+            assert_eq!(s.read_register(0x0100u16), None);
+        }
+
+        // K053260State (u8 -> u8)
+        {
+            let mut s = K053260State::default();
+            s.on_register_write(0x10u8, 0xAAu8);
+            assert_eq!(s.read_register(0x10u8), Some(0xAAu8));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // QsoundState (u8 -> u16)
+        {
+            let mut s = QsoundState::default();
+            s.on_register_write(0x10u8, 0xBEEFu16);
+            assert_eq!(s.read_register(0x10u8), Some(0xBEEFu16));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
+
+        // ScspState (u16 -> u8)
+        {
+            let mut s = ScspState::default();
+            s.on_register_write(0x0020u16, 0x12u8);
+            assert_eq!(s.read_register(0x0020u16), Some(0x12u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0020u16), None);
+        }
+
+        // Es5503State (u16 -> u8)
+        {
+            let mut s = Es5503State::default();
+            s.on_register_write(0x0035u16, 0x13u8);
+            assert_eq!(s.read_register(0x0035u16), Some(0x13u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0035u16), None);
+        }
+
+        // Es5506State (u8 -> u16)
+        {
+            let mut s = Es5506State::default();
+            s.on_register_write(0x1Au8, 0xCAFEu16);
+            assert_eq!(s.read_register(0x1Au8), Some(0xCAFEu16));
+            s.reset();
+            assert_eq!(s.read_register(0x1Au8), None);
+        }
+
+        // X1010State (u16 -> u8)
+        {
+            let mut s = X1010State::default();
+            s.on_register_write(0x0010u16, 0x21u8);
+            assert_eq!(s.read_register(0x0010u16), Some(0x21u8));
+            s.reset();
+            assert_eq!(s.read_register(0x0010u16), None);
+        }
+
+        // Ga20State (u8 -> u8)
+        {
+            let mut s = Ga20State::default();
+            s.on_register_write(0x05u8, 0x31u8);
+            assert_eq!(s.read_register(0x05u8), Some(0x31u8));
+            s.reset();
+            assert_eq!(s.read_register(0x05u8), None);
+        }
+
+        // PwmState (u8 -> u32 masked to 24 bits)
+        {
+            let mut s = PwmState::default();
+            s.on_register_write(0x10u8, 0x00FF_FFFFu32);
+            assert_eq!(s.read_register(0x10u8), Some(0x00FF_FFFFu32 & 0x00FF_FFFF));
+            s.reset();
+            assert_eq!(s.read_register(0x10u8), None);
+        }
     }
 }

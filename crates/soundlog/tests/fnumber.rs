@@ -156,3 +156,100 @@ fn test_output_csv_tuned_freq_fnum_block() {
     freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     freqs.dedup_by(|a, b| ((*a) - (*b)).abs() < 1e-6f32);
 }
+
+#[test]
+fn test_fnumber_error_variants_and_invalid_inputs() {
+    use soundlog::chip::fnumber::{
+        FNumberError, OplSpec, find_and_tune_fnumber, find_closest_fnumber,
+        generate_12edo_fnum_table,
+    };
+
+    // Construct and match enum variants directly
+    match FNumberError::InvalidInput {
+        FNumberError::InvalidInput => {}
+        _ => panic!("expected InvalidInput variant"),
+    }
+
+    let e = FNumberError::ExcessiveBits {
+        param: "fnum_bits",
+        bits: 0,
+    };
+    match e {
+        FNumberError::ExcessiveBits { param, bits } => {
+            assert_eq!(param, "fnum_bits");
+            assert_eq!(bits, 0);
+        }
+        _ => panic!("expected ExcessiveBits variant"),
+    }
+
+    // generate_12edo_fnum_table: invalid master clock values
+    assert!(matches!(
+        generate_12edo_fnum_table::<OplSpec>(f32::NAN),
+        Err(FNumberError::InvalidInput)
+    ));
+    assert!(matches!(
+        generate_12edo_fnum_table::<OplSpec>(0.0),
+        Err(FNumberError::InvalidInput)
+    ));
+    assert!(matches!(
+        generate_12edo_fnum_table::<OplSpec>(f32::INFINITY),
+        Err(FNumberError::InvalidInput)
+    ));
+
+    // With a valid table, invalid frequency inputs for finder functions should error
+    let table = generate_12edo_fnum_table::<OplSpec>(14_318_180.0).unwrap();
+    assert!(matches!(
+        find_closest_fnumber::<OplSpec>(&table, 0.0),
+        Err(FNumberError::InvalidInput)
+    ));
+    assert!(matches!(
+        find_closest_fnumber::<OplSpec>(&table, f32::NAN),
+        Err(FNumberError::InvalidInput)
+    ));
+
+    // find_and_tune_fnumber: invalid freq or invalid master clock
+    assert!(matches!(
+        find_and_tune_fnumber::<OplSpec>(&table, 0.0, 14_318_180.0),
+        Err(FNumberError::InvalidInput)
+    ));
+    assert!(matches!(
+        find_and_tune_fnumber::<OplSpec>(&table, 440.0, f32::NAN),
+        Err(FNumberError::InvalidInput)
+    ));
+    assert!(matches!(
+        find_and_tune_fnumber::<OplSpec>(&table, 440.0, 0.0),
+        Err(FNumberError::InvalidInput)
+    ));
+}
+
+#[test]
+fn test_default_master_clock_startup_for_specs() {
+    // Ensure that default_master_clock() for each spec is usable to generate a table
+    use soundlog::chip::fnumber::{
+        Opl2Spec, Opl3Spec, OplSpec, OpllSpec, OpnSpec, OpnaSpec, OpxSpec,
+        generate_12edo_fnum_table,
+    };
+
+    // OpnSpec uses a prescaler in some contexts; its default_master_clock should still be valid
+    let t_opn = generate_12edo_fnum_table::<OpnSpec>(OpnSpec::default_master_clock());
+    assert!(t_opn.is_ok());
+
+    let t_opna = generate_12edo_fnum_table::<OpnaSpec>(OpnaSpec::default_master_clock());
+    assert!(t_opna.is_ok());
+
+    let t_opl = generate_12edo_fnum_table::<OplSpec>(OplSpec::default_master_clock());
+    assert!(t_opl.is_ok());
+
+    // Opl2Spec should also be usable with its default master clock
+    let t_opl2 = generate_12edo_fnum_table::<Opl2Spec>(Opl2Spec::default_master_clock());
+    assert!(t_opl2.is_ok());
+
+    let t_opl3 = generate_12edo_fnum_table::<Opl3Spec>(Opl3Spec::default_master_clock());
+    assert!(t_opl3.is_ok());
+
+    let t_opll = generate_12edo_fnum_table::<OpllSpec>(OpllSpec::default_master_clock());
+    assert!(t_opll.is_ok());
+
+    let t_opx = generate_12edo_fnum_table::<OpxSpec>(OpxSpec::default_master_clock());
+    assert!(t_opx.is_ok());
+}

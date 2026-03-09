@@ -151,3 +151,57 @@ pub enum StateEvent {
         tone: ToneInfo,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toneinfo_new_and_without_freq() {
+        let t1 = ToneInfo::new(0x1234, 5, Some(440.0));
+        assert_eq!(t1.fnum, 0x1234);
+        assert_eq!(t1.block, 5);
+        assert_eq!(t1.freq_hz, Some(440.0));
+        assert!(t1.total_level.is_none());
+
+        let t2 = ToneInfo::without_freq(0x0100, 3);
+        assert_eq!(t2.fnum, 0x0100);
+        assert_eq!(t2.block, 3);
+        assert_eq!(t2.freq_hz, None);
+        assert!(t2.total_level.is_none());
+    }
+
+    #[test]
+    fn test_toneinfo_new_with_total_level() {
+        // TotalLevel fields are private but accessible within the same module tests.
+        let tl = TotalLevel {
+            tlnum: 7,
+            db: Some(-12.0),
+        };
+        let t = ToneInfo::new_with_total_level(0x0001, 2, Some(261.625), Some(tl));
+        assert_eq!(t.fnum, 0x0001);
+        assert_eq!(t.block, 2);
+        assert_eq!(t.freq_hz, Some(261.625));
+        assert_eq!(t.total_level.unwrap(), tl);
+    }
+
+    #[test]
+    fn test_state_event_variants_and_equality() {
+        let tone = ToneInfo::new(100, 4, Some(440.0));
+
+        let keyon = StateEvent::KeyOn { channel: 1, tone };
+        match keyon {
+            StateEvent::KeyOn { channel, tone: t } => {
+                assert_eq!(channel, 1);
+                assert_eq!(t, tone);
+            }
+            _ => panic!("expected KeyOn variant"),
+        }
+
+        let keyoff = StateEvent::KeyOff { channel: 2 };
+        assert_eq!(keyoff, StateEvent::KeyOff { channel: 2 });
+
+        let tonechg = StateEvent::ToneChange { channel: 3, tone };
+        assert_eq!(tonechg, StateEvent::ToneChange { channel: 3, tone });
+    }
+}

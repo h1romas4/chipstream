@@ -251,3 +251,155 @@ pub fn write_u8(buf: &mut [u8], off: usize, v: u8) {
 pub fn write_slice(buf: &mut [u8], off: usize, s: &[u8]) {
     buf[off..off + s.len()].copy_from_slice(s);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_display_variants() {
+        // Simple variants
+        assert_eq!(
+            format!("{}", ParseError::UnexpectedEof),
+            "unexpected end of input"
+        );
+        assert_eq!(
+            format!("{}", ParseError::InvalidIdent([0x41, 0x42, 0x43, 0x44])),
+            "invalid ident: [65, 66, 67, 68]"
+        );
+        assert_eq!(
+            format!("{}", ParseError::UnsupportedVersion(7)),
+            "unsupported version: 7"
+        );
+        assert_eq!(
+            format!("{}", ParseError::HeaderTooShort("VGM header".into())),
+            "header too short: VGM header"
+        );
+        assert_eq!(format!("{}", ParseError::Other("boom".into())), "boom");
+        assert_eq!(
+            format!(
+                "{}",
+                ParseError::UnknownOpcode {
+                    opcode: 0xAB,
+                    offset: 0x10
+                }
+            ),
+            "unknown opcode 0xAB at offset 0x10"
+        );
+        assert_eq!(
+            format!("{}", ParseError::DataInconsistency("missing".into())),
+            "data inconsistency: missing"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ParseError::DataBlockSizeExceeded {
+                    current_size: 100,
+                    limit: 200,
+                    attempted_size: 150
+                }
+            ),
+            "data block size limit exceeded: current 100 bytes, limit 200 bytes, attempted to add 150 bytes"
+        );
+
+        // OffsetOutOfRange without context
+        let e = ParseError::OffsetOutOfRange {
+            offset: 2,
+            needed: 4,
+            available: 3,
+            context: None,
+        };
+        assert_eq!(
+            format!("{}", e),
+            "offset out of range: 0x2 (needed 4 bytes, available 3)"
+        );
+
+        // OffsetOutOfRange with context
+        let e2 = ParseError::OffsetOutOfRange {
+            offset: 0x10,
+            needed: 2,
+            available: 5,
+            context: Some("header_size".into()),
+        };
+        assert_eq!(
+            format!("{}", e2),
+            "offset out of range at header_size: 0x10 (needed 2 bytes, available 5)"
+        );
+    }
+
+    #[test]
+    fn read_errors_and_values() {
+        // Small buffer to trigger various OffsetOutOfRange errors
+        let buf: [u8; 3] = [0x01, 0x02, 0x03];
+
+        // read_u32_le_at -> needs 4 bytes
+        match read_u32_le_at(&buf, 0) {
+            Err(e) => assert_eq!(
+                format!("{}", e),
+                "offset out of range: 0x0 (needed 4 bytes, available 3)"
+            ),
+            Ok(_) => panic!("expected error for read_u32_le_at with insufficient bytes"),
+        }
+
+        // read_u16_le_at at off=2 -> needs 2 bytes but only 1 remains
+        match read_u16_le_at(&buf, 2) {
+            Err(e) => assert_eq!(
+                format!("{}", e),
+                "offset out of range: 0x2 (needed 2 bytes, available 3)"
+            ),
+            Ok(_) => panic!("expected error for read_u16_le_at with insufficient bytes"),
+        }
+
+        // read_u8_at at off=3 -> out of bounds
+        match read_u8_at(&buf, 3) {
+            Err(e) => assert_eq!(
+                format!("{}", e),
+                "offset out of range: 0x3 (needed 1 bytes, available 3)"
+            ),
+            Ok(_) => panic!("expected error for read_u8_at with out-of-bounds index"),
+        }
+
+        // read_slice should report remaining bytes from `off` as available and include context
+        match read_slice(&buf, 1, 3) {
+            Err(e) => assert_eq!(
+                format!("{}", e),
+                "offset out of range at read_slice: 0x1 (needed 3 bytes, available 2)"
+            ),
+            Ok(_) => panic!("expected error for read_slice with insufficient bytes"),
+        }
+
+        // read_u24_be_at success
+        let buf2: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+        assert_eq!(read_u24_be_at(&buf2, 0).unwrap(), 0x01_02_03);
+
+        // read_u24_be_at error when not enough bytes
+        match read_u24_be_at(&buf2, 2) {
+            Err(e) => assert_eq!(
+                format!("{}", e),
+                "offset out of range: 0x2 (needed 3 bytes, available 4)"
+            ),
+            Ok(_) => panic!("expected error for read_u24_be_at with insufficient bytes"),
+        }
+
+        // read_i32_le_at success
+        let buf3: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x7F]; // 0x7FFFFFFF -> i32::MAX
+        assert_eq!(read_i32_le_at(&buf3, 0).unwrap(), 2_147_483_647);
+    }
+
+    #[test]
+    fn write_and_slice() {
+        let mut buf = [0u8; 8];
+
+        write_u32(&mut buf, 0, 0x1122_3344);
+        assert_eq!(&buf[0..4], &0x1122_3344u32.to_le_bytes());
+
+        write_u16(&mut buf, 4, 0xAABB);
+        assert_eq!(&buf[4..6], &0xAABBu16.to_le_bytes());
+
+        write_u8(&mut buf, 6, 0x7F);
+        assert_eq!(buf[6], 0x7F);
+
+        write_slice(&mut buf, 7, &[0x99]);
+        assert_eq!(buf[7], 0x99);
+    }
+}
