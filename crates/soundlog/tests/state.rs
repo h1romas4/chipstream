@@ -1870,11 +1870,7 @@ fn test_pwm_state_tracking() {
 fn test_gamegear_psg_state_tracking() {
     // Create a VGM document with Game Gear PSG register writes using VgmBuilder
     let mut builder = VgmBuilder::new();
-    builder.register_chip(
-        soundlog::chip::Chip::GameGearPsg,
-        Instance::Primary,
-        3_579_545,
-    );
+    builder.register_chip(soundlog::chip::Chip::Sn76489, Instance::Primary, 3_579_545);
 
     // Latch channel 0 frequency
     builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x8D });

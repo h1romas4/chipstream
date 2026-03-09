@@ -880,8 +880,16 @@ pub(crate) fn parse_vgm_command(
         other => {
             // Dual Chip Support #1: secondary PSG uses opcode 0x30 / 0x3F.
             // Map back to the primary opcode and parse as Secondary.
-            if other == 0x30 || other == 0x3F {
+            if other == 0x30 {
                 let primary_opcode = 0x50u8;
+                match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
+                    Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
+                    Err(ParseError::Other(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if other == 0x3F {
+                let primary_opcode = 0x4Fu8;
                 match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
                     Err(ParseError::Other(_)) => {}

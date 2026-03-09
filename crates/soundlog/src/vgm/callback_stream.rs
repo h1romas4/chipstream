@@ -958,11 +958,6 @@ impl<'a> VgmCallbackStream<'a> {
                     // Initialize PWM state tracker
                     self.state_trackers.pwm[*instance as usize] = Some(PwmState::new(*clock_hz));
                 }
-                chip::Chip::GameGearPsg => {
-                    // Initialize Game Gear PSG state tracker
-                    self.state_trackers.gamegear_psg[*instance as usize] =
-                        Some(Sn76489State::new(*clock_hz));
-                }
             }
         }
     }

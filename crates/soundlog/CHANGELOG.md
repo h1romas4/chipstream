@@ -8,6 +8,7 @@
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
 - [x] Refactor: `VgmStream` DAC stream — replaced the step-by-step mutable state machine with a purely computational model (`StreamSnapshot`); playback position and write timing are now derived from a `stream_start_sample` anchor and a `last_emitted_step` counter using integer arithmetic, eliminating `current_data_pos`, `next_write_sample`, `sample_fraction`, `remaining_commands`, and `stream_end_sample` from `StreamState`. Also fixed `LengthMode::Ignore` to match the VGM spec ("just change current data position" — no chip writes generated).
+- [x] Fix: Fixed an issue where the opcodes of the SN76489 and GG secondary chips were being treated as identical.
 
 ## v0.10.3
 

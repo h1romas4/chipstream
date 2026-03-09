@@ -56,7 +56,6 @@ pub enum Chip {
     C352,
     Ga20,
     Mikey,
-    GameGearPsg,
 }
 
 /// PSG (SN76489/SN76496) write specification.

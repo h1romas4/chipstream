@@ -1461,7 +1461,6 @@ impl VgmHeader {
             chip::Chip::C352 => self.c352_clock,
             chip::Chip::Ga20 => self.ga20_clock,
             chip::Chip::Mikey => self.mikey_clock,
-            _ => 0,
         }
     }
 
@@ -1518,7 +1517,6 @@ impl VgmHeader {
             chip::Chip::C352 => self.c352_clock = clock,
             chip::Chip::Ga20 => self.ga20_clock = clock,
             chip::Chip::Mikey => self.mikey_clock = clock,
-            _ => {}
         }
     }
 

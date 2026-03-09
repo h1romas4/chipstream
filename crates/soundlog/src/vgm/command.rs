@@ -2870,6 +2870,8 @@ fn spec_to_vgm_bytes<C: CommandSpec + ?Sized>(chip_id: Instance, spec: &C, cmd_b
             match primary {
                 // Dual Chip Support #1: SN76489 PSG uses a separate opcode.
                 0x50 => cmd_buf[start] = 0x30,
+                // Dual Chip Support #1: Game Gear PSG uses a separate opcode.
+                0x4F => cmd_buf[start] = 0x3F,
                 // Dual Chip Support #1: YM-family chips with opcode 0x5n use 0xAn
                 // for the second chip instance.
                 0x51..=0x5F => cmd_buf[start] = primary.wrapping_add(0x50),
