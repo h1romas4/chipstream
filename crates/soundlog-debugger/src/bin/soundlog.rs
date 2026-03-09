@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 // Use the library crate's modules and types. The library crate (this package)
 // exposes `cui`, `gui`, `logger` and the logging macros via `lib.rs`.
-use soundlog_debuger::cui;
-use soundlog_debuger::gui;
-use soundlog_debuger::logger::Logger;
+use soundlog_debugger::cui;
+use soundlog_debugger::gui;
+use soundlog_debugger::logger::Logger;
 
 /// Simple CLI: optional subcommand `test`, otherwise optional file path to display
 #[derive(Subcommand, Debug)]
@@ -142,13 +142,13 @@ fn main() {
                         Ok(_) => std::process::exit(0),
                         Err(e) => {
                             // Qualify macro with crate name so the exported macro is resolved.
-                            soundlog_debuger::log_error!(&*logger, "test_roundtrip failed: {}", e);
+                            soundlog_debugger::log_error!(&*logger, "test_roundtrip failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debuger::log_error!(&*logger, "failed to read input for test: {}", e);
+                    soundlog_debugger::log_error!(&*logger, "failed to read input for test: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -168,13 +168,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debuger::log_error!(&*logger, "redump failed: {}", e);
+                            soundlog_debugger::log_error!(&*logger, "redump failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debuger::log_error!(
+                    soundlog_debugger::log_error!(
                         &*logger,
                         "failed to read input for redump: {}",
                         e
@@ -193,13 +193,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debuger::log_error!(&*logger, "parse failed: {}", e);
+                            soundlog_debugger::log_error!(&*logger, "parse failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debuger::log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -230,13 +230,13 @@ fn main() {
                             std::process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debuger::log_error!(&*logger, "play failed: {}", e);
+                            soundlog_debugger::log_error!(&*logger, "play failed: {}", e);
                             std::process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debuger::log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -249,7 +249,7 @@ fn main() {
     if let Some(path) = args.file {
         match load_bytes_from_path(&path) {
             Ok(data) => initial_bytes = data,
-            Err(e) => soundlog_debuger::log_error!(&logger, "failed to read file: {}", e),
+            Err(e) => soundlog_debugger::log_error!(&logger, "failed to read file: {}", e),
         }
     }
 

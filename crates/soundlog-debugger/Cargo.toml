@@ -1,5 +1,5 @@
 [package]
-name = "soundlog-debuger"
+name = "soundlog-debugger"
 version = "0.11.0"
 edition = "2024"
 description = "GUI/CLI frontend for soundlog for debug"

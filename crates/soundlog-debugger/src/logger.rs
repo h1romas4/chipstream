@@ -1,4 +1,4 @@
-//! Centralized logger abstraction for `soundlog-debuger`.
+//! Centralized logger abstraction for `soundlog-debugger`.
 //!
 //! Goals:
 //! - Provide an output abstraction so code no longer calls `println!` / `eprintln!` directly.

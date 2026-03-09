@@ -1,5 +1,5 @@
 /*!
-Library crate for the `soundlog-debuger` package.
+Library crate for the `soundlog-debugger` package.
 
 This file exposes the internal `cui`, `gui` and `logger` modules as the public
 library surface so the `src/bin/soundlog.rs` binary (and any other consumers)

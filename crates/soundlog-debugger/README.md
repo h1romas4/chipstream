@@ -1,9 +1,9 @@
-# soundlog-debuger
+# soundlog-debugger
 
-`soundlog-debuger` provides a GUI and a small CLI to inspect, test, and re-dump VGM files processed by the `soundlog` library. 
+`soundlog-debugger` provides a GUI and a small CLI to inspect, test, and re-dump VGM files processed by the `soundlog` library. 
 
 > [!IMPORTANT]
-> `soundlog-debuger` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
+> `soundlog-debugger` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
 
 Contents:
 

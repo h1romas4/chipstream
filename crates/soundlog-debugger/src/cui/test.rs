@@ -1,4 +1,4 @@
-// chipstream/crates/soundlog-debuger/src/cui/test.rs
+// chipstream/crates/soundlog-debugger/src/cui/test.rs
 use std::convert::TryInto;
 use std::path::Path;
 

@@ -1,4 +1,4 @@
-// chipstream/crates/soundlog-debuger/src/cui/redump.rs
+// chipstream/crates/soundlog-debugger/src/cui/redump.rs
 use std::fs;
 use std::path::Path;
 
