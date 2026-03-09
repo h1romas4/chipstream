@@ -7,7 +7,7 @@ This repository is organized as a monorepo containing multiple crates and provid
 utilities for building and parsing register-write logs such as the VGM
 (Video Game Music) format.
 
-## Quick start
+## Quick Start
 
 [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
