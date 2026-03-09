@@ -9,6 +9,9 @@
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+
+## v0.11.0
+
 - [x] Add: `ChipVolume` now exposes a `relative` flag (decoded from bit 15 of the on-disk volume word) and a `volume_multiplier()` method returning the effective `f32` multiplier (`volume / 0x0100`) for relative entries, or `None` for absolute ones.
 - [x] Fix: Fixed an issue where the start position for writing the DAC Stream register for Ym2612Port0Address2AWriteAndWaitN was incorrect in some cases.
 - [x] Fix: Fixed an issue where the internal representation of `WaitNSample(n)` was pre-expanded to `n + 1`.
