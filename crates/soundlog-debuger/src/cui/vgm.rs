@@ -279,8 +279,8 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
             let mut lines: Vec<String> = Vec::new();
             for cv in &eh.chip_volumes {
                 lines.push(format!(
-                    "{:?} {:?} vol={} paired={}",
-                    cv.chip_id, cv.instance, cv.volume, cv.paired_chip
+                    "{:?} {:?} relative={} vol={} paired={}",
+                    cv.chip_id, cv.instance, cv.relative, cv.volume, cv.paired_chip
                 ));
             }
             rows.push(("extra_header.chip_volumes".into(), lines.join("\n")));

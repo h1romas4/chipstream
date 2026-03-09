@@ -2007,19 +2007,12 @@ pub struct ChipClock {
     pub instance: Instance,
     /// Clock value (Hz) as stored on-disk.
     pub clock: u32,
-    /// Stored raw chip-id byte as read/written on-disk (preserves instance bit).
-    raw_chip_id: u8,
 }
 
 impl ChipClock {
     pub fn new(chip_id: ChipId, instance: Instance, clock: u32) -> Self {
-        let mut raw = chip_id.to_u8();
-        if let Instance::Secondary = instance {
-            raw |= 0x80;
-        }
         ChipClock {
             chip_id,
-            raw_chip_id: raw,
             instance,
             clock,
         }
@@ -2032,15 +2025,36 @@ impl ChipClock {
             Instance::Primary
         };
         ChipClock {
-            chip_id: ChipId::from_u8(raw_chip_id),
-            raw_chip_id,
+            chip_id: ChipId::from_u8(raw_chip_id & 0x7F),
             instance,
             clock,
         }
     }
+
+    /// Re-encode the chip-id byte for on-disk serialisation:
+    /// bit 7 is set when this is a secondary instance.
+    fn encoded_chip_id(&self) -> u8 {
+        let mut raw = self.chip_id.to_u8();
+        if let Instance::Secondary = self.instance {
+            raw |= 0x80;
+        }
+        raw
+    }
 }
 
 /// Representation of a chip volume entry in the extra header.
+///
+/// The 16-bit `volume` field on-disk encodes two distinct interpretations
+/// depending on bit 15:
+///
+/// - **Absolute** (`relative = false`, bit 15 = 0): the value is an absolute
+///   volume level.
+/// - **Relative** (`relative = true`, bit 15 = 1): the chip volume is
+///   multiplied by `(value & 0x7FFF) / 0x0100`.  Use
+///   [`ChipVolume::volume_multiplier`] to obtain the `f32` multiplier.
+///
+/// The `volume` field stored in this struct always holds the lower 15 bits
+/// (i.e. `raw_volume & 0x7FFF`).  Bit 15 is encoded/decoded via `relative`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChipVolume {
     /// Decoded chip id.
@@ -2049,52 +2063,75 @@ pub struct ChipVolume {
     pub paired_chip: bool,
     /// Decoded instance derived from raw_flags (bit 0: secondary).
     pub instance: Instance,
-    /// Volume value
+    /// Volume value (lower 15 bits).
+    ///
+    /// When `relative` is `false` this is an absolute volume level.
+    /// When `relative` is `true` the effective multiplier is `volume / 0x0100`
+    /// (see [`ChipVolume::volume_multiplier`]).
     pub volume: u16,
-    /// Raw chip-id byte as read/written on-disk.
-    raw_chip_id: u8,
-    /// Raw flags byte as read/written on-disk (preserves vendor-specific bits).
-    raw_flags: u8,
+    /// Whether the volume is relative (`true`) or absolute (`false`).
+    ///
+    /// Corresponds to bit 15 of the on-disk 16-bit volume word.
+    pub relative: bool,
 }
 
 impl ChipVolume {
+    /// Construct an **absolute** `ChipVolume` (bit 15 = 0).
     pub fn new(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
-        let raw_chip = chip_id.to_u8();
-        let raw_flags = if let Instance::Secondary = instance {
-            0x01
-        } else {
-            0x00
-        };
         ChipVolume {
             chip_id,
-            raw_chip_id: raw_chip,
             paired_chip: false,
-            raw_flags,
             instance,
-            volume,
+            volume: volume & 0x7FFF,
+            relative: false,
+        }
+    }
+
+    /// Construct a **relative** `ChipVolume` (bit 15 = 1).
+    ///
+    /// The effective multiplier applied to the chip volume will be
+    /// `volume / 0x0100`.  `volume` must fit in 15 bits; any bit 15 set in
+    /// the supplied value is masked off and stored in `relative` instead.
+    pub fn new_relative(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
+        ChipVolume {
+            chip_id,
+            paired_chip: false,
+            instance,
+            volume: volume & 0x7FFF,
+            relative: true,
         }
     }
 
     /// Construct a `ChipVolume` that will be serialized with the paired bit
-    /// (0x80) set in the chip-id byte.
+    /// (0x80) set in the chip-id byte.  The volume is **absolute** (bit 15 = 0).
     pub fn new_paired(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
-        let mut raw_chip = chip_id.to_u8();
-        raw_chip |= 0x80;
-        let raw_flags = if let Instance::Secondary = instance {
-            0x01
-        } else {
-            0x00
-        };
         ChipVolume {
             chip_id,
-            raw_chip_id: raw_chip,
             paired_chip: true,
-            raw_flags,
             instance,
-            volume,
+            volume: volume & 0x7FFF,
+            relative: false,
         }
     }
 
+    /// Construct a paired **relative** `ChipVolume` (chip-id bit 7 set, volume
+    /// bit 15 = 1).
+    pub fn new_paired_relative(chip_id: ChipId, instance: Instance, volume: u16) -> Self {
+        ChipVolume {
+            chip_id,
+            paired_chip: true,
+            instance,
+            volume: volume & 0x7FFF,
+            relative: true,
+        }
+    }
+
+    /// Decode a `ChipVolume` from the raw on-disk bytes.
+    ///
+    /// - `raw_chip_id`: the chip-id byte (bit 7 = paired chip flag).
+    /// - `raw_flags`: the flags byte (bit 0 = secondary instance).
+    /// - `volume`: the raw 16-bit volume word (bit 15 = relative flag;
+    ///   bits 14..0 = volume magnitude).
     pub fn from_raw(raw_chip_id: u8, raw_flags: u8, volume: u16) -> Self {
         let instance = if (raw_flags & 0x01) != 0 {
             Instance::Secondary
@@ -2103,13 +2140,55 @@ impl ChipVolume {
         };
         // If bit 7 is set, it's the volume for a paired chip.
         let paired = (raw_chip_id & 0x80) != 0;
+        // Bit 15 of the volume word selects relative vs. absolute mode.
+        let relative = (volume & 0x8000) != 0;
         ChipVolume {
             chip_id: ChipId::from_u8(raw_chip_id & 0x7F),
-            raw_chip_id,
             paired_chip: paired,
-            raw_flags,
             instance,
-            volume,
+            volume: volume & 0x7FFF,
+            relative,
+        }
+    }
+
+    /// Re-encode the chip-id byte for on-disk serialisation:
+    /// bit 7 is set when this is a paired chip.
+    fn encoded_chip_id(&self) -> u8 {
+        let mut raw = self.chip_id.to_u8();
+        if self.paired_chip {
+            raw |= 0x80;
+        }
+        raw
+    }
+
+    /// Re-encode the flags byte for on-disk serialisation:
+    /// bit 0 is set when this is a secondary instance.
+    fn encoded_flags(&self) -> u8 {
+        match self.instance {
+            Instance::Secondary => 0x01,
+            Instance::Primary => 0x00,
+        }
+    }
+
+    /// Re-encode the volume word for on-disk serialisation:
+    /// bit 15 is set when this is a relative volume entry.
+    fn encoded_volume(&self) -> u16 {
+        if self.relative {
+            self.volume | 0x8000
+        } else {
+            self.volume & 0x7FFF
+        }
+    }
+
+    /// When `relative` is `true`, return the floating-point multiplier that
+    /// should be applied to the chip volume: `volume / 0x0100`.
+    ///
+    /// Returns `None` when `relative` is `false` (absolute mode).
+    pub fn volume_multiplier(&self) -> Option<f32> {
+        if self.relative {
+            Some(self.volume as f32 / 0x0100 as f32)
+        } else {
+            None
         }
     }
 }
@@ -2158,7 +2237,7 @@ impl VgmExtraHeader {
             buf.push(self.chip_clocks.len() as u8);
             // entries: chip_id (1 byte) + clock (4 bytes LE)
             for chip_clock in &self.chip_clocks {
-                buf.push(chip_clock.raw_chip_id);
+                buf.push(chip_clock.encoded_chip_id());
                 buf.extend_from_slice(&chip_clock.clock.to_le_bytes());
             }
             // Offset is relative to the field position (buf[4]).
@@ -2175,10 +2254,11 @@ impl VgmExtraHeader {
             // count (1 byte)
             buf.push(self.chip_volumes.len() as u8);
             // entries: chip_id (1 byte) + flags (1 byte) + volume (2 bytes LE)
+            // Re-encode the relative flag into bit 15 of the volume word.
             for chip_vol in &self.chip_volumes {
-                buf.push(chip_vol.raw_chip_id);
-                buf.push(chip_vol.raw_flags);
-                buf.extend_from_slice(&chip_vol.volume.to_le_bytes());
+                buf.push(chip_vol.encoded_chip_id());
+                buf.push(chip_vol.encoded_flags());
+                buf.extend_from_slice(&chip_vol.encoded_volume().to_le_bytes());
             }
             // Offset is relative to the field position (buf[8]).
             (block_start - 8) as u32
@@ -2302,7 +2382,7 @@ mod tests {
         // Use Ym2203 (0x06) with paired bit set and flags indicating secondary.
         let raw_chip = 0x80 | 0x06;
         let raw_flags = 0x01; // bit0 = secondary
-        let volume: u16 = 1234;
+        let volume: u16 = 1234; // bit 15 = 0  →  absolute
 
         let cv = ChipVolume::from_raw(raw_chip, raw_flags, volume);
 
@@ -2312,35 +2392,116 @@ mod tests {
         assert_eq!(cv.instance, Instance::Secondary);
         // Decoded chip id should ignore the paired bit.
         assert_eq!(cv.chip_id, ChipId::Ym2203);
-        // Raw fields should be preserved for round-trip.
-        assert_eq!(cv.raw_chip_id, raw_chip);
-        assert_eq!(cv.raw_flags, raw_flags);
-        assert_eq!(cv.volume, volume);
+        // volume stores the lower 15 bits; relative = false for bit-15 = 0.
+        assert_eq!(cv.volume, volume & 0x7FFF);
+        assert!(!cv.relative);
+        assert_eq!(cv.volume_multiplier(), None);
+    }
+
+    #[test]
+    fn test_chipvolume_from_raw_decodes_relative_flag() {
+        // volume with bit 15 set → relative mode.
+        let raw_chip = 0x01; // Ym2413, not paired
+        let raw_flags = 0x00; // primary instance
+        let raw_volume: u16 = 0x8200; // bit 15 = 1, magnitude = 0x0200
+
+        let cv = ChipVolume::from_raw(raw_chip, raw_flags, raw_volume);
+
+        assert!(!cv.paired_chip);
+        assert_eq!(cv.instance, Instance::Primary);
+        assert!(cv.relative);
+        // Stored volume is lower 15 bits only.
+        assert_eq!(cv.volume, 0x0200);
+        // Multiplier = 0x0200 / 0x0100 = 2.0
+        assert_eq!(cv.volume_multiplier(), Some(2.0_f32));
+    }
+
+    #[test]
+    fn test_chipvolume_new_relative_constructor() {
+        let cv = ChipVolume::new_relative(ChipId::Ym2612, Instance::Primary, 0x0080);
+
+        assert!(cv.relative);
+        assert_eq!(cv.volume, 0x0080);
+        // Multiplier = 0x0080 / 0x0100 = 0.5
+        assert!((cv.volume_multiplier().unwrap() - 0.5_f32).abs() < f32::EPSILON);
+        // Absolute constructors must NOT set the relative flag.
+        let cv_abs = ChipVolume::new(ChipId::Ym2612, Instance::Primary, 0x0080);
+        assert!(!cv_abs.relative);
     }
 
     #[test]
     fn test_chipvolume_new_paired_sets_raw_bit() {
-        // Construct a paired ChipVolume via helper and verify raw byte has bit 7.
+        // Construct a paired ChipVolume via helper and verify the paired flag.
         let cv = ChipVolume::new_paired(ChipId::Ay8910, Instance::Primary, 500u16);
 
         assert!(cv.paired_chip);
         assert_eq!(cv.chip_id, ChipId::Ay8910);
         assert_eq!(cv.instance, Instance::Primary);
-        // Raw chip id should include the paired bit.
-        assert_eq!(cv.raw_chip_id & 0x80, 0x80);
+        // Absolute mode: relative must be false.
+        assert!(!cv.relative);
+        // encoded_chip_id() must have bit 7 set for paired chips.
+        assert_eq!(cv.encoded_chip_id() & 0x80, 0x80);
+    }
+
+    #[test]
+    fn test_chipvolume_to_bytes_encodes_relative_flag() {
+        // Build an extra header with one relative and one absolute chip volume.
+        let cv_rel = ChipVolume::new_relative(ChipId::Sn76489, Instance::Primary, 0x0100);
+        let cv_abs = ChipVolume::new(ChipId::Ym2413, Instance::Primary, 0x0100);
+
+        let extra = VgmExtraHeader {
+            header_size: 0,
+            chip_clock_offset: 0,
+            chip_vol_offset: 0,
+            chip_clocks: vec![],
+            chip_volumes: vec![cv_rel, cv_abs],
+        };
+
+        let bytes = extra.to_bytes();
+
+        // Buffer layout (chip_clocks is empty, so vol block immediately follows):
+        //   [0..4]   header_size
+        //   [4..8]   chip_clock_offset
+        //   [8..12]  chip_vol_offset
+        //   [12]     count = 2
+        //   [13]     entry0: chip_id
+        //   [14]     entry0: flags
+        //   [15]     entry0: volume low byte
+        //   [16]     entry0: volume high byte
+        //   [17]     entry1: chip_id
+        //   [18]     entry1: flags
+        //   [19]     entry1: volume low byte
+        //   [20]     entry1: volume high byte
+        let entry0_start = 13usize;
+        let raw_vol0 = u16::from_le_bytes([bytes[entry0_start + 2], bytes[entry0_start + 3]]);
+        // Relative entry must have bit 15 set.
+        assert_eq!(
+            raw_vol0 & 0x8000,
+            0x8000,
+            "relative entry must have bit 15 set"
+        );
+
+        let entry1_start = entry0_start + 4;
+        let raw_vol1 = u16::from_le_bytes([bytes[entry1_start + 2], bytes[entry1_start + 3]]);
+        // Absolute entry must NOT have bit 15 set.
+        assert_eq!(
+            raw_vol1 & 0x8000,
+            0x0000,
+            "absolute entry must not have bit 15 set"
+        );
     }
 
     #[test]
     fn test_chipclock_new_and_from_raw_instance_roundtrip() {
-        // Secondary instance should set bit 7 on raw_chip_id in ChipClock::new
+        // encoded_chip_id() must set bit 7 for secondary instances.
         let cc = ChipClock::new(ChipId::Ym2612, Instance::Secondary, 44100u32);
 
         assert_eq!(cc.instance, Instance::Secondary);
         assert_eq!(cc.chip_id, ChipId::Ym2612);
-        assert_eq!(cc.raw_chip_id & 0x80, 0x80);
+        assert_eq!(cc.encoded_chip_id() & 0x80, 0x80);
 
-        // Now decode from raw and ensure we get the same semantic fields.
-        let decoded = ChipClock::from_raw(cc.raw_chip_id, cc.clock);
+        // Now decode from the encoded byte and ensure we get the same semantic fields.
+        let decoded = ChipClock::from_raw(cc.encoded_chip_id(), cc.clock);
         assert_eq!(decoded.instance, Instance::Secondary);
         assert_eq!(decoded.chip_id, ChipId::Ym2612);
         assert_eq!(decoded.clock, 44100u32);
