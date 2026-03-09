@@ -94,6 +94,7 @@ This converts synthesized DAC/digital streams into the equivalent sequence of ch
 and is also useful for producing data suitable for playback on memory-constrained microcontrollers.
 
 Please note that the Wait command will not be restructured or optimized.
+All `Wait*` and `Ym2612Port0Address2AWriteAndWaitN` commands are converted to `WaitSamples`.
 
 ```bash
 ${soundlog} redump <INPUT> <OUTPUT> [--diag]
