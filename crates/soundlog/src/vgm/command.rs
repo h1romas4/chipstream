@@ -303,7 +303,8 @@ pub struct PcmRamWrite {
     pub data: Vec<u8>,
 }
 
-/// wait n+1 samples, n can range from 0 to 15.
+/// VGM opcode 0x7n: wait n+1 samples, where n is stored as-is (0..=15).
+/// The actual number of samples waited is `self.0 + 1`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaitNSample(pub u8);
 
@@ -784,7 +785,8 @@ impl CommandSpec for PcmRamWrite {
 
 impl CommandSpec for WaitNSample {
     fn opcode(&self) -> u8 {
-        0x70_u8.wrapping_add(self.0.saturating_sub(1))
+        // self.0 is the raw n (0..=15); opcode is 0x70 + n.
+        0x70_u8.wrapping_add(self.0)
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
@@ -793,7 +795,8 @@ impl CommandSpec for WaitNSample {
     where
         Self: Sized,
     {
-        Ok((WaitNSample(opcode - 0x70 + 1), 0))
+        // Store raw n; actual wait is n+1 samples.
+        Ok((WaitNSample(opcode - 0x70), 0))
     }
 }
 
@@ -2912,7 +2915,7 @@ impl VgmDocument {
                 VgmCommand::WaitSamples(s) => s.0 as u32,
                 VgmCommand::Wait735Samples(_) => 735,
                 VgmCommand::Wait882Samples(_) => 882,
-                VgmCommand::WaitNSample(s) => s.0 as u32,
+                VgmCommand::WaitNSample(s) => s.0 as u32 + 1,
                 VgmCommand::YM2612Port0Address2AWriteAndWaitN(s) => s.0 as u32,
                 _ => 0,
             })

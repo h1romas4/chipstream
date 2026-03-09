@@ -1122,7 +1122,8 @@ impl VgmStream {
                 return self.process_wait_with_streams(882);
             }
             VgmCommand::WaitNSample(w) => {
-                let samples = w.0 as usize;
+                // w.0 is the raw n (0..=15); actual wait is n+1 samples.
+                let samples = w.0 as usize + 1;
                 return self.process_wait_with_streams(samples);
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {

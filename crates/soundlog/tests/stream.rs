@@ -7219,8 +7219,7 @@ fn test_dac_stream_fast_call_step_base_offset() {
 }
 
 /// VGM spec: opcode 0x7n means "wait n+1 samples".
-/// The inner value of WaitNSample `.0` is already incremented by +1 at parse time,
-/// so the amount added to `current_sample` must be n+1.
+/// WaitNSample stores the raw n (0..=15); the actual wait is n+1 samples.
 ///
 /// opcode 0x70 (n=0) -> wait 1 sample  -> current_sample += 1
 /// opcode 0x71 (n=1) -> wait 2 samples -> current_sample += 2
@@ -7229,14 +7228,13 @@ fn test_dac_stream_fast_call_step_base_offset() {
 fn test_wait_n_sample_plus1_sample_count() {
     use soundlog::vgm::command::{WaitNSample, WaitSamples};
 
-    // Test cases: (inner value, expected sample count).
-    // At parse time the inner value equals the expected wait (already +1 applied).
+    // Test cases: (raw n stored in WaitNSample, expected sample count = n+1).
     let cases: &[(u8, usize)] = &[
-        (1, 1),   // opcode 0x70: n=0 -> wait 1 sample
-        (2, 2),   // opcode 0x71: n=1 -> wait 2 samples
-        (8, 8),   // opcode 0x77: n=7 -> wait 8 samples
-        (15, 15), // opcode 0x7E: n=14 -> wait 15 samples
-        (16, 16), // opcode 0x7F: n=15 -> wait 16 samples
+        (0, 1),   // opcode 0x70: n=0 -> wait 1 sample
+        (1, 2),   // opcode 0x71: n=1 -> wait 2 samples
+        (7, 8),   // opcode 0x77: n=7 -> wait 8 samples
+        (14, 15), // opcode 0x7E: n=14 -> wait 15 samples
+        (15, 16), // opcode 0x7F: n=15 -> wait 16 samples
     ];
 
     for &(inner, expected_wait) in cases {
@@ -7286,7 +7284,7 @@ fn test_wait_n_sample_parse_and_roundtrip_opcode() {
 
     for n in 0u8..=15u8 {
         let expected_samples = (n + 1) as usize; // spec: wait is n+1 samples
-        let inner = n + 1; // WaitNSample inner value is n+1
+        let inner = n; // WaitNSample stores raw n (0..=15)
 
         // ---- parse check: push raw opcode bytes directly into VgmStream and
         //      confirm expansion to WaitSamples(n+1) ----
@@ -7504,10 +7502,10 @@ fn test_total_samples_wait_n_and_ym2612_2a() {
     use soundlog::vgm::command::{SeekOffset, WaitNSample, Ym2612Port0Address2AWriteAndWaitN};
     use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
 
-    // --- WaitNSample(16) の寄与は 16 サンプル ---
+    // --- WaitNSample(15) stores raw n=15, contributing 16 samples ---
     {
         let mut b = VgmBuilder::new();
-        b.add_vgm_command(WaitNSample(16u8)); // opcode 0x7F (n=15) -> 16 samples
+        b.add_vgm_command(WaitNSample(15u8)); // opcode 0x7F (n=15) -> 16 samples
         b.add_vgm_command(EndOfData);
         let doc = b.finalize();
         // VgmDocument::total_samples is an internal method used during header
@@ -7526,7 +7524,7 @@ fn test_total_samples_wait_n_and_ym2612_2a() {
         }
         assert_eq!(
             total, 16,
-            "WaitNSample(16) should consume 16 samples but got {}",
+            "WaitNSample(15) should consume 16 samples but got {}",
             total
         );
     }

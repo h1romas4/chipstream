@@ -91,7 +91,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         .iter()
         .map(|c| match c {
             soundlog::vgm::command::VgmCommand::WaitSamples(ws) => ws.0 as u64,
-            soundlog::vgm::command::VgmCommand::WaitNSample(n) => n.0 as u64,
+            soundlog::vgm::command::VgmCommand::WaitNSample(n) => n.0 as u64 + 1,
             soundlog::vgm::command::VgmCommand::Wait735Samples(_) => 735u64,
             soundlog::vgm::command::VgmCommand::Wait882Samples(_) => 882u64,
             soundlog::vgm::command::VgmCommand::YM2612Port0Address2AWriteAndWaitN(n) => n.0 as u64,
@@ -573,7 +573,8 @@ impl<'a> std::fmt::Display for CommandBrief<'a> {
             VgmCommand::WaitSamples(w) => write!(f, "WaitSamples({})", w.0),
             VgmCommand::Wait735Samples(_) => write!(f, "Wait735Samples"),
             VgmCommand::Wait882Samples(_) => write!(f, "Wait882Samples"),
-            VgmCommand::WaitNSample(w) => write!(f, "WaitNSample({})", w.0),
+            // w.0 is the raw n (0..=15); actual wait is n+1 samples.
+            VgmCommand::WaitNSample(w) => write!(f, "WaitNSample(n={}, wait={})", w.0, w.0 + 1),
             VgmCommand::EndOfData(_) => write!(f, "EndOfData"),
             VgmCommand::DataBlock(db) => match parse_data_block(*db.clone()) {
                 Ok(data_type) => write!(
