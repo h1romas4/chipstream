@@ -514,7 +514,6 @@ detecting key on/off events and extracting tone information from register writes
 | **C352** | N/A | N/A | N/A | Namco C352 | - |
 | **GA20** | N/A | N/A | N/A | Irem GA20 | - |
 | **Mikey** | N/A | N/A | N/A | Atari Lynx | - |
-| **GameGearPsg** | 3 tone + 1 noise | ✅ | ✅ | Game Gear PSG (same as SN76489) | ✅ |
 
 - (1) The NES APU state tracker does not currently support Famicom Disk System (FDS) expansion audio.  
 
