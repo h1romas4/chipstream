@@ -284,7 +284,9 @@ fn test_parse_error_extra_header_chip_clock_offset_out_of_range() {
     );
     match res.unwrap_err() {
         ParseError::OffsetOutOfRange { offset, .. } => {
-            let expected = extra_start.wrapping_add(bad_clock_offset as usize);
+            // chip_clock_offset is relative to its own field position (extra_start + 4)
+            let cc_field_pos = extra_start + 4;
+            let expected = cc_field_pos.wrapping_add(bad_clock_offset as usize);
             assert_eq!(offset, expected);
         }
         e => panic!("expected OffsetOutOfRange, got {:?}", e),
@@ -331,7 +333,9 @@ fn test_parse_error_extra_header_chip_vol_offset_out_of_range() {
     );
     match res.unwrap_err() {
         ParseError::OffsetOutOfRange { offset, .. } => {
-            let expected = extra_start.wrapping_add(bad_vol_offset as usize);
+            // chip_vol_offset is relative to its own field position (extra_start + 8)
+            let cv_field_pos = extra_start + 8;
+            let expected = cv_field_pos.wrapping_add(bad_vol_offset as usize);
             assert_eq!(offset, expected);
         }
         e => panic!("expected OffsetOutOfRange, got {:?}", e),
@@ -526,7 +530,7 @@ fn test_parse_malformed_extra_header_chip_vol_offset_inside_header() {
         "normalized header_size too small"
     );
     assert!(
-        parsed_extra.chip_vol_offset >= 12,
+        parsed_extra.chip_vol_offset >= 4,
         "normalized chip_vol_offset inside header"
     );
 }
@@ -597,7 +601,7 @@ fn test_parse_malformed_extra_header_chip_clock_offset_inside_header() {
         "normalized header_size too small"
     );
     assert!(
-        parsed_extra.chip_clock_offset >= 12,
+        parsed_extra.chip_clock_offset >= 8,
         "normalized chip_clock_offset inside header"
     );
 }

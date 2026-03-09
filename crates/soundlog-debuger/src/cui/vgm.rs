@@ -257,10 +257,41 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
         rows.push(("vgmheader_misc".into(), "(none)".to_string()));
     }
 
+    // If an extra-header was parsed, include a compact summary of its contents.
+    // We emit two rows when present: `extra_header.chip_clocks` and
+    // `extra_header.chip_volumes`. Each row's value may be multi-line (one entry
+    // per line) so the diagnostics table keeps alignment.
+    if let Some(eh) = &doc.extra_header {
+        // chip_clocks: show chip id, instance and clock value (Hz)
+        if !eh.chip_clocks.is_empty() {
+            let mut lines: Vec<String> = Vec::new();
+            for cc in &eh.chip_clocks {
+                lines.push(format!(
+                    "{:?} {:?} {} Hz",
+                    cc.chip_id, cc.instance, cc.clock
+                ));
+            }
+            rows.push(("extra_header.chip_clocks".into(), lines.join("\n")));
+        }
+
+        // chip_volumes: show chip id, instance, volume and whether it's paired
+        if !eh.chip_volumes.is_empty() {
+            let mut lines: Vec<String> = Vec::new();
+            for cv in &eh.chip_volumes {
+                lines.push(format!(
+                    "{:?} {:?} vol={} paired={}",
+                    cv.chip_id, cv.instance, cv.volume, cv.paired_chip
+                ));
+            }
+            rows.push(("extra_header.chip_volumes".into(), lines.join("\n")));
+        }
+    }
+
     // Append individual GD3 fields (one row per field) to keep columns aligned.
     for (k, v) in gd3_fields.into_iter() {
         rows.push((k, v));
     }
+
     rows.push(("commands".into(), commands_info));
 
     rows

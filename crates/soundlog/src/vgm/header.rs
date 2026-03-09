@@ -2135,75 +2135,25 @@ impl VgmExtraHeader {
 
     /// Serialize the extra header into bytes using the VGM extra-header format.
     ///
-    /// The serializer constructs a canonical extra-header buffer from parsed
-    /// fields. Raw-preservation of the on-disk extra-header has been removed.
+    /// Per the VGM specification, all pointer offsets are relative to their own
+    /// position in the file:
+    ///   - chip_clock_offset field is at buf[4]  → value = (block_start) - 4
+    ///   - chip_vol_offset   field is at buf[8]  → value = (block_start) - 8
+    ///
+    /// Layout of the produced buffer:
+    ///   [0..4]   header_size (u32 LE)
+    ///   [4..8]   chip_clock_offset (u32 LE, relative to buf[4])
+    ///   [8..12]  chip_vol_offset   (u32 LE, relative to buf[8])
+    ///   [12..]   chip_clock block (if any), then chip_volume block (if any)
     pub fn to_bytes(&self) -> Vec<u8> {
-        // If header_size is non-zero, respect it and emit only header_size
-        // bytes consisting of the header_size (u32), chip_clock_offset (u32),
-        // and chip_vol_offset (u32). Also attempt to place chip clock and chip
-        // volume blocks at the stored offsets if they fit within the stored size.
-        if self.header_size != 0 {
-            let hsz = self.header_size as usize;
-            // Ensure we return at least the 12 bytes needed for the three fields.
-            let out_len = if hsz < 12 { 12 } else { hsz };
-            let mut buf: Vec<u8> = vec![0u8; out_len];
-
-            // header_size (4 bytes LE)
-            let hsz_bytes = self.header_size.to_le_bytes();
-            buf[0..4].copy_from_slice(&hsz_bytes);
-
-            // chip_clock_offset (4 bytes LE)
-            let cco_bytes = self.chip_clock_offset.to_le_bytes();
-            buf[4..8].copy_from_slice(&cco_bytes);
-
-            // chip_vol_offset (4 bytes LE)
-            let cvo_bytes = self.chip_vol_offset.to_le_bytes();
-            buf[8..12].copy_from_slice(&cvo_bytes);
-
-            // Attempt to write chip_clock block at stored offset if present and fits.
-            if self.chip_clock_offset != 0 && !self.chip_clocks.is_empty() {
-                let start = self.chip_clock_offset as usize;
-                // needed size: 1 + count*(1+4)
-                let needed = 1usize + self.chip_clocks.len() * 5;
-                if start + needed <= out_len {
-                    buf[start] = self.chip_clocks.len() as u8;
-                    let mut pos = start + 1;
-                    for chip_clock in &self.chip_clocks {
-                        // Use the preserved raw_chip_id for on-disk representation.
-                        buf[pos] = chip_clock.raw_chip_id;
-                        buf[pos + 1..pos + 5].copy_from_slice(&chip_clock.clock.to_le_bytes());
-                        pos += 5;
-                    }
-                }
-            }
-
-            // Attempt to write chip_volume block at stored offset if present and fits.
-            if self.chip_vol_offset != 0 && !self.chip_volumes.is_empty() {
-                let start = self.chip_vol_offset as usize;
-                // needed size: 1 + count*(1+1+2)
-                let needed = 1usize + self.chip_volumes.len() * 4;
-                if start + needed <= out_len {
-                    buf[start] = self.chip_volumes.len() as u8;
-                    let mut pos = start + 1;
-                    for chip_vol in &self.chip_volumes {
-                        // Use preserved raw bytes for on-disk representation.
-                        buf[pos] = chip_vol.raw_chip_id;
-                        buf[pos + 1] = chip_vol.raw_flags;
-                        buf[pos + 2..pos + 4].copy_from_slice(&chip_vol.volume.to_le_bytes());
-                        pos += 4;
-                    }
-                }
-            }
-
-            return buf;
-        }
-
-        // Start with a 12-byte placeholder for header_size, chip_clock_offset, chip_vol_offset
+        // Reserve the 12-byte header area (three u32 fields).
         let mut buf: Vec<u8> = vec![0u8; 12];
 
-        // chip_clock block
+        // ── Chip Clock block ─────────────────────────────────────────────────
+        // chip_clock_offset is relative to the field at buf[4].
         let chip_clock_offset: u32 = if !self.chip_clocks.is_empty() {
-            let off = buf.len() as u32;
+            // Block starts at current end of buf.
+            let block_start = buf.len();
             // count (1 byte)
             buf.push(self.chip_clocks.len() as u8);
             // entries: chip_id (1 byte) + clock (4 bytes LE)
@@ -2211,14 +2161,17 @@ impl VgmExtraHeader {
                 buf.push(chip_clock.raw_chip_id);
                 buf.extend_from_slice(&chip_clock.clock.to_le_bytes());
             }
-            off
+            // Offset is relative to the field position (buf[4]).
+            (block_start - 4) as u32
         } else {
             0u32
         };
 
-        // chip_volume block
+        // ── Chip Volume block ────────────────────────────────────────────────
+        // chip_vol_offset is relative to the field at buf[8].
         let chip_vol_offset: u32 = if !self.chip_volumes.is_empty() {
-            let off = buf.len() as u32;
+            // Block starts at current end of buf.
+            let block_start = buf.len();
             // count (1 byte)
             buf.push(self.chip_volumes.len() as u8);
             // entries: chip_id (1 byte) + flags (1 byte) + volume (2 bytes LE)
@@ -2227,12 +2180,13 @@ impl VgmExtraHeader {
                 buf.push(chip_vol.raw_flags);
                 buf.extend_from_slice(&chip_vol.volume.to_le_bytes());
             }
-            off
+            // Offset is relative to the field position (buf[8]).
+            (block_start - 8) as u32
         } else {
             0u32
         };
 
-        // Now fill in the 3 header fields
+        // Fill in the three header fields now that all block positions are known.
         let header_size = buf.len() as u32;
         buf[0..4].copy_from_slice(&header_size.to_le_bytes());
         buf[4..8].copy_from_slice(&chip_clock_offset.to_le_bytes());

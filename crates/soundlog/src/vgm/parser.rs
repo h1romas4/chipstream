@@ -621,10 +621,22 @@ pub(crate) fn parse_vgm_extra_header(
     let chip_clock_offset = read_u32_le_at(bytes, offset + 4)?;
     let chip_vol_offset = read_u32_le_at(bytes, offset + 8)?;
 
-    // The 12-byte header boundary (after header_size, chip_clock_offset, chip_vol_offset fields)
+    // Per the VGM specification, all pointer offsets are relative to the current
+    // position in the file (i.e. relative to the field's own location).
+    //   chip_clock_offset field is at (offset + 4)  → block is at (offset + 4) + chip_clock_offset
+    //   chip_vol_offset   field is at (offset + 8)  → block is at (offset + 8) + chip_vol_offset
+    //
+    // The minimum meaningful value for each offset is 8 (pointing just past the three
+    // header u32 fields from their respective field positions).  Values smaller than 8
+    // would land inside the header itself and are treated as invalid; in that case we
+    // fall back to placing the block immediately after the 12-byte header area.
+
+    // Absolute position just past the 12-byte header (used as fallback base).
     let data_base = offset.wrapping_add(12);
 
-    // Track the actual offsets used for reading (normalized values)
+    // Corrected (canonical) offset values that will be stored back into the struct
+    // and later used by to_bytes().  They are always expressed as field-relative
+    // offsets so that round-trip serialisation produces spec-compliant output.
     let mut actual_chip_clock_offset = chip_clock_offset;
     let mut actual_chip_vol_offset = chip_vol_offset;
 
@@ -636,95 +648,82 @@ pub(crate) fn parse_vgm_extra_header(
         chip_volumes: Vec::new(),
     };
 
-    // Parse chip clocks block if present
-    // Offsets are relative to the extra_header start (offset)
-    // However, some VGM files have invalid offsets (< 12, pointing into the header itself)
-    // In such cases, fall back to reading sequentially from data_base
+    // ── Chip Clocks block ────────────────────────────────────────────────────
+    // chip_clock_offset is relative to the field at (offset + 4).
     if chip_clock_offset != 0 {
-        let cc_base = offset.wrapping_add(chip_clock_offset as usize);
+        // Absolute address of the chip-clock block.
+        let cc_field_pos = offset + 4;
+        let cc_base = cc_field_pos.wrapping_add(chip_clock_offset as usize);
 
-        // Check if offset is completely out of bounds
-        if cc_base >= bytes.len() {
+        // Sanity-check: offset must not point back into the 12-byte header
+        // (minimum valid field-relative value is 8, reaching just past offset+12).
+        let (actual_cc_base, corrected_cc_offset) = if chip_clock_offset < 8 {
+            // Invalid offset – fall back to the first byte after the header.
+            // The canonical field-relative offset for that position is
+            // data_base - cc_field_pos = (offset+12) - (offset+4) = 8.
+            (data_base, 8u32)
+        } else {
+            (cc_base, chip_clock_offset)
+        };
+
+        // Bounds check
+        if actual_cc_base >= bytes.len() {
             return Err(ParseError::OffsetOutOfRange {
-                offset: cc_base,
+                offset: actual_cc_base,
                 needed: 1,
                 available: bytes.len(),
                 context: Some("extra_header chip_clock_offset".into()),
             });
         }
 
-        // Use data_base if offset is invalid (< 12, pointing into the header itself)
-        let actual_cc_base = if chip_clock_offset < 12 {
-            // Normalize the offset to the correct value (12 = start of data area)
-            actual_chip_clock_offset = 12;
-            data_base
-        } else {
-            cc_base
-        };
+        actual_chip_clock_offset = corrected_cc_offset;
 
-        // Verify the fallback offset is within bounds
-        if actual_cc_base >= bytes.len() {
-            return Err(ParseError::OffsetOutOfRange {
-                offset: actual_cc_base,
-                needed: 1,
-                available: bytes.len(),
-                context: Some("extra_header chip_clock_offset fallback".into()),
-            });
-        }
         // first byte is entry count
         let count = read_u8_at(bytes, actual_cc_base)?;
         let mut cur = actual_cc_base + 1;
         for _ in 0..count {
             let chip_id = read_u8_at(bytes, cur)?;
             let clock = read_u32_le_at(bytes, cur + 1)?;
-            // Create a ChipClock preserving the raw chip-id byte and decoded instance.
             extra.chip_clocks.push(ChipClock::from_raw(chip_id, clock));
             cur = cur.wrapping_add(5);
         }
     }
 
-    // Parse chip volumes block if present
-    // Offsets are relative to the extra_header start (offset)
-    // However, some VGM files have invalid offsets (< 12, pointing into the header itself)
-    // In such cases, fall back to reading sequentially from data_base
+    // ── Chip Volumes block ───────────────────────────────────────────────────
+    // chip_vol_offset is relative to the field at (offset + 8).
     if chip_vol_offset != 0 {
-        let cv_base = offset.wrapping_add(chip_vol_offset as usize);
+        let cv_field_pos = offset + 8;
+        let cv_base = cv_field_pos.wrapping_add(chip_vol_offset as usize);
 
-        // Check if offset is completely out of bounds
-        if cv_base >= bytes.len() {
+        // Minimum valid field-relative value is 4 (reaching just past offset+12).
+        let (actual_cv_base, corrected_cv_offset) = if chip_vol_offset < 4 {
+            // Invalid offset – fall back to immediately after the chip-clock block
+            // (or data_base if there are no chip clocks).
+            let fallback = if extra.chip_clocks.is_empty() {
+                data_base
+            } else {
+                // chip_clocks block: 1 byte count + count * 5 bytes per entry
+                data_base + 1 + extra.chip_clocks.len() * 5
+            };
+            // Express the fallback as a field-relative offset.
+            let corrected = (fallback - cv_field_pos) as u32;
+            (fallback, corrected)
+        } else {
+            (cv_base, chip_vol_offset)
+        };
+
+        // Bounds check
+        if actual_cv_base >= bytes.len() {
             return Err(ParseError::OffsetOutOfRange {
-                offset: cv_base,
+                offset: actual_cv_base,
                 needed: 1,
                 available: bytes.len(),
                 context: Some("extra_header chip_vol_offset".into()),
             });
         }
 
-        // Use data_base if offset is invalid (< 12, pointing into the header itself)
-        let actual_cv_base = if chip_vol_offset < 12 {
-            // Normalize the offset to the correct value
-            // If chip_clocks is empty, use 12; otherwise calculate after chip_clocks
-            let normalized_offset = if extra.chip_clocks.is_empty() {
-                12
-            } else {
-                // chip_clocks block: 1 byte count + count * 5 bytes per entry
-                12 + 1 + (extra.chip_clocks.len() * 5)
-            };
-            actual_chip_vol_offset = normalized_offset as u32;
-            data_base
-        } else {
-            cv_base
-        };
+        actual_chip_vol_offset = corrected_cv_offset;
 
-        // Verify the fallback offset is within bounds
-        if actual_cv_base >= bytes.len() {
-            return Err(ParseError::OffsetOutOfRange {
-                offset: actual_cv_base,
-                needed: 1,
-                available: bytes.len(),
-                context: Some("extra_header chip_vol_offset fallback".into()),
-            });
-        }
         // first byte is entry count
         let count = read_u8_at(bytes, actual_cv_base)?;
         let mut cur = actual_cv_base + 1;
@@ -732,7 +731,6 @@ pub(crate) fn parse_vgm_extra_header(
             let chip_id = read_u8_at(bytes, cur)?;
             let flags = read_u8_at(bytes, cur + 1)?;
             let volume = read_u16_le_at(bytes, cur + 2)?;
-            // Create a ChipVolume preserving raw bytes and decoded instance.
             extra
                 .chip_volumes
                 .push(ChipVolume::from_raw(chip_id, flags, volume));
@@ -740,28 +738,26 @@ pub(crate) fn parse_vgm_extra_header(
         }
     }
 
-    // Update the extra header with normalized offset values if they were corrected
-    if actual_chip_clock_offset != chip_clock_offset {
-        extra.chip_clock_offset = actual_chip_clock_offset;
-    }
-    if actual_chip_vol_offset != chip_vol_offset {
-        extra.chip_vol_offset = actual_chip_vol_offset;
-    }
+    // Store back corrected (canonical) field-relative offsets so that to_bytes()
+    // can emit spec-compliant values without re-deriving them.
+    extra.chip_clock_offset = actual_chip_clock_offset;
+    extra.chip_vol_offset = actual_chip_vol_offset;
 
-    // Recalculate header_size to include all data blocks
-    let mut calculated_size = 12u32; // Base 12 bytes for the three u32 fields
+    // Recompute header_size to cover the actual data written.
+    // Layout: [header_size u32][cc_offset u32][cv_offset u32][cc block?][cv block?]
+    // The cc block (if any) starts at data_base (offset+12) and the cv block
+    // immediately follows.  header_size counts bytes from the start of the
+    // extra header (offset) to the end of the last block.
+    let mut calculated_size = 12u32; // three u32 fields
 
     if !extra.chip_clocks.is_empty() {
-        // chip_clock block size: 1 byte count + entries
         calculated_size += 1 + (extra.chip_clocks.len() as u32 * 5);
     }
 
     if !extra.chip_volumes.is_empty() {
-        // chip_volume block size: 1 byte count + entries
         calculated_size += 1 + (extra.chip_volumes.len() as u32 * 4);
     }
 
-    // Update header_size to the calculated value for correct round-trip serialization
     extra.header_size = calculated_size;
 
     Ok((extra, header_size as usize))
