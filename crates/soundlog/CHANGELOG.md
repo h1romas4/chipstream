@@ -5,6 +5,8 @@
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
   - [ ] Fix: Unify the state of ES5506.
+  - [ ] Doc: NES APU Mapping
+  - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
 - [x] Add: `ChipVolume` now exposes a `relative` flag (decoded from bit 15 of the on-disk volume word) and a `volume_multiplier()` method returning the effective `f32` multiplier (`volume / 0x0100`) for relative entries, or `None` for absolute ones.
