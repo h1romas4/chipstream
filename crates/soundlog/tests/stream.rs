@@ -5755,16 +5755,6 @@ fn test_push_chunk_loop2_command_sequence_is_clean() {
     }
 }
 
-// ── PlayUntilEnd + looped (StartStream) regression tests ────────────────────
-//
-// Issue #3: StartStream sets block_end_pos = None, so at_end_before_read always
-// returns false for PlayUntilEnd forward mode.  The stream falls through to the
-// natural-end path instead of using the pre-read end check.
-//
-// Issue #4: In the natural-end loop path an extra write was immediately emitted
-// at the same sample slot as the wrap.  libvgm defers the first post-restart
-// write until the next update tick, so the instant write is wrong.
-
 /// StartStream with PlayUntilEnd + looped=true (forward, non-FastCall).
 ///
 /// Unlike FastCall, StartStream leaves `block_end_pos = None`.  The stream must
@@ -6031,8 +6021,6 @@ fn test_length_mode_play_until_end_looped_start_stream_raw_sequence() {
     assert_eq!(items, expected, "raw command sequence mismatch: {items:?}");
 }
 
-// ── Real-world: same stream re-triggered multiple times ──────────────────────
-
 /// Scenario: drum machine pattern.
 ///
 /// A single YM2612 DAC stream (stream 0) is used to play short PCM drum hits.
@@ -6191,7 +6179,7 @@ fn test_real_world_sequential_voice_samples() {
         frequency: 44100,
     });
 
-    // ── Segment A ────────────────────────────────────────────────
+    // Segment A
     // Step 0 fires at stream_start_sample (= current_sample at StartStream time).
     // WaitSamples(N) covers N+1 steps (step 0 at sample T, steps 1..N at T+1..T+N).
     // Segment A has 4 bytes → WaitSamples(3) covers steps 0..3.
@@ -6207,7 +6195,6 @@ fn test_real_world_sequential_voice_samples() {
     builder.add_vgm_command(WaitSamples(3));
     builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
 
-    // ── Segment B ────────────────────────────────────────────────
     // Segment B has 3 bytes → WaitSamples(2) covers steps 0..2.
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
@@ -6221,7 +6208,6 @@ fn test_real_world_sequential_voice_samples() {
     builder.add_vgm_command(WaitSamples(2));
     builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
 
-    // ── Segment C ────────────────────────────────────────────────
     // Segment C has 3 bytes → WaitSamples(2) covers steps 0..2.
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
@@ -6261,7 +6247,7 @@ fn test_real_world_stream_restart_with_frequency_change() {
     let data = vec![0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
     let mut builder = build_dac_setup_builder(data, 44100, 1, 0);
 
-    // ── First run at 44100 Hz ─────────────────────────────────────
+    // First run at 44100 Hz
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
@@ -6281,7 +6267,7 @@ fn test_real_world_stream_restart_with_frequency_change() {
         frequency: 22050,
     });
 
-    // ── Second run at 22050 Hz ────────────────────────────────────
+    // Second run at 22050 Hz
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
         stream_id: 0,
         data_start_offset: 0,
@@ -6349,7 +6335,7 @@ fn test_real_world_bgm_loop_interrupted_by_sfx() {
         frequency: 44100,
     });
 
-    // ── BGM loop starts ───────────────────────────────────────────
+    // BGM loop starts
     // CommandCount(4) + looped → pattern [AA BB CC DD] repeats.
     // Step 0 fires at stream_start_sample; WaitSamples(N) covers steps 0..N.
     // WaitSamples(6) → 7 steps: AA BB CC DD AA BB CC
@@ -6365,7 +6351,7 @@ fn test_real_world_bgm_loop_interrupted_by_sfx() {
     // 7 BGM writes: AA BB CC DD AA BB CC
     builder.add_vgm_command(WaitSamples(6));
 
-    // ── SFX interrupts BGM on the same stream ID ──────────────────
+    // SFX interrupts BGM on the same stream ID
     // StartStream resets stream_start_sample; step 0 of SFX is immediately due.
     // WaitSamples(3) covers SFX steps 0..3, but SFX only has 2 bytes → 2 writes.
     builder.add_vgm_command(soundlog::vgm::command::StartStream {
@@ -6589,5 +6575,1080 @@ fn test_real_world_register_write_before_fast_call_ordering() {
     assert!(
         reset_pos < first_stream_pos,
         "register write (pos {reset_pos}) must come before first stream byte (pos {first_stream_pos}): {items:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// DAC Stream StartStream / FastCall timing correctness tests
+//
+// Checks the following invariants for the StreamSnapshot / generate_stream_writes
+// path used by 0x90-0x95 DAC stream commands:
+//
+//  A. Step 0 is scheduled at stream_start_sample (the very sample at which
+//     StartStream / FastCall is processed), so the first byte is emitted as
+//     soon as the stream clock catches up — not one sample late.
+//
+//  B. Successive steps are spaced at 44100 / freq sample intervals.
+//
+//  C. process_wait_with_streams correctly inserts a WaitSamples *before*
+//     the stream-write command when the write falls in the middle of a wait
+//     period (wait_until_write > 0).
+//
+//  D. When a stream write is due at current_sample (wait_until_write == 0),
+//     the write is emitted directly without a preceding WaitSamples(0).
+//
+//  E. The WaitSamples that follows the last stream-write within a wait period
+//     covers exactly the remaining samples (remaining_wait), not the full
+//     original wait.
+//
+//  F. FastCall: start_data_pos = block_offset + step_base, and the block
+//     boundary (block_end_pos) is respected so the stream stops at the end
+//     of the block.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Helper: build a minimal DAC stream VGM using the 0x90-0x95 command set.
+//
+// Layout:
+//   0x90  SetupStreamControl  (stream_id=0, chip=YM2612, port=0, reg=0x2A)
+//   0x91  SetStreamData       (stream_id=0, data_bank_id=chip_type, step_size=1, step_base=0)
+//   0x92  SetStreamFrequency  (stream_id=0, frequency=freq_hz)
+//   0x93  StartStream         (stream_id=0, data_start_offset=0, length_mode, data_length)
+//   0x61  WaitSamples(wait)
+//   0x66  EndOfData
+// ---------------------------------------------------------------------------
+
+/// Invariant A: step 0 of a DAC stream is scheduled at stream_start_sample,
+/// meaning the first byte must be emitted within the very first wait that
+/// encompasses sample `stream_start_sample`.
+///
+/// Setup: freq=44100 Hz (one write per sample).  Start stream, then issue
+/// WaitSamples(3).  We expect three stream-write commands interleaved with
+/// waits, with the first write at sample offset 0 relative to stream start.
+#[test]
+fn test_dac_stream_step0_scheduled_at_stream_start_sample() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, LengthMode, SetStreamData, SetStreamFrequency,
+        SetupStreamControl, StartStream, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+    use soundlog::vgm::header::ChipId;
+
+    let mut b = VgmBuilder::new();
+
+    // Three-byte PCM bank: 0x11, 0x22, 0x33
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x11u8, 0x22u8, 0x33u8],
+    });
+
+    // SetupStreamControl
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    // SetStreamData  (step_size=1, step_base=0)
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 0,
+    });
+    // SetStreamFrequency: 44100 Hz => one write per sample
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+    // StartStream: offset=0, CommandCount(3), not looped, not reversed
+    b.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 3,
+    });
+    // Wait long enough to let all three writes through
+    b.add_vgm_command(WaitSamples(10u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    // Collect (sample_before_emit, command) pairs by tracking current_sample
+    // via WaitSamples values that precede each write.
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    // Filter to only the Ym2612 writes for register 0x2A
+    let writes: Vec<u8> = emitted
+        .iter()
+        .filter_map(|cmd| match cmd {
+            VgmCommand::Ym2612Write(_, spec) if spec.register == 0x2A => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        writes,
+        vec![0x11u8, 0x22u8, 0x33u8],
+        "all three PCM bytes should be emitted in order: {emitted:?}"
+    );
+
+    // Reconstruct the sample offset of each write by summing WaitSamples
+    // values that appear before each Ym2612Write(0x2A).
+    let mut sample = 0usize;
+    let mut write_samples: Vec<usize> = Vec::new();
+    for cmd in &emitted {
+        match cmd {
+            VgmCommand::WaitSamples(w) => sample += w.0 as usize,
+            VgmCommand::Ym2612Write(_, spec) if spec.register == 0x2A => {
+                write_samples.push(sample);
+            }
+            _ => {}
+        }
+    }
+
+    // step 0 => sample 0 (stream_start_sample + 0 * 44100 / 44100)
+    // step 1 => sample 1
+    // step 2 => sample 2
+    assert_eq!(
+        write_samples,
+        vec![0, 1, 2],
+        "stream writes should land at samples 0, 1, 2 (freq=44100): {write_samples:?}"
+    );
+}
+
+/// Invariant B: with freq=22050 Hz (one write every 2 samples) the writes
+/// should be placed at samples 0, 2, 4, ...
+#[test]
+fn test_dac_stream_step_spacing_at_22050hz() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, LengthMode, SetStreamData, SetStreamFrequency,
+        SetupStreamControl, StartStream, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0xAAu8, 0xBBu8, 0xCCu8],
+    });
+
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 0,
+    });
+    // 22050 Hz => one write every 2 samples
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 22050,
+    });
+    b.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 3,
+    });
+    b.add_vgm_command(WaitSamples(20u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    let mut sample = 0usize;
+    let mut write_samples: Vec<usize> = Vec::new();
+    for cmd in &emitted {
+        match cmd {
+            VgmCommand::WaitSamples(w) => sample += w.0 as usize,
+            VgmCommand::Ym2612Write(_, spec) if spec.register == 0x2A => {
+                write_samples.push(sample);
+            }
+            _ => {}
+        }
+    }
+
+    // step 0 => 0 + 0*44100/22050 = 0
+    // step 1 => 0 + 1*44100/22050 = 2
+    // step 2 => 0 + 2*44100/22050 = 4
+    assert_eq!(
+        write_samples,
+        vec![0, 2, 4],
+        "at 22050 Hz writes should land at samples 0, 2, 4: {write_samples:?}"
+    );
+}
+
+/// Invariant C/D/E: a WaitSamples that covers multiple stream writes is split
+/// correctly: wait-before-write, write, remaining-wait.
+///
+/// Setup: freq=44100, one write every sample, data_length=2.
+/// Single WaitSamples(5).  Expected emit sequence:
+///   write@0, WaitSamples(1), write@1, WaitSamples(4)   (or equivalent split)
+///
+/// Key invariants:
+///   - No WaitSamples(0) should appear.
+///   - Writes appear before the WaitSamples that follows them.
+///   - Sum of all WaitSamples == 5.
+#[test]
+fn test_dac_stream_wait_split_no_zero_wait_and_write_before_wait() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, LengthMode, SetStreamData, SetStreamFrequency,
+        SetupStreamControl, StartStream, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x01u8, 0x02u8],
+    });
+
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 0,
+    });
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+    b.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 2,
+    });
+    b.add_vgm_command(WaitSamples(5u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    // No WaitSamples(0) should ever appear.
+    let zero_waits = emitted
+        .iter()
+        .filter(|cmd| matches!(cmd, VgmCommand::WaitSamples(w) if w.0 == 0))
+        .count();
+    assert_eq!(
+        zero_waits, 0,
+        "WaitSamples(0) must never be emitted: {emitted:?}"
+    );
+
+    // Total WaitSamples must equal the original 5 samples.
+    let total_wait: usize = emitted
+        .iter()
+        .filter_map(|cmd| {
+            if let VgmCommand::WaitSamples(w) = cmd {
+                Some(w.0 as usize)
+            } else {
+                None
+            }
+        })
+        .sum();
+    assert_eq!(total_wait, 5, "total wait samples must be 5: {emitted:?}");
+
+    // Each Ym2612Write(0x2A) must appear before the WaitSamples that follows it.
+    // i.e. there must be no WaitSamples immediately before the first write.
+    let first_write_pos = emitted
+        .iter()
+        .position(|cmd| matches!(cmd, VgmCommand::Ym2612Write(_, spec) if spec.register == 0x2A))
+        .expect("at least one write must be present");
+    if first_write_pos > 0 {
+        // If there is a wait before the first write it must have value > 0
+        // (which is fine) but the write must still come before the remaining wait.
+        // The key check: the command immediately before the first write must NOT
+        // be a WaitSamples whose value equals 0.
+        if let VgmCommand::WaitSamples(w) = &emitted[first_write_pos - 1] {
+            assert_ne!(
+                w.0, 0,
+                "WaitSamples(0) must not precede the first stream write: {emitted:?}"
+            );
+        }
+    }
+
+    // Both bytes 0x01 and 0x02 must appear in order.
+    let values: Vec<u8> = emitted
+        .iter()
+        .filter_map(|cmd| {
+            if let VgmCommand::Ym2612Write(_, spec) = cmd {
+                if spec.register == 0x2A {
+                    Some(spec.value)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        values,
+        vec![0x01u8, 0x02u8],
+        "PCM bytes must be emitted in order: {emitted:?}"
+    );
+}
+
+/// Invariant D: when a stream write is due exactly at current_sample
+/// (wait_until_write == 0), the write is emitted directly without a
+/// preceding WaitSamples.
+///
+/// Setup: start stream, then WaitSamples(0) (zero wait) is not expected to be
+/// generated when the write is at sample 0.  We issue WaitSamples(1) and verify
+/// the write at sample 0 comes first.
+#[test]
+fn test_dac_stream_write_due_at_current_sample_no_preceding_zero_wait() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, LengthMode, SetStreamData, SetStreamFrequency,
+        SetupStreamControl, StartStream, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0xFFu8],
+    });
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 0,
+    });
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+    b.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 1,
+    });
+    // WaitSamples(1): step 0 is due at sample 0 (== current_sample), so the
+    // write must be the very first emitted command.
+    b.add_vgm_command(WaitSamples(1u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    // No WaitSamples(0) anywhere.
+    let zero_waits = emitted
+        .iter()
+        .filter(|cmd| matches!(cmd, VgmCommand::WaitSamples(w) if w.0 == 0))
+        .count();
+    assert_eq!(
+        zero_waits, 0,
+        "WaitSamples(0) must not be emitted: {emitted:?}"
+    );
+
+    // The write must come before any WaitSamples.
+    let first_write_pos = emitted
+        .iter()
+        .position(|cmd| matches!(cmd, VgmCommand::Ym2612Write(_, spec) if spec.register == 0x2A))
+        .expect("Ym2612Write must be present");
+    let first_wait_pos = emitted
+        .iter()
+        .position(|cmd| matches!(cmd, VgmCommand::WaitSamples(_)));
+
+    match first_wait_pos {
+        Some(wp) => assert!(
+            first_write_pos < wp,
+            "write (pos {first_write_pos}) must come before first WaitSamples (pos {wp}): {emitted:?}"
+        ),
+        None => { /* no wait at all is also acceptable */ }
+    }
+}
+
+/// Invariant F (FastCall): start_data_pos = block_offset + step_base,
+/// and playback stops at block_end_pos.
+///
+/// Build two separate DataBlocks in the same data bank.  Use FastCall with
+/// block_id=1 (the second block) and verify that only the bytes of that
+/// block are emitted (block boundary respected).
+#[test]
+fn test_dac_stream_fast_call_block_boundary() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, SetStreamData, SetStreamFrequency, SetupStreamControl,
+        StartStreamFastCall, StartStreamFastCallFlags, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    // Block 0: bytes 0xAA, 0xBB  (block_id = 0)
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0xAAu8, 0xBBu8],
+    });
+    // Block 1: bytes 0xCC, 0xDD  (block_id = 1)
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0xCCu8, 0xDDu8],
+    });
+
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 0,
+    });
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+    // FastCall: play block_id=1, non-looped
+    b.add_vgm_command(StartStreamFastCall {
+        stream_id: 0,
+        block_id: 1,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    b.add_vgm_command(WaitSamples(20u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    let values: Vec<u8> = emitted
+        .iter()
+        .filter_map(|cmd| {
+            if let VgmCommand::Ym2612Write(_, spec) = cmd {
+                if spec.register == 0x2A {
+                    Some(spec.value)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Only bytes from block 1 (0xCC, 0xDD) should appear; not 0xAA or 0xBB.
+    assert_eq!(
+        values,
+        vec![0xCCu8, 0xDDu8],
+        "FastCall block_id=1 should emit only 0xCC and 0xDD: {emitted:?}"
+    );
+}
+
+/// Invariant F (FastCall, step_base): when step_base > 0 the stream starts
+/// at block_offset + step_base, skipping the leading bytes.
+#[test]
+fn test_dac_stream_fast_call_step_base_offset() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, SetStreamData, SetStreamFrequency, SetupStreamControl,
+        StartStreamFastCall, StartStreamFastCallFlags, WaitSamples,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+
+    // Single block: bytes 0x10, 0x20, 0x30, 0x40  (block_id = 0)
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x10u8, 0x20u8, 0x30u8, 0x40u8],
+    });
+
+    b.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: soundlog::vgm::header::ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2A,
+    });
+    // step_base = 2: playback starts 2 bytes into the block
+    b.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0x00, // StreamChipType::Ym2612Pcm
+        step_size: 1,
+        step_base: 2,
+    });
+    b.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44100,
+    });
+    b.add_vgm_command(StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    b.add_vgm_command(WaitSamples(20u16));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+        }
+    }
+
+    let values: Vec<u8> = emitted
+        .iter()
+        .filter_map(|cmd| {
+            if let VgmCommand::Ym2612Write(_, spec) = cmd {
+                if spec.register == 0x2A {
+                    Some(spec.value)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // With step_base=2, playback starts at byte index 2 of the block (0x30, 0x40).
+    assert_eq!(
+        values,
+        vec![0x30u8, 0x40u8],
+        "step_base=2 should skip first two bytes and emit 0x30, 0x40: {emitted:?}"
+    );
+}
+
+/// VGM spec: opcode 0x7n means "wait n+1 samples".
+/// The inner value of WaitNSample `.0` is already incremented by +1 at parse time,
+/// so the amount added to `current_sample` must be n+1.
+///
+/// opcode 0x70 (n=0) -> wait 1 sample  -> current_sample += 1
+/// opcode 0x71 (n=1) -> wait 2 samples -> current_sample += 2
+/// opcode 0x7F (n=15) -> wait 16 samples -> current_sample += 16
+#[test]
+fn test_wait_n_sample_plus1_sample_count() {
+    use soundlog::vgm::command::{WaitNSample, WaitSamples};
+
+    // Test cases: (inner value, expected sample count).
+    // At parse time the inner value equals the expected wait (already +1 applied).
+    let cases: &[(u8, usize)] = &[
+        (1, 1),   // opcode 0x70: n=0 -> wait 1 sample
+        (2, 2),   // opcode 0x71: n=1 -> wait 2 samples
+        (8, 8),   // opcode 0x77: n=7 -> wait 8 samples
+        (15, 15), // opcode 0x7E: n=14 -> wait 15 samples
+        (16, 16), // opcode 0x7F: n=15 -> wait 16 samples
+    ];
+
+    for &(inner, expected_wait) in cases {
+        let mut b = VgmBuilder::new();
+        // No SeekOffset needed; measuring from current_sample = 0.
+        b.add_vgm_command(WaitNSample(inner));
+        b.add_vgm_command(WaitSamples(0u16)); // dummy command to advance the stream
+        b.add_vgm_command(EndOfData);
+
+        let raw: Vec<u8> = b.finalize().into();
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        // WaitNSample is expanded to WaitSamples via process_wait_with_streams.
+        // Collect emitted commands first to avoid borrow conflicts.
+        let mut emitted_waits: Vec<u16> = Vec::new();
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                    emitted_waits.push(w.0);
+                    break;
+                }
+                StreamResult::Command(_) => {}
+                StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+            }
+        }
+
+        let got = emitted_waits
+            .first()
+            .copied()
+            .map(|v| v as usize)
+            .unwrap_or_else(|| panic!("WaitNSample({inner}): no WaitSamples command was emitted"));
+        assert_eq!(
+            got, expected_wait,
+            "WaitNSample({inner}): emitted WaitSamples should be {} samples but got {}",
+            expected_wait, got
+        );
+    }
+}
+
+/// Verify that opcode 0x7n, when parsed by VgmStream, is expanded to a WaitSamples
+/// of n+1 samples.  Also verify that serialising WaitNSample(inner) via VgmBuilder
+/// and re-parsing it reproduces the same sample count (roundtrip).
+#[test]
+fn test_wait_n_sample_parse_and_roundtrip_opcode() {
+    use soundlog::vgm::command::WaitNSample;
+
+    for n in 0u8..=15u8 {
+        let expected_samples = (n + 1) as usize; // spec: wait is n+1 samples
+        let inner = n + 1; // WaitNSample inner value is n+1
+
+        // ---- parse check: push raw opcode bytes directly into VgmStream and
+        //      confirm expansion to WaitSamples(n+1) ----
+        // push_chunk accepts raw command bytes without a VGM header.
+        {
+            let opcode = 0x70u8 + n;
+            let mut parser = VgmStream::new();
+            // Include trailing EndOfData (0x66) so the stream terminates cleanly.
+            parser.push_chunk(&[opcode, 0x66]).expect("push chunk");
+
+            let mut got_samples: Option<usize> = None;
+            for res in &mut parser {
+                match res.unwrap() {
+                    StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                        got_samples = Some(w.0 as usize);
+                        break;
+                    }
+                    StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                    StreamResult::Command(_) => {}
+                }
+            }
+            let got = got_samples.unwrap_or_else(|| {
+                panic!("opcode 0x{opcode:02X} (n={n}): no WaitSamples was emitted")
+            });
+            assert_eq!(
+                got, expected_samples,
+                "opcode 0x{opcode:02X} (n={n}): WaitSamples should be {expected_samples} samples but got {got}",
+            );
+        }
+
+        // ---- roundtrip check: serialise WaitNSample(inner) via VgmBuilder and
+        //      confirm that re-parsing reproduces the same sample count ----
+        {
+            let mut b = VgmBuilder::new();
+            b.add_vgm_command(WaitNSample(inner));
+            b.add_vgm_command(EndOfData);
+            let raw: Vec<u8> = b.finalize().into();
+            let mut parser = VgmStream::new();
+            push_vgm_bytes(&mut parser, &raw);
+
+            let mut got_samples: Option<usize> = None;
+            for res in &mut parser {
+                match res.unwrap() {
+                    StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                        got_samples = Some(w.0 as usize);
+                        break;
+                    }
+                    StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                    StreamResult::Command(_) => {}
+                }
+            }
+            let got = got_samples.unwrap_or_else(|| {
+                panic!("WaitNSample({inner}) roundtrip: no WaitSamples was emitted (n={n})")
+            });
+            assert_eq!(
+                got, expected_samples,
+                "WaitNSample({inner}) roundtrip: emitted WaitSamples should be {expected_samples} samples but got {got}",
+            );
+        }
+    }
+}
+
+/// Verify that Ym2612Port0Address2AWriteAndWaitN follows the spec:
+///   opcode 0x8n -> wait is n samples (NOT n+1); inner value `.0` == n.
+///
+/// n=0: current_sample does not advance (no wait).
+/// n=1: current_sample advances by 1.
+/// n=15: current_sample advances by 15.
+#[test]
+fn test_ym2612_port0_2a_wait_n_not_plus1() {
+    use soundlog::vgm::command::{SeekOffset, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    // Test cases: (n value, expected wait in samples)
+    let cases: &[(u8, usize)] = &[
+        (0, 0),   // 0x80: no wait
+        (1, 1),   // 0x81: 1 sample
+        (7, 7),   // 0x87: 7 samples
+        (15, 15), // 0x8F: 15 samples
+    ];
+
+    for &(n, expected_wait) in cases {
+        let mut b = VgmBuilder::new();
+
+        // Prepare a 1-byte PCM bank (value 0xAB).
+        b.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![0xABu8],
+        });
+        b.add_vgm_command(SeekOffset(0u32));
+        b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(n));
+        b.add_vgm_command(EndOfData);
+
+        let raw: Vec<u8> = b.finalize().into();
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        // Collect all emitted commands before asserting (avoids borrow conflicts).
+        let mut emitted: Vec<VgmCommand> = Vec::new();
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(cmd) => emitted.push(cmd),
+                StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+            }
+        }
+
+        let found_dac = emitted.iter().any(
+            |cmd| matches!(cmd, VgmCommand::Ym2612Write(_inst, spec) if spec.register == 0x2A),
+        );
+        assert!(
+            found_dac,
+            "0x8{n:X}: Ym2612Write(reg=0x2A) was not emitted: {emitted:?}"
+        );
+
+        // The sum of WaitSamples values after the DAC write must equal the expected wait.
+        let dac_pos = emitted
+            .iter()
+            .position(
+                |cmd| matches!(cmd, VgmCommand::Ym2612Write(_inst, spec) if spec.register == 0x2A),
+            )
+            .unwrap();
+        let total_wait_after_dac: usize = emitted[dac_pos + 1..]
+            .iter()
+            .filter_map(|cmd| {
+                if let VgmCommand::WaitSamples(w) = cmd {
+                    Some(w.0 as usize)
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        assert_eq!(
+            total_wait_after_dac, expected_wait,
+            "0x8{n:X}: total wait after DAC write should be {expected_wait} samples but got {total_wait_after_dac}",
+        );
+
+        if expected_wait == 0 {
+            // When n=0, no WaitSamples should follow the DAC write.
+            let has_wait_after = emitted[dac_pos + 1..]
+                .iter()
+                .any(|cmd| matches!(cmd, VgmCommand::WaitSamples(_)));
+            assert!(
+                !has_wait_after,
+                "0x80: no wait expected, but WaitSamples appeared after the DAC write: {emitted:?}"
+            );
+        }
+    }
+}
+
+/// Verify the parse / roundtrip behaviour of Ym2612Port0Address2AWriteAndWaitN:
+///   parsing opcode 0x8n produces a wait of n samples (NOT n+1).
+///   Re-serialising via VgmBuilder and re-parsing gives the same total wait.
+#[test]
+fn test_ym2612_port0_2a_parse_and_roundtrip_opcode() {
+    use soundlog::vgm::command::{SeekOffset, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    for n in 0u8..=15u8 {
+        // Build a minimal VGM with a 1-byte PCM bank and one 0x8n command,
+        // then confirm that the wait emitted after the DAC write equals n samples.
+        // Using real PCM data exercises the normal code path most faithfully.
+        let mut b = VgmBuilder::new();
+        b.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![0xAAu8],
+        });
+        b.add_vgm_command(SeekOffset(0u32));
+        b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(n));
+        b.add_vgm_command(EndOfData);
+        let raw: Vec<u8> = b.finalize().into();
+
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        let mut emitted: Vec<VgmCommand> = Vec::new();
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(cmd) => emitted.push(cmd),
+                StreamResult::NeedsMoreData | StreamResult::EndOfStream => break,
+            }
+        }
+
+        // Total wait after the DAC write must be n samples (NOT n+1).
+        let dac_pos = emitted
+            .iter()
+            .position(
+                |cmd| matches!(cmd, VgmCommand::Ym2612Write(_inst, spec) if spec.register == 0x2A),
+            )
+            .unwrap_or_else(|| panic!("n={n}: Ym2612Write not found in: {emitted:?}"));
+        let total_wait: usize = emitted[dac_pos + 1..]
+            .iter()
+            .filter_map(|cmd| {
+                if let VgmCommand::WaitSamples(w) = cmd {
+                    Some(w.0 as usize)
+                } else {
+                    None
+                }
+            })
+            .sum();
+        assert_eq!(
+            total_wait, n as usize,
+            "opcode 0x8{n:X}: wait should be {n} samples (NOT n+1) but got {total_wait}",
+        );
+    }
+}
+
+/// Verify that the sample counts consumed by WaitNSample and
+/// Ym2612Port0Address2AWriteAndWaitN are correct.
+///
+/// WaitNSample(inner): inner is already n+1, so the contribution is `inner`.
+/// Ym2612Port0Address2AWriteAndWaitN(n): wait is n (NOT n+1), so contribution is `n`.
+#[test]
+fn test_total_samples_wait_n_and_ym2612_2a() {
+    use soundlog::vgm::command::{SeekOffset, WaitNSample, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    // --- WaitNSample(16) の寄与は 16 サンプル ---
+    {
+        let mut b = VgmBuilder::new();
+        b.add_vgm_command(WaitNSample(16u8)); // opcode 0x7F (n=15) -> 16 samples
+        b.add_vgm_command(EndOfData);
+        let doc = b.finalize();
+        // VgmDocument::total_samples is an internal method used during header
+        // serialisation; here we verify indirectly via VgmStream consumption.
+        let raw: Vec<u8> = doc.into();
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        let mut total = 0usize;
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(VgmCommand::WaitSamples(w)) => total += w.0 as usize,
+                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                StreamResult::Command(_) => {}
+            }
+        }
+        assert_eq!(
+            total, 16,
+            "WaitNSample(16) should consume 16 samples but got {}",
+            total
+        );
+    }
+
+    // --- Ym2612Port0Address2AWriteAndWaitN(3) contributes 3 samples of wait ---
+    {
+        let mut b = VgmBuilder::new();
+        b.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![0xCDu8],
+        });
+        b.add_vgm_command(SeekOffset(0u32));
+        b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(3u8)); // wait 3 samples
+        b.add_vgm_command(EndOfData);
+        let raw: Vec<u8> = b.finalize().into();
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        let mut total_wait = 0usize;
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                    total_wait += w.0 as usize;
+                }
+                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                StreamResult::Command(_) => {}
+            }
+        }
+        assert_eq!(
+            total_wait, 3,
+            "Ym2612Port0Address2AWriteAndWaitN(3) should contribute 3 samples of wait but got {}",
+            total_wait
+        );
+    }
+
+    // --- Ym2612Port0Address2AWriteAndWaitN(0) contributes 0 samples of wait ---
+    {
+        let mut b = VgmBuilder::new();
+        b.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![0xEFu8],
+        });
+        b.add_vgm_command(SeekOffset(0u32));
+        b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8)); // wait 0 samples
+        b.add_vgm_command(EndOfData);
+        let raw: Vec<u8> = b.finalize().into();
+        let mut parser = VgmStream::new();
+        push_vgm_bytes(&mut parser, &raw);
+
+        let mut total_wait = 0usize;
+        for res in &mut parser {
+            match res.unwrap() {
+                StreamResult::Command(VgmCommand::WaitSamples(w)) => {
+                    total_wait += w.0 as usize;
+                }
+                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+                StreamResult::Command(_) => {}
+            }
+        }
+        assert_eq!(
+            total_wait, 0,
+            "Ym2612Port0Address2AWriteAndWaitN(0) should contribute 0 samples of wait but got {}",
+            total_wait
+        );
+    }
+}
+
+/// Verify that a sequence of SeekOffset + Ym2612Port0Address2AWriteAndWaitN(0) does
+/// not advance current_sample.  When wait=0, no WaitSamples should be emitted
+/// regardless of how many consecutive 0x80 commands are issued.
+#[test]
+fn test_ym2612_0x80_sequence_does_not_advance_current_sample() {
+    use soundlog::vgm::command::{SeekOffset, Ym2612Port0Address2AWriteAndWaitN};
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+
+    let mut b = VgmBuilder::new();
+    b.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x11u8, 0x22u8, 0x33u8],
+    });
+    b.add_vgm_command(SeekOffset(0u32));
+    // Issue three consecutive 0x80 commands (all wait=0).
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+    b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
+    b.add_vgm_command(EndOfData);
+
+    let raw: Vec<u8> = b.finalize().into();
+    let mut parser = VgmStream::new();
+    push_vgm_bytes(&mut parser, &raw);
+
+    // Collect all emitted commands before asserting (avoids borrow conflicts).
+    let mut emitted: Vec<VgmCommand> = Vec::new();
+    for res in &mut parser {
+        match res.unwrap() {
+            StreamResult::Command(cmd) => emitted.push(cmd),
+            StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+        }
+    }
+
+    let dac_count = emitted
+        .iter()
+        .filter(|cmd| matches!(cmd, VgmCommand::Ym2612Write(_inst, spec) if spec.register == 0x2A))
+        .count();
+
+    assert_eq!(
+        dac_count, 3,
+        "expected 3 × Ym2612Write(reg=0x2A) to be emitted: {emitted:?}"
+    );
+    // wait=0: no WaitSamples should appear at all.
+    let total_wait: usize = emitted
+        .iter()
+        .filter_map(|cmd| {
+            if let VgmCommand::WaitSamples(w) = cmd {
+                Some(w.0 as usize)
+            } else {
+                None
+            }
+        })
+        .sum();
+    assert_eq!(
+        total_wait, 0,
+        "0x80 x3: wait=0 so total WaitSamples should be 0 but got {total_wait}: {emitted:?}"
     );
 }

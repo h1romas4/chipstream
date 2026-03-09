@@ -1157,9 +1157,10 @@ impl VgmStream {
             self.pcm_data_offset += 1;
 
             if wait_samples > 0 {
-                // Emit the DAC write first
-                self.pending_stream_writes.insert(0, dac_write);
-                self.process_wait_with_streams(wait_samples)
+                // Emit the DAC write immediately; schedule the wait so the
+                // next call to next_command() processes it after the write.
+                self.pending_wait = Some(wait_samples.min(u16::MAX as usize) as u16);
+                Ok(StreamResult::Command(dac_write))
             } else {
                 Ok(StreamResult::Command(dac_write))
             }
