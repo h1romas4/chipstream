@@ -532,12 +532,12 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>, logger: Arc<Logger>) -> Result
     // Get command offsets and lengths
     let offsets_and_lengths = doc.command_offsets_and_lengths();
 
-    // Print commands with offsets and lengths (Length moved after Offset)
+    // Print commands with offsets and lengths
     let _ = logger.info(format_args!(
-        "{:<8} {:<10} {:<8} {:<80}",
-        "Index", "Offset", "Length", "Command"
+        "{:<12} {:<8} {:<10} {:<8} {:}",
+        "Samples", "Index", "Offset", "Length", "Command"
     ));
-    let _ = logger.info(format_args!("{}", "-".repeat(120)));
+    let mut total_samples: u64 = 0;
 
     for (index, (cmd, (offset, length))) in doc
         .commands
@@ -545,8 +545,22 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>, logger: Arc<Logger>) -> Result
         .zip(offsets_and_lengths.iter())
         .enumerate()
     {
+        // Accumulate samples from Wait-family commands.
+        // WaitNSample stores raw n (0..=15); actual wait is n+1 samples.
+        // YM2612Port0Address2AWriteAndWaitN stores n directly (no +1).
+        let delta: u64 = match cmd {
+            soundlog::VgmCommand::WaitSamples(s) => s.0 as u64,
+            soundlog::VgmCommand::Wait735Samples(_) => 735,
+            soundlog::VgmCommand::Wait882Samples(_) => 882,
+            soundlog::VgmCommand::WaitNSample(s) => s.0 as u64 + 1,
+            soundlog::VgmCommand::YM2612Port0Address2AWriteAndWaitN(s) => s.0 as u64,
+            _ => 0,
+        };
+        total_samples += delta;
+
         let _ = logger.info(format_args!(
-            "{:<8} 0x{:06X} {:<8} {:<80}",
+            "{:<12} {:<8} 0x{:06X} {:<8} {:<80}",
+            total_samples,
             index,
             offset,
             length,

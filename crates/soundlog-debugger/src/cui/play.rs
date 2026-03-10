@@ -47,7 +47,7 @@ pub fn play_vgm(
     // Use a constant dashed line to avoid allocating at runtime.
     let _ = logger.info(format_args!(
         "{:<12} {:<40} Events",
-        "Sample", "Register Write"
+        "Samples", "Register Write"
     ));
 
     // Track state for all chip types present in the file
@@ -120,9 +120,10 @@ pub fn play_vgm(
     /// - `reg_info` is passed as `fmt::Arguments` via `format_args!` at the call site,
     ///   avoiding allocation unless the logger actually writes.
     /// - `events` is passed as an optional slice reference so the `EventList` can borrow it.
+    /// - `total_samples` is the running cumulative sample counter maintained by the caller.
     fn print_register_log(
         logger: &Arc<Logger>,
-        sample: usize,
+        total_samples: u64,
         reg_info: fmt::Arguments<'_>,
         events: Option<&[StateEvent]>,
     ) {
@@ -130,18 +131,36 @@ pub fn play_vgm(
         // Ensure each log line ends with a newline so outputs don't run together.
         let _ = logger.info(format_args!(
             "{:<12} {} {}",
-            sample,
+            total_samples,
             reg_info,
             EventList(events)
         ));
     }
 
+    // Cumulative sample counter shared across all callbacks.
+    // Wrapped in a Cell so it can be mutated from within multiple closures
+    // without needing a RefCell borrow guard at every call site.
+    use std::cell::Cell;
+    let total_samples = Cell::new(0u64);
+
+    // Register the on_wait callback first so the counter is updated before
+    // any chip-write callbacks that may fire in the same tick.
+    callback_stream.on_wait(
+        |spec: soundlog::vgm::command::WaitSamples,
+         _sample: usize,
+         _event: Option<Vec<StateEvent>>| {
+            let next = total_samples.get() + spec.0 as u64;
+            total_samples.set(next);
+            let _ = logger.info(format_args!("{:<12} WaitSamples({})", next, spec.0,));
+        },
+    );
+
     // Register callbacks for all chip types. Use `format_args!` to defer formatting.
     callback_stream.on_write(
-        |inst: Instance, spec: chip::PsgSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::PsgSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!("Sn76489Write({:?}, 0x{:02X})", inst, spec.value),
                 event.as_deref(),
             );
@@ -149,10 +168,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2413Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2413Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2413Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -163,10 +182,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2612Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2612Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2612Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -177,10 +196,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2151Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2151Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2151Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -191,10 +210,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2203Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2203Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2203Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -205,10 +224,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2608Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2608Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2608Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                     inst, spec.port, spec.register, spec.value
@@ -219,11 +238,11 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym2610Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym2610Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             // format_command_brief uses Ym2610bWrite for the Ym2610b command; keep the Write style
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym2610bWrite({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                     inst, spec.port, spec.register, spec.value
@@ -234,10 +253,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym3812Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym3812Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym3812Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -248,10 +267,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ym3526Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ym3526Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ym3526Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -262,10 +281,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Y8950Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Y8950Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Y8950Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -276,10 +295,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ymf262Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ymf262Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!("Ymf262Write({:?}, {:?})", inst, spec),
                 event.as_deref(),
             );
@@ -287,10 +306,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ymf278bSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ymf278bSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!("Ymf278bWrite({:?}, {:?})", inst, spec),
                 event.as_deref(),
             );
@@ -298,10 +317,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ymf271Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ymf271Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!("Ymf271Write({:?}, {:?})", inst, spec),
                 event.as_deref(),
             );
@@ -309,10 +328,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ymz280bSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ymz280bSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ymz280bWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -325,11 +344,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Rf5c68U8Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Rf5c68U8Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -342,11 +361,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Rf5c68U16Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Rf5c68U16Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -359,11 +378,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Rf5c164U16Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Rf5c164U16Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -374,10 +393,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::SegaPcmSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::SegaPcmSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "SegaPcmWrite({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -388,10 +407,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::QsoundSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::QsoundSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "QsoundWrite({:?}, 0x{:04X}=0x{:04X})",
                     inst, spec.register, spec.value
@@ -402,10 +421,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::ScspSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::ScspSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "ScspWrite({:?}, 0x{:04X}=0x{:04X})",
                     inst, spec.offset, spec.value
@@ -418,11 +437,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::WonderSwanSpec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "WonderSwanWrite({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -435,11 +454,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::WonderSwanRegSpec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "WonderSwanRegWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -450,10 +469,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::VsuSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::VsuSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "VsuWrite({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -464,10 +483,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Saa1099Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Saa1099Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Saa1099Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -478,10 +497,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Es5503Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Es5503Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Es5503Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -494,11 +513,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Es5506U8Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Es5506U8Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -511,11 +530,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Es5506U16Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Es5506U16Write({:?}, 0x{:02X}=0x{:04X})",
                     inst, spec.register, spec.value
@@ -526,10 +545,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::X1010Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::X1010Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "X1010Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.offset, spec.value
@@ -540,10 +559,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::C352Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::C352Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "C352Write({:?}, 0x{:04X}=0x{:04X})",
                     inst, spec.register, spec.value
@@ -554,10 +573,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ga20Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ga20Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ga20Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -570,11 +589,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::MultiPcmSpec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "MultiPcmWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -585,10 +604,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Upd7759Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Upd7759Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Upd7759Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -601,11 +620,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Okim6258Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Okim6258Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -618,11 +637,11 @@ pub fn play_vgm(
     callback_stream.on_write(
         |inst: Instance,
          spec: chip::Okim6295Spec,
-         sample: usize,
+         _sample: usize,
          event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Okim6295Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -633,10 +652,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::K054539Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::K054539Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "K054539Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -648,10 +667,10 @@ pub fn play_vgm(
 
     // Harmonize write naming with parse output (use XWrite form)
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Huc6280Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Huc6280Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Huc6280Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -662,10 +681,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::C140Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::C140Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "C140Write({:?}, 0x{:04X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -676,10 +695,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::K053260Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::K053260Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "K053260Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -690,10 +709,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::PokeySpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::PokeySpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "PokeyWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -704,10 +723,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Ay8910Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Ay8910Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Ay8910Write({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -718,10 +737,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::GbDmgSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::GbDmgSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "GbDmgWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -732,10 +751,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::NesApuSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::NesApuSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "NesApuWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -746,10 +765,10 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::MikeySpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::MikeySpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "MikeyWrite({:?}, 0x{:02X}=0x{:02X})",
                     inst, spec.register, spec.value
@@ -760,11 +779,11 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::Scc1Spec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::Scc1Spec, _sample: usize, event: Option<Vec<StateEvent>>| {
             // Keep explicit Scc1Write format used by parse for readability
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "Scc1Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
                     inst, spec.port, spec.register, spec.value
@@ -775,11 +794,11 @@ pub fn play_vgm(
     );
 
     callback_stream.on_write(
-        |inst: Instance, spec: chip::PwmSpec, sample: usize, event: Option<Vec<StateEvent>>| {
+        |inst: Instance, spec: chip::PwmSpec, _sample: usize, event: Option<Vec<StateEvent>>| {
             // Match parse's PwmWrite formatting (show register and 24-bit value)
             print_register_log(
                 &logger,
-                sample,
+                total_samples.get(),
                 format_args!(
                     "PwmWrite({:?}, reg=0x{:02X}=0x{:06X})",
                     inst,
