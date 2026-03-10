@@ -534,7 +534,7 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>, logger: Arc<Logger>) -> Result
 
     // Print commands with offsets and lengths
     let _ = logger.info(format_args!(
-        "{:<12} {:<8} {:<10} {:<8} {:}",
+        "{:<12} {:<8} {:<8} {:<8} {:}",
         "Samples", "Index", "Offset", "Length", "Command"
     ));
     let mut total_samples: u64 = 0;
@@ -556,11 +556,12 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>, logger: Arc<Logger>) -> Result
             soundlog::VgmCommand::YM2612Port0Address2AWriteAndWaitN(s) => s.0 as u64,
             _ => 0,
         };
+        let samples_at_issue = total_samples;
         total_samples += delta;
 
         let _ = logger.info(format_args!(
             "{:<12} {:<8} 0x{:06X} {:<8} {:<80}",
-            total_samples,
+            samples_at_issue,
             index,
             offset,
             length,
