@@ -153,8 +153,11 @@ builder.set_gd3(Gd3 {
     ..Default::default()
 });
 
-// Finalize the document (An `EndOfData` tag is automatically added)
+// Finalize the document
+// An `EndOfData` tag is automatically added.
+// Values such as `total_samples` in the header are calculated automatically.
 let document: VgmDocument = builder.finalize();
+
 // `into()` converts the finalized `VgmDocument` into VGM-format binary bytes
 let _bytes: Vec<u8> = document.into();
 ```
@@ -240,7 +243,7 @@ let doc: VgmDocument = b.finalize();
 // parsed commands as well as any stream-generated writes expanded into
 // the timeline.
 let mut stream = VgmStream::from_document(doc);
-stream.set_loop_count(Some(2)); // Prevent infinite loops
+// Drive the stream until EndOfStream.
 while let Some(result) = stream.next() {
     match result {
         Ok(VgmStreamResult::Command(cmd)) => match cmd {
