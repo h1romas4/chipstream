@@ -9,6 +9,7 @@
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+- [x] Add: re-export VgmStreamResult.
 
 ## v0.11.0
 

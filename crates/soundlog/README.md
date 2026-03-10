@@ -27,10 +27,9 @@ Key features:
 ## Quick Start — building a VGM player
 
 ```rust
-use soundlog::{VgmBuilder, VgmCallbackStream, VgmHeader};
+use soundlog::{VgmBuilder, VgmCallbackStream, VgmHeader, VgmStreamResult};
 use soundlog::chip::{self, event::StateEvent};
 use soundlog::vgm::command::{Instance, VgmCommand, WaitSamples};
-use soundlog::vgm::stream::StreamResult;
 
 // Load a .vgm file from disk
 // let vgm_bytes: Vec<u8> = 
@@ -72,7 +71,7 @@ callback_stream.on_write(
 // fadeout period (if set) before ending.
 for result in &mut callback_stream {
     match result {
-        Ok(StreamResult::Command(cmd)) => {
+        Ok(VgmStreamResult::Command(cmd)) => {
             // Callbacks for chip register writes are already invoked above.
             // Handle other commands here as needed; most commonly WaitSamples,
             // which carries the number of audio samples to render before the
@@ -205,14 +204,13 @@ interleaved at the correct sample positions. All wait commands
 are converted to `WaitSamples` for consistent processing.
 
 ```rust
-use soundlog::{VgmBuilder, VgmStream, VgmDocument};
-use soundlog::vgm::stream::StreamResult;
-use soundlog::vgm::command::{
-    VgmCommand, WaitSamples, WaitNSample, Wait735Samples,
-    Wait882Samples, SetupStreamControl, StartStream, Instance
-};
 use soundlog::chip::Ym2612Spec;
-use soundlog::vgm::detail::{parse_data_block, DataBlockType};
+use soundlog::vgm::command::{
+    Instance, SetupStreamControl, StartStream, VgmCommand, Wait735Samples, Wait882Samples,
+    WaitNSample, WaitSamples,
+};
+use soundlog::vgm::detail::{DataBlockType, parse_data_block};
+use soundlog::{VgmBuilder, VgmDocument, VgmStream, VgmStreamResult};
 
 // Build a minimal document that contains a data block and stream control
 // commands. (Builder helpers for data blocks / stream setup exist on the
@@ -245,7 +243,7 @@ let mut stream = VgmStream::from_document(doc);
 stream.set_loop_count(Some(2)); // Prevent infinite loops
 while let Some(result) = stream.next() {
     match result {
-        Ok(StreamResult::Command(cmd)) => match cmd {
+        Ok(VgmStreamResult::Command(cmd)) => match cmd {
             VgmCommand::WaitSamples(s) => {
                 // All wait commands
                 // (WaitSamples, WaitNSample, Wait735Samples,
@@ -295,8 +293,8 @@ while let Some(result) = stream.next() {
                 // Implement actual playback / device I/O in this branch.                
             },
         },
-        Ok(StreamResult::NeedsMoreData) => break,
-        Ok(StreamResult::EndOfStream) => break,
+        Ok(VgmStreamResult::NeedsMoreData) => break,
+        Ok(VgmStreamResult::EndOfStream) => break,
         Err(e) => eprintln!("stream error: {:?}", e),
     }
 }
@@ -323,8 +321,7 @@ As with that example, you should iterate over the stream and handle the StreamRe
 Note that when the parser returns `EndOfStream` in chunked mode it means the parser has consumed all bytes you supplied; to loop playback you must re-supply the bytes starting at the documented loop offset yourself (reset your chunk source to the loop point and call `push_chunk` again).
 
 ```rust
-use soundlog::vgm::VgmStream;
-use soundlog::vgm::stream::StreamResult;
+use soundlog::{VgmStream, VgmStreamResult};
 
 let mut parser = VgmStream::new();
 // Typically, the chunk size would be fixed at 1KB or similar.
@@ -334,9 +331,9 @@ for chunk in chunks {
     parser.push_chunk(&chunk).expect("push chunk");
     for result in &mut parser {
         match result {
-            Ok(StreamResult::Command(_)) => {},
-            Ok(StreamResult::NeedsMoreData) => break,
-            Ok(StreamResult::EndOfStream) => {
+            Ok(VgmStreamResult::Command(_)) => {},
+            Ok(VgmStreamResult::NeedsMoreData) => break,
+            Ok(VgmStreamResult::EndOfStream) => {
                 // EndOfStream reached — the stream has no further data.
                 // To loop playback, reset your chunk source to the loop
                 // offset and call `push_chunk` again so the parser receives
@@ -375,9 +372,9 @@ and custom playback engines with minimal boilerplate code.
 See also: the **Chip State Tracking** section below for current implementation status and a list of supported chips.
 
 ```rust
+use soundlog::chip::{Ym2612Spec, event::StateEvent};
+use soundlog::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use soundlog::{VgmBuilder, VgmCallbackStream};
-use soundlog::vgm::command::{Instance, WaitSamples, VgmCommand, EndOfData};
-use soundlog::chip::{event::StateEvent, Ym2612Spec};
 
 // Build a simple VGM document with YM2612 commands
 let mut b = VgmBuilder::new();
