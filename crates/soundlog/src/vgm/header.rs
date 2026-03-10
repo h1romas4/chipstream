@@ -2216,14 +2216,14 @@ impl VgmExtraHeader {
     ///
     /// Per the VGM specification, all pointer offsets are relative to their own
     /// position in the file:
-    ///   - chip_clock_offset field is at buf[4]  → value = (block_start) - 4
-    ///   - chip_vol_offset   field is at buf[8]  → value = (block_start) - 8
+    ///   - chip_clock_offset field is at buf\[4\]  → value = (block_start) - 4
+    ///   - chip_vol_offset   field is at buf\[8\]  → value = (block_start) - 8
     ///
     /// Layout of the produced buffer:
-    ///   [0..4]   header_size (u32 LE)
-    ///   [4..8]   chip_clock_offset (u32 LE, relative to buf[4])
-    ///   [8..12]  chip_vol_offset   (u32 LE, relative to buf[8])
-    ///   [12..]   chip_clock block (if any), then chip_volume block (if any)
+    ///   \[0..4\]   header_size (u32 LE)
+    ///   \[4..8\]   chip_clock_offset (u32 LE, relative to buf\[4\])
+    ///   \[8..12\]  chip_vol_offset   (u32 LE, relative to buf\[8\])
+    ///   \[12..\]   chip_clock block (if any), then chip_volume block (if any)
     pub fn to_bytes(&self) -> Vec<u8> {
         // Reserve the 12-byte header area (three u32 fields).
         let mut buf: Vec<u8> = vec![0u8; 12];
