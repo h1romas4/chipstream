@@ -268,6 +268,11 @@ pub struct EndOfData;
 /// Note: prefer constructing a `DataBlock` via
 /// `soundlog::vgm::detail::build_data_block` (see `crate::vgm::detail::build_data_block`)
 /// instead of instantiating this struct by hand.
+///
+/// Note:  Set `marker` to `0x66` for PCM data streams where compatibility with old players is required.
+/// For backward compatibility with older players, the `marker` field is
+/// commonly set to the EndOfData opcode (`0x66`) so legacy players treat the
+/// stream/block as end-of-data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
     pub marker: u8,
@@ -279,6 +284,11 @@ pub struct DataBlock {
 
 /// VGM command 0x68 specifies a PCM RAM write.
 ///
+/// Note:  Set `marker` to `0x66` for PCM data streams where compatibility with old players is required.
+/// For backward compatibility with older players, the `marker` field is
+/// commonly set to the EndOfData opcode (`0x66`) so legacy players treat the
+/// stream/block as end-of-data.
+///
 /// Example:
 ///
 /// ```rust
@@ -286,7 +296,7 @@ pub struct DataBlock {
 /// use soundlog::vgm::command::StreamChipType;
 ///
 /// let p = PcmRamWrite {
-///     marker: 0x66,
+///     marker: 0x66, // EndOfData opcode (`0x66`)
 ///     chip_type: StreamChipType::Ym2612Pcm,
 ///     read_offset: 0,
 ///     write_offset: 0,
