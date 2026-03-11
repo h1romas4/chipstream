@@ -932,43 +932,32 @@ pub(crate) fn parse_vgm_command(
                 other,
                 0xB3..=0xBF | 0xC0 | 0xC3 | 0xC5..=0xC8 | 0xD0..=0xD6 | 0xE1
             ) {
-                // Peek at the first parameter byte to determine the chip instance.
-                // For SegaPCM (0xC0) the instance bit is in the *second* parameter byte.
-                let instance = if other == 0xC0 {
-                    // SegaPCM: the VGM spec states the 2nd-chip-bit is in the
-                    // "high byte of the address parameter". The wire format is
-                    // `0xC0 bb aa dd` where `bb` is the address high byte and
-                    // is the *first* parameter byte (at `cur`), so we read from
-                    // `cur`, not `cur + 1`.
-                    match read_u8_at(bytes, cur) {
-                        Ok(b) if b & 0x80 != 0 => Instance::Secondary,
-                        Ok(_) => Instance::Primary,
-                        Err(e) => return Err(e),
-                    }
+                // Read the first parameter byte to determine the chip instance.
+                // For all covered opcodes (including SegaPCM 0xC0) the instance-select
+                // bit is in the first parameter byte at `cur`.
+                // This read also tells us whether we need to strip the bit.
+                let first_param = read_u8_at(bytes, cur)?;
+                let instance = if first_param & 0x80 != 0 {
+                    Instance::Secondary
                 } else {
-                    match read_u8_at(bytes, cur) {
-                        Ok(b) if b & 0x80 != 0 => Instance::Secondary,
-                        Ok(_) => Instance::Primary,
-                        Err(e) => return Err(e),
-                    }
+                    Instance::Primary
                 };
 
                 // Pass the parameter bytes to the chip-specific parser.
                 //
-                // Primary instance: pass &bytes[cur..] directly — no copy needed.
-                //
                 // Secondary instance: the instance-select bit (bit 7 of the first
                 // parameter byte) must be stripped before the chip parser sees the
-                // value.  We only need to copy the handful of bytes that the
-                // longest possible payload could consume (MAX_PAYLOAD), not the
-                // entire remainder of the file.
+                // value.  We already have `first_param` from the read above, so we
+                // only need a small stack buffer: place the masked byte at [0] and
+                // copy the remaining payload bytes (at most MAX_PAYLOAD-1) after it.
                 const MAX_PAYLOAD: usize = 8;
                 let mut patched_buf = [0u8; MAX_PAYLOAD];
                 let param_slice: &[u8] = if instance == Instance::Secondary {
-                    let avail = bytes.len().saturating_sub(cur).min(MAX_PAYLOAD);
-                    patched_buf[..avail].copy_from_slice(&bytes[cur..cur + avail]);
-                    patched_buf[0] &= 0x7F; // strip instance-select bit
-                    &patched_buf[..avail]
+                    patched_buf[0] = first_param & 0x7F; // strip instance-select bit
+                    let rest_avail = bytes.len().saturating_sub(cur + 1).min(MAX_PAYLOAD - 1);
+                    patched_buf[1..1 + rest_avail]
+                        .copy_from_slice(&bytes[cur + 1..cur + 1 + rest_avail]);
+                    &patched_buf[..1 + rest_avail]
                 } else {
                     &bytes[cur..]
                 };
