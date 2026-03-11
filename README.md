@@ -27,7 +27,7 @@ GUI/CLI frontend for soundlog for debug
 Usage: soundlog [FILE] [COMMAND]
 
 Commands:
-  test    Run in test / headless mode
+  test    Execute parse and build round-trip tests. Also output header details
   redump  Re-dump VGM file with DAC streams expanded to chip writes
   parse   Parse and display VGM file commands with offsets and lengths
   play    Play VGM file and display register writes with events

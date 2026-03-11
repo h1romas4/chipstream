@@ -21,7 +21,7 @@ use soundlog_debugger::logger::Logger;
 /// Simple CLI: optional subcommand `test`, otherwise optional file path to display
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run in test / headless mode
+    /// Execute parse and build round-trip tests. Also output header details
     Test {
         /// Path to binary file to test (use '-' for stdin)
         #[arg(value_name = "FILE")]
