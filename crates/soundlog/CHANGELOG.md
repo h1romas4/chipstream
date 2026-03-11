@@ -11,7 +11,7 @@
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
 - [x] Add: re-export VgmStreamResult.
 - [x] Change: Changed the type of `chip_instance` in `Ay8910StereoMask` from `u8` to `Instance`. 
-- [x] Fix: Fixed a panic that could occur when the boundary was determined to be dual chip in `VgmStream::push_chunk`.
+- [x] Fix: `vgm::parser` (`parse_vgm_command`) — fixed a panic (`range end index 3 out of range for slice of length 2`) in `VgmStream::push_chunk` when a dual-chip-#2 register-write command was split across chunk boundaries.
 
 ## v0.11.0
 

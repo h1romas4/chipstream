@@ -953,18 +953,27 @@ pub(crate) fn parse_vgm_command(
                     }
                 };
 
-                // Build a patched parameter buffer with bit 7 stripped so that
-                // the chip-specific parse implementations receive the real value.
-                let avail = bytes.len().saturating_sub(cur);
-                let mut patched = bytes[cur..cur + avail].to_vec();
-                if instance == Instance::Secondary && !patched.is_empty() {
-                    // Strip the instance-select bit from the first parameter byte.
-                    // For SegaPCM (0xC0) the spec places this bit in the address
-                    // high byte, which is also the first parameter byte on the wire.
-                    patched[0] &= 0x7F;
-                }
+                // Pass the parameter bytes to the chip-specific parser.
+                //
+                // Primary instance: pass &bytes[cur..] directly — no copy needed.
+                //
+                // Secondary instance: the instance-select bit (bit 7 of the first
+                // parameter byte) must be stripped before the chip parser sees the
+                // value.  We only need to copy the handful of bytes that the
+                // longest possible payload could consume (MAX_PAYLOAD), not the
+                // entire remainder of the file.
+                const MAX_PAYLOAD: usize = 8;
+                let mut patched_buf = [0u8; MAX_PAYLOAD];
+                let param_slice: &[u8] = if instance == Instance::Secondary {
+                    let avail = bytes.len().saturating_sub(cur).min(MAX_PAYLOAD);
+                    patched_buf[..avail].copy_from_slice(&bytes[cur..cur + avail]);
+                    patched_buf[0] &= 0x7F; // strip instance-select bit
+                    &patched_buf[..avail]
+                } else {
+                    &bytes[cur..]
+                };
 
-                match parse_chip_write(other, instance, &patched, 0) {
+                match parse_chip_write(other, instance, param_slice, 0) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
                     Err(ParseError::Other(_)) => {}
                     Err(e) => return Err(e),
