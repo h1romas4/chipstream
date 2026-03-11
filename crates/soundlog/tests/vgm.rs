@@ -311,7 +311,7 @@ fn add_command_ay8910_mask_with_spec() {
 
     // Create Ay8910StereoMask directly with detailed fields
     let mask_spec = Ay8910StereoMask {
-        chip_instance: 1,
+        chip_instance: Instance::Secondary,
         is_ym2203: true,
         left_ch1: true,
         right_ch1: true,
@@ -328,7 +328,7 @@ fn add_command_ay8910_mask_with_spec() {
     assert_eq!(doc.iter().count(), 2);
     match doc.iter().next().unwrap().clone() {
         VgmCommand::AY8910StereoMask(s) => {
-            assert_eq!(s.chip_instance, 1);
+            assert_eq!(s.chip_instance, Instance::Secondary);
             assert!(s.is_ym2203);
             assert!(s.left_ch1);
             assert!(s.right_ch1);

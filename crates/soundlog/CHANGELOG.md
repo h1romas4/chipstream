@@ -10,6 +10,7 @@
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
 - [x] Add: re-export VgmStreamResult.
+- [x] Change: Changed the type of `chip_instance` in `Ay8910StereoMask` from `u8` to `Instance`. 
 
 ## v0.11.0
 

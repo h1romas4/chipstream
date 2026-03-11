@@ -1823,7 +1823,7 @@ fn test_misc_callbacks_invoked() {
 
     // AY8910 stereo mask (opcode 0xD0 style)
     let ay_mask = Ay8910StereoMask {
-        chip_instance: 0,
+        chip_instance: Instance::Primary,
         is_ym2203: false,
         left_ch1: true,
         right_ch1: false,

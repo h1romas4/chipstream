@@ -190,8 +190,8 @@ pub(crate) trait CommandSpec {
 /// AY8910 stereo mask
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ay8910StereoMask {
-    /// Chip instance (0 or 1)
-    pub chip_instance: u8,
+    /// Chip instance (Primary or Secondary)
+    pub chip_instance: Instance,
     /// true = YM2203 SSG, false = AY8910
     pub is_ym2203: bool,
     /// Enable channel 1 on left speaker
@@ -211,7 +211,7 @@ pub struct Ay8910StereoMask {
 impl Ay8910StereoMask {
     pub fn from_mask(mask: u8) -> Self {
         Self {
-            chip_instance: (mask >> 7) & 1,
+            chip_instance: Instance::from(((mask >> 7) & 1) as usize),
             is_ym2203: (mask >> 6) & 1 == 1,
             right_ch3: (mask >> 5) & 1 == 1,
             left_ch3: (mask >> 4) & 1 == 1,
@@ -223,7 +223,8 @@ impl Ay8910StereoMask {
     }
 
     pub fn to_mask(&self) -> u8 {
-        ((self.chip_instance & 1) << 7)
+        let inst_bit = (usize::from(self.chip_instance) as u8) & 1;
+        (inst_bit << 7)
             | ((self.is_ym2203 as u8) << 6)
             | ((self.right_ch3 as u8) << 5)
             | ((self.left_ch3 as u8) << 4)
@@ -2399,10 +2400,7 @@ impl CommandSpec for chip::ScspSpec {
         dest.push(self.offset as u8);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let hi = read_u8_at(bytes, off)?;
         let lo = read_u8_at(bytes, off + 1)?;
         let offv = ((hi as u16) << 8) | (lo as u16);
@@ -2428,10 +2426,7 @@ impl CommandSpec for chip::WonderSwanSpec {
         dest.push(self.offset as u8);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, opcode: u8) -> Result<(Self, usize), ParseError> {
         // Parse according to opcode:
         // - 0xC6: mm ll dd (16-bit offset + value) => consumes 3 bytes
         // - if called for 0xBC (register form), gracefully fallback by reading aa dd and
@@ -2474,10 +2469,7 @@ impl CommandSpec for chip::WonderSwanRegSpec {
         dest.push(self.register);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
@@ -2501,10 +2493,7 @@ impl CommandSpec for chip::VsuSpec {
         dest.push(self.offset as u8);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let hi = read_u8_at(bytes, off)?;
         let lo = read_u8_at(bytes, off + 1)?;
         let offv = ((hi as u16) << 8) | (lo as u16);
@@ -2529,10 +2518,7 @@ impl CommandSpec for chip::Saa1099Spec {
         dest.push(self.register);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
@@ -2556,10 +2542,7 @@ impl CommandSpec for chip::Es5503Spec {
         dest.push(self.register as u8);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let hi = read_u8_at(bytes, off)?;
         let lo = read_u8_at(bytes, off + 1)?;
         let reg = ((hi as u16) << 8) | (lo as u16);
@@ -2585,10 +2568,7 @@ impl CommandSpec for chip::Es5506U8Spec {
         dest.push(self.register);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
@@ -2613,10 +2593,7 @@ impl CommandSpec for chip::Es5506U16Spec {
         dest.push(((self.value >> 8) & 0xFF) as u8);
         dest.push((self.value & 0xFF) as u8);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let hi = read_u8_at(bytes, off + 1)?;
         let lo = read_u8_at(bytes, off + 2)?;
@@ -2642,10 +2619,7 @@ impl CommandSpec for chip::X1010Spec {
         dest.push(self.offset as u8);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let hi = read_u8_at(bytes, off)?;
         let lo = read_u8_at(bytes, off + 1)?;
         let offv = ((hi as u16) << 8) | (lo as u16);
@@ -2672,10 +2646,7 @@ impl CommandSpec for chip::C352Spec {
         dest.push(((self.value >> 8) & 0xFF) as u8);
         dest.push((self.value & 0xFF) as u8);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let hi = read_u8_at(bytes, off)?;
         let lo = read_u8_at(bytes, off + 1)?;
         let reg = ((hi as u16) << 8) | (lo as u16);
@@ -2702,10 +2673,7 @@ impl CommandSpec for chip::Ga20Spec {
         dest.push(self.register);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
@@ -2728,10 +2696,7 @@ impl CommandSpec for chip::MikeySpec {
         dest.push(self.register);
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
@@ -2753,10 +2718,7 @@ impl CommandSpec for chip::GameGearPsgSpec {
         dest.push(self.opcode());
         dest.push(self.value);
     }
-    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
-    where
-        Self: Sized,
-    {
+    fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let v = read_u8_at(bytes, off)?;
         Ok((chip::GameGearPsgSpec { value: v }, 1))
     }
