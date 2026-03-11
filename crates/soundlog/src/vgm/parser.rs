@@ -955,25 +955,13 @@ pub(crate) fn parse_vgm_command(
 
                 // Build a patched parameter buffer with bit 7 stripped so that
                 // the chip-specific parse implementations receive the real value.
-                // We need at most a handful of bytes; copy enough to cover the
-                // longest possible payload (4 bytes is sufficient for all 0xBx-0xDx
-                // commands).
-                const MAX_PAYLOAD: usize = 8;
-                let avail = bytes.len().saturating_sub(cur).min(MAX_PAYLOAD);
-                let mut patched = [0u8; MAX_PAYLOAD];
-                patched[..avail].copy_from_slice(&bytes[cur..cur + avail]);
-                if instance == Instance::Secondary {
-                    if other == 0xC0 {
-                        // Strip instance bit from first parameter byte (bb = high address byte).
-                        if avail >= 1 {
-                            patched[0] &= 0x7F;
-                        }
-                    } else {
-                        // Strip instance bit from first parameter byte.
-                        if avail >= 1 {
-                            patched[0] &= 0x7F;
-                        }
-                    }
+                let avail = bytes.len().saturating_sub(cur);
+                let mut patched = bytes[cur..cur + avail].to_vec();
+                if instance == Instance::Secondary && !patched.is_empty() {
+                    // Strip the instance-select bit from the first parameter byte.
+                    // For SegaPCM (0xC0) the spec places this bit in the address
+                    // high byte, which is also the first parameter byte on the wire.
+                    patched[0] &= 0x7F;
                 }
 
                 match parse_chip_write(other, instance, &patched, 0) {

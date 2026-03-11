@@ -1035,6 +1035,19 @@ impl VgmStream {
 
                 match parse_result {
                     Ok((command, consumed)) => {
+                        // Defensive check: parse_vgm_command must never claim to
+                        // have consumed more bytes than were present in the buffer.
+                        // Return an OffsetOutOfRange so the caller treats it as NeedsMoreData.
+                        if consumed > buffer.len() {
+                            return Err(ParseError::OffsetOutOfRange {
+                                offset: 0,
+                                needed: consumed,
+                                available: buffer.len(),
+                                context: Some(
+                                    "get_next_raw_command: consumed > buffer.len()".into(),
+                                ),
+                            });
+                        }
                         // Remove consumed bytes from buffer
                         buffer.drain(..consumed);
                         self.shrink_buffer_if_needed();

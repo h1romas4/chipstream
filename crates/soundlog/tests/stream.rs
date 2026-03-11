@@ -7650,3 +7650,300 @@ fn test_ym2612_0x80_sequence_does_not_advance_current_sample() {
         "0x80 x3: wait=0 so total WaitSamples should be 0 but got {total_wait}: {emitted:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// push_chunk split-boundary tests
+//
+// These tests verify that register-write commands split across chunk
+// boundaries are reassembled correctly.  Each test pushes the command
+// bytes one fragment at a time and confirms that:
+//   1. Every incomplete fragment yields NeedsMoreData (never an error).
+//   2. Once the final byte arrives the fully-parsed command is returned.
+//
+// Covered paths
+// ─────────────
+// Primary (non-dual-chip) path
+//   0x54  Ym2151Write  opcode + reg + val  (3 bytes total)
+//         split after opcode only          → 1 | 2
+//         split after opcode + reg         → 2 | 1
+//
+// Dual Chip #2 path (instance bit in first parameter byte)
+//   0xB7  Okim6258Write  opcode + reg + val  (3 bytes total)
+//         split after opcode only           → 1 | 2
+//         split after opcode + reg          → 2 | 1
+//
+// The dual-chip-#2 path was the site of the "range end index 3 out of
+// range for slice of length 2" panic that the fix addressed.
+// ---------------------------------------------------------------------------
+
+/// Push `chunk` into `stream`, drain all results and assert that every
+/// result is either NeedsMoreData or the expected command.
+/// Returns `true` when the expected command has been seen.
+fn drain_expecting<F>(stream: &mut VgmStream, chunk: &[u8], mut matcher: F) -> bool
+where
+    F: FnMut(&VgmCommand) -> bool,
+{
+    stream.push_chunk(chunk).expect("push_chunk must not error");
+    let mut found = false;
+    loop {
+        match stream.next() {
+            Some(Ok(StreamResult::Command(cmd))) => {
+                if matcher(&cmd) {
+                    found = true;
+                }
+            }
+            Some(Ok(StreamResult::NeedsMoreData)) => break,
+            Some(Ok(StreamResult::EndOfStream)) => break,
+            Some(Err(e)) => panic!("unexpected parse error: {:?}", e),
+            None => break,
+        }
+    }
+    found
+}
+
+// ── Primary path (0x54 Ym2151) ──────────────────────────────────────────────
+
+#[test]
+fn test_push_chunk_split_after_opcode_primary_write() {
+    // Split:  [0x54] | [0x20, 0x42]
+    // Ym2151Write(Primary, reg=0x20, val=0x42)
+    let mut stream = VgmStream::new();
+
+    // First chunk: opcode only — must yield NeedsMoreData, never an error.
+    let found_after_first = drain_expecting(&mut stream, &[0x54], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode-only chunk"
+    );
+
+    // Second chunk: remaining two payload bytes — must now yield the command.
+    let found = drain_expecting(&mut stream, &[0x20, 0x42], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Ym2151Write(Instance::Primary, spec)
+                if spec.register == 0x20 && spec.value == 0x42
+        )
+    });
+    assert!(
+        found,
+        "Ym2151Write(Primary, reg=0x20, val=0x42) must be emitted after the second chunk"
+    );
+}
+
+#[test]
+fn test_push_chunk_split_mid_payload_primary_write() {
+    // Split:  [0x54, 0x20] | [0x42]
+    // Ym2151Write(Primary, reg=0x20, val=0x42)
+    let mut stream = VgmStream::new();
+
+    // First chunk: opcode + reg — still incomplete, must yield NeedsMoreData.
+    let found_after_first = drain_expecting(&mut stream, &[0x54, 0x20], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode+reg chunk"
+    );
+
+    // Second chunk: val byte only — must now yield the command.
+    let found = drain_expecting(&mut stream, &[0x42], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Ym2151Write(Instance::Primary, spec)
+                if spec.register == 0x20 && spec.value == 0x42
+        )
+    });
+    assert!(
+        found,
+        "Ym2151Write(Primary, reg=0x20, val=0x42) must be emitted after the second chunk"
+    );
+}
+
+// ── Dual Chip #2 path (0xB7 Okim6258, Primary instance) ─────────────────────
+
+#[test]
+fn test_push_chunk_split_after_opcode_dual_chip2_write() {
+    // Split:  [0xB7] | [0x00, 0x02]
+    // Okim6258Write(Primary, reg=0x00, val=0x02)
+    // 0xB7 is processed via the Dual-Chip-#2 path (0xB3..=0xBF range).
+    // This was the exact scenario that triggered the panic before the fix.
+    let mut stream = VgmStream::new();
+
+    // First chunk: opcode only — must yield NeedsMoreData, never an error.
+    let found_after_first = drain_expecting(&mut stream, &[0xB7], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode-only chunk (dual-chip-#2 path)"
+    );
+
+    // Second chunk: reg + val — must now yield the command.
+    let found = drain_expecting(&mut stream, &[0x00, 0x02], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Okim6258Write(Instance::Primary, spec)
+                if spec.register == 0x00 && spec.value == 0x02
+        )
+    });
+    assert!(
+        found,
+        "Okim6258Write(Primary, reg=0x00, val=0x02) must be emitted after the second chunk"
+    );
+}
+
+#[test]
+fn test_push_chunk_split_mid_payload_dual_chip2_write() {
+    // Split:  [0xB7, 0x00] | [0x02]
+    // Okim6258Write(Primary, reg=0x00, val=0x02)
+    // The instance-select peek reads bytes[cur]=0x00 (bit7=0 → Primary);
+    // the patched slice is [0x00] (length 1) so val is not yet available.
+    let mut stream = VgmStream::new();
+
+    // First chunk: opcode + reg — still incomplete.
+    let found_after_first = drain_expecting(&mut stream, &[0xB7, 0x00], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode+reg chunk (dual-chip-#2 path)"
+    );
+
+    // Second chunk: val byte — must now yield the command.
+    let found = drain_expecting(&mut stream, &[0x02], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Okim6258Write(Instance::Primary, spec)
+                if spec.register == 0x00 && spec.value == 0x02
+        )
+    });
+    assert!(
+        found,
+        "Okim6258Write(Primary, reg=0x00, val=0x02) must be emitted after the second chunk"
+    );
+}
+
+// ── Dual Chip #2 path (0xB7 Okim6258, Secondary instance) ───────────────────
+
+#[test]
+fn test_push_chunk_split_after_opcode_dual_chip2_secondary_write() {
+    // Split:  [0xB7] | [0x80, 0x05]
+    // 0x80 → bit7 set → Secondary instance; stripped reg = 0x00, val = 0x05
+    // Okim6258Write(Secondary, reg=0x00, val=0x05)
+    let mut stream = VgmStream::new();
+
+    let found_after_first = drain_expecting(&mut stream, &[0xB7], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode-only chunk (dual-chip-#2 secondary)"
+    );
+
+    let found = drain_expecting(&mut stream, &[0x80, 0x05], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Okim6258Write(Instance::Secondary, spec)
+                if spec.register == 0x00 && spec.value == 0x05
+        )
+    });
+    assert!(
+        found,
+        "Okim6258Write(Secondary, reg=0x00, val=0x05) must be emitted after the second chunk"
+    );
+}
+
+#[test]
+fn test_push_chunk_split_mid_payload_dual_chip2_secondary_write() {
+    // Split:  [0xB7, 0x80] | [0x05]
+    // 0x80 → bit7 set → Secondary; stripped reg = 0x00, val = 0x05
+    let mut stream = VgmStream::new();
+
+    let found_after_first = drain_expecting(&mut stream, &[0xB7, 0x80], |_| false);
+    assert!(
+        !found_after_first,
+        "command must not be emitted from opcode+reg chunk (dual-chip-#2 secondary)"
+    );
+
+    let found = drain_expecting(&mut stream, &[0x05], |cmd| {
+        matches!(
+            cmd,
+            VgmCommand::Okim6258Write(Instance::Secondary, spec)
+                if spec.register == 0x00 && spec.value == 0x05
+        )
+    });
+    assert!(
+        found,
+        "Okim6258Write(Secondary, reg=0x00, val=0x05) must be emitted after the second chunk"
+    );
+}
+
+// ── byte-by-byte delivery covers all split points ───────────────────────────
+
+#[test]
+fn test_push_chunk_one_byte_at_a_time_primary_write() {
+    // Deliver 0x54 reg val one byte at a time.
+    // Bytes 1 and 2 must produce NeedsMoreData; byte 3 must yield the command.
+    let bytes: &[u8] = &[0x54, 0x1B, 0x7F];
+    let mut stream = VgmStream::new();
+    let mut found = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        stream.push_chunk(&[b]).expect("push_chunk must not error");
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(cmd))) => {
+                    assert_eq!(
+                        i, 2,
+                        "command must only appear after the third byte, got it at byte {i}"
+                    );
+                    assert!(
+                        matches!(
+                            &cmd,
+                            VgmCommand::Ym2151Write(Instance::Primary, spec)
+                                if spec.register == 0x1B && spec.value == 0x7F
+                        ),
+                        "unexpected command: {cmd:?}"
+                    );
+                    found = true;
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => panic!("unexpected parse error at byte {i}: {e:?}"),
+                None => break,
+            }
+        }
+    }
+    assert!(found, "Ym2151Write must be emitted after all three bytes");
+}
+
+#[test]
+fn test_push_chunk_one_byte_at_a_time_dual_chip2_write() {
+    // Deliver 0xB7 reg val one byte at a time.
+    // This was the exact panic scenario: after bytes [0xB7, 0x00] the
+    // patched buffer had only 1 real byte but the parser needed 2,
+    // previously causing drain(..3) on a 2-byte buffer.
+    let bytes: &[u8] = &[0xB7, 0x00, 0x03];
+    let mut stream = VgmStream::new();
+    let mut found = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        stream.push_chunk(&[b]).expect("push_chunk must not error");
+        loop {
+            match stream.next() {
+                Some(Ok(StreamResult::Command(cmd))) => {
+                    assert_eq!(
+                        i, 2,
+                        "command must only appear after the third byte, got it at byte {i}"
+                    );
+                    assert!(
+                        matches!(
+                            &cmd,
+                            VgmCommand::Okim6258Write(Instance::Primary, spec)
+                                if spec.register == 0x00 && spec.value == 0x03
+                        ),
+                        "unexpected command: {cmd:?}"
+                    );
+                    found = true;
+                }
+                Some(Ok(StreamResult::NeedsMoreData)) => break,
+                Some(Ok(StreamResult::EndOfStream)) => break,
+                Some(Err(e)) => panic!("unexpected parse error at byte {i}: {e:?}"),
+                None => break,
+            }
+        }
+    }
+    assert!(found, "Okim6258Write must be emitted after all three bytes");
+}
