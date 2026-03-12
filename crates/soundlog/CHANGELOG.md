@@ -9,6 +9,9 @@
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+
+## v0.12.0
+
 - [x] Add: re-export VgmStreamResult.
 - [x] Change: Changed the type of `chip_instance` in `Ay8910StereoMask` from `u8` to `Instance`. 
 - [x] Fix: `vgm::parser` (`parse_vgm_command`) — fixed a panic (`range end index 3 out of range for slice of length 2`) in `VgmStream::push_chunk` when a dual-chip-#2 register-write command was split across chunk boundaries.
