@@ -666,8 +666,8 @@ pub struct VgmStream {
     pending_wait: Option<u16>,
     /// Fadeout grace period in samples after loop end (None = no fadeout)
     fadeout_samples: Option<usize>,
-    /// Sample position when the loop ended (for fadeout tracking)
-    loop_end_sample: Option<usize>,
+    /// Remaining samples to play from the loop point during fadeout.
+    fadeout_remaining_samples: Option<usize>,
     /// Current read offset in PCM data bank (StreamChipType::Ym2612Pcm) for 0x8n commands
     pcm_data_offset: usize,
     /// Maximum allowed total size for accumulated data blocks
@@ -760,7 +760,7 @@ impl VgmStream {
             pending_stream_writes: Vec::new(),
             pending_wait: None,
             fadeout_samples: None,
-            loop_end_sample: None,
+            fadeout_remaining_samples: None,
             pcm_data_offset: 0,
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
@@ -992,20 +992,23 @@ impl VgmStream {
         }
 
         if self.encountered_end {
-            if let (Some(fadeout_samples), Some(loop_end_sample)) =
-                (self.fadeout_samples, self.loop_end_sample)
-            {
-                let fadeout_end = loop_end_sample.saturating_add(fadeout_samples);
-                if self.current_sample >= fadeout_end {
+            if let Some(remaining) = self.fadeout_remaining_samples {
+                if remaining == 0 {
                     return Ok(StreamResult::EndOfStream);
                 }
                 let command = match self.get_next_raw_command()? {
+                    Some(VgmCommand::EndOfData(_)) => {
+                        self.jump_to_loop_point();
+                        self.reset_loop_state();
+                        return self.next_command();
+                    }
                     Some(cmd) => cmd,
                     None => {
-                        // No more data, generate a wait to advance to end of fadeout
-                        let remaining = fadeout_end.saturating_sub(self.current_sample);
-                        let wait_amount = remaining.min(u16::MAX as usize) as u16;
-                        VgmCommand::WaitSamples(WaitSamples(wait_amount))
+                        // Buffer sources cannot be rewound to their loop point;
+                        // finish their fadeout without parsing trailing bytes.
+                        VgmCommand::WaitSamples(
+                            WaitSamples(remaining.min(u16::MAX as usize) as u16),
+                        )
                     }
                 };
                 return self.process_command(command);
@@ -1426,7 +1429,7 @@ impl VgmStream {
         self.current_sample = 0;
         self.pending_stream_writes.clear();
         self.pending_wait = None;
-        self.loop_end_sample = None;
+        self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
         self.total_data_block_size = 0;
         // loop_base and loop_modifier are header-derived configuration and are
@@ -1504,20 +1507,22 @@ impl VgmStream {
     fn handle_end_of_data(&mut self) {
         self.current_loops = self.current_loops.saturating_add(1);
 
+        if !self.has_loop_point() {
+            self.encountered_end = true;
+            return;
+        }
+
         if let Some(max_loops) = self.effective_loop_count() {
             if self.current_loops >= max_loops {
                 self.encountered_end = true;
-                if self.fadeout_samples.is_some() {
-                    self.loop_end_sample = Some(self.current_sample);
+                if let Some(samples) = self.fadeout_samples {
+                    self.fadeout_remaining_samples = Some(samples);
+                    self.jump_to_loop_point();
+                    self.reset_loop_state();
                 }
             } else {
                 self.jump_to_loop_point();
                 self.reset_loop_state();
-                if self.current_loops.saturating_add(1) == max_loops
-                    && self.fadeout_samples.is_some()
-                {
-                    self.loop_end_sample = Some(self.current_sample);
-                }
             }
         } else {
             // No finite loop limit configured -> infinite loop behavior.
@@ -1525,6 +1530,21 @@ impl VgmStream {
             // so playback continues indefinitely.
             self.jump_to_loop_point();
             self.reset_loop_state();
+        }
+    }
+
+    /// Returns whether the stream can continue playback from a loop point.
+    ///
+    /// Document and file sources report whether their parsed VGM metadata contains
+    /// a loop point. Buffer sources use caller-managed chunk re-feeding, so they
+    /// are treated as loop-capable even though no seekable loop offset is stored.
+    fn has_loop_point(&self) -> bool {
+        match &self.source {
+            // Buffer sources receive command chunks incrementally, so their caller
+            // controls loop re-feeding rather than supplying a seekable loop offset.
+            VgmStreamSource::Buffer { .. } => true,
+            VgmStreamSource::Document { loop_index, .. } => loop_index.is_some(),
+            VgmStreamSource::File { loop_pos, .. } => loop_pos.is_some(),
         }
     }
 
@@ -2115,6 +2135,13 @@ impl VgmStream {
         &mut self,
         wait_samples: usize,
     ) -> Result<StreamResult, ParseError> {
+        let wait_samples = self
+            .fadeout_remaining_samples
+            .map_or(wait_samples, |remaining| wait_samples.min(remaining));
+        if let Some(remaining) = &mut self.fadeout_remaining_samples {
+            *remaining = remaining.saturating_sub(wait_samples);
+        }
+
         let target_sample = self.current_sample.saturating_add(wait_samples);
 
         let next_stream_write_sample = self.find_next_stream_write_sample(target_sample);

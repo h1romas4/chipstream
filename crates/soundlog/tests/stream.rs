@@ -1,9 +1,11 @@
 use soundlog::VgmBuilder;
 use soundlog::VgmDocument;
+use soundlog::meta::Gd3;
 use soundlog::vgm::command::DacStreamChipType;
 use soundlog::vgm::command::{
     EndOfData, Instance, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
 };
+use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
 use soundlog::vgm::header::ChipId;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 use soundlog::{VgmCallbackStream, chip};
@@ -2530,6 +2532,81 @@ fn test_fadeout_samples_with_stream_control() {
     assert_eq!(stream_writes, 4);
     // Should have accumulated wait time including fadeout
     assert!(total_wait >= 50);
+}
+
+#[test]
+fn test_fadeout_after_end_of_data_does_not_parse_gd3_as_commands() {
+    let mut builder = VgmBuilder::new();
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x11, 0x22],
+    });
+    builder.add_vgm_command(WaitSamples(44100));
+    builder.set_loop_offset(0);
+    builder.set_gd3(Gd3 {
+        track_name_en: Some("regression".to_string()),
+        ..Default::default()
+    });
+
+    let document = builder.finalize();
+    let bytes: Vec<u8> = (&document).into();
+    let mut stream = VgmStream::from_vgm(bytes).expect("from_vgm");
+    stream.set_loop_count(Some(2));
+    stream.set_fadeout_samples(Some(88200));
+
+    let mut saw_end = false;
+    let mut total_wait_samples = 0usize;
+    for result in &mut stream {
+        match result {
+            Ok(StreamResult::EndOfStream) => {
+                saw_end = true;
+                break;
+            }
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(wait))) => {
+                total_wait_samples += wait.0 as usize;
+            }
+            Ok(StreamResult::Command(_)) | Ok(StreamResult::NeedsMoreData) => {}
+            Err(error) => panic!("unexpected stream error: {error:?}"),
+        }
+    }
+
+    assert!(saw_end, "stream should finish after the fadeout");
+    assert_eq!(total_wait_samples, 4 * 44100);
+}
+
+#[test]
+fn test_no_loop_point_does_not_loop_during_fadeout() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.set_gd3(Gd3 {
+        track_name_en: Some("no loop".to_string()),
+        ..Default::default()
+    });
+
+    let bytes: Vec<u8> = builder.finalize().into();
+    let mut stream = VgmStream::from_vgm(bytes).expect("from_vgm");
+    stream.set_loop_count(Some(2));
+    stream.set_fadeout_samples(Some(200));
+
+    let mut total_wait_samples = 0usize;
+    let mut end_of_stream = false;
+    for result in &mut stream {
+        match result {
+            Ok(StreamResult::Command(VgmCommand::WaitSamples(wait))) => {
+                total_wait_samples += wait.0 as usize;
+            }
+            Ok(StreamResult::EndOfStream) => {
+                end_of_stream = true;
+                break;
+            }
+            Ok(StreamResult::Command(_)) | Ok(StreamResult::NeedsMoreData) => {}
+            Err(error) => panic!("unexpected stream error: {error:?}"),
+        }
+    }
+
+    assert!(end_of_stream);
+    assert_eq!(total_wait_samples, 100);
+    assert_eq!(stream.current_loop_count(), 1);
 }
 
 #[test]

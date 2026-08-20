@@ -10,6 +10,12 @@
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
 
+## v0.13.0
+
+- [x] Fix: `VgmStream` no longer parses GD3 or trailing metadata as VGM commands after the final `EndOfData` during fadeout processing.
+- [x] Fix: VGM files without a loop point ignore loop count and fadeout settings and stop at the first `EndOfData`.
+- [x] Test: Added a builder-based regression test covering PCM DataBlock, loop point, GD3 metadata, loop count 2, and an 88200-sample fadeout.
+
 ## v0.12.0
 
 - [x] Add: re-export VgmStreamResult.
