@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use soundlog::chip::state::{Okim6258State, Ym2151State};
+use soundlog::mdx::command::MdxCommand;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::mdx::parser::parse_mdx_command;
 use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::command::Instance;
@@ -34,6 +36,70 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 
     MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
         .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
+}
+
+/// Detects the MXDRV16y layout using the voice-area boundary heuristic from
+/// NanoDriveX. Standard MDX keeps track entries before the voice data, while
+/// MXDRV16y places a track entry after the inferred voice area.
+fn detect_mxdrv16y(input: &Path, package: &MdxPackage) -> Result<bool> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("failed to read MDX input: {}", input.display()))?;
+    let voice_data_offset = package
+        .mdx
+        .header
+        .tone_data_position()
+        .ok_or_else(|| anyhow!("MDX voice data offset overflow"))?;
+    let mut voice_data_end = bytes.len();
+    let mut detected = false;
+
+    for track in 0..package.mdx.header.track_count() {
+        let Some(track_position) = package.mdx.header.track_position(track) else {
+            continue;
+        };
+        if track_position >= voice_data_offset && track_position < voice_data_end {
+            voice_data_end = track_position;
+            detected = true;
+        }
+    }
+
+    for track in 0..package.mdx.header.track_count() {
+        let Some(mut position) = package.mdx.header.track_position(track) else {
+            continue;
+        };
+        if position >= voice_data_offset {
+            continue;
+        }
+        for _ in 0..64 {
+            if position >= voice_data_offset {
+                if position < voice_data_end {
+                    voice_data_end = position;
+                    detected = true;
+                }
+                break;
+            }
+            let Ok((command, length)) = parse_mdx_command(&bytes, position) else {
+                break;
+            };
+            let next_position = position.saturating_add(length);
+            if matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_)) {
+                break;
+            }
+            if let MdxCommand::Jump(jump) = command {
+                if jump.offset == 0 {
+                    break;
+                }
+                let Some(jump_position) = next_position.checked_add_signed(jump.offset as isize)
+                else {
+                    break;
+                };
+                position = jump_position;
+            } else {
+                position = next_position;
+            }
+        }
+    }
+
+    Ok(detected && voice_data_end > voice_data_offset)
 }
 
 fn resolve_pdx_path(input: &Path, pdx: Option<&Path>, pdx_name: Option<&str>) -> Option<PathBuf> {
@@ -88,7 +154,9 @@ pub fn mdx2vgm(
     options: &MdxToVgmOptions,
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
-    let mut document = to_vgm_document(&package, options)
+    let mut options = *options;
+    options.mxdrv16y |= detect_mxdrv16y(input, &package)?;
+    let mut document = to_vgm_document(&package, &options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     if package.drives_okim6258() {
         document.header.okim6258_flags = Okim6258Flags {
@@ -115,6 +183,7 @@ pub fn mdx2vgm(
 pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
+    let mxdrv16y = detect_mxdrv16y(input, &package)?;
 
     println!("Title: {}", package.mdx.header.title);
     println!(
@@ -133,6 +202,7 @@ pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
         ),
         None => println!("PDX file: (none)"),
     }
+    println!("MXDRV16y: {mxdrv16y}");
     println!("Tracks: {}", package.mdx.tracks.len());
     println!("Tones: {}", package.mdx.tone_bank.tones.len());
     let source_map = package.mdx.sourcemap();
@@ -172,8 +242,10 @@ pub fn play_mdx(
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let has_pcm = package.drives_okim6258();
+    let mut options = *options;
+    options.mxdrv16y |= detect_mxdrv16y(input, &package)?;
 
-    let generator = to_vgm_stream_generator(package, *options)
+    let generator = to_vgm_stream_generator(package, options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error}"))?;
     let stream = VgmStream::from_generator(generator);
 
