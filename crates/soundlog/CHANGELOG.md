@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-- [x] Add: Initial MDX format support (`mdx` feature).
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
@@ -11,6 +10,10 @@
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
 - [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+
+## v0.14.0
+
+- [x] Add: Initial MDX format support (`mdx` feature).
 
 ## v0.13.0
 
