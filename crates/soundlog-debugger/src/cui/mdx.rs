@@ -23,19 +23,10 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
     let mdx = MdxDocument::parse(&mdx_bytes)
         .map_err(|error| anyhow!("failed to parse MDX input: {error}"))?;
 
-    let pdx_path = pdx.map(PathBuf::from).or_else(|| {
-        mdx.header.pdx_name.as_deref().and_then(|name| {
-            let directory = input.parent().unwrap_or_else(|| Path::new("."));
-            let candidates = [
-                directory.join(name),
-                directory.join(format!("{name}.PDX")),
-                directory.join(format!("{name}.pdx")),
-            ];
-            candidates.into_iter().find(|candidate| candidate.is_file())
-        })
-    });
+    let pdx_path = resolve_pdx_path(input, pdx, mdx.header.pdx_name.as_deref());
     let pdx_bytes = pdx_path
         .as_deref()
+        .filter(|path| path.is_file())
         .map(|path| {
             fs::read(path).with_context(|| format!("failed to read PDX input: {}", path.display()))
         })
@@ -43,6 +34,50 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 
     MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
         .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
+}
+
+fn resolve_pdx_path(input: &Path, pdx: Option<&Path>, pdx_name: Option<&str>) -> Option<PathBuf> {
+    if let Some(path) = pdx {
+        return Some(path.to_path_buf());
+    }
+    let name = pdx_name?;
+    let directory = input
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let candidates = [
+        directory.join(name),
+        directory.join(format!("{name}.PDX")),
+        directory.join(format!("{name}.pdx")),
+    ];
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .or_else(|| find_case_insensitive_file(directory, &candidates))
+        .or_else(|| candidates.into_iter().next())
+}
+
+fn find_case_insensitive_file(directory: &Path, candidates: &[PathBuf]) -> Option<PathBuf> {
+    let entries = fs::read_dir(directory).ok()?;
+    let candidate_names = candidates
+        .iter()
+        .filter_map(|candidate| candidate.file_name())
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .map(|name| {
+                        let name = name.to_string_lossy().to_ascii_lowercase();
+                        candidate_names.iter().any(|candidate| candidate == &name)
+                    })
+                    .unwrap_or(false)
+        })
 }
 
 /// Converts an MDX file, optionally paired with its PDX file, into VGM.
@@ -79,12 +114,25 @@ pub fn mdx2vgm(
 /// Parse an MDX file and print its summary and every track command.
 pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
+    let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
 
     println!("Title: {}", package.mdx.header.title);
     println!(
         "PDX: {}",
         package.mdx.header.pdx_name.as_deref().unwrap_or("(none)")
     );
+    match pdx_path {
+        Some(path) => println!(
+            "PDX file: {} ({})",
+            path.display(),
+            if path.is_file() {
+                "exists"
+            } else {
+                "not found"
+            }
+        ),
+        None => println!("PDX file: (none)"),
+    }
     println!("Tracks: {}", package.mdx.tracks.len());
     println!("Tones: {}", package.mdx.tone_bank.tones.len());
     let source_map = package.mdx.sourcemap();
