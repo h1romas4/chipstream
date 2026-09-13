@@ -71,7 +71,8 @@ use crate::vgm::command::{
     ReservedU24, ReservedU32, UnknownSpec, VgmCommand, WaitSamples,
 };
 use crate::vgm::header::ChipInstances;
-use crate::vgm::stream::{StreamResult, VgmStream};
+use crate::vgm::stream::{StreamResult, VgmCommandGenerator, VgmStream};
+use std::mem;
 
 type ChipCallback<'a, S> = Option<Box<dyn FnMut(Instance, S, usize, Option<Vec<StateEvent>>) + 'a>>;
 type CommandCallback<'a, S> = Option<Box<dyn FnMut(S, usize, Option<Vec<StateEvent>>) + 'a>>;
@@ -562,6 +563,38 @@ impl<'a> VgmCallbackStream<'a> {
         }
     }
 
+    /// Creates a new callback stream from a lazy VGM command generator.
+    ///
+    /// Commands are generated on demand as the callback stream is iterated.
+    /// This is equivalent to [`VgmStream::from_generator`] followed by
+    /// [`VgmCallbackStream::new`], and keeps the lazy, bounded-memory behavior
+    /// of the underlying generator.
+    ///
+    /// # Arguments
+    ///
+    /// * `generator` - The lazy producer of VGM commands
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::{ParseError, VgmCallbackStream, VgmCommandGenerator};
+    ///
+    /// #[derive(Debug)]
+    /// struct EmptyGenerator;
+    ///
+    /// impl VgmCommandGenerator for EmptyGenerator {
+    ///     fn next_command(&mut self) -> Result<Option<soundlog::vgm::command::VgmCommand>, ParseError> {
+    ///         Ok(None)
+    ///     }
+    /// }
+    ///
+    /// let generator: Box<dyn VgmCommandGenerator> = Box::new(EmptyGenerator);
+    /// let _callback_stream = VgmCallbackStream::from_generator(generator);
+    /// ```
+    pub fn from_generator(generator: Box<dyn VgmCommandGenerator>) -> Self {
+        Self::new(VgmStream::from_generator(generator))
+    }
+
     /// Creates a new callback stream directly from a VGM document.
     ///
     /// This is a convenience method that creates a `VgmStream` from the document
@@ -746,7 +779,7 @@ impl<'a> VgmCallbackStream<'a> {
         // Suppress all user-facing callbacks during fast-forward by swapping them out.
         // State trackers (separate from callbacks) continue to receive every write.
         let mut saved_callbacks = Callbacks::default();
-        std::mem::swap(&mut self.callbacks, &mut saved_callbacks);
+        mem::swap(&mut self.callbacks, &mut saved_callbacks);
 
         let mut seek_result = Ok(());
         loop {
@@ -765,7 +798,7 @@ impl<'a> VgmCallbackStream<'a> {
         }
 
         // Always restore callbacks, even on error.
-        std::mem::swap(&mut self.callbacks, &mut saved_callbacks);
+        mem::swap(&mut self.callbacks, &mut saved_callbacks);
 
         seek_result
     }

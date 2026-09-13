@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 // YM2612 (OPN2) event test.
 //
 // # Voice design (pure sine from OP1 only)
@@ -288,7 +290,7 @@ fn test_ym2612_keyon_and_tone_freq_matches_a4() {
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2612State>(Instance::Primary, master_clock);
 
-    let captured_freq_hz = std::sync::Arc::new(std::sync::Mutex::new(None::<f32>));
+    let captured_freq_hz = Arc::new(Mutex::new(None::<f32>));
     let captured_freq_hz_cb = captured_freq_hz.clone();
 
     callback_stream.on_write(move |_inst, _spec: chip::Ym2612Spec, _sample, event_opt| {

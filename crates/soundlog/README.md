@@ -4,7 +4,7 @@ soundlog — builder, parser and stream-processor for retro sound-chip register-
 
 `soundlog` is a small crate for building and parsing register-write
 logs for retro sound chips. It currently supports the VGM
-(Video Game Music) file format.
+(Video Game Music) file format and MDX-to-VGM conversion.
 
 Key features:
 - Builder API to construct VGM documents programmatically.
@@ -23,6 +23,8 @@ Key features:
   untrusted input.
 - Chip state tracking: Monitor register writes to track key on/off events and
   extract tone information (frequency, pitch) from sound chip registers in real-time.
+- Format conversion: Other supported formats can use the same VGM
+  stream-processing interface for playback; MDX is currently supported.
 
 ## Quick Start — building a VGM player
 
@@ -345,6 +347,41 @@ for chunk in chunks {
             },
             Err(_) => break,
         }
+    }
+}
+```
+
+### `VgmStream::from_generator` — streaming playback for other formats
+
+For playback of another supported format, such as MDX, create a package from
+in-memory source data and pass the lazy generator returned by its conversion
+API to `VgmStream::from_generator`. Commands are converted as they are
+consumed, so the complete VGM command list does not need to be kept in memory.
+
+```rust
+use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
+use soundlog::mdx::document::MdxBuilder;
+use soundlog::mdx::package::MdxPackage;
+use soundlog::{VgmStream, VgmStreamResult};
+
+// Build or parse MDX/PDX data in memory.
+let package = MdxPackage {
+    mdx: MdxBuilder::new().finalize(),
+    pdx: None,
+};
+let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
+    .expect("create a lazy VGM command generator");
+let mut stream = VgmStream::from_generator(generator);
+
+for result in &mut stream {
+    match result {
+        Ok(VgmStreamResult::Command(command)) => {
+            // Send command to the target sound chips or audio renderer.
+            println!("{command:?}");
+        }
+        Ok(VgmStreamResult::EndOfStream) => break,
+        Ok(VgmStreamResult::NeedsMoreData) => break,
+        Err(error) => panic!("stream error: {error}"),
     }
 }
 ```

@@ -7,6 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// SN76489 has 4 channels (3 tone + 1 noise)
 const SN76489_CHANNELS: usize = 4;
@@ -72,7 +73,7 @@ impl Sn76489State {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             current_latch: None,
             master_clock_hz,
             registers: Sn76489Storage::default(),

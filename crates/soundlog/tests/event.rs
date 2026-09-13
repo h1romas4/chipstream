@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Optional output directory for VGM test artifacts (relative to the crate root).
 ///
@@ -12,7 +14,7 @@ use std::path::PathBuf;
 /// - Enable output only when needed: SOUNDLOG_TEST_OUTPUT_VGM=assets/vgm cargo test
 /// - Default (no env var): no files written to the crate tree (safe for `cargo publish`)
 pub fn output_vgm_dir() -> Option<PathBuf> {
-    match std::env::var("SOUNDLOG_TEST_OUTPUT_VGM") {
+    match env::var("SOUNDLOG_TEST_OUTPUT_VGM") {
         Ok(s) if !s.is_empty() => Some(PathBuf::from(s)),
         _ => None,
     }
@@ -21,12 +23,12 @@ pub fn output_vgm_dir() -> Option<PathBuf> {
 pub fn maybe_write_vgm(filename: &str, bytes: &[u8]) {
     if let Some(dir) = output_vgm_dir() {
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let out_dir = std::path::Path::new(manifest).join(dir);
-        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        let out_dir = Path::new(manifest).join(dir);
+        if let Err(e) = fs::create_dir_all(&out_dir) {
             eprintln!("warning: could not create output dir {:?}: {}", out_dir, e);
         } else {
             let out_path = out_dir.join(filename);
-            if let Err(e) = std::fs::write(&out_path, bytes) {
+            if let Err(e) = fs::write(&out_path, bytes) {
                 eprintln!("warning: failed to write vgm file {:?}: {}", out_path, e);
             } else {
                 eprintln!("Wrote test VGM to {:?}", out_path);

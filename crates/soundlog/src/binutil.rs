@@ -1,4 +1,5 @@
 //! Utilities used by parsers: parse error type and byte readers/writers.
+use std::error::Error;
 use std::fmt;
 
 /// Error type returned by the parsing helpers in this module.
@@ -114,7 +115,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl Error for ParseError {}
 
 /// Read a 32-bit little-endian unsigned integer from `bytes` at `off`.
 ///
@@ -206,6 +207,34 @@ pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
     let b1 = bytes[off + 1] as u32;
     let b2 = bytes[off + 2] as u32;
     Ok((b0 << 16) | (b1 << 8) | b2)
+}
+
+/// Read a 16-bit big-endian unsigned integer from `bytes` at `off`.
+///
+/// Returns `Ok(u16)` when the two bytes starting at `off` are available and
+/// were successfully interpreted as a big-endian `u16`. Returns
+/// `Err(ParseError::OffsetOutOfRange)` when the buffer is too short.
+pub fn read_u16_be_at(bytes: &[u8], off: usize) -> Result<u16, ParseError> {
+    if bytes.len() < off + 2 {
+        return Err(ParseError::OffsetOutOfRange {
+            offset: off,
+            needed: 2,
+            available: bytes.len(),
+            context: None,
+        });
+    }
+    let mut tmp: [u8; 2] = [0; 2];
+    tmp.copy_from_slice(&bytes[off..off + 2]);
+    Ok(u16::from_be_bytes(tmp))
+}
+
+/// Read a 16-bit big-endian signed integer from `bytes` at `off`.
+///
+/// This preserves the two-byte representation read by `read_u16_be_at` and
+/// interprets it as an `i16`.
+pub fn read_i16_be_at(bytes: &[u8], off: usize) -> Result<i16, ParseError> {
+    let value = read_u16_be_at(bytes, off)?;
+    Ok(i16::from_be_bytes(value.to_be_bytes()))
 }
 
 /// Read a 32-bit little-endian signed integer from `bytes` at `off`.

@@ -400,7 +400,7 @@ impl BitPackingCompression {
                     // Use table lookup
                     let table = table.unwrap(); // Already checked above
                     let index = compressed_value as usize;
-                    read_table_value(table, index, bytes_per_value)? as u32
+                    read_table_value(table, index, bytes_per_value)?
                 }
                 BitPackingSubType::Unknown(_) => {
                     return Err(ParseError::Other(format!(

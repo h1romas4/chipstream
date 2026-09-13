@@ -1,4 +1,6 @@
 use std::convert::TryInto;
+use std::cmp;
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -170,8 +172,7 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     }
 
     // commands info: count and rough distribution
-    let mut cmd_counts: std::collections::HashMap<&'static str, usize> =
-        std::collections::HashMap::new();
+    let mut cmd_counts: HashMap<&'static str, usize> = HashMap::new();
     for c in &doc.commands {
         let key: &'static str = match c {
             soundlog::vgm::command::VgmCommand::WaitSamples(_) => "wait",
@@ -322,7 +323,7 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
             .unwrap_or_else(|| "<missing>".to_string());
         let ov_lines: Vec<&str> = ov.split('\n').collect();
         let rv_lines: Vec<&str> = rv.split('\n').collect();
-        let max_lines = std::cmp::max(ov_lines.len(), rv_lines.len());
+        let max_lines = cmp::max(ov_lines.len(), rv_lines.len());
         for i in 0..max_lines {
             let key_cell = if i == 0 {
                 Cell::new(k.clone())
@@ -383,7 +384,7 @@ pub(crate) fn print_diag_compact(
 
         let olines: Vec<&str> = ov.split('\n').collect();
         let rlines: Vec<&str> = rv.split('\n').collect();
-        let maxl = std::cmp::max(olines.len(), rlines.len());
+        let maxl = cmp::max(olines.len(), rlines.len());
         for i in 0..maxl {
             if i == 0 {
                 combined.push((
@@ -579,8 +580,8 @@ pub fn parse_vgm(file_path: &Path, data: Vec<u8>, logger: Arc<Logger>) -> Result
 /// when the logger is a Noop (dry-run).
 struct CommandBrief<'a>(&'a soundlog::VgmCommand);
 
-impl<'a> std::fmt::Display for CommandBrief<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a> fmt::Display for CommandBrief<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use soundlog::VgmCommand;
 
         match self.0 {
@@ -891,8 +892,8 @@ impl<'a> std::fmt::Display for CommandBrief<'a> {
 /// formatting until `write_fmt` is invoked by the Logger.
 struct DataBlockTypeDisplay<'a>(&'a DataBlockType);
 
-impl<'a> std::fmt::Display for DataBlockTypeDisplay<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a> fmt::Display for DataBlockTypeDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use soundlog::vgm::detail::DataBlockType;
         match self.0 {
             DataBlockType::UncompressedStream(us) => {

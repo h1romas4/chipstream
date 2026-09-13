@@ -26,6 +26,7 @@ use crate::vgm::detail::{
 use crate::vgm::header::{ChipId, VgmHeader, VgmHeaderField};
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
+use std::fmt;
 
 /// Minimum buffer capacity (in bytes) at which we consider shrinking the
 /// parser's internal byte buffer. The shrink logic avoids attempting to reduce
@@ -34,6 +35,25 @@ use std::collections::HashMap;
 /// to be reduced to save RAM. Tune this value for more constrained environments
 /// (lower for very small-RAM targets).
 const MIN_CAP_TO_SHRINK: usize = 64 * 1024; // 64 KiB
+
+/// A lazy, single-pass producer of VGM commands for [`VgmStream::from_generator`].
+///
+/// Unlike [`VgmStream::from_document`], which requires the entire command
+/// stream to be produced up front, a `VgmCommandGenerator` is driven one
+/// command at a time, so conversion work happens lazily, at the pace the
+/// stream is iterated.
+///
+/// Implementations must not retain commands once they have been returned:
+/// memory use should stay bounded (roughly O(1) per call) regardless of how
+/// much of the stream has been consumed, rather than growing with playback
+/// time or song length. This means a generator's own repeat/loop handling
+/// (e.g. MDX's song-repeat logic) must resolve internally — there is no
+/// stream-level rewind to a previously produced command.
+pub trait VgmCommandGenerator: fmt::Debug {
+    /// Produces the next command, or `Ok(None)` once the generator has
+    /// permanently finished (no further calls will ever produce a command).
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError>;
+}
 
 /// Internal source of VGM commands for the stream processor.
 ///
@@ -54,6 +74,16 @@ enum VgmStreamSource {
         current_index: usize,
         /// Loop point command index (None if no loop)
         loop_index: Option<usize>,
+    },
+    /// Commands pulled on demand from a [`VgmCommandGenerator`] (created via
+    /// `VgmStream::from_generator`).
+    ///
+    /// Neither the generator nor this variant retains produced commands;
+    /// each one is forwarded to the caller and then dropped, so memory use
+    /// does not grow with playback time.
+    Generator {
+        /// The lazy command producer.
+        generator: Box<dyn VgmCommandGenerator>,
     },
     /// Raw VGM file bytes owned by the stream (created via `VgmStream::from_vgm`).
     ///
@@ -824,6 +854,46 @@ impl VgmStream {
         }
     }
 
+    /// Creates a new VGM stream that produces commands lazily by pulling
+    /// them from `generator` on demand as the stream is iterated, instead
+    /// of requiring the entire command sequence to be produced up front
+    /// (as [`from_document`](Self::from_document) does).
+    ///
+    /// # Loop Handling
+    ///
+    /// Unlike `from_document`, a generator-backed stream never has a
+    /// stream-level rewindable loop point (`has_loop_point()` always
+    /// returns `false`): any song repeat (e.g. MDX's song-repeat detection)
+    /// must be resolved by the generator itself, continuing to produce new
+    /// commands for as long as the underlying song keeps repeating. Use the
+    /// generator's own options (e.g. `MdxToVgmOptions::loop_count`) to
+    /// control finite vs. infinite repeats instead of
+    /// `VgmStream::set_loop_count`.
+    ///
+    /// # Examples
+    /// ```
+    /// use soundlog::{ParseError, VgmCommandGenerator};
+    /// use soundlog::vgm::VgmStream;
+    ///
+    /// #[derive(Debug)]
+    /// struct EmptyGenerator;
+    ///
+    /// impl VgmCommandGenerator for EmptyGenerator {
+    ///     fn next_command(&mut self) -> Result<Option<soundlog::vgm::command::VgmCommand>, ParseError> {
+    ///         Ok(None)
+    ///     }
+    /// }
+    ///
+    /// let generator: Box<dyn VgmCommandGenerator> = Box::new(EmptyGenerator);
+    /// let stream = VgmStream::from_generator(generator);
+    /// ```
+    pub fn from_generator(generator: Box<dyn VgmCommandGenerator>) -> Self {
+        Self {
+            source: VgmStreamSource::Generator { generator },
+            ..Self::default()
+        }
+    }
+
     /// Creates a new VGM stream processor from a complete raw VGM file.
     ///
     /// Unlike [`new`](Self::new) + [`push_chunk`](Self::push_chunk), this constructor
@@ -963,6 +1033,9 @@ impl VgmStream {
             VgmStreamSource::Document { .. } => Err(ParseError::Other(
                 "push_chunk() cannot be called on a VgmStream created from a document".into(),
             )),
+            VgmStreamSource::Generator { .. } => Err(ParseError::Other(
+                "push_chunk() cannot be called on a VgmStream created from a generator".into(),
+            )),
             VgmStreamSource::File { .. } => Err(ParseError::Other(
                 "push_chunk() cannot be called on a VgmStream created from VgmStream::from_vgm"
                     .into(),
@@ -1077,6 +1150,7 @@ impl VgmStream {
                     Ok(None)
                 }
             }
+            VgmStreamSource::Generator { generator } => generator.next_command(),
             VgmStreamSource::File {
                 data, current_pos, ..
             } => {
@@ -1380,6 +1454,7 @@ impl VgmStream {
         match &self.source {
             VgmStreamSource::Buffer { buffer, .. } => buffer.len(),
             VgmStreamSource::Document { .. } => 0,
+            VgmStreamSource::Generator { .. } => 0,
             VgmStreamSource::File {
                 data, current_pos, ..
             } => data.len().saturating_sub(*current_pos),
@@ -1409,6 +1484,9 @@ impl VgmStream {
             } => {
                 *current_index = 0;
             }
+            // A generator is a single-pass producer with no retained
+            // history to rewind to; there is nothing to reset here.
+            VgmStreamSource::Generator { .. } => {}
             VgmStreamSource::File {
                 current_pos,
                 command_start,
@@ -1544,6 +1622,9 @@ impl VgmStream {
             // controls loop re-feeding rather than supplying a seekable loop offset.
             VgmStreamSource::Buffer { .. } => true,
             VgmStreamSource::Document { loop_index, .. } => loop_index.is_some(),
+            // Generators resolve their own repeats internally instead of
+            // exposing a stream-level rewind point; see `from_generator`.
+            VgmStreamSource::Generator { .. } => false,
             VgmStreamSource::File { loop_pos, .. } => loop_pos.is_some(),
         }
     }
@@ -1585,6 +1666,9 @@ impl VgmStream {
                     *current_index = 0;
                 }
             }
+            // Never reached: `has_loop_point()` is always `false` for
+            // generator sources, so `handle_end_of_data` never calls this.
+            VgmStreamSource::Generator { .. } => {}
             VgmStreamSource::Buffer { buffer } => {
                 // For byte stream, the caller is responsible for re-pushing data
                 // from the loop point after each loop iteration.

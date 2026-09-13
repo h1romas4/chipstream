@@ -8,6 +8,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// AY-3-8910 has 3 tone channels
 const AY8910_CHANNELS: usize = 3;
@@ -65,7 +66,7 @@ impl Ay8910State {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             registers: Ay8910Storage::default(),
         }

@@ -97,10 +97,7 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
             });
         }
         // Attempt to parse GD3 and propagate any parse error to the caller.
-        match parse_gd3(&bytes[gd3_start..]) {
-            Ok(g) => Some(g),
-            Err(e) => return Err(e),
-        }
+        Some(parse_gd3(&bytes[gd3_start..])?)
     } else {
         None
     };

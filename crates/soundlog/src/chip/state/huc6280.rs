@@ -7,6 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// HuC6280 has 6 wavetable channels
 const HUC6280_CHANNELS: usize = 6;
@@ -73,7 +74,7 @@ impl Huc6280State {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             selected_channel: 0,
             registers: Huc6280Storage::default(),

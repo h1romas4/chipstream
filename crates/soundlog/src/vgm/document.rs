@@ -27,6 +27,9 @@ use crate::vgm::detail;
 use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 use crate::vgm::parser;
 use std::convert::TryFrom;
+use std::mem;
+use std::slice;
+use std::vec;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 /// A complete VGM document, consisting of a header, an ordered command
@@ -163,6 +166,26 @@ impl VgmBuilder {
     {
         self.document.commands.push(command.into());
         self
+    }
+
+    /// Number of commands appended to the builder so far.
+    ///
+    /// Useful for recording a loop position with `set_loop_index` before the
+    /// corresponding command is known to be reachable from `finalize()`.
+    pub fn command_count(&self) -> usize {
+        self.document.commands.len()
+    }
+
+    /// Removes and returns every command appended to the builder so far,
+    /// leaving it empty (as if newly constructed).
+    ///
+    /// Crate-internal escape hatch for callers (such as lazy
+    /// [`VgmCommandGenerator`](crate::vgm::stream::VgmCommandGenerator)
+    /// implementations) that reuse the same builder as scratch space across
+    /// many small batches of commands instead of accumulating a whole
+    /// document, so it never grows unbounded with playback time.
+    pub(crate) fn take_commands(&mut self) -> Vec<VgmCommand> {
+        mem::take(&mut self.document.commands)
     }
 
     /// Append a chip write produced by a chip-specific spec.
@@ -461,12 +484,12 @@ impl From<&VgmDocument> for Vec<u8> {
 
 impl VgmDocument {
     /// Return an iterator over `VgmCommand` references.
-    pub fn iter(&self) -> std::slice::Iter<'_, VgmCommand> {
+    pub fn iter(&self) -> slice::Iter<'_, VgmCommand> {
         self.commands.iter()
     }
 
     /// Return a mutable iterator over `VgmCommand` references.
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, VgmCommand> {
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, VgmCommand> {
         self.commands.iter_mut()
     }
 
@@ -509,7 +532,7 @@ impl VgmDocument {
 /// Consume the document and iterate its commands by value.
 impl IntoIterator for VgmDocument {
     type Item = VgmCommand;
-    type IntoIter = std::vec::IntoIter<VgmCommand>;
+    type IntoIter = vec::IntoIter<VgmCommand>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.commands.into_iter()
@@ -519,7 +542,7 @@ impl IntoIterator for VgmDocument {
 /// Iterate over commands by reference: `for c in &doc { ... }`.
 impl<'a> IntoIterator for &'a VgmDocument {
     type Item = &'a VgmCommand;
-    type IntoIter = std::slice::Iter<'a, VgmCommand>;
+    type IntoIter = slice::Iter<'a, VgmCommand>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.commands.iter()
@@ -529,7 +552,7 @@ impl<'a> IntoIterator for &'a VgmDocument {
 /// Iterate over commands by mutable reference: `for c in &mut doc { ... }`.
 impl<'a> IntoIterator for &'a mut VgmDocument {
     type Item = &'a mut VgmCommand;
-    type IntoIter = std::slice::IterMut<'a, VgmCommand>;
+    type IntoIter = slice::IterMut<'a, VgmCommand>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.commands.iter_mut()

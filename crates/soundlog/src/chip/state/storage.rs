@@ -29,6 +29,7 @@
 //! ```
 
 use std::fmt::Debug;
+use std::collections::HashMap;
 use std::hash::Hash;
 
 /// Trait for register storage backend
@@ -135,7 +136,7 @@ where
     R: Copy + Eq + Hash + Debug + Default,
     V: Copy + Debug + Default,
 {
-    registers: std::collections::HashMap<R, V>,
+    registers: HashMap<R, V>,
 }
 
 impl<R, V> RegisterStorage for SparseStorage<R, V>

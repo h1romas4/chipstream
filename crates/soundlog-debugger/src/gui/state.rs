@@ -27,6 +27,8 @@ use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::detail::{DataBlockType, parse_data_block};
 
 use std::collections::HashMap;
+use std::cmp;
+use std::mem;
 use std::sync::mpsc;
 use std::thread;
 
@@ -890,7 +892,7 @@ impl UiState {
                     let mut buckets: Vec<AstNode> = Vec::new();
                     let mut start_idx = 0usize;
                     while start_idx < total_cmds {
-                        let end_idx = std::cmp::min(start_idx + bucket_size, total_cmds);
+                        let end_idx = cmp::min(start_idx + bucket_size, total_cmds);
                         let title = format!("[{}..{}]", start_idx, end_idx);
                         let detail = format!("{} commands", end_idx - start_idx);
                         // this bucket node is lazy and records its start index and count
@@ -919,7 +921,7 @@ impl UiState {
                     // `VgmDocument` implements `From<&VgmDocument> for Vec<u8>` so use
                     // `Vec::from(&doc)` rather than the private `to_bytes()` method.
                     let rebuilt_bytes = Vec::from(&doc);
-                    let max_len = std::cmp::max(data.len(), rebuilt_bytes.len());
+                        let max_len = cmp::max(data.len(), rebuilt_bytes.len());
                     let mut diffs: Vec<(usize, usize)> = Vec::new();
                     let mut in_diff = false;
                     let mut diff_start: usize = 0;
@@ -1044,7 +1046,7 @@ impl UiState {
                         });
                         return;
                     }
-                    let end = std::cmp::min(absolute_start + count, total);
+                    let end = cmp::min(absolute_start + count, total);
 
                     let mut nodes: Vec<AstNode> = Vec::with_capacity(end - absolute_start);
                     // Compute absolute offsets/lengths for commands once and attach them
@@ -1827,7 +1829,11 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
 
                         if hovered {
                             let rim = ui.visuals().widgets.hovered.fg_stroke.color;
-                            painter.rect_stroke(rect.shrink(1.0), 6.0, egui::Stroke::new(1.0, rim));
+                            painter.rect_stroke(
+                                rect.shrink(1.0),
+                                6.0,
+                                egui::Stroke::new(1.0_f32, rim),
+                            );
                         }
 
                         // Text with slight offset when pressed; dim when disabled.
@@ -1967,7 +1973,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
     // Drain deferred loads queued during drawing to avoid nested mutable borrows.
     if !state.deferred_loads.is_empty() {
         let mut to_process = Vec::new();
-        std::mem::swap(&mut to_process, &mut state.deferred_loads);
+        mem::swap(&mut to_process, &mut state.deferred_loads);
         for (path, start, count) in to_process {
             let key = path_key_for(&path);
             // Remove enqueued marker so request_children can set pending_requests and proceed.

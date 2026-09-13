@@ -41,7 +41,34 @@ pub fn play_vgm(
     if let Some(b) = loop_base {
         stream.set_loop_base(b);
     }
+
+    run_callback_stream(stream, logger, &file_path.display().to_string(), |callback_stream| {
+        // Track state for all chip types present in the file
+        callback_stream.track_chips(&instances);
+    })
+}
+
+/// Attaches the same register-write/event logging callbacks used by
+/// `soundlog play` to a callback stream built from `stream`, and drives it
+/// to completion.
+///
+/// Shared by any command that wants "play and log" output regardless of how
+/// its `VgmStream` was constructed — a parsed `.vgm` file (see
+/// [`play_vgm`]), or a lazily-generated stream (e.g. `soundlog mdx play`).
+/// `track_state` is called once on the freshly-built `VgmCallbackStream`
+/// before any commands are processed, so callers can wire up whatever chip
+/// state tracking is appropriate for their source (`track_chips` from a VGM
+/// header's chip instances, or manual `track_state::<S>` calls when no
+/// header exists). `source` is used only for error messages (e.g. the input
+/// file path).
+pub fn run_callback_stream(
+    stream: VgmStream,
+    logger: Arc<Logger>,
+    source: &str,
+    track_state: impl FnOnce(&mut VgmCallbackStream<'_>),
+) -> Result<()> {
     let mut callback_stream = VgmCallbackStream::new(stream);
+    track_state(&mut callback_stream);
 
     // Header output: print a small header using the logger (noop in dry-run).
     // Use a constant dashed line to avoid allocating at runtime.
@@ -49,9 +76,6 @@ pub fn play_vgm(
         "{:<12} {:<40} Events",
         "Samples", "Register Write"
     ));
-
-    // Track state for all chip types present in the file
-    callback_stream.track_chips(&instances);
 
     // Display wrapper for a single StateEvent that formats without allocating.
     struct StateEventDisplay<'a>(&'a StateEvent);
@@ -842,19 +866,12 @@ pub fn play_vgm(
             }
             Ok(StreamResult::EndOfStream) => break,
             Ok(StreamResult::NeedsMoreData) => {
-                // Should not happen when using VgmStream::from_document
-                let _ = logger.error(format_args!(
-                    "{}: Unexpected NeedsMoreData in stream",
-                    file_path.display()
-                ));
+                // Should not happen for a fully-materialized document or generator
+                let _ = logger.error(format_args!("{source}: Unexpected NeedsMoreData in stream"));
                 break;
             }
             Err(e) => {
-                let _ = logger.error(format_args!(
-                    "{}: Stream error: {:?}",
-                    file_path.display(),
-                    e
-                ));
+                let _ = logger.error(format_args!("{source}: Stream error: {:?}", e));
                 break;
             }
         }

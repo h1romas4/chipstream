@@ -10,6 +10,9 @@ use soundlog::vgm::header::ChipId;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 use soundlog::{VgmCallbackStream, chip};
 use std::cell::RefCell;
+use std::cmp;
+use std::collections::HashSet;
+use std::mem;
 use std::rc::Rc;
 
 /// Push only the command region of a serialized VGM file into a [`VgmStream`].
@@ -428,11 +431,11 @@ fn test_callback_stream_iteration_borrowing() {
     // Print sizes to help reason about overhead
     println!(
         "size_of::<VgmCommand>() = {}",
-        std::mem::size_of::<VgmCommand>()
+        mem::size_of::<VgmCommand>()
     );
     println!(
         "size_of::<StreamResult>() = {}",
-        std::mem::size_of::<StreamResult>()
+        mem::size_of::<StreamResult>()
     );
 
     // Register a write callback that increments the counter. This callback
@@ -475,7 +478,7 @@ fn test_stream_parser_incremental_data() {
     let mut parsed_commands = Vec::new();
 
     while offset < vgm_data.len() {
-        let end = std::cmp::min(offset + chunk_size, vgm_data.len());
+        let end = cmp::min(offset + chunk_size, vgm_data.len());
         let chunk = &vgm_data[offset..end];
         parser.push_chunk(chunk).expect("push chunk");
         offset = end;
@@ -1019,7 +1022,7 @@ fn test_streaming_with_variable_chunk_sizes() {
 
     // Initial push of first chunk
     if !chunk_sizes.is_empty() && data_offset < vgm_data.len() {
-        let chunk_size = std::cmp::min(chunk_sizes[chunk_index], vgm_data.len() - data_offset);
+        let chunk_size = cmp::min(chunk_sizes[chunk_index], vgm_data.len() - data_offset);
         let chunk = &vgm_data[data_offset..data_offset + chunk_size];
         parser.push_chunk(chunk).expect("push chunk");
         data_offset += chunk_size;
@@ -1054,7 +1057,7 @@ fn test_streaming_with_variable_chunk_sizes() {
                     if data_offset < vgm_data.len() {
                         let remaining = vgm_data.len() - data_offset;
                         let chunk_size = if chunk_index < chunk_sizes.len() {
-                            std::cmp::min(chunk_sizes[chunk_index], remaining)
+                            cmp::min(chunk_sizes[chunk_index], remaining)
                         } else {
                             remaining // Feed all remaining data if we're out of chunk sizes
                         };
@@ -4089,7 +4092,7 @@ fn test_vgm_callback_stream_push_chunk_large_doc() {
     let header = &doc.header;
     let mut offset = 0x34usize.wrapping_add(header.data_offset as usize);
     while offset < bytes.len() {
-        let end = std::cmp::min(offset + chunk_size, bytes.len());
+        let end = cmp::min(offset + chunk_size, bytes.len());
         cb_stream
             .push_chunk(&bytes[offset..end])
             .expect("push_chunk");
@@ -5914,7 +5917,7 @@ fn test_length_mode_play_until_end_looped_start_stream_no_double_write_on_wrap()
     }
 
     // No two writes should share the same sample slot.
-    let mut seen_samples = std::collections::HashSet::new();
+    let mut seen_samples = HashSet::new();
     for (s, v) in &writes_with_sample {
         assert!(
             seen_samples.insert(*s),

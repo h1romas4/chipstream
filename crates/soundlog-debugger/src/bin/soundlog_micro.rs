@@ -1,6 +1,6 @@
 //! `soundlog-micro` — Experimental C interface for MCU (Microcontroller Unit) targets.
 //!
-//! This binary wraps [`VgmCallbackStream`] with a set of `extern "C"` functions,
+//! This binary wraps [`soundlog::vgm::VgmCallbackStream`] with a set of `extern "C"` functions,
 //! providing an interface suitable for bare-metal or embedded environments where
 //! Rust's standard allocator and runtime may not be available in their usual form.
 //!
@@ -41,6 +41,9 @@
 
 #![allow(unsafe_code)]
 
+use std::mem::MaybeUninit;
+use std::ptr;
+
 // ---------------------------------------------------------------------------
 // mod common — shared status codes and singleton state
 // ---------------------------------------------------------------------------
@@ -48,6 +51,7 @@
 mod common {
     use std::mem::ManuallyDrop;
     use std::mem::MaybeUninit;
+    use std::ptr;
 
     use soundlog::VgmCallbackStream;
 
@@ -109,7 +113,7 @@ mod common {
     pub fn state_ptr() -> *mut MicroState {
         // SAFETY: STATE is a valid MaybeUninit<MicroState>; callers are
         // responsible for ensuring it has been initialised before dereferencing.
-        unsafe { (*std::ptr::addr_of_mut!(STATE)).as_mut_ptr() }
+        unsafe { (*ptr::addr_of_mut!(STATE)).as_mut_ptr() }
     }
 }
 
@@ -161,7 +165,7 @@ pub unsafe extern "C" fn stream_deinit() {
     use common::{INITIALIZED, STATE, state_ptr};
 
     // Nothing to do if never initialised.
-    if unsafe { !*std::ptr::addr_of!(INITIALIZED) } {
+    if unsafe { !*ptr::addr_of!(INITIALIZED) } {
         return;
     }
 
@@ -181,22 +185,22 @@ pub unsafe extern "C" fn stream_deinit() {
             // The ManuallyDrop sentinel in psram_vec is also silently
             // discarded, which is correct because ManuallyDrop never calls
             // the inner destructor anyway.
-            std::ptr::write(
-                std::ptr::addr_of_mut!(STATE),
-                std::mem::MaybeUninit::uninit(),
+            ptr::write(
+                ptr::addr_of_mut!(STATE),
+                MaybeUninit::uninit(),
             );
         } else {
             // push_chunk path: the Vec inside VgmCallbackStream is a normal
             // heap allocation.  assume_init_drop() runs full drop glue and
             // frees it correctly.
-            std::ptr::addr_of_mut!(STATE)
-                .cast::<std::mem::MaybeUninit<common::MicroState>>()
+            ptr::addr_of_mut!(STATE)
+                .cast::<MaybeUninit<common::MicroState>>()
                 .as_mut()
                 .unwrap_unchecked()
                 .assume_init_drop();
         }
 
-        *std::ptr::addr_of_mut!(INITIALIZED) = false;
+        *ptr::addr_of_mut!(INITIALIZED) = false;
     }
 }
 
@@ -234,6 +238,8 @@ pub unsafe extern "C" fn stream_deinit() {
 /// ```
 mod push_chunk {
     use std::hint::black_box;
+    use std::ptr;
+    use std::slice;
 
     use soundlog::VgmCallbackStream;
     use soundlog::VgmHeader;
@@ -290,7 +296,7 @@ mod push_chunk {
         }
 
         // SAFETY: caller guarantees data is valid for len bytes.
-        let vgm: &'static [u8] = unsafe { std::slice::from_raw_parts(data, len) };
+        let vgm: &'static [u8] = unsafe { slice::from_raw_parts(data, len) };
 
         // Parse the VGM header.
         let header = match VgmHeader::from_bytes(vgm) {
@@ -362,7 +368,7 @@ mod push_chunk {
                 loops_before: 0,
                 psram_vec: None,
             });
-            *std::ptr::addr_of_mut!(INITIALIZED) = true;
+            *ptr::addr_of_mut!(INITIALIZED) = true;
         }
 
         0
@@ -395,7 +401,7 @@ mod push_chunk {
     /// - Must be called in a single-threaded context.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn stream_push_chunk(chunk_ptr: *const u8, chunk_len: usize) -> i8 {
-        if unsafe { !*std::ptr::addr_of!(INITIALIZED) } {
+        if unsafe { !*ptr::addr_of!(INITIALIZED) } {
             return PushStatus::HeaderParse as i8;
         }
 
@@ -408,7 +414,7 @@ mod push_chunk {
         let state = unsafe { &mut *state_ptr() };
 
         // SAFETY: caller guarantees chunk_ptr is valid for chunk_len bytes.
-        let chunk: &[u8] = unsafe { std::slice::from_raw_parts(chunk_ptr, chunk_len) };
+        let chunk: &[u8] = unsafe { slice::from_raw_parts(chunk_ptr, chunk_len) };
 
         // Snapshot the loop count before pushing so we can detect a post-loop
         // buffer clear (loop count increases) vs. a mid-command chunk split.
@@ -478,6 +484,7 @@ mod push_chunk {
 mod from_vgm {
     use std::hint::black_box;
     use std::mem::ManuallyDrop;
+    use std::ptr;
 
     use soundlog::VgmCallbackStream;
     use soundlog::chip::Ym2612Spec;
@@ -584,7 +591,7 @@ mod from_vgm {
                 loops_before: 0,
                 psram_vec: Some(psram_sentinel),
             });
-            *std::ptr::addr_of_mut!(INITIALIZED) = true;
+            *ptr::addr_of_mut!(INITIALIZED) = true;
         }
 
         0
@@ -610,7 +617,7 @@ mod from_vgm {
     /// - Must be called in a single-threaded context.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn stream_next() -> i8 {
-        if unsafe { !*std::ptr::addr_of!(INITIALIZED) } {
+        if unsafe { !*ptr::addr_of!(INITIALIZED) } {
             return PushStatus::HeaderParse as i8;
         }
         let state = unsafe { &mut *state_ptr() };
@@ -639,6 +646,8 @@ mod from_vgm {
 /// `main_push_chunk` exercises `stream_init` + `stream_push_chunk`.
 /// `main_from_vgm`   exercises `stream_init_from_vgm` + `stream_next`.
 mod driver {
+    use std::process;
+
     use super::common::PushStatus;
     use super::from_vgm::{stream_init_from_vgm, stream_next};
     use super::push_chunk::{stream_init, stream_push_chunk};
@@ -703,7 +712,7 @@ mod driver {
         };
         if init_rc != 0 {
             eprintln!("[push_chunk] stream_init failed: {init_rc}");
-            std::process::exit(init_rc as i32);
+            process::exit(init_rc as i32);
         }
         println!(
             "[push_chunk] stream_init OK  cmd_start={cmd_start}  cmd_end={cmd_end}  restart_abs={restart_abs}"
@@ -749,7 +758,7 @@ mod driver {
             } else {
                 eprintln!("[push_chunk] stream_push_chunk error: {rc} after {push_count} push(es)");
                 unsafe { stream_deinit() };
-                std::process::exit(rc as i32);
+                process::exit(rc as i32);
             }
         }
     }
@@ -782,7 +791,7 @@ mod driver {
         let init_rc = unsafe { stream_init_from_vgm(REMDME_VGM.as_ptr(), REMDME_VGM.len(), 2) };
         if init_rc != 0 {
             eprintln!("[from_vgm] stream_init_from_vgm failed: {init_rc}");
-            std::process::exit(init_rc as i32);
+            process::exit(init_rc as i32);
         }
         println!("[from_vgm] stream_init_from_vgm OK");
 
@@ -799,7 +808,7 @@ mod driver {
             } else {
                 eprintln!("[from_vgm] stream_next error: {rc} after {cmd_count} command(s)");
                 unsafe { stream_deinit() };
-                std::process::exit(rc as i32);
+                process::exit(rc as i32);
             }
         }
     }

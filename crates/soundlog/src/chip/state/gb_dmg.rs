@@ -10,6 +10,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// Game Boy DMG has 4 channels
 const GB_DMG_CHANNELS: usize = 4;
@@ -81,7 +82,7 @@ impl GbDmgState {
     /// ```
     pub fn new(_clock: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             registers: GbDmgStorage::default(),
         }
     }

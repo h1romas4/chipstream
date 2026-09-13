@@ -7,6 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// POKEY has 4 audio channels
 const POKEY_CHANNELS: usize = 4;
@@ -108,7 +109,7 @@ impl PokeyState {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             registers: PokeyStorage::default(),
         }

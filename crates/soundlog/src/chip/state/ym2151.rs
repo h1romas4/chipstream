@@ -7,6 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// YM2151 has 8 FM channels
 const YM2151_CHANNELS: usize = 8;
@@ -59,7 +60,7 @@ impl Ym2151State {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             registers: Ym2151Storage::default(),
         }

@@ -18,6 +18,7 @@
 
 use std::fmt;
 use std::io::{self, ErrorKind, Write};
+use std::process;
 use std::sync::{Arc, Mutex};
 
 /// Where the logger writes to.
@@ -203,7 +204,7 @@ impl Logger {
             if exit_on_broken_pipe {
                 // Typical CLI semantics: when the reader of the pipe disappears,
                 // exit quietly with code 0.
-                std::process::exit(0);
+                process::exit(0);
             } else {
                 // For tests we may prefer not to exit; treat as silent success.
                 return Ok(());
@@ -249,11 +250,11 @@ mod tests {
     use std::io::{Error, ErrorKind, Result as IoResult};
 
     /// A simple writer that appends bytes into an Arc<Mutex<Vec<u8>>> for inspection.
-    struct VecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    struct VecWriter(Arc<Mutex<Vec<u8>>>);
 
     impl VecWriter {
-        fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
-            let a = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let a = Arc::new(Mutex::new(Vec::new()));
             (VecWriter(a.clone()), a)
         }
     }
@@ -263,7 +264,7 @@ mod tests {
             let mut g = self
                 .0
                 .lock()
-                .map_err(|_| std::io::Error::other("VecWriter mutex poisoned".to_string()))?;
+                .map_err(|_| io::Error::other("VecWriter mutex poisoned".to_string()))?;
             g.extend_from_slice(buf);
             Ok(buf.len())
         }
@@ -329,7 +330,7 @@ mod tests {
         struct ErrWriter;
         impl Write for ErrWriter {
             fn write(&mut self, _buf: &[u8]) -> IoResult<usize> {
-                Err(std::io::Error::other("other".to_string()))
+                Err(io::Error::other("other".to_string()))
             }
             fn flush(&mut self) -> IoResult<()> {
                 Ok(())

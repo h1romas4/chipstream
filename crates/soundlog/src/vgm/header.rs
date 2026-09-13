@@ -20,6 +20,8 @@ use crate::chip;
 use crate::vgm::command::Instance;
 use crate::vgm::parser::parse_vgm_header;
 use std::convert::TryFrom;
+use std::slice;
+use std::vec;
 
 // For unknown/future versions, use the maximum header size
 pub(crate) const VGM_MAX_HEADER_SIZE: u32 = 0x100;
@@ -50,7 +52,7 @@ impl ChipInstances {
 
 impl IntoIterator for ChipInstances {
     type Item = (Instance, chip::Chip, f32);
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -59,7 +61,7 @@ impl IntoIterator for ChipInstances {
 
 impl<'a> IntoIterator for &'a ChipInstances {
     type Item = &'a (Instance, chip::Chip, f32);
-    type IntoIter = std::slice::Iter<'a, (Instance, chip::Chip, f32)>;
+    type IntoIter = slice::Iter<'a, (Instance, chip::Chip, f32)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [x] Add: Initial MDX format support (`mdx` feature).
+- [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
   - [ ] Fix: Unify the state of ES5506.

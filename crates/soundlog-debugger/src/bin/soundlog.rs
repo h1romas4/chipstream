@@ -10,10 +10,12 @@ use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
+use std::process;
 use std::sync::Arc;
 
 // Use the library crate's modules and types. The library crate (this package)
 // exposes `cui`, `gui`, `logger` and the logging macros via `lib.rs`.
+use soundlog::mdx::convert::MdxToVgmOptions;
 use soundlog_debugger::cui;
 use soundlog_debugger::gui;
 use soundlog_debugger::logger::Logger;
@@ -74,6 +76,99 @@ enum Commands {
         #[arg(long)]
         loop_base: Option<i8>,
     },
+    /// MDX file operations
+    Mdx {
+        #[command(subcommand)]
+        command: MdxCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MdxCommands {
+    /// Parse an MDX file and display its document summary
+    Parse {
+        /// MDX input file path
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Optional PDX file to parse alongside the MDX file
+        #[arg(long, value_name = "FILE")]
+        pdx: Option<PathBuf>,
+    },
+    /// Convert an MDX file to a VGM file
+    Convert {
+        /// MDX input file path
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// VGM output file path (use '-' for stdout)
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+
+        /// Optional PDX file used for PCM references (PCM conversion is deferred)
+        #[arg(long, value_name = "FILE")]
+        pdx: Option<PathBuf>,
+
+        /// YM2151 clock in Hz
+        #[arg(long, default_value_t = 4_000_000)]
+        ym2151_clock: u32,
+
+        /// OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks;
+        /// must stay paired with the fixed `/512` header divider, see
+        /// `soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ`)
+        #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
+        okim6258_clock: u32,
+
+        /// Output sample rate in Hz
+        #[arg(long, default_value_t = 44_100)]
+        sample_rate: u32,
+
+        /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
+        #[arg(long, value_name = "COUNT")]
+        loop_count: Option<u32>,
+
+        /// Enable MXDRV16y compatibility handling (raw channel remapping via
+        /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
+        #[arg(long)]
+        mxdrv16y: bool,
+    },
+    /// Convert an MDX file lazily and play it, printing the same register
+    /// write/event log format as `soundlog play`
+    Play {
+        /// MDX input file path
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Optional PDX file used for PCM references
+        #[arg(long, value_name = "FILE")]
+        pdx: Option<PathBuf>,
+
+        /// Dry-run mode: process the file without printing output (only errors/panics)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// YM2151 clock in Hz
+        #[arg(long, default_value_t = 4_000_000)]
+        ym2151_clock: u32,
+
+        /// OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks;
+        /// see `MdxCommands::Convert`'s `okim6258_clock`)
+        #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
+        okim6258_clock: u32,
+
+        /// Output sample rate in Hz
+        #[arg(long, default_value_t = 44_100)]
+        sample_rate: u32,
+
+        /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
+        #[arg(long, value_name = "COUNT")]
+        loop_count: Option<u32>,
+
+        /// Enable MXDRV16y compatibility handling (raw channel remapping via
+        /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
+        #[arg(long)]
+        mxdrv16y: bool,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -132,6 +227,69 @@ fn main() {
 
     // Handle subcommands
     match args.command {
+        Some(Commands::Mdx { command }) => match command {
+            MdxCommands::Parse { input, pdx } => {
+                match cui::mdx::parse_mdx(&input, pdx.as_deref()) {
+                    Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_debugger::log_error!(&*logger, "mdx parse failed: {}", error);
+                        process::exit(1);
+                    }
+                }
+            }
+            MdxCommands::Convert {
+                input,
+                output,
+                pdx,
+                ym2151_clock,
+                okim6258_clock,
+                sample_rate,
+                loop_count,
+                mxdrv16y,
+            } => {
+                let options = MdxToVgmOptions {
+                    ym2151_clock,
+                    okim6258_clock,
+                    sample_rate,
+                    loop_count,
+                    mxdrv16y,
+                };
+                match cui::convert::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
+                    Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_debugger::log_error!(&*logger, "convert failed: {}", error);
+                        process::exit(1);
+                    }
+                }
+            }
+            MdxCommands::Play {
+                input,
+                pdx,
+                dry_run,
+                ym2151_clock,
+                okim6258_clock,
+                sample_rate,
+                loop_count,
+                mxdrv16y,
+            } => {
+                // Configure logger according to dry_run so main's messages respect it.
+                logger = Arc::new(Logger::new_stdout(dry_run));
+                let options = MdxToVgmOptions {
+                    ym2151_clock,
+                    okim6258_clock,
+                    sample_rate,
+                    loop_count,
+                    mxdrv16y,
+                };
+                match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
+                        Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_debugger::log_error!(&*logger, "mdx play failed: {}", error);
+                        process::exit(1);
+                    }
+                }
+            }
+        },
         Some(Commands::Test { file, dry_run }) => {
             // Configure logger according to dry_run so main's messages respect it.
             logger = Arc::new(Logger::new_stdout(dry_run));
@@ -139,17 +297,17 @@ fn main() {
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
                     match cui::vgm::test_roundtrip(&file, bytes, dry_run) {
-                        Ok(_) => std::process::exit(0),
+                        Ok(_) => process::exit(0),
                         Err(e) => {
                             // Qualify macro with crate name so the exported macro is resolved.
                             soundlog_debugger::log_error!(&*logger, "test_roundtrip failed: {}", e);
-                            std::process::exit(1);
+                            process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
                     soundlog_debugger::log_error!(&*logger, "failed to read input for test: {}", e);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }
@@ -165,11 +323,11 @@ fn main() {
                     match cui::vgm::redump_vgm(&input, &output, bytes, diag) {
                         Ok(_) => {
                             // redump succeeded; diagnostics (if diag) are produced inside `redump_vgm`.
-                            std::process::exit(0);
+                            process::exit(0);
                         }
                         Err(e) => {
                             soundlog_debugger::log_error!(&*logger, "redump failed: {}", e);
-                            std::process::exit(1);
+                            process::exit(1);
                         }
                     }
                 }
@@ -179,7 +337,7 @@ fn main() {
                         "failed to read input for redump: {}",
                         e
                     );
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }
@@ -190,17 +348,17 @@ fn main() {
                     // Call parse_vgm (pass logger Arc so the parse path can use centralized logging)
                     match cui::vgm::parse_vgm(&file, bytes, logger.clone()) {
                         Ok(_) => {
-                            std::process::exit(0);
+                            process::exit(0);
                         }
                         Err(e) => {
                             soundlog_debugger::log_error!(&*logger, "parse failed: {}", e);
-                            std::process::exit(1);
+                            process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
                     soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }
@@ -227,17 +385,17 @@ fn main() {
                         loop_base,
                     ) {
                         Ok(_) => {
-                            std::process::exit(0);
+                            process::exit(0);
                         }
                         Err(e) => {
                             soundlog_debugger::log_error!(&*logger, "play failed: {}", e);
-                            std::process::exit(1);
+                            process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
                     soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }

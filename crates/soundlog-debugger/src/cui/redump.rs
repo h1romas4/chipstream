@@ -1,5 +1,6 @@
 // chipstream/crates/soundlog-debugger/src/cui/redump.rs
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -172,10 +173,10 @@ pub fn redump_vgm(input_path: &Path, output_path: &Path, data: Vec<u8>, diag: bo
     let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
 
     // Write to output file or stdout if output_path is "-" (convention)
-    if output_path == std::path::Path::new("-") {
+    if output_path == Path::new("-") {
         // Write to stdout
         use std::io::Write;
-        let mut stdout = std::io::stdout();
+        let mut stdout = io::stdout();
         stdout
             .write_all(&rebuilt_bytes)
             .with_context(|| "failed to write output VGM to stdout")?;

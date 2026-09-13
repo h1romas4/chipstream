@@ -7,6 +7,7 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
+use std::array;
 
 /// SAA1099 has 6 audio channels
 const SAA1099_CHANNELS: usize = 6;
@@ -70,7 +71,7 @@ impl Saa1099State {
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: std::array::from_fn(|_| ChannelState::new()),
+            channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
             registers: Saa1099Storage::default(),
             all_channels_enable: false,

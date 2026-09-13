@@ -13,6 +13,7 @@
 //! Gd3 chunk bytes, preserving the raw `version` value stored in the
 //! parsed chunk.
 use crate::binutil::{ParseError, read_slice, read_u16_le_at, read_u32_le_at};
+use std::convert::TryFrom;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gd3 {
@@ -189,7 +190,7 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
 /// This is a fallible conversion that delegates to `parse_gd3` and returns
 /// a `crate::binutil::ParseError` on failure. Use `Gd3::try_from(bytes)` or
 /// call `parse_gd3(bytes)` directly to handle parse errors explicitly.
-impl std::convert::TryFrom<&[u8]> for Gd3 {
+impl TryFrom<&[u8]> for Gd3 {
     type Error = ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {

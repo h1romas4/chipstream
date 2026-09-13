@@ -3,4 +3,8 @@
 *.vgz
 *.wav
 *.zst
+*.mdx
+*.MDX
+*.pdx
+*.PDX
 !crates/soundlog/assets/vgm/*.vgm

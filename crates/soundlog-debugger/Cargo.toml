@@ -1,6 +1,6 @@
 [package]
 name = "soundlog-debugger"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 description = "GUI/CLI frontend for soundlog for debug"
 license = "MIT"
@@ -17,7 +17,7 @@ unicode-width = "0.1"
 
 # Optional: depend on the local soundlog crate if the GUI will use it.
 # Uncomment if you need to link against the library crate.
-soundlog = { path = "../soundlog" }
+soundlog = { path = "../soundlog", features = ["mdx"] }
 
 [[bin]]
 name = "soundlog"

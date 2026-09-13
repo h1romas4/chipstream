@@ -15,6 +15,7 @@ use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
 use crate::chip;
+use std::cmp;
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::{VgmHeader, VgmHeaderField};
 // re-export
@@ -3053,7 +3054,7 @@ impl VgmDocument {
     /// (e.g. `finalize`) can compute lengths/offsets without duplicating code.
     fn commands_to_bytes_up_to(&self, end: usize) -> Vec<u8> {
         let mut cmd_buf: Vec<u8> = Vec::new();
-        let upto = std::cmp::min(end, self.commands.len());
+        let upto = cmp::min(end, self.commands.len());
         for cmd in &self.commands[..upto] {
             let (b, _len) = command_to_vgm_bytes(cmd);
             cmd_buf.extend_from_slice(&b);

@@ -12,6 +12,7 @@
 //!  - highly optimized rendering of extremely large buffers.
 #![allow(clippy::manual_div_ceil)]
 use eframe::egui;
+use std::mem;
 
 /// Stateful painter-based hex viewer.
 pub struct HexViewer {
@@ -488,7 +489,7 @@ impl HexViewer {
             let bytes_len = bytes.len();
             if s < bytes_len || e < bytes_len {
                 if e < s {
-                    std::mem::swap(&mut s, &mut e);
+                    mem::swap(&mut s, &mut e);
                 }
                 // Clamp to file bounds.
                 let s_clamped = s.min(bytes_len.saturating_sub(1));
@@ -524,7 +525,7 @@ impl HexViewer {
                         st.color.b(),
                         200,
                     );
-                    egui::Stroke::new(1.0, c)
+                    egui::Stroke::new(1.0_f32, c)
                 };
                 let mut union_rect: Option<egui::Rect> = None;
 
@@ -621,7 +622,7 @@ impl HexViewer {
                                 // Draw stroke-only overlay: slightly stronger alpha so the outline
                                 // is visible on top of fills but still looks like an overlay.
                                 let overlay_stroke = egui::Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     egui::Color32::from_rgba_unmultiplied(
                                         stroke.color.r(),
                                         stroke.color.g(),
@@ -685,7 +686,7 @@ impl HexViewer {
                         } else {
                             egui::Color32::from_rgba_unmultiplied(200, 36, 36, 220)
                         };
-                        let width = if is_active { 2.0 } else { 1.0 };
+                        let width = if is_active { 2.0_f32 } else { 1.0_f32 };
                         let diff_stroke = egui::Stroke::new(width, color);
                         painter.rect_stroke(d_rect, 0.0, diff_stroke);
 

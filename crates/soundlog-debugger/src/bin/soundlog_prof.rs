@@ -22,6 +22,7 @@
 //! caller can use compact numeric codes if desired.
 
 use std::hint::black_box;
+use std::process;
 
 use soundlog::VgmHeader;
 use soundlog::VgmStream;
@@ -54,8 +55,8 @@ fn main() {
     // Example: limit loops to 100 iteration so profiling completes.
     // The process returns the error code if push_chunk fails.
     match push_chunk(data_vec, Some(2), 4096usize) {
-        Ok(_count) => std::process::exit(0),
-        Err(e) => std::process::exit(e as i32),
+        Ok(_count) => process::exit(0),
+        Err(e) => process::exit(e as i32),
     }
 }
 

@@ -46,6 +46,8 @@
 //! println!("closest={:?}, tuned={:?}", closest, tuned);
 //! ```
 //!
+use std::array;
+
 /// /// Reference A4 frequency (default 440 Hz).
 ///
 /// This constant is used as the reference pitch when generating the 12-EDO tables.
@@ -592,7 +594,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
     );
 
     let mut fnum_table: [[Option<FNumberEntry>; 12]; 8] =
-        std::array::from_fn(|_| std::array::from_fn(|_| None::<FNumberEntry>));
+        array::from_fn(|_| array::from_fn(|_| None::<FNumberEntry>));
 
     for (block, row) in fnum_table.iter_mut().enumerate().take(max_block + 1) {
         for (semitone, slot) in row.iter_mut().enumerate() {
