@@ -41,9 +41,8 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 /// Detects the MXDRV16y layout using the voice-area boundary heuristic from
 /// NanoDriveX. Standard MDX keeps track entries before the voice data, while
 /// MXDRV16y places a track entry after the inferred voice area.
-fn detect_mxdrv16y(input: &Path, package: &MdxPackage) -> Result<bool> {
-    let bytes = fs::read(input)
-        .with_context(|| format!("failed to read MDX input: {}", input.display()))?;
+fn detect_mxdrv16y(package: &MdxPackage) -> Result<bool> {
+    let bytes = package.mdx.to_bytes();
     let voice_data_offset = package
         .mdx
         .header
@@ -155,7 +154,7 @@ pub fn mdx2vgm(
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let mut options = *options;
-    options.mxdrv16y |= detect_mxdrv16y(input, &package)?;
+    options.mxdrv16y |= detect_mxdrv16y(&package)?;
     let mut document = to_vgm_document(&package, &options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     if package.drives_okim6258() {
@@ -183,7 +182,7 @@ pub fn mdx2vgm(
 pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
-    let mxdrv16y = detect_mxdrv16y(input, &package)?;
+    let mxdrv16y = detect_mxdrv16y(&package)?;
 
     println!("Title: {}", package.mdx.header.title);
     println!(
@@ -243,7 +242,7 @@ pub fn play_mdx(
     let package = read_mdx_package(input, pdx)?;
     let has_pcm = package.drives_okim6258();
     let mut options = *options;
-    options.mxdrv16y |= detect_mxdrv16y(input, &package)?;
+    options.mxdrv16y |= detect_mxdrv16y(&package)?;
 
     let generator = to_vgm_stream_generator(package, options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error}"))?;
