@@ -885,9 +885,7 @@ impl MdxCommandSpec for MdxExtended2Command {
             0x03 => Self::RelativeTranspose {
                 value: read_u8_at(bytes, payload)? as i8,
             },
-            _ => Self::Unknown(MdxExtended2UnknownCommand {
-                opcode: subopcode,
-            }),
+            _ => Self::Unknown(MdxExtended2UnknownCommand { opcode: subopcode }),
         };
         let length = if subopcode == 0x00 {
             2

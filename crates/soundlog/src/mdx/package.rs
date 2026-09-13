@@ -87,10 +87,7 @@ impl MdxPackage {
     /// parsed documents rather than the original input buffers. The PDX owned
     /// parser retains decoded sample data only, not the original compressed
     /// input representation.
-    pub fn parse_owned(
-        mdx_bytes: Vec<u8>,
-        pdx_bytes: Option<Vec<u8>>,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_owned(mdx_bytes: Vec<u8>, pdx_bytes: Option<Vec<u8>>) -> Result<Self, ParseError> {
         Ok(Self {
             mdx: MdxDocument::parse(&mdx_bytes)?,
             pdx: pdx_bytes.map(PdxDocument::parse_owned).transpose()?,

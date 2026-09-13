@@ -185,10 +185,7 @@ pub unsafe extern "C" fn stream_deinit() {
             // The ManuallyDrop sentinel in psram_vec is also silently
             // discarded, which is correct because ManuallyDrop never calls
             // the inner destructor anyway.
-            ptr::write(
-                ptr::addr_of_mut!(STATE),
-                MaybeUninit::uninit(),
-            );
+            ptr::write(ptr::addr_of_mut!(STATE), MaybeUninit::uninit());
         } else {
             // push_chunk path: the Vec inside VgmCallbackStream is a normal
             // heap allocation.  assume_init_drop() runs full drop glue and

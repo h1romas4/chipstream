@@ -8,8 +8,8 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
 use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
+use std::array;
 
 /// YM2610B has 6 FM channels + 3 PSG channels = 9 total channels
 /// (ADPCM channels are not tracked for tone)

@@ -15,9 +15,9 @@ use crate::binutil::{
     ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
 };
 use crate::chip;
-use std::cmp;
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::{VgmHeader, VgmHeaderField};
+use std::cmp;
 // re-export
 pub use crate::vgm::detail::StreamChipType;
 pub use crate::vgm::header::ChipId;

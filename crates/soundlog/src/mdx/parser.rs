@@ -130,9 +130,7 @@ pub fn parse_mdx_command(bytes: &[u8], offset: usize) -> Result<(MdxCommand, usi
         0xe6 => parse_extended2(bytes, operands, opcode),
         0xe7 => parse_extended(bytes, operands, opcode),
         _ => Ok((
-            MdxCommand::Raw(crate::mdx::command::MdxRawCommand {
-                opcode,
-            }),
+            MdxCommand::Raw(crate::mdx::command::MdxRawCommand { opcode }),
             1,
         )),
     }

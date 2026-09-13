@@ -28,8 +28,8 @@
 //! array_storage.write(0x20, 0xABCD);
 //! ```
 
-use std::fmt::Debug;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
 
 /// Trait for register storage backend

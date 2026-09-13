@@ -3,10 +3,10 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
-use soundlog::vgm::header::Okim6258Flags;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
 use soundlog::mdx::package::MdxPackage;
+use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
+use soundlog::vgm::header::Okim6258Flags;
 
 /// Convert an MDX file, optionally paired with its PDX file, into VGM.
 pub fn mdx2vgm(

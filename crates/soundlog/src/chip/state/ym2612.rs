@@ -7,8 +7,8 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
 use crate::chip::fnumber::{ChipTypeSpec, OpnaSpec};
+use std::array;
 
 /// YM2612 channel storage (256 register space, but sparse usage)
 ///

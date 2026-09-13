@@ -429,10 +429,7 @@ fn test_callback_stream_iteration_borrowing() {
     let mut cb_stream = VgmCallbackStream::from_vgm(raw).expect("valid VGM");
 
     // Print sizes to help reason about overhead
-    println!(
-        "size_of::<VgmCommand>() = {}",
-        mem::size_of::<VgmCommand>()
-    );
+    println!("size_of::<VgmCommand>() = {}", mem::size_of::<VgmCommand>());
     println!(
         "size_of::<StreamResult>() = {}",
         mem::size_of::<StreamResult>()

@@ -7,8 +7,8 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
 use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
+use std::array;
 
 /// YM2203 has 3 FM channels + 3 PSG channels = 6 total channels
 const YM2203_CHANNELS: usize = 6;

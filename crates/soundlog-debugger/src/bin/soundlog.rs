@@ -282,7 +282,7 @@ fn main() {
                     mxdrv16y,
                 };
                 match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
-                        Ok(()) => process::exit(0),
+                    Ok(()) => process::exit(0),
                     Err(error) => {
                         soundlog_debugger::log_error!(&*logger, "mdx play failed: {}", error);
                         process::exit(1);

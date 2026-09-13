@@ -293,7 +293,7 @@ fn find_match(
 }
 
 /// Adds candidate positions for potential matches to the hash map.
-/// 
+///
 /// `source` is the input buffer, `position` is the starting position of the new data,
 /// `length` is the number of bytes to consider, and `candidates` is the hash map storing
 /// previously seen positions keyed by 3-byte sequences.
@@ -369,8 +369,8 @@ fn make_result(result: Result, bytes_written: usize, reader: &BitReader<'_>) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::iter;
     use super::{DecodeResult, Result, decode, encode};
+    use std::iter;
 
     #[test]
     fn rejects_invalid_decode_arguments() {

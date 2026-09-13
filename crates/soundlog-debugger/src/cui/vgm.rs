@@ -1,5 +1,5 @@
-use std::convert::TryInto;
 use std::cmp;
+use std::convert::TryInto;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;

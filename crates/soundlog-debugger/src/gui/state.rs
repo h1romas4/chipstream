@@ -26,8 +26,8 @@ use soundlog::vgm::VgmHeaderField;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::detail::{DataBlockType, parse_data_block};
 
-use std::collections::HashMap;
 use std::cmp;
+use std::collections::HashMap;
 use std::mem;
 use std::sync::mpsc;
 use std::thread;
@@ -921,7 +921,7 @@ impl UiState {
                     // `VgmDocument` implements `From<&VgmDocument> for Vec<u8>` so use
                     // `Vec::from(&doc)` rather than the private `to_bytes()` method.
                     let rebuilt_bytes = Vec::from(&doc);
-                        let max_len = cmp::max(data.len(), rebuilt_bytes.len());
+                    let max_len = cmp::max(data.len(), rebuilt_bytes.len());
                     let mut diffs: Vec<(usize, usize)> = Vec::new();
                     let mut in_diff = false;
                     let mut diff_start: usize = 0;

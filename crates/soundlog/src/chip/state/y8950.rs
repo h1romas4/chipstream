@@ -7,8 +7,8 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
 use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
+use std::array;
 
 /// Y8950 has 9 FM channels
 const Y8950_CHANNELS: usize = 9;

@@ -168,9 +168,13 @@ pub fn parse_mdx_header(bytes: &[u8]) -> Result<(MdxHeader, usize), ParseError> 
 
     let first_track_offset = read_u16_be_at(bytes, track_table_offset)?;
     let first_track_position = base_offset.checked_add(first_track_offset as usize);
-    let track_count = if first_track_position
-        .and_then(|position| bytes.get(position))
-        .is_some_and(|&opcode| opcode == 0xe8)
+    let has_standard_track_table_length = first_track_position
+        .and_then(|position| position.checked_sub(track_table_offset))
+        .is_some_and(|length| length == TRACK_COUNT * 2);
+    let track_count = if !has_standard_track_table_length
+        && first_track_position
+            .and_then(|position| bytes.get(position))
+            .is_some_and(|&opcode| opcode == 0xe8)
     {
         EXTENDED_TRACK_COUNT
     } else {

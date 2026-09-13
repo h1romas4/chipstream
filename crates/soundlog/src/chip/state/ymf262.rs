@@ -7,8 +7,8 @@ use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
 use crate::chip::fnumber::{self as fnumber, ChipTypeSpec};
+use std::array;
 
 /// YMF262 has 18 FM channels (9 per port)
 const YMF262_CHANNELS: usize = 18;

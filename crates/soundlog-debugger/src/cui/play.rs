@@ -42,10 +42,15 @@ pub fn play_vgm(
         stream.set_loop_base(b);
     }
 
-    run_callback_stream(stream, logger, &file_path.display().to_string(), |callback_stream| {
-        // Track state for all chip types present in the file
-        callback_stream.track_chips(&instances);
-    })
+    run_callback_stream(
+        stream,
+        logger,
+        &file_path.display().to_string(),
+        |callback_stream| {
+            // Track state for all chip types present in the file
+            callback_stream.track_chips(&instances);
+        },
+    )
 }
 
 /// Attaches the same register-write/event logging callbacks used by

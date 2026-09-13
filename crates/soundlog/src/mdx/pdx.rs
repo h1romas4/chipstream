@@ -9,8 +9,8 @@
 //! round trip or construct a canonical uncompressed document.
 
 use crate::ParseError;
-use std::array;
 use crate::mdx::lz;
+use std::array;
 
 /// Number of note slots in one PDX bank.
 const ENTRIES_PER_BANK: usize = 96;

@@ -11,12 +11,12 @@ use soundlog::mdx::command::{
     MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown, MdxVolumeLfo,
     MdxVolumeUp,
 };
-use soundlog::mdx::header::parse_mdx_header;
-use soundlog::mdx::lz::encode as encode_lz;
-use soundlog::mdx::parser::parse_mdx_command;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
+use soundlog::mdx::header::parse_mdx_header;
+use soundlog::mdx::lz::encode as encode_lz;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::mdx::parser::parse_mdx_command;
 use soundlog::mdx::pcm::Pcm8aFormat;
 use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
@@ -758,7 +758,10 @@ fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
             op: 0x0f,
             operators: [MdxOperator::default(); 4],
         })
-        .add_mdx_command(0, MdxCommand::Pan(soundlog::mdx::command::MdxPan { value: 3 }))
+        .add_mdx_command(
+            0,
+            MdxCommand::Pan(soundlog::mdx::command::MdxPan { value: 3 }),
+        )
         .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap())
         .add_mdx_command(0, MdxVoiceOrPcmBank { value: 1 })
@@ -838,7 +841,13 @@ fn mdx_converter_remaps_fm_channel_from_raw_register_0x08_writes_under_mxdrv16y(
 fn mdx_converter_escapes_empty_infinite_loop_under_mxdrv16y() {
     let mut builder = MdxBuilder::new();
     builder
-        .add_mdx_command(0, MdxLoopStart { count: 0, reserved: 0 })
+        .add_mdx_command(
+            0,
+            MdxLoopStart {
+                count: 0,
+                reserved: 0,
+            },
+        )
         .add_mdx_command(
             0,
             MdxCommand::LoopEnd(MdxRelativeOffset {
@@ -927,7 +936,13 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
 fn mdx_converter_pcm_track_loop_uses_shared_loop_machinery() {
     let mut builder = MdxBuilder::new();
     builder
-        .add_mdx_command(8, MdxLoopStart { count: 3, reserved: 0 })
+        .add_mdx_command(
+            8,
+            MdxLoopStart {
+                count: 3,
+                reserved: 0,
+            },
+        )
         .add_mdx_command(8, MdxRest::new(2).unwrap())
         .add_mdx_command(
             8,
@@ -985,7 +1000,13 @@ fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
     // `loop_count`, which must only govern the whole-song repeat.
     let mut builder = MdxBuilder::new();
     builder
-        .add_mdx_command(0, MdxLoopStart { count: 4, reserved: 0 })
+        .add_mdx_command(
+            0,
+            MdxLoopStart {
+                count: 4,
+                reserved: 0,
+            },
+        )
         .add_mdx_command(0, MdxRest::new(1).unwrap())
         .add_mdx_command(
             0,
@@ -994,7 +1015,13 @@ fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
                 offset: -4,
             }),
         )
-        .add_mdx_command(1, MdxLoopStart { count: 2, reserved: 0 })
+        .add_mdx_command(
+            1,
+            MdxLoopStart {
+                count: 2,
+                reserved: 0,
+            },
+        )
         .add_mdx_command(1, MdxRest::new(2).unwrap())
         .add_mdx_command(
             1,
@@ -1214,8 +1241,8 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
     let mdx_bytes = fs::read(asset_dir.join("DRAi.mdx")).expect("read example.mdx");
     let package = MdxPackage::parse(&mdx_bytes, None).expect("parse example.mdx");
 
-    let expected_document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("eager convert example.mdx");
+    let expected_document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("eager convert example.mdx");
     assert!(
         expected_document.loop_command_index().is_some(),
         "example.mdx is expected to have a native loop point for this test to be meaningful"
@@ -1338,4 +1365,3 @@ fn parses_mdx_fixtures_and_round_trips_them() {
         );
     }
 }
-

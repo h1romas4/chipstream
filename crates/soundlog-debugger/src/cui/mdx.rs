@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use soundlog::chip::state::{Okim6258State, Ym2151State};
-use soundlog::vgm::command::Instance;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmStream;
+use soundlog::vgm::command::Instance;
 
 use crate::logger::Logger;
 
@@ -88,7 +88,8 @@ pub fn play_mdx(
             // No `VgmDocument`/header exists in the lazy path (see
             // `VgmStream::from_generator`), so track state manually using
             // the same clocks passed to the generator.
-            callback_stream.track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
+            callback_stream
+                .track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
             if has_pcm {
                 callback_stream
                     .track_state::<Okim6258State>(Instance::Primary, options.okim6258_clock as f32);
