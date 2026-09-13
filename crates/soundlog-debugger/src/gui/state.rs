@@ -1289,7 +1289,7 @@ fn draw_ast_node(ui: &mut egui::Ui, node: &AstNode, path: Vec<usize>, state: &mu
                 // copy the full original (untruncated) label_str to the clipboard
                 let label_clone = label_str.clone();
                 ui.ctx().output_mut(|out| out.copied_text = label_clone);
-                state.push_event(format!("copied: {}", &label_str));
+                state.push_event(format!("copied: {}", label_str));
                 // Close the context menu after handling the click so it doesn't remain open.
                 ui.close_menu();
             }
@@ -1567,14 +1567,12 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                         entry.extend(nodes);
                     } else if start < entry.len() {
                         // Overwrite existing range if overlapping (best-effort).
-                        let mut idx = start;
-                        for n in nodes.into_iter() {
+                        for (idx, n) in (start..).zip(nodes) {
                             if idx < entry.len() {
                                 entry[idx] = n;
                             } else {
                                 entry.push(n);
                             }
-                            idx += 1;
                         }
                     } else {
                         // start > len: pad with placeholders (unlikely) then append.

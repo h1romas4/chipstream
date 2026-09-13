@@ -2900,10 +2900,8 @@ fn test_multiple_dac_streams_wait_interleaving() {
                     stream1_writes.push(data_spec.value);
                 }
             }
-            VgmCommand::Ym2151Write(_, data_spec) => {
-                if data_spec.register == 0x08 {
-                    stream2_writes.push(data_spec.value);
-                }
+            VgmCommand::Ym2151Write(_, data_spec) if data_spec.register == 0x08 => {
+                stream2_writes.push(data_spec.value);
             }
             _ => {}
         }
@@ -2992,10 +2990,8 @@ fn test_multiple_dac_streams_wait_interleaving() {
                     current_consecutive_stream1 += 1;
                 }
             }
-            VgmCommand::Ym2151Write(_, data_spec) => {
-                if data_spec.register == 0x08 {
-                    current_consecutive_stream2 += 1;
-                }
+            VgmCommand::Ym2151Write(_, data_spec) if data_spec.register == 0x08 => {
+                current_consecutive_stream2 += 1;
             }
             _ => {}
         }

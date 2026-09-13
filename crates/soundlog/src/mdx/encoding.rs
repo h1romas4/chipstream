@@ -82,22 +82,6 @@ fn push_codepoint(result: &mut String, codepoint: u32) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::decode_shift_jis;
-
-    #[test]
-    fn decodes_cp932_and_x68000_extensions() {
-        assert_eq!(decode_shift_jis(b"ASCII"), "ASCII");
-        assert_eq!(
-            decode_shift_jis(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]),
-            "テスト"
-        );
-        assert_eq!(decode_shift_jis(&[0xa6, 0xdf]), "ｦﾟ");
-        assert_eq!(decode_shift_jis(&[0xec, 0x71, 0xf0, 0x31]), "Ⅳ¹");
-    }
-}
-
 /// A lookup table for converting CP932 (Shift JIS) code points to Unicode.
 /// This table maps each possible 16-bit CP932 code point to its corresponding Unicode code point.
 /// <https://unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP932.TXT>
@@ -5565,3 +5549,19 @@ pub static CP932_TO_UNICODE: [u16; 65536] = [
     0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd, 0xfffd,
     0xfffd, 0xfffd, 0xfffd, 0xfffd,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::decode_shift_jis;
+
+    #[test]
+    fn decodes_cp932_and_x68000_extensions() {
+        assert_eq!(decode_shift_jis(b"ASCII"), "ASCII");
+        assert_eq!(
+            decode_shift_jis(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]),
+            "テスト"
+        );
+        assert_eq!(decode_shift_jis(&[0xa6, 0xdf]), "ｦﾟ");
+        assert_eq!(decode_shift_jis(&[0xec, 0x71, 0xf0, 0x31]), "Ⅳ¹");
+    }
+}
