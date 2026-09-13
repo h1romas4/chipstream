@@ -31,6 +31,7 @@ Commands:
   redump  Re-dump VGM file with DAC streams expanded to chip writes
   parse   Parse and display VGM file commands with offsets and lengths
   play    Play VGM file and display register writes with events
+  mdx     MDX file operations
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:

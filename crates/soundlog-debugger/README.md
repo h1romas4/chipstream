@@ -14,6 +14,7 @@ Contents:
   - `redump`
   - `parse`
   - `play`
+  - `mdx`
 - GUI notes
 - Diagnostic flags and piping
 - Troubleshooting and caveats
@@ -42,6 +43,7 @@ Commands:
   redump  Re-dump VGM file with DAC streams expanded to chip writes
   parse   Parse and display VGM file commands with offsets and lengths
   play    Play VGM file and display register writes with events
+  mdx     MDX file operations
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -200,6 +202,74 @@ Notes:
 
 - `play` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
 - The frequency values shown in `play` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
+
+### `mdx`
+
+The `mdx` command group provides MDX parsing, conversion, and playback through
+the same VGM command and register-write processing used by the other CLI
+commands.
+
+```bash
+${soundlog} mdx <COMMAND>
+```
+
+#### `mdx parse`
+
+Parse an MDX file and display its document summary. An optional PDX file can
+be supplied for packages that reference external PCM data.
+
+```bash
+${soundlog} mdx parse <INPUT> [--pdx <FILE>]
+```
+
+Examples:
+
+```bash
+${soundlog} mdx parse samples/example.mdx
+${soundlog} mdx parse samples/example.mdx --pdx samples/example.pdx
+```
+
+#### `mdx convert`
+
+Convert an MDX file to a VGM file. Use `-` as the output path to write the
+serialized VGM bytes to stdout.
+
+```bash
+${soundlog} mdx convert <INPUT> <OUTPUT> [OPTIONS]
+```
+
+Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
+`--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
+`--mxdrv16y`.
+
+Examples:
+
+```bash
+${soundlog} mdx convert samples/example.mdx samples/example.vgm
+${soundlog} mdx convert samples/example.mdx samples/example.vgm \
+  --pdx samples/example.pdx --loop-count 2
+```
+
+#### `mdx play`
+
+Convert an MDX file lazily and print the same register-write and event log
+format as `soundlog play`. The complete VGM command list is not built up
+front.
+
+```bash
+${soundlog} mdx play <INPUT> [OPTIONS]
+```
+
+The playback options include `--pdx <FILE>`, `--dry-run`,
+`--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
+`--loop-count <COUNT>`, and `--mxdrv16y`.
+
+Examples:
+
+```bash
+${soundlog} mdx play samples/example.mdx
+${soundlog} mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
+```
 
 ## GUI notes
 
