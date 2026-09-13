@@ -73,6 +73,22 @@ const FM_VOLUME_TABLE: [u8; 16] = [
     0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MdxPcmMode {
+    LegacyAdpcm,
+    Pcm8a,
+}
+
+impl MdxPcmMode {
+    fn from_track_count(track_count: usize) -> Self {
+        if track_count == 16 {
+            Self::Pcm8a
+        } else {
+            Self::LegacyAdpcm
+        }
+    }
+}
+
 /// Options controlling MDX to VGM conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxToVgmOptions {
@@ -376,6 +392,8 @@ struct TrackState {
 struct PlaybackState<P: Borrow<MdxPackage>> {
     /// MDX/PDX package being consumed by the playback simulation.
     package: P,
+    /// MDX PCM command semantics selected from the header's track layout.
+    pcm_mode: MdxPcmMode,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
     /// True for files with PCM8/PCM8A tracks (>= 9 MDX tracks); gates all
@@ -436,72 +454,79 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
 }
 
 impl<P: Borrow<MdxPackage>> PlaybackState<P> {
-    fn new(package: P, loop_count: Option<u32>, mxdrv16y: bool, mark_native_loop: bool) -> Self {
+    fn new(
+        package: P,
+        pcm_mode: MdxPcmMode,
+        loop_count: Option<u32>,
+        mxdrv16y: bool,
+        mark_native_loop: bool,
+    ) -> Self {
         let has_pcm = package.borrow().drives_okim6258();
         let tracks = package
             .borrow()
             .mdx
             .tracks
             .iter()
-                .enumerate()
-                .map(|(track, commands)| TrackState {
-                    command_index: 0,
-                    wait_ticks: 0,
-                    key_off_ticks: 0,
-                    active: !commands.is_empty(),
-                    key_on: false,
-                    voice: 0,
-                    voice_selected: false,
-                    voice_pending: false,
-                    pan_pending: false,
-                    con_fl: 0,
-                    key_on_slot: 0,
-                    fm_channel: track as u8,
-                    pan: 0xc0,
-                    volume: 8,
-                    gate: 8,
-                    key_off_disabled: false,
-                    key_on_delay: 0,
-                    key_on_delay_counter: 0,
-                    key_on_pending: false,
-                    detune: 0,
-                    transpose: 0,
-                    note_pitch: None,
-                    last_written_pitch: None,
-                    bend_offset: 0,
-                    bend_delta: 0,
-                    portamento_active: false,
-                    sync_wait: false,
-                    loop_stack: Vec::new(),
-                    pms_ams: 0,
-                    opm_lfo_reset_pending: false,
-                    lfo_delay: 0,
-                    lfo_delay_counter: 0,
-                    pitch_lfo_enabled: false,
-                    pitch_lfo_type: 0,
-                    pitch_lfo_length: 0,
-                    pitch_lfo_length_cooked: 0,
-                    pitch_lfo_length_counter: 0,
-                    pitch_lfo_delta_start: 0,
-                    pitch_lfo_delta: 0,
-                    pitch_lfo_offset_start: 0,
-                    pitch_lfo_offset: 0,
-                    volume_lfo_enabled: false,
-                    volume_lfo_type: 0,
-                    volume_lfo_length: 0,
-                    volume_lfo_length_counter: 0,
-                    volume_lfo_delta_start: 0,
-                    volume_lfo_delta: 0,
-                    volume_lfo_delta_cooked: 0,
-                    volume_lfo_offset: 0,
-                    pcm_bank: 0,
-                    pcm_rate_step: 0x10000,
-                    pcm_data_kind: Pcm8aFormat::Adpcm,
-                    pcm_pan: 0,
-                })
-                .collect();
+            .enumerate()
+            .map(|(track, commands)| TrackState {
+                command_index: 0,
+                wait_ticks: 0,
+                key_off_ticks: 0,
+                active: !commands.is_empty(),
+                key_on: false,
+                voice: 0,
+                voice_selected: false,
+                voice_pending: false,
+                pan_pending: false,
+                con_fl: 0,
+                key_on_slot: 0,
+                fm_channel: track as u8,
+                pan: 0xc0,
+                volume: 8,
+                gate: 8,
+                key_off_disabled: false,
+                key_on_delay: 0,
+                key_on_delay_counter: 0,
+                key_on_pending: false,
+                detune: 0,
+                transpose: 0,
+                note_pitch: None,
+                last_written_pitch: None,
+                bend_offset: 0,
+                bend_delta: 0,
+                portamento_active: false,
+                sync_wait: false,
+                loop_stack: Vec::new(),
+                pms_ams: 0,
+                opm_lfo_reset_pending: false,
+                lfo_delay: 0,
+                lfo_delay_counter: 0,
+                pitch_lfo_enabled: false,
+                pitch_lfo_type: 0,
+                pitch_lfo_length: 0,
+                pitch_lfo_length_cooked: 0,
+                pitch_lfo_length_counter: 0,
+                pitch_lfo_delta_start: 0,
+                pitch_lfo_delta: 0,
+                pitch_lfo_offset_start: 0,
+                pitch_lfo_offset: 0,
+                volume_lfo_enabled: false,
+                volume_lfo_type: 0,
+                volume_lfo_length: 0,
+                volume_lfo_length_counter: 0,
+                volume_lfo_delta_start: 0,
+                volume_lfo_delta: 0,
+                volume_lfo_delta_cooked: 0,
+                volume_lfo_offset: 0,
+                pcm_bank: 0,
+                pcm_rate_step: 0x10000,
+                pcm_data_kind: Pcm8aFormat::Adpcm,
+                pcm_pan: 0,
+            })
+            .collect();
         Self {
             package,
+            pcm_mode,
             tracks,
             has_pcm,
             pcm_channels: Default::default(),
@@ -706,7 +731,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if let Some(existing) = self.pcm_sample_cache.get(&key) {
             return Some(Rc::clone(existing));
         }
-        let bytes = self.package.borrow().pdx.as_ref()?.sample_bytes(bank, note)?;
+        let bytes = self
+            .package
+            .borrow()
+            .pdx
+            .as_ref()?
+            .sample_bytes(bank, note)?;
         let decoded = decode_pcm8a(format, bytes).ok()?;
         let samples: Rc<[i16]> = decoded.into();
         self.pcm_sample_cache.insert(key, Rc::clone(&samples));
@@ -897,11 +927,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     write_ym2151(builder, 0x0f, combined);
                 }
                 MdxCommand::AdpcmOrNoiseFrequency(command) => {
-                    // PCM8A rate/format select; PCM1 (single-channel, fixed
-                    // hardware divider) is not yet implemented.
-                    if let Some(&(rate_step, data_kind)) =
-                        PCM8A_MODE_TABLE.get(usize::from(command.value))
-                    {
+                    // Standard nine-track MDX uses the legacy ADPCM rate
+                    // selector (F0-F4); extended MDX uses PCM8A F0-F12.
+                    let mode = PCM8A_MODE_TABLE
+                        .get(usize::from(command.value))
+                        .copied()
+                        .filter(|&(_, data_kind)| {
+                            matches!(self.pcm_mode, MdxPcmMode::Pcm8a)
+                                || data_kind == Pcm8aFormat::Adpcm
+                        });
+                    if let Some((rate_step, data_kind)) = mode {
                         self.tracks[track].pcm_rate_step = rate_step;
                         self.tracks[track].pcm_data_kind = data_kind;
                     }
@@ -1678,8 +1713,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// samples to maintain accurate playback timing.
     fn emit_wait(&mut self, builder: &mut VgmBuilder, sample_rate: u32) {
         let tick_microseconds = self.tick_microseconds();
-        let sample_accumulator =
-            u64::from(self.sample_remainder) + u64::from(tick_microseconds) * u64::from(sample_rate);
+        let sample_accumulator = u64::from(self.sample_remainder)
+            + u64::from(tick_microseconds) * u64::from(sample_rate);
         let samples = (sample_accumulator / u64::from(MICROSECONDS_PER_SECOND)) as u32;
         self.sample_remainder = (sample_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
 
@@ -1691,8 +1726,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let pcm_accumulator = u64::from(self.pcm_output_remainder)
             + u64::from(tick_microseconds) * u64::from(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ);
         let pcm_bytes_due = (pcm_accumulator / u64::from(MICROSECONDS_PER_SECOND)) as u32;
-        self.pcm_output_remainder =
-            (pcm_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
+        self.pcm_output_remainder = (pcm_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
         if pcm_bytes_due == 0 {
             Self::emit_wait_chunks(builder, samples);
             return;
@@ -1814,8 +1848,10 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
         mark_native_loop: bool,
     ) -> Result<Self, MdxConvertError> {
         options.validate()?;
+        let pcm_mode = MdxPcmMode::from_track_count(package.borrow().mdx.header.track_count());
         let playback = PlaybackState::new(
             package,
+            pcm_mode,
             options.loop_count,
             options.mxdrv16y,
             mark_native_loop,
@@ -1874,9 +1910,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
                 self.finished = true;
                 Ok(false)
             }
-            StepOutcome::Continue => {
-                Ok(true)
-            }
+            StepOutcome::Continue => Ok(true),
         }
     }
 }
