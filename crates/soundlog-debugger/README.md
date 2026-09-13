@@ -64,7 +64,7 @@ Options:
 Run a headless test / round-trip check on a VGM file. Useful for automated verification and CI.
 
 ```bash
-${soundlog} test <FILE> [--dry-run]
+soundlog test <FILE> [--dry-run]
 ```
 
 - `<FILE>`: path to input binary. Use `-` to read from stdin.
@@ -75,13 +75,13 @@ Examples:
 - Run a test on a file (prints a one-line result or diagnostics by default):
 
 ```bash
-${soundlog} test samples/example.vgz
+soundlog test samples/example.vgz
 ```
 
 - Read gzipped input from a pipe (stdin) and suppress normal output:
 
 ```bash
-cat samples/example.vgz | ${soundlog} test - --dry-run
+cat samples/example.vgz | soundlog test - --dry-run
 ```
 
 Behavior:
@@ -99,7 +99,7 @@ Please note that the Wait command will not be restructured or optimized.
 All `Wait*` and `Ym2612Port0Address2AWriteAndWaitN` commands are converted to `WaitSamples`.
 
 ```bash
-${soundlog} redump <INPUT> <OUTPUT> [--diag]
+soundlog redump <INPUT> <OUTPUT> [--diag]
 ```
 
 - `<INPUT>`: path to input VGM. `-` for stdin is supported (useful with pipes).
@@ -111,13 +111,13 @@ Examples:
 - Re-dump to a file:
 
 ```bash
-${soundlog} redump samples/input.vgz samples/output.vgm
+soundlog redump samples/input.vgz samples/output.vgm
 ```
 
 - Expand loops to exactly 2 iterations and add 44100 samples (1 second @ 44.1kHz) fadeout:
 
 ```bash
-${soundlog} redump samples/input.vgz rebuilt.vgm --loop-count 2 --fadeout-samples 44100
+soundlog redump samples/input.vgz rebuilt.vgm --loop-count 2 --fadeout-samples 44100
 ```
 
 Notes:
@@ -130,7 +130,7 @@ Notes:
 Parse and display the VGM command stream with offsets and lengths.
 
 ```bash
-${soundlog} parse <FILE>
+soundlog parse <FILE>
 ```
 
 - `<FILE>`: path to input VGM. Use `-` to read from stdin (gzipped input is detected automatically).
@@ -150,13 +150,13 @@ Examples:
 - Parse a file and print the command list:
 
 ```bash
-${soundlog} parse samples/example.vgz
+soundlog parse samples/example.vgz
 ```
 
 - Feed gzipped input via stdin and parse:
 
 ```bash
-cat samples/example.vgz | ${soundlog} parse -
+cat samples/example.vgz | soundlog parse -
 ```
 
 Notes:
@@ -169,7 +169,7 @@ Notes:
 Play a VGM file and display register writes with state events.
 
 ```bash
-${soundlog} play <FILE> [--dry-run]
+soundlog play <FILE> [--dry-run]
 ```
 
 - `<FILE>`: path to input VGM. Use `-` to read from stdin.
@@ -189,13 +189,13 @@ Examples:
 - Play and print register logs to the terminal:
 
 ```bash
-${soundlog} play samples/example.vgz
+soundlog play samples/example.vgz
 ```
 
 - Parse and track events but suppress printing (dry-run):
 
 ```bash
-${soundlog} play samples/example.vgz --dry-run
+soundlog play samples/example.vgz --dry-run
 ```
 
 Notes:
@@ -210,7 +210,7 @@ the same VGM command and register-write processing used by the other CLI
 commands.
 
 ```bash
-${soundlog} mdx <COMMAND>
+soundlog mdx <COMMAND>
 ```
 
 #### `mdx parse`
@@ -219,15 +219,20 @@ Parse an MDX file and display its document summary. An optional PDX file can
 be supplied for packages that reference external PCM data.
 
 ```bash
-${soundlog} mdx parse <INPUT> [--pdx <FILE>]
+soundlog mdx parse <INPUT> [--pdx <FILE>]
 ```
 
 Examples:
 
 ```bash
-${soundlog} mdx parse samples/example.mdx
-${soundlog} mdx parse samples/example.mdx --pdx samples/example.pdx
+soundlog mdx parse samples/example.mdx
+soundlog mdx parse samples/example.mdx --pdx samples/example.pdx
 ```
+
+When `--pdx <FILE>` is omitted, the PDX filename stored in the MDX header is
+used to search the input file's directory. The exact name, `.PDX`, and `.pdx`
+variants are checked, followed by a case-insensitive filename search. If no
+matching file is found, processing continues without PDX data.
 
 #### `mdx convert`
 
@@ -235,7 +240,7 @@ Convert an MDX file to a VGM file. Use `-` as the output path to write the
 serialized VGM bytes to stdout.
 
 ```bash
-${soundlog} mdx convert <INPUT> <OUTPUT> [OPTIONS]
+soundlog mdx convert <INPUT> <OUTPUT> [OPTIONS]
 ```
 
 Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
@@ -245,8 +250,8 @@ Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
 Examples:
 
 ```bash
-${soundlog} mdx convert samples/example.mdx samples/example.vgm
-${soundlog} mdx convert samples/example.mdx samples/example.vgm \
+soundlog mdx convert samples/example.mdx samples/example.vgm
+soundlog mdx convert samples/example.mdx samples/example.vgm \
   --pdx samples/example.pdx --loop-count 2
 ```
 
@@ -257,7 +262,7 @@ format as `soundlog play`. The complete VGM command list is not built up
 front.
 
 ```bash
-${soundlog} mdx play <INPUT> [OPTIONS]
+soundlog mdx play <INPUT> [OPTIONS]
 ```
 
 The playback options include `--pdx <FILE>`, `--dry-run`,
@@ -267,8 +272,8 @@ The playback options include `--pdx <FILE>`, `--dry-run`,
 Examples:
 
 ```bash
-${soundlog} mdx play samples/example.mdx
-${soundlog} mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
+soundlog mdx play samples/example.mdx
+soundlog mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
 ## GUI notes
@@ -276,7 +281,7 @@ ${soundlog} mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
 - Launch the GUI by running the binary with no subcommand:
 
 ```bash
-${soundlog} samples/example.vgz
+soundlog samples/example.vgz
 ```
 
 - The GUI is a simple inspector for parsed VGM documents and command streams. It is intended for interactive debugging and visualization, not for production conversion pipelines.
