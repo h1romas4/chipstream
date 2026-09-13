@@ -254,7 +254,7 @@ fn main() {
                     loop_count,
                     mxdrv16y,
                 };
-                match cui::convert::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
+                match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
                         soundlog_debugger::log_error!(&*logger, "convert failed: {}", error);

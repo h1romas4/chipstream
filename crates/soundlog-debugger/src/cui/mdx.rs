@@ -1,27 +1,84 @@
 use std::fs;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use soundlog::chip::state::{Okim6258State, Ym2151State};
-use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
+use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
+use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::command::Instance;
+use soundlog::vgm::header::Okim6258Flags;
 
 use crate::logger::Logger;
 
-/// Parse an MDX file and print its summary and every track command.
-pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
+/// Reads an MDX package, resolving its PDX sidecar when no explicit path was
+/// supplied.
+pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
     let mdx_bytes = fs::read(input)
         .with_context(|| format!("failed to read MDX input: {}", input.display()))?;
-    let pdx_bytes = pdx
+    let mdx = MdxDocument::parse(&mdx_bytes)
+        .map_err(|error| anyhow!("failed to parse MDX input: {error}"))?;
+
+    let pdx_path = pdx.map(PathBuf::from).or_else(|| {
+        mdx.header.pdx_name.as_deref().and_then(|name| {
+            let directory = input.parent().unwrap_or_else(|| Path::new("."));
+            let candidates = [
+                directory.join(name),
+                directory.join(format!("{name}.PDX")),
+                directory.join(format!("{name}.pdx")),
+            ];
+            candidates.into_iter().find(|candidate| candidate.is_file())
+        })
+    });
+    let pdx_bytes = pdx_path
+        .as_deref()
         .map(|path| {
             fs::read(path).with_context(|| format!("failed to read PDX input: {}", path.display()))
         })
         .transpose()?;
-    let package = MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
-        .map_err(|error| anyhow!("failed to parse MDX package: {error}"))?;
+
+    MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
+        .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
+}
+
+/// Converts an MDX file, optionally paired with its PDX file, into VGM.
+pub fn mdx2vgm(
+    input: &Path,
+    output: &Path,
+    pdx: Option<&Path>,
+    options: &MdxToVgmOptions,
+) -> Result<()> {
+    let package = read_mdx_package(input, pdx)?;
+    let mut document = to_vgm_document(&package, options)
+        .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
+    if package.drives_okim6258() {
+        document.header.okim6258_flags = Okim6258Flags {
+            clock_divider: PCM8_OKIM6258_CLOCK_DIVIDER,
+            adpcm_3bit_select: false,
+            output_12bit: false,
+            reserved: 0,
+        };
+    }
+    let bytes: Vec<u8> = (&document).into();
+
+    if output.as_os_str() == "-" {
+        io::stdout()
+            .write_all(&bytes)
+            .context("failed to write VGM to stdout")?;
+    } else {
+        fs::write(output, bytes)
+            .with_context(|| format!("failed to write VGM output: {}", output.display()))?;
+    }
+    Ok(())
+}
+
+/// Parse an MDX file and print its summary and every track command.
+pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
+    let package = read_mdx_package(input, pdx)?;
 
     println!("Title: {}", package.mdx.header.title);
     println!(
@@ -65,15 +122,7 @@ pub fn play_mdx(
     logger: Arc<Logger>,
     options: &MdxToVgmOptions,
 ) -> Result<()> {
-    let mdx_bytes = fs::read(input)
-        .with_context(|| format!("failed to read MDX input: {}", input.display()))?;
-    let pdx_bytes = pdx
-        .map(|path| {
-            fs::read(path).with_context(|| format!("failed to read PDX input: {}", path.display()))
-        })
-        .transpose()?;
-    let package = MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
-        .map_err(|error| anyhow!("failed to parse MDX package: {error}"))?;
+    let package = read_mdx_package(input, pdx)?;
     let has_pcm = package.drives_okim6258();
 
     let generator = to_vgm_stream_generator(package, *options)
