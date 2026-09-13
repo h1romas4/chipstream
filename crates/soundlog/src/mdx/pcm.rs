@@ -150,6 +150,7 @@ pub(crate) struct AdpcmEncoder {
 }
 
 impl AdpcmEncoder {
+    /// Encodes one 12-bit signed sample into a 4-bit ADPCM nibble, updating the internal state.
     pub(crate) fn encode_nibble(&mut self, target: i32) -> u8 {
         let target = target.clamp(-2048, 2047);
         let mut diff = target - self.signal;
@@ -186,12 +187,16 @@ impl AdpcmEncoder {
     }
 }
 
+/// Step size table for the ADPCM encoder and decoder. Each entry represents the quantization step
+/// for the corresponding step index.
 pub(crate) const STEP_TABLE: [i32; 49] = [
     16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
     143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
     876, 963, 1060, 1166, 1282, 1411, 1552,
 ];
 
+/// Index shift table for the ADPCM encoder and decoder. Each entry indicates
+/// how the step index should be adjusted based on the lower three bits of the encoded nibble.
 pub(crate) const INDEX_SHIFT: [isize; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
 
 #[cfg(test)]

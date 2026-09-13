@@ -99,6 +99,9 @@ impl MdxTone {
     }
 }
 
+/// Parse the operator fields from a slice of bytes into an array of four [`MdxOperator`] values.
+///
+/// The input slice must contain at least 24 bytes, corresponding to six 4-byte groups for the four operators.
 fn operators_from_bytes(bytes: &[u8]) -> [MdxOperator; 4] {
     let group = |index: usize| {
         let start = index * 4;
@@ -127,6 +130,9 @@ fn operators_from_bytes(bytes: &[u8]) -> [MdxOperator; 4] {
     })
 }
 
+/// Serialize an array of four [`MdxOperator`] values into a 24-byte slice suitable for an MDX tone record.
+///
+/// The output slice contains six 4-byte groups corresponding to the four operators.
 fn operators_to_bytes(operators: [MdxOperator; 4]) -> [u8; 24] {
     let mut bytes = [0; 24];
     let mut groups = [[0; 4]; 6];
