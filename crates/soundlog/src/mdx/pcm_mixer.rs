@@ -281,6 +281,46 @@ mod tests {
     }
 
     #[test]
+    fn mix_and_encode_byte_combines_samples_from_different_blocks() {
+        let samples = [1000i16, -1000, 500, 250];
+        let mut channels: [PcmChannelState; 8] = Default::default();
+        channels[0] = PcmChannelState {
+            block_start: 0,
+            block_length: 2,
+            rate_step: 0x10000,
+            gain: 16,
+            ..Default::default()
+        };
+        channels[1] = PcmChannelState {
+            block_start: 2,
+            block_length: 2,
+            rate_step: 0x10000,
+            gain: 16,
+            ..Default::default()
+        };
+
+        let mut encoder = AdpcmEncoder::default();
+        let mixed_byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
+
+        let combined_samples = [1500i16, -750];
+        let mut reference_channels: [PcmChannelState; 8] = Default::default();
+        reference_channels[0] = PcmChannelState {
+            block_length: 2,
+            rate_step: 0x10000,
+            gain: 16,
+            ..Default::default()
+        };
+        let mut reference_encoder = AdpcmEncoder::default();
+        let reference_byte = mix_and_encode_byte(
+            &mut reference_channels,
+            &combined_samples,
+            &mut reference_encoder,
+        );
+
+        assert_eq!(mixed_byte, reference_byte);
+    }
+
+    #[test]
     fn channels_can_share_one_decoded_block_range() {
         let samples = [1000i16, 1000];
         let mut channels: [PcmChannelState; 8] = Default::default();
