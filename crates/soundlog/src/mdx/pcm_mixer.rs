@@ -7,9 +7,9 @@
 //! module reproduces that mixing + re-encoding step so it can be replayed
 //! faithfully from a single OKIM6258 chip in VGM.
 //!
-//! Note: the real hardware output stage also runs the mix through analog
-//! low-pass/high-pass filtering before re-encoding; that filtering is not
-//! yet ported here (see the PCM/PDX implementation plan).
+//! The real hardware output stage is approximated with the NanoDriveX
+//! 15,625 Hz `/512` 3rd-order low-pass and 183 Hz high-pass filters before
+//! re-encoding.
 //!
 //! The mixer keeps one resampling state per logical PCM channel and emits a
 //! single mono ADPCM byte stream. It does not decide when MDX notes begin or
@@ -45,6 +45,58 @@ pub const PCM8_OKIM6258_CLOCK_DIVIDER: u8 = 2;
 /// halves (or otherwise distorts) the real decode rate, which sounds like
 /// noise even though the ADPCM data itself is correct.
 pub const PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ: u32 = PCM8_MASTER_SAMPLE_RATE * 512;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PcmOutputFilter {
+    enabled: bool,
+    lpf_state1: f32,
+    lpf_state2: f32,
+    lpf_state3: f32,
+    hpf_state: f32,
+}
+
+impl PcmOutputFilter {
+    pub(crate) const fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            lpf_state1: 0.0,
+            lpf_state2: 0.0,
+            lpf_state3: 0.0,
+            hpf_state: 0.0,
+        }
+    }
+
+    // NanoDriveX's Pcm8LpfDiv512 coefficients for a 15,625 Hz OKIM6258 rate.
+    const LPF_B0: f32 = 0.548918487;
+    const LPF_B1: f32 = 0.564018086;
+    const LPF_B2: f32 = 0.141551943;
+    const LPF_B3: f32 = 0.011922191;
+    const LPF_A1: f32 = 0.201042424;
+    const LPF_A2: f32 = -0.019938263;
+    const LPF_A3: f32 = 0.085306545;
+
+    // NanoDriveX's Pcm8HpfDiv512 coefficients (183 Hz high-pass).
+    const HPF_B0: f32 = 0.964495990;
+    const HPF_A1: f32 = 0.928991979;
+
+    fn process_sample(&mut self, sample: i16) -> i16 {
+        if !self.enabled {
+            return sample;
+        }
+        let input = f32::from(sample);
+        let lpf_output = Self::LPF_B0 * input + self.lpf_state1;
+        self.lpf_state1 = Self::LPF_B1 * input - Self::LPF_A1 * lpf_output + self.lpf_state2;
+        self.lpf_state2 = Self::LPF_B2 * input - Self::LPF_A2 * lpf_output + self.lpf_state3;
+        self.lpf_state3 = Self::LPF_B3 * input - Self::LPF_A3 * lpf_output;
+
+        let scaled_input = Self::HPF_B0 * lpf_output;
+        let hpf_output = scaled_input + self.hpf_state;
+        self.hpf_state = -scaled_input + Self::HPF_A1 * hpf_output;
+
+        let rounded = hpf_output + if hpf_output >= 0.0 { 0.5 } else { -0.5 };
+        rounded.clamp(-2048.0, 2047.0) as i16
+    }
+}
 
 /// Converts a raw MDX `@v` volume byte (`0x00..=0x0F` nibble form, or
 /// `0x80..=0xFF` fine-grained form) into a PCM8 channel gain multiplier,
@@ -145,6 +197,7 @@ pub(crate) fn mix_and_encode_byte(
     channels: &mut [PcmChannelState; 8],
     samples: &[i16],
     encoder: &mut AdpcmEncoder,
+    filter: &mut PcmOutputFilter,
 ) -> u8 {
     let mut mix0 = 0i32;
     let mut mix1 = 0i32;
@@ -152,7 +205,9 @@ pub(crate) fn mix_and_encode_byte(
         mix0 += channel.advance(samples);
         mix1 += channel.advance(samples);
     }
-    encoder.encode_pair(clamp_to_12_bit(mix0), clamp_to_12_bit(mix1))
+    let filtered0 = filter.process_sample(clamp_to_12_bit(mix0));
+    let filtered1 = filter.process_sample(clamp_to_12_bit(mix1));
+    encoder.encode_pair(filtered0, filtered1)
 }
 
 #[cfg(test)]
@@ -172,6 +227,16 @@ mod tests {
         assert_eq!(pcm8_gain(0x80), 80);
         // 0xff -> tl=0x7f, out of TL_TABLE range -> level 0 -> lowest gain.
         assert_eq!(pcm8_gain(0xff), 2);
+    }
+
+    #[test]
+    fn pcm_output_filter_reduces_first_full_scale_sample() {
+        let mut filter = PcmOutputFilter::new(true);
+
+        let output = filter.process_sample(2047);
+
+        assert!(output < 2047);
+        assert!(output > 0);
     }
 
     #[test]
@@ -237,11 +302,20 @@ mod tests {
         let mut encoder = AdpcmEncoder::default();
         // All channels silent -> mixed sample is 0 for both nibbles, so two
         // independent silent encoders must produce identical bytes.
-        let byte = mix_and_encode_byte(&mut channels, &[], &mut encoder);
+        let byte = mix_and_encode_byte(
+            &mut channels,
+            &[],
+            &mut encoder,
+            &mut PcmOutputFilter::default(),
+        );
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
         let mut reference_encoder = AdpcmEncoder::default();
-        let reference_byte =
-            mix_and_encode_byte(&mut reference_channels, &[], &mut reference_encoder);
+        let reference_byte = mix_and_encode_byte(
+            &mut reference_channels,
+            &[],
+            &mut reference_encoder,
+            &mut PcmOutputFilter::default(),
+        );
         assert_eq!(byte, reference_byte);
     }
 
@@ -272,11 +346,20 @@ mod tests {
         let mut encoder = AdpcmEncoder::default();
         // The two channels cancel out, so the encoded byte should match an
         // encoder fed two all-silent channels.
-        let byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
+        let byte = mix_and_encode_byte(
+            &mut channels,
+            &samples,
+            &mut encoder,
+            &mut PcmOutputFilter::default(),
+        );
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
         let mut reference_encoder = AdpcmEncoder::default();
-        let reference_byte =
-            mix_and_encode_byte(&mut reference_channels, &[], &mut reference_encoder);
+        let reference_byte = mix_and_encode_byte(
+            &mut reference_channels,
+            &[],
+            &mut reference_encoder,
+            &mut PcmOutputFilter::default(),
+        );
         assert_eq!(byte, reference_byte);
     }
 
@@ -300,7 +383,12 @@ mod tests {
         };
 
         let mut encoder = AdpcmEncoder::default();
-        let mixed_byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
+        let mixed_byte = mix_and_encode_byte(
+            &mut channels,
+            &samples,
+            &mut encoder,
+            &mut PcmOutputFilter::default(),
+        );
 
         let combined_samples = [1500i16, -750];
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
@@ -315,6 +403,7 @@ mod tests {
             &mut reference_channels,
             &combined_samples,
             &mut reference_encoder,
+            &mut PcmOutputFilter::default(),
         );
 
         assert_eq!(mixed_byte, reference_byte);
@@ -332,7 +421,12 @@ mod tests {
         }
 
         let mut encoder = AdpcmEncoder::default();
-        let shared_byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
+        let shared_byte = mix_and_encode_byte(
+            &mut channels,
+            &samples,
+            &mut encoder,
+            &mut PcmOutputFilter::default(),
+        );
 
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
         reference_channels[0].block_start = 0;
@@ -340,8 +434,12 @@ mod tests {
         reference_channels[0].rate_step = 0x10000;
         reference_channels[0].gain = 32;
         let mut reference_encoder = AdpcmEncoder::default();
-        let reference_byte =
-            mix_and_encode_byte(&mut reference_channels, &samples, &mut reference_encoder);
+        let reference_byte = mix_and_encode_byte(
+            &mut reference_channels,
+            &samples,
+            &mut reference_encoder,
+            &mut PcmOutputFilter::default(),
+        );
 
         assert_eq!(shared_byte, reference_byte);
     }

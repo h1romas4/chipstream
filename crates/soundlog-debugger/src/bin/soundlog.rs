@@ -5,7 +5,7 @@
 //! state and call into the module each frame.
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -15,10 +15,27 @@ use std::sync::Arc;
 
 // Use the library crate's modules and types. The library crate (this package)
 // exposes `cui`, `gui`, `logger` and the logging macros via `lib.rs`.
-use soundlog::mdx::convert::MdxToVgmOptions;
+use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions};
 use soundlog_debugger::cui;
 use soundlog_debugger::gui;
 use soundlog_debugger::logger::Logger;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AdpcmModeArg {
+    Through,
+    Resample,
+    Lpf,
+}
+
+impl From<AdpcmModeArg> for AdpcmMode {
+    fn from(mode: AdpcmModeArg) -> Self {
+        match mode {
+            AdpcmModeArg::Through => Self::Through,
+            AdpcmModeArg::Resample => Self::Resample,
+            AdpcmModeArg::Lpf => Self::Lpf,
+        }
+    }
+}
 
 /// Simple CLI: optional subcommand `test`, otherwise optional file path to display
 #[derive(Subcommand, Debug)]
@@ -131,6 +148,10 @@ enum MdxCommands {
         /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
         #[arg(long)]
         mxdrv16y: bool,
+
+        /// ADPCM mode: through, resample, or lpf (default: through)
+        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
+        adpcm_mode: AdpcmModeArg,
     },
     /// Convert an MDX file lazily and play it, printing the same register
     /// write/event log format as `soundlog play`
@@ -168,6 +189,10 @@ enum MdxCommands {
         /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
         #[arg(long)]
         mxdrv16y: bool,
+
+        /// ADPCM mode: through, resample, or lpf (default: through)
+        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
+        adpcm_mode: AdpcmModeArg,
     },
 }
 
@@ -246,6 +271,7 @@ fn main() {
                 sample_rate,
                 loop_count,
                 mxdrv16y,
+                adpcm_mode,
             } => {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
@@ -253,6 +279,7 @@ fn main() {
                     sample_rate,
                     loop_count,
                     mxdrv16y,
+                    adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
                     Ok(()) => process::exit(0),
@@ -271,6 +298,7 @@ fn main() {
                 sample_rate,
                 loop_count,
                 mxdrv16y,
+                adpcm_mode,
             } => {
                 // Configure logger according to dry_run so main's messages respect it.
                 logger = Arc::new(Logger::new_stdout(dry_run));
@@ -280,6 +308,7 @@ fn main() {
                     sample_rate,
                     loop_count,
                     mxdrv16y,
+                    adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),

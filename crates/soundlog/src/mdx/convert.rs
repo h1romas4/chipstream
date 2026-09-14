@@ -18,9 +18,9 @@ use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
 use crate::mdx::command::{
     MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxOpmLfo, MdxPitchLfo, MdxVolumeLfo,
 };
-use crate::mdx::package::MdxPackage;
+use crate::mdx::package::{MdxPackage, MdxPcmReference};
 use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a};
-use crate::mdx::pcm_mixer::{self, PcmChannelState};
+use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{Instance, WaitSamples};
 use crate::vgm::{VgmBuilder, VgmDocument};
@@ -88,6 +88,23 @@ impl MdxPcmMode {
     }
 }
 
+/// ADPCM processing mode for MDX PCM output.
+///
+/// MDX PCM8/PCM8A is always mixed and re-encoded into the single OKIM6258
+/// stream required by the VGM output. `Through` and `Resample` therefore
+/// share the unfiltered path here; `Lpf` additionally applies the
+/// NanoDriveX-style output filter before re-encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AdpcmMode {
+    /// No output filter. This is the default.
+    #[default]
+    Through,
+    /// Resample the PCM channels without the output filter.
+    Resample,
+    /// Resample and apply the NanoDriveX-style LPF/HPF.
+    Lpf,
+}
+
 /// Options controlling MDX to VGM conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxToVgmOptions {
@@ -98,6 +115,8 @@ pub struct MdxToVgmOptions {
     /// package is present. It is paired with the `/512` clock divider;
     /// changing it changes the playback speed of the PCM8/PCM8A stream.
     pub okim6258_clock: u32,
+    /// ADPCM processing mode for PCM8/PCM8A output.
+    pub adpcm_mode: AdpcmMode,
     /// VGM output sample rate in Hz.
     pub sample_rate: u32,
     /// Total number of playthroughs of the whole song's repeat.
@@ -130,6 +149,7 @@ impl Default for MdxToVgmOptions {
         Self {
             ym2151_clock: 4_000_000,
             okim6258_clock: pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ,
+            adpcm_mode: AdpcmMode::default(),
             sample_rate: 44_100,
             loop_count: None,
             mxdrv16y: false,
@@ -393,6 +413,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     package: P,
     /// MDX PCM command semantics selected from the header's track layout.
     pcm_mode: MdxPcmMode,
+    /// ADPCM processing mode selected by the caller.
+    adpcm_mode: AdpcmMode,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
     /// True for files with PCM8/PCM8A tracks (>= 9 MDX tracks); gates all
@@ -406,6 +428,11 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     pcm_sample_ranges: HashMap<(usize, usize, u8), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     pcm_encoder: AdpcmEncoder,
+    /// Persistent NanoDriveX-style output filter state for the mixed PCM8 stream.
+    pcm_filter: PcmOutputFilter,
+    /// Raw PCM1 ADPCM payload used by the `Through` mode.
+    raw_pcm_bytes: Vec<u8>,
+    raw_pcm_position: usize,
     /// Q at `MICROSECONDS_PER_SECOND` scale, tracking fractional OKIM6258
     /// data-register writes owed across tick boundaries (mirrors
     /// `sample_remainder` but driven by `PCM8_STREAM_BYTE_RATE_HZ` instead
@@ -457,6 +484,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn new(
         package: P,
         pcm_mode: MdxPcmMode,
+        adpcm_mode: AdpcmMode,
         loop_count: Option<u32>,
         mxdrv16y: bool,
         mark_native_loop: bool,
@@ -527,12 +555,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         Self {
             package,
             pcm_mode,
+            adpcm_mode,
             tracks,
             has_pcm,
             pcm_channels: Default::default(),
             pcm_samples: Vec::new(),
             pcm_sample_ranges: HashMap::new(),
             pcm_encoder: AdpcmEncoder::default(),
+            pcm_filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
+            raw_pcm_bytes: Vec::new(),
+            raw_pcm_position: 0,
             pcm_output_remainder: 0,
             tempo: DEFAULT_TEMPO,
             sample_remainder: 0,
@@ -670,6 +702,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             state.pos_in_block = 0;
             state.rate_counter = 0;
             state.hold = false;
+            if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+                self.raw_pcm_bytes.clear();
+                self.raw_pcm_position = 0;
+            }
         }
     }
 
@@ -696,6 +732,30 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let rate_step = self.tracks[track].pcm_rate_step;
         let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
         let same_block = tie && self.pcm_channels[channel].block_key == Some(block_key);
+        if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+            && matches!(self.adpcm_mode, AdpcmMode::Through)
+            && !same_block
+            && track == 8
+        {
+            let reference = MdxPcmReference {
+                track,
+                bank,
+                note: note_index,
+                sample: self
+                    .package
+                    .borrow()
+                    .pdx
+                    .as_ref()
+                    .and_then(|pdx| pdx.entry(bank, note_index)),
+            };
+            self.raw_pcm_bytes = self
+                .package
+                .borrow()
+                .pcm_sample_bytes(&reference)
+                .unwrap_or_default()
+                .to_vec();
+            self.raw_pcm_position = 0;
+        }
         if !same_block {
             let range = self.decode_pcm_samples(bank, note_index, format);
             let state = &mut self.pcm_channels[channel];
@@ -1785,11 +1845,24 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Mixes and re-encodes one ADPCM byte (2 samples) from the 8 PCM8
     /// channels and writes it directly to the OKIM6258 data register (1).
     fn emit_pcm_byte(&mut self, builder: &mut VgmBuilder) {
-        let byte = pcm_mixer::mix_and_encode_byte(
-            &mut self.pcm_channels,
-            &self.pcm_samples,
-            &mut self.pcm_encoder,
-        );
+        let byte = if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+            && matches!(self.adpcm_mode, AdpcmMode::Through)
+        {
+            let byte = self
+                .raw_pcm_bytes
+                .get(self.raw_pcm_position)
+                .copied()
+                .unwrap_or(0x80);
+            self.raw_pcm_position = self.raw_pcm_position.saturating_add(1);
+            byte
+        } else {
+            pcm_mixer::mix_and_encode_byte(
+                &mut self.pcm_channels,
+                &self.pcm_samples,
+                &mut self.pcm_encoder,
+                &mut self.pcm_filter,
+            )
+        };
         builder.add_vgm_command((
             Instance::Primary,
             Okim6258Spec {
@@ -1872,6 +1945,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
         let playback = PlaybackState::new(
             package,
             pcm_mode,
+            options.adpcm_mode,
             options.loop_count,
             options.mxdrv16y,
             mark_native_loop,

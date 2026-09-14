@@ -245,7 +245,16 @@ soundlog mdx convert <INPUT> <OUTPUT> [OPTIONS]
 
 Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
-`--mxdrv16y`.
+`--mxdrv16y`, and `--adpcm-mode <through|resample|lpf>` (default:
+`through`).
+
+The ADPCM modes follow NanoDriveX naming. For legacy 9-track PCM1, `through`
+sends the encoded PDX ADPCM bytes directly, while `resample` decodes and
+re-encodes them at the output rate. `lpf` uses the same resampling path and
+additionally applies the NanoDriveX-style LPF/HPF before OKIM6258 ADPCM
+re-encoding. MDX PCM8/PCM8A output is always mixed and re-encoded into the
+single OKIM6258 stream required by VGM, so `through` and `resample` are
+equivalent for that format.
 
 Examples:
 
@@ -267,7 +276,8 @@ soundlog mdx play <INPUT> [OPTIONS]
 
 The playback options include `--pdx <FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
-`--loop-count <COUNT>`, and `--mxdrv16y`.
+`--loop-count <COUNT>`, `--mxdrv16y`, and
+`--adpcm-mode <through|resample|lpf>` (default: `through`).
 
 Examples:
 
