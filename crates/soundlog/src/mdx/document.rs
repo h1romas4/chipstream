@@ -74,9 +74,9 @@ pub struct MdxDocument {
 /// track `0` is the first track in the serialized MDX file.
 ///
 /// The builder stores title and PDX name values as encoded MDX byte strings.
-/// Use [`set_title_bytes`][Self::set_title_bytes] and
-/// [`set_pdx_name_bytes`][Self::set_pdx_name_bytes] when the source bytes are
-/// already encoded in the MDX character set.
+/// Use [`set_title`][Self::set_title] and [`set_pdx_name`][Self::set_pdx_name]
+/// for Rust strings, or the corresponding byte methods when the source bytes
+/// are already encoded in the MDX character set.
 ///
 /// Call [`finalize`][Self::finalize] after adding commands. Finalization adds
 /// an [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] command to every non-terminated track, updates the
@@ -138,6 +138,11 @@ impl MdxBuilder {
         self
     }
 
+    /// Sets the title from a Rust string, encoding it as MDX text.
+    pub fn set_title(&mut self, title: &str) -> &mut Self {
+        self.set_title_bytes(crate::mdx::encoding::encode_shift_jis(title))
+    }
+
     /// Sets or clears the PDX filename using already encoded MDX text bytes.
     ///
     /// Pass `Some(bytes)` to set a filename or `None` to remove it. As with
@@ -149,6 +154,11 @@ impl MdxBuilder {
             bytes.as_deref().map(crate::mdx::encoding::decode_shift_jis);
         self.document.header.pdx_name_raw_bytes = bytes;
         self
+    }
+
+    /// Sets or clears the PDX filename from a Rust string.
+    pub fn set_pdx_name(&mut self, name: Option<&str>) -> &mut Self {
+        self.set_pdx_name_bytes(name.map(crate::mdx::encoding::encode_shift_jis))
     }
 
     /// Appends a value convertible into an OPM tone to the generated tone bank.

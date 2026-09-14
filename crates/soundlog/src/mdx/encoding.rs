@@ -49,6 +49,33 @@ pub(crate) fn decode_shift_jis(bytes: &[u8]) -> String {
     result
 }
 
+/// Encode MDX text using the CP932-compatible Shift JIS mapping used by MXDRV.
+///
+/// X68000 gaiji mappings are preferred when a character has both a gaiji and a
+/// standard CP932 representation. Characters without a supported mapping are
+/// replaced with ASCII `?`, matching [`decode_shift_jis`] fallback behavior.
+pub(crate) fn encode_shift_jis(text: &str) -> Vec<u8> {
+    let mut result = Vec::with_capacity(text.len());
+
+    for character in text.chars() {
+        let code = match character as u32 {
+            0x00..=0x7f => character as u16,
+            0xff61..=0xff9f => 0xa1 + (character as u16 - 0xff61),
+            codepoint => x68k_unicode_to_code(codepoint)
+                .or_else(|| cp932_unicode_to_code(codepoint))
+                .unwrap_or(u16::from(b'?')),
+        };
+
+        if code <= 0xff {
+            result.push(code as u8);
+        } else {
+            result.extend_from_slice(&code.to_be_bytes());
+        }
+    }
+
+    result
+}
+
 fn cp932_to_unicode(code: u16) -> Option<u32> {
     CP932_MAPPINGS
         .binary_search_by_key(&code, |&(code, _)| code)
@@ -72,6 +99,28 @@ fn x68k_extended_to_unicode(code: u16) -> Option<u32> {
         0xf241..=0xf25a | 0xf341..=0xf35a => Some(0xe000 + u32::from((code as u8) - 0x41)),
         _ => None,
     }
+}
+
+fn x68k_unicode_to_code(codepoint: u32) -> Option<u16> {
+    match codepoint {
+        0x2163 => Some(0xec71),
+        0x2161 => Some(0xec7b),
+        0x2070 => Some(0xf030),
+        0x00b9 => Some(0xf031),
+        0x00b2 => Some(0xf032),
+        0x00b3 => Some(0xf033),
+        0x2074..=0x2079 => Some(0xf030 + (codepoint as u16 - 0x2070)),
+        0xe020..=0xe039 => Some(0xf041 + (codepoint as u16 - 0xe020)),
+        0x2080..=0x2089 => Some(0xf230 + (codepoint as u16 - 0x2080)),
+        0xe000..=0xe019 => Some(0xf241 + (codepoint as u16 - 0xe000)),
+        _ => None,
+    }
+}
+
+fn cp932_unicode_to_code(codepoint: u32) -> Option<u16> {
+    CP932_MAPPINGS
+        .iter()
+        .find_map(|&(code, unicode)| (u32::from(unicode) == codepoint).then_some(code))
 }
 
 fn push_codepoint(result: &mut String, codepoint: u32) {
@@ -1057,7 +1106,7 @@ static CP932_MAPPINGS: &[(u16, u16)] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::decode_shift_jis;
+    use super::{decode_shift_jis, encode_shift_jis};
 
     #[test]
     fn decodes_cp932_and_x68000_extensions() {
@@ -1074,5 +1123,18 @@ mod tests {
     fn replaces_unknown_and_truncated_sequences() {
         assert_eq!(decode_shift_jis(&[0x80, 0x40]), "?");
         assert_eq!(decode_shift_jis(&[0x82]), "?");
+    }
+
+    #[test]
+    fn encodes_cp932_and_x68000_extensions() {
+        assert_eq!(encode_shift_jis("ASCII"), b"ASCII");
+        assert_eq!(
+            encode_shift_jis("テスト"),
+            [0x83, 0x65, 0x83, 0x58, 0x83, 0x67]
+        );
+        assert_eq!(encode_shift_jis("ｦﾟ"), [0xa6, 0xdf]);
+        assert_eq!(encode_shift_jis("Ⅳ¹"), [0xec, 0x71, 0xf0, 0x31]);
+        assert_eq!(encode_shift_jis("").as_slice(), [0xf0, 0x41]);
+        assert_eq!(encode_shift_jis("😀"), b"?");
     }
 }

@@ -333,6 +333,18 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
 }
 
 #[test]
+fn mdx_builder_encodes_string_metadata_as_shift_jis() {
+    let mut builder = MdxBuilder::new();
+    builder.set_title("テスト").set_pdx_name(Some("音色.pdx"));
+
+    let document = builder.finalize();
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized metadata");
+
+    assert_eq!(reparsed.header.title, "テスト");
+    assert_eq!(reparsed.header.pdx_name.as_deref(), Some("音色.pdx"));
+}
+
+#[test]
 fn mdx_builder_serializes_tone_bank_before_tracks() {
     let tone = MdxTone {
         voice_number: 3,
