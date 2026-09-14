@@ -11,6 +11,7 @@ use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::parser::parse_mdx_command;
 use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
+use soundlog::meta::Gd3;
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::command::Instance;
 use soundlog::vgm::header::Okim6258Flags;
@@ -157,6 +158,12 @@ pub fn mdx2vgm(
     options.mxdrv16y |= detect_mxdrv16y(&package)?;
     let mut document = to_vgm_document(&package, &options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
+    if !package.mdx.header.title.is_empty() {
+        document.gd3 = Some(Gd3 {
+            track_name_origin: Some(package.mdx.header.title.clone()),
+            ..Gd3::default()
+        });
+    }
     if package.drives_okim6258() {
         document.header.okim6258_flags = Okim6258Flags {
             clock_divider: PCM8_OKIM6258_CLOCK_DIVIDER,
@@ -204,6 +211,17 @@ pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
     println!("MXDRV16y: {mxdrv16y}");
     println!("Tracks: {}", package.mdx.tracks.len());
     println!("Tones: {}", package.mdx.tone_bank.tones.len());
+    if let Some(pdx) = package.pdx.as_ref() {
+        let (sample_count, sample_bytes) = pdx
+            .banks
+            .iter()
+            .flat_map(|bank| bank.entries.iter().flatten())
+            .fold((0usize, 0u64), |(count, bytes), sample| {
+                (count + 1, bytes + u64::from(sample.size))
+            });
+        println!("PDX banks: {}", pdx.banks.len());
+        println!("PDX samples: {sample_count} ({sample_bytes} bytes)");
+    }
     let source_map = package.mdx.sourcemap();
     for (track, commands) in package.mdx.tracks.iter().enumerate() {
         println!("Track {track}: {} commands", commands.len());
@@ -222,9 +240,6 @@ pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
                 .join(" ");
             println!("  [{command_index:04}] 0x{offset:06x} +{length:02}  {bytes:<17} {command:?}");
         }
-    }
-    if let Some(pdx) = package.pdx.as_ref() {
-        println!("PDX banks: {}", pdx.banks.len());
     }
     Ok(())
 }
