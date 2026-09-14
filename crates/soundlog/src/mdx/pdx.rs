@@ -395,6 +395,7 @@ fn decode_pdx_body_owned(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), ParseError> 
     match result.result {
         lz::Result::Ok => {
             decoded.truncate(result.bytes_written);
+            decoded.shrink_to_fit();
             Ok((decoded, true))
         }
         error => Err(ParseError::DataInconsistency(format!(

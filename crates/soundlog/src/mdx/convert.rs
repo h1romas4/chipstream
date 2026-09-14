@@ -28,7 +28,6 @@ use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
-use std::rc::Rc;
 
 /// Number of microseconds in one second, used as the fixed-point time scale
 /// for sample and PCM-byte remainder calculations.
@@ -401,9 +400,6 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     has_pcm: bool,
     /// Per-channel ADPCM/PCM playback state for tracks 8-15.
     pcm_channels: [PcmChannelState; 8],
-    /// Decoded PDX samples, cached by `(bank, note, format)` so repeated
-    /// key-ons do not redecode the same sample data.
-    pcm_sample_cache: HashMap<(usize, usize, u8), Rc<[i16]>>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     pcm_encoder: AdpcmEncoder,
     /// Q at `MICROSECONDS_PER_SECOND` scale, tracking fractional OKIM6258
@@ -530,7 +526,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             tracks,
             has_pcm,
             pcm_channels: Default::default(),
-            pcm_sample_cache: HashMap::new(),
             pcm_encoder: AdpcmEncoder::default(),
             pcm_output_remainder: 0,
             tempo: DEFAULT_TEMPO,
@@ -665,6 +660,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             state.hold = true;
         } else {
             state.block = None;
+            state.block_key = None;
             state.pos_in_block = 0;
             state.rate_counter = 0;
             state.hold = false;
@@ -685,20 +681,24 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let tie = self.tracks[track].key_off_disabled;
         let channel = track - 8;
 
-        let samples = self.resolve_pcm_samples(bank, note_index, format);
+        let format_key = match format {
+            Pcm8aFormat::Adpcm => 0u8,
+            Pcm8aFormat::Pcm16 => 1u8,
+            Pcm8aFormat::Pcm8 => 2u8,
+        };
+        let block_key = (bank, note_index, format_key);
         let rate_step = self.tracks[track].pcm_rate_step;
         let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
-        let state = &mut self.pcm_channels[channel];
-        let same_block = tie
-            && samples
-                .as_ref()
-                .zip(state.block.as_ref())
-                .is_some_and(|(a, b)| Rc::ptr_eq(a, b));
+        let same_block = tie && self.pcm_channels[channel].block_key == Some(block_key);
         if !same_block {
+            let samples = self.decode_pcm_samples(bank, note_index, format);
+            let state = &mut self.pcm_channels[channel];
+            state.block = samples;
+            state.block_key = state.block.as_ref().map(|_| block_key);
             state.pos_in_block = 0;
             state.rate_counter = 0;
         }
-        state.block = samples;
+        let state = &mut self.pcm_channels[channel];
         state.rate_step = rate_step;
         state.gain = gain;
         state.hold = false;
@@ -713,24 +713,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.pcm_channels[track - 8].gain = gain;
     }
 
-    /// Decodes (or returns already-decoded) PDX sample data for `(bank,
-    /// note)` under `format`, caching the result since the same sample is
-    /// typically keyed on many times across a track.
-    fn resolve_pcm_samples(
+    /// Decodes one PDX sample for the channel that is starting playback.
+    /// The decoded block is owned only by that channel; there is no song-wide
+    /// sample cache, so memory is bounded by the eight active channels.
+    fn decode_pcm_samples(
         &mut self,
         bank: usize,
         note: usize,
         format: Pcm8aFormat,
-    ) -> Option<Rc<[i16]>> {
-        let format_key = match format {
-            Pcm8aFormat::Adpcm => 0u8,
-            Pcm8aFormat::Pcm16 => 1,
-            Pcm8aFormat::Pcm8 => 2,
-        };
-        let key = (bank, note, format_key);
-        if let Some(existing) = self.pcm_sample_cache.get(&key) {
-            return Some(Rc::clone(existing));
-        }
+    ) -> Option<Box<[i16]>> {
         let bytes = self
             .package
             .borrow()
@@ -738,9 +729,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .as_ref()?
             .sample_bytes(bank, note)?;
         let decoded = decode_pcm8a(format, bytes).ok()?;
-        let samples: Rc<[i16]> = decoded.into();
-        self.pcm_sample_cache.insert(key, Rc::clone(&samples));
-        Some(samples)
+        Some(decoded.into_boxed_slice())
     }
 
     /// Processes all pending commands for the specified track, updating the

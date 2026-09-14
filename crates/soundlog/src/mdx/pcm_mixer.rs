@@ -16,7 +16,6 @@
 //! end; those playback and scheduling decisions are made by `convert`.
 
 use crate::mdx::pcm::AdpcmEncoder;
-use std::rc::Rc;
 
 /// Fixed master output sample rate (Hz) of the re-encoded ADPCM stream.
 ///
@@ -72,7 +71,8 @@ pub(crate) fn pcm8_gain(volume: u8) -> u8 {
 /// `pcmRateCounter`/`pcmRateStep`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PcmChannelState {
-    pub block: Option<Rc<[i16]>>,
+    pub block: Option<Box<[i16]>>,
+    pub block_key: Option<(usize, usize, u8)>,
     pub pos_in_block: u32,
     pub rate_counter: u32,
     pub rate_step: u32,
@@ -94,6 +94,7 @@ impl PcmChannelState {
         let len = block.len() as u32;
         if self.pos_in_block >= len {
             self.block = None;
+            self.block_key = None;
             return 0;
         }
 
@@ -121,6 +122,7 @@ impl PcmChannelState {
             self.pos_in_block = new_pos.min(len);
             if self.pos_in_block >= len {
                 self.block = None;
+                self.block_key = None;
             }
         }
         contribution
@@ -180,7 +182,8 @@ mod tests {
     #[test]
     fn channel_advances_by_rate_step_and_interpolates() {
         let mut channel = PcmChannelState {
-            block: Some(Rc::from(vec![0i16, 1000, 2000, 3000].into_boxed_slice())),
+            block: Some(vec![0i16, 1000, 2000, 3000].into_boxed_slice()),
+            block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
             rate_step: 0x8000, // 0.5x: half a sample per output sample.
@@ -204,7 +207,8 @@ mod tests {
     #[test]
     fn channel_stops_when_it_reaches_the_end_of_its_block() {
         let mut channel = PcmChannelState {
-            block: Some(Rc::from(vec![100i16].into_boxed_slice())),
+            block: Some(vec![100i16].into_boxed_slice()),
+            block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
             rate_step: 0x10000, // 1.0x: one sample per output sample.
@@ -234,7 +238,8 @@ mod tests {
     fn mix_and_encode_byte_sums_multiple_active_channels() {
         let mut channels: [PcmChannelState; 8] = Default::default();
         channels[0] = PcmChannelState {
-            block: Some(Rc::from(vec![1000i16, 1000].into_boxed_slice())),
+            block: Some(vec![1000i16, 1000].into_boxed_slice()),
+            block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
             rate_step: 0x10000,
@@ -242,7 +247,8 @@ mod tests {
             hold: false,
         };
         channels[1] = PcmChannelState {
-            block: Some(Rc::from(vec![-1000i16, -1000].into_boxed_slice())),
+            block: Some(vec![-1000i16, -1000].into_boxed_slice()),
+            block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
             rate_step: 0x10000,
