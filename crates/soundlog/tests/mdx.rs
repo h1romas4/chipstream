@@ -574,6 +574,23 @@ fn pdx_document_round_trips_lz_compressed_data() {
 }
 
 #[test]
+fn pdx_document_grows_lz_decode_buffer_past_initial_capacity() {
+    let sample_size = 64 * 1024 + 1;
+    let mut decoded = vec![0u8; 0x300 + sample_size];
+    decoded[0..4].copy_from_slice(&0x300u32.to_be_bytes());
+    decoded[4..8].copy_from_slice(&(sample_size as u32).to_be_bytes());
+    decoded[0x300 + sample_size - 1] = 0x5a;
+
+    let mut compressed = vec![0x7f, 0xff, 0xff, 0x4c];
+    compressed.extend_from_slice(&encode_lz(&decoded));
+    let document = PdxDocument::parse(&compressed).expect("parse expanded PDX");
+
+    assert_eq!(document.decoded_bytes(), decoded);
+    assert_eq!(document.sample_bytes(0, 0).unwrap().len(), sample_size);
+    assert_eq!(document.sample_bytes(0, 0).unwrap().last(), Some(&0x5a));
+}
+
+#[test]
 fn pdx_document_owned_parse_round_trips_without_retaining_input() {
     let mut decoded = vec![0u8; 0x300 + 8 + 4];
     decoded[0..4].copy_from_slice(&0x308u32.to_be_bytes());

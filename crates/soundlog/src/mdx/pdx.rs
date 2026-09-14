@@ -22,7 +22,9 @@ const BANK_SIZE: usize = ENTRIES_PER_BANK * ENTRY_SIZE;
 const MAX_BANKS: usize = 32;
 /// Four-byte marker that prefixes a NanoDriveX-compatible LZ stream.
 const LZ_STREAM_MARKER: [u8; 4] = [0x7f, 0xff, 0xff, 0x4c];
-/// Maximum decoded size allocated for a compressed PDX payload.
+/// Initial decoded size allocated for a compressed PDX payload.
+const INITIAL_DECODED_PDX_SIZE: usize = 64 * 1024;
+/// Safety limit for a compressed PDX payload after growth.
 const MAX_DECODED_PDX_SIZE: usize = 256 * 1024;
 
 /// A PDX sample table entry.
@@ -390,16 +392,21 @@ fn decode_pdx_body_owned(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), ParseError> 
     let compressed = bytes.get(stream_start..).ok_or_else(|| {
         ParseError::DataInconsistency("PDX LZ stream has no compressed data".into())
     })?;
-    let mut decoded = vec![0; MAX_DECODED_PDX_SIZE];
-    let result = lz::decode(compressed, &mut decoded);
-    match result.result {
-        lz::Result::Ok => {
+    let mut capacity = INITIAL_DECODED_PDX_SIZE;
+    loop {
+        let mut decoded = vec![0; capacity];
+        let result = lz::decode(compressed, &mut decoded);
+        if result.result == lz::Result::Ok {
             decoded.truncate(result.bytes_written);
             decoded.shrink_to_fit();
-            Ok((decoded, true))
+            return Ok((decoded, true));
         }
-        error => Err(ParseError::DataInconsistency(format!(
-            "PDX LZ decode failed: {error:?}"
-        ))),
+        if result.result != lz::Result::OutputOverrun || capacity == MAX_DECODED_PDX_SIZE {
+            return Err(ParseError::DataInconsistency(format!(
+                "PDX LZ decode failed: {:?}",
+                result.result
+            )));
+        }
+        capacity = capacity.saturating_mul(2).min(MAX_DECODED_PDX_SIZE);
     }
 }
