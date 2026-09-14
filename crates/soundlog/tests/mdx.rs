@@ -1183,13 +1183,7 @@ fn drain_finite_stream(mut stream: VgmStream) -> Vec<VgmCommand> {
 
 /// PDX sidecar filenames for the real MDX fixtures under `assets/mdx` that
 /// need one to fully resolve (see also `real_mdx_and_pdx_fixtures_resolve_pcm_references`).
-const REAL_FIXTURE_PDX_PAIRS: &[(&str, &str)] = &[
-    ("RAYFOR0.MDX", "RAYFOR.PDX"),
-    ("RAYFOR1.MDX", "RAYFOR.PDX"),
-    ("RAY_F_1.MDX", "RAY_F_1.PDX"),
-    ("RAY_F_R4.MDX", "RAY_F_R4.PDX"),
-    ("RF2.MDX", "RF2.PDX"),
-];
+const REAL_FIXTURE_PDX_PAIRS: &[(&str, &str)] = &[("example.mdx", "example.pdx")];
 
 #[test]
 #[ignore = "requires fixture files under assets/mdx"]
@@ -1260,7 +1254,7 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
     // tick. Verified empirically (see PR discussion) to affect only the
     // trailing command(s) of the eager document, never anything earlier.
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
-    let mdx_bytes = fs::read(asset_dir.join("DRAi.mdx")).expect("read example.mdx");
+    let mdx_bytes = fs::read(asset_dir.join("example.mdx")).expect("read example.mdx");
     let package = MdxPackage::parse(&mdx_bytes, None).expect("parse example.mdx");
 
     let expected_document =
@@ -1308,7 +1302,7 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
 #[ignore = "requires fixture files under assets/mdx"]
 fn real_mdx_and_pdx_fixtures_resolve_pcm_references() {
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
-    let pdx_bytes = fs::read(asset_dir.join("GR_PCM.PDX")).expect("read example.pdx");
+    let pdx_bytes = fs::read(asset_dir.join("example.pdx")).expect("read example.pdx");
     let mut paths = fs::read_dir(&asset_dir)
         .expect("read GR fixture directory")
         .map(|entry| entry.expect("read GR fixture entry").path())
@@ -1328,7 +1322,7 @@ fn real_mdx_and_pdx_fixtures_resolve_pcm_references() {
         let mdx_bytes = fs::read(&path).expect("read GR MDX fixture");
         let package = MdxPackage::parse(&mdx_bytes, Some(&pdx_bytes))
             .unwrap_or_else(|error| panic!("parse {}: {error:?}", path.display()));
-        assert_eq!(package.pdx_name(), Some("GR_PCM.PDX"));
+        assert_eq!(package.pdx_name(), Some("example.pdx"));
         let references = package.pcm_references();
         assert!(
             !references.is_empty(),
