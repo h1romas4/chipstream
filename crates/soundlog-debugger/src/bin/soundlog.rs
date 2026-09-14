@@ -145,7 +145,7 @@ enum MdxCommands {
         loop_count: Option<u32>,
 
         /// Enable MXDRV16y compatibility handling (raw channel remapping via
-        /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
+        /// register 0x08 writes)
         #[arg(long)]
         mxdrv16y: bool,
 
@@ -186,7 +186,7 @@ enum MdxCommands {
         loop_count: Option<u32>,
 
         /// Enable MXDRV16y compatibility handling (raw channel remapping via
-        /// register 0x08 writes, and the "DD1_00" empty-loop escape trap)
+        /// register 0x08 writes)
         #[arg(long)]
         mxdrv16y: bool,
 
