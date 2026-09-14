@@ -866,10 +866,17 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].pan_pending = true;
                 }
                 MdxCommand::Pan(command) => {
-                    // Raw value routes to the NJU72342 amplifier in the
-                    // reference (0=center, 1=left, 2=right, 3=mute), not a
-                    // chip register; left/right order is swapped versus FM.
-                    self.tracks[track].pcm_pan = command.value & 0x03;
+                    // libvgm uses OKIM6258 register 0x02 for the X68000 pan
+                    // extension (0=center, 1=left, 2=right, 3=mute).
+                    let pan = command.value & 0x03;
+                    self.tracks[track].pcm_pan = pan;
+                    builder.add_vgm_command((
+                        Instance::Primary,
+                        Okim6258Spec {
+                            register: 0x02,
+                            value: pan,
+                        },
+                    ));
                 }
                 MdxCommand::Volume(command) if track < 8 => {
                     self.tracks[track].volume = command.value;

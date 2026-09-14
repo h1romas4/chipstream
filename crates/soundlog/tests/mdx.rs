@@ -930,6 +930,16 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
             (0x19, 0x80),
         ]
     );
+
+    let pcm_pan_writes: Vec<_> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 0x02 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pcm_pan_writes, vec![1]);
 }
 
 #[test]
