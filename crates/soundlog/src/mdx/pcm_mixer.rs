@@ -65,13 +65,14 @@ pub(crate) fn pcm8_gain(volume: u8) -> u8 {
     }
 }
 
-/// One ADPCM channel's mixer state: the currently loaded decoded PCM
-/// samples plus a Q16.16 playback position, mirroring `OKIM6258State`'s
-/// per-channel `currentBlockId`/`posInBlock` and the track's own
-/// `pcmRateCounter`/`pcmRateStep`.
+/// One ADPCM channel's mixer state: a range in the shared decoded PCM arena
+/// plus a Q16.16 playback position, mirroring `OKIM6258State`'s per-channel
+/// `currentBlockId`/`posInBlock` and the track's own `pcmRateCounter`/
+/// `pcmRateStep`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PcmChannelState {
-    pub block: Option<Box<[i16]>>,
+    pub block_start: usize,
+    pub block_length: u32,
     pub block_key: Option<(usize, usize, u8)>,
     pub pos_in_block: u32,
     pub rate_counter: u32,
@@ -87,19 +88,19 @@ impl PcmChannelState {
     /// linearly-interpolated, gain-weighted contribution to the mix (0 if
     /// stopped or silent). Mirrors one nibble's worth of the per-channel
     /// body of `buildPcm8AdpcmByte`.
-    fn advance(&mut self) -> i32 {
-        let Some(block) = self.block.as_ref() else {
+    fn advance(&mut self, samples: &[i16]) -> i32 {
+        if self.block_length == 0 {
             return 0;
-        };
-        let len = block.len() as u32;
+        }
+        let len = self.block_length;
         if self.pos_in_block >= len {
-            self.block = None;
+            self.block_length = 0;
             self.block_key = None;
             return 0;
         }
 
         let sample = {
-            let s0 = i32::from(block[self.pos_in_block as usize]);
+            let s0 = i32::from(samples[self.block_start + self.pos_in_block as usize]);
             if self.rate_counter == 0 {
                 s0
             } else {
@@ -107,7 +108,7 @@ impl PcmChannelState {
                 if next >= len {
                     s0
                 } else {
-                    let s1 = i32::from(block[next as usize]);
+                    let s1 = i32::from(samples[self.block_start + next as usize]);
                     s0 + (((s1 - s0) * self.rate_counter as i32) >> 16)
                 }
             }
@@ -121,7 +122,7 @@ impl PcmChannelState {
             let new_pos = self.pos_in_block + advance;
             self.pos_in_block = new_pos.min(len);
             if self.pos_in_block >= len {
-                self.block = None;
+                self.block_length = 0;
                 self.block_key = None;
             }
         }
@@ -142,13 +143,14 @@ fn clamp_to_12_bit(mix: i32) -> i16 {
 /// with no loaded block are skipped.
 pub(crate) fn mix_and_encode_byte(
     channels: &mut [PcmChannelState; 8],
+    samples: &[i16],
     encoder: &mut AdpcmEncoder,
 ) -> u8 {
     let mut mix0 = 0i32;
     let mut mix1 = 0i32;
     for channel in channels.iter_mut() {
-        mix0 += channel.advance();
-        mix1 += channel.advance();
+        mix0 += channel.advance(samples);
+        mix1 += channel.advance(samples);
     }
     encoder.encode_pair(clamp_to_12_bit(mix0), clamp_to_12_bit(mix1))
 }
@@ -175,14 +177,15 @@ mod tests {
     #[test]
     fn silent_channel_contributes_nothing_and_does_not_advance() {
         let mut channel = PcmChannelState::default();
-        assert_eq!(channel.advance(), 0);
+        assert_eq!(channel.advance(&[]), 0);
         assert_eq!(channel.pos_in_block, 0);
     }
 
     #[test]
     fn channel_advances_by_rate_step_and_interpolates() {
         let mut channel = PcmChannelState {
-            block: Some(vec![0i16, 1000, 2000, 3000].into_boxed_slice()),
+            block_start: 0,
+            block_length: 4,
             block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
@@ -192,14 +195,15 @@ mod tests {
         };
 
         // First output sample: exactly on sample 0, no fraction yet.
-        assert_eq!(channel.advance(), 0);
+        let samples = [0i16, 1000, 2000, 3000];
+        assert_eq!(channel.advance(&samples), 0);
         assert_eq!(channel.pos_in_block, 0);
         assert_eq!(channel.rate_counter, 0x8000);
 
         // Second: halfway between sample 0 (0) and sample 1 (1000) -> ~500,
         // scaled by unity gain (16) then later normalized by the mixer's
         // final >>4, so the raw contribution here is sample * 16.
-        let contribution = channel.advance();
+        let contribution = channel.advance(&samples);
         assert_eq!(contribution, 500 * 16);
         assert_eq!(channel.pos_in_block, 1);
     }
@@ -207,7 +211,8 @@ mod tests {
     #[test]
     fn channel_stops_when_it_reaches_the_end_of_its_block() {
         let mut channel = PcmChannelState {
-            block: Some(vec![100i16].into_boxed_slice()),
+            block_start: 0,
+            block_length: 1,
             block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
@@ -216,9 +221,14 @@ mod tests {
             hold: false,
         };
 
-        assert_eq!(channel.advance(), 100 * 16);
-        assert!(channel.block.is_none(), "single-sample block must stop");
-        assert_eq!(channel.advance(), 0, "a stopped channel stays silent");
+        let samples = [100i16];
+        assert_eq!(channel.advance(&samples), 100 * 16);
+        assert_eq!(channel.block_length, 0, "single-sample block must stop");
+        assert_eq!(
+            channel.advance(&samples),
+            0,
+            "a stopped channel stays silent"
+        );
     }
 
     #[test]
@@ -227,18 +237,21 @@ mod tests {
         let mut encoder = AdpcmEncoder::default();
         // All channels silent -> mixed sample is 0 for both nibbles, so two
         // independent silent encoders must produce identical bytes.
-        let byte = mix_and_encode_byte(&mut channels, &mut encoder);
+        let byte = mix_and_encode_byte(&mut channels, &[], &mut encoder);
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
         let mut reference_encoder = AdpcmEncoder::default();
-        let reference_byte = mix_and_encode_byte(&mut reference_channels, &mut reference_encoder);
+        let reference_byte =
+            mix_and_encode_byte(&mut reference_channels, &[], &mut reference_encoder);
         assert_eq!(byte, reference_byte);
     }
 
     #[test]
     fn mix_and_encode_byte_sums_multiple_active_channels() {
         let mut channels: [PcmChannelState; 8] = Default::default();
+        let samples = [1000i16, 1000, -1000, -1000];
         channels[0] = PcmChannelState {
-            block: Some(vec![1000i16, 1000].into_boxed_slice()),
+            block_start: 0,
+            block_length: 2,
             block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
@@ -247,7 +260,8 @@ mod tests {
             hold: false,
         };
         channels[1] = PcmChannelState {
-            block: Some(vec![-1000i16, -1000].into_boxed_slice()),
+            block_start: 2,
+            block_length: 2,
             block_key: None,
             pos_in_block: 0,
             rate_counter: 0,
@@ -258,10 +272,37 @@ mod tests {
         let mut encoder = AdpcmEncoder::default();
         // The two channels cancel out, so the encoded byte should match an
         // encoder fed two all-silent channels.
-        let byte = mix_and_encode_byte(&mut channels, &mut encoder);
+        let byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
         let mut reference_channels: [PcmChannelState; 8] = Default::default();
         let mut reference_encoder = AdpcmEncoder::default();
-        let reference_byte = mix_and_encode_byte(&mut reference_channels, &mut reference_encoder);
+        let reference_byte =
+            mix_and_encode_byte(&mut reference_channels, &[], &mut reference_encoder);
         assert_eq!(byte, reference_byte);
+    }
+
+    #[test]
+    fn channels_can_share_one_decoded_block_range() {
+        let samples = [1000i16, 1000];
+        let mut channels: [PcmChannelState; 8] = Default::default();
+        for channel in channels.iter_mut().take(2) {
+            channel.block_start = 0;
+            channel.block_length = 2;
+            channel.rate_step = 0x10000;
+            channel.gain = 16;
+        }
+
+        let mut encoder = AdpcmEncoder::default();
+        let shared_byte = mix_and_encode_byte(&mut channels, &samples, &mut encoder);
+
+        let mut reference_channels: [PcmChannelState; 8] = Default::default();
+        reference_channels[0].block_start = 0;
+        reference_channels[0].block_length = 2;
+        reference_channels[0].rate_step = 0x10000;
+        reference_channels[0].gain = 32;
+        let mut reference_encoder = AdpcmEncoder::default();
+        let reference_byte =
+            mix_and_encode_byte(&mut reference_channels, &samples, &mut reference_encoder);
+
+        assert_eq!(shared_byte, reference_byte);
     }
 }

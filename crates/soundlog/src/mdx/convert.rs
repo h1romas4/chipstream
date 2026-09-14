@@ -400,6 +400,10 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     has_pcm: bool,
     /// Per-channel ADPCM/PCM playback state for tracks 8-15.
     pcm_channels: [PcmChannelState; 8],
+    /// Single decoded PCM arena shared by all PCM channels.
+    pcm_samples: Vec<i16>,
+    /// Ranges in `pcm_samples` indexed by `(bank, note, format)`.
+    pcm_sample_ranges: HashMap<(usize, usize, u8), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     pcm_encoder: AdpcmEncoder,
     /// Q at `MICROSECONDS_PER_SECOND` scale, tracking fractional OKIM6258
@@ -526,6 +530,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             tracks,
             has_pcm,
             pcm_channels: Default::default(),
+            pcm_samples: Vec::new(),
+            pcm_sample_ranges: HashMap::new(),
             pcm_encoder: AdpcmEncoder::default(),
             pcm_output_remainder: 0,
             tempo: DEFAULT_TEMPO,
@@ -659,7 +665,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if hold {
             state.hold = true;
         } else {
-            state.block = None;
+            state.block_length = 0;
             state.block_key = None;
             state.pos_in_block = 0;
             state.rate_counter = 0;
@@ -691,10 +697,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
         let same_block = tie && self.pcm_channels[channel].block_key == Some(block_key);
         if !same_block {
-            let samples = self.decode_pcm_samples(bank, note_index, format);
+            let range = self.decode_pcm_samples(bank, note_index, format);
             let state = &mut self.pcm_channels[channel];
-            state.block = samples;
-            state.block_key = state.block.as_ref().map(|_| block_key);
+            state.block_start = range.map_or(0, |(start, _)| start);
+            state.block_length = range.map_or(0, |(_, length)| length as u32);
+            state.block_key = range.map(|_| block_key);
             state.pos_in_block = 0;
             state.rate_counter = 0;
         }
@@ -713,15 +720,23 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.pcm_channels[track - 8].gain = gain;
     }
 
-    /// Decodes one PDX sample for the channel that is starting playback.
-    /// The decoded block is owned only by that channel; there is no song-wide
-    /// sample cache, so memory is bounded by the eight active channels.
+    /// Decodes one PDX sample into the shared PCM arena and returns its range.
+    /// Repeated `(bank, note, format)` lookups share the existing range.
     fn decode_pcm_samples(
         &mut self,
         bank: usize,
         note: usize,
         format: Pcm8aFormat,
-    ) -> Option<Box<[i16]>> {
+    ) -> Option<(usize, usize)> {
+        let format_key = match format {
+            Pcm8aFormat::Adpcm => 0u8,
+            Pcm8aFormat::Pcm16 => 1u8,
+            Pcm8aFormat::Pcm8 => 2u8,
+        };
+        let key = (bank, note, format_key);
+        if let Some(&range) = self.pcm_sample_ranges.get(&key) {
+            return Some(range);
+        }
         let bytes = self
             .package
             .borrow()
@@ -729,7 +744,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .as_ref()?
             .sample_bytes(bank, note)?;
         let decoded = decode_pcm8a(format, bytes).ok()?;
-        Some(decoded.into_boxed_slice())
+        let start = self.pcm_samples.len();
+        let length = decoded.len();
+        self.pcm_samples.extend_from_slice(&decoded);
+        let range = (start, length);
+        self.pcm_sample_ranges.insert(key, range);
+        Some(range)
     }
 
     /// Processes all pending commands for the specified track, updating the
@@ -1765,7 +1785,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Mixes and re-encodes one ADPCM byte (2 samples) from the 8 PCM8
     /// channels and writes it directly to the OKIM6258 data register (1).
     fn emit_pcm_byte(&mut self, builder: &mut VgmBuilder) {
-        let byte = pcm_mixer::mix_and_encode_byte(&mut self.pcm_channels, &mut self.pcm_encoder);
+        let byte = pcm_mixer::mix_and_encode_byte(
+            &mut self.pcm_channels,
+            &self.pcm_samples,
+            &mut self.pcm_encoder,
+        );
         builder.add_vgm_command((
             Instance::Primary,
             Okim6258Spec {
