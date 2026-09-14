@@ -23,7 +23,7 @@ const MAX_BANKS: usize = 32;
 /// Four-byte marker that prefixes a NanoDriveX-compatible LZ stream.
 const LZ_STREAM_MARKER: [u8; 4] = [0x7f, 0xff, 0xff, 0x4c];
 /// Maximum decoded size allocated for a compressed PDX payload.
-const MAX_DECODED_PDX_SIZE: usize = 64 * 1024 * 1024;
+const MAX_DECODED_PDX_SIZE: usize = 256 * 1024;
 
 /// A PDX sample table entry.
 ///
