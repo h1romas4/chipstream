@@ -4,7 +4,7 @@
 //! semantics needed to produce VGM output. It supports both eager document
 //! conversion and lazy command generation for bounded-memory streaming.
 //! The playback semantics and PCM8/PCM8A handling are informed by the
-//! NanoDriveX implementation, particularly its `src/mdx.cpp` and
+//! NanoDriveX (by Fujix), particularly its `src/mdx.cpp` and
 //! `include/mdx.h` sources.
 //!
 //! Responsibilities:
