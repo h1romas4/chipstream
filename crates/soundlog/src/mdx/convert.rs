@@ -433,10 +433,13 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Raw PCM1 ADPCM payload used by the `Through` mode.
     raw_pcm_bytes: Vec<u8>,
     raw_pcm_position: usize,
+    /// Current legacy PCM1 output byte rate after the OKIM6258 clock/divider
+    /// selected by the most recent `0xed` command.
+    pcm_output_byte_rate_hz: u32,
     /// Q at `MICROSECONDS_PER_SECOND` scale, tracking fractional OKIM6258
-    /// data-register writes owed across tick boundaries (mirrors
-    /// `sample_remainder` but driven by `PCM8_STREAM_BYTE_RATE_HZ` instead
-    /// of the VGM sample rate).
+    /// data-register writes owed across tick boundaries. The rate changes
+    /// with legacy PCM1 `0xed` commands and remains at the PCM8A master rate
+    /// for extended PCM8A playback.
     pcm_output_remainder: u32,
     /// Current MDX tempo, used to derive the duration of one playback tick.
     tempo: u8,
@@ -565,6 +568,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             pcm_filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
             raw_pcm_bytes: Vec::new(),
             raw_pcm_position: 0,
+            pcm_output_byte_rate_hz: pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ,
             pcm_output_remainder: 0,
             tempo: DEFAULT_TEMPO,
             sample_remainder: 0,
@@ -1015,6 +1019,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     if let Some((rate_step, data_kind)) = mode {
                         self.tracks[track].pcm_rate_step = rate_step;
                         self.tracks[track].pcm_data_kind = data_kind;
+                        if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+                            self.set_legacy_pcm_rate(command.value, builder);
+                        }
                     }
                 }
                 MdxCommand::OpmLfo(command) => self.apply_opm_lfo(track, command, builder),
@@ -1800,7 +1807,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
 
         let pcm_accumulator = u64::from(self.pcm_output_remainder)
-            + u64::from(tick_microseconds) * u64::from(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ);
+            + u64::from(tick_microseconds) * u64::from(self.pcm_output_byte_rate_hz);
         let pcm_bytes_due = (pcm_accumulator / u64::from(MICROSECONDS_PER_SECOND)) as u32;
         self.pcm_output_remainder = (pcm_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
         if pcm_bytes_due == 0 {
@@ -1840,6 +1847,38 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// mixer's own sample clock so both stay in sync with the same tempo.
     fn tick_microseconds(&self) -> u32 {
         256 * u32::from(256u16 - u16::from(self.tempo))
+    }
+
+    /// Applies NanoDriveX's legacy PCM1 clock/divider selection for `0xed`
+    /// F0-F4. OKIM6258 clock bytes are written to registers `0x08`-`0x0b`;
+    /// libvgm commits the new clock when register `0x0b` is written. The
+    /// following `0x0c` write selects the divider.
+    fn set_legacy_pcm_rate(&mut self, mode: u8, builder: &mut VgmBuilder) {
+        let Some((byte_rate_hz, clock_bytes, divider_value)) = (match mode {
+            0 => Some((1_953, [0x00, 0x09, 0x3d, 0x00], 0)), // 4 MHz / 1024
+            1 => Some((2_604, [0x00, 0x09, 0x3d, 0x00], 1)), // 4 MHz / 768
+            2 => Some((3_906, [0x00, 0x12, 0x7a, 0x00], 0)), // 8 MHz / 1024
+            3 => Some((5_208, [0x00, 0x12, 0x7a, 0x00], 1)), // 8 MHz / 768
+            4 => Some((
+                pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ,
+                [0x00, 0x12, 0x7a, 0x00],
+                2,
+            )), // 8 MHz / 512
+            _ => None,
+        }) else {
+            return;
+        };
+        self.pcm_output_byte_rate_hz = byte_rate_hz;
+        for (register, value) in (0x08..=0x0b).zip(clock_bytes) {
+            builder.add_vgm_command((Instance::Primary, Okim6258Spec { register, value }));
+        }
+        builder.add_vgm_command((
+            Instance::Primary,
+            Okim6258Spec {
+                register: 0x0c,
+                value: divider_value,
+            },
+        ));
     }
 
     /// Mixes and re-encodes one ADPCM byte (2 samples) from the 8 PCM8
