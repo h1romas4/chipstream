@@ -14,9 +14,11 @@ concise (for example the binary previously relied on `crate::cui::...` paths).
 pub mod cui;
 pub mod gui;
 pub mod logger;
+pub mod source;
 
 /// Convenience re-exports to mirror the previous crate layout where the binary
 /// could access submodules directly under `crate::...`.
 pub use crate::cui::*;
 pub use crate::gui::*;
 pub use crate::logger::*;
+pub use crate::source::*;
