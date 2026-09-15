@@ -18,96 +18,19 @@ This avoids doing large string allocation and widget construction on the UI
 thread all at once and keeps the UI responsive for very large VGM files.
 */
 
-use crate::gui::HexViewer;
+use crate::gui::lazy::{LazyLoadState, resolve_request};
+use crate::gui::loader::{spawn_children_parse, spawn_initial_parse};
+use crate::gui::messages::apply_message;
+use crate::gui::tree::{handle_keyboard_selection, path_key, render_ast_tree};
+use crate::gui::{AstBuildMessage, AstNode, HexViewer};
 use eframe::egui;
 
-use soundlog::VgmDocument;
-use soundlog::vgm::VgmHeaderField;
-use soundlog::vgm::command::VgmCommand;
-use soundlog::vgm::detail::{DataBlockType, parse_data_block};
+#[cfg(test)]
+use crate::gui::ast::source_node_to_ast;
 
-use std::cmp;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::mpsc;
-use std::thread;
-
-/// Simple AST node representation for the UI.
-/// `lazy_count` is Some(n) when this node is a placeholder for many children
-/// (e.g. the `Commands` node) and children are fetched lazily.
-#[derive(Clone, Debug)]
-pub struct AstNode {
-    pub title: String,
-    pub detail: String,
-    pub children: Vec<AstNode>,
-    pub lazy_count: Option<usize>,
-    /// If this lazy node corresponds to a specific range (a bucket), this holds
-    /// the absolute start index in the command list for the bucket. Used when
-    /// requesting children for that bucket.
-    pub lazy_start: Option<usize>,
-    /// Optional byte range (start, len) this AST node corresponds to in the raw
-    /// file bytes. When present, clicking the node will highlight this range
-    /// in the hex viewer.
-    pub byte_range: Option<(usize, usize)>,
-}
-
-impl AstNode {
-    pub fn new(title: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            detail: detail.into(),
-            children: Vec::new(),
-            lazy_count: None,
-            lazy_start: None,
-            byte_range: None,
-        }
-    }
-
-    pub fn with_children(mut self, children: Vec<AstNode>) -> Self {
-        self.children = children;
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_lazy(mut self, count: usize) -> Self {
-        self.lazy_count = Some(count);
-        self
-    }
-
-    /// Mark this node as a lazy range starting at `start` and with `count` items.
-    pub fn with_lazy_range(mut self, start: usize, count: usize) -> Self {
-        self.lazy_count = Some(count);
-        self.lazy_start = Some(start);
-        self
-    }
-
-    /// Attach a byte range (start offset, length) to this node.
-    pub fn with_byte_range(mut self, start: usize, len: usize) -> Self {
-        self.byte_range = Some((start, len));
-        self
-    }
-}
-
-/// Messages sent from background workers to the UI.
-///
-/// - `Full` contains the entire prebuilt lightweight AST (header + Commands
-///   node with lazy_count set, not necessarily filled children).
-/// - `Partial` contains a chunk of children for a node identified by `path`.
-/// - `Error` contains a user-presentable error message.
-pub enum AstBuildMessage {
-    Full(Vec<AstNode>),
-    Partial {
-        path: Vec<usize>,
-        start: usize,
-        nodes: Vec<AstNode>,
-    },
-    /// Differences between original file bytes and the serialized/rebuilt bytes.
-    /// Each tuple is (start_inclusive, end_inclusive).
-    /// The `Diff` variant now carries the rebuilt bytes as well so the UI can
-    /// display both original and rebuilt data when needed.
-    Diff(Vec<(usize, usize)>, Vec<u8>),
-    Error(String),
-}
 
 /// UI state holding AST, raw bytes and supporting maps for lazy-loading.
 pub struct UiState {
@@ -136,12 +59,12 @@ pub struct UiState {
     /// Whether an initial parse is in progress.
     pub ast_building: bool,
 
+    /// Monotonically increasing identifier for the currently loaded byte source.
+    pub parse_generation: u64,
+
     /// For lazy nodes (keyed by path string like "0" or "1.2"), store the already
     /// loaded child nodes in display order (appended as partial chunks arrive).
-    pub loaded_lazy_nodes: HashMap<String, Vec<AstNode>>,
-
-    /// Prevent duplicate concurrent requests per node path.
-    pub pending_requests: HashMap<String, bool>,
+    pub(crate) lazy: LazyLoadState,
 
     /// Chunk size for lazy loading (number of commands to request per click).
     pub lazy_chunk_size: usize,
@@ -180,8 +103,8 @@ impl UiState {
             ast_build_rx: None,
             ast_build_tx: None,
             ast_building: false,
-            loaded_lazy_nodes: HashMap::new(),
-            pending_requests: HashMap::new(),
+            parse_generation: 0,
+            lazy: LazyLoadState::new(),
             lazy_chunk_size: 200,
             deferred_loads: Vec::new(),
             enqueued_requests: HashMap::new(),
@@ -201,8 +124,8 @@ impl UiState {
             ast_build_rx: None,
             ast_build_tx: None,
             ast_building: false,
-            loaded_lazy_nodes: HashMap::new(),
-            pending_requests: HashMap::new(),
+            parse_generation: 0,
+            lazy: LazyLoadState::new(),
             lazy_chunk_size: 200,
             deferred_loads: Vec::new(),
             enqueued_requests: HashMap::new(),
@@ -212,660 +135,35 @@ impl UiState {
     /// Push an event string into the recent_events buffer (kept as a no-op in
     /// non-debug builds).
     #[allow(dead_code)]
-    fn push_event(&mut self, _ev: impl Into<String>) {
+    pub(super) fn push_event(&mut self, _ev: impl Into<String>) {
         // Intentionally left empty: UI-level event logging removed for release build.
-    }
-
-    /// Build the `Header` top-level AST node (with child fields and byte ranges).
-    ///
-    /// This extracts the header construction logic from the background worker so
-    /// the closure remains small. It returns a fully-populated `AstNode` for
-    /// the Header (including byte_range when determinable).
-    fn build_header_node(doc: &VgmDocument) -> AstNode {
-        // Build header child nodes (only non-zero/meaningful fields except Ident which is always shown).
-        let mut header_children: Vec<AstNode> = Vec::new();
-
-        // Always show ident even if it's zero-filled
-        header_children.push(
-            AstNode::new(
-                "Ident",
-                format!("'{}'", String::from_utf8_lossy(&doc.header.ident)),
-            )
-            // VGM ident occupies bytes 0x00..0x03 (4 bytes)
-            .with_byte_range(0x00, 4),
-        );
-
-        if doc.header.eof_offset != 0 {
-            header_children.push(AstNode::new(
-                "EOF offset",
-                format!("0x{:08x}", doc.header.eof_offset),
-            ));
-        }
-        if doc.header.version != 0 {
-            header_children.push(AstNode::new(
-                "Version",
-                format!("0x{:08x}", doc.header.version),
-            ));
-        }
-        if doc.header.sn76489_clock != 0 {
-            header_children.push(AstNode::new(
-                "SN76489 clock",
-                format!("{}", doc.header.sn76489_clock),
-            ));
-        }
-        if doc.header.ym2413_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2413 clock",
-                format!("{}", doc.header.ym2413_clock),
-            ));
-        }
-        if doc.header.gd3_offset != 0 {
-            header_children.push(AstNode::new(
-                "GD3 offset",
-                format!("0x{:08x}", doc.header.gd3_offset),
-            ));
-        }
-        if doc.header.total_samples != 0 {
-            header_children.push(AstNode::new(
-                "Total samples",
-                format!("{}", doc.header.total_samples),
-            ));
-        }
-        if doc.header.loop_offset != 0 {
-            header_children.push(AstNode::new(
-                "Loop offset",
-                format!("0x{:08x}", doc.header.loop_offset),
-            ));
-        }
-        if doc.header.loop_samples != 0 {
-            header_children.push(AstNode::new(
-                "Loop samples",
-                format!("{}", doc.header.loop_samples),
-            ));
-        }
-        if doc.header.sample_rate != 0 {
-            header_children.push(AstNode::new(
-                "Sample rate",
-                format!("{}", doc.header.sample_rate),
-            ));
-        }
-        if u16::from(doc.header.sn76489_feedback) != 0 {
-            header_children.push(AstNode::new(
-                "SN76489 Feedback",
-                format!("{:?}", doc.header.sn76489_feedback),
-            ));
-        }
-        if u8::from(doc.header.sn76489_shift_register_width) != 0 {
-            header_children.push(AstNode::new(
-                "SN76489 Shift Register Width",
-                format!("{:?}", doc.header.sn76489_shift_register_width),
-            ));
-        }
-        if u8::from(doc.header.sn76489_flags) != 0 {
-            header_children.push(AstNode::new(
-                "SN76489 Flags",
-                format!("{:?}", doc.header.sn76489_flags),
-            ));
-        }
-        if doc.header.ym2612_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2612 clock",
-                format!("{}", doc.header.ym2612_clock),
-            ));
-        }
-        if doc.header.ym2151_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2151 clock",
-                format!("{}", doc.header.ym2151_clock),
-            ));
-        }
-        if doc.header.data_offset != 0 {
-            header_children.push(AstNode::new(
-                "Data offset",
-                format!("0x{:08x}", doc.header.data_offset),
-            ));
-        }
-        if doc.header.sega_pcm_clock != 0 {
-            header_children.push(AstNode::new(
-                "Sega PCM clock",
-                format!("{}", doc.header.sega_pcm_clock),
-            ));
-        }
-        if doc.header.spcm_interface != 0 {
-            header_children.push(AstNode::new(
-                "SPCM interface",
-                format!("{}", doc.header.spcm_interface),
-            ));
-        }
-        if doc.header.rf5c68_clock != 0 {
-            header_children.push(AstNode::new(
-                "RF5C68 clock",
-                format!("{}", doc.header.rf5c68_clock),
-            ));
-        }
-        if doc.header.ym2203_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2203 clock",
-                format!("{}", doc.header.ym2203_clock),
-            ));
-        }
-        if doc.header.ym2608_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2608 clock",
-                format!("{}", doc.header.ym2608_clock),
-            ));
-        }
-        if doc.header.ym2610b_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM2610B clock",
-                format!("{}", doc.header.ym2610b_clock),
-            ));
-        }
-        if doc.header.ym3812_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM3812 clock",
-                format!("{}", doc.header.ym3812_clock),
-            ));
-        }
-        if doc.header.ym3526_clock != 0 {
-            header_children.push(AstNode::new(
-                "YM3526 clock",
-                format!("{}", doc.header.ym3526_clock),
-            ));
-        }
-        if doc.header.y8950_clock != 0 {
-            header_children.push(AstNode::new(
-                "Y8950 clock",
-                format!("{}", doc.header.y8950_clock),
-            ));
-        }
-        if doc.header.ymf262_clock != 0 {
-            header_children.push(AstNode::new(
-                "YMF262 clock",
-                format!("{}", doc.header.ymf262_clock),
-            ));
-        }
-        if doc.header.ymf278b_clock != 0 {
-            header_children.push(AstNode::new(
-                "YMF278B clock",
-                format!("{}", doc.header.ymf278b_clock),
-            ));
-        }
-        if doc.header.ymf271_clock != 0 {
-            header_children.push(AstNode::new(
-                "YMF271 clock",
-                format!("{}", doc.header.ymf271_clock),
-            ));
-        }
-        if doc.header.ymz280b_clock != 0 {
-            header_children.push(AstNode::new(
-                "YMZ280B clock",
-                format!("{}", doc.header.ymz280b_clock),
-            ));
-        }
-        if doc.header.rf5c164_clock != 0 {
-            header_children.push(AstNode::new(
-                "RF5C164 clock",
-                format!("{}", doc.header.rf5c164_clock),
-            ));
-        }
-        if doc.header.pwm_clock != 0 {
-            header_children.push(AstNode::new(
-                "PWM clock",
-                format!("{}", doc.header.pwm_clock),
-            ));
-        }
-        if doc.header.ay8910_clock != 0 {
-            header_children.push(AstNode::new(
-                "AY8910 clock",
-                format!("{}", doc.header.ay8910_clock),
-            ));
-        }
-        if u8::from(doc.header.ay_chip_type) != 0 {
-            header_children.push(AstNode::new(
-                "AY8910 chipType",
-                format!("{:?}", doc.header.ay_chip_type),
-            ));
-        }
-        if u8::from(doc.header.ay8910_flags) != 0 {
-            header_children.push(AstNode::new(
-                "Ay8910Flags",
-                format!("{:?}", doc.header.ay8910_flags),
-            ));
-        }
-        if u8::from(doc.header.ym2203_ay8910_flags) != 0 {
-            header_children.push(AstNode::new(
-                "Ym2203Ay8910Flags",
-                format!("{:?}", doc.header.ym2203_ay8910_flags),
-            ));
-        }
-        if u8::from(doc.header.ym2608_ay8910_flags) != 0 {
-            header_children.push(AstNode::new(
-                "Ym2608Ay8910Flags",
-                format!("{:?}", doc.header.ym2608_ay8910_flags),
-            ));
-        }
-        if doc.header.gb_dmg_clock != 0 {
-            header_children.push(AstNode::new(
-                "GB DMG clock",
-                format!("{}", doc.header.gb_dmg_clock),
-            ));
-        }
-        if doc.header.nes_apu_clock != 0 {
-            header_children.push(AstNode::new(
-                "NES APU clock",
-                format!("{}", doc.header.nes_apu_clock),
-            ));
-        }
-        if doc.header.multipcm_clock != 0 {
-            header_children.push(AstNode::new(
-                "MultiPCM clock",
-                format!("{}", doc.header.multipcm_clock),
-            ));
-        }
-        if doc.header.upd7759_clock != 0 {
-            header_children.push(AstNode::new(
-                "UPD7759 clock",
-                format!("{}", doc.header.upd7759_clock),
-            ));
-        }
-        if doc.header.okim6258_clock != 0 {
-            header_children.push(AstNode::new(
-                "OKIM6258 clock",
-                format!("{}", doc.header.okim6258_clock),
-            ));
-        }
-        if u8::from(doc.header.okim6258_flags) != 0 {
-            header_children.push(AstNode::new(
-                "OKIM6258 flags",
-                format!("{:?}", doc.header.okim6258_flags),
-            ));
-        }
-        if doc.header.okim6295_clock != 0 {
-            header_children.push(AstNode::new(
-                "OKIM6295 clock",
-                format!("{}", doc.header.okim6295_clock),
-            ));
-        }
-        if doc.header.k051649_clock != 0 {
-            header_children.push(AstNode::new(
-                "K051649 clock",
-                format!("{}", doc.header.k051649_clock),
-            ));
-        }
-        if doc.header.k054539_clock != 0 {
-            header_children.push(AstNode::new(
-                "K054539 clock",
-                format!("{}", doc.header.k054539_clock),
-            ));
-        }
-        if u8::from(doc.header.k054539_flags) != 0 {
-            header_children.push(AstNode::new(
-                "K054539 flags",
-                format!("{:?}", doc.header.k054539_flags),
-            ));
-        }
-        if doc.header.huc6280_clock != 0 {
-            header_children.push(AstNode::new(
-                "HuC6280 clock",
-                format!("{}", doc.header.huc6280_clock),
-            ));
-        }
-        if doc.header.c140_clock != 0 {
-            header_children.push(AstNode::new(
-                "C140 clock",
-                format!("{}", doc.header.c140_clock),
-            ));
-        }
-        if u8::from(doc.header.c140_chip_type) != 0 {
-            header_children.push(AstNode::new(
-                "C140 chipType",
-                format!("{:?}", doc.header.c140_chip_type),
-            ));
-        }
-        if doc.header.k053260_clock != 0 {
-            header_children.push(AstNode::new(
-                "K053260 clock",
-                format!("{}", doc.header.k053260_clock),
-            ));
-        }
-        if doc.header.pokey_clock != 0 {
-            header_children.push(AstNode::new(
-                "Pokey clock",
-                format!("{}", doc.header.pokey_clock),
-            ));
-        }
-        if doc.header.qsound_clock != 0 {
-            header_children.push(AstNode::new(
-                "QSound clock",
-                format!("{}", doc.header.qsound_clock),
-            ));
-        }
-        if doc.header.scsp_clock != 0 {
-            header_children.push(AstNode::new(
-                "SCSP clock",
-                format!("{}", doc.header.scsp_clock),
-            ));
-        }
-        if doc.header.extra_header_offset != 0 {
-            header_children.push(AstNode::new(
-                "Extra header offset",
-                format!("0x{:08x}", doc.header.extra_header_offset),
-            ));
-        }
-        if doc.header.wonderswan_clock != 0 {
-            header_children.push(AstNode::new(
-                "WonderSwan clock",
-                format!("{}", doc.header.wonderswan_clock),
-            ));
-        }
-        if doc.header.vsu_clock != 0 {
-            header_children.push(AstNode::new(
-                "VSU clock",
-                format!("{}", doc.header.vsu_clock),
-            ));
-        }
-        if doc.header.saa1099_clock != 0 {
-            header_children.push(AstNode::new(
-                "SAA1099 clock",
-                format!("{}", doc.header.saa1099_clock),
-            ));
-        }
-        if doc.header.es5503_clock != 0 {
-            header_children.push(AstNode::new(
-                "ES5503 clock",
-                format!("{}", doc.header.es5503_clock),
-            ));
-        }
-        if doc.header.es5506_clock != 0 {
-            header_children.push(AstNode::new(
-                "ES5506 clock",
-                format!("{}", doc.header.es5506_clock),
-            ));
-        }
-        if doc.header.es5503_output_channels != 0 {
-            header_children.push(AstNode::new(
-                "ES5506 channels",
-                format!("{}", doc.header.es5503_output_channels),
-            ));
-        }
-        if doc.header.c352_clock_divider != 0 {
-            header_children.push(AstNode::new(
-                "ES5506 CD flags",
-                format!("{}", doc.header.c352_clock_divider),
-            ));
-        }
-        if doc.header.x1_010_clock != 0 {
-            header_children.push(AstNode::new(
-                "X1-010 clock",
-                format!("{}", doc.header.x1_010_clock),
-            ));
-        }
-        if doc.header.c352_clock != 0 {
-            header_children.push(AstNode::new(
-                "C352 clock",
-                format!("{}", doc.header.c352_clock),
-            ));
-        }
-        if doc.header.ga20_clock != 0 {
-            header_children.push(AstNode::new(
-                "GA20 clock",
-                format!("{}", doc.header.ga20_clock),
-            ));
-        }
-        if doc.header.mikey_clock != 0 {
-            header_children.push(AstNode::new(
-                "Mikey clock",
-                format!("{}", doc.header.mikey_clock),
-            ));
-        }
-        if doc.header.reserved_e8_ef != [0u8; 8] {
-            header_children.push(AstNode::new(
-                "Reserved E8-EF",
-                format!("{:?}", doc.header.reserved_e8_ef),
-            ));
-        }
-        if doc.header.reserved_f0_ff != [0u8; 16] {
-            header_children.push(AstNode::new(
-                "Reserved F0-FF",
-                format!("{:?}", doc.header.reserved_f0_ff),
-            ));
-        }
-
-        // Attach byte ranges to header child nodes using HeaderField mapping.
-        // We map the node title to a HeaderField and, if the field exists in
-        // the serialized header (per data_offset/version rules), attach the
-        // computed byte range to the AstNode so the hex viewer can highlight it.
-        let mappings: Vec<(&str, VgmHeaderField)> = vec![
-            ("Ident", VgmHeaderField::Ident),
-            ("EOF offset", VgmHeaderField::EofOffset),
-            ("Version", VgmHeaderField::Version),
-            ("SN76489 clock", VgmHeaderField::Sn76489Clock),
-            ("YM2413 clock", VgmHeaderField::Ym2413Clock),
-            ("GD3 offset", VgmHeaderField::Gd3Offset),
-            ("Total samples", VgmHeaderField::TotalSamples),
-            ("Loop offset", VgmHeaderField::LoopOffset),
-            ("Loop samples", VgmHeaderField::LoopSamples),
-            ("Sample rate", VgmHeaderField::SampleRate),
-            ("SN76489 feedback", VgmHeaderField::Sn76489Feedback),
-            (
-                "SN76489 shift register width",
-                VgmHeaderField::Sn76489ShiftRegisterWidth,
-            ),
-            ("SN76489 flags", VgmHeaderField::Sn76489Flags),
-            ("YM2612 clock", VgmHeaderField::Ym2612Clock),
-            ("YM2151 clock", VgmHeaderField::Ym2151Clock),
-            ("Data offset", VgmHeaderField::DataOffset),
-            ("Sega PCM clock", VgmHeaderField::SegaPcmClock),
-            ("SPCM interface", VgmHeaderField::SpcmInterface),
-            ("RF5C68 clock", VgmHeaderField::Rf5c68Clock),
-            ("YM2203 clock", VgmHeaderField::Ym2203Clock),
-            ("YM2608 clock", VgmHeaderField::Ym2608Clock),
-            ("YM2610B clock", VgmHeaderField::Ym2610bClock),
-            ("YM3812 clock", VgmHeaderField::Ym3812Clock),
-            ("YM3526 clock", VgmHeaderField::Ym3526Clock),
-            ("Y8950 clock", VgmHeaderField::Y8950Clock),
-            ("YMF262 clock", VgmHeaderField::Ymf262Clock),
-            ("YMF278B clock", VgmHeaderField::Ymf278bClock),
-            ("YMF271 clock", VgmHeaderField::Ymf271Clock),
-            ("YMZ280B clock", VgmHeaderField::Ymz280bClock),
-            ("RF5C164 clock", VgmHeaderField::Rf5c164Clock),
-            ("PWM clock", VgmHeaderField::PwmClock),
-            ("AY8910 clock", VgmHeaderField::Ay8910Clock),
-            ("AY8910 chipType", VgmHeaderField::Ay8910ChipType),
-            ("Ay8910Flags", VgmHeaderField::Ay8910Flags),
-            ("Ym2203Ay8910Flags", VgmHeaderField::Ym2203Ay8910Flags),
-            ("Ym2608Ay8910Flags", VgmHeaderField::Ym2608Ay8910Flags),
-            ("VolumeModifier", VgmHeaderField::VolumeModifier),
-            ("LoopBase", VgmHeaderField::LoopBase),
-            ("LoopModifier", VgmHeaderField::LoopModifier),
-            ("GB DMG clock", VgmHeaderField::GbDmgClock),
-            ("NES APU clock", VgmHeaderField::NesApuClock),
-            ("MultiPCM clock", VgmHeaderField::MultipcmClock),
-            ("UPD7759 clock", VgmHeaderField::Upd7759Clock),
-            ("OKIM6258 clock", VgmHeaderField::Okim6258Clock),
-            ("OKIM6258 flags", VgmHeaderField::Okim6258Flags),
-            ("OKIM6295 clock", VgmHeaderField::Okim6295Clock),
-            ("K051649 clock", VgmHeaderField::K051649Clock),
-            ("K054539 clock", VgmHeaderField::K054539Clock),
-            ("K054539 flags", VgmHeaderField::K054539Flags),
-            ("HuC6280 clock", VgmHeaderField::Huc6280Clock),
-            ("C140 chipType", VgmHeaderField::C140ChipType),
-            ("C140 clock", VgmHeaderField::C140Clock),
-            ("K053260 clock", VgmHeaderField::K053260Clock),
-            ("Pokey clock", VgmHeaderField::PokeyClock),
-            ("QSound clock", VgmHeaderField::QsoundClock),
-            ("SCSP clock", VgmHeaderField::ScspClock),
-            ("Extra header offset", VgmHeaderField::ExtraHeaderOffset),
-            ("WonderSwan clock", VgmHeaderField::WonderSwan),
-            ("VSU clock", VgmHeaderField::Vsu),
-            ("SAA1099 clock", VgmHeaderField::Saa1099),
-            ("ES5503 clock", VgmHeaderField::Es5503),
-            ("ES5506 clock", VgmHeaderField::Es5506),
-            ("ES5506 channels", VgmHeaderField::Es5503OutputChannels),
-            ("ES5506 channels", VgmHeaderField::Es5506OutputChannels),
-            ("C352 clock divider", VgmHeaderField::C352ClockDivider),
-            ("X1-010 clock", VgmHeaderField::X1_010),
-            ("C352 clock", VgmHeaderField::C352),
-            ("GA20 clock", VgmHeaderField::Ga20),
-            ("Mikey clock", VgmHeaderField::Mikey),
-            ("Reserved E8-EF", VgmHeaderField::ReservedE8EF),
-            ("Reserved F0-FF", VgmHeaderField::ReservedF0FF),
-        ];
-
-        for node in &mut header_children {
-            if let Some((_, hf)) = mappings
-                .iter()
-                .find(|(title, _)| title.eq_ignore_ascii_case(&node.title))
-                && let Some((start, len)) =
-                    hf.byte_range(doc.header.version, doc.header.data_offset)
-            {
-                node.byte_range = Some((start, len));
-            }
-        }
-
-        // Attach header node and compute its overall byte range when possible.
-        // Prefer the first command absolute offset as the header length if commands exist;
-        // otherwise fall back to GD3 start if present.
-        let mut header_node =
-            AstNode::new("Header", "Header fields").with_children(header_children);
-        let header_len_opt = if !doc.commands.is_empty() {
-            // souecemap() returns absolute (file) offsets for commands; the first command's
-            // absolute offset equals the serialized header length. Use that when available.
-            doc.sourcemap().first().map(|(off, _)| *off)
-        } else if doc.header.gd3_offset != 0 {
-            // If there are no commands but GD3 exists, the GD3 start marks the end of header.
-            Some(doc.header.gd3_offset.wrapping_add(0x14) as usize)
-        } else {
-            None
-        };
-        if let Some(hlen) = header_len_opt {
-            header_node.byte_range = Some((0usize, hlen));
-        }
-        header_node
-    }
-
-    /// Build a GD3 top-level node (with child fields and byte ranges) if present.
-    /// Returns Some(AstNode) when GD3 metadata exists and at least one child field
-    /// is non-empty; otherwise returns None.
-    fn build_gd3_node(doc: &VgmDocument) -> Option<AstNode> {
-        if doc.header.gd3_offset != 0 {
-            let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
-            // Fields start after the 12-byte Gd3 header (ident+version+len).
-            let mut field_off = gd3_start + 12_usize;
-            let gd3_ref = doc.gd3.as_ref()?;
-            let mut gd3_children: Vec<AstNode> = Vec::new();
-
-            // Helper to push a field node and advance the running offset.
-            // For the Notes field we strip newlines so the AST/right-pane detail
-            // shows a single-line note (per request).
-            let push_field =
-                |children: &mut Vec<AstNode>, title: &str, v: &Option<String>, off: &mut usize| {
-                    if let Some(s) = v {
-                        // UTF-16LE code units -> two bytes each
-                        let len_bytes = s.encode_utf16().count() * 2;
-                        // For Notes, remove newline characters; otherwise keep the original string.
-                        let detail = if title == "Notes" {
-                            s.replace('\n', " ")
-                        } else {
-                            s.clone()
-                        };
-                        children.push(AstNode::new(title, detail).with_byte_range(*off, len_bytes));
-                        // advance past string bytes + 2-byte UTF-16 nul terminator
-                        *off = off.saturating_add(len_bytes + 2);
-                    } else {
-                        // empty field: only the 2-byte terminator is present
-                        *off = off.saturating_add(2);
-                    }
-                };
-
-            push_field(
-                &mut gd3_children,
-                "Track name (EN)",
-                &gd3_ref.track_name_en,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Track name (JP)",
-                &gd3_ref.track_name_origin,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Game name (EN)",
-                &gd3_ref.game_name_en,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Game name (JP)",
-                &gd3_ref.game_name_origin,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "System name (EN)",
-                &gd3_ref.system_name_en,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "System name (JP)",
-                &gd3_ref.system_name_origin,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Author (EN)",
-                &gd3_ref.author_name_en,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Author (JP)",
-                &gd3_ref.author_name_origin,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Release date",
-                &gd3_ref.release_date,
-                &mut field_off,
-            );
-            push_field(
-                &mut gd3_children,
-                "Creator",
-                &gd3_ref.creator,
-                &mut field_off,
-            );
-            push_field(&mut gd3_children, "Notes", &gd3_ref.notes, &mut field_off);
-
-            if !gd3_children.is_empty() {
-                // Attach a GD3 top-level node and also record the full GD3 chunk range
-                // so selecting the GD3 node highlights the entire metadata chunk.
-                let mut gd3_node = AstNode::new("GD3", "Metadata").with_children(gd3_children);
-                let gd3_len = doc.gd3.as_ref().map(|g| g.to_bytes().len()).unwrap_or(0);
-                if gd3_len > 0 {
-                    let gd3_start = doc.header.gd3_offset.wrapping_add(0x14) as usize;
-                    gd3_node.byte_range = Some((gd3_start, gd3_len));
-                }
-                return Some(gd3_node);
-            }
-        }
-        None
     }
 
     /// Kick off initial parse in background. This will produce a lightweight
     /// AST where the `Commands` node has `lazy_count = Some(total)`.
     pub fn populate_from_bytes(&mut self, bytes: &[u8]) {
-        // store raw bytes
+        let input_changed = self.bytes != bytes;
+        if input_changed {
+            self.ast_root.clear();
+            self.lazy.clear();
+            self.rebuilt_bytes = None;
+            self.selected_ast = None;
+            self.pending_focus = None;
+            self.last_selected_ast_rect = None;
+            self.last_focused_widget = None;
+            self.deferred_loads.clear();
+            self.enqueued_requests.clear();
+            self.hex_viewer.reset_document_state();
+        }
         self.bytes = bytes.to_vec();
 
-        // If a background parse is already running, do nothing.
-        if self.ast_building {
+        // Keep the existing worker for repeated UI-frame calls with the same input.
+        if self.ast_building && !input_changed {
             return;
         }
+
+        self.parse_generation = self.parse_generation.wrapping_add(1);
+        let generation = self.parse_generation;
 
         // Create a channel for background parse results if not already present.
         let (tx, rx) = mpsc::channel::<AstBuildMessage>();
@@ -873,91 +171,7 @@ impl UiState {
         self.ast_build_tx = Some(tx.clone());
         self.ast_building = true;
 
-        // Clone bytes to move into worker.
-        let data = self.bytes.clone();
-
-        // Spawn background thread to parse the document and produce the lightweight AST.
-        thread::spawn(move || {
-            match VgmDocument::try_from(data.as_slice()) {
-                Ok(doc) => {
-                    // Build header node (extracted helper).
-                    let mut nodes: Vec<AstNode> = Vec::new();
-                    let header_node = Self::build_header_node(&doc);
-                    nodes.push(header_node);
-
-                    // Commands node: create bucketed children (e.g. [0..1000], [1000..2000], ...)
-                    // Each bucket is a lazy node that can be expanded to load its commands.
-                    let total_cmds = doc.commands.len();
-                    let bucket_size = 1000usize;
-                    let mut buckets: Vec<AstNode> = Vec::new();
-                    let mut start_idx = 0usize;
-                    while start_idx < total_cmds {
-                        let end_idx = cmp::min(start_idx + bucket_size, total_cmds);
-                        let title = format!("[{}..{}]", start_idx, end_idx);
-                        let detail = format!("{} commands", end_idx - start_idx);
-                        // this bucket node is lazy and records its start index and count
-                        buckets.push(
-                            AstNode::new(title, detail)
-                                .with_lazy_range(start_idx, end_idx - start_idx),
-                        );
-                        start_idx = end_idx;
-                    }
-
-                    // The top-level Commands node contains the bucket children (not lazy itself).
-                    nodes.push(
-                        AstNode::new("Commands", format!("{} commands", total_cmds))
-                            .with_children(buckets),
-                    );
-
-                    // Place GD3 node after Commands so it appears below Commands in the AST.
-                    if let Some(gd3_node) = Self::build_gd3_node(&doc) {
-                        nodes.push(gd3_node);
-                    }
-
-                    let _ = tx.send(AstBuildMessage::Full(nodes));
-
-                    // Compute differences between the original bytes (`data`) and the
-                    // serialized/rebuilt bytes produced by the document serializer.
-                    // `VgmDocument` implements `From<&VgmDocument> for Vec<u8>` so use
-                    // `Vec::from(&doc)` rather than the private `to_bytes()` method.
-                    let rebuilt_bytes = Vec::from(&doc);
-                    let max_len = cmp::max(data.len(), rebuilt_bytes.len());
-                    let mut diffs: Vec<(usize, usize)> = Vec::new();
-                    let mut in_diff = false;
-                    let mut diff_start: usize = 0;
-                    for i in 0..max_len {
-                        let orig = data.get(i);
-                        let newb = rebuilt_bytes.get(i);
-                        let differs = match (orig, newb) {
-                            (Some(o), Some(n)) => o != n,
-                            (Some(_), None) | (None, Some(_)) => true,
-                            _ => false,
-                        };
-                        if differs {
-                            if !in_diff {
-                                in_diff = true;
-                                diff_start = i;
-                            }
-                        } else if in_diff {
-                            // close the current diff range (inclusive end)
-                            diffs.push((diff_start, i.saturating_sub(1)));
-                            in_diff = false;
-                        }
-                    }
-                    if in_diff {
-                        diffs.push((diff_start, max_len.saturating_sub(1)));
-                    }
-
-                    // Send diff ranges (may be empty) to the UI so it can render red overlays.
-                    // Include rebuilt_bytes so the UI can present both original and rebuilt data
-                    // in tooltips or other diagnostics views.
-                    let _ = tx.send(AstBuildMessage::Diff(diffs, rebuilt_bytes));
-                }
-                Err(e) => {
-                    let _ = tx.send(AstBuildMessage::Error(format!("{:?}", e)));
-                }
-            }
-        });
+        spawn_initial_parse(self.bytes.clone(), generation, tx);
     }
 
     /// Request a chunk of children for the node identified by `path`.
@@ -965,7 +179,7 @@ impl UiState {
     ///   the node is a bucket; otherwise absolute).
     /// - `count` is how many commands to format.
     ///
-    /// This spawns a background worker which reparses the VGM bytes and produces
+    /// This spawns a background worker which reparses the source bytes and produces
     /// formatted `AstNode`s for the specified range. Results are sent via the
     /// shared sender stored in `ast_build_tx`. Note: the `start` in the
     /// `AstBuildMessage::Partial` is the *relative* offset within the bucket so
@@ -980,12 +194,7 @@ impl UiState {
             .join(".");
 
         // Avoid duplicate concurrent requests for the same path.
-        if self
-            .pending_requests
-            .get(&path_key)
-            .copied()
-            .unwrap_or(false)
-        {
+        if self.lazy.is_pending(&path) {
             self.push_event(format!("request skipped (pending): {}", path_key));
             return;
         }
@@ -1003,7 +212,7 @@ impl UiState {
         let tx = tx_opt.unwrap();
 
         // Mark a pending request.
-        self.pending_requests.insert(path_key.clone(), true);
+        self.lazy.begin_request(&path);
         self.push_event(format!(
             "request: {} start={} count={}",
             path_key, start, count
@@ -1011,483 +220,27 @@ impl UiState {
 
         // Clone bytes to move into thread.
         let data = self.bytes.clone();
+        let generation = self.parse_generation;
 
         // Determine base absolute start for this path (if the node corresponds to a bucket).
         // If the node at `path` has a `lazy_start`, treat the provided `start` as
         // relative to that bucket; otherwise `start` is absolute.
-        let mut base_abs = 0usize;
-        let mut cur_nodes = &self.ast_root;
-        for idx in &path {
-            if *idx >= cur_nodes.len() {
-                break;
-            }
-            let node = &cur_nodes[*idx];
-            if let Some(ls) = node.lazy_start {
-                base_abs = ls;
-            }
-            cur_nodes = &node.children;
-        }
+        let resolved = resolve_request(&path, start, &self.ast_root);
         // Keep the relative start for returning in the Partial message.
         let relative_start = start;
         // Compute absolute start for parsing.
-        let absolute_start = base_abs.saturating_add(relative_start);
+        let absolute_start = resolved.absolute_start;
 
-        thread::spawn(move || {
-            // Re-parse document in background and produce requested range using absolute indices.
-            match VgmDocument::try_from(data.as_slice()) {
-                Ok(doc) => {
-                    let total = doc.commands.len();
-                    if absolute_start >= total {
-                        // Nothing to do; send empty chunk. Use relative_start so the UI knows insertion pos.
-                        let _ = tx.send(AstBuildMessage::Partial {
-                            path,
-                            start: relative_start,
-                            nodes: Vec::new(),
-                        });
-                        return;
-                    }
-                    let end = cmp::min(absolute_start + count, total);
-
-                    let mut nodes: Vec<AstNode> = Vec::with_capacity(end - absolute_start);
-                    // Compute absolute offsets/lengths for commands once and attach them
-                    // to the returned AstNodes so the UI can highlight the exact bytes.
-                    let abs_ranges = doc.sourcemap();
-                    for (abs_i, cmd) in doc.iter().enumerate().take(end).skip(absolute_start) {
-                        // Prefer showing a parsed DataBlock summary both in the
-                        // title and detail when available so the left-pane doesn't
-                        // show the raw `DataBlock(...)` debug blob.
-                        let (title, detail) = match cmd {
-                            VgmCommand::DataBlock(db) => match parse_data_block(*db.clone()) {
-                                Ok(dbt) => {
-                                    let inner_dbg = match dbt {
-                                        DataBlockType::UncompressedStream(s) => format!("{:?}", s),
-                                        DataBlockType::CompressedStream(c) => format!("{:?}", c),
-                                        DataBlockType::DecompressionTable(t) => format!("{:?}", t),
-                                        DataBlockType::RomRamDump(r) => format!("{:?}", r),
-                                        DataBlockType::RamWrite16(rw) => format!("{:?}", rw),
-                                        DataBlockType::RamWrite32(rw) => format!("{:?}", rw),
-                                    };
-                                    (format!("{}: {}", abs_i, inner_dbg), inner_dbg.clone())
-                                }
-                                Err((_, err)) => (
-                                    format!("{}: DataBlock(parse error)", abs_i),
-                                    format!("<DataBlock parse error: {:?}>", err),
-                                ),
-                            },
-                            _ => (format!("{}: {:?}", abs_i, cmd), format!("{:?}", cmd)),
-                        };
-
-                        if let Some((off, len)) = abs_ranges.get(abs_i).copied() {
-                            nodes.push(AstNode::new(title, detail).with_byte_range(off, len));
-                        } else {
-                            nodes.push(AstNode::new(title, detail));
-                        }
-                    }
-
-                    let _ = tx.send(AstBuildMessage::Partial {
-                        path,
-                        start: relative_start,
-                        nodes,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(AstBuildMessage::Error(format!("{:?}", e)));
-                }
-            }
-        });
-    }
-}
-
-/// Helper to build a path key string from a path Vec.
-fn path_key_for(path: &[usize]) -> String {
-    path.iter()
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-/// Parse an address/offset from an AstNode detail string.
-///
-/// Supports "0x..." hexadecimal tokens (first occurrence) and the first
-/// contiguous decimal sequence otherwise. Returns `Some(offset)` on success.
-fn parse_address_from_detail(detail: &str) -> Option<usize> {
-    let s = detail.trim();
-
-    // Try hex first: find "0x" and consume following hex digits.
-    if let Some(pos) = s.find("0x") {
-        let hex_str: String = s[pos + 2..]
-            .chars()
-            .take_while(|ch| ch.is_ascii_hexdigit())
-            .collect();
-        if !hex_str.is_empty() {
-            // Try parsing and return the parsed value if successful; otherwise fall through
-            // to decimal parsing below.
-            if let Ok(v) = usize::from_str_radix(&hex_str, 16) {
-                return Some(v);
-            }
-        }
-    }
-
-    // Fall back to the first contiguous decimal sequence (byte index).
-    if let Some(pos) = s.find(|c: char| c.is_ascii_digit()) {
-        let dec_str: String = s[pos..]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if let Ok(v) = dec_str.parse::<usize>() {
-            return Some(v);
-        }
-    }
-
-    None
-}
-
-/// Draw an AstNode. Special handling if node.lazy_count.is_some(): we treat it as a
-/// lazily-populated container and render only already-loaded children plus a
-/// "Show more" button that requests the next chunk.
-fn draw_ast_node(ui: &mut egui::Ui, node: &AstNode, path: Vec<usize>, state: &mut UiState) {
-    use egui::CollapsingHeader;
-
-    // Render only the first line of a node's title to avoid multi-line duplicate appearance.
-    let display_title = node.title.lines().next().unwrap_or(&node.title).to_string();
-
-    // If this is a lazy container (bucket) handle specially.
-    if let Some(total) = node.lazy_count {
-        // If this lazy node has a defined start index it represents a bucket range.
-        if let Some(_start_idx) = node.lazy_start {
-            CollapsingHeader::new(
-                egui::RichText::new(&display_title).size(state.hex_viewer.font_size()),
-            )
-            .default_open(total <= 100)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-
-                let key = path_key_for(&path);
-                // Clone already-loaded children (if any) to avoid borrow issues.
-                let children = state
-                    .loaded_lazy_nodes
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
-                if children.is_empty() {
-                    // Not loaded yet — automatically request this bucket when the
-                    // user opens the tree node. We avoid showing a button: the
-                    // request is triggered once and a loading label is shown.
-                    let pending = state.pending_requests.get(&key).copied().unwrap_or(false);
-                    if pending {
-                        ui.label("Loading...");
-                    } else {
-                        // Trigger background load for this bucket once.
-                        // For bucketed lazy nodes we want to request the entire bucket
-                        // (e.g. [0..1000]) so that expanding the bucket loads all entries
-                        // rather than only a single chunk. Previously we used
-                        // `lazy_chunk_size` here which caused only the first N items to load.
-                        // NOTE: request_children expects `start` relative to the
-                        // bucket, so pass 0 here (we want the full bucket).
-                        let count = total;
-                        // Defer the actual request to after drawing to avoid nested mutable borrows.
-                        let key = path_key_for(&path);
-                        if !state.enqueued_requests.contains_key(&key) {
-                            state.deferred_loads.push((path.clone(), 0, count));
-                            state.enqueued_requests.insert(key, true);
-                        }
-                        ui.label("Loading...");
-                    }
-                } else {
-                    // Render loaded children for this bucket.
-                    for (idx, child) in children.into_iter().enumerate() {
-                        let mut child_path = path.clone();
-                        child_path.push(idx);
-                        draw_ast_node(ui, &child, child_path, state);
-                    }
-                }
-            });
-            return;
-        } else {
-            // Fallback generic lazy handling (should not be common with bucket approach).
-            CollapsingHeader::new(
-                egui::RichText::new(&display_title).size(state.hex_viewer.font_size()),
-            )
-            .default_open(total <= 100)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                let key = path_key_for(&path);
-                let children = state
-                    .loaded_lazy_nodes
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
-                let loaded = children.len();
-                for (idx, child) in children.into_iter().enumerate() {
-                    let mut child_path = path.clone();
-                    child_path.push(idx);
-                    draw_ast_node(ui, &child, child_path, state);
-                }
-
-                if loaded < total {
-                    let pending = state.pending_requests.get(&key).copied().unwrap_or(false);
-                    let btn_label = format!("Show more ({}/{})", loaded, total);
-                    if pending {
-                        ui.label(btn_label);
-                    } else if ui.button(btn_label).clicked() {
-                        let start = loaded;
-                        let count = state.lazy_chunk_size;
-                        let key = path_key_for(&path);
-                        if !state.enqueued_requests.contains_key(&key) {
-                            state.deferred_loads.push((path.clone(), start, count));
-                            state.enqueued_requests.insert(key, true);
-                        }
-                    }
-                }
-            });
-            return;
-        }
-    }
-
-    // Non-lazy node: render title only (no detail shown).
-    if node.children.is_empty() {
-        let selected = state
-            .selected_ast
-            .as_ref()
-            .map(|p| *p == path)
-            .unwrap_or(false);
-
-        // Collapse repeated `path.len()` checks by evaluating the common prefix once.
-        let label_str = if path.len() >= 2
-            && (path[0] == 0
-                || state
-                    .ast_root
-                    .get(path[0])
-                    .map(|n| n.title == "GD3")
-                    .unwrap_or(false))
-        {
-            // For header child items (top-level header is at path[0] == 0) and
-            // GD3 child items (top-level node title == "GD3"), show the configured value inline.
-            let detail_first = node.detail.lines().next().unwrap_or(&node.detail).trim();
-            format!("{}: {}", display_title, detail_first)
-        } else {
-            display_title.clone()
-        };
-        // Truncate long labels for display while keeping the full `label_str` intact for copy operations.
-        let display_label = {
-            let max_chars = 120usize;
-            if label_str.chars().count() > max_chars {
-                let mut s = label_str.chars().take(max_chars).collect::<String>();
-                s.push_str("...");
-                s
-            } else {
-                label_str.clone()
-            }
-        };
-        let title_text = egui::RichText::new(display_label).size(state.hex_viewer.font_size());
-        // Use a SelectableLabel so the label is clickable and returns a Response.
-        let response = ui.add(egui::SelectableLabel::new(selected, title_text.clone()));
-        // Right-click context menu: allow copying the full (untruncated) label.
-        // Call context_menu on a clone so we don't move `response`.
-        response.clone().context_menu(|ui| {
-            if ui.button("Copy").clicked() {
-                // copy the full original (untruncated) label_str to the clipboard
-                let label_clone = label_str.clone();
-                ui.ctx().output_mut(|out| out.copied_text = label_clone);
-                state.push_event(format!("copied: {}", label_str));
-                // Close the context menu after handling the click so it doesn't remain open.
-                ui.close_menu();
-            }
-        });
-
-        // If a keyboard-driven navigation requested that this path be focused/visible,
-        // apply it now (focus). Keep the pending flag until we observe that the response
-        // actually has focus so that we do not clear the request before the UI has applied the focus.
-        if state.pending_focus.as_ref() == Some(&path) {
-            // Request focus programmatically; do not clear pending_focus here.
-            // Record the widget id we requested focus for so Tab-focus suppression can
-            // re-apply it later if needed.
-            state.last_focused_widget = Some(response.id);
-            ui.ctx().memory_mut(|mem| mem.request_focus(response.id));
-            // Do not scroll yet; wait until focus is observed to avoid premature clearing.
-        }
-        // Once the response actually has keyboard focus, consider the pending focus fulfilled
-        // and perform the scroll-to-rect now so the left pane visibly follows keyboard navigation.
-        if response.has_focus() && state.pending_focus.as_ref() == Some(&path) {
-            // Scroll so this response rect is visible (centered).
-            ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
-            // Clear the pending flag after performing the scroll.
-            state.pending_focus = None;
-        }
-
-        // If this label currently has keyboard focus (e.g. arrived here via arrow keys)
-        // treat it like a click so keyboard-only navigation immediately updates selection
-        // and the hex viewer, without requiring Enter.
-        if response.has_focus() && !selected {
-            // Remember selected AST path
-            state.selected_ast = Some(path.clone());
-            // Remember the response rect so the left ScrollArea will scroll to it after drawing.
-            state.last_selected_ast_rect = Some(response.rect);
-            // Ensure an immediate repaint so the hex-viewer and pending-focus handling apply now.
-            ui.ctx().request_repaint();
-
-            // Clear previous hex highlights/markers and any overlay outlines
-            state.hex_viewer.clear_selection_range();
-            state.hex_viewer.clear_reference_markers();
-            state.hex_viewer.clear_outline_ranges();
-            // Default to drawing selection ranges with outlines unless overridden below.
-            state.hex_viewer.set_selection_outline_enabled(true);
-
-            // Prefer highlighting the full Header/GD3 top-level range when a child is selected.
-            // If not applicable, fall back to the node's own byte_range or parsed address.
-            let mut applied = false;
-            if path.len() >= 2
-                && let Some(top) = state.ast_root.get(path[0])
-                && (top.title == "Header" || top.title == "GD3")
-                && let Some((hs, hl)) = top.byte_range
-                && hs < state.bytes.len()
-                && hl > 0
-            {
-                let end = hs
-                    .saturating_add(hl)
-                    .saturating_sub(1)
-                    .min(state.bytes.len().saturating_sub(1));
-                // Highlight the entire header/gd3 as fill-only
-                state.hex_viewer.set_selection_range(hs, end);
-                state.hex_viewer.set_reference_markers(vec![hs]);
-                state.hex_viewer.set_pending_scroll_to(hs, end);
-                // Mark the parent header/gd3 range as fill-only so it draws without a stroke.
-                state.hex_viewer.set_fill_only_ranges(vec![(hs, end)]);
-                // For header contexts, use fill-only for the parent range (disable selection stroke).
-                state.hex_viewer.set_selection_outline_enabled(false);
-                // If this specific child has its own byte_range, draw it as an overlay outline.
-                if let Some((cstart, clen)) = node.byte_range {
-                    let cend = cstart.saturating_add(clen).saturating_sub(1);
-                    state.hex_viewer.set_outline_ranges(vec![(cstart, cend)]);
-                    // Also show a reference marker and scroll to the child field
-                    // so the cursor appears at the child's address within the header.
-                    state.hex_viewer.set_reference_markers(vec![cstart]);
-                    state.hex_viewer.set_pending_scroll_to(cstart, cend);
-                } else {
-                    state.hex_viewer.clear_outline_ranges();
-                }
-                applied = true;
-            }
-
-            if !applied {
-                // If top-level Header/GD3 range not applied, fall back to node.byte_range or parsed address.
-                match node.byte_range {
-                    Some((start, len)) if start < state.bytes.len() && len > 0 => {
-                        let end = start
-                            .saturating_add(len)
-                            .saturating_sub(1)
-                            .min(state.bytes.len().saturating_sub(1));
-                        state.hex_viewer.set_selection_range(start, end);
-                        state.hex_viewer.set_reference_markers(vec![start]);
-                        state.hex_viewer.set_pending_scroll_to(start, end);
-                    }
-                    _ => {
-                        // Try to parse an address/offset from the node.detail and highlight it,
-                        // same logic as clicking the node (so keyboard-only selection updates the hex view).
-                        if let Some(addr) = parse_address_from_detail(&node.detail)
-                            .filter(|&a| a < state.bytes.len())
-                        {
-                            state.hex_viewer.set_selection_range(addr, addr);
-                            state.hex_viewer.set_reference_markers(vec![addr]);
-                            state.hex_viewer.set_pending_scroll_to(addr, addr);
-                        }
-                    }
-                }
-            }
-        }
-
-        if response.clicked() {
-            // Remember selected AST path
-            state.selected_ast = Some(path.clone());
-            // Store the response rect so the outer ScrollArea can scroll to it after drawing.
-            state.last_selected_ast_rect = Some(response.rect);
-
-            // Give keyboard focus to this label so subsequent arrow keys are
-            // received by the left pane and used for navigation.
-            // Record the focused widget id so Tab suppression can restore it.
-            state.last_focused_widget = Some(response.id);
-            response.request_focus();
-
-            // Clear previous hex highlights/markers and any overlay outlines
-            state.hex_viewer.clear_selection_range();
-            state.hex_viewer.clear_reference_markers();
-            state.hex_viewer.clear_outline_ranges();
-            // Default to drawing selection ranges with outlines unless overridden below.
-            state.hex_viewer.set_selection_outline_enabled(true);
-
-            // Prefer highlighting the full Header/GD3 top-level range when a child is clicked.
-            let mut applied = false;
-            if path.len() >= 2
-                && let Some(top) = state.ast_root.get(path[0])
-                && (top.title == "Header" || top.title == "GD3")
-                && let Some((hs, hl)) = top.byte_range
-                && hs < state.bytes.len()
-                && hl > 0
-            {
-                let end = hs
-                    .saturating_add(hl)
-                    .saturating_sub(1)
-                    .min(state.bytes.len().saturating_sub(1));
-                // Highlight the entire header/gd3 as fill-only
-                state.hex_viewer.set_selection_range(hs, end);
-                state.hex_viewer.set_reference_markers(vec![hs]);
-                // Also request auto-scroll so the selected range is brought into view.
-                state.hex_viewer.set_pending_scroll_to(hs, end);
-                // For header contexts, use fill-only for the parent range
-                state.hex_viewer.set_selection_outline_enabled(false);
-                // Draw an overlay outline for the specific child if available.
-                if let Some((cstart, clen)) = node.byte_range {
-                    let cend = cstart.saturating_add(clen).saturating_sub(1);
-                    state.hex_viewer.set_outline_ranges(vec![(cstart, cend)]);
-                    // Also move the reference marker and pending scroll to the child
-                    // so the cursor appears at the child's address within the header.
-                    state.hex_viewer.set_reference_markers(vec![cstart]);
-                    state.hex_viewer.set_pending_scroll_to(cstart, cend);
-                } else {
-                    state.hex_viewer.clear_outline_ranges();
-                }
-                applied = true;
-            }
-
-            if !applied {
-                // If top-level Header/GD3 range not applied, fall back to node.byte_range or parsed address.
-                match node.byte_range {
-                    Some((start, len)) if start < state.bytes.len() && len > 0 => {
-                        let end = start
-                            .saturating_add(len)
-                            .saturating_sub(1)
-                            .min(state.bytes.len().saturating_sub(1));
-                        state.hex_viewer.set_selection_range(start, end);
-                        state.hex_viewer.set_reference_markers(vec![start]);
-                        // Also request auto-scroll so the selected range is brought into view.
-                        state.hex_viewer.set_pending_scroll_to(start, end);
-                    }
-                    _ => {
-                        // Try to parse an address/offset from the node.detail and highlight it.
-                        if let Some(addr) = parse_address_from_detail(&node.detail)
-                            .filter(|&a| a < state.bytes.len())
-                        {
-                            // Highlight the byte and add a reference marker at that offset.
-                            state.hex_viewer.set_selection_range(addr, addr);
-                            state.hex_viewer.set_reference_markers(vec![addr]);
-                            // Also request auto-scroll so the selected byte is brought into view.
-                            state.hex_viewer.set_pending_scroll_to(addr, addr);
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        CollapsingHeader::new(egui::RichText::new(&node.title).size(state.hex_viewer.font_size()))
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                for (i, child) in node.children.iter().enumerate() {
-                    let mut child_path = path.clone();
-                    child_path.push(i);
-                    draw_ast_node(ui, child, child_path, state);
-                }
-            });
+        spawn_children_parse(
+            data,
+            generation,
+            tx,
+            path,
+            relative_start,
+            absolute_start,
+            count,
+            resolved.mdx_track,
+        );
     }
 }
 
@@ -1530,98 +283,9 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
             state.ast_build_rx = None;
         }
 
-        // Now process collected messages, mutating `state` as needed.
+        // Apply collected messages after releasing the receiver borrow.
         for msg in msgs {
-            match msg {
-                AstBuildMessage::Full(nodes) => {
-                    // Receive initial lightweight AST.
-                    state.ast_root = nodes;
-                    // Clear any previous lazy loads
-                    state.loaded_lazy_nodes.clear();
-                    state.pending_requests.clear();
-                    state.ast_building = false;
-                    state.push_event("received: full ast".to_string());
-                }
-                AstBuildMessage::Partial { path, start, nodes } => {
-                    // Capture node count early because `nodes` may be moved below.
-                    let nodes_count = nodes.len();
-
-                    // Build the path key (no mutable borrow of `state` yet).
-                    let path_key = path
-                        .iter()
-                        .map(|i| i.to_string())
-                        .collect::<Vec<_>>()
-                        .join(".");
-
-                    // To avoid holding multiple mutable borrows of `state`,
-                    // remove the existing entry from the map, operate on it locally,
-                    // then re-insert the updated vector. This prevents nested
-                    // mutable borrows when other state methods are called.
-                    let mut entry = state
-                        .loaded_lazy_nodes
-                        .remove(&path_key)
-                        .unwrap_or_default();
-
-                    // If start matches current length, append; if start < len, try to splice in.
-                    if start == entry.len() {
-                        entry.extend(nodes);
-                    } else if start < entry.len() {
-                        // Overwrite existing range if overlapping (best-effort).
-                        for (idx, n) in (start..).zip(nodes) {
-                            if idx < entry.len() {
-                                entry[idx] = n;
-                            } else {
-                                entry.push(n);
-                            }
-                        }
-                    } else {
-                        // start > len: pad with placeholders (unlikely) then append.
-                        let pad = start - entry.len();
-                        for _ in 0..pad {
-                            entry.push(AstNode::new("<placeholder>", ""));
-                        }
-                        entry.extend(nodes);
-                    }
-
-                    let new_len = entry.len();
-                    // Re-insert the updated entry into the map.
-                    state.loaded_lazy_nodes.insert(path_key.clone(), entry);
-
-                    // Clear pending flag.
-                    state.pending_requests.remove(&path_key);
-
-                    // Push a compact event marker (no-op in release).
-                    state.push_event(format!(
-                        "recv partial: path={:?} start={} nodes={}",
-                        path, start, nodes_count
-                    ));
-                    state.push_event(format!("inserted: {} now {} items", path_key, new_len));
-                }
-                AstBuildMessage::Diff(diffs, rebuilt_bytes) => {
-                    // Receive diff ranges produced by the background parse + serialization.
-                    // Update hex viewer overlay ranges so mismatches are shown as red outlines.
-                    state.hex_viewer.set_diff_ranges(diffs);
-                    // Provide the rebuilt bytes to the HexViewer so its diff tooltip can
-                    // show both Original and Rebuilt values. Clone here because we will
-                    // also store the rebuilt bytes in the UiState.
-                    state
-                        .hex_viewer
-                        .set_rebuilt_bytes(Some(rebuilt_bytes.clone()));
-                    // Store the rebuilt bytes on the UI state so other UI code can access them.
-                    state.rebuilt_bytes = Some(rebuilt_bytes);
-                    // Ensure the UI repaints immediately so the hex viewer processes any
-                    // pending scroll requests (e.g. scroll to first diff) without waiting.
-                    ctx.request_repaint();
-                    state.push_event("received: diff ranges".to_string());
-                }
-                AstBuildMessage::Error(e) => {
-                    state.ast_root = vec![AstNode::new("Parse Error", e)];
-                    state.ast_building = false;
-                    state.pending_requests.clear();
-                    state.loaded_lazy_nodes.clear();
-                    state.push_event("received: parse error".to_string());
-                }
-            }
+            apply_message(state, ctx, msg);
         }
     }
 
@@ -1642,7 +306,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                     ui.add_space(8.0);
 
                     // Clone the top-level AST into a snapshot to avoid holding an
-                    // immutable borrow of `state.ast_root` while `draw_ast_node`
+                    // immutable borrow of `state.ast_root` while `render_ast_tree`
                     // may mutably borrow `state`. Cloning only the top-level
                     // nodes avoids borrow conflicts during recursive drawing.
                     let ast_snapshot = state.ast_root.clone();
@@ -1674,71 +338,9 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                         ctx.request_repaint();
                     }
 
-                    // Keyboard navigation for left-pane top-level selection (Up/Down only).
-                    if (input.key_pressed(egui::Key::ArrowUp)
-                        || input.key_pressed(egui::Key::ArrowDown))
-                        && total > 0
-                    {
-                        let cur = state.selected_ast.as_ref().and_then(|p| p.first().copied());
-                        let new_idx = if input.key_pressed(egui::Key::ArrowUp) {
-                            match cur {
-                                Some(0) => Some(0),
-                                Some(n) => Some(n.saturating_sub(1)),
-                                None => Some(total.saturating_sub(1)),
-                            }
-                        } else {
-                            // ArrowDown
-                            match cur {
-                                Some(n) if n + 1 < total => Some(n + 1),
-                                Some(_) => Some(total.saturating_sub(1)),
-                                None => Some(0),
-                            }
-                        };
-                        if let Some(idx) = new_idx {
-                            // Select the top-level node at `idx`.
-                            state.selected_ast = Some(vec![idx]);
-                            // Ensure keyboard-driven selection will focus & scroll the corresponding label.
-                            state.pending_focus = Some(vec![idx]);
-                            // Force a repaint so the pending focus + hex-view updates are applied promptly.
-                            ctx.request_repaint();
+                    handle_keyboard_selection(state, ctx, &input, total);
 
-                            // Clear previous hex highlights/markers and overlays
-                            state.hex_viewer.clear_selection_range();
-                            state.hex_viewer.clear_reference_markers();
-                            state.hex_viewer.clear_outline_ranges();
-                            state.hex_viewer.set_selection_outline_enabled(true);
-
-                            // If this node has an associated byte_range, apply it to the hex viewer.
-                            // Otherwise, attempt to parse the node.detail similarly to a click,
-                            // so keyboard-only navigation updates the hex view immediately.
-                            if let Some(node) = state.ast_root.get(idx) {
-                                match node.byte_range {
-                                    Some((start, len)) if start < state.bytes.len() && len > 0 => {
-                                        let end = start
-                                            .saturating_add(len)
-                                            .saturating_sub(1)
-                                            .min(state.bytes.len().saturating_sub(1));
-                                        state.hex_viewer.set_selection_range(start, end);
-                                        state.hex_viewer.set_reference_markers(vec![start]);
-                                        state.hex_viewer.set_pending_scroll_to(start, end);
-                                    }
-                                    _ => {
-                                        if let Some(addr) = parse_address_from_detail(&node.detail)
-                                            .filter(|&a| a < state.bytes.len())
-                                        {
-                                            state.hex_viewer.set_selection_range(addr, addr);
-                                            state.hex_viewer.set_reference_markers(vec![addr]);
-                                            state.hex_viewer.set_pending_scroll_to(addr, addr);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    for (i, node) in ast_snapshot.iter().enumerate() {
-                        draw_ast_node(ui, node, vec![i], state);
-                    }
+                    render_ast_tree(ui, &ast_snapshot, state);
                     // If an AST node set a last_selected_ast_rect during drawing (keyboard-driven
                     // navigation or click), scroll the left panel so the selected node is visible.
                     if let Some(r) = state.last_selected_ast_rect.take() {
@@ -1917,9 +519,8 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
 
         // 1) Check top-level AST nodes (e.g., Header, Commands, GD3) for a byte_range that covers the click.
         for (i, node) in state.ast_root.iter().enumerate() {
-            if let Some((s, len)) = node.byte_range {
-                let e = s.saturating_add(len).saturating_sub(1);
-                if clicked >= s && clicked <= e {
+            if let Some(range) = node.byte_range {
+                if range.contains(clicked) {
                     found_path = Some(vec![i]);
                     break;
                 }
@@ -1929,7 +530,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
         // 2) If not found, search loaded lazy nodes (buckets) where each entry contains command AstNodes
         //    with their own byte_range. The loaded_lazy_nodes keys are path strings like "1.0".
         if found_path.is_none() {
-            'outer: for (key, nodes) in state.loaded_lazy_nodes.iter() {
+            'outer: for (key, nodes) in state.lazy.loaded_nodes.iter() {
                 // Parse key into a path Vec<usize> (e.g. "1.0" -> vec![1,0])
                 let base_path: Vec<usize> = if key.is_empty() {
                     Vec::new()
@@ -1940,9 +541,8 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                 };
 
                 for (idx, n) in nodes.iter().enumerate() {
-                    if let Some((s, len)) = n.byte_range {
-                        let e = s.saturating_add(len).saturating_sub(1);
-                        if clicked >= s && clicked <= e {
+                    if let Some(range) = n.byte_range {
+                        if range.contains(clicked) {
                             let mut full_path = base_path.clone();
                             full_path.push(idx);
                             found_path = Some(full_path);
@@ -1973,10 +573,220 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
         let mut to_process = Vec::new();
         mem::swap(&mut to_process, &mut state.deferred_loads);
         for (path, start, count) in to_process {
-            let key = path_key_for(&path);
+            let key = path_key(&path);
             // Remove enqueued marker so request_children can set pending_requests and proceed.
             state.enqueued_requests.remove(&key);
             state.request_children(path, start, count);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AstNode, UiState, source_node_to_ast};
+    use crate::gui::loader::compute_diff_ranges;
+    use crate::source::{ByteCoordinateSpace, ByteRange, MappedRange, SourceNode, VgmAdapter};
+    use soundlog::VgmBuilder;
+    use soundlog::mdx::command::MdxRest;
+    use soundlog::mdx::document::MdxBuilder;
+    use soundlog::meta::Gd3;
+    use soundlog::vgm::command::WaitSamples;
+    use std::time::Duration;
+
+    fn sample_vgm_bytes() -> Vec<u8> {
+        let mut builder = VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(735));
+        builder.set_gd3(Gd3 {
+            track_name_en: Some("Phase 1".to_string()),
+            game_name_en: Some("GUI contract".to_string()),
+            ..Default::default()
+        });
+        let document = builder.finalize();
+        (&document).into()
+    }
+
+    #[test]
+    fn empty_state_starts_without_document_data() {
+        let state = UiState::new_empty();
+
+        assert!(state.ast_root.is_empty());
+        assert!(state.bytes.is_empty());
+        assert!(state.rebuilt_bytes.is_none());
+        assert!(!state.ast_building);
+    }
+
+    #[test]
+    fn vgm_nodes_keep_header_command_and_gd3_ranges() {
+        let bytes = sample_vgm_bytes();
+        let document = soundlog::VgmDocument::try_from(bytes.as_slice()).unwrap();
+        let header = source_node_to_ast(VgmAdapter::header_node(&document));
+        let gd3 = source_node_to_ast(VgmAdapter::gd3_node(&document).expect("sample contains GD3"));
+
+        assert_eq!(
+            header.byte_range,
+            Some(ByteRange::new(0, document.sourcemap()[0].0))
+        );
+        assert_eq!(header.children[0].title, "Ident");
+        assert_eq!(header.children[0].byte_range, Some(ByteRange::new(0, 4)));
+        assert_eq!(gd3.title, "GD3");
+        assert!(gd3.byte_range.is_some());
+        assert_eq!(gd3.children[0].title, "Track name (EN)");
+        assert!(gd3.children[0].byte_range.unwrap().len > 0);
+    }
+
+    #[test]
+    fn vgm_command_sourcemap_matches_serialized_command_ranges() {
+        let bytes = sample_vgm_bytes();
+        let document = soundlog::VgmDocument::try_from(bytes.as_slice()).unwrap();
+        let ranges = document.sourcemap();
+
+        assert_eq!(document.commands.len(), 2);
+        assert_eq!(ranges.len(), document.commands.len());
+        for (offset, length) in ranges {
+            assert!(length > 0);
+            assert!(offset + length <= bytes.len());
+        }
+    }
+
+    #[test]
+    fn diff_ranges_group_adjacent_changes_and_cover_length_changes() {
+        assert_eq!(compute_diff_ranges(b"abcdef", b"abXYef"), vec![(2, 3)]);
+        assert_eq!(
+            compute_diff_ranges(b"abcdef", b"abXdefZ"),
+            vec![(2, 2), (6, 6)]
+        );
+        assert_eq!(compute_diff_ranges(b"abcdef", b"abc"), vec![(3, 5)]);
+        assert_eq!(compute_diff_ranges(b"abc", b"abcdef"), vec![(3, 5)]);
+        assert!(compute_diff_ranges(b"same", b"same").is_empty());
+        assert!(compute_diff_ranges(b"", b"").is_empty());
+    }
+
+    #[test]
+    fn ast_nodes_preserve_lazy_range_and_byte_range_metadata() {
+        let node = AstNode::new("Commands", "2 commands")
+            .with_lazy_range(10, 2)
+            .with_byte_range(32, 8);
+
+        assert_eq!(node.lazy_count, Some(2));
+        assert_eq!(node.lazy_start, Some(10));
+        assert_eq!(node.byte_range, Some(ByteRange::new(32, 8)));
+    }
+
+    #[test]
+    fn logical_source_ranges_are_not_sent_to_the_hex_viewer() {
+        let node = SourceNode::new(1, "logical", "command").with_range(MappedRange {
+            space: ByteCoordinateSpace::Logical,
+            range: ByteRange::new(12, 3),
+        });
+
+        let ast = source_node_to_ast(node);
+
+        assert_eq!(
+            ast.mapped_range,
+            Some(MappedRange {
+                space: ByteCoordinateSpace::Logical,
+                range: ByteRange::new(12, 3),
+            })
+        );
+        assert_eq!(ast.byte_range, None);
+    }
+
+    #[test]
+    fn invalid_vgm_bytes_fall_back_to_raw_binary_nodes() {
+        let nodes = crate::gui::ast::build_raw_binary_nodes(&[1, 2, 3], "invalid VGM");
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].title, "Raw Binary");
+        assert!(nodes[0].detail.contains("invalid VGM"));
+        assert_eq!(nodes[0].byte_range, Some(ByteRange::new(0, 3)));
+        assert_eq!(nodes[0].children.len(), 1);
+        assert_eq!(nodes[0].children[0].byte_range, Some(ByteRange::new(0, 3)));
+    }
+
+    #[test]
+    fn populate_from_bytes_builds_mdx_nodes_after_vgm_rejection() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest::new(12).unwrap());
+        let bytes = builder.finalize().to_bytes();
+
+        let mut state = UiState::new_empty();
+        state.populate_from_bytes(&bytes);
+        let receiver = state.ast_build_rx.take().unwrap();
+
+        let full = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        match full {
+            super::AstBuildMessage::Full { generation, nodes } => {
+                assert_eq!(generation, 1);
+                assert_eq!(nodes[0].title, "Header");
+                assert_eq!(nodes[1].title, "Tone data");
+                assert_eq!(nodes[2].title, "Track 0");
+                assert_eq!(nodes[2].lazy_count, Some(2));
+                assert_eq!(nodes[2].lazy_track, Some(0));
+                assert!(nodes[2].children.is_empty());
+                state.ast_root = nodes;
+            }
+            message => panic!(
+                "expected MDX Full message, got {:?}",
+                message_type(&message)
+            ),
+        }
+
+        match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
+            super::AstBuildMessage::Diff { generation, .. } => assert_eq!(generation, 1),
+            message => panic!(
+                "expected MDX Diff message, got {:?}",
+                message_type(&message)
+            ),
+        }
+        state.request_children(vec![2], 0, 2);
+        match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
+            super::AstBuildMessage::Partial {
+                generation, nodes, ..
+            } => {
+                assert_eq!(generation, 1);
+                assert_eq!(nodes[0].title, "0: Rest(MdxRest { ticks: 12 })");
+                assert_eq!(nodes[1].title, "1: EndOfTrack(MdxEndOfTrack)");
+                assert!(nodes[0].byte_range.is_some());
+            }
+            message => panic!(
+                "expected MDX Partial message, got {:?}",
+                message_type(&message)
+            ),
+        }
+    }
+
+    #[test]
+    fn replacing_input_during_parse_advances_generation() {
+        let mut first_builder = MdxBuilder::new();
+        first_builder.add_mdx_command(0, MdxRest::new(12).unwrap());
+        let first = first_builder.finalize().to_bytes();
+
+        let mut second_builder = MdxBuilder::new();
+        second_builder.add_mdx_command(0, MdxRest::new(24).unwrap());
+        let second = second_builder.finalize().to_bytes();
+
+        let mut state = UiState::new_empty();
+        state.populate_from_bytes(&first);
+        assert_eq!(state.parse_generation, 1);
+        state.populate_from_bytes(&second);
+        assert_eq!(state.parse_generation, 2);
+
+        let receiver = state.ast_build_rx.take().unwrap();
+        match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
+            super::AstBuildMessage::Full { generation, .. } => assert_eq!(generation, 2),
+            message => panic!(
+                "expected current-generation Full message, got {:?}",
+                message_type(&message)
+            ),
+        }
+    }
+
+    fn message_type(message: &super::AstBuildMessage) -> &'static str {
+        match message {
+            super::AstBuildMessage::Full { .. } => "Full",
+            super::AstBuildMessage::Partial { .. } => "Partial",
+            super::AstBuildMessage::Diff { .. } => "Diff",
+            super::AstBuildMessage::Error { .. } => "Error",
         }
     }
 }

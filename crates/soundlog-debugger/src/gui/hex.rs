@@ -215,6 +215,21 @@ impl HexViewer {
         self.current_diff_idx = None;
     }
 
+    /// Clear state that belongs to the currently displayed source document.
+    pub fn reset_document_state(&mut self) {
+        self.selected = None;
+        self.last_clicked_byte = None;
+        self.clear_selection_range();
+        self.clear_reference_markers();
+        self.clear_outline_ranges();
+        self.clear_fill_only_ranges();
+        self.clear_diff_ranges();
+        self.set_rebuilt_bytes(None);
+        self.pending_scroll_to = None;
+        self.pending_scroll_align_top = false;
+        self.last_selection_rect = None;
+    }
+
     /// Return a slice of the current diff ranges (inclusive start, inclusive end).
     pub fn diff_ranges(&self) -> &[(usize, usize)] {
         &self.diff_ranges
@@ -1064,5 +1079,65 @@ impl HexViewer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HexViewer;
+
+    #[test]
+    fn diff_selection_starts_at_first_range_and_wraps() {
+        let mut viewer = HexViewer::new();
+        viewer.set_diff_ranges(vec![(4, 5), (20, 22)]);
+
+        assert!(viewer.has_diffs());
+        assert_eq!(viewer.current_diff_index(), Some(0));
+        assert_eq!(viewer.current_diff_range(), Some((4, 5)));
+
+        viewer.next_diff();
+        assert_eq!(viewer.current_diff_index(), Some(1));
+        assert_eq!(viewer.current_diff_range(), Some((20, 22)));
+
+        viewer.next_diff();
+        assert_eq!(viewer.current_diff_index(), Some(0));
+
+        viewer.prev_diff();
+        assert_eq!(viewer.current_diff_index(), Some(1));
+    }
+
+    #[test]
+    fn clearing_diff_ranges_clears_diff_selection() {
+        let mut viewer = HexViewer::new();
+        viewer.set_diff_ranges(vec![(4, 5)]);
+        viewer.clear_diff_ranges();
+
+        assert!(!viewer.has_diffs());
+        assert_eq!(viewer.current_diff_index(), None);
+        assert_eq!(viewer.current_diff_range(), None);
+    }
+
+    #[test]
+    fn resetting_document_state_clears_document_dependent_view_state() {
+        let mut viewer = HexViewer::new();
+        viewer.set_rebuilt_bytes(Some(vec![1, 2, 3]));
+        viewer.set_selection_range(4, 5);
+        viewer.set_reference_markers(vec![4]);
+        viewer.set_outline_ranges(vec![(4, 5)]);
+        viewer.set_fill_only_ranges(vec![(4, 5)]);
+        viewer.set_diff_ranges(vec![(4, 5)]);
+
+        viewer.reset_document_state();
+
+        assert!(!viewer.has_diffs());
+        assert_eq!(viewer.current_diff_index(), None);
+        assert_eq!(viewer.current_diff_range(), None);
+        assert_eq!(viewer.selected(), None);
+        assert!(viewer.diff_ranges().is_empty());
+        assert!(viewer.selection_range.is_none());
+        assert!(viewer.reference_markers.is_empty());
+        assert!(viewer.outline_ranges.is_empty());
+        assert!(viewer.fill_only_ranges.is_empty());
+        assert!(viewer.rebuilt_bytes.is_none());
     }
 }
