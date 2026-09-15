@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -185,62 +186,84 @@ pub fn mdx2vgm(
     Ok(())
 }
 
-/// Parse an MDX file and print its summary and every track command.
-pub fn parse_mdx(input: &Path, pdx: Option<&Path>) -> Result<()> {
+/// Parse an MDX file and print its track commands with source offsets.
+pub fn parse_mdx(input: &Path, pdx: Option<&Path>, logger: Arc<Logger>) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
-    let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
-    let mxdrv16y = detect_mxdrv16y(&package)?;
-
-    println!("Title: {}", package.mdx.header.title);
-    println!(
-        "PDX: {}",
-        package.mdx.header.pdx_name.as_deref().unwrap_or("(none)")
-    );
-    match pdx_path {
-        Some(path) => println!(
-            "PDX file: {} ({})",
-            path.display(),
-            if path.is_file() {
-                "exists"
-            } else {
-                "not found"
-            }
-        ),
-        None => println!("PDX file: (none)"),
-    }
-    println!("MXDRV16y: {mxdrv16y}");
-    println!("Tracks: {}", package.mdx.tracks.len());
-    println!("Tones: {}", package.mdx.tone_bank.tones.len());
-    if let Some(pdx) = package.pdx.as_ref() {
-        let (sample_count, sample_bytes) = pdx
-            .banks
-            .iter()
-            .flat_map(|bank| bank.entries.iter().flatten())
-            .fold((0usize, 0u64), |(count, bytes), sample| {
-                (count + 1, bytes + u64::from(sample.size))
-            });
-        println!("PDX banks: {}", pdx.banks.len());
-        println!("PDX samples: {sample_count} ({sample_bytes} bytes)");
-    }
+    let _ = logger.info(format_args!(
+        "{:<8} {:<8} {:<8} {:<8} {}",
+        "Track", "Index", "Offset", "Length", "Command"
+    ));
     let source_map = package.mdx.sourcemap();
     for (track, commands) in package.mdx.tracks.iter().enumerate() {
-        println!("Track {track}: {} commands", commands.len());
         for (command_index, command) in commands.iter().enumerate() {
             let (offset, length) = source_map
                 .get(track)
                 .and_then(|track_map| track_map.get(command_index))
                 .copied()
                 .unwrap_or((0, 0));
-            let bytes = command
-                .to_mdx_bytes()
-                .unwrap_or_default()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            println!("  [{command_index:04}] 0x{offset:06x} +{length:02}  {bytes:<17} {command:?}");
+            let _ = logger.info(format_args!(
+                "{:<8} {:<8} 0x{:06x} {:<8} {:?}",
+                track, command_index, offset, length, command
+            ));
         }
     }
+    Ok(())
+}
+
+/// Convert an MDX package to VGM and verify that the generated VGM parses.
+pub fn test_mdx(
+    input: &Path,
+    pdx: Option<&Path>,
+    logger: Arc<Logger>,
+    options: &MdxToVgmOptions,
+) -> Result<()> {
+    let package = read_mdx_package(input, pdx)?;
+    let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
+    let mxdrv16y = detect_mxdrv16y(&package)?;
+    let _ = logger.info(format_args!("Title: {}", package.mdx.header.title));
+    let _ = logger.info(format_args!(
+        "PDX: {}",
+        package.mdx.header.pdx_name.as_deref().unwrap_or("(none)")
+    ));
+    match pdx_path {
+        Some(path) => {
+            let _ = logger.info(format_args!(
+                "PDX file: {} ({})",
+                path.display(),
+                if path.is_file() {
+                    "exists"
+                } else {
+                    "not found"
+                }
+            ));
+        }
+        None => {
+            let _ = logger.info(format_args!("PDX file: (none)"));
+        }
+    }
+    if let Some(pdx) = package.pdx.as_ref() {
+        let _ = logger.info(format_args!("PDX banks: {}", pdx.banks.len()));
+    }
+    let _ = logger.info(format_args!("MXDRV16y: {mxdrv16y}"));
+    let mut options = *options;
+    options.mxdrv16y |= mxdrv16y;
+    let document = to_vgm_document(&package, &options)
+        .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
+    let document = if package.mdx.header.title.is_empty() {
+        document
+    } else {
+        let mut document = document;
+        document.gd3 = Some(Gd3 {
+            track_name_origin: Some(package.mdx.header.title.clone()),
+            ..Gd3::default()
+        });
+        document
+    };
+    let bytes: Vec<u8> = (&document).into();
+    let _: soundlog::VgmDocument = (&bytes[..])
+        .try_into()
+        .with_context(|| format!("generated VGM failed to parse: {}", input.display()))?;
+    let _ = logger.info(format_args!("VGM: parse ok ({} bytes)", bytes.len()));
     Ok(())
 }
 

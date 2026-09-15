@@ -102,7 +102,7 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum MdxCommands {
-    /// Parse an MDX file and display its document summary
+    /// Parse an MDX file and display its track commands
     Parse {
         /// MDX input file path
         #[arg(value_name = "INPUT")]
@@ -111,6 +111,44 @@ enum MdxCommands {
         /// Optional PDX file to parse alongside the MDX file
         #[arg(long, value_name = "FILE")]
         pdx: Option<PathBuf>,
+    },
+    /// Convert an MDX file and verify that the generated VGM parses
+    Test {
+        /// MDX input file path
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Optional PDX file used for PCM references
+        #[arg(long, value_name = "FILE")]
+        pdx: Option<PathBuf>,
+
+        /// Dry-run mode: process the file without printing diagnostics
+        #[arg(long)]
+        dry_run: bool,
+
+        /// YM2151 clock in Hz
+        #[arg(long, default_value_t = 4_000_000)]
+        ym2151_clock: u32,
+
+        /// OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks)
+        #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
+        okim6258_clock: u32,
+
+        /// Output sample rate in Hz
+        #[arg(long, default_value_t = 44_100)]
+        sample_rate: u32,
+
+        /// Total number of iterations for MDX repeat blocks
+        #[arg(long, value_name = "COUNT")]
+        loop_count: Option<u32>,
+
+        /// Enable MXDRV16y compatibility handling
+        #[arg(long)]
+        mxdrv16y: bool,
+
+        /// ADPCM mode: through, resample, or lpf (default: through)
+        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
+        adpcm_mode: AdpcmModeArg,
     },
     /// Convert an MDX file to a VGM file
     Convert {
@@ -254,10 +292,38 @@ fn main() {
     match args.command {
         Some(Commands::Mdx { command }) => match command {
             MdxCommands::Parse { input, pdx } => {
-                match cui::mdx::parse_mdx(&input, pdx.as_deref()) {
+                match cui::mdx::parse_mdx(&input, pdx.as_deref(), logger.clone()) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
                         soundlog_debugger::log_error!(&*logger, "mdx parse failed: {}", error);
+                        process::exit(1);
+                    }
+                }
+            }
+            MdxCommands::Test {
+                input,
+                pdx,
+                dry_run,
+                ym2151_clock,
+                okim6258_clock,
+                sample_rate,
+                loop_count,
+                mxdrv16y,
+                adpcm_mode,
+            } => {
+                logger = Arc::new(Logger::new_stdout(dry_run));
+                let options = MdxToVgmOptions {
+                    ym2151_clock,
+                    okim6258_clock,
+                    sample_rate,
+                    loop_count,
+                    mxdrv16y,
+                    adpcm_mode: adpcm_mode.into(),
+                };
+                match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
+                    Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_debugger::log_error!(&*logger, "mdx test failed: {}", error);
                         process::exit(1);
                     }
                 }

@@ -215,8 +215,9 @@ soundlog mdx <COMMAND>
 
 #### `mdx parse`
 
-Parse an MDX file and display its document summary. An optional PDX file can
-be supplied for packages that reference external PCM data.
+Parse an MDX file and display its track commands with source offsets and
+lengths, in the same inspection style as `soundlog parse`. An optional PDX
+file can be supplied for packages that reference external PCM data.
 
 ```bash
 soundlog mdx parse <INPUT> [--pdx <FILE>]
@@ -233,6 +234,26 @@ When `--pdx <FILE>` is omitted, the PDX filename stored in the MDX header is
 used to search the input file's directory. The exact name, `.PDX`, and `.pdx`
 variants are checked, followed by a case-insensitive filename search. If no
 matching file is found, processing continues without PDX data.
+
+#### `mdx test`
+
+Convert an MDX file to VGM in memory and verify that the generated VGM can be
+parsed as a VGM document.
+
+```bash
+soundlog mdx test <INPUT> [OPTIONS]
+```
+
+The test options include `--pdx <FILE>`, `--dry-run`, `--ym2151-clock <HZ>`,
+`--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
+`--mxdrv16y`.
+
+Examples:
+
+```bash
+soundlog mdx test samples/example.mdx
+soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
+```
 
 #### `mdx convert`
 
