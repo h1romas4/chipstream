@@ -267,6 +267,7 @@ pub(crate) fn apply_node_selection(
 
         if let Some(child_range) = node.byte_range {
             let child_end = child_range.end().saturating_sub(1);
+            state.hex_viewer.set_cursor(child_range.start);
             state
                 .hex_viewer
                 .set_outline_ranges(vec![(child_range.start, child_end)]);

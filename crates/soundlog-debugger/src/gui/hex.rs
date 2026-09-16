@@ -136,6 +136,11 @@ impl HexViewer {
         self.selected
     }
 
+    /// Set the cursor byte without changing the current selection range.
+    pub fn set_cursor(&mut self, index: usize) {
+        self.selected = Some(index);
+    }
+
     /// Set an inclusive selection range. If `end < start` the values will be swapped.
     pub fn set_selection_range(&mut self, start: usize, end: usize) {
         if end >= start {
