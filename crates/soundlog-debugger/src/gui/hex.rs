@@ -616,9 +616,16 @@ impl HexViewer {
                     let y1 = line_top + row_height - 4.0;
 
                     let seg_rect = egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+                    let ascii_x0 = ascii_base_x + line_start * (hex_cell_w / 3.0) + 1.0;
+                    let ascii_x1 = ascii_base_x + (line_end + 1.0) * (hex_cell_w / 3.0) - 1.0;
+                    let ascii_rect = egui::Rect::from_min_max(
+                        egui::pos2(ascii_x0, y0),
+                        egui::pos2(ascii_x1, y1),
+                    );
                     // Fill; draw stroke only if selection outlines are enabled and this selection
                     // is not covered by a fill-only range.
                     painter.rect_filled(seg_rect, 0.0, fill_color);
+                    painter.rect_filled(ascii_rect, 0.0, fill_color);
                     if self.selection_outline_enabled {
                         // If any configured fill-only range fully covers the selection, skip stroke.
                         let mut covered = false;
@@ -630,6 +637,7 @@ impl HexViewer {
                         }
                         if !covered {
                             painter.rect_stroke(seg_rect, 1.0, stroke, egui::StrokeKind::Inside);
+                            painter.rect_stroke(ascii_rect, 1.0, stroke, egui::StrokeKind::Inside);
                         }
                     }
 
@@ -1311,6 +1319,20 @@ impl HexViewer {
                     }
                 })
                 .collect();
+            let ascii_char_w = hex_cell_w / 3.0;
+            for (i, _) in chunk.iter().enumerate() {
+                if self.selected == Some(offset + i) {
+                    let ascii_cell = egui::Rect::from_min_size(
+                        egui::pos2(ascii_base_x + i as f32 * ascii_char_w, line_top),
+                        egui::vec2(ascii_char_w, row_height - 4.0),
+                    );
+                    painter.rect_filled(
+                        ascii_cell.shrink(1.0),
+                        2.0,
+                        ui.visuals().selection.bg_fill,
+                    );
+                }
+            }
             painter.text(
                 egui::pos2(ascii_base_x, line_top),
                 egui::Align2::LEFT_TOP,
