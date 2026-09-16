@@ -339,23 +339,39 @@ impl HexViewer {
         let current = self.current_diff_idx.map_or(0, |index| index + 1);
         let diff_text = format!("{} / {}", current, total);
 
-        ui.colored_label(ui.visuals().weak_text_color(), "DIFF");
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        // Build from right to left so the complete status group stays aligned to
+        // the window's right edge while reading left-to-right as:
+        // DIFF, previous, next, current/total.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(48.0, button_size.y),
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    ui.colored_label(ui.visuals().text_color(), diff_text);
+                },
+            );
+
+            ui.add_space(7.0);
+            if Self::status_button(ui, button_size, "›", "Next difference", has_diffs).clicked() {
+                self.next_diff();
+                ui.ctx().request_repaint();
+            }
+
+            ui.add_space(3.0);
             if Self::status_button(ui, button_size, "‹", "Previous difference", has_diffs).clicked()
             {
                 self.prev_diff();
                 ui.ctx().request_repaint();
             }
 
-            ui.add_space(3.0);
-            if Self::status_button(ui, button_size, "›", "Next difference", has_diffs).clicked() {
-                self.next_diff();
-                ui.ctx().request_repaint();
-            }
-
             ui.add_space(7.0);
-            ui.colored_label(ui.visuals().text_color(), diff_text);
+            ui.allocate_ui_with_layout(
+                egui::vec2(34.0, button_size.y),
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    ui.colored_label(ui.visuals().weak_text_color(), "DIFF");
+                },
+            );
         });
     }
 

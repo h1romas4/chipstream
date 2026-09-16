@@ -294,15 +294,11 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
         .exact_size(32.0)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                state.hex_viewer.show_status_bar(ui);
-
                 if state.ast_building {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(10.0);
-                        ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
-                    });
+                    ui.add_space(10.0);
+                    ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
                 }
+                state.hex_viewer.show_status_bar(ui);
             });
         });
 
