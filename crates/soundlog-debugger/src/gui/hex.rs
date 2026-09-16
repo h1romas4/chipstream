@@ -1025,23 +1025,47 @@ impl HexViewer {
         painter.rect_filled(header_rect, 0.0, bg_color);
 
         let font = egui::FontId::monospace(self.font_size);
+        let selected_column = self.selected.map(|index| index % bpl);
+        let selected_bg = ui.visuals().selection.bg_fill;
+        let selected_text = ui.visuals().selection.stroke.color;
         for column in 0..bpl {
             let x = base_x + offset_width + column as f32 * hex_cell_w;
+            let hex_rect = egui::Rect::from_min_size(
+                egui::pos2(x, header_rect.min.y),
+                egui::vec2(hex_cell_w, row_height),
+            );
+            let ascii_x = ascii_base_x + column as f32 * char_w;
+            let ascii_rect = egui::Rect::from_min_size(
+                egui::pos2(ascii_x, header_rect.min.y),
+                egui::vec2(char_w, row_height),
+            );
+            let is_selected = selected_column == Some(column);
+            if is_selected {
+                painter.rect_filled(hex_rect, 2.0, selected_bg);
+                painter.rect_filled(ascii_rect, 2.0, selected_bg);
+            }
             painter.text(
                 egui::pos2(x + hex_cell_w * 0.5, header_rect.min.y + 2.0),
                 egui::Align2::CENTER_TOP,
                 format!("+{:X}", column),
                 font.clone(),
-                ui.visuals().weak_text_color(),
+                if is_selected {
+                    selected_text
+                } else {
+                    ui.visuals().weak_text_color()
+                },
             );
 
-            let ascii_x = ascii_base_x + column as f32 * char_w;
             painter.text(
                 egui::pos2(ascii_x + char_w * 0.5, header_rect.min.y + 2.0),
                 egui::Align2::CENTER_TOP,
                 format!("{:X}", column),
                 font.clone(),
-                ui.visuals().weak_text_color(),
+                if is_selected {
+                    selected_text
+                } else {
+                    ui.visuals().weak_text_color()
+                },
             );
         }
     }
