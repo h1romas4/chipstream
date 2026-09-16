@@ -19,12 +19,12 @@ use soundlog::vgm::command::WaitSamples;
 /// This used to live in `main.rs`. It configures the native window options and
 /// starts the `eframe` event loop with `ui::Debuger` as the application.
 pub fn run_gui(initial_bytes: Vec<u8>) {
-    // Configure native options: fix horizontal width to 900 and allow vertical resizing.
+    // Configure native options: fix horizontal width to 1024 and allow vertical resizing.
     let native_options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 800.0])
-            .with_min_inner_size([900.0, 200.0])
-            .with_max_inner_size([900.0, 5000.0])
+            .with_inner_size([1024.0, 800.0])
+            .with_min_inner_size([1024.0, 200.0])
+            .with_max_inner_size([1024.0, 5000.0])
             .with_maximize_button(false),
         ..NativeOptions::default()
     };
