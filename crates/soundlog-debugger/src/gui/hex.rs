@@ -1259,9 +1259,10 @@ impl HexViewer {
                     ui.visuals().selection.bg_fill,
                 );
             }
+            let address_text_y = address_rect.center().y - (mono_text_height * 0.5);
 
             painter.text(
-                egui::pos2(base_x, line_top),
+                egui::pos2(base_x, address_text_y),
                 egui::Align2::LEFT_TOP,
                 format!("{:08X}", offset),
                 font.clone(),
@@ -1272,7 +1273,7 @@ impl HexViewer {
                 },
             );
             painter.text(
-                egui::pos2(base_x + address_width, line_top),
+                egui::pos2(base_x + address_width, address_text_y),
                 egui::Align2::LEFT_TOP,
                 ":",
                 font.clone(),
