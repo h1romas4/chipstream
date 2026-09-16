@@ -143,6 +143,7 @@ impl HexViewer {
         } else {
             self.selection_range = Some((end, start));
         }
+        self.selected = Some(start.min(end));
     }
 
     /// Clear any selection range.
@@ -338,11 +339,28 @@ impl HexViewer {
         let total = self.diff_ranges.len();
         let current = self.current_diff_idx.map_or(0, |index| index + 1);
         let diff_text = format!("{} / {}", current, total);
+        let address_text = self
+            .selection_range
+            .map(|(start, _)| start)
+            .or(self.selected)
+            .map_or_else(
+                || "ADDR --".to_owned(),
+                |address| format!("ADDR 0x{address:08X}"),
+            );
 
         // Build from right to left so the complete status group stays aligned to
         // the window's right edge while reading left-to-right as:
         // DIFF, previous, next, current/total.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(112.0, button_size.y),
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    ui.colored_label(ui.visuals().text_color(), address_text);
+                },
+            );
+
+            ui.add_space(10.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(48.0, button_size.y),
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
@@ -504,9 +522,7 @@ impl HexViewer {
             let line_idx = r / bpl;
             let line_top = data_top + (line_idx as f32) * row_height + 2.0;
             let center = egui::pos2(base_x - 8.0, line_top + (row_height - 4.0) * 0.5);
-            // `extra_light_text_color` is not a method on `Visuals`. Use `text_color()` which
-            // returns a `Color32` suitable for the small marker.
-            let col = ui.visuals().text_color();
+            let col = ui.visuals().selection.stroke.color;
             painter.circle_filled(center, 3.0, col);
         }
 
