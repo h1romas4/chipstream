@@ -1243,13 +1243,31 @@ impl HexViewer {
             let end = ((line_idx + 1) * bpl).min(bytes.len());
             let chunk = &bytes[offset..end];
             let line_top = data_top + (line_idx as f32) * row_height + 2.0;
+            let address_selected = self
+                .selected
+                .is_some_and(|selected| selected / bpl == line_idx);
+            let address_rect = egui::Rect::from_min_size(
+                egui::pos2(base_x, line_top),
+                egui::vec2(offset_width, row_height - 4.0),
+            );
+            if address_selected {
+                painter.rect_filled(
+                    address_rect.shrink(1.0),
+                    2.0,
+                    ui.visuals().selection.bg_fill,
+                );
+            }
 
             painter.text(
                 egui::pos2(base_x, line_top),
                 egui::Align2::LEFT_TOP,
                 format!("{:08X}:", offset),
                 font.clone(),
-                ui.visuals().text_color(),
+                if address_selected {
+                    ui.visuals().selection.stroke.color
+                } else {
+                    ui.visuals().text_color()
+                },
             );
 
             for (i, b) in chunk.iter().enumerate() {
@@ -1259,11 +1277,7 @@ impl HexViewer {
                     egui::vec2(hex_cell_w, row_height - 4.0),
                 );
                 if self.selected == Some(global_idx) {
-                    painter.rect_filled(
-                        cell_rect.shrink(1.0),
-                        2.0,
-                        ui.visuals().selection.bg_fill,
-                    );
+                    painter.rect_filled(cell_rect.shrink(1.0), 2.0, ui.visuals().selection.bg_fill);
                 }
                 painter.text(
                     egui::pos2(
