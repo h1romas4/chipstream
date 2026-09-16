@@ -331,35 +331,39 @@ impl HexViewer {
         self.last_selection_rect.take()
     }
 
-    /// Show the diff navigation controls in the window toolbar.
-    pub fn show_toolbar(&mut self, ui: &mut egui::Ui) {
-        let button_size = egui::vec2(28.0, 24.0);
+    /// Show the diff navigation controls in the window status bar.
+    pub fn show_status_bar(&mut self, ui: &mut egui::Ui) {
+        let button_size = egui::vec2(24.0, 22.0);
         let has_diffs = self.has_diffs();
         let total = self.diff_ranges.len();
         let current = self.current_diff_idx.map_or(0, |index| index + 1);
-        let diff_text = format!("Diff {}/{}", current, total);
+        let diff_text = format!("{} / {}", current, total);
+
+        ui.colored_label(ui.visuals().weak_text_color(), "DIFF");
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if Self::toolbar_button(ui, button_size, self.font_size, "Prev", has_diffs).clicked() {
+            if Self::status_button(ui, button_size, "‹", "Previous difference", has_diffs).clicked()
+            {
                 self.prev_diff();
                 ui.ctx().request_repaint();
             }
 
-            ui.add_space(4.0);
-            if Self::toolbar_button(ui, button_size, self.font_size, "Next", has_diffs).clicked() {
+            ui.add_space(3.0);
+            if Self::status_button(ui, button_size, "›", "Next difference", has_diffs).clicked() {
                 self.next_diff();
                 ui.ctx().request_repaint();
             }
 
-            ui.add_space(8.0);
-            ui.label(diff_text);
+            ui.add_space(7.0);
+            ui.colored_label(ui.visuals().text_color(), diff_text);
         });
     }
 
-    fn toolbar_button(
+    fn status_button(
         ui: &mut egui::Ui,
         size: egui::Vec2,
-        font_size: f32,
         label: &str,
+        tooltip: &str,
         enabled: bool,
     ) -> egui::Response {
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -368,14 +372,8 @@ impl HexViewer {
         let pressed = enabled
             && (response.clicked() || (hovered && ui.input(|input| input.pointer.any_down())));
 
-        painter.rect_filled(
-            rect.translate(egui::vec2(0.0, 1.0)),
-            3.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40),
-        );
-
         let background = if !enabled {
-            ui.visuals().widgets.inactive.bg_fill
+            ui.visuals().faint_bg_color
         } else if pressed {
             ui.visuals().widgets.active.bg_fill
         } else if hovered {
@@ -383,12 +381,12 @@ impl HexViewer {
         } else {
             ui.visuals().widgets.inactive.bg_fill
         };
-        painter.rect_filled(rect, 3.0, background);
+        painter.rect_filled(rect, 4.0, background);
 
         if hovered {
             painter.rect_stroke(
                 rect.shrink(1.0),
-                3.0,
+                4.0,
                 egui::Stroke::new(1.0, ui.visuals().widgets.hovered.fg_stroke.color),
                 egui::StrokeKind::Inside,
             );
@@ -406,14 +404,14 @@ impl HexViewer {
         painter.text(
             egui::pos2(
                 rect.center().x,
-                rect.center().y + if pressed { 1.6 } else { 0.0 },
+                rect.center().y + if pressed { 1.0 } else { 0.0 },
             ),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(font_size),
+            egui::FontId::proportional(17.0),
             text_color,
         );
-        response
+        response.on_hover_text(tooltip)
     }
 
     /// Show the viewer inside the provided `ui`, rendering `bytes`.
