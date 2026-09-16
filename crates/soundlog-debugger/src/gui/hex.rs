@@ -1259,7 +1259,11 @@ impl HexViewer {
                     egui::vec2(hex_cell_w, row_height - 4.0),
                 );
                 if self.selected == Some(global_idx) {
-                    painter.rect_filled(cell_rect, 2.0, ui.visuals().selection.bg_fill);
+                    painter.rect_filled(
+                        cell_rect.shrink(1.0),
+                        2.0,
+                        ui.visuals().selection.bg_fill,
+                    );
                 }
                 painter.text(
                     egui::pos2(
