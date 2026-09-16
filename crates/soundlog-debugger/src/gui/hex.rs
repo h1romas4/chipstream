@@ -331,6 +331,96 @@ impl HexViewer {
         self.last_selection_rect.take()
     }
 
+    /// Show the diff navigation toolbar above the hex view.
+    pub fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        let button_size = egui::vec2(72.0, 26.0);
+        let has_diffs = self.has_diffs();
+        let total = self.diff_ranges.len();
+        let current = self.current_diff_idx.map_or(0, |index| index + 1);
+        let diff_text = format!("Diff {}/{}", current, total);
+        let diff_width = diff_text.len() as f32 * self.font_size * 0.6 + 12.0;
+        let group_width = button_size.x * 2.0 + 8.0 + 12.0 + diff_width;
+        let left_space = ((ui.available_width() - group_width) / 2.0).max(0.0);
+
+        ui.add_space(left_space);
+        ui.horizontal(|ui| {
+            if Self::toolbar_button(ui, button_size, self.font_size, "Prev", has_diffs).clicked() {
+                self.prev_diff();
+                ui.ctx().request_repaint();
+            }
+
+            ui.add_space(8.0);
+            if Self::toolbar_button(ui, button_size, self.font_size, "Next", has_diffs).clicked() {
+                self.next_diff();
+                ui.ctx().request_repaint();
+            }
+
+            ui.add_space(12.0);
+            ui.label(diff_text);
+        });
+    }
+
+    fn toolbar_button(
+        ui: &mut egui::Ui,
+        size: egui::Vec2,
+        font_size: f32,
+        label: &str,
+        enabled: bool,
+    ) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let painter = ui.painter_at(rect);
+        let hovered = enabled && response.hovered();
+        let pressed = enabled
+            && (response.clicked() || (hovered && ui.input(|input| input.pointer.any_down())));
+
+        painter.rect_filled(
+            rect.translate(egui::vec2(0.0, 2.0)),
+            6.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40),
+        );
+
+        let background = if !enabled {
+            ui.visuals().widgets.inactive.bg_fill
+        } else if pressed {
+            ui.visuals().widgets.active.bg_fill
+        } else if hovered {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            ui.visuals().widgets.inactive.bg_fill
+        };
+        painter.rect_filled(rect, 6.0, background);
+
+        if hovered {
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                6.0,
+                egui::Stroke::new(1.0, ui.visuals().widgets.hovered.fg_stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        let mut text_color = ui.visuals().text_color();
+        if !enabled {
+            text_color = egui::Color32::from_rgba_unmultiplied(
+                text_color.r(),
+                text_color.g(),
+                text_color.b(),
+                120,
+            );
+        }
+        painter.text(
+            egui::pos2(
+                rect.center().x,
+                rect.center().y + if pressed { 1.6 } else { 0.0 },
+            ),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(font_size),
+            text_color,
+        );
+        response
+    }
+
     /// Show the viewer inside the provided `ui`, rendering `bytes`.
     ///
     /// This function allocates a rectangular area sized to the available width
