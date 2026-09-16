@@ -468,7 +468,7 @@ impl HexViewer {
         let content_width = offset_width + bpl as f32 * hex_cell_w + sep_gap + ascii_width + 12.0;
 
         // Compute required total height and allocate an area.
-        let total_height = (lines as f32) * row_height;
+        let total_height = (lines as f32 + 1.0) * row_height;
         let total_size = egui::Vec2::new(available_width, total_height);
 
         // Allocate space in the UI for the whole viewer.
@@ -491,9 +491,22 @@ impl HexViewer {
         // Center the fixed-width columns so the left and right padding match.
         let side_padding = ((available_width - content_width) * 0.5).max(0.0);
         let base_x = rect.min.x + side_padding + 6.0;
+        let data_top = rect.min.y + row_height;
 
         // Precompute ascii column start X
         let ascii_base_x = base_x + offset_width + (bpl as f32) * hex_cell_w + sep_gap;
+
+        // Draw the byte-column subaddress header above the data rows.
+        for column in 0..bpl {
+            let x = base_x + offset_width + column as f32 * hex_cell_w;
+            painter.text(
+                egui::pos2(x + hex_cell_w * 0.5, rect.min.y + 2.0),
+                egui::Align2::CENTER_TOP,
+                format!("{:02X}", column),
+                font.clone(),
+                ui.visuals().weak_text_color(),
+            );
+        }
 
         // Draw reference markers in the margin (small circles) for marked offsets.
         for &r in &self.reference_markers {
@@ -501,7 +514,7 @@ impl HexViewer {
                 continue;
             }
             let line_idx = r / bpl;
-            let line_top = rect.min.y + (line_idx as f32) * row_height + 2.0;
+            let line_top = data_top + (line_idx as f32) * row_height + 2.0;
             let center = egui::pos2(base_x - 8.0, line_top + (row_height - 4.0) * 0.5);
             // `extra_light_text_color` is not a method on `Visuals`. Use `text_color()` which
             // returns a `Color32` suitable for the small marker.
@@ -514,6 +527,7 @@ impl HexViewer {
             &painter,
             bytes,
             rect,
+            data_top,
             lines,
             row_height,
             bpl,
@@ -574,7 +588,7 @@ impl HexViewer {
                 // Draw per-line filled segments with slight inset so the stroke does not
                 // overlap the hex text area and no gaps appear between adjacent cells.
                 for line in start_line..=end_line {
-                    let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+                    let line_top = data_top + (line as f32) * row_height + 2.0;
                     let line_start = if line == start_line {
                         (s_clamped % bpl) as f32
                     } else {
@@ -638,7 +652,7 @@ impl HexViewer {
                             let o_start_line = o_start / bpl;
                             let o_end_line = o_end / bpl;
                             for line in o_start_line..=o_end_line {
-                                let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+                                let line_top = data_top + (line as f32) * row_height + 2.0;
                                 let line_start = if line == o_start_line {
                                     (o_start % bpl) as f32
                                 } else {
@@ -695,7 +709,7 @@ impl HexViewer {
             for d_rect in Self::range_rects(
                 ds,
                 de,
-                rect,
+                data_top,
                 row_height,
                 bpl,
                 base_x,
@@ -978,7 +992,7 @@ impl HexViewer {
         self.apply_pending_scroll(
             ui,
             bytes.len(),
-            rect,
+            data_top,
             row_height,
             bpl,
             base_x,
@@ -989,8 +1003,8 @@ impl HexViewer {
         self.handle_click(
             ui,
             resp.clicked(),
-            rect,
             bytes.len(),
+            data_top,
             row_height,
             bpl,
             base_x,
@@ -1034,7 +1048,7 @@ impl HexViewer {
     fn range_rects(
         start: usize,
         end: usize,
-        rect: egui::Rect,
+        data_top: f32,
         row_height: f32,
         bpl: usize,
         base_x: f32,
@@ -1044,7 +1058,7 @@ impl HexViewer {
         let start_line = start / bpl;
         let end_line = end / bpl;
         (start_line..=end_line).map(move |line| {
-            let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+            let line_top = data_top + (line as f32) * row_height + 2.0;
             let line_start = if line == start_line {
                 (start % bpl) as f32
             } else {
@@ -1068,7 +1082,7 @@ impl HexViewer {
         &mut self,
         ui: &mut egui::Ui,
         bytes_len: usize,
-        rect: egui::Rect,
+        data_top: f32,
         row_height: f32,
         bpl: usize,
         base_x: f32,
@@ -1089,7 +1103,7 @@ impl HexViewer {
         let e_line = ee / bpl;
         let mut scroll_union: Option<egui::Rect> = None;
         for line in s_line..=e_line {
-            let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+            let line_top = data_top + (line as f32) * row_height + 2.0;
             let line_start = if line == s_line {
                 (ss % bpl) as f32
             } else {
@@ -1123,6 +1137,7 @@ impl HexViewer {
         painter: &egui::Painter,
         bytes: &[u8],
         rect: egui::Rect,
+        data_top: f32,
         lines: usize,
         row_height: f32,
         bpl: usize,
@@ -1134,14 +1149,14 @@ impl HexViewer {
         mono_text_height: f32,
     ) {
         let clip_rect = ui.clip_rect();
-        let visible_top = clip_rect.min.y.max(rect.min.y);
+        let visible_top = clip_rect.min.y.max(data_top);
         let visible_bottom = clip_rect.max.y.min(rect.max.y);
         if visible_bottom <= visible_top || lines == 0 {
             return;
         }
 
-        let mut first_line = (((visible_top - rect.min.y) / row_height).floor()).max(0.0) as usize;
-        let mut last_line = (((visible_bottom - rect.min.y) / row_height).ceil()).max(0.0) as usize;
+        let mut first_line = (((visible_top - data_top) / row_height).floor()).max(0.0) as usize;
+        let mut last_line = (((visible_bottom - data_top) / row_height).ceil()).max(0.0) as usize;
         let last_index = lines.saturating_sub(1);
         first_line = first_line.min(last_index);
         last_line = last_line.min(last_index);
@@ -1150,7 +1165,7 @@ impl HexViewer {
             let offset = line_idx * bpl;
             let end = ((line_idx + 1) * bpl).min(bytes.len());
             let chunk = &bytes[offset..end];
-            let line_top = rect.min.y + (line_idx as f32) * row_height + 2.0;
+            let line_top = data_top + (line_idx as f32) * row_height + 2.0;
 
             painter.text(
                 egui::pos2(base_x, line_top),
@@ -1205,8 +1220,8 @@ impl HexViewer {
         &mut self,
         ui: &mut egui::Ui,
         clicked: bool,
-        rect: egui::Rect,
         bytes_len: usize,
+        data_top: f32,
         row_height: f32,
         bpl: usize,
         base_x: f32,
@@ -1221,7 +1236,7 @@ impl HexViewer {
         };
 
         let rel_x = pos.x - (base_x + offset_width);
-        let rel_y = pos.y - rect.min.y;
+        let rel_y = pos.y - data_top;
         if rel_x < 0.0 || rel_y < 0.0 {
             return;
         }
