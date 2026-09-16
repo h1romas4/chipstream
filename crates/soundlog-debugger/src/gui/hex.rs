@@ -345,9 +345,8 @@ impl HexViewer {
         let current = self.current_diff_idx.map_or(0, |index| index + 1);
         let diff_text = format!("{} / {}", current, total);
         let address_text = self
-            .selection_range
-            .map(|(start, _)| start)
-            .or(self.selected)
+            .selected
+            .or_else(|| self.selection_range.map(|(start, _)| start))
             .map_or_else(
                 || "ADDR --".to_owned(),
                 |address| format!("ADDR 0x{address:08X}"),
