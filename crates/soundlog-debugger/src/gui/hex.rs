@@ -463,8 +463,9 @@ impl HexViewer {
         let offset_chars = 9.0; // "00000000:" -> 9 chars (8 hex + colon)
         let offset_width = offset_chars * char_w + 8.0;
         let hex_cell_w = char_w * 3.0; // "FF " (two hex + space)
-        let _ascii_cell_w = char_w * 1.0;
         let sep_gap = 12.0_f32;
+        let ascii_width = bpl as f32 * char_w;
+        let content_width = offset_width + bpl as f32 * hex_cell_w + sep_gap + ascii_width + 12.0;
 
         // Compute required total height and allocate an area.
         let total_height = (lines as f32) * row_height;
@@ -487,8 +488,9 @@ impl HexViewer {
         };
         painter.rect_filled(rect, 0.0, bg_color);
 
-        // Starting base point for text on each line.
-        let base_x = rect.min.x + 6.0;
+        // Center the fixed-width columns so the left and right padding match.
+        let side_padding = ((available_width - content_width) * 0.5).max(0.0);
+        let base_x = rect.min.x + side_padding + 6.0;
 
         // Precompute ascii column start X
         let ascii_base_x = base_x + offset_width + (bpl as f32) * hex_cell_w + sep_gap;
