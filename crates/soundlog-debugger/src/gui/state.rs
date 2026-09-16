@@ -290,6 +290,18 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
         }
     }
 
+    egui::Panel::top("main_toolbar")
+        .exact_size(34.0)
+        .show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                if state.ast_building {
+                    ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
+                    ui.separator();
+                }
+                state.hex_viewer.show_toolbar(ui);
+            });
+        });
+
     // Left sidebar AST
     egui::Panel::left("ast_panel")
         .resizable(false)
@@ -354,45 +366,26 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             });
         });
 
-    // Right: hex viewer & toolbar
+    // Right: hex viewer
     egui::CentralPanel::default().show(ui, |ui| {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                // "Bytes" label removed from the right pane per request.
-                if state.ast_building {
-                    ui.add_space(12.0);
-                    ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // Ensure the HexViewer always has access to the ORIGINAL file bytes so
+                // its diff tooltip can display the true Original values even when the
+                // viewer is asked to render the rebuilt bytes.
+                state
+                    .hex_viewer
+                    .set_original_bytes(Some(state.bytes.clone()));
+
+                // Prefer showing the rebuilt/serialized bytes in the right pane when available.
+                // The background parse/serializer supplies `rebuilt_bytes` via AstBuildMessage::Diff.
+                if let Some(rb) = state.rebuilt_bytes.as_ref() {
+                    state.hex_viewer.show(ui, rb);
+                } else {
+                    state.hex_viewer.show(ui, &state.bytes);
                 }
-
-                // Diff status indicator in the right-pane toolbar:
-                // - If diffs exist: show a red message with count.
-                // - If no diffs and bytes are loaded: show a green message clarifying
-                //   that original bytes equal re-serialized (rebuilt) bytes.
-                ui.add_space(8.0);
-                state.hex_viewer.show_toolbar(ui);
             });
-
-            ui.add_space(6.0);
-
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Ensure the HexViewer always has access to the ORIGINAL file bytes so
-                    // its diff tooltip can display the true Original values even when the
-                    // viewer is asked to render the rebuilt bytes.
-                    state
-                        .hex_viewer
-                        .set_original_bytes(Some(state.bytes.clone()));
-
-                    // Prefer showing the rebuilt/serialized bytes in the right pane when available.
-                    // The background parse/serializer supplies `rebuilt_bytes` via AstBuildMessage::Diff.
-                    if let Some(rb) = state.rebuilt_bytes.as_ref() {
-                        state.hex_viewer.show(ui, rb);
-                    } else {
-                        state.hex_viewer.show(ui, &state.bytes);
-                    }
-                });
-        });
     });
 
     // If the HexViewer recorded a byte click, consume it here and focus the corresponding
