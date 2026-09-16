@@ -115,14 +115,17 @@ pub(crate) fn draw_ast_node(
             }
         };
         let title_text = egui::RichText::new(display_label).size(state.hex_viewer.font_size());
-        let response = ui.add(egui::SelectableLabel::new(selected, title_text));
+        let response = ui.selectable_label(selected, title_text);
         response.clone().context_menu(|ui| {
             if ui.button("Copy").clicked() {
                 let label_clone = label_str.clone();
-                ui.ctx()
-                    .output_mut(|output| output.copied_text = label_clone);
+                ui.ctx().output_mut(|output| {
+                    output
+                        .commands
+                        .push(egui::OutputCommand::CopyText(label_clone));
+                });
                 state.push_event(format!("copied: {}", label_str));
-                ui.close_menu();
+                ui.close();
             }
         });
 

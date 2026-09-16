@@ -245,7 +245,8 @@ impl UiState {
 }
 
 /// Top-level UI entry called each frame.
-pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    let ctx = ui.ctx().clone();
     // If we have bytes but no AST yet, start initial populate.
     if state.ast_root.is_empty() && !state.bytes.is_empty() {
         let bytes_clone = state.bytes.clone();
@@ -285,20 +286,20 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
 
         // Apply collected messages after releasing the receiver borrow.
         for msg in msgs {
-            apply_message(state, ctx, msg);
+            apply_message(state, &ctx, msg);
         }
     }
 
     // Left sidebar AST
-    egui::SidePanel::left("ast_panel")
+    egui::Panel::left("ast_panel")
         .resizable(false)
         // Reduce default left panel width so the hex viewer on the right is more visible.
-        .default_width(240.0)
+        .default_size(240.0)
         // Keep the left panel width fixed so clicking inside doesn't cause the separator
         // to jump when internal content briefly changes size.
-        .min_width(240.0)
-        .max_width(240.0)
-        .show(ctx, |ui| {
+        .min_size(240.0)
+        .max_size(240.0)
+        .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -338,7 +339,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                         ctx.request_repaint();
                     }
 
-                    handle_keyboard_selection(state, ctx, &input, total);
+                    handle_keyboard_selection(state, &ctx, &input, total);
 
                     render_ast_tree(ui, &ast_snapshot, state);
                     // If an AST node set a last_selected_ast_rect during drawing (keyboard-driven
@@ -354,7 +355,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
         });
 
     // Right: hex viewer & toolbar
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 // "Bytes" label removed from the right pane per request.
@@ -433,6 +434,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
                                 rect.shrink(1.0),
                                 6.0,
                                 egui::Stroke::new(1.0_f32, rim),
+                                egui::StrokeKind::Inside,
                             );
                         }
 

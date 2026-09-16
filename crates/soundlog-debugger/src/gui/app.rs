@@ -21,9 +21,10 @@ use soundlog::vgm::command::WaitSamples;
 pub fn run_gui(initial_bytes: Vec<u8>) {
     // Configure native options: fix horizontal width to 1024 and allow vertical resizing.
     let native_options = NativeOptions {
-        initial_window_size: Some(egui::vec2(1024.0, 800.0)),
-        min_window_size: Some(egui::vec2(1024.0, 200.0)),
-        max_window_size: Some(egui::vec2(1024.0, 5000.0)),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 800.0])
+            .with_min_inner_size([1024.0, 200.0])
+            .with_max_inner_size([1024.0, 5000.0]),
         ..NativeOptions::default()
     };
 
@@ -32,7 +33,7 @@ pub fn run_gui(initial_bytes: Vec<u8>) {
         "soundlog debuger",
         native_options,
         Box::new(move |cc: &CreationContext| {
-            Box::new(Debuger::new_with_bytes(cc, initial_bytes.clone()))
+            Ok(Box::new(Debuger::new_with_bytes(cc, initial_bytes.clone())))
         }),
     ) {
         eprintln!("failed to launch native window: {:?}", err);
@@ -92,11 +93,10 @@ impl Debuger {
 }
 
 impl eframe::App for Debuger {
-    // Called each frame to update the UI.
-    fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut Frame) {
         // Defer to the UI module's `show_ui` function to render everything.
         // `show_ui` is exported from the parent (`ui`) module, so refer to it
         // via `super::show_ui`.
-        super::show_ui(&mut self.state.borrow_mut(), ctx, frame);
+        super::show_ui(&mut self.state.borrow_mut(), ui, frame);
     }
 }

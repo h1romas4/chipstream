@@ -580,7 +580,7 @@ impl HexViewer {
                             }
                         }
                         if !covered {
-                            painter.rect_stroke(seg_rect, 1.0, stroke);
+                            painter.rect_stroke(seg_rect, 1.0, stroke, egui::StrokeKind::Inside);
                         }
                     }
 
@@ -645,7 +645,12 @@ impl HexViewer {
                                         230,
                                     ),
                                 );
-                                painter.rect_stroke(o_rect, 0.0, overlay_stroke);
+                                painter.rect_stroke(
+                                    o_rect,
+                                    0.0,
+                                    overlay_stroke,
+                                    egui::StrokeKind::Inside,
+                                );
                             }
                         }
                     }
@@ -703,7 +708,7 @@ impl HexViewer {
                         };
                         let width = if is_active { 2.0_f32 } else { 1.0_f32 };
                         let diff_stroke = egui::Stroke::new(width, color);
-                        painter.rect_stroke(d_rect, 0.0, diff_stroke);
+                        painter.rect_stroke(d_rect, 0.0, diff_stroke, egui::StrokeKind::Inside);
 
                         // If the pointer is hovering over this diff overlay segment, show a tooltip
                         // that explicitly displays the ORIGINAL bytes for the full diff range so the user
