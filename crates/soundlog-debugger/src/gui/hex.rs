@@ -1264,7 +1264,7 @@ impl HexViewer {
                 painter.text(
                     egui::pos2(
                         cell_rect.center().x,
-                        cell_rect.center().y - (mono_text_height * 0.35),
+                        cell_rect.center().y - (mono_text_height * 0.5),
                     ),
                     egui::Align2::CENTER_TOP,
                     format!("{:02X}", b),
