@@ -52,6 +52,7 @@ impl Debuger {
     pub fn new_with_bytes(cc: &CreationContext, initial_bytes: Vec<u8>) -> Self {
         // Increase UI scaling by 1.2x for better readability.
         let ctx = &cc.egui_ctx;
+        ctx.set_theme(egui::Theme::Dark);
         ctx.set_visuals(egui::Visuals::dark());
         let current = ctx.pixels_per_point();
         ctx.set_pixels_per_point(current * 1.2);
