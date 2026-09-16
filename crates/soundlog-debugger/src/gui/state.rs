@@ -368,9 +368,15 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
 
     // Right: hex viewer
     egui::CentralPanel::default().show(ui, |ui| {
-        egui::ScrollArea::vertical()
+        let output = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let row_height = (ui
+                    .text_style_height(&egui::TextStyle::Monospace)
+                    .max(state.hex_viewer.font_size())
+                    + 6.0)
+                    .max(18.0);
+                ui.add_space(row_height);
                 // Ensure the HexViewer always has access to the ORIGINAL file bytes so
                 // its diff tooltip can display the true Original values even when the
                 // viewer is asked to render the rebuilt bytes.
@@ -386,6 +392,7 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
                     state.hex_viewer.show(ui, &state.bytes);
                 }
             });
+        state.hex_viewer.paint_header(ui, output.inner_rect);
     });
 
     // If the HexViewer recorded a byte click, consume it here and focus the corresponding

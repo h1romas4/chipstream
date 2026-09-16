@@ -468,7 +468,7 @@ impl HexViewer {
         let content_width = offset_width + bpl as f32 * hex_cell_w + sep_gap + ascii_width + 12.0;
 
         // Compute required total height and allocate an area.
-        let total_height = (lines as f32 + 1.0) * row_height;
+        let total_height = lines as f32 * row_height;
         let total_size = egui::Vec2::new(available_width, total_height);
 
         // Allocate space in the UI for the whole viewer.
@@ -491,22 +491,10 @@ impl HexViewer {
         // Center the fixed-width columns so the left and right padding match.
         let side_padding = ((available_width - content_width) * 0.5).max(0.0);
         let base_x = rect.min.x + side_padding + 6.0;
-        let data_top = rect.min.y + row_height;
+        let data_top = rect.min.y;
 
         // Precompute ascii column start X
         let ascii_base_x = base_x + offset_width + (bpl as f32) * hex_cell_w + sep_gap;
-
-        // Draw the byte-column subaddress header above the data rows.
-        for column in 0..bpl {
-            let x = base_x + offset_width + column as f32 * hex_cell_w;
-            painter.text(
-                egui::pos2(x + hex_cell_w * 0.5, rect.min.y + 2.0),
-                egui::Align2::CENTER_TOP,
-                format!("{:02X}", column),
-                font.clone(),
-                ui.visuals().weak_text_color(),
-            );
-        }
 
         // Draw reference markers in the margin (small circles) for marked offsets.
         for &r in &self.reference_markers {
@@ -1011,6 +999,51 @@ impl HexViewer {
             offset_width,
             hex_cell_w,
         );
+    }
+
+    pub fn paint_header(&self, ui: &mut egui::Ui, viewport: egui::Rect) {
+        let mono_text_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let row_height = (mono_text_height.max(self.font_size) + 6.0).max(18.0);
+        let bpl = self.bytes_per_line;
+        let char_w = self.font_size * 0.6_f32;
+        let offset_width = 9.0 * char_w + 8.0;
+        let hex_cell_w = char_w * 3.0;
+        let sep_gap = 12.0_f32;
+        let ascii_width = bpl as f32 * char_w;
+        let content_width = offset_width + bpl as f32 * hex_cell_w + sep_gap + ascii_width + 12.0;
+        let side_padding = ((viewport.width() - content_width) * 0.5).max(0.0);
+        let base_x = viewport.min.x + side_padding + 6.0;
+        let ascii_base_x = base_x + offset_width + bpl as f32 * hex_cell_w + sep_gap;
+        let header_rect =
+            egui::Rect::from_min_size(viewport.min, egui::vec2(viewport.width(), row_height));
+        let painter = ui.painter_at(header_rect);
+        let bg_color = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(28, 28, 30)
+        } else {
+            ui.visuals().panel_fill
+        };
+        painter.rect_filled(header_rect, 0.0, bg_color);
+
+        let font = egui::FontId::monospace(self.font_size);
+        for column in 0..bpl {
+            let x = base_x + offset_width + column as f32 * hex_cell_w;
+            painter.text(
+                egui::pos2(x + hex_cell_w * 0.5, header_rect.min.y + 2.0),
+                egui::Align2::CENTER_TOP,
+                format!("+{:X}", column),
+                font.clone(),
+                ui.visuals().weak_text_color(),
+            );
+
+            let ascii_x = ascii_base_x + column as f32 * char_w;
+            painter.text(
+                egui::pos2(ascii_x + char_w * 0.5, header_rect.min.y + 2.0),
+                egui::Align2::CENTER_TOP,
+                format!("{:X}", column),
+                font.clone(),
+                ui.visuals().weak_text_color(),
+            );
+        }
     }
 
     fn draw_diff_segment(&self, painter: &egui::Painter, rect: egui::Rect, index: usize) {
