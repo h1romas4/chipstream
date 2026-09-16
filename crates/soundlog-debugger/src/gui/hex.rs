@@ -588,335 +588,286 @@ impl HexViewer {
         // Each diff will be drawn as a semi-transparent red fill plus a red outline.
         // The currently-selected diff (if any) is highlighted with a stronger fill and thicker stroke.
         for (idx, &(d_s, d_e)) in self.diff_ranges.iter().enumerate() {
-            if d_s < bytes.len() || d_e < bytes.len() {
-                let ds = d_s.min(bytes.len().saturating_sub(1));
-                let de = d_e.min(bytes.len().saturating_sub(1));
-                if de >= ds {
-                    let d_start_line = ds / bpl;
-                    let d_end_line = de / bpl;
-                    for line in d_start_line..=d_end_line {
-                        let line_top = rect.min.y + (line as f32) * row_height + 2.0;
-                        let line_start = if line == d_start_line {
-                            (ds % bpl) as f32
+            let Some((ds, de)) = Self::clamp_range((d_s, d_e), bytes.len()) else {
+                continue;
+            };
+            for d_rect in Self::range_rects(
+                ds,
+                de,
+                rect,
+                row_height,
+                bpl,
+                base_x,
+                offset_width,
+                hex_cell_w,
+            ) {
+                self.draw_diff_segment(&painter, d_rect, idx);
+
+                // If the pointer is hovering over this diff overlay segment, show a tooltip
+                // that explicitly displays the ORIGINAL bytes for the full diff range so the user
+                // can see "Original:" content. We build a limited-length hex dump and an
+                // ASCII representation for readability.
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+                    && d_rect.contains(pos)
+                {
+                    // Determine a source buffer for the Original bytes:
+                    // Prefer `self.original_bytes` if it was set by the UI layer;
+                    // otherwise fall back to the `bytes` slice passed to `show()`.
+                    let orig_buf: &[u8] = self.original_bytes.as_deref().unwrap_or(bytes);
+
+                    // Guard: ensure ds..=de is within bounds of the original buffer.
+                    if ds <= de && de < orig_buf.len() {
+                        let orig_slice = &orig_buf[ds..=de];
+                        let len_bytes = orig_slice.len();
+
+                        // Build a hex representation (truncate if very long).
+                        let hex_str = if len_bytes <= 64 {
+                            orig_slice
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         } else {
-                            0.0
+                            // show head ... tail to give context without overwhelming the tooltip
+                            let head = orig_slice
+                                .iter()
+                                .take(32)
+                                .map(|b| format!("{:02X}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let tail = orig_slice
+                                .iter()
+                                .rev()
+                                .take(32)
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let tail = tail
+                                .into_iter()
+                                .rev()
+                                .map(|b| format!("{:02X}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            format!("{} ... {}", head, tail)
                         };
-                        let line_end = if line == d_end_line {
-                            (de % bpl) as f32
+
+                        // ASCII-friendly representation (non-printable -> '.'). Truncate similar to hex.
+                        let ascii_str = if len_bytes <= 64 {
+                            orig_slice
+                                .iter()
+                                .map(|&b| {
+                                    if b.is_ascii_graphic() || b == b' ' {
+                                        b as char
+                                    } else {
+                                        '.'
+                                    }
+                                })
+                                .collect::<String>()
                         } else {
-                            (bpl as f32) - 1.0
+                            let head = orig_slice
+                                .iter()
+                                .take(32)
+                                .map(|&b| {
+                                    if b.is_ascii_graphic() || b == b' ' {
+                                        b as char
+                                    } else {
+                                        '.'
+                                    }
+                                })
+                                .collect::<String>();
+                            let tail = orig_slice
+                                .iter()
+                                .rev()
+                                .take(32)
+                                .cloned()
+                                .collect::<Vec<u8>>();
+                            let tail = tail
+                                .into_iter()
+                                .rev()
+                                .map(|b| {
+                                    if b.is_ascii_graphic() || b == b' ' {
+                                        b as char
+                                    } else {
+                                        '.'
+                                    }
+                                })
+                                .collect::<String>();
+                            format!("{} ... {}", head, tail)
                         };
 
-                        let x0 = base_x + offset_width + line_start * hex_cell_w + 1.0;
-                        let x1 = base_x + offset_width + (line_end + 1.0) * hex_cell_w - 1.0;
-                        let y0 = line_top + 1.0;
-                        let y1 = line_top + row_height - 4.0;
+                        let label = String::from("Original:");
 
-                        let d_rect =
-                            egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+                        // Also prepare rebuilt bytes for the same range (if available in the viewer).
+                        // Build per-byte hex and ASCII lines for both Original and Rebuilt so values
+                        // appear aligned and it's obvious which bytes differ.
+                        let mut rebuilt_present = false;
+                        let mut rebuilt_hex = String::new();
+                        let mut rebuilt_ascii = String::new();
 
-                        // Active diff visual style is stronger to stand out.
-                        let is_active = self.current_diff_idx.map(|i| i == idx).unwrap_or(false);
-
-                        // Fill: semi-transparent red (stronger for active).
-                        let fill_color = if is_active {
-                            egui::Color32::from_rgba_unmultiplied(220, 60, 60, 120)
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(200, 60, 60, 90)
-                        };
-                        painter.rect_filled(d_rect, 0.0, fill_color);
-
-                        // Stroke: red outline (thicker for active).
-                        let color = if is_active {
-                            egui::Color32::from_rgba_unmultiplied(220, 24, 24, 255)
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(200, 36, 36, 220)
-                        };
-                        let width = if is_active { 2.0_f32 } else { 1.0_f32 };
-                        let diff_stroke = egui::Stroke::new(width, color);
-                        painter.rect_stroke(d_rect, 0.0, diff_stroke, egui::StrokeKind::Inside);
-
-                        // If the pointer is hovering over this diff overlay segment, show a tooltip
-                        // that explicitly displays the ORIGINAL bytes for the full diff range so the user
-                        // can see "Original:" content. We build a limited-length hex dump and an
-                        // ASCII representation for readability.
-                        if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
-                            && d_rect.contains(pos)
-                        {
-                            // Determine a source buffer for the Original bytes:
-                            // Prefer `self.original_bytes` if it was set by the UI layer;
-                            // otherwise fall back to the `bytes` slice passed to `show()`.
-                            let orig_buf: &[u8] = self.original_bytes.as_deref().unwrap_or(bytes);
-
-                            // Guard: ensure ds..=de is within bounds of the original buffer.
-                            if ds <= de && de < orig_buf.len() {
-                                let orig_slice = &orig_buf[ds..=de];
-                                let len_bytes = orig_slice.len();
-
-                                // Build a hex representation (truncate if very long).
-                                let hex_str = if len_bytes <= 64 {
-                                    orig_slice
-                                        .iter()
-                                        .map(|b| format!("{:02X}", b))
-                                        .collect::<Vec<_>>()
-                                        .join(" ")
+                        if let Some(rb) = &self.rebuilt_bytes {
+                            // If rebuilt bytes are present, attempt to build a same-length slice
+                            // aligned to ds..=de. If rebuilt is shorter, show available bytes and
+                            // use '--' for missing bytes so it's clear it's absent.
+                            if ds <= de {
+                                // Determine how many bytes originally are considered
+                                let orig_len = (de.saturating_sub(ds)).saturating_add(1);
+                                // Build per-byte hex parts for rebuilt (or placeholder)
+                                let mut parts_hex: Vec<String> = Vec::with_capacity(orig_len);
+                                let mut parts_ascii: Vec<char> = Vec::with_capacity(orig_len);
+                                for i in 0..orig_len {
+                                    let idx = ds.saturating_add(i);
+                                    if idx < rb.len() {
+                                        let b = rb[idx];
+                                        parts_hex.push(format!("{:02X}", b));
+                                        parts_ascii.push(if b.is_ascii_graphic() || b == b' ' {
+                                            b as char
+                                        } else {
+                                            '.'
+                                        });
+                                    } else {
+                                        // Indicate missing rebuilt byte clearly
+                                        parts_hex.push(String::from("--"));
+                                        parts_ascii.push('.');
+                                    }
+                                }
+                                // Join into display strings (truncate with head...tail if too long)
+                                let reb_full = parts_hex.join(" ");
+                                if parts_hex.len() <= 64 {
+                                    rebuilt_hex = reb_full;
                                 } else {
-                                    // show head ... tail to give context without overwhelming the tooltip
-                                    let head = orig_slice
+                                    let head = parts_hex
                                         .iter()
                                         .take(32)
-                                        .map(|b| format!("{:02X}", b))
+                                        .cloned()
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    let tail = orig_slice
+                                    // Collect last up-to-32 hex parts and reverse back to original order.
+                                    let mut tail_vec = parts_hex
                                         .iter()
                                         .rev()
                                         .take(32)
                                         .cloned()
                                         .collect::<Vec<_>>();
-                                    let tail = tail
-                                        .into_iter()
-                                        .rev()
-                                        .map(|b| format!("{:02X}", b))
-                                        .collect::<Vec<_>>()
-                                        .join(" ");
-                                    format!("{} ... {}", head, tail)
-                                };
-
-                                // ASCII-friendly representation (non-printable -> '.'). Truncate similar to hex.
-                                let ascii_str = if len_bytes <= 64 {
-                                    orig_slice
-                                        .iter()
-                                        .map(|&b| {
-                                            if b.is_ascii_graphic() || b == b' ' {
-                                                b as char
-                                            } else {
-                                                '.'
-                                            }
-                                        })
-                                        .collect::<String>()
+                                    tail_vec.reverse();
+                                    let tail = tail_vec.join(" ");
+                                    rebuilt_hex = format!("{} ... {}", head, tail);
+                                }
+                                let reb_ascii_full = parts_ascii.iter().collect::<String>();
+                                if reb_ascii_full.len() <= 64 {
+                                    rebuilt_ascii = reb_ascii_full;
                                 } else {
-                                    let head = orig_slice
-                                        .iter()
-                                        .take(32)
-                                        .map(|&b| {
-                                            if b.is_ascii_graphic() || b == b' ' {
-                                                b as char
-                                            } else {
-                                                '.'
-                                            }
-                                        })
-                                        .collect::<String>();
-                                    let tail = orig_slice
-                                        .iter()
-                                        .rev()
-                                        .take(32)
-                                        .cloned()
-                                        .collect::<Vec<u8>>();
-                                    let tail = tail
-                                        .into_iter()
-                                        .rev()
-                                        .map(|b| {
-                                            if b.is_ascii_graphic() || b == b' ' {
-                                                b as char
-                                            } else {
-                                                '.'
-                                            }
-                                        })
-                                        .collect::<String>();
-                                    format!("{} ... {}", head, tail)
-                                };
-
-                                let label = String::from("Original:");
-
-                                // Also prepare rebuilt bytes for the same range (if available in the viewer).
-                                // Build per-byte hex and ASCII lines for both Original and Rebuilt so values
-                                // appear aligned and it's obvious which bytes differ.
-                                let mut rebuilt_present = false;
-                                let mut rebuilt_hex = String::new();
-                                let mut rebuilt_ascii = String::new();
-
-                                if let Some(rb) = &self.rebuilt_bytes {
-                                    // If rebuilt bytes are present, attempt to build a same-length slice
-                                    // aligned to ds..=de. If rebuilt is shorter, show available bytes and
-                                    // use '--' for missing bytes so it's clear it's absent.
-                                    if ds <= de {
-                                        // Determine how many bytes originally are considered
-                                        let orig_len = (de.saturating_sub(ds)).saturating_add(1);
-                                        // Build per-byte hex parts for rebuilt (or placeholder)
-                                        let mut parts_hex: Vec<String> =
-                                            Vec::with_capacity(orig_len);
-                                        let mut parts_ascii: Vec<char> =
-                                            Vec::with_capacity(orig_len);
-                                        for i in 0..orig_len {
-                                            let idx = ds.saturating_add(i);
-                                            if idx < rb.len() {
-                                                let b = rb[idx];
-                                                parts_hex.push(format!("{:02X}", b));
-                                                parts_ascii.push(
-                                                    if b.is_ascii_graphic() || b == b' ' {
-                                                        b as char
-                                                    } else {
-                                                        '.'
-                                                    },
-                                                );
-                                            } else {
-                                                // Indicate missing rebuilt byte clearly
-                                                parts_hex.push(String::from("--"));
-                                                parts_ascii.push('.');
-                                            }
-                                        }
-                                        // Join into display strings (truncate with head...tail if too long)
-                                        let reb_full = parts_hex.join(" ");
-                                        if parts_hex.len() <= 64 {
-                                            rebuilt_hex = reb_full;
-                                        } else {
-                                            let head = parts_hex
-                                                .iter()
-                                                .take(32)
-                                                .cloned()
-                                                .collect::<Vec<_>>()
-                                                .join(" ");
-                                            // Collect last up-to-32 hex parts and reverse back to original order.
-                                            let mut tail_vec = parts_hex
-                                                .iter()
-                                                .rev()
-                                                .take(32)
-                                                .cloned()
-                                                .collect::<Vec<_>>();
-                                            tail_vec.reverse();
-                                            let tail = tail_vec.join(" ");
-                                            rebuilt_hex = format!("{} ... {}", head, tail);
-                                        }
-                                        let reb_ascii_full = parts_ascii.iter().collect::<String>();
-                                        if reb_ascii_full.len() <= 64 {
-                                            rebuilt_ascii = reb_ascii_full;
-                                        } else {
-                                            let head =
-                                                reb_ascii_full.chars().take(32).collect::<String>();
-                                            // Take last up-to-32 characters and restore original order.
-                                            let mut tail_chars: Vec<char> =
-                                                reb_ascii_full.chars().rev().take(32).collect();
-                                            tail_chars.reverse();
-                                            let tail = tail_chars.into_iter().collect::<String>();
-                                            rebuilt_ascii = format!("{} ... {}", head, tail);
-                                        }
-                                        rebuilt_present = true;
-                                    }
+                                    let head = reb_ascii_full.chars().take(32).collect::<String>();
+                                    // Take last up-to-32 characters and restore original order.
+                                    let mut tail_chars: Vec<char> =
+                                        reb_ascii_full.chars().rev().take(32).collect();
+                                    tail_chars.reverse();
+                                    let tail = tail_chars.into_iter().collect::<String>();
+                                    rebuilt_ascii = format!("{} ... {}", head, tail);
                                 }
-
-                                // Estimate tooltip size from text length and font metrics.
-                                let char_w = self.font_size * 0.6_f32;
-                                let padding_x = 6.0_f32;
-                                let padding_y = 4.0_f32;
-                                // Number of text lines to display: original label/hex/ascii and optional rebuilt label/hex/ascii
-                                let lines_count = if rebuilt_present { 6u32 } else { 3u32 };
-                                let max_line_len =
-                                    hex_str.len().max(ascii_str.len()).max(label.len());
-                                // If rebuilt present, consider rebuilt hex length as well for width
-                                let max_line_len = if rebuilt_present {
-                                    max_line_len.max(rebuilt_hex.len()).max(rebuilt_ascii.len())
-                                } else {
-                                    max_line_len
-                                };
-                                let desired_w = max_line_len as f32 * char_w + padding_x * 2.0;
-
-                                let right_space = rect.max.x - (pos.x + 12.0) - 8.0;
-                                let left_space = (pos.x - 12.0) - rect.min.x - 8.0;
-                                let max_allowed = right_space.max(left_space).max(64.0);
-
-                                let tip_w = desired_w.min(max_allowed).max(64.0);
-                                // Compute tooltip height based on lines_count
-                                let tip_h = (mono_text_height.max(self.font_size)
-                                    * lines_count as f32)
-                                    + padding_y * 2.0;
-
-                                let mut tip_x = pos.x + 12.0;
-                                let mut tip_y = pos.y + 12.0;
-                                if tip_x + tip_w > rect.max.x {
-                                    tip_x = (pos.x - 12.0 - tip_w).max(rect.min.x + 4.0);
-                                }
-                                if tip_y + tip_h > rect.max.y {
-                                    tip_y = rect.max.y - tip_h - 4.0;
-                                }
-
-                                let tip_pos = egui::pos2(tip_x, tip_y);
-                                let tip_rect =
-                                    egui::Rect::from_min_size(tip_pos, egui::vec2(tip_w, tip_h));
-
-                                // Draw tooltip background.
-                                let bg = if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(50, 50, 52)
-                                } else {
-                                    ui.visuals().panel_fill
-                                };
-                                painter.rect_filled(tip_rect.expand(2.0), 4.0, bg);
-
-                                // Vertical baseline for lines
-                                let base_y = tip_rect.min.y + padding_y * 0.5;
-                                // Draw Original label + hex + ascii
-                                painter.text(
-                                    egui::pos2(tip_rect.min.x + padding_x, base_y),
-                                    egui::Align2::LEFT_TOP,
-                                    label,
-                                    egui::FontId::monospace(self.font_size),
-                                    ui.visuals().text_color(),
-                                );
-                                painter.text(
-                                    egui::pos2(
-                                        tip_rect.min.x + padding_x,
-                                        base_y + mono_text_height * 1.0,
-                                    ),
-                                    egui::Align2::LEFT_TOP,
-                                    hex_str,
-                                    egui::FontId::monospace(self.font_size),
-                                    ui.visuals().text_color(),
-                                );
-                                painter.text(
-                                    egui::pos2(
-                                        tip_rect.min.x + padding_x,
-                                        base_y + mono_text_height * 2.0,
-                                    ),
-                                    egui::Align2::LEFT_TOP,
-                                    ascii_str,
-                                    egui::FontId::monospace(self.font_size),
-                                    ui.visuals().text_color(),
-                                );
-
-                                // If rebuilt bytes are available, draw them below the original block as paired lines.
-                                if rebuilt_present {
-                                    painter.text(
-                                        egui::pos2(
-                                            tip_rect.min.x + padding_x,
-                                            base_y + mono_text_height * 3.0,
-                                        ),
-                                        egui::Align2::LEFT_TOP,
-                                        String::from("Rebuilt:"),
-                                        egui::FontId::monospace(self.font_size),
-                                        ui.visuals().text_color(),
-                                    );
-                                    painter.text(
-                                        egui::pos2(
-                                            tip_rect.min.x + padding_x,
-                                            base_y + mono_text_height * 4.0,
-                                        ),
-                                        egui::Align2::LEFT_TOP,
-                                        rebuilt_hex,
-                                        egui::FontId::monospace(self.font_size),
-                                        ui.visuals().text_color(),
-                                    );
-                                    painter.text(
-                                        egui::pos2(
-                                            tip_rect.min.x + padding_x,
-                                            base_y + mono_text_height * 5.0,
-                                        ),
-                                        egui::Align2::LEFT_TOP,
-                                        rebuilt_ascii,
-                                        egui::FontId::monospace(self.font_size),
-                                        ui.visuals().text_color(),
-                                    );
-                                }
+                                rebuilt_present = true;
                             }
+                        }
+
+                        // Estimate tooltip size from text length and font metrics.
+                        let char_w = self.font_size * 0.6_f32;
+                        let padding_x = 6.0_f32;
+                        let padding_y = 4.0_f32;
+                        // Number of text lines to display: original label/hex/ascii and optional rebuilt label/hex/ascii
+                        let lines_count = if rebuilt_present { 6u32 } else { 3u32 };
+                        let max_line_len = hex_str.len().max(ascii_str.len()).max(label.len());
+                        // If rebuilt present, consider rebuilt hex length as well for width
+                        let max_line_len = if rebuilt_present {
+                            max_line_len.max(rebuilt_hex.len()).max(rebuilt_ascii.len())
+                        } else {
+                            max_line_len
+                        };
+                        let desired_w = max_line_len as f32 * char_w + padding_x * 2.0;
+
+                        let right_space = rect.max.x - (pos.x + 12.0) - 8.0;
+                        let left_space = (pos.x - 12.0) - rect.min.x - 8.0;
+                        let max_allowed = right_space.max(left_space).max(64.0);
+
+                        let tip_w = desired_w.min(max_allowed).max(64.0);
+                        // Compute tooltip height based on lines_count
+                        let tip_h = (mono_text_height.max(self.font_size) * lines_count as f32)
+                            + padding_y * 2.0;
+
+                        let mut tip_x = pos.x + 12.0;
+                        let mut tip_y = pos.y + 12.0;
+                        if tip_x + tip_w > rect.max.x {
+                            tip_x = (pos.x - 12.0 - tip_w).max(rect.min.x + 4.0);
+                        }
+                        if tip_y + tip_h > rect.max.y {
+                            tip_y = rect.max.y - tip_h - 4.0;
+                        }
+
+                        let tip_pos = egui::pos2(tip_x, tip_y);
+                        let tip_rect = egui::Rect::from_min_size(tip_pos, egui::vec2(tip_w, tip_h));
+
+                        // Draw tooltip background.
+                        let bg = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(50, 50, 52)
+                        } else {
+                            ui.visuals().panel_fill
+                        };
+                        painter.rect_filled(tip_rect.expand(2.0), 4.0, bg);
+
+                        // Vertical baseline for lines
+                        let base_y = tip_rect.min.y + padding_y * 0.5;
+                        // Draw Original label + hex + ascii
+                        painter.text(
+                            egui::pos2(tip_rect.min.x + padding_x, base_y),
+                            egui::Align2::LEFT_TOP,
+                            label,
+                            egui::FontId::monospace(self.font_size),
+                            ui.visuals().text_color(),
+                        );
+                        painter.text(
+                            egui::pos2(tip_rect.min.x + padding_x, base_y + mono_text_height * 1.0),
+                            egui::Align2::LEFT_TOP,
+                            hex_str,
+                            egui::FontId::monospace(self.font_size),
+                            ui.visuals().text_color(),
+                        );
+                        painter.text(
+                            egui::pos2(tip_rect.min.x + padding_x, base_y + mono_text_height * 2.0),
+                            egui::Align2::LEFT_TOP,
+                            ascii_str,
+                            egui::FontId::monospace(self.font_size),
+                            ui.visuals().text_color(),
+                        );
+
+                        // If rebuilt bytes are available, draw them below the original block as paired lines.
+                        if rebuilt_present {
+                            painter.text(
+                                egui::pos2(
+                                    tip_rect.min.x + padding_x,
+                                    base_y + mono_text_height * 3.0,
+                                ),
+                                egui::Align2::LEFT_TOP,
+                                String::from("Rebuilt:"),
+                                egui::FontId::monospace(self.font_size),
+                                ui.visuals().text_color(),
+                            );
+                            painter.text(
+                                egui::pos2(
+                                    tip_rect.min.x + padding_x,
+                                    base_y + mono_text_height * 4.0,
+                                ),
+                                egui::Align2::LEFT_TOP,
+                                rebuilt_hex,
+                                egui::FontId::monospace(self.font_size),
+                                ui.visuals().text_color(),
+                            );
+                            painter.text(
+                                egui::pos2(
+                                    tip_rect.min.x + padding_x,
+                                    base_y + mono_text_height * 5.0,
+                                ),
+                                egui::Align2::LEFT_TOP,
+                                rebuilt_ascii,
+                                egui::FontId::monospace(self.font_size),
+                                ui.visuals().text_color(),
+                            );
                         }
                     }
                 }
@@ -945,6 +896,71 @@ impl HexViewer {
             offset_width,
             hex_cell_w,
         );
+    }
+
+    fn draw_diff_segment(&self, painter: &egui::Painter, rect: egui::Rect, index: usize) {
+        let is_active = self.current_diff_idx == Some(index);
+        let fill_color = if is_active {
+            egui::Color32::from_rgba_unmultiplied(220, 60, 60, 120)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(200, 60, 60, 90)
+        };
+        painter.rect_filled(rect, 0.0, fill_color);
+
+        let color = if is_active {
+            egui::Color32::from_rgba_unmultiplied(220, 24, 24, 255)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(200, 36, 36, 220)
+        };
+        let width = if is_active { 2.0 } else { 1.0 };
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(width, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    fn clamp_range((start, end): (usize, usize), bytes_len: usize) -> Option<(usize, usize)> {
+        if bytes_len == 0 || (start >= bytes_len && end >= bytes_len) {
+            return None;
+        }
+        let start = start.min(bytes_len - 1);
+        let end = end.min(bytes_len - 1);
+        Some((start.min(end), start.max(end)))
+    }
+
+    fn range_rects(
+        start: usize,
+        end: usize,
+        rect: egui::Rect,
+        row_height: f32,
+        bpl: usize,
+        base_x: f32,
+        offset_width: f32,
+        hex_cell_w: f32,
+    ) -> impl Iterator<Item = egui::Rect> {
+        let start_line = start / bpl;
+        let end_line = end / bpl;
+        (start_line..=end_line).map(move |line| {
+            let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+            let line_start = if line == start_line {
+                (start % bpl) as f32
+            } else {
+                0.0
+            };
+            let line_end = if line == end_line {
+                (end % bpl) as f32
+            } else {
+                (bpl as f32) - 1.0
+            };
+            let x0 = base_x + offset_width + line_start * hex_cell_w + 1.0;
+            let x1 = base_x + offset_width + (line_end + 1.0) * hex_cell_w - 1.0;
+            egui::Rect::from_min_max(
+                egui::pos2(x0, line_top + 1.0),
+                egui::pos2(x1, line_top + row_height - 4.0),
+            )
+        })
     }
 
     fn apply_pending_scroll(
