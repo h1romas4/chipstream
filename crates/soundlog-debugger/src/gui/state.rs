@@ -585,7 +585,7 @@ pub fn show_ui(state: &mut UiState, ctx: &egui::Context, _frame: &mut eframe::Fr
 mod tests {
     use super::{AstNode, UiState, source_node_to_ast};
     use crate::gui::loader::compute_diff_ranges;
-    use crate::source::{ByteCoordinateSpace, ByteRange, MappedRange, SourceNode, VgmAdapter};
+    use crate::sourcemap::{ByteCoordinateSpace, ByteRange, MappedRange, SourceNode, VgmAdapter};
     use soundlog::VgmBuilder;
     use soundlog::mdx::command::MdxRest;
     use soundlog::mdx::document::MdxBuilder;

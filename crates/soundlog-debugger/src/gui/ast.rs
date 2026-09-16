@@ -1,4 +1,4 @@
-use crate::source::{ByteRange, MappedRange, RawBinaryAdapter, SourceNode};
+use crate::sourcemap::{ByteRange, MappedRange, RawBinaryAdapter, SourceNode};
 
 /// AST node representation used by the debugger tree.
 #[derive(Clone, Debug)]

@@ -44,7 +44,7 @@ impl Default for RawBinaryAdapter {
 #[cfg(test)]
 mod tests {
     use super::RawBinaryAdapter;
-    use crate::source::ByteCoordinateSpace;
+    use crate::sourcemap::ByteCoordinateSpace;
 
     #[test]
     fn raw_adapter_maps_each_block_to_original_bytes() {

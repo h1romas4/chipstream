@@ -1,6 +1,6 @@
 use super::ast::{build_raw_binary_nodes, source_node_to_ast};
 use super::{AstBuildMessage, AstNode};
-use crate::source::{MdxAdapter, SourceAdapter, VgmAdapter};
+use crate::sourcemap::{MdxAdapter, SourceAdapter, VgmAdapter};
 use std::cmp;
 use std::sync::mpsc;
 use std::thread;
