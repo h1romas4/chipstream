@@ -408,95 +408,21 @@ impl HexViewer {
             painter.circle_filled(center, 3.0, col);
         }
 
-        // iterate lines and draw only visible lines using painter to improve performance
-        // Compute visible range using the current clip rect so we draw only what's visible.
-        let clip_rect = ui.clip_rect();
-        let visible_top = clip_rect.min.y.max(rect.min.y);
-        let visible_bottom = clip_rect.max.y.min(rect.max.y);
-
-        if visible_bottom > visible_top && lines > 0 {
-            // Map visible Y range to line indices
-            let first_line_f = ((visible_top - rect.min.y) / row_height).floor();
-            let last_line_f = ((visible_bottom - rect.min.y) / row_height).ceil();
-
-            let mut first_line = first_line_f.max(0.0) as usize;
-            let mut last_line = last_line_f.max(0.0) as usize;
-
-            let last_index = lines.saturating_sub(1);
-            first_line = first_line.min(last_index);
-            last_line = last_line.min(last_index);
-
-            // Draw only the visible lines
-            for line_idx in first_line..=last_line {
-                let offset = line_idx * bpl;
-                let end = ((line_idx + 1) * bpl).min(bytes.len());
-                let chunk = &bytes[offset..end];
-
-                // y coordinate for this line's top
-                let line_top = rect.min.y + (line_idx as f32) * row_height + 2.0;
-
-                // Draw offset
-                let offset_text = format!("{:08X}:", offset);
-                painter.text(
-                    egui::pos2(base_x, line_top),
-                    egui::Align2::LEFT_TOP,
-                    offset_text.clone(),
-                    font.clone(),
-                    ui.visuals().text_color(),
-                );
-
-                // Draw hex cells
-                for (i, b) in chunk.iter().enumerate() {
-                    let global_idx = offset + i;
-                    let x = base_x + offset_width + (i as f32) * hex_cell_w;
-
-                    let cell_min = egui::pos2(x, line_top);
-                    let cell_rect = egui::Rect::from_min_size(
-                        cell_min,
-                        egui::vec2(hex_cell_w, row_height - 4.0),
-                    );
-
-                    // If single byte selected, draw highlight rectangle.
-                    // Range fills are drawn per-line (below) to avoid gaps between cells.
-                    if self.selected == Some(global_idx) {
-                        let radius = 2.0;
-                        let highlight_color = ui.visuals().selection.bg_fill;
-                        painter.rect_filled(cell_rect, radius, highlight_color);
-                    }
-
-                    // Draw hex text centered in cell
-                    let hex_text = format!("{:02X}", b);
-                    painter.text(
-                        egui::pos2(
-                            cell_rect.center().x,
-                            cell_rect.center().y - (mono_text_height * 0.35),
-                        ),
-                        egui::Align2::CENTER_TOP,
-                        hex_text,
-                        font.clone(),
-                        ui.visuals().text_color(),
-                    );
-                }
-
-                // Draw ASCII column
-                let mut ascii_text = String::with_capacity(chunk.len());
-                for b in chunk.iter() {
-                    let ch = if b.is_ascii_graphic() || *b == b' ' {
-                        *b as char
-                    } else {
-                        '.'
-                    };
-                    ascii_text.push(ch);
-                }
-                painter.text(
-                    egui::pos2(ascii_base_x, line_top),
-                    egui::Align2::LEFT_TOP,
-                    ascii_text,
-                    font.clone(),
-                    ui.visuals().text_color(),
-                );
-            }
-        }
+        self.draw_visible_lines(
+            ui,
+            &painter,
+            bytes,
+            rect,
+            lines,
+            row_height,
+            bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ascii_base_x,
+            &font,
+            mono_text_height,
+        );
 
         // Draw selection_range as a continuous filled band (per-line segments) and stroke with a dark red outline.
         if let Some((mut s, mut e)) = self.selection_range {
@@ -997,93 +923,204 @@ impl HexViewer {
             }
         }
 
-        // If there was a pending scroll request (from next/prev or initial diff set),
-        // compute the target rect and ask the UI to scroll so the diff/selection is visible.
-        if let Some((scroll_s, scroll_e)) = self.pending_scroll_to.take() {
-            // Capture and clear the align-top flag immediately so it does not
-            // persist if scrolling fails or the target rect is empty.
-            let align_top = self.pending_scroll_align_top;
-            self.pending_scroll_align_top = false;
+        self.apply_pending_scroll(
+            ui,
+            bytes.len(),
+            rect,
+            row_height,
+            bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+        );
 
-            let bytes_len = bytes.len();
-            if bytes_len > 0 {
-                let ss = scroll_s.min(bytes_len.saturating_sub(1));
-                let ee = scroll_e.min(bytes_len.saturating_sub(1));
-                let s_line = ss / bpl;
-                let e_line = ee / bpl;
-                let mut scroll_union: Option<egui::Rect> = None;
-                for line in s_line..=e_line {
-                    let line_top = rect.min.y + (line as f32) * row_height + 2.0;
-                    let line_start = if line == s_line {
-                        (ss % bpl) as f32
-                    } else {
-                        0.0
-                    };
-                    let line_end = if line == e_line {
-                        (ee % bpl) as f32
-                    } else {
-                        (bpl as f32) - 1.0
-                    };
-                    let x0 = base_x + offset_width + line_start * hex_cell_w + 1.0;
-                    let x1 = base_x + offset_width + (line_end + 1.0) * hex_cell_w - 1.0;
-                    let y0 = line_top + 1.0;
-                    let y1 = line_top + row_height - 4.0;
-                    let seg = egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
-                    scroll_union = Some(if let Some(u) = scroll_union {
-                        u.union(seg)
-                    } else {
-                        seg
-                    });
-                }
-                if let Some(target_rect) = scroll_union {
-                    // Default: center the target rect.
-                    ui.scroll_to_rect(target_rect, Some(egui::Align::Center));
-                    // If requested, align the target rect to the top (Min).
-                    if align_top {
-                        ui.scroll_to_rect(target_rect, Some(egui::Align::Min));
-                    }
-                }
-            }
+        self.handle_click(
+            ui,
+            resp.clicked(),
+            rect,
+            bytes.len(),
+            row_height,
+            bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+        );
+    }
+
+    fn apply_pending_scroll(
+        &mut self,
+        ui: &mut egui::Ui,
+        bytes_len: usize,
+        rect: egui::Rect,
+        row_height: f32,
+        bpl: usize,
+        base_x: f32,
+        offset_width: f32,
+        hex_cell_w: f32,
+    ) {
+        let Some((scroll_s, scroll_e)) = self.pending_scroll_to.take() else {
+            return;
+        };
+        let align_top = mem::replace(&mut self.pending_scroll_align_top, false);
+        if bytes_len == 0 {
+            return;
         }
 
-        // Right-pane click handling:
-        // - Map a pointer click to the global byte index (if any)
-        // - Update the viewer's single-byte selection so the UI reflects the click
-        // - Publish the clicked byte index into egui memory (temp storage) under the Id
-        //   \"hex_clicked_byte\" so the left-pane code (outside this module) can read it
-        //   and focus the corresponding AST command if a mapping exists.
-        //
-        // This keeps the HexViewer self-contained while allowing the outer UI to react.
-        if resp.clicked()
-            && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
-        {
-            // Compute coordinates relative to the hex grid start.
-            let rel_x = pos.x - (base_x + offset_width);
-            let rel_y = pos.y - rect.min.y;
-            if rel_x >= 0.0 && rel_y >= 0.0 {
-                let line_idx = (rel_y / row_height).floor() as usize;
-                let col_f = (rel_x / hex_cell_w).floor();
-                if col_f >= 0.0 {
-                    let col = col_f as usize;
-                    let global_idx = line_idx.saturating_mul(bpl).saturating_add(col);
-                    if global_idx < bytes.len() {
-                        // Update selection state so the viewer highlights the clicked byte.
-                        self.selected = Some(global_idx);
-                        self.selection_range = Some((global_idx, global_idx));
-                        self.reference_markers = vec![global_idx];
-                        // Publish clicked byte into egui temporary memory so other UI
-                        // code (left pane) can detect the click and focus the AST node.
-                        // Record the clicked byte index locally; the outer UI can
-                        // consume it via `HexViewer::take_last_clicked_byte()` to
-                        // focus the corresponding AST node without using egui temp storage.
-                        self.last_clicked_byte = Some(global_idx);
-                        // Request repaint so the consumer of the memory key can observe
-                        // and react in the same frame if desired.
-                        ui.ctx().request_repaint();
-                    }
-                }
+        let ss = scroll_s.min(bytes_len.saturating_sub(1));
+        let ee = scroll_e.min(bytes_len.saturating_sub(1));
+        let s_line = ss / bpl;
+        let e_line = ee / bpl;
+        let mut scroll_union: Option<egui::Rect> = None;
+        for line in s_line..=e_line {
+            let line_top = rect.min.y + (line as f32) * row_height + 2.0;
+            let line_start = if line == s_line {
+                (ss % bpl) as f32
+            } else {
+                0.0
+            };
+            let line_end = if line == e_line {
+                (ee % bpl) as f32
+            } else {
+                (bpl as f32) - 1.0
+            };
+            let x0 = base_x + offset_width + line_start * hex_cell_w + 1.0;
+            let x1 = base_x + offset_width + (line_end + 1.0) * hex_cell_w - 1.0;
+            let segment = egui::Rect::from_min_max(
+                egui::pos2(x0, line_top + 1.0),
+                egui::pos2(x1, line_top + row_height - 4.0),
+            );
+            scroll_union = Some(scroll_union.map_or(segment, |rect| rect.union(segment)));
+        }
+
+        if let Some(target_rect) = scroll_union {
+            ui.scroll_to_rect(target_rect, Some(egui::Align::Center));
+            if align_top {
+                ui.scroll_to_rect(target_rect, Some(egui::Align::Min));
             }
         }
+    }
+
+    fn draw_visible_lines(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        bytes: &[u8],
+        rect: egui::Rect,
+        lines: usize,
+        row_height: f32,
+        bpl: usize,
+        base_x: f32,
+        offset_width: f32,
+        hex_cell_w: f32,
+        ascii_base_x: f32,
+        font: &egui::FontId,
+        mono_text_height: f32,
+    ) {
+        let clip_rect = ui.clip_rect();
+        let visible_top = clip_rect.min.y.max(rect.min.y);
+        let visible_bottom = clip_rect.max.y.min(rect.max.y);
+        if visible_bottom <= visible_top || lines == 0 {
+            return;
+        }
+
+        let mut first_line = (((visible_top - rect.min.y) / row_height).floor()).max(0.0) as usize;
+        let mut last_line = (((visible_bottom - rect.min.y) / row_height).ceil()).max(0.0) as usize;
+        let last_index = lines.saturating_sub(1);
+        first_line = first_line.min(last_index);
+        last_line = last_line.min(last_index);
+
+        for line_idx in first_line..=last_line {
+            let offset = line_idx * bpl;
+            let end = ((line_idx + 1) * bpl).min(bytes.len());
+            let chunk = &bytes[offset..end];
+            let line_top = rect.min.y + (line_idx as f32) * row_height + 2.0;
+
+            painter.text(
+                egui::pos2(base_x, line_top),
+                egui::Align2::LEFT_TOP,
+                format!("{:08X}:", offset),
+                font.clone(),
+                ui.visuals().text_color(),
+            );
+
+            for (i, b) in chunk.iter().enumerate() {
+                let global_idx = offset + i;
+                let cell_rect = egui::Rect::from_min_size(
+                    egui::pos2(base_x + offset_width + (i as f32) * hex_cell_w, line_top),
+                    egui::vec2(hex_cell_w, row_height - 4.0),
+                );
+                if self.selected == Some(global_idx) {
+                    painter.rect_filled(cell_rect, 2.0, ui.visuals().selection.bg_fill);
+                }
+                painter.text(
+                    egui::pos2(
+                        cell_rect.center().x,
+                        cell_rect.center().y - (mono_text_height * 0.35),
+                    ),
+                    egui::Align2::CENTER_TOP,
+                    format!("{:02X}", b),
+                    font.clone(),
+                    ui.visuals().text_color(),
+                );
+            }
+
+            let ascii_text: String = chunk
+                .iter()
+                .map(|b| {
+                    if b.is_ascii_graphic() || *b == b' ' {
+                        *b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            painter.text(
+                egui::pos2(ascii_base_x, line_top),
+                egui::Align2::LEFT_TOP,
+                ascii_text,
+                font.clone(),
+                ui.visuals().text_color(),
+            );
+        }
+    }
+
+    fn handle_click(
+        &mut self,
+        ui: &mut egui::Ui,
+        clicked: bool,
+        rect: egui::Rect,
+        bytes_len: usize,
+        row_height: f32,
+        bpl: usize,
+        base_x: f32,
+        offset_width: f32,
+        hex_cell_w: f32,
+    ) {
+        let Some(pos) = clicked
+            .then(|| ui.input(|i| i.pointer.hover_pos()))
+            .flatten()
+        else {
+            return;
+        };
+
+        let rel_x = pos.x - (base_x + offset_width);
+        let rel_y = pos.y - rect.min.y;
+        if rel_x < 0.0 || rel_y < 0.0 {
+            return;
+        }
+
+        let line_idx = (rel_y / row_height).floor() as usize;
+        let col = (rel_x / hex_cell_w).floor() as usize;
+        let global_idx = line_idx.saturating_mul(bpl).saturating_add(col);
+        if global_idx >= bytes_len {
+            return;
+        }
+
+        self.selected = Some(global_idx);
+        self.selection_range = Some((global_idx, global_idx));
+        self.reference_markers = vec![global_idx];
+        self.last_clicked_byte = Some(global_idx);
+        ui.ctx().request_repaint();
     }
 }
 
