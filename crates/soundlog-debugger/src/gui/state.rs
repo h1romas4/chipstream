@@ -257,9 +257,16 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             .dropped_files
             .first()
             .map(|file| file.path().to_path_buf())
-    }) && let Ok(bytes) = fs::read(path)
+    }) && let Ok(bytes) = fs::read(&path)
     {
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
         state.populate_from_bytes(&bytes);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+            "soundlog debuger - {file_name}"
+        )));
         ctx.request_repaint();
     }
 

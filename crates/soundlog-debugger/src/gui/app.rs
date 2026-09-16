@@ -18,7 +18,7 @@ use soundlog::vgm::command::WaitSamples;
 ///
 /// This used to live in `main.rs`. It configures the native window options and
 /// starts the `eframe` event loop with `ui::Debuger` as the application.
-pub fn run_gui(initial_bytes: Vec<u8>) {
+pub fn run_gui(initial_bytes: Vec<u8>, initial_file_name: Option<String>) {
     // Configure native options: fix horizontal width to 1024 and allow vertical resizing.
     let native_options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -30,8 +30,12 @@ pub fn run_gui(initial_bytes: Vec<u8>) {
     };
 
     // Launch native window, moving initial bytes into the closure.
+    let window_title = initial_file_name.as_deref().map_or_else(
+        || "soundlog debuger".to_owned(),
+        |name| format!("soundlog debuger - {name}"),
+    );
     if let Err(err) = eframe::run_native(
-        "soundlog debuger",
+        &window_title,
         native_options,
         Box::new(move |cc: &CreationContext| {
             Ok(Box::new(Debuger::new_with_bytes(cc, initial_bytes.clone())))

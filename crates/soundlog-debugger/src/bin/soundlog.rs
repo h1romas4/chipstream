@@ -497,6 +497,12 @@ fn main() {
         None => {}
     }
 
+    let initial_file_name = args
+        .file
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+
     // Try to load bytes from the provided file, otherwise keep empty vector.
     let mut initial_bytes: Vec<u8> = Vec::new();
     if let Some(path) = args.file {
@@ -507,5 +513,5 @@ fn main() {
     }
 
     // Launch GUI in a separate function (implementation is provided by the gui module).
-    gui::run_gui(initial_bytes);
+    gui::run_gui(initial_bytes, initial_file_name);
 }
