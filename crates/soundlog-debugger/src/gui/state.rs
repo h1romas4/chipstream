@@ -29,6 +29,7 @@ use eframe::egui;
 use crate::gui::ast::source_node_to_ast;
 
 use std::collections::HashMap;
+use std::fs;
 use std::mem;
 use std::sync::mpsc;
 
@@ -247,6 +248,21 @@ impl UiState {
 /// Top-level UI entry called each frame.
 pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
     let ctx = ui.ctx().clone();
+
+    // Native file drops provide a path. Load the first dropped file and send it
+    // through the same parse/reset path used by the initial document.
+    if let Some(path) = ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .first()
+            .map(|file| file.path().to_path_buf())
+    }) && let Ok(bytes) = fs::read(path)
+    {
+        state.populate_from_bytes(&bytes);
+        ctx.request_repaint();
+    }
+
     // If we have bytes but no AST yet, start initial populate.
     if state.ast_root.is_empty() && !state.bytes.is_empty() {
         let bytes_clone = state.bytes.clone();
