@@ -522,7 +522,7 @@ impl HexViewer {
             let line_idx = r / bpl;
             let line_top = data_top + (line_idx as f32) * row_height + 2.0;
             let center = egui::pos2(base_x - 8.0, line_top + (row_height - 4.0) * 0.5);
-            let col = ui.visuals().selection.stroke.color;
+            let col = ui.visuals().selection.bg_fill;
             painter.circle_filled(center, 3.0, col);
         }
 
