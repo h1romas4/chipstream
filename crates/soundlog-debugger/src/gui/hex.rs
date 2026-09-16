@@ -1246,9 +1246,11 @@ impl HexViewer {
             let address_selected = self
                 .selected
                 .is_some_and(|selected| selected / bpl == line_idx);
+            let char_w = hex_cell_w / 3.0;
+            let address_width = char_w * 8.0;
             let address_rect = egui::Rect::from_min_size(
-                egui::pos2(base_x, line_top),
-                egui::vec2(offset_width, row_height - 4.0),
+                egui::pos2(base_x - 2.0, line_top),
+                egui::vec2(address_width + 4.0, row_height - 4.0),
             );
             if address_selected {
                 painter.rect_filled(
@@ -1261,13 +1263,20 @@ impl HexViewer {
             painter.text(
                 egui::pos2(base_x, line_top),
                 egui::Align2::LEFT_TOP,
-                format!("{:08X}:", offset),
+                format!("{:08X}", offset),
                 font.clone(),
                 if address_selected {
                     ui.visuals().selection.stroke.color
                 } else {
                     ui.visuals().text_color()
                 },
+            );
+            painter.text(
+                egui::pos2(base_x + address_width, line_top),
+                egui::Align2::LEFT_TOP,
+                ":",
+                font.clone(),
+                ui.visuals().text_color(),
             );
 
             for (i, b) in chunk.iter().enumerate() {
