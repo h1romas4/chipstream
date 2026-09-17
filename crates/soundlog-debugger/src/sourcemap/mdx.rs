@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use soundlog::mdx::document::MdxDocument;
+use soundlog::mdx::tone::MdxTone;
 
 use super::{ByteCoordinateSpace, ByteRange, MappedRange, SourceAdapter, SourceNode};
 
@@ -88,13 +89,34 @@ impl MdxAdapter {
             return None;
         }
         let start = document.header.tone_data_position()?;
+        let children = document
+            .tone_bank
+            .tones
+            .iter()
+            .enumerate()
+            .map(|(index, tone)| {
+                SourceNode::new(
+                    0x2000_0000 | index as u64,
+                    format!("Voice {}", tone.voice_number),
+                    format!("{tone:?}"),
+                )
+                .with_range(MappedRange {
+                    space,
+                    range: ByteRange::new(
+                        start + index * MdxTone::BYTE_LENGTH,
+                        MdxTone::BYTE_LENGTH,
+                    ),
+                })
+            })
+            .collect();
         Some(
             SourceNode::new(1, "Tone data", format!("{} bytes", bytes.len())).with_range(
                 MappedRange {
                     space,
                     range: ByteRange::new(start, bytes.len()),
                 },
-            ),
+            )
+            .with_children(children),
         )
     }
 
@@ -193,6 +215,7 @@ mod tests {
     use super::MdxAdapter;
     use soundlog::mdx::command::MdxRest;
     use soundlog::mdx::document::MdxBuilder;
+    use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
     #[test]
     fn adapter_parses_and_maps_track_commands() {
@@ -218,6 +241,42 @@ mod tests {
 
         assert!(MdxAdapter::track_nodes(&document, 99).is_empty());
         assert!(MdxAdapter::track_node(&document, 99).is_none());
+    }
+
+    #[test]
+    fn tone_node_lists_tones_by_voice_number() {
+        let mut builder = MdxBuilder::new();
+        builder.append_tone(MdxTone {
+            voice_number: 3,
+            con: 1,
+            fl: 2,
+            op: 4,
+            operators: [MdxOperator::default(); 4],
+        });
+        builder.append_tone(MdxTone {
+            voice_number: 7,
+            con: 5,
+            fl: 6,
+            op: 8,
+            operators: [MdxOperator::default(); 4],
+        });
+        let document = MdxAdapter::parse(&builder.finalize().to_bytes()).unwrap();
+
+        let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original)
+            .unwrap();
+
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].label, "Voice 3");
+        assert!(node.children[0].detail.contains("voice_number: 3"));
+        assert_eq!(
+            node.children[0].range.unwrap().range,
+            super::ByteRange::new(
+                node.range.unwrap().range.start,
+                MdxTone::BYTE_LENGTH,
+            )
+        );
+        assert_eq!(node.children[1].label, "Voice 7");
+        assert!(node.children[1].detail.contains("voice_number: 7"));
     }
 
     #[test]
