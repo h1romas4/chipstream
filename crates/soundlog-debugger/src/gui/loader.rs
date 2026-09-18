@@ -53,18 +53,21 @@ pub(crate) fn spawn_initial_parse(
                 if let Some(tone_node) = MdxAdapter::tone_node(&document, space) {
                     nodes.push(source_node_to_ast(tone_node));
                 }
-                nodes.extend(document.tracks.iter().enumerate().map(|(track, commands)| {
-                    let node = AstNode::new(
-                        format!("Track {track}"),
-                        format!("{} commands", commands.len()),
-                    );
-                    if commands.is_empty() {
-                        node
-                    } else {
-                        node.with_lazy_range(0, commands.len())
+                nodes.extend(
+                    document
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, commands)| !commands.is_empty())
+                        .map(|(track, commands)| {
+                            AstNode::new(
+                                format!("Track {track}"),
+                                format!("{} commands", commands.len()),
+                            )
+                            .with_lazy_range(0, commands.len())
                             .with_lazy_track(track)
-                    }
-                }));
+                        }),
+                );
                 let rebuilt_bytes = canonical_bytes_with_adapter::<MdxAdapter>(&document);
                 let diffs = compute_diff_ranges(&data, &rebuilt_bytes);
                 let _ = tx.send(AstBuildMessage::Full { generation, nodes });
