@@ -205,6 +205,22 @@ Notes:
 
 ### `mdx`
 
+```text
+MDX file operations
+
+Usage: soundlog mdx <COMMAND>
+
+Commands:
+  parse    Parse an MDX file and display its track commands
+  test     Convert an MDX file and verify that the generated VGM parses
+  convert  Convert an MDX file to a VGM file
+  play     Convert an MDX file lazily and play it, printing the same register write/event log format as `soundlog play`
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
 The `mdx` command group provides MDX parsing, conversion, and playback through
 the same VGM command and register-write processing used by the other CLI
 commands.
