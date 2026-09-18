@@ -573,6 +573,57 @@ impl MdxCommandSpec for MdxOpmRegisterWrite {
     }
 }
 
+/// An LFO waveform value used by pitch and volume LFO configuration commands.
+///
+/// Values with bit 7 set are reserved for the separate enable/disable form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdxLfoWaveform {
+    Sawtooth,
+    Square,
+    Triangle,
+    RandomNoise,
+    Unknown(u8),
+}
+
+impl MdxLfoWaveform {
+    pub const fn from_raw(value: u8) -> Self {
+        match value {
+            0x00 => Self::Sawtooth,
+            0x01 => Self::Square,
+            0x02 => Self::Triangle,
+            0x03 => Self::RandomNoise,
+            value => Self::Unknown(value),
+        }
+    }
+
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::Sawtooth => 0x00,
+            Self::Square => 0x01,
+            Self::Triangle => 0x02,
+            Self::RandomNoise => 0x03,
+            Self::Unknown(value) => value,
+        }
+    }
+
+    pub const fn base(self) -> u8 {
+        self.raw() & 0x03
+    }
+
+    pub const fn base_waveform(self) -> Self {
+        match self.base() {
+            0 => Self::Sawtooth,
+            1 => Self::Square,
+            2 => Self::Triangle,
+            _ => Self::RandomNoise,
+        }
+    }
+
+    pub const fn has_extended_amplitude(self) -> bool {
+        self.raw() >= 0x04
+    }
+}
+
 /// Pitch LFO configuration or state change (`0xec`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdxPitchLfo {
@@ -580,7 +631,7 @@ pub enum MdxPitchLfo {
         enabled: bool,
     },
     Configure {
-        waveform: u8,
+        waveform: MdxLfoWaveform,
         frequency: u16,
         amplitude: i16,
     },
@@ -599,7 +650,7 @@ impl MdxCommandSpec for MdxPitchLfo {
                 frequency,
                 amplitude,
             } => {
-                dest.push(*waveform);
+                dest.push(waveform.raw());
                 dest.extend_from_slice(&frequency.to_be_bytes());
                 dest.extend_from_slice(&amplitude.to_be_bytes());
             }
@@ -615,6 +666,7 @@ impl MdxCommandSpec for MdxPitchLfo {
                 2,
             ));
         }
+        let waveform = MdxLfoWaveform::from_raw(waveform);
         Ok((
             Self::Configure {
                 waveform,
@@ -633,7 +685,7 @@ pub enum MdxVolumeLfo {
         enabled: bool,
     },
     Configure {
-        waveform: u8,
+        waveform: MdxLfoWaveform,
         frequency: u16,
         amplitude: u16,
     },
@@ -652,7 +704,7 @@ impl MdxCommandSpec for MdxVolumeLfo {
                 frequency,
                 amplitude,
             } => {
-                dest.push(*waveform);
+                dest.push(waveform.raw());
                 dest.extend_from_slice(&frequency.to_be_bytes());
                 dest.extend_from_slice(&amplitude.to_be_bytes());
             }
@@ -668,6 +720,7 @@ impl MdxCommandSpec for MdxVolumeLfo {
                 2,
             ));
         }
+        let waveform = MdxLfoWaveform::from_raw(waveform);
         Ok((
             Self::Configure {
                 waveform,

@@ -7,9 +7,9 @@ use std::path::Path;
 
 use soundlog::mdx::command::{
     MdxAdpcmOrNoiseFrequency, MdxCommand, MdxEndOfTrack, MdxExtended2Command, MdxExtendedCommand,
-    MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite, MdxPan, MdxPitchLfo, MdxRawCommand,
-    MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown, MdxVolumeLfo,
-    MdxVolumeUp,
+    MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite, MdxPan, MdxPitchLfo,
+    MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown,
+    MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
     MdxConvertError, MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator,
@@ -47,6 +47,19 @@ fn mdx_note_preserves_note_and_encodes_length() {
     assert_eq!(note.length_byte(), 0xff);
     assert!(MdxNote::new(0x7f, 1).is_none());
     assert!(MdxNote::new(0xe0, 1).is_none());
+}
+
+#[test]
+fn mdx_lfo_waveform_preserves_known_and_unknown_values() {
+    let waveform = MdxLfoWaveform::from_raw(0x04);
+    assert_eq!(waveform.raw(), 0x04);
+    assert_eq!(waveform.base(), 0x00);
+    assert!(waveform.has_extended_amplitude());
+    assert_eq!(waveform, MdxLfoWaveform::Unknown(0x04));
+    assert_eq!(
+        MdxLfoWaveform::from_raw(0x7f),
+        MdxLfoWaveform::Unknown(0x7f)
+    );
 }
 
 #[test]
@@ -89,7 +102,7 @@ fn mdx_pitch_lfo_configuration_uses_big_endian_words() {
     assert_eq!(
         command,
         MdxCommand::PitchLfo(MdxPitchLfo::Configure {
-            waveform: 0x02,
+            waveform: MdxLfoWaveform::Triangle,
             frequency: 0x1234,
             amplitude: -2,
         })
@@ -332,6 +345,38 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
     assert_eq!(reparsed.tracks, document.tracks);
     assert_eq!(reparsed.header.title, "BUILT");
     assert_eq!(reparsed.header.pdx_name.as_deref(), Some("example.pdx"));
+}
+
+#[test]
+fn mdx_builder_serializes_lfo_waveform_enums() {
+    let pitch_lfo = MdxPitchLfo::Configure {
+        waveform: MdxLfoWaveform::Triangle,
+        frequency: 0x1234,
+        amplitude: -2,
+    };
+    let volume_lfo = MdxVolumeLfo::Configure {
+        waveform: MdxLfoWaveform::RandomNoise,
+        frequency: 0x0040,
+        amplitude: 0x0020,
+    };
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, pitch_lfo)
+        .add_mdx_command(0, volume_lfo);
+
+    let document = builder.finalize();
+    assert_eq!(
+        document.tracks[0],
+        vec![
+            MdxCommand::PitchLfo(pitch_lfo),
+            MdxCommand::VolumeLfo(volume_lfo),
+            MdxCommand::EndOfTrack(MdxEndOfTrack),
+        ]
+    );
+
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized LFO commands");
+    assert_eq!(reparsed.tracks, document.tracks);
 }
 
 #[test]

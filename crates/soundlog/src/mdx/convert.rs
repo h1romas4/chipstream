@@ -16,7 +16,8 @@
 
 use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
 use crate::mdx::command::{
-    MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxOpmLfo, MdxPitchLfo, MdxVolumeLfo,
+    MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPitchLfo,
+    MdxVolumeLfo,
 };
 use crate::mdx::package::{MdxPackage, MdxPcmReference};
 use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a};
@@ -369,7 +370,7 @@ struct TrackState {
     /// Whether the pitch LFO is enabled.
     pitch_lfo_enabled: bool,
     /// Selected pitch LFO waveform and mode.
-    pitch_lfo_type: u8,
+    pitch_lfo_type: Option<MdxLfoWaveform>,
     /// Configured pitch LFO period in ticks.
     pitch_lfo_length: u16,
     /// Effective pitch LFO period after waveform-specific adjustment.
@@ -387,7 +388,7 @@ struct TrackState {
     /// Whether the volume LFO is enabled.
     volume_lfo_enabled: bool,
     /// Selected volume LFO waveform and mode.
-    volume_lfo_type: u8,
+    volume_lfo_type: Option<MdxLfoWaveform>,
     /// Configured volume LFO period in ticks.
     volume_lfo_length: u16,
     /// Remaining ticks in the current volume LFO period.
@@ -537,7 +538,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 lfo_delay: 0,
                 lfo_delay_counter: 0,
                 pitch_lfo_enabled: false,
-                pitch_lfo_type: 0,
+                pitch_lfo_type: None,
                 pitch_lfo_length: 0,
                 pitch_lfo_length_cooked: 0,
                 pitch_lfo_length_counter: 0,
@@ -546,7 +547,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 pitch_lfo_offset_start: 0,
                 pitch_lfo_offset: 0,
                 volume_lfo_enabled: false,
-                volume_lfo_type: 0,
+                volume_lfo_type: None,
                 volume_lfo_length: 0,
                 volume_lfo_length_counter: 0,
                 volume_lfo_delta_start: 0,
@@ -1454,9 +1455,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 amplitude,
             } => {
                 self.tracks[track].pitch_lfo_enabled = true;
-                let wave_type = waveform & 0x03;
+                let wave_type = waveform.base();
                 let mode = wave_type << 1;
-                self.tracks[track].pitch_lfo_type = wave_type + 1;
+                self.tracks[track].pitch_lfo_type = Some(waveform.base_waveform());
                 self.tracks[track].pitch_lfo_length = frequency;
 
                 let mut cooked = frequency;
@@ -1469,10 +1470,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 self.tracks[track].pitch_lfo_length_cooked = cooked;
 
                 let mut delta = i32::from(amplitude) << 8;
-                let mut wave_check = waveform;
-                if wave_check >= 0x04 {
+                let wave_check = waveform.base();
+                if waveform.has_extended_amplitude() {
                     delta <<= 8;
-                    wave_check &= 0x03;
                 }
                 self.tracks[track].pitch_lfo_delta_start = delta;
                 self.tracks[track].pitch_lfo_offset_start =
@@ -1506,8 +1506,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 amplitude,
             } => {
                 self.tracks[track].volume_lfo_enabled = true;
-                let mode = waveform << 1;
-                self.tracks[track].volume_lfo_type = waveform + 1;
+                let mode = waveform.raw() << 1;
+                self.tracks[track].volume_lfo_type = Some(waveform.base_waveform());
                 self.tracks[track].volume_lfo_length = frequency;
                 self.tracks[track].volume_lfo_delta_start = amplitude;
 
@@ -1574,11 +1574,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Handles sawtooth, square, and triangle waveforms, updating the internal offset and
     /// length counter accordingly.
     fn update_pitch_lfo(&mut self, track: usize) {
-        if !self.tracks[track].pitch_lfo_enabled || self.tracks[track].pitch_lfo_type == 0 {
+        if !self.tracks[track].pitch_lfo_enabled {
             return;
         }
-        match self.tracks[track].pitch_lfo_type {
-            1 => {
+        let Some(waveform) = self.tracks[track].pitch_lfo_type else {
+            return;
+        };
+        match waveform {
+            MdxLfoWaveform::Sawtooth => {
                 // Sawtooth: ramp, then flip sign at the end of each period.
                 self.tracks[track].pitch_lfo_offset = self.tracks[track]
                     .pitch_lfo_offset
@@ -1592,7 +1595,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].pitch_lfo_offset.wrapping_neg();
                 }
             }
-            2 => {
+            MdxLfoWaveform::Square => {
                 // Square: hold at delta, flip sign at the end of each period.
                 self.tracks[track].pitch_lfo_offset = self.tracks[track].pitch_lfo_delta;
                 self.tracks[track].pitch_lfo_length_counter =
@@ -1604,7 +1607,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].pitch_lfo_delta.wrapping_neg();
                 }
             }
-            3 => {
+            MdxLfoWaveform::Triangle => {
                 // Triangle: ramp continuously, flip sign at each period end.
                 self.tracks[track].pitch_lfo_offset = self.tracks[track]
                     .pitch_lfo_offset
@@ -1618,7 +1621,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].pitch_lfo_delta.wrapping_neg();
                 }
             }
-            4 => {
+            MdxLfoWaveform::RandomNoise => {
                 // Random: reload with a new random offset each period.
                 self.tracks[track].pitch_lfo_length_counter =
                     self.tracks[track].pitch_lfo_length_counter.wrapping_sub(1);
@@ -1630,7 +1633,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].pitch_lfo_length;
                 }
             }
-            _ => {}
+            MdxLfoWaveform::Unknown(_) => {}
         }
     }
 
@@ -1638,11 +1641,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Handles sawtooth, square, and triangle waveforms, updating the internal offset and
     /// length counter accordingly.
     fn update_volume_lfo(&mut self, track: usize) {
-        if !self.tracks[track].volume_lfo_enabled || self.tracks[track].volume_lfo_type == 0 {
+        if !self.tracks[track].volume_lfo_enabled {
             return;
         }
-        match self.tracks[track].volume_lfo_type {
-            1 => {
+        let Some(waveform) = self.tracks[track].volume_lfo_type else {
+            return;
+        };
+        match waveform {
+            MdxLfoWaveform::Sawtooth => {
                 // Sawtooth: ramp, then reset to the cooked baseline.
                 self.tracks[track].volume_lfo_offset = self.tracks[track]
                     .volume_lfo_offset
@@ -1656,7 +1662,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].volume_lfo_delta_cooked;
                 }
             }
-            2 => {
+            MdxLfoWaveform::Square => {
                 // Square: step at each period end, then flip sign.
                 self.tracks[track].volume_lfo_length_counter =
                     self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
@@ -1670,7 +1676,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].volume_lfo_delta.wrapping_neg();
                 }
             }
-            3 => {
+            MdxLfoWaveform::Triangle => {
                 // Triangle: ramp continuously, flip sign at each period end.
                 self.tracks[track].volume_lfo_offset = self.tracks[track]
                     .volume_lfo_offset
@@ -1684,7 +1690,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].volume_lfo_delta.wrapping_neg();
                 }
             }
-            4 => {
+            MdxLfoWaveform::RandomNoise => {
                 // Random: reload with a new random offset each period.
                 self.tracks[track].volume_lfo_length_counter =
                     self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
@@ -1696,7 +1702,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         self.tracks[track].volume_lfo_length;
                 }
             }
-            _ => {}
+            MdxLfoWaveform::Unknown(_) => {}
         }
     }
 
