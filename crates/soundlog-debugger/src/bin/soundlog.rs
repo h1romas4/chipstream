@@ -170,7 +170,10 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
+        /// Total number of whole-song playthroughs (for example, 1 plays once)
+        ///
+        /// When omitted, unconditional song repeats are preserved as a native
+        /// VGM loop. This does not override nested MDX repeat blocks; 0 is invalid.
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
