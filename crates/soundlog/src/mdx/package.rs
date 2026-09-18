@@ -53,7 +53,7 @@ pub struct MdxPcmReference {
 /// use soundlog::mdx::package::MdxPackage;
 ///
 /// let package = MdxPackage {
-///     mdx: MdxBuilder::new().finalize(),
+///     mdx: MdxBuilder::new().finalize().unwrap(),
 ///     pdx: None,
 /// };
 ///

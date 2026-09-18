@@ -52,7 +52,7 @@ const MAX_DECODED_MDX_SIZE: usize = 64 * 1024 * 1024;
 ///
 /// let mut builder = MdxBuilder::new();
 /// builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-/// let bytes = builder.finalize().to_bytes();
+/// let bytes = builder.finalize().unwrap().to_bytes();
 /// let document = MdxDocument::parse(&bytes).unwrap();
 ///
 /// assert_eq!(document.tracks.len(), 9);
@@ -91,13 +91,14 @@ pub struct MdxDocument {
 /// let mut builder = MdxBuilder::new();
 /// builder.add_mdx_command(0, MdxRest::new(24).unwrap());
 /// builder.add_mdx_command(0, MdxEndOfTrack);
-/// let document = builder.finalize();
+/// let document = builder.finalize().unwrap();
 ///
 /// assert_eq!(document.tracks.len(), 9);
 /// assert_eq!(document.tracks[0].len(), 2);
 /// ```
 pub struct MdxBuilder {
     document: MdxDocument,
+    error: Option<ParseError>,
 }
 
 impl MdxBuilder {
@@ -122,6 +123,7 @@ impl MdxBuilder {
                 tracks: vec![Vec::new(); DEFAULT_TRACK_COUNT],
                 lz_compressed: false,
             },
+            error: None,
         }
     }
 
@@ -187,11 +189,18 @@ impl MdxBuilder {
 
     /// Replaces one track with the supplied command sequence.
     ///
-    /// Track indices are zero-based. Setting track 9 or above grows the
-    /// document to at least the extended 16-track form, while preserving all
-    /// existing tracks. An empty replacement track is allowed; it remains
-    /// absent from the serialized track table until commands are added.
+    /// Track indices are zero-based. Setting track 9 through 15 grows the
+    /// document to the extended 16-track form, while preserving all existing
+    /// tracks. An empty replacement track is allowed. Track 16 and above are
+    /// reported by [`finalize`][Self::finalize] because MDX supports only the
+    /// standard nine-track and extended sixteen-track layouts.
     pub fn set_track(&mut self, track: usize, commands: Vec<MdxCommand>) -> &mut Self {
+        if track >= EXTENDED_TRACK_COUNT {
+            self.error = Some(ParseError::DataInconsistency(format!(
+                "MDX track index {track} is outside the supported 0..16 range"
+            )));
+            return self;
+        }
         if track >= self.document.tracks.len() {
             self.document
                 .tracks
@@ -209,13 +218,17 @@ impl MdxBuilder {
     ///
     /// Track indices are zero-based. Referencing a track beyond the current
     /// range grows the document in the same way as [`set_track`][Self::set_track]
-    /// and creates empty intermediate tracks.
+    /// and creates empty intermediate tracks. Track 16 and above are reported
+    /// by [`finalize`][Self::finalize].
     pub fn add_mdx_command<C>(&mut self, track: usize, command: C) -> &mut Self
     where
         C: Into<MdxCommand>,
     {
         if track >= self.document.tracks.len() {
             self.set_track(track, Vec::new());
+            if track >= self.document.tracks.len() {
+                return self;
+            }
         }
         self.document.tracks[track].push(command.into());
         self
@@ -231,8 +244,12 @@ impl MdxBuilder {
     /// [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] receives
     /// one. The returned [`MdxDocument`] is ready for [`to_bytes`][MdxDocument::to_bytes]
     /// or for conversion to a playback stream. Calling this method consumes
-    /// the builder.
-    pub fn finalize(mut self) -> MdxDocument {
+    /// the builder. Invalid track indices are returned here instead of
+    /// interrupting the chainable builder methods.
+    pub fn finalize(mut self) -> Result<MdxDocument, ParseError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
         if self.document.tracks.len() > DEFAULT_TRACK_COUNT
             && !matches!(
                 self.document.tracks[0].first(),
@@ -253,7 +270,7 @@ impl MdxBuilder {
                 u16::try_from(2 + self.document.tracks.len() * 2).unwrap_or(u16::MAX);
         }
         self.document.recalculate_offsets();
-        self.document
+        Ok(self.document)
     }
 }
 

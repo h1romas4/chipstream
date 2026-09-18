@@ -330,7 +330,7 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
         .add_mdx_command(0, MdxCommand::Rest(MdxRest { ticks: 1 }))
         .add_mdx_command(1, MdxCommand::VolumeUp(MdxVolumeUp));
 
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     assert!(matches!(
         document.tracks[0].last(),
         Some(MdxCommand::EndOfTrack(_))
@@ -352,7 +352,7 @@ fn mdx_builder_round_trips_extended_tracks() {
     let mut builder = MdxBuilder::new();
     builder.add_mdx_command(9, MdxRest { ticks: 1 });
 
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     assert_eq!(document.tracks.len(), 16);
     assert!(matches!(
         document.tracks[0].first(),
@@ -362,6 +362,15 @@ fn mdx_builder_round_trips_extended_tracks() {
     let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse extended MDX document");
     assert_eq!(reparsed.tracks.len(), 16);
     assert_eq!(reparsed.tracks[9], document.tracks[9]);
+}
+
+#[test]
+fn mdx_builder_rejects_track_indices_above_extended_layout() {
+    let mut builder = MdxBuilder::new();
+    builder.add_mdx_command(16, MdxRest { ticks: 1 });
+
+    let error = builder.finalize().expect_err("track 16 should be rejected");
+    assert!(matches!(error, soundlog::ParseError::DataInconsistency(_)));
 }
 
 #[test]
@@ -382,7 +391,7 @@ fn mdx_builder_serializes_lfo_waveform_enums() {
         .add_mdx_command(0, pitch_lfo)
         .add_mdx_command(0, volume_lfo);
 
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     assert_eq!(
         document.tracks[0],
         vec![
@@ -401,7 +410,7 @@ fn mdx_builder_encodes_string_metadata_as_shift_jis() {
     let mut builder = MdxBuilder::new();
     builder.set_title("テスト").set_pdx_name(Some("音色.pdx"));
 
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized metadata");
 
     assert_eq!(reparsed.header.title, "テスト");
@@ -434,7 +443,7 @@ fn mdx_builder_serializes_tone_bank_before_tracks() {
         .append_tone(tone.clone())
         .add_mdx_command(0, MdxVolumeUp);
 
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse built tone bank");
 
     assert_eq!(reparsed.tone_bank.tones, vec![tone]);
@@ -524,7 +533,7 @@ fn mdx_document_parses_lz_compressed_body() {
     builder
         .set_title_bytes(b"COMPRESSED".to_vec())
         .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp));
-    let original = builder.finalize().to_bytes();
+    let original = builder.finalize().unwrap().to_bytes();
     let (_, body_start) = parse_mdx_header(&original).expect("parse original header");
 
     let mut compressed = original[..body_start].to_vec();
@@ -543,7 +552,7 @@ fn mdx_builder_can_enable_lz_compression() {
         .set_title_bytes(b"BUILDER LZ".to_vec())
         .set_lz_compressed(true)
         .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp));
-    let document = builder.finalize();
+    let document = builder.finalize().unwrap();
     let compressed = document.to_bytes();
 
     assert!(
@@ -735,7 +744,7 @@ fn mdx_package_resolves_pcm_notes_to_pdx_entries() {
                 length: 1,
             },
         );
-    let mdx_bytes = builder.finalize().to_bytes();
+    let mdx_bytes = builder.finalize().unwrap().to_bytes();
 
     let mut pdx_bytes = vec![0u8; 0x608];
     pdx_bytes[0x318..0x31c].copy_from_slice(&0x604u32.to_be_bytes());
@@ -774,7 +783,7 @@ fn mdx_package_decodes_a_resolved_pcm_reference() {
             length: 1,
         },
     );
-    let mdx_bytes = builder.finalize().to_bytes();
+    let mdx_bytes = builder.finalize().unwrap().to_bytes();
 
     let mut pdx_builder = PdxBuilder::new();
     pdx_builder.set_sample(0, 0, vec![0x80, 0x7f]).unwrap();
@@ -797,7 +806,7 @@ fn mdx_converter_emits_fm_initialization_and_rest_duration() {
     let mut builder = MdxBuilder::new();
     builder.add_mdx_command(0, MdxRest { ticks: 1 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -816,7 +825,7 @@ fn mdx_converter_emits_fm_initialization_and_rest_duration() {
 #[test]
 fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
     let package = MdxPackage {
-        mdx: MdxBuilder::new().finalize(),
+        mdx: MdxBuilder::new().finalize().unwrap(),
         pdx: None,
     };
 
@@ -868,7 +877,7 @@ fn mdx_converter_reports_missing_fm_tone() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -907,7 +916,7 @@ fn mdx_converter_writes_ym2151_keycode_and_key_fraction() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -951,7 +960,7 @@ fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1009,7 +1018,7 @@ fn mdx_converter_releases_sync_wait_with_sync_send() {
         )
         .add_mdx_command(1, MdxRest { ticks: 1 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1058,7 +1067,7 @@ fn mdx_converter_configures_opm_lfo_and_resets_it_on_key_on() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1114,7 +1123,7 @@ fn mdx_converter_applies_key_on_delay_and_gate_before_key_off() {
         )
         .add_mdx_command(0, MdxRest { ticks: 2 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1178,7 +1187,7 @@ fn mdx_converter_applies_transpose_and_detune_to_pitch_registers() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1235,7 +1244,7 @@ fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1291,7 +1300,7 @@ fn mdx_converter_remaps_fm_channel_from_raw_register_0x08_writes_under_mxdrv16y(
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1340,7 +1349,7 @@ fn mdx_converter_applies_fm_volume_commands_to_carrier_level() {
         .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp))
         .add_mdx_command(0, MdxCommand::VolumeDown(MdxVolumeDown));
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1386,7 +1395,7 @@ fn mdx_converter_honors_key_off_disable_for_an_fm_note() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1431,7 +1440,7 @@ fn mdx_converter_updates_pitch_during_portamento() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1478,7 +1487,7 @@ fn mdx_converter_applies_relative_transpose_after_absolute_transpose() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1510,7 +1519,7 @@ fn mdx_converter_escapes_empty_infinite_loop_under_mxdrv16y() {
         )
         .add_mdx_command(0, MdxRest { ticks: 5 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1554,7 +1563,7 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
     let mut pdx_builder = PdxBuilder::new();
     pdx_builder.set_sample(0, 0, vec![0x11, 0x22]).unwrap();
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: Some(pdx_builder.finalize()),
     };
 
@@ -1622,7 +1631,7 @@ fn mdx_converter_pcm_track_loop_uses_shared_loop_machinery() {
         )
         .add_mdx_command(8, MdxRest { ticks: 1 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1647,7 +1656,7 @@ fn mdx_converter_resolves_a_whole_song_backward_jump_to_a_native_vgm_loop_point(
             }),
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1700,7 +1709,7 @@ fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
             }),
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 
@@ -1752,7 +1761,7 @@ fn mdx_converter_does_not_emit_okim6258_without_pdx() {
             },
         );
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
     assert_eq!(package.mdx.tracks.len(), 9);
@@ -1783,7 +1792,7 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
             },
         )
         .add_mdx_command(8, MdxRest { ticks: 128 });
-    let mdx = builder.finalize();
+    let mdx = builder.finalize().unwrap();
 
     let mut pdx_builder = PdxBuilder::new();
     pdx_builder.set_sample(0, 0, vec![0x11, 0x22]).unwrap();
@@ -1848,7 +1857,7 @@ fn mdx_converter_selects_pcm8a_sample_formats() {
         let mut pdx_builder = PdxBuilder::new();
         pdx_builder.set_sample(0, 0, sample).unwrap();
         let package = MdxPackage {
-            mdx: builder.finalize(),
+            mdx: builder.finalize().unwrap(),
             pdx: Some(pdx_builder.finalize()),
         };
         let document =
@@ -1891,7 +1900,7 @@ fn mdx_converter_pcm_eager_and_lazy_paths_match() {
         .set_sample(0, 0, vec![0x11, 0x22, 0x33])
         .unwrap();
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: Some(pdx_builder.finalize()),
     };
 
@@ -1929,7 +1938,7 @@ fn mdx_package_try_into_vgm_stream_matches_eager_conversion() {
         )
         .add_mdx_command(0, MdxRest { ticks: 4 });
     let package = MdxPackage {
-        mdx: builder.finalize(),
+        mdx: builder.finalize().unwrap(),
         pdx: None,
     };
 

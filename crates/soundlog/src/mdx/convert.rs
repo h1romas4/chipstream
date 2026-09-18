@@ -217,7 +217,7 @@ impl MdxToVgmOptions {
 /// use soundlog::vgm::VgmCallbackStream;
 ///
 /// let package = MdxPackage {
-///     mdx: MdxBuilder::new().finalize(),
+///     mdx: MdxBuilder::new().finalize().unwrap(),
 ///     pdx: None,
 /// };
 /// let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
