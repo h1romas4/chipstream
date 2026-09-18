@@ -167,7 +167,7 @@ impl PcmChannelState {
         };
         let contribution = sample * i32::from(self.gain);
 
-        let acc = u64::from(self.rate_counter) + u64::from(self.rate_step);
+        let acc = self.rate_counter + self.rate_step;
         let advance = (acc >> 16) as u32;
         self.rate_counter = (acc & 0xFFFF) as u32;
         if advance != 0 {
