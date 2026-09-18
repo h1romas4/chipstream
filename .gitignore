@@ -10,3 +10,7 @@
 *.pdx
 *.PDX
 !crates/soundlog/assets/vgm/*.vgm
+!crates/soundlog/assets/mdx/*.mdx
+!crates/soundlog/assets/mdx/*.MDX
+!crates/soundlog/assets/mdx/*.pdx
+!crates/soundlog/assets/mdx/*.PDX

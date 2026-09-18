@@ -501,7 +501,6 @@ fn mdx_builder_can_enable_lz_compression() {
 }
 
 #[test]
-#[ignore = "requires fixture files under assets/mdx"]
 fn pdx_document_parses_and_round_trips_fixtures() {
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
     let mut paths = fs::read_dir(&asset_dir)
@@ -1160,6 +1159,151 @@ fn mdx_converter_remaps_fm_channel_from_raw_register_0x08_writes_under_mxdrv16y(
 }
 
 #[test]
+fn mdx_converter_applies_fm_volume_commands_to_carrier_level() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(0, MdxCommand::Volume(MdxVolume { value: 0 }))
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap())
+        .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp))
+        .add_mdx_command(0, MdxCommand::VolumeDown(MdxVolumeDown));
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert FM volume commands");
+    let carrier_levels: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x78 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert!(carrier_levels.windows(3).any(|levels| levels == [0x2a, 0x28, 0x2a]));
+}
+
+#[test]
+fn mdx_converter_honors_key_off_disable_for_an_fm_note() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::KeyOffDisable(soundlog::mdx::command::MdxKeyOffDisable),
+        )
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert tied FM note");
+    let key_commands: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(key_commands, vec![0x40]);
+}
+
+#[test]
+fn mdx_converter_updates_pitch_during_portamento() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::Portamento(soundlog::mdx::command::MdxSignedWord {
+                opcode: 0xf2,
+                offset: 0x100,
+            }),
+        )
+        .add_mdx_command(0, MdxNote::new(0x80, 4).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert portamento");
+    let key_fractions: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x30 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert!(key_fractions.len() >= 2);
+    assert!(key_fractions.windows(2).all(|values| values[0] < values[1]));
+}
+
+#[test]
+fn mdx_converter_applies_relative_transpose_after_absolute_transpose() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::Extended2(MdxExtended2Command::Transpose { value: 12 }),
+        )
+        .add_mdx_command(
+            0,
+            MdxCommand::Extended2(MdxExtended2Command::RelativeTranspose { value: -2 }),
+        )
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert relative transpose");
+    assert!(document.commands.iter().any(|command| matches!(
+        command,
+        VgmCommand::Ym2151Write(_, spec) if spec.register == 0x28 && spec.value == 0x0d
+    )));
+}
+
+#[test]
 fn mdx_converter_escapes_empty_infinite_loop_under_mxdrv16y() {
     let mut builder = MdxBuilder::new();
     builder
@@ -1609,10 +1753,9 @@ fn drain_finite_stream(mut stream: VgmStream) -> Vec<VgmCommand> {
 
 /// PDX sidecar filenames for the real MDX fixtures under `assets/mdx` that
 /// need one to fully resolve (see also `real_mdx_and_pdx_fixtures_resolve_pcm_references`).
-const REAL_FIXTURE_PDX_PAIRS: &[(&str, &str)] = &[("example.mdx", "example.pdx")];
+const REAL_FIXTURE_PDX_PAIRS: &[(&str, &str)] = &[("mdx_fm_loop.mdx", "mdx_fm_loop.pdx")];
 
 #[test]
-#[ignore = "requires fixture files under assets/mdx"]
 fn real_mdx_fixtures_lazy_stream_matches_eager_conversion_with_finite_loop_count() {
     // A finite `loop_count` takes the exact same code path in both the
     // eager (`to_vgm_document`) and lazy (`to_vgm_stream_generator`) drivers
@@ -1641,7 +1784,7 @@ fn real_mdx_fixtures_lazy_stream_matches_eager_conversion_with_finite_loop_count
 
     for path in mdx_paths {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let mdx_bytes = fs::read(&path).unwrap_or_else(|e| panic!("read example.mdx: {e}"));
+        let mdx_bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
         let pdx_bytes = REAL_FIXTURE_PDX_PAIRS
             .iter()
             .find(|(mdx, _)| *mdx == name)
@@ -1649,22 +1792,21 @@ fn real_mdx_fixtures_lazy_stream_matches_eager_conversion_with_finite_loop_count
                 fs::read(asset_dir.join(pdx)).unwrap_or_else(|e| panic!("read {pdx}: {e}"))
             });
         let package = MdxPackage::parse(&mdx_bytes, pdx_bytes.as_deref())
-            .unwrap_or_else(|e| panic!("parse example.mdx: {e:?}"));
+            .unwrap_or_else(|e| panic!("parse {name}: {e:?}"));
 
         let expected_document = to_vgm_document(&package, &options)
-            .unwrap_or_else(|e| panic!("eager convert example.mdx: {e:?}"));
+            .unwrap_or_else(|e| panic!("eager convert {name}: {e:?}"));
         let expected_commands = drain_finite_stream(VgmStream::from_document(expected_document));
 
         let generator = to_vgm_stream_generator(package, options)
-            .unwrap_or_else(|e| panic!("lazy convert example.mdx: {e:?}"));
+            .unwrap_or_else(|e| panic!("lazy convert {name}: {e:?}"));
         let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
 
-        assert_eq!(lazy_commands, expected_commands, "mismatch for example.mdx");
+        assert_eq!(lazy_commands, expected_commands, "mismatch for {name}");
     }
 }
 
 #[test]
-#[ignore = "requires fixture files under assets/mdx"]
 fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
     // Under the default `loop_count: None`, the eager path stops once an
     // unconditional repeat is seen a second time and records that position
@@ -1680,19 +1822,20 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
     // tick. Verified empirically (see PR discussion) to affect only the
     // trailing command(s) of the eager document, never anything earlier.
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
-    let mdx_bytes = fs::read(asset_dir.join("example.mdx")).expect("read example.mdx");
-    let package = MdxPackage::parse(&mdx_bytes, None).expect("parse example.mdx");
+    let mdx_bytes = fs::read(asset_dir.join("mdx_fm_loop.mdx")).expect("read mdx_fm_loop.mdx");
+    let package = MdxPackage::parse(&mdx_bytes, None).expect("parse mdx_fm_loop.mdx");
 
     let expected_document =
-        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("eager convert example.mdx");
+        to_vgm_document(&package, &MdxToVgmOptions::default())
+            .expect("eager convert mdx_fm_loop.mdx");
     assert!(
         expected_document.loop_command_index().is_some(),
-        "example.mdx is expected to have a native loop point for this test to be meaningful"
+        "mdx_fm_loop.mdx is expected to have a native loop point for this test to be meaningful"
     );
     let expected_commands = drain_finite_stream(VgmStream::from_document(expected_document));
 
     let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
-        .expect("lazy convert example.mdx");
+        .expect("lazy convert mdx_fm_loop.mdx");
     let mut lazy_stream = VgmStream::from_generator(generator);
     let mut lazy_commands = Vec::with_capacity(expected_commands.len());
     while lazy_commands.len() < expected_commands.len() {
@@ -1725,17 +1868,16 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
 }
 
 #[test]
-#[ignore = "requires fixture files under assets/mdx"]
 fn real_mdx_and_pdx_fixtures_resolve_pcm_references() {
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
-    let pdx_bytes = fs::read(asset_dir.join("example.pdx")).expect("read example.pdx");
+    let pdx_bytes = fs::read(asset_dir.join("mdx_fm_loop.pdx")).expect("read mdx_fm_loop.pdx");
     let mut paths = fs::read_dir(&asset_dir)
         .expect("read GR fixture directory")
         .map(|entry| entry.expect("read GR fixture entry").path())
         .filter(|path| {
             path.is_file()
                 && path.file_name().is_some_and(|name| {
-                    name.to_string_lossy().starts_with("GR_")
+                    name.to_string_lossy().starts_with("mdx_pcm_")
                         && path
                             .extension()
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("mdx"))
@@ -1748,7 +1890,7 @@ fn real_mdx_and_pdx_fixtures_resolve_pcm_references() {
         let mdx_bytes = fs::read(&path).expect("read GR MDX fixture");
         let package = MdxPackage::parse(&mdx_bytes, Some(&pdx_bytes))
             .unwrap_or_else(|error| panic!("parse {}: {error:?}", path.display()));
-        assert_eq!(package.pdx_name(), Some("example.pdx"));
+        assert_eq!(package.pdx_name(), Some("mdx_fm_loop.pdx"));
         let references = package.pcm_references();
         assert!(
             !references.is_empty(),
@@ -1764,7 +1906,6 @@ fn real_mdx_and_pdx_fixtures_resolve_pcm_references() {
 }
 
 #[test]
-#[ignore = "requires fixture files under assets/mdx"]
 fn parses_mdx_fixtures_and_round_trips_them() {
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
     let entries = match fs::read_dir(&asset_dir) {
