@@ -128,12 +128,10 @@ impl MdxAdapter {
     }
 
     fn format_tone(tone: &MdxTone) -> String {
-        const HEADER_COMMENT_COLUMN: usize = 43;
+        const COMMENT_COLUMN: usize = 42;
         const OP_COMMENT_COLUMN: usize = 42;
         let header = format!("@{}={{", tone.voice_number);
-        let mut lines = vec![format!(
-            "{header:<HEADER_COMMENT_COLUMN$}; Voice definition"
-        )];
+        let mut lines = vec![format!("{header:<COMMENT_COLUMN$}; Voice definition")];
         let labels = ["OP1", "OP2", "OP3", "OP4"];
         for (operator, label) in tone.operators.iter().zip(labels) {
             let line = format!(
@@ -362,7 +360,7 @@ mod tests {
         assert_eq!(
             node.children[0].copy_text.as_deref(),
             Some(
-                "@1={                                       ; Voice definition\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP1\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP2\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP3\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP4\n  0,  7, 15                               ; CON, FL, OP-mask\n}"
+                "@1={                                      ; Voice definition\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP1\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP2\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP3\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP4\n  0,  7, 15                               ; CON, FL, OP-mask\n}"
             )
         );
     }
