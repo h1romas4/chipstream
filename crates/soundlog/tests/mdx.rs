@@ -11,7 +11,9 @@ use soundlog::mdx::command::{
     MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown, MdxVolumeLfo,
     MdxVolumeUp,
 };
-use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
+use soundlog::mdx::convert::{
+    MdxConvertError, MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator,
+};
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::header::parse_mdx_header;
 use soundlog::mdx::lz::encode as encode_lz;
@@ -739,6 +741,71 @@ fn mdx_converter_emits_fm_initialization_and_rest_duration() {
 }
 
 #[test]
+fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
+    let package = MdxPackage {
+        mdx: MdxBuilder::new().finalize(),
+        pdx: None,
+    };
+
+    let zero_sample_rate = MdxToVgmOptions {
+        sample_rate: 0,
+        ..MdxToVgmOptions::default()
+    };
+    assert_eq!(
+        to_vgm_document(&package, &zero_sample_rate),
+        Err(MdxConvertError::InvalidOptions("sample rate must not be zero"))
+    );
+    assert_eq!(
+        to_vgm_stream_generator(package.clone(), zero_sample_rate).map(|_| ()),
+        Err(MdxConvertError::InvalidOptions("sample rate must not be zero"))
+    );
+
+    let zero_loop_count = MdxToVgmOptions {
+        loop_count: Some(0),
+        ..MdxToVgmOptions::default()
+    };
+    assert_eq!(
+        to_vgm_document(&package, &zero_loop_count),
+        Err(MdxConvertError::InvalidOptions(
+            "loop count must be greater than zero"
+        ))
+    );
+    assert_eq!(
+        to_vgm_stream_generator(package, zero_loop_count).map(|_| ()),
+        Err(MdxConvertError::InvalidOptions(
+            "loop count must be greater than zero"
+        ))
+    );
+}
+
+#[test]
+fn mdx_converter_reports_missing_fm_tone() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    assert_eq!(
+        to_vgm_document(&package, &MdxToVgmOptions::default()),
+        Err(MdxConvertError::MissingTone { voice: 0 })
+    );
+    let mut generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
+        .expect("lazy generator should be created before playback");
+    let error = loop {
+        match generator.next_command() {
+            Ok(Some(_)) => continue,
+            Ok(None) => panic!("missing tone should fail before end of stream"),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.to_string(), "missing tone for voice 0");
+}
+
+#[test]
 fn mdx_converter_writes_ym2151_keycode_and_key_fraction() {
     let mut builder = MdxBuilder::new();
     builder
@@ -1126,6 +1193,122 @@ fn mdx_converter_does_not_emit_okim6258_without_pdx() {
         "OKIM6258 must not be driven without a loaded PDX, even if a track \
          references a PCM note"
     );
+}
+
+#[test]
+fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(8, MdxNote::new(0x80, 1).unwrap())
+        .add_mdx_command(8, MdxRest::new(128).unwrap());
+    let mdx = builder.finalize();
+
+    let mut pdx_builder = PdxBuilder::new();
+    pdx_builder.set_sample(0, 0, vec![0x11, 0x22]).unwrap();
+    let package = MdxPackage {
+        mdx,
+        pdx: Some(pdx_builder.finalize()),
+    };
+    let options = MdxToVgmOptions {
+        okim6258_clock: 8_000_000,
+        ..MdxToVgmOptions::default()
+    };
+
+    let document = to_vgm_document(&package, &options).expect("convert PCM package");
+
+    assert_eq!(document.header.okim6258_clock, 8_000_000);
+    assert_eq!(document.header.okim6258_flags.clock_divider, 2);
+    assert!(matches!(
+        document.commands.iter().find(|command| matches!(
+            command,
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x02
+        )),
+        Some(_)
+    ));
+
+    let pcm_bytes: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+    assert!(pcm_bytes.starts_with(&[0x11, 0x22]));
+    assert!(!pcm_bytes.is_empty());
+    assert!(document
+        .commands
+        .iter()
+        .any(|command| matches!(command, VgmCommand::EndOfData(_))));
+    assert!(document.commands.iter().rev().any(|command| matches!(
+        command,
+        VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x01
+    )));
+}
+
+#[test]
+fn mdx_converter_selects_pcm8a_sample_formats() {
+    fn convert_pcm8a(rate_mode: u8, sample: Vec<u8>) -> Vec<u8> {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                8,
+                MdxAdpcmOrNoiseFrequency { value: rate_mode },
+            )
+            .add_mdx_command(8, MdxNote::new(0x80, 1).unwrap())
+            .add_mdx_command(8, MdxRest::new(64).unwrap())
+            .add_mdx_command(15, MdxRest::new(64).unwrap());
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 0, sample).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+            .expect("convert PCM8A package");
+        document
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => Some(spec.value),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let pcm16_bytes = convert_pcm8a(5, vec![0x00, 0x10, 0x00, 0x20]);
+    let pcm8_bytes = convert_pcm8a(6, vec![0x10, 0x20]);
+
+    assert!(!pcm16_bytes.is_empty());
+    assert!(!pcm8_bytes.is_empty());
+    assert_ne!(
+        pcm16_bytes, pcm8_bytes,
+        "PCM8A F5 and F6 must decode their sample bytes using different formats"
+    );
+}
+
+#[test]
+fn mdx_converter_pcm_eager_and_lazy_paths_match() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxNote::new(0x80, 1).unwrap())
+        .add_mdx_command(8, MdxRest::new(64).unwrap());
+    let mut pdx_builder = PdxBuilder::new();
+    pdx_builder.set_sample(0, 0, vec![0x11, 0x22, 0x33]).unwrap();
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: Some(pdx_builder.finalize()),
+    };
+
+    let eager = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert PCM package eagerly");
+    let eager_commands = drain_finite_stream(VgmStream::from_document(eager));
+    let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
+        .expect("convert PCM package lazily");
+    let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
+
+    assert_eq!(lazy_commands, eager_commands);
 }
 
 #[test]
