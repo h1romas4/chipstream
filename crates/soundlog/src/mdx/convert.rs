@@ -24,7 +24,7 @@ use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a};
 use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{Instance, WaitSamples};
-use crate::vgm::{VgmBuilder, VgmDocument};
+use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
@@ -118,8 +118,6 @@ pub struct MdxToVgmOptions {
     pub okim6258_clock: u32,
     /// ADPCM processing mode for PCM8/PCM8A output.
     pub adpcm_mode: AdpcmMode,
-    /// VGM output sample rate in Hz.
-    pub sample_rate: u32,
     /// Total number of playthroughs of the whole song's repeat.
     ///
     /// This only affects the song-level repeat: a backward `Jump`, or a
@@ -151,7 +149,6 @@ impl Default for MdxToVgmOptions {
             ym2151_clock: 4_000_000,
             okim6258_clock: pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ,
             adpcm_mode: AdpcmMode::default(),
-            sample_rate: 44_100,
             loop_count: None,
             mxdrv16y: false,
         }
@@ -184,11 +181,6 @@ impl MdxToVgmOptions {
     /// Validates option combinations shared by both the eager
     /// [`to_vgm_document`] path and the lazy [`MdxVgmGenerator`].
     fn validate(&self) -> Result<(), MdxConvertError> {
-        if self.sample_rate == 0 {
-            return Err(MdxConvertError::InvalidOptions(
-                "sample rate must not be zero",
-            ));
-        }
         if self.loop_count == Some(0) {
             return Err(MdxConvertError::InvalidOptions(
                 "loop count must be greater than zero",
@@ -255,7 +247,7 @@ pub fn to_vgm_document(
     // `VgmDocument`); only needed here, for the serialized document.
     generator
         .builder
-        .set_sample_rate(options.sample_rate)
+        .set_sample_rate(VGM_SAMPLE_RATE)
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
 
     while generator.run_step()? {}
@@ -602,7 +594,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn step(
         &mut self,
         builder: &mut VgmBuilder,
-        sample_rate: u32,
     ) -> Result<StepOutcome, MdxConvertError> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
@@ -611,7 +602,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
-        self.emit_wait(builder, sample_rate);
+        self.emit_wait(builder);
         Ok(StepOutcome::Continue)
     }
 
@@ -1804,22 +1795,22 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
     /// samples to maintain accurate playback timing.
-    fn emit_wait(&mut self, builder: &mut VgmBuilder, sample_rate: u32) {
+    fn emit_wait(&mut self, builder: &mut VgmBuilder) {
         let tick_microseconds = self.tick_microseconds();
-        let sample_accumulator = u64::from(self.sample_remainder)
-            + u64::from(tick_microseconds) * u64::from(sample_rate);
-        let samples = (sample_accumulator / u64::from(MICROSECONDS_PER_SECOND)) as u32;
-        self.sample_remainder = (sample_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
+        let sample_accumulator = self.sample_remainder
+            + tick_microseconds * VGM_SAMPLE_RATE;
+        let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
+        self.sample_remainder = sample_accumulator % MICROSECONDS_PER_SECOND;
 
         if !self.has_pcm {
             Self::emit_wait_chunks(builder, samples);
             return;
         }
 
-        let pcm_accumulator = u64::from(self.pcm_output_remainder)
-            + u64::from(tick_microseconds) * u64::from(self.pcm_output_byte_rate_hz);
-        let pcm_bytes_due = (pcm_accumulator / u64::from(MICROSECONDS_PER_SECOND)) as u32;
-        self.pcm_output_remainder = (pcm_accumulator % u64::from(MICROSECONDS_PER_SECOND)) as u32;
+        let pcm_accumulator = self.pcm_output_remainder
+            + tick_microseconds * self.pcm_output_byte_rate_hz;
+        let pcm_bytes_due = pcm_accumulator / MICROSECONDS_PER_SECOND;
+        self.pcm_output_remainder = pcm_accumulator % MICROSECONDS_PER_SECOND;
         if pcm_bytes_due == 0 {
             Self::emit_wait_chunks(builder, samples);
             return;
@@ -2039,7 +2030,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
 
         match self
             .playback
-            .step(&mut self.builder, self.options.sample_rate)?
+            .step(&mut self.builder)?
         {
             StepOutcome::Finished => {
                 self.playback.emit_closing_commands(&mut self.builder);

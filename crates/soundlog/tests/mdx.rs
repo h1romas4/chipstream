@@ -891,23 +891,6 @@ fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
         pdx: None,
     };
 
-    let zero_sample_rate = MdxToVgmOptions {
-        sample_rate: 0,
-        ..MdxToVgmOptions::default()
-    };
-    assert_eq!(
-        to_vgm_document(&package, &zero_sample_rate),
-        Err(MdxConvertError::InvalidOptions(
-            "sample rate must not be zero"
-        ))
-    );
-    assert_eq!(
-        to_vgm_stream_generator(package.clone(), zero_sample_rate).map(|_| ()),
-        Err(MdxConvertError::InvalidOptions(
-            "sample rate must not be zero"
-        ))
-    );
-
     let zero_loop_count = MdxToVgmOptions {
         loop_count: Some(0),
         ..MdxToVgmOptions::default()

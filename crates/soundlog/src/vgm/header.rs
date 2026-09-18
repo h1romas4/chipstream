@@ -904,7 +904,7 @@ impl Default for VgmHeader {
             total_samples: 0,
             loop_offset: 0,
             loop_samples: 0,
-            sample_rate: 44100,
+            sample_rate: crate::vgm::VGM_SAMPLE_RATE,
             sn76489_feedback: Sn76489Feedback::Unknown(0),
             sn76489_shift_register_width: Sn76489ShiftRegisterWidth::Unknown(0),
             sn76489_flags: Sn76489Flags {

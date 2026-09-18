@@ -134,10 +134,6 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Output sample rate in Hz
-        #[arg(long, default_value_t = 44_100)]
-        sample_rate: u32,
-
         /// Total number of iterations for MDX repeat blocks
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
@@ -173,10 +169,6 @@ enum MdxCommands {
         /// `soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ`)
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
-
-        /// Output sample rate in Hz
-        #[arg(long, default_value_t = 44_100)]
-        sample_rate: u32,
 
         /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
         #[arg(long, value_name = "COUNT")]
@@ -214,10 +206,6 @@ enum MdxCommands {
         /// see `MdxCommands::Convert`'s `okim6258_clock`)
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
-
-        /// Output sample rate in Hz
-        #[arg(long, default_value_t = 44_100)]
-        sample_rate: u32,
 
         /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
         #[arg(long, value_name = "COUNT")]
@@ -306,7 +294,6 @@ fn main() {
                 dry_run,
                 ym2151_clock,
                 okim6258_clock,
-                sample_rate,
                 loop_count,
                 mxdrv16y,
                 adpcm_mode,
@@ -315,7 +302,6 @@ fn main() {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
-                    sample_rate,
                     loop_count,
                     mxdrv16y,
                     adpcm_mode: adpcm_mode.into(),
@@ -334,7 +320,6 @@ fn main() {
                 pdx,
                 ym2151_clock,
                 okim6258_clock,
-                sample_rate,
                 loop_count,
                 mxdrv16y,
                 adpcm_mode,
@@ -342,7 +327,6 @@ fn main() {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
-                    sample_rate,
                     loop_count,
                     mxdrv16y,
                     adpcm_mode: adpcm_mode.into(),
@@ -361,7 +345,6 @@ fn main() {
                 dry_run,
                 ym2151_clock,
                 okim6258_clock,
-                sample_rate,
                 loop_count,
                 mxdrv16y,
                 adpcm_mode,
@@ -371,7 +354,6 @@ fn main() {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
-                    sample_rate,
                     loop_count,
                     mxdrv16y,
                     adpcm_mode: adpcm_mode.into(),
