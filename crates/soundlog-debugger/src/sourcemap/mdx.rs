@@ -40,13 +40,9 @@ impl MdxAdapter {
     }
 
     pub fn header_node(document: &MdxDocument, space: ByteCoordinateSpace) -> SourceNode {
-        let title_len = document.header.title_raw_bytes.len();
+        let title_len = document.header.title_byte_len();
         let pdx_start = title_len + 3;
-        let pdx_len = document
-            .header
-            .pdx_name_raw_bytes
-            .as_ref()
-            .map_or(0, Vec::len);
+        let pdx_len = document.header.pdx_name_byte_len();
         let header_len = document.header.base_offset + 2 + document.header.track_count() * 2;
 
         let mut children = vec![

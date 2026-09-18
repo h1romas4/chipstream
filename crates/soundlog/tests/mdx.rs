@@ -247,12 +247,7 @@ fn mdx_header_round_trips_a_nine_track_file() {
 
     assert_eq!(base_offset, 20);
     assert_eq!(header.title, "TITLE");
-    assert_eq!(header.title_raw_bytes, b"TITLE");
     assert_eq!(header.pdx_name.as_deref(), Some("example.pdx"));
-    assert_eq!(
-        header.pdx_name_raw_bytes.as_deref(),
-        Some(&b"example.pdx"[..])
-    );
     assert_eq!(header.tone_data_offset, 0x0024);
     assert_eq!(header.track_count(), 9);
     assert_eq!(header.track_offsets[0], Some(0x0040));
@@ -673,8 +668,8 @@ fn regenerate_mdx_fixtures() {
 
         let mut builder = MdxBuilder::new();
         builder
-            .set_title_bytes(document.header.title_raw_bytes.clone())
-            .set_pdx_name_bytes(document.header.pdx_name_raw_bytes.clone());
+            .set_title(&document.header.title)
+            .set_pdx_name(document.header.pdx_name.as_deref());
         for tone in document.tone_bank.tones.iter().cloned() {
             builder.append_tone(tone);
         }

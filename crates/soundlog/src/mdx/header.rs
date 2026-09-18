@@ -13,6 +13,7 @@
 use crate::ParseError;
 use crate::binutil::read_u16_be_at;
 use crate::mdx::encoding::decode_shift_jis;
+use std::borrow::Cow;
 
 /// Number of track offsets in a standard MDX header.
 const TRACK_COUNT: usize = 9;
@@ -52,22 +53,16 @@ const UNUSED_TRACK_OFFSET: u16 = 0xffff;
 pub struct MdxHeader {
     /// The title decoded from CP932-compatible Shift JIS.
     ///
-    /// The encoded form used for serialization is retained separately in
-    /// [`title_raw_bytes`][Self::title_raw_bytes].
+    /// The original encoded form is retained internally for lossless
+    /// round-trips when the decoded title is unchanged.
     pub title: String,
-    /// The original encoded title bytes before the `CR LF 1A` terminator.
-    ///
-    /// These bytes are serialized as-is by [`to_bytes`][Self::to_bytes].
-    pub title_raw_bytes: Vec<u8>,
+    pub(crate) title_raw_bytes: Vec<u8>,
     /// The optional PDX filename decoded from CP932-compatible Shift JIS.
     ///
-    /// The encoded form used for serialization is retained separately in
-    /// [`pdx_name_raw_bytes`][Self::pdx_name_raw_bytes].
+    /// The original encoded form is retained internally for lossless
+    /// round-trips when the decoded filename is unchanged.
     pub pdx_name: Option<String>,
-    /// The original encoded PDX filename bytes before its NUL terminator.
-    ///
-    /// `None` represents an empty PDX filename field.
-    pub pdx_name_raw_bytes: Option<Vec<u8>>,
+    pub(crate) pdx_name_raw_bytes: Option<Vec<u8>>,
     /// The absolute position immediately after the PDX filename terminator.
     ///
     /// Tone and track offsets are resolved relative to this position.
@@ -121,21 +116,40 @@ impl MdxHeader {
         self.track_offsets.len()
     }
 
+    /// Returns the encoded byte length of the title.
+    pub fn title_byte_len(&self) -> usize {
+        self.title_raw_bytes.len()
+    }
+
+    /// Returns the encoded byte length of the optional PDX filename.
+    pub fn pdx_name_byte_len(&self) -> usize {
+        self.pdx_name_raw_bytes.as_ref().map_or(0, Vec::len)
+    }
+
     /// Serializes this header using the canonical MDX header delimiters.
     ///
-    /// The title raw bytes are followed by `CR LF 1A`, the optional PDX name
-    /// bytes and a NUL terminator, then the tone offset and track offset table.
-    /// Absent tracks are serialized as `0xffff`. The decoded `title` and
-    /// `pdx_name` fields are not re-encoded; their corresponding raw byte
-    /// fields are authoritative for serialization.
+    /// The title bytes are followed by `CR LF 1A`, the optional PDX name bytes
+    /// and a NUL terminator, then the tone offset and track offset table.
+    /// Absent tracks are serialized as `0xffff`. Unchanged decoded text keeps
+    /// its original encoded bytes; edited text is encoded as Shift JIS.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let pdx_name = self.pdx_name_raw_bytes.as_deref().unwrap_or_default();
+        let title = if decode_shift_jis(&self.title_raw_bytes) == self.title {
+            Cow::Borrowed(self.title_raw_bytes.as_slice())
+        } else {
+            Cow::Owned(crate::mdx::encoding::encode_shift_jis(&self.title))
+        };
+        let pdx_name = match (self.pdx_name_raw_bytes.as_deref(), self.pdx_name.as_deref()) {
+            (Some(raw), Some(name)) if decode_shift_jis(raw) == name => Cow::Borrowed(raw),
+            (None, None) => Cow::Borrowed(&[] as &[u8]),
+            (_, Some(name)) => Cow::Owned(crate::mdx::encoding::encode_shift_jis(name)),
+            (_, None) => Cow::Borrowed(&[] as &[u8]),
+        };
         let mut bytes = Vec::with_capacity(
-            self.title_raw_bytes.len() + 3 + pdx_name.len() + 1 + 2 + self.track_offsets.len() * 2,
+            title.len() + 3 + pdx_name.len() + 1 + 2 + self.track_offsets.len() * 2,
         );
-        bytes.extend_from_slice(&self.title_raw_bytes);
+        bytes.extend_from_slice(&title);
         bytes.extend_from_slice(&[0x0d, 0x0a, 0x1a]);
-        bytes.extend_from_slice(pdx_name);
+        bytes.extend_from_slice(&pdx_name);
         bytes.push(0);
         bytes.extend_from_slice(&self.tone_data_offset.to_be_bytes());
         for offset in &self.track_offsets {
