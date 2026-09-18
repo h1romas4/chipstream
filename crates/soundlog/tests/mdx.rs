@@ -382,6 +382,21 @@ fn mdx_builder_round_trips_extended_tracks() {
 }
 
 #[test]
+fn mdx_builder_keeps_empty_tracks_absent() {
+    let mut builder = MdxBuilder::new();
+    builder.set_track(9, Vec::new());
+
+    let document = builder.finalize().unwrap();
+    assert!(document.tracks[1].is_empty());
+    assert!(document.header.track_offsets[1].is_none());
+    assert!(document.header.track_offsets[9].is_none());
+
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse extended MDX document");
+    assert!(reparsed.tracks[1].is_empty());
+    assert!(reparsed.tracks[9].is_empty());
+}
+
+#[test]
 fn mdx_builder_rejects_track_indices_above_extended_layout() {
     let mut builder = MdxBuilder::new();
     builder.add_mdx_command(16, MdxRest { ticks: 1 });
@@ -643,6 +658,41 @@ fn pdx_document_parses_and_round_trips_fixtures() {
                 );
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "explicitly regenerates committed MDX fixtures"]
+fn regenerate_mdx_fixtures() {
+    let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
+    for filename in ["mdx_fm_loop.mdx", "mdx_pcm_reference.mdx"] {
+        let path = asset_dir.join(filename);
+        let source = fs::read(&path).unwrap_or_else(|error| panic!("read {filename}: {error}"));
+        let document = MdxDocument::parse(&source)
+            .unwrap_or_else(|error| panic!("parse {filename}: {error:?}"));
+
+        let mut builder = MdxBuilder::new();
+        builder
+            .set_title_bytes(document.header.title_raw_bytes.clone())
+            .set_pdx_name_bytes(document.header.pdx_name_raw_bytes.clone());
+        for tone in document.tone_bank.tones.iter().cloned() {
+            builder.append_tone(tone);
+        }
+        for (track, commands) in document.tracks.iter().enumerate() {
+            let mut commands = commands.clone();
+            if matches!(commands.last(), Some(MdxCommand::EndOfTrack(_))) {
+                commands.pop();
+            }
+            if !commands.is_empty() {
+                builder.set_track(track, commands);
+            }
+        }
+
+        let rebuilt = builder
+            .finalize()
+            .unwrap_or_else(|error| panic!("finalize {filename}: {error:?}"));
+        fs::write(&path, rebuilt.to_bytes())
+            .unwrap_or_else(|error| panic!("write {filename}: {error}"));
     }
 }
 

@@ -79,8 +79,10 @@ pub struct MdxDocument {
 /// are already encoded in the MDX character set.
 ///
 /// Call [`finalize`][Self::finalize] after adding commands. Finalization adds
-/// an [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] command to every non-terminated track, updates the
-/// header track offsets, and returns the resulting document.
+/// an [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] command to every
+/// non-empty, non-terminated track, updates the header track offsets, and
+/// returns the resulting document. Empty tracks remain absent from the
+/// serialized track table.
 ///
 /// # Examples
 ///
@@ -191,9 +193,10 @@ impl MdxBuilder {
     ///
     /// Track indices are zero-based. Setting track 9 through 15 grows the
     /// document to the extended 16-track form, while preserving all existing
-    /// tracks. An empty replacement track is allowed. Track 16 and above are
-    /// reported by [`finalize`][Self::finalize] because MDX supports only the
-    /// standard nine-track and extended sixteen-track layouts.
+    /// tracks. An empty replacement track is allowed and remains absent from
+    /// the serialized track table. Track 16 and above are reported by
+    /// [`finalize`][Self::finalize] because MDX supports only the standard
+    /// nine-track and extended sixteen-track layouts.
     pub fn set_track(&mut self, track: usize, commands: Vec<MdxCommand>) -> &mut Self {
         if track >= EXTENDED_TRACK_COUNT {
             self.error = Some(ParseError::DataInconsistency(format!(
@@ -240,7 +243,7 @@ impl MdxBuilder {
     /// marker at the start of track 0 when it is not already present. This
     /// marker allows parsers to identify the sixteen-track header layout.
     ///
-    /// Every track that does not already end with
+    /// Every non-empty track that does not already end with
     /// [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] receives
     /// one. The returned [`MdxDocument`] is ready for [`to_bytes`][MdxDocument::to_bytes]
     /// or for conversion to a playback stream. Calling this method consumes
@@ -259,7 +262,7 @@ impl MdxBuilder {
             self.document.tracks[0].insert(0, MdxCommand::PcmMode(MdxPcmMode));
         }
         for track in &mut self.document.tracks {
-            if !matches!(track.last(), Some(MdxCommand::EndOfTrack(_))) {
+            if !track.is_empty() && !matches!(track.last(), Some(MdxCommand::EndOfTrack(_))) {
                 track.push(MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack));
             }
         }
@@ -408,6 +411,7 @@ impl MdxDocument {
                 })
             })
             .chain(Some(tone_position.saturating_add(tone_bytes.len())))
+            .chain(Some(bytes.len()))
             .max()
             .unwrap_or(bytes.len());
         bytes.resize(body_end, 0);
