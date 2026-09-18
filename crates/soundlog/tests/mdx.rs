@@ -835,6 +835,232 @@ fn mdx_converter_writes_ym2151_keycode_and_key_fraction() {
 }
 
 #[test]
+fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+                register: 0x0f,
+                value: 0x80,
+            }),
+        )
+        .add_mdx_command(0, MdxAdpcmOrNoiseFrequency { value: 3 })
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert noise frequency update");
+    let noise_register_values: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x0f => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert!(noise_register_values.windows(2).any(|values| values == [0x80, 0x83]));
+}
+
+#[test]
+fn mdx_converter_releases_sync_wait_with_sync_send() {
+    let tone = MdxTone {
+        voice_number: 0,
+        con: 0,
+        fl: 0,
+        op: 0,
+        operators: [MdxOperator::default(); 4],
+    };
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(tone)
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(0, MdxCommand::SyncWait(soundlog::mdx::command::MdxSyncWait))
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap())
+        .add_mdx_command(0, MdxRest::new(1).unwrap())
+        .add_mdx_command(1, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            1,
+            MdxCommand::SyncSend(soundlog::mdx::command::MdxSyncSend { value: 0 }),
+        )
+        .add_mdx_command(1, MdxNote::new(0x80, 1).unwrap())
+        .add_mdx_command(1, MdxRest::new(1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert synchronized tracks");
+    let key_on_values: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+
+    assert!(key_on_values.contains(&0x40));
+    assert!(key_on_values.contains(&0x41));
+}
+
+#[test]
+fn mdx_converter_configures_opm_lfo_and_resets_it_on_key_on() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::OpmLfo(MdxOpmLfo::Configure {
+                control: 0x40,
+                lfrq: 0x12,
+                pmd: 0x34,
+                amd: 0x56,
+                pms_ams: 0x07,
+            }),
+        )
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert OPM LFO configuration");
+    let opm_writes: Vec<(u8, u8)> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) => Some((spec.register, spec.value)),
+            _ => None,
+        })
+        .collect();
+
+    assert!(opm_writes.contains(&(0x1b, 0x00)));
+    assert!(opm_writes.contains(&(0x18, 0x12)));
+    assert!(opm_writes.contains(&(0x19, 0x34)));
+    assert!(opm_writes.contains(&(0x19, 0x56)));
+    assert!(opm_writes.contains(&(0x38, 0x07)));
+    assert!(opm_writes
+        .windows(2)
+        .any(|writes| writes == [(0x01, 0x02), (0x01, 0x00)]));
+}
+
+#[test]
+fn mdx_converter_applies_key_on_delay_and_gate_before_key_off() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::KeyOnDelay(soundlog::mdx::command::MdxKeyOnDelay { value: 2 }),
+        )
+        .add_mdx_command(0, MdxCommand::Gate(soundlog::mdx::command::MdxGate { value: 0 }))
+        .add_mdx_command(0, MdxNote::new(0x80, 4).unwrap())
+        .add_mdx_command(0, MdxRest::new(2).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert delayed key-on");
+    let key_commands: Vec<u8> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+    let key_on_index = document
+        .commands
+        .iter()
+        .position(|command| {
+            matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 && spec.value == 0x40
+            )
+        })
+        .expect("delayed key-on should eventually be emitted");
+    let waits_before_key_on = document.commands[..key_on_index]
+        .iter()
+        .filter(|command| matches!(command, VgmCommand::WaitSamples(_)))
+        .count();
+
+    assert!(waits_before_key_on >= 2);
+    assert_eq!(key_commands, vec![0x40, 0x00]);
+}
+
+#[test]
+fn mdx_converter_applies_transpose_and_detune_to_pitch_registers() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .append_tone(MdxTone {
+            voice_number: 0,
+            con: 0,
+            fl: 0,
+            op: 0,
+            operators: [MdxOperator::default(); 4],
+        })
+        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(
+            0,
+            MdxCommand::Extended2(MdxExtended2Command::Transpose { value: 12 }),
+        )
+        .add_mdx_command(
+            0,
+            MdxCommand::Detune(soundlog::mdx::command::MdxSignedWord {
+                opcode: 0xf3,
+                offset: 1,
+            }),
+        )
+        .add_mdx_command(0, MdxNote::new(0x80, 1).unwrap());
+    let package = MdxPackage {
+        mdx: builder.finalize(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert transposed and detuned note");
+    assert!(document.commands.iter().any(|command| matches!(
+        command,
+        VgmCommand::Ym2151Write(_, spec) if spec.register == 0x28 && spec.value == 0x10
+    )));
+    assert!(document.commands.iter().any(|command| matches!(
+        command,
+        VgmCommand::Ym2151Write(_, spec) if spec.register == 0x30 && spec.value == 0x18
+    )));
+}
+
+#[test]
 fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
     // Register 0x20 combines pan with CON/FL, so switching to a voice with a
     // different algorithm must rewrite it even without a new Pan command.
