@@ -231,7 +231,7 @@ mod tests {
     fn adapter_parses_and_maps_track_commands() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let bytes = builder.finalize().to_bytes();
+        let bytes = builder.finalize().unwrap().to_bytes();
         let document = MdxAdapter::parse(&bytes).unwrap();
 
         let nodes = MdxAdapter::track_nodes(&document, 0);
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn adapter_returns_empty_nodes_for_unknown_track() {
-        let document = MdxBuilder::new().finalize();
+        let document = MdxBuilder::new().finalize().unwrap();
 
         assert!(MdxAdapter::track_nodes(&document, 99).is_empty());
         assert!(MdxAdapter::track_node(&document, 99).is_none());
@@ -257,7 +257,7 @@ mod tests {
     fn header_node_maps_offset_and_track_table_fields() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let document = MdxAdapter::parse(&builder.finalize().to_bytes()).unwrap();
+        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes()).unwrap();
         let header = MdxAdapter::header_node(&document, super::ByteCoordinateSpace::Original);
 
         assert_eq!(
@@ -290,7 +290,7 @@ mod tests {
             op: 8,
             operators: [MdxOperator::default(); 4],
         });
-        let document = MdxAdapter::parse(&builder.finalize().to_bytes()).unwrap();
+        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes()).unwrap();
 
         let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original).unwrap();
 
@@ -309,12 +309,12 @@ mod tests {
     fn adapter_distinguishes_original_and_logical_input_spaces() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let original = builder.finalize().to_bytes();
+        let original = builder.finalize().unwrap().to_bytes();
 
         let mut compressed_builder = MdxBuilder::new();
         compressed_builder.add_mdx_command(0, MdxRest::new(12).unwrap());
         compressed_builder.set_lz_compressed(true);
-        let compressed = compressed_builder.finalize().to_bytes();
+        let compressed = compressed_builder.finalize().unwrap().to_bytes();
 
         assert_eq!(
             MdxAdapter::coordinate_space(&original),

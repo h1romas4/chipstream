@@ -618,7 +618,7 @@ mod tests {
     fn populate_from_bytes_builds_mdx_nodes_after_vgm_rejection() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let bytes = builder.finalize().to_bytes();
+        let bytes = builder.finalize().unwrap().to_bytes();
 
         let mut state = UiState::new_empty();
         state.populate_from_bytes(&bytes);
@@ -670,11 +670,11 @@ mod tests {
     fn replacing_input_during_parse_advances_generation() {
         let mut first_builder = MdxBuilder::new();
         first_builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let first = first_builder.finalize().to_bytes();
+        let first = first_builder.finalize().unwrap().to_bytes();
 
         let mut second_builder = MdxBuilder::new();
         second_builder.add_mdx_command(0, MdxRest::new(24).unwrap());
-        let second = second_builder.finalize().to_bytes();
+        let second = second_builder.finalize().unwrap().to_bytes();
 
         let mut state = UiState::new_empty();
         state.populate_from_bytes(&first);

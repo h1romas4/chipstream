@@ -369,12 +369,17 @@ impl MdxDocument {
     /// track contents before serialization. The returned bytes are therefore a
     /// canonical representation of the typed document, not necessarily a
     /// byte-for-byte copy of the input passed to [`parse`][Self::parse].
+    /// Direct edits to [`MdxHeader::title`][crate::mdx::header::MdxHeader::title]
+    /// or [`MdxHeader::pdx_name`][crate::mdx::header::MdxHeader::pdx_name] are
+    /// encoded here when they differ from the parsed raw values. Unchanged raw
+    /// values remain intact for lossless round trips.
     ///
     /// If LZ compression was enabled on the builder, the serialized body is
     /// encoded using the NanoDriveX-compatible format. Documents parsed from
     /// compressed input are not automatically marked for compressed output.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut document = self.clone();
+        document.synchronize_header_text();
         document.recalculate_offsets();
         let mut bytes = document.header.to_bytes();
         let tone_position = document.header.tone_data_position().unwrap_or(bytes.len());
@@ -430,6 +435,29 @@ impl MdxDocument {
         compressed.extend_from_slice(&LZ_STREAM_MARKER);
         compressed.extend_from_slice(&lz::encode(&bytes[body_start..]));
         compressed
+    }
+
+    /// Synchronizes decoded public header fields with their retained encoded
+    /// representation while preserving raw bytes when the fields are unchanged.
+    fn synchronize_header_text(&mut self) {
+        let decoded_title = crate::mdx::encoding::decode_shift_jis(&self.header.title_raw_bytes);
+        if decoded_title != self.header.title {
+            self.header.title_raw_bytes =
+                crate::mdx::encoding::encode_shift_jis(&self.header.title);
+        }
+
+        let decoded_pdx_name = self
+            .header
+            .pdx_name_raw_bytes
+            .as_deref()
+            .map(crate::mdx::encoding::decode_shift_jis);
+        if decoded_pdx_name != self.header.pdx_name {
+            self.header.pdx_name_raw_bytes = self
+                .header
+                .pdx_name
+                .as_deref()
+                .map(crate::mdx::encoding::encode_shift_jis);
+        }
     }
 
     /// Recalculates the track offsets based on the current state of the document.

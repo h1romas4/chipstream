@@ -348,6 +348,23 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
 }
 
 #[test]
+fn mdx_document_serializes_direct_header_field_edits() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .set_title("ORIGINAL")
+        .set_pdx_name(Some("original.pdx"));
+    let mut document = MdxDocument::parse(&builder.finalize().unwrap().to_bytes())
+        .expect("parse built MDX document");
+
+    document.header.title = "EDITED".to_string();
+    document.header.pdx_name = Some("edited.pdx".to_string());
+
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse edited MDX document");
+    assert_eq!(reparsed.header.title, "EDITED");
+    assert_eq!(reparsed.header.pdx_name.as_deref(), Some("edited.pdx"));
+}
+
+#[test]
 fn mdx_builder_round_trips_extended_tracks() {
     let mut builder = MdxBuilder::new();
     builder.add_mdx_command(9, MdxRest { ticks: 1 });

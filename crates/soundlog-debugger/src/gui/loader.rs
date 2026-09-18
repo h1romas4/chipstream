@@ -212,7 +212,7 @@ mod tests {
     fn sample_mdx_bytes() -> Vec<u8> {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        builder.finalize().to_bytes()
+        builder.finalize().unwrap().to_bytes()
     }
 
     fn receive_message(receiver: mpsc::Receiver<AstBuildMessage>) -> AstBuildMessage {

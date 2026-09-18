@@ -41,7 +41,7 @@ const UNUSED_TRACK_OFFSET: u16 = 0xffff;
 ///
 /// let mut builder = MdxBuilder::new();
 /// builder.add_mdx_command(0, MdxRest::new(8).unwrap());
-/// let bytes = builder.finalize().to_bytes();
+/// let bytes = builder.finalize().unwrap().to_bytes();
 /// let (header, body_offset) = MdxHeader::parse(&bytes).unwrap();
 ///
 /// assert_eq!(header.track_count(), 9);
