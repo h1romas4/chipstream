@@ -348,6 +348,23 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
 }
 
 #[test]
+fn mdx_builder_round_trips_extended_tracks() {
+    let mut builder = MdxBuilder::new();
+    builder.add_mdx_command(9, MdxRest { ticks: 1 });
+
+    let document = builder.finalize();
+    assert_eq!(document.tracks.len(), 16);
+    assert!(matches!(
+        document.tracks[0].first(),
+        Some(MdxCommand::PcmMode(_))
+    ));
+
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse extended MDX document");
+    assert_eq!(reparsed.tracks.len(), 16);
+    assert_eq!(reparsed.tracks[9], document.tracks[9]);
+}
+
+#[test]
 fn mdx_builder_serializes_lfo_waveform_enums() {
     let pitch_lfo = MdxPitchLfo::Configure {
         waveform: MdxLfoWaveform::Triangle,

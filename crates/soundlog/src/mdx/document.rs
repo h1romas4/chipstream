@@ -10,7 +10,7 @@
 //! - Build documents from typed commands without exposing byte-level offsets.
 
 use crate::ParseError;
-use crate::mdx::command::MdxCommand;
+use crate::mdx::command::{MdxCommand, MdxPcmMode};
 use crate::mdx::header::MdxHeader;
 use crate::mdx::lz::{self, Result as LzResult};
 use crate::mdx::parser::parse_mdx_command;
@@ -223,12 +223,24 @@ impl MdxBuilder {
 
     /// Finalizes the document and recalculates its header offsets.
     ///
+    /// Documents with more than nine tracks receive the extended MDX PCM-mode
+    /// marker at the start of track 0 when it is not already present. This
+    /// marker allows parsers to identify the sixteen-track header layout.
+    ///
     /// Every track that does not already end with
     /// [`MdxEndOfTrack`][crate::mdx::command::MdxEndOfTrack] receives
     /// one. The returned [`MdxDocument`] is ready for [`to_bytes`][MdxDocument::to_bytes]
     /// or for conversion to a playback stream. Calling this method consumes
     /// the builder.
     pub fn finalize(mut self) -> MdxDocument {
+        if self.document.tracks.len() > DEFAULT_TRACK_COUNT
+            && !matches!(
+                self.document.tracks[0].first(),
+                Some(MdxCommand::PcmMode(_))
+            )
+        {
+            self.document.tracks[0].insert(0, MdxCommand::PcmMode(MdxPcmMode));
+        }
         for track in &mut self.document.tracks {
             if !matches!(track.last(), Some(MdxCommand::EndOfTrack(_))) {
                 track.push(MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack));
