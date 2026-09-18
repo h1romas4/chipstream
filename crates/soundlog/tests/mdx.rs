@@ -752,11 +752,15 @@ fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
     };
     assert_eq!(
         to_vgm_document(&package, &zero_sample_rate),
-        Err(MdxConvertError::InvalidOptions("sample rate must not be zero"))
+        Err(MdxConvertError::InvalidOptions(
+            "sample rate must not be zero"
+        ))
     );
     assert_eq!(
         to_vgm_stream_generator(package.clone(), zero_sample_rate).map(|_| ()),
-        Err(MdxConvertError::InvalidOptions("sample rate must not be zero"))
+        Err(MdxConvertError::InvalidOptions(
+            "sample rate must not be zero"
+        ))
     );
 
     let zero_loop_count = MdxToVgmOptions {
@@ -870,7 +874,11 @@ fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
         })
         .collect();
 
-    assert!(noise_register_values.windows(2).any(|values| values == [0x80, 0x83]));
+    assert!(
+        noise_register_values
+            .windows(2)
+            .any(|values| values == [0x80, 0x83])
+    );
 }
 
 #[test]
@@ -960,9 +968,11 @@ fn mdx_converter_configures_opm_lfo_and_resets_it_on_key_on() {
     assert!(opm_writes.contains(&(0x19, 0x34)));
     assert!(opm_writes.contains(&(0x19, 0x56)));
     assert!(opm_writes.contains(&(0x38, 0x07)));
-    assert!(opm_writes
-        .windows(2)
-        .any(|writes| writes == [(0x01, 0x02), (0x01, 0x00)]));
+    assert!(
+        opm_writes
+            .windows(2)
+            .any(|writes| writes == [(0x01, 0x02), (0x01, 0x00)])
+    );
 }
 
 #[test]
@@ -981,7 +991,10 @@ fn mdx_converter_applies_key_on_delay_and_gate_before_key_off() {
             0,
             MdxCommand::KeyOnDelay(soundlog::mdx::command::MdxKeyOnDelay { value: 2 }),
         )
-        .add_mdx_command(0, MdxCommand::Gate(soundlog::mdx::command::MdxGate { value: 0 }))
+        .add_mdx_command(
+            0,
+            MdxCommand::Gate(soundlog::mdx::command::MdxGate { value: 0 }),
+        )
         .add_mdx_command(0, MdxNote::new(0x80, 4).unwrap())
         .add_mdx_command(0, MdxRest::new(2).unwrap());
     let package = MdxPackage {
@@ -989,8 +1002,8 @@ fn mdx_converter_applies_key_on_delay_and_gate_before_key_off() {
         pdx: None,
     };
 
-    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("convert delayed key-on");
+    let document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert delayed key-on");
     let key_commands: Vec<u8> = document
         .commands
         .iter()
@@ -1179,8 +1192,8 @@ fn mdx_converter_applies_fm_volume_commands_to_carrier_level() {
         pdx: None,
     };
 
-    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("convert FM volume commands");
+    let document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert FM volume commands");
     let carrier_levels: Vec<u8> = document
         .commands
         .iter()
@@ -1190,7 +1203,11 @@ fn mdx_converter_applies_fm_volume_commands_to_carrier_level() {
         })
         .collect();
 
-    assert!(carrier_levels.windows(3).any(|levels| levels == [0x2a, 0x28, 0x2a]));
+    assert!(
+        carrier_levels
+            .windows(3)
+            .any(|levels| levels == [0x2a, 0x28, 0x2a])
+    );
 }
 
 #[test]
@@ -1215,8 +1232,8 @@ fn mdx_converter_honors_key_off_disable_for_an_fm_note() {
         pdx: None,
     };
 
-    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("convert tied FM note");
+    let document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert tied FM note");
     let key_commands: Vec<u8> = document
         .commands
         .iter()
@@ -1254,8 +1271,8 @@ fn mdx_converter_updates_pitch_during_portamento() {
         pdx: None,
     };
 
-    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("convert portamento");
+    let document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert portamento");
     let key_fractions: Vec<u8> = document
         .commands
         .iter()
@@ -1295,8 +1312,8 @@ fn mdx_converter_applies_relative_transpose_after_absolute_transpose() {
         pdx: None,
     };
 
-    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("convert relative transpose");
+    let document =
+        to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert relative transpose");
     assert!(document.commands.iter().any(|command| matches!(
         command,
         VgmCommand::Ym2151Write(_, spec) if spec.register == 0x28 && spec.value == 0x0d
@@ -1607,10 +1624,12 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
         .collect();
     assert!(pcm_bytes.starts_with(&[0x11, 0x22]));
     assert!(!pcm_bytes.is_empty());
-    assert!(document
-        .commands
-        .iter()
-        .any(|command| matches!(command, VgmCommand::EndOfData(_))));
+    assert!(
+        document
+            .commands
+            .iter()
+            .any(|command| matches!(command, VgmCommand::EndOfData(_)))
+    );
     assert!(document.commands.iter().rev().any(|command| matches!(
         command,
         VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x01
@@ -1622,10 +1641,7 @@ fn mdx_converter_selects_pcm8a_sample_formats() {
     fn convert_pcm8a(rate_mode: u8, sample: Vec<u8>) -> Vec<u8> {
         let mut builder = MdxBuilder::new();
         builder
-            .add_mdx_command(
-                8,
-                MdxAdpcmOrNoiseFrequency { value: rate_mode },
-            )
+            .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: rate_mode })
             .add_mdx_command(8, MdxNote::new(0x80, 1).unwrap())
             .add_mdx_command(8, MdxRest::new(64).unwrap())
             .add_mdx_command(15, MdxRest::new(64).unwrap());
@@ -1635,8 +1651,8 @@ fn mdx_converter_selects_pcm8a_sample_formats() {
             mdx: builder.finalize(),
             pdx: Some(pdx_builder.finalize()),
         };
-        let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-            .expect("convert PCM8A package");
+        let document =
+            to_vgm_document(&package, &MdxToVgmOptions::default()).expect("convert PCM8A package");
         document
             .commands
             .iter()
@@ -1665,7 +1681,9 @@ fn mdx_converter_pcm_eager_and_lazy_paths_match() {
         .add_mdx_command(8, MdxNote::new(0x80, 1).unwrap())
         .add_mdx_command(8, MdxRest::new(64).unwrap());
     let mut pdx_builder = PdxBuilder::new();
-    pdx_builder.set_sample(0, 0, vec![0x11, 0x22, 0x33]).unwrap();
+    pdx_builder
+        .set_sample(0, 0, vec![0x11, 0x22, 0x33])
+        .unwrap();
     let package = MdxPackage {
         mdx: builder.finalize(),
         pdx: Some(pdx_builder.finalize()),
@@ -1825,9 +1843,8 @@ fn real_mdx_fixture_lazy_stream_prefix_matches_native_loop_document() {
     let mdx_bytes = fs::read(asset_dir.join("mdx_fm_loop.mdx")).expect("read mdx_fm_loop.mdx");
     let package = MdxPackage::parse(&mdx_bytes, None).expect("parse mdx_fm_loop.mdx");
 
-    let expected_document =
-        to_vgm_document(&package, &MdxToVgmOptions::default())
-            .expect("eager convert mdx_fm_loop.mdx");
+    let expected_document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("eager convert mdx_fm_loop.mdx");
     assert!(
         expected_document.loop_command_index().is_some(),
         "mdx_fm_loop.mdx is expected to have a native loop point for this test to be meaningful"

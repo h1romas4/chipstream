@@ -64,25 +64,27 @@ impl MdxAdapter {
                 range: ByteRange::new(pdx_start, pdx_len),
             }),
         ];
-        children.push(SourceNode::new(
-            2,
-            "Tone data offset",
-            format!("0x{:04x}", document.header.tone_data_offset),
-        ).with_range(MappedRange {
-            space,
-            range: ByteRange::new(document.header.base_offset, 2),
-        }));
-        children.push(SourceNode::new(
-            3,
-            "Track count",
-            document.header.track_count().to_string(),
-        ).with_range(MappedRange {
-            space,
-            range: ByteRange::new(
-                document.header.base_offset + 2,
-                document.header.track_count() * 2,
-            ),
-        }));
+        children.push(
+            SourceNode::new(
+                2,
+                "Tone data offset",
+                format!("0x{:04x}", document.header.tone_data_offset),
+            )
+            .with_range(MappedRange {
+                space,
+                range: ByteRange::new(document.header.base_offset, 2),
+            }),
+        );
+        children.push(
+            SourceNode::new(3, "Track count", document.header.track_count().to_string())
+                .with_range(MappedRange {
+                    space,
+                    range: ByteRange::new(
+                        document.header.base_offset + 2,
+                        document.header.track_count() * 2,
+                    ),
+                }),
+        );
 
         SourceNode::new(0, "Header", "MDX header")
             .with_range(MappedRange {
@@ -119,13 +121,12 @@ impl MdxAdapter {
             })
             .collect();
         Some(
-            SourceNode::new(1, "Tone data", format!("{} bytes", bytes.len())).with_range(
-                MappedRange {
+            SourceNode::new(1, "Tone data", format!("{} bytes", bytes.len()))
+                .with_range(MappedRange {
                     space,
                     range: ByteRange::new(start, bytes.len()),
-                },
-            )
-            .with_children(children),
+                })
+                .with_children(children),
         )
     }
 
@@ -291,18 +292,14 @@ mod tests {
         });
         let document = MdxAdapter::parse(&builder.finalize().to_bytes()).unwrap();
 
-        let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original)
-            .unwrap();
+        let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original).unwrap();
 
         assert_eq!(node.children.len(), 2);
         assert_eq!(node.children[0].label, "Voice 3");
         assert!(node.children[0].detail.contains("voice_number: 3"));
         assert_eq!(
             node.children[0].range.unwrap().range,
-            super::ByteRange::new(
-                node.range.unwrap().range.start,
-                MdxTone::BYTE_LENGTH,
-            )
+            super::ByteRange::new(node.range.unwrap().range.start, MdxTone::BYTE_LENGTH,)
         );
         assert_eq!(node.children[1].label, "Voice 7");
         assert!(node.children[1].detail.contains("voice_number: 7"));
