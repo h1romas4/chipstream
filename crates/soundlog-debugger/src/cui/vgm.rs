@@ -298,13 +298,11 @@ fn summarize_doc(doc: &VgmDocument) -> Vec<(String, String)> {
     rows
 }
 
-/// Print a rich side-by-side table of original vs. rebuilt document fields.
+/// Print a side-by-side table of original and rebuilt VGM document fields.
 ///
 /// This is used by `test_roundtrip` to show diagnostics when the roundtrip
 /// succeeds and output is enabled (i.e. when the caller did not request --dry-run).
 pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
-    // Build a field-aligned side-by-side table using summarize_doc but
-    // split multi-line values into per-line rows so columns stay aligned.
     let orig_rows = summarize_doc(orig);
     let rebuilt_rows = summarize_doc(rebuilt);
     let mut side = Table::new();
@@ -330,33 +328,55 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
             } else {
                 Cell::new("")
             };
-            let ocell = Cell::new(ov_lines.get(i).unwrap_or(&"").to_string());
-            let rcell = Cell::new(rv_lines.get(i).unwrap_or(&"").to_string());
-            side.add_row(vec![key_cell, ocell, rcell]);
+            side.add_row(vec![
+                key_cell,
+                Cell::new(ov_lines.get(i).unwrap_or(&"").to_string()),
+                Cell::new(rv_lines.get(i).unwrap_or(&"").to_string()),
+            ]);
         }
     }
-    // Also include any keys present only in rebuilt
     for (k, rv) in &rebuilt_rows {
         if !orig_rows.iter().any(|(ok, _)| ok == k) {
             let rv_lines: Vec<&str> = rv.split('\n').collect();
-            for (i, rl) in rv_lines.iter().enumerate() {
-                if i == 0 {
-                    side.add_row(vec![
-                        Cell::new(k.clone()),
-                        Cell::new("<missing>"),
-                        Cell::new(rl.to_string()),
-                    ]);
-                } else {
-                    side.add_row(vec![
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(rl.to_string()),
-                    ]);
-                }
+            for (i, value) in rv_lines.iter().enumerate() {
+                side.add_row(vec![
+                    Cell::new(if i == 0 { k } else { "" }),
+                    Cell::new(if i == 0 { "<missing>" } else { "" }),
+                    Cell::new((*value).to_string()),
+                ]);
             }
         }
     }
     println!("{}", side);
+}
+
+fn print_original_diag_table(document: &VgmDocument) {
+    let rows = summarize_doc(document);
+    let mut table = Table::new();
+    table.load_preset(NOTHING);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
+    for (key, value) in &rows {
+        for (index, line) in value.split('\n').enumerate() {
+            table.add_row(vec![
+                Cell::new(if index == 0 { key } else { "" }),
+                Cell::new(line),
+            ]);
+        }
+    }
+    println!("{}", table);
+}
+
+/// Print a VGM heading followed by the original-document diagnostic table.
+pub(crate) fn print_vgm_diag_table(orig: &VgmDocument, _rebuilt: &VgmDocument) {
+    println!("VGM:");
+    print_original_diag_table(orig);
+}
+
+/// Print a VGM heading followed by the original/rebuilt diagnostic table.
+pub(crate) fn print_vgm_comparison_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
+    println!("VGM:");
+    print_diag_table(orig, rebuilt);
 }
 
 /// Print a compact, fixed-width, unicode-aware diagnostic summary.

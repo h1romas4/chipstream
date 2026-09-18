@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
 use soundlog::chip::state::{Okim6258State, Ym2151State};
 use soundlog::mdx::command::MdxCommand;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
@@ -43,6 +44,7 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 /// Detects the MXDRV16y layout using the voice-area boundary heuristic from
 /// NanoDriveX. Standard MDX keeps track entries before the voice data, while
 /// MXDRV16y places a track entry after the inferred voice area.
+#[allow(dead_code)]
 fn detect_mxdrv16y(package: &MdxPackage) -> Result<bool> {
     let bytes = package.mdx.to_bytes();
     let voice_data_offset = package
@@ -155,9 +157,7 @@ pub fn mdx2vgm(
     options: &MdxToVgmOptions,
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
-    let mut options = *options;
-    options.mxdrv16y |= detect_mxdrv16y(&package)?;
-    let mut document = to_vgm_document(&package, &options)
+    let mut document = to_vgm_document(&package, options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     if !package.mdx.header.title.is_empty() {
         document.gd3 = Some(Gd3 {
@@ -219,35 +219,50 @@ pub fn test_mdx(
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
-    let mxdrv16y = detect_mxdrv16y(&package)?;
-    let _ = logger.info(format_args!("Title: {}", package.mdx.header.title));
-    let _ = logger.info(format_args!(
-        "PDX: {}",
-        package.mdx.header.pdx_name.as_deref().unwrap_or("(none)")
-    ));
-    match pdx_path {
-        Some(path) => {
-            let _ = logger.info(format_args!(
-                "PDX file: {} ({})",
-                path.display(),
-                if path.is_file() {
-                    "exists"
-                } else {
-                    "not found"
-                }
-            ));
+    let mxdrv16y = options.mxdrv16y;
+    if !logger.is_noop() {
+        let _ = logger.info(format_args!("MDX:"));
+        let mut table = Table::new();
+        table.load_preset(NOTHING);
+        table.set_content_arrangement(ContentArrangement::Dynamic);
+        table.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
+        table.add_row(vec![
+            Cell::new("title"),
+            Cell::new(package.mdx.header.title.clone()),
+        ]);
+        table.add_row(vec![
+            Cell::new("pdx_name"),
+            Cell::new(package.mdx.header.pdx_name.as_deref().unwrap_or("(none)")),
+        ]);
+        table.add_row(vec![
+            Cell::new("pdx_file"),
+            Cell::new(match pdx_path {
+                Some(path) => format!(
+                    "{} ({})",
+                    path.display(),
+                    if path.is_file() {
+                        "exists"
+                    } else {
+                        "not found"
+                    }
+                ),
+                None => "(none)".to_string(),
+            }),
+        ]);
+        if let Some(pdx) = package.pdx.as_ref() {
+            table.add_row(vec![
+                Cell::new("pdx_banks"),
+                Cell::new(pdx.banks.len().to_string()),
+            ]);
         }
-        None => {
-            let _ = logger.info(format_args!("PDX file: (none)"));
-        }
+        table.add_row(vec![Cell::new("mxdrv16y"), Cell::new(mxdrv16y.to_string())]);
+        table.add_row(vec![
+            Cell::new("tracks"),
+            Cell::new(package.mdx.tracks.len().to_string()),
+        ]);
+        let _ = logger.info(format_args!("{table}"));
     }
-    if let Some(pdx) = package.pdx.as_ref() {
-        let _ = logger.info(format_args!("PDX banks: {}", pdx.banks.len()));
-    }
-    let _ = logger.info(format_args!("MXDRV16y: {mxdrv16y}"));
-    let mut options = *options;
-    options.mxdrv16y |= mxdrv16y;
-    let document = to_vgm_document(&package, &options)
+    let document = to_vgm_document(&package, options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     let document = if package.mdx.header.title.is_empty() {
         document
@@ -260,10 +275,12 @@ pub fn test_mdx(
         document
     };
     let bytes: Vec<u8> = (&document).into();
-    let _: soundlog::VgmDocument = (&bytes[..])
+    let reparsed: soundlog::VgmDocument = (&bytes[..])
         .try_into()
         .with_context(|| format!("generated VGM failed to parse: {}", input.display()))?;
-    let _ = logger.info(format_args!("VGM: parse ok ({} bytes)", bytes.len()));
+    if !logger.is_noop() {
+        crate::cui::vgm::print_vgm_diag_table(&document, &reparsed);
+    }
     Ok(())
 }
 
@@ -279,10 +296,8 @@ pub fn play_mdx(
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let has_pcm = package.drives_okim6258();
-    let mut options = *options;
-    options.mxdrv16y |= detect_mxdrv16y(&package)?;
 
-    let generator = to_vgm_stream_generator(package, options)
+    let generator = to_vgm_stream_generator(package, *options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error}"))?;
     let stream = VgmStream::from_generator(generator);
 

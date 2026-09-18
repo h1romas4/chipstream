@@ -139,6 +139,11 @@ impl Logger {
         self.exit_on_broken_pipe = v;
     }
 
+    /// Return whether this logger suppresses normal output.
+    pub fn is_noop(&self) -> bool {
+        matches!(self.output, LoggerOutput::Noop)
+    }
+
     /// Low level logging function. Accepts a `fmt::Arguments` so callers can use
     /// `format_args!` and avoid allocating strings when the logger is Noop.
     pub fn log(&self, _level: LogLevel, args: fmt::Arguments) -> io::Result<()> {
