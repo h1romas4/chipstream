@@ -64,6 +64,7 @@ pub struct SourceNode {
     pub id: NodeId,
     pub label: String,
     pub detail: String,
+    pub copy_text: Option<String>,
     pub range: Option<MappedRange>,
     pub children: Vec<SourceNode>,
 }
@@ -74,6 +75,7 @@ impl SourceNode {
             id,
             label: label.into(),
             detail: detail.into(),
+            copy_text: None,
             range: None,
             children: Vec::new(),
         }
@@ -81,6 +83,11 @@ impl SourceNode {
 
     pub fn with_range(mut self, range: MappedRange) -> Self {
         self.range = Some(range);
+        self
+    }
+
+    pub fn with_copy_text(mut self, text: impl Into<String>) -> Self {
+        self.copy_text = Some(text.into());
         self
     }
 

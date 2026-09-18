@@ -107,6 +107,7 @@ impl MdxAdapter {
                     format!("Voice {}", tone.voice_number),
                     format!("{tone:?}"),
                 )
+                .with_copy_text(Self::format_tone(tone))
                 .with_range(MappedRange {
                     space,
                     range: ByteRange::new(
@@ -124,6 +125,37 @@ impl MdxAdapter {
                 })
                 .with_children(children),
         )
+    }
+
+    fn format_tone(tone: &MdxTone) -> String {
+        const HEADER_COMMENT_COLUMN: usize = 43;
+        const OP_COMMENT_COLUMN: usize = 42;
+        let header = format!("@{}={{", tone.voice_number);
+        let mut lines = vec![format!(
+            "{header:<HEADER_COMMENT_COLUMN$}; Voice definition"
+        )];
+        let labels = ["OP1", "OP2", "OP3", "OP4"];
+        for (operator, label) in tone.operators.iter().zip(labels) {
+            let line = format!(
+                " {:>2}, {:>2}, {:>2}, {:>2}, {:>2}, {:>2}, {:>1}, {:>1}, {:>1}, {:>1}, {:>1},",
+                operator.ar,
+                operator.dr,
+                operator.sr,
+                operator.rr,
+                operator.sl,
+                operator.ol,
+                operator.ks,
+                operator.ml,
+                operator.dt1,
+                operator.dt2,
+                operator.ame,
+            );
+            lines.push(format!("{line:<OP_COMMENT_COLUMN$}; {label}"));
+        }
+        let global = format!(" {:>2}, {:>2}, {:>2}", tone.con, tone.fl, tone.op);
+        lines.push(format!("{global:<OP_COMMENT_COLUMN$}; CON, FL, OP-mask"));
+        lines.push("}".to_string());
+        lines.join("\n")
     }
 
     pub fn track_nodes(document: &MdxDocument, track: usize) -> Vec<SourceNode> {
@@ -299,6 +331,40 @@ mod tests {
         );
         assert_eq!(node.children[1].label, "Voice 7");
         assert!(node.children[1].detail.contains("voice_number: 7"));
+    }
+
+    #[test]
+    fn tone_node_copy_text_uses_mdx_voice_format() {
+        let tone = MdxTone {
+            voice_number: 1,
+            con: 0,
+            fl: 7,
+            op: 15,
+            operators: [MdxOperator {
+                ar: 31,
+                dr: 0,
+                sr: 0,
+                rr: 15,
+                sl: 0,
+                ol: 0,
+                ks: 0,
+                ml: 1,
+                dt1: 0,
+                dt2: 0,
+                ame: 0,
+            }; 4],
+        };
+        let mut builder = MdxBuilder::new();
+        builder.append_tone(tone);
+        let document = builder.finalize().unwrap();
+        let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original).unwrap();
+
+        assert_eq!(
+            node.children[0].copy_text.as_deref(),
+            Some(
+                "@1={                                       ; Voice definition\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP1\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP2\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP3\n 31,  0,  0, 15,  0,  0, 0, 1, 0, 0, 0,   ; OP4\n  0,  7, 15                               ; CON, FL, OP-mask\n}"
+            )
+        );
     }
 
     #[test]

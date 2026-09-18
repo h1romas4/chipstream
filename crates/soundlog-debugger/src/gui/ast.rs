@@ -5,6 +5,7 @@ use crate::sourcemap::{ByteRange, MappedRange, RawBinaryAdapter, SourceNode};
 pub struct AstNode {
     pub title: String,
     pub detail: String,
+    pub copy_text: Option<String>,
     pub children: Vec<AstNode>,
     pub lazy_count: Option<usize>,
     pub lazy_start: Option<usize>,
@@ -18,6 +19,7 @@ impl AstNode {
         Self {
             title: title.into(),
             detail: detail.into(),
+            copy_text: None,
             children: Vec::new(),
             lazy_count: None,
             lazy_start: None,
@@ -87,6 +89,7 @@ pub(crate) fn source_node_to_ast(node: SourceNode) -> AstNode {
         ast.byte_range = mapped.hex_range();
     }
     ast.children = node.children.into_iter().map(source_node_to_ast).collect();
+    ast.copy_text = node.copy_text;
     ast
 }
 
