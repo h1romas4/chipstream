@@ -1715,12 +1715,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let (current_offset, current_length) = self.package.borrow().mdx.sourcemap()[track]
             .get(command_index.saturating_sub(1))
             .copied()?;
-        let target_offset = (current_offset as i64)
-            .saturating_add(current_length as i64)
-            .saturating_add(i64::from(offset));
+        let command_end = current_offset.checked_add(current_length)?;
+        let target_offset = if offset >= 0 {
+            command_end.checked_add(offset as usize)?
+        } else {
+            command_end.checked_sub(offset.unsigned_abs() as usize)?
+        };
         self.package.borrow().mdx.sourcemap()[track]
             .iter()
-            .position(|(offset, _)| *offset as i64 == target_offset)
+            .position(|(offset, _)| *offset == target_offset)
     }
 
     /// Performs a relative jump for the specified track by the given offset.
