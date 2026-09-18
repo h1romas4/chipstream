@@ -54,12 +54,16 @@ pub(crate) fn spawn_initial_parse(
                     nodes.push(source_node_to_ast(tone_node));
                 }
                 nodes.extend(document.tracks.iter().enumerate().map(|(track, commands)| {
-                    AstNode::new(
+                    let node = AstNode::new(
                         format!("Track {track}"),
                         format!("{} commands", commands.len()),
-                    )
-                    .with_lazy_range(0, commands.len())
-                    .with_lazy_track(track)
+                    );
+                    if commands.is_empty() {
+                        node
+                    } else {
+                        node.with_lazy_range(0, commands.len())
+                            .with_lazy_track(track)
+                    }
                 }));
                 let rebuilt_bytes = canonical_bytes_with_adapter::<MdxAdapter>(&document);
                 let diffs = compute_diff_ranges(&data, &rebuilt_bytes);

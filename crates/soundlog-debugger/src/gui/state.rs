@@ -634,6 +634,10 @@ mod tests {
                 assert_eq!(nodes[2].lazy_count, Some(2));
                 assert_eq!(nodes[2].lazy_track, Some(0));
                 assert!(nodes[2].children.is_empty());
+                assert_eq!(nodes[3].title, "Track 1");
+                assert_eq!(nodes[3].detail, "0 commands");
+                assert!(nodes[3].lazy_count.is_none());
+                assert!(nodes[3].lazy_track.is_none());
                 state.ast_root = nodes;
             }
             message => panic!(
