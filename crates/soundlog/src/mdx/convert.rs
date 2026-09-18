@@ -258,7 +258,12 @@ pub fn to_vgm_document(
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
 
     while generator.run_step()? {}
-    Ok(generator.playback.finalize_with_pcm(generator.builder))
+    let mut document = generator.playback.finalize_with_pcm(generator.builder);
+    if package.pdx.is_some() {
+        document.header.okim6258_flags.clock_divider =
+            pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
+    }
+    Ok(document)
 }
 
 /// Outcome of one [`PlaybackState::step`] call.
