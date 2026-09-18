@@ -68,12 +68,21 @@ impl MdxAdapter {
             2,
             "Tone data offset",
             format!("0x{:04x}", document.header.tone_data_offset),
-        ));
+        ).with_range(MappedRange {
+            space,
+            range: ByteRange::new(document.header.base_offset, 2),
+        }));
         children.push(SourceNode::new(
             3,
             "Track count",
             document.header.track_count().to_string(),
-        ));
+        ).with_range(MappedRange {
+            space,
+            range: ByteRange::new(
+                document.header.base_offset + 2,
+                document.header.track_count() * 2,
+            ),
+        }));
 
         SourceNode::new(0, "Header", "MDX header")
             .with_range(MappedRange {
@@ -241,6 +250,26 @@ mod tests {
 
         assert!(MdxAdapter::track_nodes(&document, 99).is_empty());
         assert!(MdxAdapter::track_node(&document, 99).is_none());
+    }
+
+    #[test]
+    fn header_node_maps_offset_and_track_table_fields() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest::new(12).unwrap());
+        let document = MdxAdapter::parse(&builder.finalize().to_bytes()).unwrap();
+        let header = MdxAdapter::header_node(&document, super::ByteCoordinateSpace::Original);
+
+        assert_eq!(
+            header.children[2].range.unwrap().range,
+            super::ByteRange::new(document.header.base_offset, 2)
+        );
+        assert_eq!(
+            header.children[3].range.unwrap().range,
+            super::ByteRange::new(
+                document.header.base_offset + 2,
+                document.header.track_count() * 2,
+            )
+        );
     }
 
     #[test]
