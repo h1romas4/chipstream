@@ -207,7 +207,7 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of iterations for MDX repeat blocks (for example, 1 plays once)
+        /// Total number of iterations for MDX repeat blocks (default: 1)
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
@@ -351,6 +351,7 @@ fn main() {
             } => {
                 // Configure logger according to dry_run so main's messages respect it.
                 logger = Arc::new(Logger::new_stdout(dry_run));
+                let loop_count = loop_count.or(Some(1));
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
