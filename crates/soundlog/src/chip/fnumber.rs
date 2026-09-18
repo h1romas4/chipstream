@@ -606,7 +606,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
 
             let mut best: Option<FNumber> = None;
             let fnum_floor = if ideal_fnum_f.is_finite() && ideal_fnum_f > 0.0 {
-                ideal_fnum_f.floor() as i64
+                ideal_fnum_f.floor() as u32
             } else {
                 0
             };
@@ -617,13 +617,16 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
                 (1_u32 << spec.fnum_bits as usize) - 1
             };
 
-            for delta in -1..=1 {
-                let cand_i = fnum_floor + delta;
-                if cand_i < 1 {
+            for delta in [-1i8, 0, 1] {
+                let Some(cand) = (match delta {
+                    -1 => fnum_floor.checked_sub(1),
+                    0 => Some(fnum_floor),
+                    1 => fnum_floor.checked_add(1),
+                    _ => unreachable!(),
+                }) else {
                     continue;
-                }
-                let cand = cand_i as u32;
-                if cand > fnum_max {
+                };
+                if cand == 0 || cand > fnum_max {
                     continue;
                 }
                 let produced = C::fnum_block_to_freq(cand, block as u8, master_clock_hz)?;
