@@ -205,6 +205,14 @@ Notes:
 
 ### `mdx`
 
+The `mdx` command group provides MDX parsing, conversion, and playback through
+the same VGM command and register-write processing used by the other CLI
+commands.
+
+```bash
+soundlog mdx <COMMAND>
+```
+
 ```text
 MDX file operations
 
@@ -219,14 +227,6 @@ Commands:
 
 Options:
   -h, --help  Print help
-```
-
-The `mdx` command group provides MDX parsing, conversion, and playback through
-the same VGM command and register-write processing used by the other CLI
-commands.
-
-```bash
-soundlog mdx <COMMAND>
 ```
 
 #### `mdx parse`
