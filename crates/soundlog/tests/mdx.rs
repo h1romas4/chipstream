@@ -1656,6 +1656,41 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
 }
 
 #[test]
+fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
+        .add_mdx_command(8, MdxPan { value: 0 })
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 4,
+            },
+        )
+        .add_mdx_command(8, MdxRest { ticks: 4 });
+    let mut pdx_builder = PdxBuilder::new();
+    pdx_builder.set_sample(0, 0, vec![0x11, 0x22]).unwrap();
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: Some(pdx_builder.finalize()),
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("a muted PCM track should still convert");
+    let pcm_pan_writes: Vec<_> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 0x02 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pcm_pan_writes, vec![3]);
+}
+
+#[test]
 fn mdx_converter_pcm_track_loop_uses_shared_loop_machinery() {
     let mut builder = MdxBuilder::new();
     builder

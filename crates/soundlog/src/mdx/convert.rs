@@ -400,9 +400,6 @@ struct TrackState {
     pcm_rate_step: u32,
     /// Sample data format selected by the last `0xed` on a PCM8A track.
     pcm_data_kind: Pcm8aFormat,
-    /// Raw ADPCM pan value (0=center, 1=left, 2=right, 3=mute), routed to
-    /// the NJU72342 amplifier in the reference rather than a chip register.
-    pcm_pan: u8,
 }
 
 struct PlaybackState<P: Borrow<MdxPackage>> {
@@ -549,7 +546,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 pcm_bank: 0,
                 pcm_rate_step: 0x10000,
                 pcm_data_kind: Pcm8aFormat::Adpcm,
-                pcm_pan: 0,
             })
             .collect();
         Self {
@@ -935,10 +931,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].pan_pending = true;
                 }
                 MdxCommand::Pan(command) => {
-                    // libvgm uses OKIM6258 register 0x02 for the X68000 pan
-                    // extension (0=center, 1=left, 2=right, 3=mute).
-                    let pan = command.value & 0x03;
-                    self.tracks[track].pcm_pan = pan;
+                    // MDX ADPCM pan values are 0=mute, 1=left, 2=right,
+                    // 3=center. The VGM OKIM6258 pan extension uses
+                    // 0=center, 1=left, 2=right, 3=mute.
+                    let pan = match command.value & 0x03 {
+                        0 => 3,
+                        1 => 1,
+                        2 => 2,
+                        _ => 0,
+                    };
                     builder.add_vgm_command((
                         Instance::Primary,
                         Okim6258Spec {
