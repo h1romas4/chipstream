@@ -25,7 +25,7 @@ pub(crate) fn draw_ast_node(
             CollapsingHeader::new(
                 egui::RichText::new(&display_title).size(state.hex_viewer.font_size()),
             )
-            .default_open(total <= 100)
+            .default_open(false)
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 let children = state.lazy.loaded(&path);
@@ -55,7 +55,7 @@ pub(crate) fn draw_ast_node(
         CollapsingHeader::new(
             egui::RichText::new(&display_title).size(state.hex_viewer.font_size()),
         )
-        .default_open(total <= 100)
+        .default_open(false)
         .show(ui, |ui| {
             ui.add_space(4.0);
             let children = state.lazy.loaded(&path);
