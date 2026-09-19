@@ -782,7 +782,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through)
-            && !same_block
             && track == 8
         {
             let reference = MdxPcmReference {
@@ -804,15 +803,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 .to_vec();
             self.raw_pcm_position = 0;
         }
-        if !same_block {
-            let range = self.decode_pcm_samples(bank, note_index, format);
-            let state = &mut self.pcm_channels[channel];
-            state.block_start = range.map_or(0, |(start, _)| start);
-            state.block_length = range.map_or(0, |(_, length)| length as u32);
-            state.block_key = range.map(|_| block_key);
-            state.pos_in_block = 0;
-            state.rate_counter = 0;
-        }
+        let range = self.decode_pcm_samples(bank, note_index, format);
+        let state = &mut self.pcm_channels[channel];
+        state.block_start = range.map_or(0, |(start, _)| start);
+        state.block_length = range.map_or(0, |(_, length)| length as u32);
+        state.block_key = range.map(|_| block_key);
+        state.pos_in_block = 0;
+        state.rate_counter = 0;
         let state = &mut self.pcm_channels[channel];
         state.rate_step = rate_step;
         state.gain = gain;
