@@ -623,10 +623,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn has_pending_pcm_output(&self) -> bool {
         let raw_pending = matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && self.raw_pcm_position < self.raw_pcm_bytes.len();
-        let mixed_pending = self
-            .pcm_channels
-            .iter()
-            .any(|channel| channel.block_length != 0);
+        let mixed_pending = !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+            && matches!(self.adpcm_mode, AdpcmMode::Through))
+            && self
+                .pcm_channels
+                .iter()
+                .any(|channel| channel.block_length != 0);
         raw_pending || mixed_pending
     }
 
