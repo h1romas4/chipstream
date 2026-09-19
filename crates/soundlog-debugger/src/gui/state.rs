@@ -642,13 +642,6 @@ mod tests {
             ),
         }
 
-        match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
-            super::AstBuildMessage::Diff { generation, .. } => assert_eq!(generation, 1),
-            message => panic!(
-                "expected MDX Diff message, got {:?}",
-                message_type(&message)
-            ),
-        }
         state.request_children(vec![2], 0, 2);
         match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
             super::AstBuildMessage::Partial {

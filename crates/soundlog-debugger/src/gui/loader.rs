@@ -68,14 +68,7 @@ pub(crate) fn spawn_initial_parse(
                             .with_lazy_track(track)
                         }),
                 );
-                let rebuilt_bytes = canonical_bytes_with_adapter::<MdxAdapter>(&document);
-                let diffs = compute_diff_ranges(&data, &rebuilt_bytes);
                 let _ = tx.send(AstBuildMessage::Full { generation, nodes });
-                let _ = tx.send(AstBuildMessage::Diff {
-                    generation,
-                    diffs,
-                    rebuilt_bytes,
-                });
             }
             Err(mdx_error) => {
                 let parse_error = format!("VGM: {vgm_error:?}; MDX: {mdx_error:?}");
