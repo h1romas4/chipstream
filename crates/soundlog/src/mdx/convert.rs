@@ -640,15 +640,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
-        // NanoDriveX schedules the next hardware tick before processing the
-        // current tick. A tempo command handled during this tick therefore
-        // affects the following interval, not the interval just started.
-        let tick_microseconds = self.tick_microseconds();
         self.process_tick(builder)?;
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
-        self.emit_wait(builder, tick_microseconds);
+        self.emit_wait(builder);
         Ok(StepOutcome::Continue)
     }
 
@@ -1858,7 +1854,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
     /// samples to maintain accurate playback timing.
-    fn emit_wait(&mut self, builder: &mut VgmBuilder, tick_microseconds: u32) {
+    fn emit_wait(&mut self, builder: &mut VgmBuilder) {
+        let tick_microseconds = self.tick_microseconds();
         let sample_accumulator = self.sample_remainder
             + tick_microseconds * VGM_SAMPLE_RATE;
         let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
