@@ -1270,7 +1270,7 @@ fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
         })
         .add_mdx_command(
             0,
-            MdxCommand::Pan(soundlog::mdx::command::MdxPan { value: 3 }),
+            MdxCommand::Pan(soundlog::mdx::command::MdxPan::Center),
         )
         .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(
@@ -1593,7 +1593,7 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
     builder
         .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
-        .add_mdx_command(8, MdxPan { value: 1 })
+        .add_mdx_command(8, MdxPan::Right)
         .add_mdx_command(8, MdxVolume { value: 8 })
         .add_mdx_command(
             8,
@@ -1652,7 +1652,7 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
             _ => None,
         })
         .collect();
-    assert_eq!(pcm_pan_writes, vec![1]);
+    assert_eq!(pcm_pan_writes, vec![2]);
 }
 
 #[test]
@@ -1661,7 +1661,7 @@ fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
     builder
         .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
-        .add_mdx_command(8, MdxPan { value: 0 })
+        .add_mdx_command(8, MdxPan::Mute)
         .add_mdx_command(
             8,
             MdxNote {

@@ -284,13 +284,43 @@ impl MdxCommandSpec for MdxTempo {
 
 /// Set track pan (`0xfc pan`).
 ///
-/// The value is kept in its raw MDX representation. MXDRV interprets values
-/// `1` and `2` in opposite left/right order for FM and ADPCM tracks, so the
-/// track type is required before converting this value to a playback pan.
+/// These variants represent the raw MDX values. MXDRV interprets values `1`
+/// and `2` in opposite left/right order for FM and ADPCM tracks, so the track
+/// type is required before converting this command to a playback pan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MdxPan {
-    /// Raw MDX pan value; its left/right meaning depends on the track type.
-    pub value: u8,
+pub enum MdxPan {
+    /// Raw value `0`: mute.
+    Mute,
+    /// Raw value `1`: right for FM, left for ADPCM.
+    Right,
+    /// Raw value `2`: left for FM, right for ADPCM.
+    Left,
+    /// Raw value `3`: center.
+    Center,
+    /// An unrecognized raw MDX value, preserved for round-tripping.
+    Unknown(u8),
+}
+
+impl MdxPan {
+    pub const fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Mute,
+            1 => Self::Right,
+            2 => Self::Left,
+            3 => Self::Center,
+            value => Self::Unknown(value),
+        }
+    }
+
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::Mute => 0,
+            Self::Right => 1,
+            Self::Left => 2,
+            Self::Center => 3,
+            Self::Unknown(value) => value,
+        }
+    }
 }
 
 impl MdxCommandSpec for MdxPan {
@@ -298,13 +328,11 @@ impl MdxCommandSpec for MdxPan {
         0xfc
     }
     fn to_mdx_bytes(&self, dest: &mut Vec<u8>) {
-        dest.extend_from_slice(&[self.opcode(), self.value]);
+        dest.extend_from_slice(&[self.opcode(), self.raw()]);
     }
     fn parse(bytes: &[u8], offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         Ok((
-            Self {
-                value: read_u8_at(bytes, offset)?,
-            },
+            Self::from_raw(read_u8_at(bytes, offset)?),
             2,
         ))
     }

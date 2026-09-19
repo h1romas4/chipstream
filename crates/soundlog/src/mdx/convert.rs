@@ -16,8 +16,8 @@
 
 use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
 use crate::mdx::command::{
-    MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPitchLfo,
-    MdxVolumeLfo,
+    MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPan,
+    MdxPitchLfo, MdxVolumeLfo,
 };
 use crate::mdx::package::{MdxPackage, MdxPcmReference};
 use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a};
@@ -922,11 +922,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].key_on = false;
                 }
                 MdxCommand::Pan(command) if track < 8 => {
-                    self.tracks[track].pan = match command.value {
-                        1 => 0x40,
-                        2 => 0x80,
-                        3 => 0xc0,
-                        _ => 0,
+                    self.tracks[track].pan = match command {
+                        MdxPan::Right => 0x40,
+                        MdxPan::Left => 0x80,
+                        MdxPan::Center => 0xc0,
+                        MdxPan::Mute | MdxPan::Unknown(_) => 0,
                     };
                     self.tracks[track].pan_pending = true;
                 }
@@ -934,11 +934,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // MDX ADPCM pan values are 0=mute, 1=left, 2=right,
                     // 3=center. The VGM OKIM6258 pan extension uses
                     // 0=center, 1=left, 2=right, 3=mute.
-                    let pan = match command.value & 0x03 {
-                        0 => 3,
-                        1 => 1,
-                        2 => 2,
-                        _ => 0,
+                    let pan = match command {
+                        MdxPan::Mute => 3,
+                        MdxPan::Right => 2,
+                        MdxPan::Left => 1,
+                        MdxPan::Center => 0,
+                        MdxPan::Unknown(value) => value & 0x03,
                     };
                     builder.add_vgm_command((
                         Instance::Primary,
