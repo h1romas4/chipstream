@@ -79,6 +79,48 @@ enum MdxPcmMode {
     Pcm8a,
 }
 
+
+/// Schedules the OKIM6258 data-register writes driven by the hardware MCK.
+///
+/// NanoDriveX receives one output event per PCM byte from its MCK interrupt.
+/// VGM has no MCK command, so this scheduler carries the fractional event
+/// phase across MDX ticks and exposes the number of events due in each tick.
+struct MckScheduler {
+    byte_rate_hz: u32,
+    time_remainder: u32,
+    started: bool,
+}
+
+impl MckScheduler {
+    fn new(byte_rate_hz: u32) -> Self {
+        Self {
+            byte_rate_hz,
+            time_remainder: 0,
+            started: false,
+        }
+    }
+
+    fn set_byte_rate(&mut self, byte_rate_hz: u32) {
+        self.byte_rate_hz = byte_rate_hz;
+    }
+
+    fn advance(&mut self, tick_microseconds: u32) -> u32 {
+        let accumulator = self.time_remainder
+            + tick_microseconds.saturating_mul(self.byte_rate_hz);
+        let bytes_due = accumulator / MICROSECONDS_PER_SECOND;
+        self.time_remainder = accumulator % MICROSECONDS_PER_SECOND;
+        bytes_due
+    }
+
+    fn take_initial_event(&mut self) -> bool {
+        if self.started {
+            false
+        } else {
+            self.started = true;
+            true
+        }
+    }
+}
 impl MdxPcmMode {
     fn from_track_count(track_count: usize) -> Self {
         if track_count == 16 {
@@ -427,14 +469,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Raw PCM1 ADPCM payload used by the `Through` mode.
     raw_pcm_bytes: Vec<u8>,
     raw_pcm_position: usize,
-    /// Current legacy PCM1 output byte rate after the OKIM6258 clock/divider
-    /// selected by the most recent `0xed` command.
-    pcm_output_byte_rate_hz: u32,
-    /// Q at `MICROSECONDS_PER_SECOND` scale, tracking fractional OKIM6258
-    /// data-register writes owed across tick boundaries. The rate changes
-    /// with legacy PCM1 `0xed` commands and remains at the PCM8A master rate
-    /// for extended PCM8A playback.
-    pcm_output_remainder: u32,
+    /// MCK-driven OKIM6258 data-register write scheduler.
+    mck_scheduler: MckScheduler,
     /// Current MDX tempo, used to derive the duration of one playback tick.
     tempo: u8,
     /// Fractional VGM samples owed after converting elapsed tick time at the
@@ -561,8 +597,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             pcm_filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
             raw_pcm_bytes: Vec::new(),
             raw_pcm_position: 0,
-            pcm_output_byte_rate_hz: pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ,
-            pcm_output_remainder: 0,
+            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ),
             tempo: DEFAULT_TEMPO,
             sample_remainder: 0,
             loop_count,
@@ -579,9 +614,20 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     }
 
     /// Checks if the playback has finished, either due to the song loop being complete
-    /// or all tracks being inactive.
+    /// or all tracks being inactive and all pending PCM output being drained.
     fn finished(&self) -> bool {
-        self.song_loop_complete || self.tracks.iter().all(|track| !track.active)
+        self.song_loop_complete
+            || (self.tracks.iter().all(|track| !track.active) && !self.has_pending_pcm_output())
+    }
+
+    fn has_pending_pcm_output(&self) -> bool {
+        let raw_pending = matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+            && self.raw_pcm_position < self.raw_pcm_bytes.len();
+        let mixed_pending = self
+            .pcm_channels
+            .iter()
+            .any(|channel| channel.block_length != 0);
+        raw_pending || mixed_pending
     }
 
     /// Runs one tick of playback, appending any resulting commands to
@@ -594,11 +640,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
+        // NanoDriveX schedules the next hardware tick before processing the
+        // current tick. A tempo command handled during this tick therefore
+        // affects the following interval, not the interval just started.
+        let tick_microseconds = self.tick_microseconds();
         self.process_tick(builder)?;
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
-        self.emit_wait(builder);
+        self.emit_wait(builder, tick_microseconds);
         Ok(StepOutcome::Continue)
     }
 
@@ -698,10 +748,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             state.pos_in_block = 0;
             state.rate_counter = 0;
             state.hold = false;
-            if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
-                self.raw_pcm_bytes.clear();
-                self.raw_pcm_position = 0;
-            }
         }
     }
 
@@ -832,6 +878,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 break;
             };
             self.tracks[track].command_index += 1;
+                if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+                    self.raw_pcm_bytes.clear();
+                    self.raw_pcm_position = 0;
+                }
             match command {
                 MdxCommand::Rest(command) => {
                     self.tracks[track].wait_ticks = command.ticks;
@@ -1811,8 +1861,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
     /// samples to maintain accurate playback timing.
-    fn emit_wait(&mut self, builder: &mut VgmBuilder) {
-        let tick_microseconds = self.tick_microseconds();
+    fn emit_wait(&mut self, builder: &mut VgmBuilder, tick_microseconds: u32) {
         let sample_accumulator = self.sample_remainder
             + tick_microseconds * VGM_SAMPLE_RATE;
         let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
@@ -1823,10 +1872,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             return;
         }
 
-        let pcm_accumulator = self.pcm_output_remainder
-            + tick_microseconds * self.pcm_output_byte_rate_hz;
-        let pcm_bytes_due = pcm_accumulator / MICROSECONDS_PER_SECOND;
-        self.pcm_output_remainder = pcm_accumulator % MICROSECONDS_PER_SECOND;
+        let pcm_bytes_due = self.mck_scheduler.advance(tick_microseconds);
         if pcm_bytes_due == 0 {
             Self::emit_wait_chunks(builder, samples);
             return;
@@ -1836,15 +1882,26 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         // samples (splitting `samples` into `pcm_bytes_due` near-equal
         // segments) so each byte lands close to its real playback position
         // without resorting to a wait-1-sample-per-byte command stream.
-        let mut remaining_samples = samples;
-        let mut remaining_bytes = pcm_bytes_due;
-        while remaining_bytes > 0 {
-            let chunk = remaining_samples / remaining_bytes;
-            Self::emit_wait_chunks(builder, chunk);
-            remaining_samples -= chunk;
-            remaining_bytes -= 1;
+        let mut emitted_samples = 0;
+        let first_byte_at_zero = self.mck_scheduler.take_initial_event();
+        let start_index = if first_byte_at_zero {
+            self.emit_pcm_byte(builder);
+            1
+        } else {
+            0
+        };
+        for byte_index in start_index..pcm_bytes_due {
+            // Place each byte at its fractional position in the tick. Using
+            // the cumulative target avoids dropping the remainder on every
+            // tick and produces the 5/6-sample cadence of a 7812 Hz stream.
+            let target_index = if first_byte_at_zero { byte_index } else { byte_index + 1 };
+            let target_samples = (u64::from(target_index) * u64::from(samples)
+                / u64::from(pcm_bytes_due)) as u32;
+            Self::emit_wait_chunks(builder, target_samples - emitted_samples);
+            emitted_samples = target_samples;
             self.emit_pcm_byte(builder);
         }
+        Self::emit_wait_chunks(builder, samples - emitted_samples);
     }
 
     /// Emits wait commands in chunks of up to 65535 samples to the VGM builder.
@@ -1885,7 +1942,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }) else {
             return;
         };
-        self.pcm_output_byte_rate_hz = byte_rate_hz;
+        self.mck_scheduler.set_byte_rate(byte_rate_hz);
         for (register, value) in (0x08..=0x0b).zip(clock_bytes) {
             builder.add_vgm_command((Instance::Primary, Okim6258Spec { register, value }));
         }

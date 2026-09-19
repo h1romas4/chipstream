@@ -1961,6 +1961,21 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
         .collect();
     assert!(pcm_bytes.starts_with(&[0x11, 0x22]));
     assert!(!pcm_bytes.is_empty());
+
+    let mut sample_position = 0u32;
+    let mut pcm_write_positions = Vec::new();
+    for command in &document.commands {
+        match command {
+            VgmCommand::WaitSamples(WaitSamples(value)) => {
+                sample_position += u32::from(*value);
+            }
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => {
+                pcm_write_positions.push(sample_position);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(&pcm_write_positions[..4], &[0, 5, 11, 16]);
     assert!(
         document
             .commands
