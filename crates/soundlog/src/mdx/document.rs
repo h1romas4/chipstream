@@ -167,7 +167,7 @@ impl MdxBuilder {
 
     /// Appends a value convertible into an OPM tone to the generated tone bank.
     ///
-    /// Tone definitions are serialized before the track command streams. The
+    /// Tone definitions are serialized after the track command streams. The
     /// tone table offset is populated during [`finalize`][Self::finalize].
     pub fn append_tone<T>(&mut self, tone: T) -> &mut Self
     where
@@ -266,12 +266,6 @@ impl MdxBuilder {
                 track.push(MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack));
             }
         }
-        if !self.document.tone_bank.to_bytes().is_empty()
-            && self.document.header.tone_data_offset == 0
-        {
-            self.document.header.tone_data_offset =
-                u16::try_from(2 + self.document.tracks.len() * 2).unwrap_or(u16::MAX);
-        }
         self.document.recalculate_offsets();
         Ok(self.document)
     }
@@ -300,14 +294,23 @@ impl MdxDocument {
         let decoded = decode_mdx_body(bytes)?;
         let parse_bytes = decoded.as_deref().unwrap_or(bytes);
         let (header, _) = MdxHeader::parse(parse_bytes)?;
-        let tone_start = header
-            .tone_data_position()
-            .ok_or_else(|| ParseError::DataInconsistency("MDX tone data offset overflow".into()))?;
-        let tone_end = (0..header.track_count())
-            .filter_map(|track| header.track_position(track))
-            .filter(|&position| position > tone_start)
-            .min()
-            .unwrap_or(parse_bytes.len());
+        let header_length = header.base_offset + 2 + header.track_count() * 2;
+        let tone_start = if header.tone_data_offset == 0 {
+            header_length
+        } else {
+            header.tone_data_position().ok_or_else(|| {
+                ParseError::DataInconsistency("MDX tone data offset overflow".into())
+            })?
+        };
+        let tone_end = if header.tone_data_offset == 0 {
+            tone_start
+        } else {
+            (0..header.track_count())
+                .filter_map(|track| header.track_position(track))
+                .filter(|&position| position > tone_start)
+                .min()
+                .unwrap_or(parse_bytes.len())
+        };
         if tone_end > parse_bytes.len() || tone_start > tone_end {
             return Err(ParseError::DataInconsistency(
                 "MDX tone data range is outside the file".into(),
@@ -385,8 +388,13 @@ impl MdxDocument {
         document.synchronize_header_text();
         document.recalculate_offsets();
         let mut bytes = document.header.to_bytes();
-        let tone_position = document.header.tone_data_position().unwrap_or(bytes.len());
         let tone_bytes = document.tone_bank.to_bytes();
+        let header_length = document.header.base_offset + 2 + document.tracks.len() * 2;
+        let tone_position = if document.header.tone_data_offset == 0 {
+            header_length
+        } else {
+            document.header.tone_data_position().unwrap_or(bytes.len())
+        };
         let mut track_bytes = Vec::with_capacity(document.tracks.len());
         for track in &document.tracks {
             track_bytes.push(
@@ -410,7 +418,14 @@ impl MdxDocument {
                         .map(|position| position.saturating_add(track_bytes[track].len()))
                 })
             })
-            .chain(Some(tone_position.saturating_add(tone_bytes.len())))
+            .chain(Some(
+                document
+                    .header
+                    .tone_data_position()
+                    .filter(|_| document.header.tone_data_offset != 0)
+                    .unwrap_or(header_length)
+                    .saturating_add(tone_bytes.len()),
+            ))
             .chain(Some(bytes.len()))
             .max()
             .unwrap_or(bytes.len());
@@ -476,10 +491,14 @@ impl MdxDocument {
             + self.header.pdx_name_raw_bytes.as_ref().map_or(0, Vec::len)
             + 1;
         let header_length = self.header.base_offset + 2 + self.tracks.len() * 2;
-        let tone_table_end = self.header.base_offset + 2 + self.tracks.len() * 2;
-        let tone_position = self.header.tone_data_position().unwrap_or(header_length);
         let tone_length = self.tone_bank.to_bytes().len();
-        let mut position = if tone_position == tone_table_end {
+        let tone_table_end = self.header.base_offset + 2 + self.tracks.len() * 2;
+        let tone_position = if self.header.tone_data_offset == 0 {
+            header_length
+        } else {
+            self.header.tone_data_position().unwrap_or(header_length)
+        };
+        let mut position = if tone_length != 0 && tone_position == tone_table_end {
             tone_position.saturating_add(tone_length)
         } else {
             header_length
@@ -500,6 +519,11 @@ impl MdxDocument {
                     .map(|bytes| bytes.len())
                     .sum::<usize>(),
             );
+        }
+        if tone_length != 0 && self.header.tone_data_offset == 0 {
+            self.header.tone_data_offset =
+                u16::try_from(position.saturating_sub(self.header.base_offset))
+                    .unwrap_or(u16::MAX);
         }
     }
 }

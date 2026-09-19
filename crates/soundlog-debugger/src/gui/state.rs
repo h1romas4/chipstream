@@ -629,11 +629,11 @@ mod tests {
             super::AstBuildMessage::Full { generation, nodes } => {
                 assert_eq!(generation, 1);
                 assert_eq!(nodes[0].title, "Header");
-                assert_eq!(nodes[2].title, "Track 0");
-                assert_eq!(nodes[2].lazy_count, Some(2));
-                assert_eq!(nodes[2].lazy_track, Some(0));
-                assert!(nodes[2].children.is_empty());
-                assert_eq!(nodes.len(), 3);
+                assert_eq!(nodes[1].title, "Track 0");
+                assert_eq!(nodes[1].lazy_count, Some(2));
+                assert_eq!(nodes[1].lazy_track, Some(0));
+                assert!(nodes[1].children.is_empty());
+                assert_eq!(nodes.len(), 2);
                 state.ast_root = nodes;
             }
             message => panic!(
@@ -642,7 +642,7 @@ mod tests {
             ),
         }
 
-        state.request_children(vec![2], 0, 2);
+        state.request_children(vec![1], 0, 2);
         match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
             super::AstBuildMessage::Partial {
                 generation, nodes, ..

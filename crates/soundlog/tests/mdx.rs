@@ -445,7 +445,7 @@ fn mdx_builder_encodes_string_metadata_as_shift_jis() {
 }
 
 #[test]
-fn mdx_builder_serializes_tone_bank_before_tracks() {
+fn mdx_builder_serializes_tone_bank_after_tracks() {
     let tone = MdxTone {
         voice_number: 3,
         con: 1,
@@ -471,7 +471,15 @@ fn mdx_builder_serializes_tone_bank_before_tracks() {
         .add_mdx_command(0, MdxVolumeUp);
 
     let document = builder.finalize().unwrap();
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse built tone bank");
+    let bytes = document.to_bytes();
+    let tone_position = document.header.tone_data_position().unwrap();
+    let track_position = document.header.track_position(0).unwrap();
+    let track_length = document.tracks[0]
+        .iter()
+        .map(|command| command.to_mdx_bytes().unwrap().len())
+        .sum::<usize>();
+    assert_eq!(tone_position, track_position + track_length);
+    let reparsed = MdxDocument::parse(&bytes).expect("parse built tone bank");
 
     assert_eq!(reparsed.tone_bank.tones, vec![tone]);
     assert_eq!(reparsed.tracks, document.tracks);
