@@ -7,9 +7,9 @@ use std::path::Path;
 
 use soundlog::mdx::command::{
     MdxAdpcmOrNoiseFrequency, MdxCommand, MdxEndOfTrack, MdxExtended2Command, MdxExtendedCommand,
-    MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite, MdxPan, MdxPitchLfo,
-    MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown,
-    MdxVolumeLfo, MdxVolumeUp,
+    MdxKeyOffDisable, MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite,
+    MdxPan, MdxPitchLfo, MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank,
+    MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
     MdxConvertError, MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator,
@@ -1661,6 +1661,52 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
         })
         .collect();
     assert_eq!(pcm_pan_writes, vec![2]);
+}
+
+#[test]
+fn mdx_converter_does_not_retrigger_a_held_pcm_block() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
+        .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
+        .add_mdx_command(8, MdxKeyOffDisable)
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 4,
+            },
+        )
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 4,
+            },
+        )
+        .add_mdx_command(8, MdxRest { ticks: 4 });
+    let mut pdx_builder = PdxBuilder::new();
+    pdx_builder
+        .set_sample(0, 0, (0..1024).map(|value| value as u8).collect())
+        .unwrap();
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: Some(pdx_builder.finalize()),
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("held PCM notes should convert");
+    let pcm_bytes: Vec<_> = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => Some(spec.value),
+            _ => None,
+        })
+        .collect();
+    assert!(pcm_bytes.len() > 120);
+    assert_eq!(pcm_bytes[100], 100);
+    assert_eq!(pcm_bytes[110], 110);
 }
 
 #[test]

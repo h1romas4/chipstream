@@ -727,7 +727,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let block_key = (bank, note_index, format_key);
         let rate_step = self.tracks[track].pcm_rate_step;
         let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
-        let same_block = tie && self.pcm_channels[channel].block_key == Some(block_key);
+        let same_block = self.pcm_channels[channel].hold
+            && self.pcm_channels[channel].block_key == Some(block_key);
+        if same_block {
+            // F7 followed by the same PCM note is a held note, not a second
+            // trigger. This is the NanoDriveX "WAPICO" compatibility case.
+            return;
+        }
         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through)
             && !same_block
@@ -764,7 +770,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let state = &mut self.pcm_channels[channel];
         state.rate_step = rate_step;
         state.gain = gain;
-        state.hold = false;
+        state.hold = tie;
     }
 
     /// Applies a live volume change to a currently-playing ADPCM/PCM
@@ -833,6 +839,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // cancels any pending tie, regardless of prior state.
                     self.tracks[track].key_off_ticks = command.ticks;
                     self.tracks[track].key_off_disabled = false;
+                    if track >= 8 {
+                        // NanoDriveX clears the ADPCM hold at a rest while
+                        // allowing the sample to continue to its own end.
+                        self.pcm_channels[track - 8].hold = false;
+                    }
                 }
                 MdxCommand::Note(command) if track < 8 => {
                     let note = i32::from(command.note - 0x80) + self.tracks[track].transpose;
