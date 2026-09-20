@@ -675,14 +675,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             if !self.tracks[track_index].active {
                 continue;
             }
+            if self.tracks[track_index].wait_ticks > 0 {
+                self.tracks[track_index].wait_ticks -= 1;
+            }
             if track_index < 8 {
                 self.update_fm_tick(track_index, builder);
             }
             self.process_key_off(track_index, builder);
             self.process_key_on_delay(track_index, builder)?;
-            if self.tracks[track_index].wait_ticks > 0 {
-                self.tracks[track_index].wait_ticks -= 1;
-            }
             // Sync-wait only blocks new command processing; envelope, pitch
             // and LFO updates above still run while a track waits.
             if self.tracks[track_index].sync_wait {
