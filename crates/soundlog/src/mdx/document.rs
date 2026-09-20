@@ -522,8 +522,7 @@ impl MdxDocument {
         }
         if tone_length != 0 && self.header.tone_data_offset == 0 {
             self.header.tone_data_offset =
-                u16::try_from(position.saturating_sub(self.header.base_offset))
-                    .unwrap_or(u16::MAX);
+                u16::try_from(position.saturating_sub(self.header.base_offset)).unwrap_or(u16::MAX);
         }
     }
 }

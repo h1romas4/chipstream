@@ -79,7 +79,6 @@ enum MdxPcmMode {
     Pcm8a,
 }
 
-
 /// Schedules the OKIM6258 data-register writes driven by the hardware MCK.
 ///
 /// NanoDriveX receives one output event per PCM byte from its MCK interrupt.
@@ -105,8 +104,7 @@ impl MckScheduler {
     }
 
     fn advance(&mut self, tick_microseconds: u32) -> u32 {
-        let accumulator = self.time_remainder
-            + tick_microseconds.saturating_mul(self.byte_rate_hz);
+        let accumulator = self.time_remainder + tick_microseconds.saturating_mul(self.byte_rate_hz);
         let bytes_due = accumulator / MICROSECONDS_PER_SECOND;
         self.time_remainder = accumulator % MICROSECONDS_PER_SECOND;
         bytes_due
@@ -635,10 +633,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Runs one tick of playback, appending any resulting commands to
     /// `builder`. Shared by the eager [`to_vgm_document`] loop and
     /// [`MdxVgmGenerator`], which drives the same steps lazily.
-    fn step(
-        &mut self,
-        builder: &mut VgmBuilder,
-    ) -> Result<StepOutcome, MdxConvertError> {
+    fn step(&mut self, builder: &mut VgmBuilder) -> Result<StepOutcome, MdxConvertError> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
@@ -873,10 +868,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 break;
             };
             self.tracks[track].command_index += 1;
-                if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
-                    self.raw_pcm_bytes.clear();
-                    self.raw_pcm_position = 0;
-                }
+            if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+                self.raw_pcm_bytes.clear();
+                self.raw_pcm_position = 0;
+            }
             match command {
                 MdxCommand::Rest(command) => {
                     self.tracks[track].wait_ticks = command.ticks;
@@ -1858,8 +1853,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// samples to maintain accurate playback timing.
     fn emit_wait(&mut self, builder: &mut VgmBuilder) {
         let tick_microseconds = self.tick_microseconds();
-        let sample_accumulator = self.sample_remainder
-            + tick_microseconds * VGM_SAMPLE_RATE;
+        let sample_accumulator = self.sample_remainder + tick_microseconds * VGM_SAMPLE_RATE;
         let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
         self.sample_remainder = sample_accumulator % MICROSECONDS_PER_SECOND;
 
@@ -1890,9 +1884,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             // Place each byte at its fractional position in the tick. Using
             // the cumulative target avoids dropping the remainder on every
             // tick and produces the 5/6-sample cadence of a 7812 Hz stream.
-            let target_index = if first_byte_at_zero { byte_index } else { byte_index + 1 };
-            let target_samples = (u64::from(target_index) * u64::from(samples)
-                / u64::from(pcm_bytes_due)) as u32;
+            let target_index = if first_byte_at_zero {
+                byte_index
+            } else {
+                byte_index + 1
+            };
+            let target_samples =
+                (u64::from(target_index) * u64::from(samples) / u64::from(pcm_bytes_due)) as u32;
             Self::emit_wait_chunks(builder, target_samples - emitted_samples);
             emitted_samples = target_samples;
             self.emit_pcm_byte(builder);
@@ -2097,10 +2095,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
             }
         }
 
-        match self
-            .playback
-            .step(&mut self.builder)?
-        {
+        match self.playback.step(&mut self.builder)? {
             StepOutcome::Finished => {
                 self.playback.emit_closing_commands(&mut self.builder);
                 // `VgmBuilder::finalize()` is never called in the lazy path (it

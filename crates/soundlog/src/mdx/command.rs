@@ -331,10 +331,7 @@ impl MdxCommandSpec for MdxPan {
         dest.extend_from_slice(&[self.opcode(), self.raw()]);
     }
     fn parse(bytes: &[u8], offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
-        Ok((
-            Self::from_raw(read_u8_at(bytes, offset)?),
-            2,
-        ))
+        Ok((Self::from_raw(read_u8_at(bytes, offset)?), 2))
     }
 }
 

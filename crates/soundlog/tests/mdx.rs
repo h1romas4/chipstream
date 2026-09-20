@@ -8,8 +8,8 @@ use std::path::Path;
 use soundlog::mdx::command::{
     MdxAdpcmOrNoiseFrequency, MdxCommand, MdxEndOfTrack, MdxExtended2Command, MdxExtendedCommand,
     MdxKeyOffDisable, MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite,
-    MdxPan, MdxPitchLfo, MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank,
-    MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
+    MdxPan, MdxPitchLfo, MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume,
+    MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
     MdxConvertError, MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator,
@@ -1276,10 +1276,7 @@ fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
             op: 0x0f,
             operators: [MdxOperator::default(); 4],
         })
-        .add_mdx_command(
-            0,
-            MdxCommand::Pan(soundlog::mdx::command::MdxPan::Center),
-        )
+        .add_mdx_command(0, MdxCommand::Pan(soundlog::mdx::command::MdxPan::Center))
         .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(
             0,
