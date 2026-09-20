@@ -3,6 +3,11 @@
 ## Unreleased
 
 - [x] Add: Initial MDX format support (`mdx` feature).
+    - [x] Parse and serialize MDX Extended Commands
+      - [x] Implemented: `E6` Transpose / Relative Transpose
+      - [x] Implemented: Parse and round-trip all `E7` subcommands
+      - [ ] Not implemented: Playback of `E6` Relative Detune
+      - [ ] Not implemented: VGM playback for `E7` Fadeout / PCM8 Direct Drive / Key Off / Channel Control / Add Note Length / Set Flag
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
