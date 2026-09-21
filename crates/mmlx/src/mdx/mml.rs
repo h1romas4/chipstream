@@ -791,7 +791,7 @@ fn parse_repeat(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
     }
     MmlCommand::Repeat {
         body,
-        count: count.expect("repeat must have a count"),
+        count: count.unwrap_or(2),
     }
 }
 
@@ -888,6 +888,16 @@ mod tests {
         let document = parse("A S10\n").unwrap();
 
         assert_eq!(document.tracks[0].commands, vec![MmlCommand::SyncSend(10)]);
+    }
+
+    #[test]
+    fn defaults_repeat_count_to_two() {
+        let document = parse("A [c d]\n").unwrap();
+
+        assert!(matches!(
+            document.tracks[0].commands.as_slice(),
+            [MmlCommand::Repeat { count: 2, .. }]
+        ));
     }
 
     #[test]

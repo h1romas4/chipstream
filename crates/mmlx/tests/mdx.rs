@@ -347,6 +347,19 @@ fn compiles_repeat_and_loop_commands_ast() {
 }
 
 #[test]
+fn compiles_repeat_with_default_count_ast() {
+    let commands = compile_source("A [c d]\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::LoopStart(command) if command.count == 2));
+    assert!(matches!(commands[1], MdxCommand::Note(_)));
+    assert!(matches!(commands[2], MdxCommand::Note(_)));
+    assert!(matches!(
+        commands[3],
+        MdxCommand::LoopEnd(command) if command.offset == -9
+    ));
+}
+
+#[test]
 fn compiles_loop_point_ast() {
     let commands = compile_source("A c L d\n").tracks[0].clone();
 

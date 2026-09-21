@@ -38,7 +38,7 @@ command = _{
 	| lfo_delay | ignore | pcm_frequency
 }
 
-repeat = { "[" ~ command* ~ "]" ~ repeat_count }
+repeat = { "[" ~ command* ~ "]" ~ repeat_count? }
 
 tempo = { "t" ~ tempo_number }
 opm_tempo = { "@t" ~ opm_tempo_number }
