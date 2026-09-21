@@ -103,7 +103,7 @@ pan_number = @{ '0'..'3' }
 noise_number = @{ "3" ~ ('0'..'1') | ('1'..'2') ~ ASCII_DIGIT | ('0'..'9') }
 pcm_frequency_number = @{ ('0'..'9') | "1" ~ ('0'..'2') }
 signed_number = @{ "-"? ~ ASCII_DIGIT+ }
-channel_ref = @{ 'A'..'H' | "P" | ASCII_DIGIT }
+channel_ref = @{ 'A'..'H' | 'P'..'W' | number }
 
 string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 comment = { ";" ~ (!NEWLINE ~ ANY)* ~ NEWLINE? }

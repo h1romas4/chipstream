@@ -350,12 +350,7 @@ fn compile_commands(
                 }
                 .into(),
             ),
-            MmlCommand::SyncSend(channel) => output.push(
-                MdxSyncSend {
-                    value: sync_channel_value(*channel)?,
-                }
-                .into(),
-            ),
+            MmlCommand::SyncSend(value) => output.push(MdxSyncSend { value: *value }.into()),
             MmlCommand::SyncWait => output.push(soundlog::mdx::command::MdxSyncWait.into()),
             MmlCommand::PitchLfo {
                 waveform,
@@ -603,15 +598,6 @@ fn channel_index(channel: char) -> Result<usize, CompileError> {
 }
 
 /// Map an MML synchronization channel to the value used by MDX.
-fn sync_channel_value(channel: char) -> Result<u8, CompileError> {
-    match channel {
-        'A'..='H' => Ok(channel as u8 - b'A'),
-        'P'..='W' => Ok(channel as u8 - b'P' + 8),
-        '0'..='9' => Ok(channel as u8 - b'0'),
-        _ => Err(CompileError::InvalidChannel(channel)),
-    }
-}
-
 /// Return the serialized byte length of a sequence of MDX commands.
 fn command_bytes(commands: &[MdxCommand]) -> usize {
     commands

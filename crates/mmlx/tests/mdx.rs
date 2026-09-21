@@ -316,6 +316,16 @@ fn compiles_noise_and_pcm_frequency_ast() {
 }
 
 #[test]
+fn compiles_multidigit_sync_channel_ast() {
+    let commands = compile_source("A S10\n").tracks[0].clone();
+
+    assert!(matches!(
+        commands[0],
+        MdxCommand::SyncSend(command) if command.value == 10
+    ));
+}
+
+#[test]
 fn compiles_repeat_and_loop_commands_ast() {
     let commands = compile_source("A L [c / d]3\n").tracks[0].clone();
 

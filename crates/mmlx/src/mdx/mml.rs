@@ -126,8 +126,8 @@ pub enum MmlCommand {
     KeyOnDelay(u8),
     /// Set noise frequency.
     NoiseFrequency(u8),
-    /// Send a synchronization event to another channel.
-    SyncSend(char),
+    /// Send a synchronization event to another channel value.
+    SyncSend(u8),
     /// Wait for a synchronization event.
     SyncWait,
     /// Configure pitch LFO.
@@ -641,15 +641,20 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
         }
         Rule::key_on_delay => MmlCommand::KeyOnDelay(parse_single_u16(pair) as u8),
         Rule::noise_frequency => MmlCommand::NoiseFrequency(parse_single_u16(pair) as u8),
-        Rule::sync_send => MmlCommand::SyncSend(
-            pair.into_inner()
+        Rule::sync_send => {
+            let channel = pair
+                .into_inner()
                 .next()
                 .expect("sync send has a channel")
-                .as_str()
-                .chars()
-                .next()
-                .expect("channel is not empty"),
-        ),
+                .as_str();
+            let value = match channel.as_bytes().first().copied() {
+                Some(b'A'..=b'H') => channel.as_bytes()[0] - b'A',
+                Some(b'P'..=b'W') => channel.as_bytes()[0] - b'P' + 8,
+                Some(b'0'..=b'9') => channel.parse().expect("sync channel is valid"),
+                _ => unreachable!("sync channel is valid"),
+            };
+            MmlCommand::SyncSend(value)
+        }
         Rule::sync_wait => MmlCommand::SyncWait,
         Rule::pitch_lfo => {
             let values = parse_u16_values(pair);
@@ -876,6 +881,13 @@ mod tests {
                 value: 2
             })
         ));
+    }
+
+    #[test]
+    fn parses_multidigit_sync_channel() {
+        let document = parse("A S10\n").unwrap();
+
+        assert_eq!(document.tracks[0].commands, vec![MmlCommand::SyncSend(10)]);
     }
 
     #[test]
