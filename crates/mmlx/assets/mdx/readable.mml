@@ -1,0 +1,31 @@
+#title "Readable MXDRV parser fixture"
+#pcmfile "fixture.pdx"
+
+@1 = {
+    /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
+       28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
+       22, 9,  1,  2, 1,  47, 2, 12, 0,  0,  0,
+       29, 4,  3,  6, 1,  37, 1, 3,  3,  0,  0,
+       15, 7,  0,  5, 10,  0, 2, 1,  0,  0,  1,
+    /* CON FL OP */
+       2,  7, 15
+}
+
+; Basic timing, pitch, and articulation commands.
+A @t200 @1 t120 o4 l8 c+8 d-8 e4 r8 n12,16
+B < > q4 @q12 _ & v8 @v100 ( ) p3
+
+; Looping, register access, synchronization, and noise.
+C L D-12 [ c4 / d4 ]2 y1,2 k3 w4 S0 W
+
+; Pitch LFO and volume LFO.
+D MP0,4,5 MPON MPOF MA0,4,5 MAON MAOF MD3
+
+; OPM LFO and ignore.
+E MH0,1,2,3,4,5,1 MHON MHOF !
+
+/* A final track with a summed length expression. */
+F c4^%24 r%12^8
+
+; PCM-only commands belong to the PCM channel.
+P F4

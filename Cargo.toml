@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["crates/soundlog", "crates/soundlog-debugger" ]
+members = ["crates/mmlx","crates/soundlog", "crates/soundlog-debugger" ]
