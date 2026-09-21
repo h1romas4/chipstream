@@ -49,8 +49,8 @@ pub enum MmlCommand {
         /// Number of repetitions.
         count: u16,
     },
-    /// Set tempo using `t`.
-    Tempo(u8),
+    /// Set tempo using `t` in quarter notes per second.
+    Tempo(u32),
     /// Play a named note.
     Note {
         /// Note name from `a` through `g`.
@@ -90,7 +90,7 @@ pub enum MmlCommand {
     /// Increase the octave.
     OctaveUp,
     /// Set the default note length.
-    DefaultLength(u16),
+    DefaultLength(MmlLength),
     /// Set the gate value.
     Gate(u8),
     /// Set the fine gate value using `@q`.
@@ -394,7 +394,7 @@ fn describe_rule(rule: &Rule) -> String {
         Rule::octave_number => "octave (0..=8, 1 digit)".to_owned(),
         Rule::gate_number => "gate (1..=8, 1 digit)".to_owned(),
         Rule::pan_number => "pan (0..=3, 1 digit)".to_owned(),
-        Rule::noise_number => "noise frequency (0..=311, up to 3 digits)".to_owned(),
+        Rule::noise_number => "noise frequency (0..=31, up to 2 digits)".to_owned(),
         other => format!("{other:?}"),
     }
 }
@@ -412,6 +412,7 @@ fn validate_document(document: &MmlDocument) -> Result<(), ParseError> {
 /// Validate command-specific ranges and recursively validate repeat bodies.
 fn validate_command(command: &MmlCommand) -> Result<(), ParseError> {
     match command {
+        MmlCommand::Tempo(value) => validate_range("tempo", *value as i64, 1, i64::MAX)?,
         MmlCommand::Repeat { body, count } => {
             validate_range("repeat", *count as i64, 2, 255)?;
             for command in body {
@@ -427,6 +428,7 @@ fn validate_command(command: &MmlCommand) -> Result<(), ParseError> {
         } => validate_range("note length", *length as i64, 1, 256)?,
         MmlCommand::ExtendedNote { length, .. }
         | MmlCommand::ExtendedRest(length)
+        | MmlCommand::DefaultLength(length)
         | MmlCommand::NumericNote {
             length: Some(length),
             ..
@@ -613,14 +615,9 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                 .parse()
                 .expect("number is valid"),
         ),
-        Rule::default_length => MmlCommand::DefaultLength(
-            pair.into_inner()
-                .next()
-                .expect("length must have a number")
-                .as_str()
-                .parse()
-                .expect("number is valid"),
-        ),
+        Rule::default_length => MmlCommand::DefaultLength(parse_length(
+            pair.into_inner().next().expect("length must have a value"),
+        )),
         Rule::octave_down => MmlCommand::OctaveDown,
         Rule::octave_up => MmlCommand::OctaveUp,
         Rule::gate => MmlCommand::Gate(parse_single_u16(pair) as u8),
@@ -827,6 +824,34 @@ mod tests {
         assert!(tree.contains("MmlDocument"), "{tree}");
         assert!(tree.contains("tracks"), "{tree}");
         assert!(tree.contains("Note"), "{tree}");
+    }
+
+    #[test]
+    fn parses_tick_lengths_as_default_and_explicit_lengths() {
+        let document = parse("A l%192 c%36\n").unwrap();
+
+        assert_eq!(
+            document.tracks[0].commands,
+            vec![
+                MmlCommand::DefaultLength(MmlLength::Ticks(192)),
+                MmlCommand::ExtendedNote {
+                    name: 'c',
+                    accidental: None,
+                    length: MmlLength::Ticks(36),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_documented_volume_and_noise_limits() {
+        let document = parse("A v15 w31\n").unwrap();
+
+        assert_eq!(document.tracks[0].commands[0], MmlCommand::Volume(15));
+        assert_eq!(
+            document.tracks[0].commands[1],
+            MmlCommand::NoiseFrequency(31)
+        );
     }
 
     #[test]

@@ -3,10 +3,10 @@
 use std::fmt;
 
 use soundlog::mdx::command::{
-    MdxAdpcmOrNoiseFrequency, MdxCommand, MdxGate, MdxKeyOffDisable, MdxKeyOnDelay, MdxLfoDelay,
-    MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite, MdxPan, MdxPitchLfo,
-    MdxRelativeOffset, MdxRest, MdxSignedWord, MdxSyncSend, MdxTempo, MdxVoiceOrPcmBank, MdxVolume,
-    MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
+    MdxAdpcmOrNoiseFrequency, MdxCommand, MdxEndOfTrack, MdxGate, MdxKeyOffDisable, MdxKeyOnDelay,
+    MdxLfoDelay, MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite, MdxPan,
+    MdxPitchLfo, MdxRelativeOffset, MdxRest, MdxSignedWord, MdxSyncSend, MdxTempo,
+    MdxVoiceOrPcmBank, MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
@@ -14,7 +14,6 @@ use soundlog::mdx::tone::{MdxOperator, MdxTone};
 use super::mml::{Accidental, MmlCommand, MmlDocument, MmlLength, MmlVoice};
 
 const TICKS_PER_WHOLE: u16 = 192;
-const DEFAULT_LENGTH: u16 = 4;
 const FIRST_NOTE: u16 = 0x80;
 const LAST_NOTE: u16 = 0xdf;
 
@@ -72,6 +71,8 @@ impl std::error::Error for CompileError {}
 /// represented by soundlog's MDX model.
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
+    let mut tracks: [Vec<MdxCommand>; 9] = std::array::from_fn(|_| Vec::new());
+    let mut track_states: [TrackState; 9] = std::array::from_fn(|_| TrackState::default());
     if let Some(title) = &document.title {
         builder.set_title(title);
     }
@@ -83,7 +84,16 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
 
     for track in &document.tracks {
         let track_index = channel_index(track.channel)?;
-        let commands = compile_track(&track.commands)?;
+        tracks[track_index].extend(compile_track(
+            &track.commands,
+            &mut track_states[track_index],
+        )?);
+    }
+
+    for (track_index, mut commands) in tracks.into_iter().enumerate() {
+        if commands.is_empty() {
+            commands.push(MdxEndOfTrack.into());
+        }
         builder.set_track(track_index, commands);
     }
 
@@ -101,7 +111,7 @@ fn compile_voice(voice: &MmlVoice) -> Result<MdxTone, CompileError> {
         });
     }
 
-    let operators = std::array::from_fn(|index| {
+    let operators = [0, 2, 1, 3].map(|index| {
         let values = &voice.values[index * 11..index * 11 + 11];
         MdxOperator {
             ar: values[0],
@@ -127,19 +137,27 @@ fn compile_voice(voice: &MmlVoice) -> Result<MdxTone, CompileError> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct TrackState {
     octave: u8,
-    default_length: u16,
+    default_length: MmlLength,
+}
+
+impl Default for TrackState {
+    fn default() -> Self {
+        Self {
+            octave: 4,
+            default_length: MmlLength::Denominator(4),
+        }
+    }
 }
 
 /// Compile one track while maintaining its octave and default note length.
-fn compile_track(commands: &[MmlCommand]) -> Result<Vec<MdxCommand>, CompileError> {
-    let mut state = TrackState {
-        octave: 4,
-        default_length: DEFAULT_LENGTH,
-    };
-    compile_commands(commands, &mut state)
+fn compile_track(
+    commands: &[MmlCommand],
+    state: &mut TrackState,
+) -> Result<Vec<MdxCommand>, CompileError> {
+    compile_commands(commands, state)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -148,10 +166,42 @@ fn compile_commands(
     state: &mut TrackState,
 ) -> Result<Vec<MdxCommand>, CompileError> {
     let mut output = Vec::new();
-    for command in commands {
+    let mut index = 0;
+    while index < commands.len() {
+        let command = &commands[index];
+        let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
+        let mut consumed = 1;
+        if matches!(commands.get(index + 1), Some(MmlCommand::Portamento)) {
+            if let Some(target) = commands.get(index + 2) {
+                if let (Some(source_note), Some(target_note)) = (
+                    command_note_number(command, state.octave)?,
+                    command_note_number(target, state.octave)?,
+                ) {
+                    let offset = i32::from(target_note) - i32::from(source_note);
+                    let offset =
+                        i16::try_from(offset * 341).map_err(|_| CompileError::InvalidValue {
+                            command: "portamento",
+                            value: i64::from(offset * 341),
+                        })?;
+                    output.push(MdxCommand::Portamento(MdxSignedWord {
+                        opcode: 0xf2,
+                        offset,
+                    }));
+                    consumed = 3;
+                }
+            }
+        }
         match command {
-            MmlCommand::OpmTempo(value) | MmlCommand::Tempo(value) => {
+            MmlCommand::OpmTempo(value) => {
                 output.push(MdxTempo { value: *value }.into());
+            }
+            MmlCommand::Tempo(value) => {
+                output.push(
+                    MdxTempo {
+                        value: tempo_value(*value)?,
+                    }
+                    .into(),
+                );
             }
             MmlCommand::VoiceSelect(value) => {
                 output.push(MdxVoiceOrPcmBank { value: *value }.into());
@@ -177,40 +227,53 @@ fn compile_commands(
                 name,
                 accidental,
                 length,
-            } => output.extend(compile_note(
-                note_number(state.octave, *name, *accidental)?,
-                note_ticks(
-                    length.map(MmlLength::Denominator).as_ref(),
-                    state.default_length,
-                )?,
-            )?),
+            } => {
+                if note_is_legato {
+                    output.push(MdxKeyOffDisable.into());
+                }
+                output.extend(compile_note(
+                    note_number(state.octave, *name, *accidental)?,
+                    note_ticks(
+                        length.map(MmlLength::Denominator).as_ref(),
+                        &state.default_length,
+                    )?,
+                )?);
+            }
             MmlCommand::ExtendedNote {
                 name,
                 accidental,
                 length,
-            } => output.extend(compile_note(
-                note_number(state.octave, *name, *accidental)?,
-                length_ticks(length, state.default_length)?,
-            )?),
-            MmlCommand::NumericNote { note, length } => output.extend(compile_note(
-                *note as u16,
-                note_ticks(length.as_ref(), state.default_length)?,
-            )?),
+            } => {
+                if note_is_legato {
+                    output.push(MdxKeyOffDisable.into());
+                }
+                output.extend(compile_note(
+                    note_number(state.octave, *name, *accidental)?,
+                    length_ticks(length)?,
+                )?);
+            }
+            MmlCommand::NumericNote { note, length } => {
+                if note_is_legato {
+                    output.push(MdxKeyOffDisable.into());
+                }
+                output.extend(compile_note(
+                    *note as u16,
+                    note_ticks(length.as_ref(), &state.default_length)?,
+                )?);
+            }
             MmlCommand::Rest { length } => output.extend(compile_rest(note_ticks(
                 length.map(MmlLength::Denominator).as_ref(),
-                state.default_length,
+                &state.default_length,
             )?)),
-            MmlCommand::ExtendedRest(length) => {
-                output.extend(compile_rest(length_ticks(length, state.default_length)?))
-            }
+            MmlCommand::ExtendedRest(length) => output.extend(compile_rest(length_ticks(length)?)),
             MmlCommand::Octave(value) => state.octave = *value,
             MmlCommand::OctaveDown => state.octave = state.octave.saturating_sub(1),
             MmlCommand::OctaveUp => state.octave = state.octave.saturating_add(1),
-            MmlCommand::DefaultLength(value) => state.default_length = *value,
+            MmlCommand::DefaultLength(value) => state.default_length = value.clone(),
             MmlCommand::Gate(value) => output.push(MdxGate { value: *value }.into()),
             MmlCommand::FineGate(value) => output.push(
                 MdxGate {
-                    value: checked_u8("@q", *value as i64)?,
+                    value: checked_u8("@q", 256 - i64::from(*value))?,
                 }
                 .into(),
             ),
@@ -218,10 +281,14 @@ fn compile_commands(
                 opcode: 0xf2,
                 offset: 0,
             })),
-            MmlCommand::Legato => output.push(MdxKeyOffDisable.into()),
-            MmlCommand::Volume(value) | MmlCommand::FineVolume(value) => {
-                output.push(MdxVolume { value: *value }.into())
-            }
+            MmlCommand::Legato => {}
+            MmlCommand::Volume(value) => output.push(MdxVolume { value: *value }.into()),
+            MmlCommand::FineVolume(value) => output.push(
+                MdxVolume {
+                    value: checked_u8("@v", 128 + i64::from(*value))?,
+                }
+                .into(),
+            ),
             MmlCommand::VolumeDown => output.push(MdxVolumeDown.into()),
             MmlCommand::VolumeUp => output.push(MdxVolumeUp.into()),
             MmlCommand::Pan(value) => output.push(MdxPan::from_raw(*value).into()),
@@ -265,13 +332,8 @@ fn compile_commands(
             } => output.push(
                 MdxPitchLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: *period,
-                    amplitude: i16::try_from(*amplitude).map_err(|_| {
-                        CompileError::InvalidValue {
-                            command: "pitch LFO amplitude",
-                            value: *amplitude as i64,
-                        }
-                    })?,
+                    frequency: checked_u16("pitch LFO period", u32::from(*period) * 2)?,
+                    amplitude: checked_i16("pitch LFO amplitude", u32::from(*amplitude) * 128)?,
                 }
                 .into(),
             ),
@@ -286,8 +348,8 @@ fn compile_commands(
             } => output.push(
                 MdxVolumeLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: *period,
-                    amplitude: *amplitude,
+                    frequency: checked_u16("volume LFO period", u32::from(*period) * 2)?,
+                    amplitude: checked_u16("volume LFO amplitude", u32::from(*amplitude) * 32)?,
                 }
                 .into(),
             ),
@@ -308,19 +370,34 @@ fn compile_commands(
                 key_sync,
             } => output.push(
                 MdxOpmLfo::Configure {
-                    control: ((*key_sync & 1) << 7) | (*waveform & 3),
+                    control: ((*key_sync & 1) << 6) | (*waveform & 3),
                     lfrq: *lfrq,
-                    pmd: *pmd,
+                    pmd: 0x80 | *pmd,
                     amd: *amd,
-                    pms_ams: ((*pms & 7) << 4) | (*ams & 3),
+                    pms_ams: ((*pms & 7) << 4) | (*ams & 0xf),
                 }
                 .into(),
             ),
             MmlCommand::OpmLfoOn => output.push(MdxOpmLfo::SetEnabled { enabled: true }.into()),
             MmlCommand::OpmLfoOff => output.push(MdxOpmLfo::SetEnabled { enabled: false }.into()),
         }
+        index += consumed;
     }
     Ok(output)
+}
+
+/// Return the note number represented by a note command at the current octave.
+fn command_note_number(command: &MmlCommand, octave: u8) -> Result<Option<u16>, CompileError> {
+    match command {
+        MmlCommand::Note {
+            name, accidental, ..
+        }
+        | MmlCommand::ExtendedNote {
+            name, accidental, ..
+        } => Ok(Some(note_number(octave, *name, *accidental)?)),
+        MmlCommand::NumericNote { note, .. } => Ok(Some(*note as u16)),
+        _ => Ok(None),
+    }
 }
 
 /// Encode a note, splitting it when its duration exceeds one MDX note command.
@@ -402,26 +479,38 @@ fn note_number(
 }
 
 /// Convert an optional note length to ticks, using the track default when absent.
-fn note_ticks(length: Option<&MmlLength>, default_length: u16) -> Result<u16, CompileError> {
+fn note_ticks(length: Option<&MmlLength>, default_length: &MmlLength) -> Result<u16, CompileError> {
     length
-        .map(|length| length_ticks(length, default_length))
-        .unwrap_or_else(|| ticks_from_denominator(default_length, "default length"))
+        .map(length_ticks)
+        .unwrap_or_else(|| length_ticks(default_length))
 }
 
 /// Convert a parsed MML length expression into MDX ticks.
-fn length_ticks(length: &MmlLength, default_length: u16) -> Result<u16, CompileError> {
+fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
     match length {
         MmlLength::Denominator(value) => ticks_from_denominator(*value, "note length"),
         MmlLength::Ticks(value) => Ok(*value),
         MmlLength::Sum(values) => values.iter().try_fold(0_u16, |total, value| {
             total
-                .checked_add(length_ticks(value, default_length)?)
+                .checked_add(length_ticks(value)?)
                 .ok_or(CompileError::InvalidValue {
                     command: "note length",
                     value: i64::from(u16::MAX),
                 })
         }),
     }
+}
+
+/// Convert a BPM-style MML tempo into the OPM tempo byte used by MDX.
+fn tempo_value(bpm: u32) -> Result<u8, CompileError> {
+    if bpm == 0 {
+        return Err(CompileError::InvalidValue {
+            command: "tempo",
+            value: 0,
+        });
+    }
+    let decrement = 78_125 / (16_u64 * u64::from(bpm));
+    Ok(256_u64.saturating_sub(decrement).min(u64::from(u8::MAX)) as u8)
 }
 
 /// Convert a denominator-based length into ticks for a whole note of 192 ticks.
@@ -435,6 +524,22 @@ fn ticks_from_denominator(value: u16, command: &'static str) -> Result<u16, Comp
 /// Convert a signed integer to an MDX unsigned byte value.
 fn checked_u8(command: &'static str, value: i64) -> Result<u8, CompileError> {
     u8::try_from(value).map_err(|_| CompileError::InvalidValue { command, value })
+}
+
+/// Convert a scaled MML value to an MDX unsigned 16-bit value.
+fn checked_u16(command: &'static str, value: u32) -> Result<u16, CompileError> {
+    u16::try_from(value).map_err(|_| CompileError::InvalidValue {
+        command,
+        value: i64::from(value),
+    })
+}
+
+/// Convert a scaled MML value to an MDX signed 16-bit value.
+fn checked_i16(command: &'static str, value: u32) -> Result<i16, CompileError> {
+    i16::try_from(value).map_err(|_| CompileError::InvalidValue {
+        command,
+        value: i64::from(value),
+    })
 }
 
 /// Map an MML track channel to its zero-based MDX track index.
@@ -469,7 +574,7 @@ fn command_bytes(commands: &[MdxCommand]) -> usize {
 mod tests {
     use super::*;
     use crate::mdx::parse;
-    use soundlog::mdx::command::MdxEndOfTrack;
+    use soundlog::mdx::command::{MdxEndOfTrack, MdxTempo};
 
     #[test]
     fn compiles_metadata_voice_and_basic_track() {
@@ -488,6 +593,19 @@ mod tests {
     }
 
     #[test]
+    fn includes_end_of_track_for_empty_standard_tracks() {
+        let compiled = compile(&parse("").unwrap()).unwrap();
+
+        assert_eq!(compiled.tracks.len(), 9);
+        assert!(
+            compiled
+                .tracks
+                .iter()
+                .all(|track| matches!(track.as_slice(), [MdxCommand::EndOfTrack(_)]))
+        );
+    }
+
+    #[test]
     fn compiles_voice_parameters_into_soundlog_tone() {
         let source = "@1={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}\n";
         let compiled = compile(&parse(source).unwrap()).unwrap();
@@ -497,5 +615,31 @@ mod tests {
         assert_eq!(tone.operators[0].ar, 1);
         assert_eq!(tone.operators[3].ame, 44);
         assert_eq!((tone.con, tone.fl, tone.op), (45, 46, 47));
+    }
+
+    #[test]
+    fn converts_bpm_tempo_to_mdx_tempo() {
+        let compiled = compile(&parse("A t30 t4882\n").unwrap()).unwrap();
+
+        assert!(matches!(
+            compiled.tracks[0][0],
+            MdxCommand::Tempo(MdxTempo { value: 94 })
+        ));
+        assert!(matches!(
+            compiled.tracks[0][1],
+            MdxCommand::Tempo(MdxTempo { value: 255 })
+        ));
+    }
+
+    #[test]
+    fn places_key_off_disable_before_legato_notes() {
+        let compiled = compile(&parse("A c&d e\n").unwrap()).unwrap();
+        let commands = &compiled.tracks[0];
+
+        assert!(matches!(commands[0], MdxCommand::KeyOffDisable(_)));
+        assert!(matches!(commands[1], MdxCommand::Note(_)));
+        assert!(matches!(commands[2], MdxCommand::Note(_)));
+        assert!(matches!(commands[3], MdxCommand::Note(_)));
+        assert!(matches!(commands[4], MdxCommand::EndOfTrack(_)));
     }
 }
