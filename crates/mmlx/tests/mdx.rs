@@ -273,7 +273,7 @@ fn compiles_control_commands_ast() {
     assert!(matches!(commands[7], MdxCommand::KeyOnDelay(command) if command.value == 3));
     assert!(matches!(
         commands[8],
-        MdxCommand::AdpcmOrNoiseFrequency(command) if command.value == 4
+        MdxCommand::AdpcmOrNoiseFrequency(command) if command.value == 132
     ));
     assert!(matches!(commands[9], MdxCommand::SyncSend(command) if command.value == 0));
     assert!(matches!(commands[10], MdxCommand::SyncWait(_)));
@@ -281,6 +281,20 @@ fn compiles_control_commands_ast() {
         commands[11],
         MdxCommand::AdpcmOrNoiseFrequency(command) if command.value == 4
     ));
+}
+
+#[test]
+fn compiles_noise_and_pcm_frequency_ast() {
+    let commands = compile_source("A w0 w31 F0 F7\n").tracks[0].clone();
+    let frequencies: Vec<u8> = commands
+        .iter()
+        .filter_map(|command| match command {
+            MdxCommand::AdpcmOrNoiseFrequency(command) => Some(command.value),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(frequencies, vec![0x80, 0x9f, 0, 7]);
 }
 
 #[test]

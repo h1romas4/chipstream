@@ -316,8 +316,14 @@ fn compile_commands(
                 .into(),
             ),
             MmlCommand::KeyOnDelay(value) => output.push(MdxKeyOnDelay { value: *value }.into()),
-            MmlCommand::NoiseFrequency(value) | MmlCommand::PcmFrequency(value) => {
-                output.push(MdxAdpcmOrNoiseFrequency { value: *value }.into())
+            MmlCommand::NoiseFrequency(value) => output.push(
+                MdxAdpcmOrNoiseFrequency {
+                    value: 0x80 | *value,
+                }
+                .into(),
+            ),
+            MmlCommand::PcmFrequency(value) => {
+                output.push(MdxAdpcmOrNoiseFrequency { value: *value & 0x07 }.into())
             }
             MmlCommand::SyncSend(channel) => output.push(
                 MdxSyncSend {
