@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(name = "mmlx", version, about = "Parse MML source files")]
@@ -22,13 +22,22 @@ enum Command {
         verbose: bool,
     },
     /// Compile an MML source file into an MDX binary file.
-    Build {
+    Compile {
         /// MML source file to parse.
         input: PathBuf,
 
         /// Output MDX binary file.
         output: PathBuf,
+
+        /// Select the compile format. Defaults to mdx.
+        #[arg(long = "mml", value_enum, value_name = "FORMAT", default_value_t = CompileFormat::Mdx)]
+        format: CompileFormat,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompileFormat {
+    Mdx,
 }
 
 fn main() {
@@ -40,7 +49,11 @@ fn main() {
                 println!("{}", mmlx::mdx::format_tree(&document));
             }
         }
-        Command::Build { input, output } => {
+        Command::Compile {
+            input,
+            output,
+            format: _,
+        } => {
             let document = parse_input(&input);
             let document = match mmlx::mdx::compile(&document) {
                 Ok(document) => document,
