@@ -234,8 +234,9 @@ fn compile_commands(
             MmlCommand::Ignore => break,
             MmlCommand::Repeat { body, count } => {
                 let body_base = base_offset + command_bytes(&output);
-                let body_commands = compile_commands(body, state, body_base)?;
+                let mut body_commands = compile_commands(body, state, body_base)?;
                 let body_length = command_bytes(&body_commands);
+                patch_repeat_escape_offsets(&mut body_commands, body_length)?;
                 output.push(
                     MdxLoopStart {
                         count: checked_u8("repeat", *count as i64)?,
@@ -246,7 +247,7 @@ fn compile_commands(
                 output.extend(body_commands);
                 output.push(MdxCommand::LoopEnd(MdxRelativeOffset {
                     opcode: 0xf5,
-                    offset: -(body_length as i16 + 3),
+                    offset: checked_signed_i16("repeat", -(body_length as i32 + 5))?,
                 }));
             }
             MmlCommand::Note {
@@ -592,6 +593,14 @@ fn checked_i16(command: &'static str, value: u32) -> Result<i16, CompileError> {
     })
 }
 
+/// Convert an unscaled signed integer to an MDX signed 16-bit value.
+fn checked_signed_i16(command: &'static str, value: i32) -> Result<i16, CompileError> {
+    i16::try_from(value).map_err(|_| CompileError::InvalidValue {
+        command,
+        value: i64::from(value),
+    })
+}
+
 /// Map an MML track channel to its zero-based MDX track index.
 fn channel_index(channel: char) -> Result<usize, CompileError> {
     match channel {
@@ -618,6 +627,32 @@ fn command_bytes(commands: &[MdxCommand]) -> usize {
         .filter_map(MdxCommand::to_mdx_bytes)
         .map(|bytes| bytes.len())
         .sum()
+}
+
+/// Patch escape offsets for the outermost repeat body.
+fn patch_repeat_escape_offsets(
+    commands: &mut [MdxCommand],
+    body_length: usize,
+) -> Result<(), CompileError> {
+    let mut position = 0_usize;
+    let mut nested_depth = 0_usize;
+    for command in commands {
+        let command_length = command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
+        match command {
+            MdxCommand::LoopStart(_) => nested_depth += 1,
+            MdxCommand::LoopEnd(_) => nested_depth = nested_depth.saturating_sub(1),
+            MdxCommand::LoopEscape(command) if nested_depth == 0 => {
+                let offset = i32::try_from(body_length)
+                    .unwrap_or(i32::MAX)
+                    - i32::try_from(position).unwrap_or(i32::MAX)
+                    + 1;
+                command.offset = checked_signed_i16("repeat escape", offset)?;
+            }
+            _ => {}
+        }
+        position = position.saturating_add(command_length);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -309,9 +309,15 @@ fn compiles_repeat_and_loop_commands_ast() {
 
     assert!(matches!(commands[0], MdxCommand::LoopStart(command) if command.count == 3));
     assert!(matches!(commands[1], MdxCommand::Note(_)));
-    assert!(matches!(commands[2], MdxCommand::LoopEscape(_)));
+    assert!(matches!(
+        commands[2],
+        MdxCommand::LoopEscape(command) if command.offset == 6
+    ));
     assert!(matches!(commands[3], MdxCommand::Note(_)));
-    assert!(matches!(commands[4], MdxCommand::LoopEnd(_)));
+    assert!(matches!(
+        commands[4],
+        MdxCommand::LoopEnd(command) if command.offset == -12
+    ));
     assert!(matches!(
         commands[5],
         MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -16
