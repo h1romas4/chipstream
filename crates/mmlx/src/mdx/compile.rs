@@ -178,10 +178,17 @@ fn compile_commands(
                     command_note_number(target, state.octave)?,
                 ) {
                     let offset = i32::from(target_note) - i32::from(source_note);
-                    let offset =
-                        i16::try_from(offset * 341).map_err(|_| CompileError::InvalidValue {
+                    let ticks = command_note_ticks(command, state)?.ok_or(
+                        CompileError::InvalidValue {
                             command: "portamento",
-                            value: i64::from(offset * 341),
+                            value: 0,
+                        },
+                    )?;
+                    let offset = (16_384 * offset) / i32::from(ticks);
+                    let offset =
+                        i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
+                            command: "portamento",
+                            value: i64::from(offset),
                         })?;
                     output.push(MdxCommand::Portamento(MdxSignedWord {
                         opcode: 0xf2,
@@ -403,6 +410,25 @@ fn command_note_number(command: &MmlCommand, octave: u8) -> Result<Option<u16>, 
             name, accidental, ..
         } => Ok(Some(note_number(octave, *name, *accidental)?)),
         MmlCommand::NumericNote { note, .. } => Ok(Some(*note as u16)),
+        _ => Ok(None),
+    }
+}
+
+/// Return the duration of a note used as the source of a portamento.
+fn command_note_ticks(
+    command: &MmlCommand,
+    state: &TrackState,
+) -> Result<Option<u16>, CompileError> {
+    match command {
+        MmlCommand::Note { length, .. } => note_ticks(
+            length.map(MmlLength::Denominator).as_ref(),
+            &state.default_length,
+        )
+        .map(Some),
+        MmlCommand::ExtendedNote { length, .. } => length_ticks(length).map(Some),
+        MmlCommand::NumericNote { length, .. } => {
+            note_ticks(length.as_ref(), &state.default_length).map(Some)
+        }
         _ => Ok(None),
     }
 }

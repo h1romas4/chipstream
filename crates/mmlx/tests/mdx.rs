@@ -190,6 +190,12 @@ fn compiles_portamento_ast() {
         commands[2][1],
         MdxCommand::Portamento(command) if command.offset == -682
     ));
+
+    let short_note = compile_source("A d8_e\n").tracks[0].clone();
+    assert!(matches!(
+        short_note[0],
+        MdxCommand::Portamento(command) if command.offset == 1365
+    ));
 }
 
 #[test]
