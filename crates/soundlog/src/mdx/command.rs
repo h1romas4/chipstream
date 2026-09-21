@@ -41,6 +41,7 @@ pub enum MdxCommand {
     Detune(MdxSignedWord),
     Portamento(MdxSignedWord),
     EndOfTrack(MdxEndOfTrack),
+    EndOfTrackLoop(MdxRelativeOffset),
     Jump(MdxRelativeOffset),
     KeyOnDelay(MdxKeyOnDelay),
     SyncSend(MdxSyncSend),
@@ -74,9 +75,10 @@ impl MdxCommand {
             Self::Pan(command) => command.to_mdx_bytes(&mut bytes),
             Self::Gate(command) => command.to_mdx_bytes(&mut bytes),
             Self::LoopStart(command) => command.to_mdx_bytes(&mut bytes),
-            Self::LoopEnd(command) | Self::LoopEscape(command) | Self::Jump(command) => {
-                command.to_mdx_bytes(&mut bytes)
-            }
+            Self::LoopEnd(command)
+            | Self::LoopEscape(command)
+            | Self::EndOfTrackLoop(command)
+            | Self::Jump(command) => command.to_mdx_bytes(&mut bytes),
             Self::Detune(command) | Self::Portamento(command) => command.to_mdx_bytes(&mut bytes),
             Self::VolumeDown(command) => command.to_mdx_bytes(&mut bytes),
             Self::VolumeUp(command) => command.to_mdx_bytes(&mut bytes),

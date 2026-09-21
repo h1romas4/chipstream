@@ -275,5 +275,5 @@ fn parse_end_or_jump(bytes: &[u8], offset: usize) -> Result<(MdxCommand, usize),
         return Ok((MdxCommand::EndOfTrack(command), length));
     }
 
-    parse_relative(bytes, offset, 0xf1, MdxCommand::Jump)
+    parse_relative(bytes, offset, 0xf1, MdxCommand::EndOfTrackLoop)
 }

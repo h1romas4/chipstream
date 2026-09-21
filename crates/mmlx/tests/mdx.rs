@@ -307,12 +307,33 @@ fn compiles_noise_and_pcm_frequency_ast() {
 fn compiles_repeat_and_loop_commands_ast() {
     let commands = compile_source("A L [c / d]3\n").tracks[0].clone();
 
-    assert!(matches!(commands[0], MdxCommand::LoopStart(command) if command.count == 0));
-    assert!(matches!(commands[1], MdxCommand::LoopStart(command) if command.count == 3));
-    assert!(matches!(commands[2], MdxCommand::Note(_)));
-    assert!(matches!(commands[3], MdxCommand::LoopEscape(_)));
-    assert!(matches!(commands[4], MdxCommand::Note(_)));
-    assert!(matches!(commands[5], MdxCommand::LoopEnd(_)));
+    assert!(matches!(commands[0], MdxCommand::LoopStart(command) if command.count == 3));
+    assert!(matches!(commands[1], MdxCommand::Note(_)));
+    assert!(matches!(commands[2], MdxCommand::LoopEscape(_)));
+    assert!(matches!(commands[3], MdxCommand::Note(_)));
+    assert!(matches!(commands[4], MdxCommand::LoopEnd(_)));
+    assert!(matches!(
+        commands[5],
+        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -16
+    ));
+}
+
+#[test]
+fn compiles_loop_point_ast() {
+    let commands = compile_source("A c L d\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::Note(_)));
+    assert!(matches!(commands[1], MdxCommand::Note(_)));
+    assert!(matches!(
+        commands[2],
+        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -5
+    ));
+
+    let empty_loop = compile_source("A L\n").tracks[0].clone();
+    assert!(matches!(
+        empty_loop.as_slice(),
+        [MdxCommand::EndOfTrackLoop(command)] if command.opcode == 0xf1 && command.offset == -3
+    ));
 }
 
 #[test]

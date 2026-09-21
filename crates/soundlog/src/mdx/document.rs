@@ -262,7 +262,9 @@ impl MdxBuilder {
             self.document.tracks[0].insert(0, MdxCommand::PcmMode(MdxPcmMode));
         }
         for track in &mut self.document.tracks {
-            if !track.is_empty() && !matches!(track.last(), Some(MdxCommand::EndOfTrack(_))) {
+            let has_end = matches!(track.last(), Some(MdxCommand::EndOfTrack(_)))
+                || matches!(track.last(), Some(MdxCommand::EndOfTrackLoop(_)));
+            if !track.is_empty() && !has_end {
                 track.push(MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack));
             }
         }
@@ -608,7 +610,10 @@ fn parse_track(
         offset = offset.checked_add(length).ok_or_else(|| {
             ParseError::DataInconsistency(format!("MDX track {track} offset overflow"))
         })?;
-        let end_of_track = matches!(command, MdxCommand::EndOfTrack(_));
+        let end_of_track = matches!(
+            command,
+            MdxCommand::EndOfTrack(_) | MdxCommand::EndOfTrackLoop(_)
+        );
         commands.push(command);
         if end_of_track {
             return Ok(commands);

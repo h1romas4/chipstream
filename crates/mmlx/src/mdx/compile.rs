@@ -84,14 +84,29 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
 
     for track in &document.tracks {
         let track_index = channel_index(track.channel)?;
+        let base_offset = command_bytes(&tracks[track_index]);
         tracks[track_index].extend(compile_track(
             &track.commands,
             &mut track_states[track_index],
+            base_offset,
         )?);
     }
 
     for (track_index, mut commands) in tracks.into_iter().enumerate() {
-        if commands.is_empty() {
+        if let Some(loop_start) = track_states[track_index].loop_start {
+            let track_length = command_bytes(&commands);
+            let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
+                - i32::try_from(track_length).unwrap_or(i32::MAX)
+                - 3;
+            let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
+                command: "loop start",
+                value: i64::from(offset),
+            })?;
+            commands.push(MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset,
+            }));
+        } else if commands.is_empty() {
             commands.push(MdxEndOfTrack.into());
         }
         builder.set_track(track_index, commands);
@@ -141,6 +156,7 @@ fn compile_voice(voice: &MmlVoice) -> Result<MdxTone, CompileError> {
 struct TrackState {
     octave: u8,
     default_length: MmlLength,
+    loop_start: Option<usize>,
 }
 
 impl Default for TrackState {
@@ -148,6 +164,7 @@ impl Default for TrackState {
         Self {
             octave: 4,
             default_length: MmlLength::Denominator(4),
+            loop_start: None,
         }
     }
 }
@@ -156,14 +173,16 @@ impl Default for TrackState {
 fn compile_track(
     commands: &[MmlCommand],
     state: &mut TrackState,
+    base_offset: usize,
 ) -> Result<Vec<MdxCommand>, CompileError> {
-    compile_commands(commands, state)
+    compile_commands(commands, state, base_offset)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
 fn compile_commands(
     commands: &[MmlCommand],
     state: &mut TrackState,
+    base_offset: usize,
 ) -> Result<Vec<MdxCommand>, CompileError> {
     let mut output = Vec::new();
     let mut index = 0;
@@ -178,18 +197,16 @@ fn compile_commands(
                     command_note_number(target, state.octave)?,
                 ) {
                     let offset = i32::from(target_note) - i32::from(source_note);
-                    let ticks = command_note_ticks(command, state)?.ok_or(
-                        CompileError::InvalidValue {
+                    let ticks =
+                        command_note_ticks(command, state)?.ok_or(CompileError::InvalidValue {
                             command: "portamento",
                             value: 0,
-                        },
-                    )?;
-                    let offset = (16_384 * offset) / i32::from(ticks);
-                    let offset =
-                        i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
-                            command: "portamento",
-                            value: i64::from(offset),
                         })?;
+                    let offset = (16_384 * offset) / i32::from(ticks);
+                    let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
+                        command: "portamento",
+                        value: i64::from(offset),
+                    })?;
                     output.push(MdxCommand::Portamento(MdxSignedWord {
                         opcode: 0xf2,
                         offset,
@@ -216,7 +233,8 @@ fn compile_commands(
             MmlCommand::Directive(_) => {}
             MmlCommand::Ignore => break,
             MmlCommand::Repeat { body, count } => {
-                let body_commands = compile_commands(body, state)?;
+                let body_base = base_offset + command_bytes(&output);
+                let body_commands = compile_commands(body, state, body_base)?;
                 let body_length = command_bytes(&body_commands);
                 output.push(
                     MdxLoopStart {
@@ -300,13 +318,9 @@ fn compile_commands(
             MmlCommand::VolumeDown => output.push(MdxVolumeDown.into()),
             MmlCommand::VolumeUp => output.push(MdxVolumeUp.into()),
             MmlCommand::Pan(value) => output.push(MdxPan::from_raw(*value).into()),
-            MmlCommand::LoopStart => output.push(
-                MdxLoopStart {
-                    count: 0,
-                    reserved: 0,
-                }
-                .into(),
-            ),
+            MmlCommand::LoopStart => {
+                state.loop_start = Some(base_offset + command_bytes(&output));
+            }
             MmlCommand::Detune(value) => output.push(MdxCommand::Detune(MdxSignedWord {
                 opcode: 0xf3,
                 offset: *value,
@@ -329,9 +343,12 @@ fn compile_commands(
                 }
                 .into(),
             ),
-            MmlCommand::PcmFrequency(value) => {
-                output.push(MdxAdpcmOrNoiseFrequency { value: *value & 0x07 }.into())
-            }
+            MmlCommand::PcmFrequency(value) => output.push(
+                MdxAdpcmOrNoiseFrequency {
+                    value: *value & 0x07,
+                }
+                .into(),
+            ),
             MmlCommand::SyncSend(channel) => output.push(
                 MdxSyncSend {
                     value: sync_channel_value(*channel)?,

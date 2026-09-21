@@ -1187,6 +1187,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::Jump(command) => {
                     self.take_repeating_jump(track, command.offset, builder)
                 }
+                MdxCommand::EndOfTrackLoop(command) => {
+                    self.take_repeating_jump(track, command.offset, builder)
+                }
                 MdxCommand::Raw(_) => {}
             }
         }
