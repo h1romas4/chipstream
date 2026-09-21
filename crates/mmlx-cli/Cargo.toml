@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+hound = "3"
 mmlx = { path = "../mmlx" }
+soundlog = { path = "../soundlog" }

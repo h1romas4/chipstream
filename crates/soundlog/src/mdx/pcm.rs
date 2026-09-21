@@ -151,7 +151,7 @@ pub(crate) struct AdpcmEncoder {
 
 impl AdpcmEncoder {
     /// Encodes one 12-bit signed sample into a 4-bit ADPCM nibble, updating the internal state.
-    pub(crate) fn encode_nibble(&mut self, target: i32) -> u8 {
+    pub fn encode_nibble(&mut self, target: i32) -> u8 {
         let target = target.clamp(-2048, 2047);
         let mut diff = target - self.signal;
         let mut nibble = 0u8;
@@ -180,11 +180,23 @@ impl AdpcmEncoder {
 
     /// Encodes two consecutive 12-bit signed samples into one ADPCM byte
     /// (low nibble first), mirroring `OKIM6258::encodePair`.
-    pub(crate) fn encode_pair(&mut self, sample_a: i16, sample_b: i16) -> u8 {
+    pub fn encode_pair(&mut self, sample_a: i16, sample_b: i16) -> u8 {
         let nib0 = self.encode_nibble(i32::from(sample_a));
         let nib1 = self.encode_nibble(i32::from(sample_b));
         nib0 | (nib1 << 4)
     }
+}
+
+/// Encode signed 12-bit PCM samples into low-nibble-first OKIM6258 ADPCM.
+///
+/// An odd final sample is paired with zero, matching the byte-oriented PDX
+/// sample representation.
+pub fn encode_adpcm(samples: &[i16]) -> Vec<u8> {
+    let mut encoder = AdpcmEncoder::default();
+    samples
+        .chunks(2)
+        .map(|pair| encoder.encode_pair(pair[0], pair.get(1).copied().unwrap_or(0)))
+        .collect()
 }
 
 /// Step size table for the ADPCM encoder and decoder. Each entry represents the quantization step

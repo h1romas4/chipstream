@@ -1,7 +1,6 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "mmlx", version, about = "Parse MML source files")]
@@ -12,6 +11,20 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Parse or compile MML/MDX data.
+    Mdx {
+        #[command(subcommand)]
+        command: MdxCommand,
+    },
+    /// Build PDX sample data.
+    Pdx {
+        #[command(subcommand)]
+        command: PdxCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MdxCommand {
     /// Parse and validate an MML source file.
     Check {
         /// MML source file to parse.
@@ -28,61 +41,33 @@ enum Command {
 
         /// Output MDX binary file.
         output: PathBuf,
-
-        /// Select the compile format. Defaults to mdx.
-        #[arg(long = "mml", value_enum, value_name = "FORMAT", default_value_t = CompileFormat::Mdx)]
-        format: CompileFormat,
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CompileFormat {
-    Mdx,
+#[derive(Debug, Subcommand)]
+enum PdxCommand {
+    /// Convert WAV files to ADPCM samples and write a PDX file.
+    Build {
+        /// Input WAV files followed by the output PDX path.
+        #[arg(value_name = "INPUT_WAV_OR_OUTPUT_PDX", num_args = 2..)]
+        files: Vec<PathBuf>,
+    },
 }
 
 fn main() {
     let args = Args::parse();
-    match args.command {
-        Command::Check { input, verbose } => {
-            let document = parse_input(&input);
-            if verbose {
-                println!("{}", mmlx::mdx::format_tree(&document));
-            }
-        }
-        Command::Compile {
-            input,
-            output,
-            format: _,
-        } => {
-            let document = parse_input(&input);
-            let document = match mmlx::mdx::compile(&document) {
-                Ok(document) => document,
-                Err(error) => {
-                    eprintln!("compile error: {error}");
-                    std::process::exit(1);
-                }
-            };
-            if let Err(error) = fs::write(&output, document.to_bytes()) {
-                eprintln!("{}: {error}", output.display());
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
-fn parse_input(input: &Path) -> mmlx::mdx::MmlDocument {
-    let source = match fs::read_to_string(input) {
-        Ok(source) => source,
-        Err(error) => {
-            eprintln!("{}: {error}", input.display());
-            std::process::exit(1);
-        }
+    let result = match args.command {
+        Command::Mdx { command } => match command {
+            MdxCommand::Check { input, verbose } => mmlx_cli::check(&input, verbose),
+            MdxCommand::Compile { input, output } => mmlx_cli::compile(&input, &output),
+        },
+        Command::Pdx {
+            command: PdxCommand::Build { files },
+        } => mmlx_cli::build_pdx(&files),
     };
-    match mmlx::mdx::parse(&source) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("parse error: {error}");
-            std::process::exit(1);
-        }
+
+    if let Err(error) = result {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
 }
