@@ -1,44 +1,75 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "mmlx", version, about = "Parse MML source files")]
 struct Args {
-    /// MML source file to parse.
-    input: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
 
-    /// Output MDX binary file.
-    output: PathBuf,
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Parse and validate an MML source file.
+    Check {
+        /// MML source file to parse.
+        input: PathBuf,
+
+        /// Print the parsed MML syntax tree.
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Compile an MML source file into an MDX binary file.
+    Build {
+        /// MML source file to parse.
+        input: PathBuf,
+
+        /// Output MDX binary file.
+        output: PathBuf,
+    },
 }
 
 fn main() {
     let args = Args::parse();
-    let source = match fs::read_to_string(&args.input) {
+    match args.command {
+        Command::Check { input, verbose } => {
+            let document = parse_input(&input);
+            if verbose {
+                println!("{}", mmlx::mdx::format_tree(&document));
+            }
+        }
+        Command::Build { input, output } => {
+            let document = parse_input(&input);
+            let document = match mmlx::mdx::compile(&document) {
+                Ok(document) => document,
+                Err(error) => {
+                    eprintln!("compile error: {error}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(error) = fs::write(&output, document.to_bytes()) {
+                eprintln!("{}: {error}", output.display());
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn parse_input(input: &Path) -> mmlx::mdx::MmlDocument {
+    let source = match fs::read_to_string(input) {
         Ok(source) => source,
         Err(error) => {
-            eprintln!("{}: {error}", args.input.display());
+            eprintln!("{}: {error}", input.display());
             std::process::exit(1);
         }
     };
-    let document = match mmlx::mdx::parse(&source) {
+    match mmlx::mdx::parse(&source) {
         Ok(document) => document,
         Err(error) => {
             eprintln!("parse error: {error}");
             std::process::exit(1);
         }
-    };
-
-    let document = match mmlx::mdx::compile(&document) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("compile error: {error}");
-            std::process::exit(1);
-        }
-    };
-    if let Err(error) = fs::write(&args.output, document.to_bytes()) {
-        eprintln!("{}: {error}", args.output.display());
-        std::process::exit(1);
     }
 }

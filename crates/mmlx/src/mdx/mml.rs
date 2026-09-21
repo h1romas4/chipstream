@@ -288,6 +288,15 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
     Ok(document)
 }
 
+/// Format a parsed MML document as a readable syntax tree.
+///
+/// This uses the typed AST produced by [`parse`]. The original Pest pairs and
+/// source trivia are not retained after parsing, so whitespace and comments
+/// are not included in the formatted tree.
+pub fn format_tree(document: &MmlDocument) -> String {
+    format!("{document:#?}")
+}
+
 /// Convert a PEST error into a compact, source-oriented diagnostic.
 fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String {
     let (line_number, column) = match error.line_col {
@@ -808,6 +817,16 @@ mod tests {
                 length: Some(8),
             }
         );
+    }
+
+    #[test]
+    fn displays_the_parsed_document_tree() {
+        let document = parse("A c4\n").unwrap();
+        let tree = format_tree(&document);
+
+        assert!(tree.contains("MmlDocument"), "{tree}");
+        assert!(tree.contains("tracks"), "{tree}");
+        assert!(tree.contains("Note"), "{tree}");
     }
 
     #[test]
