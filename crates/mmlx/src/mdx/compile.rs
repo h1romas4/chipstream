@@ -206,7 +206,8 @@ fn compile_commands(
             MmlCommand::VoiceSelect(value) => {
                 output.push(MdxVoiceOrPcmBank { value: *value }.into());
             }
-            MmlCommand::Directive(_) | MmlCommand::Ignore => {}
+            MmlCommand::Directive(_) => {}
+            MmlCommand::Ignore => break,
             MmlCommand::Repeat { body, count } => {
                 let body_commands = compile_commands(body, state)?;
                 let body_length = command_bytes(&body_commands);

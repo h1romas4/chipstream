@@ -252,3 +252,63 @@ fn compiles_volume_ast() {
 
     assert_eq!(volumes, vec![15, 0, 128, 228]);
 }
+
+#[test]
+fn compiles_control_commands_ast() {
+    let commands = compile_source("A @t200 p1 v8 ( ) D-12 y1,2 k3 w4 S0 W F4\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::Tempo(tempo) if tempo.value == 200));
+    assert!(matches!(
+        commands[1],
+        MdxCommand::Pan(soundlog::mdx::command::MdxPan::Right)
+    ));
+    assert!(matches!(commands[2], MdxCommand::Volume(volume) if volume.value == 8));
+    assert!(matches!(commands[3], MdxCommand::VolumeDown(_)));
+    assert!(matches!(commands[4], MdxCommand::VolumeUp(_)));
+    assert!(matches!(commands[5], MdxCommand::Detune(command) if command.offset == -12));
+    assert!(matches!(
+        commands[6],
+        MdxCommand::OpmRegisterWrite(command) if command.register == 1 && command.value == 2
+    ));
+    assert!(matches!(commands[7], MdxCommand::KeyOnDelay(command) if command.value == 3));
+    assert!(matches!(
+        commands[8],
+        MdxCommand::AdpcmOrNoiseFrequency(command) if command.value == 4
+    ));
+    assert!(matches!(commands[9], MdxCommand::SyncSend(command) if command.value == 0));
+    assert!(matches!(commands[10], MdxCommand::SyncWait(_)));
+    assert!(matches!(
+        commands[11],
+        MdxCommand::AdpcmOrNoiseFrequency(command) if command.value == 4
+    ));
+}
+
+#[test]
+fn compiles_repeat_and_loop_commands_ast() {
+    let commands = compile_source("A L [c / d]3\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::LoopStart(command) if command.count == 0));
+    assert!(matches!(commands[1], MdxCommand::LoopStart(command) if command.count == 3));
+    assert!(matches!(commands[2], MdxCommand::Note(_)));
+    assert!(matches!(commands[3], MdxCommand::LoopEscape(_)));
+    assert!(matches!(commands[4], MdxCommand::Note(_)));
+    assert!(matches!(commands[5], MdxCommand::LoopEnd(_)));
+}
+
+#[test]
+fn compiles_numeric_rest_and_legato_ast() {
+    let commands = compile_source("A n12,8 r%24 c & d\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::Note(note) if note.note == 140 && note.length == 24));
+    assert!(matches!(commands[1], MdxCommand::Rest(rest) if rest.ticks == 24));
+    assert!(matches!(commands[2], MdxCommand::KeyOffDisable(_)));
+    assert!(matches!(commands[3], MdxCommand::Note(note) if note.note == 173));
+    assert!(matches!(commands[4], MdxCommand::Note(note) if note.note == 175));
+}
+
+#[test]
+fn ignores_commands_after_ignore_marker_ast() {
+    let commands = compile_source("A c ! d\n").tracks[0].clone();
+
+    assert_eq!(note_values(&commands), vec![(173, 48)]);
+}
