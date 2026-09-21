@@ -278,7 +278,7 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
             Rule::voice => document.voices.push(parse_voice(line)),
-            Rule::track => document.tracks.push(parse_track(line)),
+            Rule::track => document.tracks.extend(parse_track(line)),
             Rule::blank | Rule::comment | Rule::block_comment => {}
             rule => unreachable!("unexpected line rule: {rule:?}"),
         }
@@ -509,21 +509,26 @@ fn parse_string(line: pest::iterators::Pair<'_, Rule>) -> String {
         .expect("metadata line must contain a string")
 }
 
-/// Convert a `track` grammar pair into a channel and typed commands.
-fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> MmlTrack {
+/// Convert a track line into one typed track per channel in its prefix.
+fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<MmlTrack> {
     let mut children = line.into_inner();
-    let channel = children
+    let channels = children
         .next()
         .expect("track must have a channel")
         .as_str()
         .chars()
-        .next()
-        .expect("channel must not be empty");
+        .collect::<Vec<_>>();
     let commands = children
         .filter(|pair| pair.as_rule() != Rule::block_comment)
         .map(parse_command)
-        .collect();
-    MmlTrack { channel, commands }
+        .collect::<Vec<_>>();
+    channels
+        .into_iter()
+        .map(|channel| MmlTrack {
+            channel,
+            commands: commands.clone(),
+        })
+        .collect()
 }
 
 /// Convert one command grammar pair into its typed AST representation.
@@ -818,6 +823,27 @@ mod tests {
                 accidental: Some(Accidental::Sharp),
                 length: Some(8),
             }
+        );
+    }
+
+    #[test]
+    fn expands_multiple_standard_channels() {
+        let document = parse("ABCDEFGH c\n").unwrap();
+
+        assert_eq!(document.tracks.len(), 8);
+        assert_eq!(
+            document
+                .tracks
+                .iter()
+                .map(|track| track.channel)
+                .collect::<Vec<_>>(),
+            vec!['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+        );
+        assert!(
+            document
+                .tracks
+                .iter()
+                .all(|track| track.commands.len() == 1)
         );
     }
 

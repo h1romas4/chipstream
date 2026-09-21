@@ -21,7 +21,7 @@ voice_separator = _{ "," ~ voice_padding* }
 voice_padding = _{ block_comment | comment | NEWLINE }
 
 track = { channel ~ command* ~ NEWLINE? }
-channel = @{ 'A'..'H' | "P" }
+channel = @{ ('A'..'H' | "P")+ }
 
 command = _{
 	block_comment
