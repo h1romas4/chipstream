@@ -412,7 +412,7 @@ fn validate_document(document: &MmlDocument) -> Result<(), ParseError> {
 /// Validate command-specific ranges and recursively validate repeat bodies.
 fn validate_command(command: &MmlCommand) -> Result<(), ParseError> {
     match command {
-        MmlCommand::Tempo(value) => validate_range("tempo", *value as i64, 1, i64::MAX)?,
+        MmlCommand::Tempo(value) => validate_range("tempo", *value as i64, 19, 4882)?,
         MmlCommand::Repeat { body, count } => {
             validate_range("repeat", *count as i64, 2, 255)?;
             for command in body {
@@ -876,6 +876,29 @@ mod tests {
                 value: 2
             })
         ));
+    }
+
+    #[test]
+    fn enforces_reference_tempo_range() {
+        assert!(matches!(
+            parse("A t18\n"),
+            Err(ParseError::InvalidValue {
+                command: "tempo",
+                value: 18,
+                min: 19,
+                max: 4882,
+            })
+        ));
+        assert!(matches!(
+            parse("A t4883\n"),
+            Err(ParseError::InvalidValue {
+                command: "tempo",
+                value: 4883,
+                min: 19,
+                max: 4882,
+            })
+        ));
+        assert!(parse("A t19 t4882\n").is_ok());
     }
 
     #[test]
