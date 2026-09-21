@@ -365,7 +365,7 @@ fn compile_commands(
                 MdxPitchLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
                     frequency: checked_u16("pitch LFO period", u32::from(*period) * 2)?,
-                    amplitude: checked_i16("pitch LFO amplitude", u32::from(*amplitude) * 128)?,
+                    amplitude: i16::from_be_bytes(((*amplitude & 0xff) << 8).to_be_bytes()),
                 }
                 .into(),
             ),
@@ -381,7 +381,7 @@ fn compile_commands(
                 MdxVolumeLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
                     frequency: checked_u16("volume LFO period", u32::from(*period) * 2)?,
-                    amplitude: checked_u16("volume LFO amplitude", u32::from(*amplitude) * 32)?,
+                    amplitude: (*amplitude & 0xff) << 8,
                 }
                 .into(),
             ),
@@ -585,14 +585,6 @@ fn checked_u16(command: &'static str, value: u32) -> Result<u16, CompileError> {
     })
 }
 
-/// Convert a scaled MML value to an MDX signed 16-bit value.
-fn checked_i16(command: &'static str, value: u32) -> Result<i16, CompileError> {
-    i16::try_from(value).map_err(|_| CompileError::InvalidValue {
-        command,
-        value: i64::from(value),
-    })
-}
-
 /// Convert an unscaled signed integer to an MDX signed 16-bit value.
 fn checked_signed_i16(command: &'static str, value: i32) -> Result<i16, CompileError> {
     i16::try_from(value).map_err(|_| CompileError::InvalidValue {
@@ -642,8 +634,7 @@ fn patch_repeat_escape_offsets(
             MdxCommand::LoopStart(_) => nested_depth += 1,
             MdxCommand::LoopEnd(_) => nested_depth = nested_depth.saturating_sub(1),
             MdxCommand::LoopEscape(command) if nested_depth == 0 => {
-                let offset = i32::try_from(body_length)
-                    .unwrap_or(i32::MAX)
+                let offset = i32::try_from(body_length).unwrap_or(i32::MAX)
                     - i32::try_from(position).unwrap_or(i32::MAX)
                     + 1;
                 command.offset = checked_signed_i16("repeat escape", offset)?;

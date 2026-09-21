@@ -89,7 +89,7 @@ fn compiles_pitch_lfo_ast() {
         MdxCommand::PitchLfo(soundlog::mdx::command::MdxPitchLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
             frequency: 4,
-            amplitude: 2048,
+            amplitude: 4096,
         })
     ));
     assert!(matches!(commands[2], MdxCommand::PitchLfo(_)));
@@ -106,13 +106,13 @@ fn compiles_volume_lfo_ast() {
         MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
             frequency: 8,
-            amplitude: 32,
+            amplitude: 256,
         })
     ));
     assert!(matches!(
         commands[2],
         MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
-            amplitude: 64,
+            amplitude: 512,
             ..
         })
     ));
@@ -139,10 +139,7 @@ fn compiles_opm_lfo_ast() {
     let wide_sensitivity = compile_source("A MH0,3,3,4,8,15,0\n").tracks[0].clone();
     assert!(matches!(
         wide_sensitivity[0],
-        MdxCommand::OpmLfo(soundlog::mdx::command::MdxOpmLfo::Configure {
-            pms_ams: 143,
-            ..
-        })
+        MdxCommand::OpmLfo(soundlog::mdx::command::MdxOpmLfo::Configure { pms_ams: 143, .. })
     ));
 }
 
