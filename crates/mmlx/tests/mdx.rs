@@ -46,6 +46,13 @@ fn parses_compact_mdx_fixture() {
 fn compiles_readable_fixture_to_serializable_mdx() {
     let source = include_str!("../assets/mdx/readable.mml");
     let compiled = mdx::compile(&mdx::parse(source).unwrap()).unwrap();
+
+    assert_eq!(compiled.header.title, "Readable MXDRV parser fixture");
+    assert_eq!(compiled.header.pdx_name.as_deref(), Some("fixture.pdx"));
+    assert_eq!(compiled.tracks.len(), 9);
+    assert!(!compiled.tracks[0].is_empty());
+    assert_eq!(compiled.tone_bank.tones.len(), 1);
+
     let bytes = compiled.to_bytes();
     let reparsed = soundlog::mdx::document::MdxDocument::parse(&bytes).unwrap();
 
