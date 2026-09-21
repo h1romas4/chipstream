@@ -404,7 +404,7 @@ fn compile_commands(
                 MdxOpmLfo::Configure {
                     control: ((*key_sync & 1) << 6) | (*waveform & 3),
                     lfrq: *lfrq,
-                    pmd: 0x80 | *pmd,
+                    pmd: 0x80 | (*pmd & 0x7f),
                     amd: *amd,
                     pms_ams: ((*pms & 0xf) << 4) | (*ams & 0xf),
                 }
