@@ -1894,12 +1894,19 @@ dependencies = [
 
 [[package]]
 name = "mmlx"
-version = "0.1.0"
+version = "0.14.0"
 dependencies = [
- "clap",
  "pest",
  "pest_derive",
  "soundlog",
+]
+
+[[package]]
+name = "mmlx-cli"
+version = "0.14.0"
+dependencies = [
+ "clap",
+ "mmlx",
 ]
 
 [[package]]

@@ -1,0 +1,8 @@
+[package]
+name = "mmlx-cli"
+version = "0.14.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+mmlx = { path = "../mmlx" }

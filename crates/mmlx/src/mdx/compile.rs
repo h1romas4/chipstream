@@ -92,6 +92,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
         .map_err(|error| CompileError::Builder(error.to_string()))
 }
 
+/// Convert one MML voice definition into an MDX tone.
 fn compile_voice(voice: &MmlVoice) -> Result<MdxTone, CompileError> {
     if voice.values.len() != 47 {
         return Err(CompileError::InvalidVoice {
@@ -132,6 +133,7 @@ struct TrackState {
     default_length: u16,
 }
 
+/// Compile one track while maintaining its octave and default note length.
 fn compile_track(commands: &[MmlCommand]) -> Result<Vec<MdxCommand>, CompileError> {
     let mut state = TrackState {
         octave: 4,
@@ -140,6 +142,7 @@ fn compile_track(commands: &[MmlCommand]) -> Result<Vec<MdxCommand>, CompileErro
     compile_commands(commands, &mut state)
 }
 
+/// Lower MML commands recursively into their soundlog MDX representations.
 fn compile_commands(
     commands: &[MmlCommand],
     state: &mut TrackState,
@@ -320,6 +323,7 @@ fn compile_commands(
     Ok(output)
 }
 
+/// Encode a note, splitting it when its duration exceeds one MDX note command.
 fn compile_note(note: u16, ticks: u16) -> Result<Vec<MdxCommand>, CompileError> {
     let opcode = FIRST_NOTE + note;
     if !(FIRST_NOTE..=LAST_NOTE).contains(&opcode) {
@@ -345,6 +349,7 @@ fn compile_note(note: u16, ticks: u16) -> Result<Vec<MdxCommand>, CompileError> 
     Ok(commands)
 }
 
+/// Encode a rest, splitting it when its duration exceeds one MDX rest command.
 fn compile_rest(ticks: u16) -> Vec<MdxCommand> {
     let mut commands = Vec::new();
     let mut remaining = ticks;
@@ -360,6 +365,7 @@ fn compile_rest(ticks: u16) -> Vec<MdxCommand> {
     commands
 }
 
+/// Convert an MML note name and accidental at an octave into an MDX note number.
 fn note_number(
     octave: u8,
     name: char,
@@ -395,12 +401,14 @@ fn note_number(
     Ok(absolute as u16)
 }
 
+/// Convert an optional note length to ticks, using the track default when absent.
 fn note_ticks(length: Option<&MmlLength>, default_length: u16) -> Result<u16, CompileError> {
     length
         .map(|length| length_ticks(length, default_length))
         .unwrap_or_else(|| ticks_from_denominator(default_length, "default length"))
 }
 
+/// Convert a parsed MML length expression into MDX ticks.
 fn length_ticks(length: &MmlLength, default_length: u16) -> Result<u16, CompileError> {
     match length {
         MmlLength::Denominator(value) => ticks_from_denominator(*value, "note length"),
@@ -416,6 +424,7 @@ fn length_ticks(length: &MmlLength, default_length: u16) -> Result<u16, CompileE
     }
 }
 
+/// Convert a denominator-based length into ticks for a whole note of 192 ticks.
 fn ticks_from_denominator(value: u16, command: &'static str) -> Result<u16, CompileError> {
     if value == 0 {
         return Err(CompileError::InvalidValue { command, value: 0 });
@@ -423,10 +432,12 @@ fn ticks_from_denominator(value: u16, command: &'static str) -> Result<u16, Comp
     Ok(TICKS_PER_WHOLE / value)
 }
 
+/// Convert a signed integer to an MDX unsigned byte value.
 fn checked_u8(command: &'static str, value: i64) -> Result<u8, CompileError> {
     u8::try_from(value).map_err(|_| CompileError::InvalidValue { command, value })
 }
 
+/// Map an MML track channel to its zero-based MDX track index.
 fn channel_index(channel: char) -> Result<usize, CompileError> {
     match channel {
         'A'..='H' => Ok(channel as usize - 'A' as usize),
@@ -435,6 +446,7 @@ fn channel_index(channel: char) -> Result<usize, CompileError> {
     }
 }
 
+/// Map an MML synchronization channel to the value used by MDX.
 fn sync_channel_value(channel: char) -> Result<u8, CompileError> {
     match channel {
         'A'..='H' => Ok(channel as u8 - b'A'),
@@ -444,6 +456,7 @@ fn sync_channel_value(channel: char) -> Result<u8, CompileError> {
     }
 }
 
+/// Return the serialized byte length of a sequence of MDX commands.
 fn command_bytes(commands: &[MdxCommand]) -> usize {
     commands
         .iter()
