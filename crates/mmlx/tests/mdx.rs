@@ -71,6 +71,13 @@ fn compiles_multiple_standard_channels_ast() {
 }
 
 #[test]
+fn compiles_bare_default_length_reset_ast() {
+    let commands = compile_source("A l8 l c\n").tracks[0].clone();
+
+    assert!(matches!(commands[0], MdxCommand::Note(note) if note.length == 24));
+}
+
+#[test]
 fn compiles_metadata_and_tone_ast() {
     let source = "#title \"Test\"\n#pcmfile \"test.pdx\"\n@1={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}\nA @1 o4 l4 c4\n";
     let compiled = compile_source(source);

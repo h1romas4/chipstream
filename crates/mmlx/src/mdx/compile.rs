@@ -297,6 +297,7 @@ fn compile_commands(
             MmlCommand::OctaveDown => state.octave = state.octave.saturating_sub(1),
             MmlCommand::OctaveUp => state.octave = state.octave.saturating_add(1),
             MmlCommand::DefaultLength(value) => state.default_length = value.clone(),
+            MmlCommand::DefaultLengthReset => {}
             MmlCommand::Gate(value) => output.push(MdxGate { value: *value }.into()),
             MmlCommand::FineGate(value) => output.push(
                 MdxGate {

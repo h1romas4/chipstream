@@ -91,6 +91,8 @@ pub enum MmlCommand {
     OctaveUp,
     /// Set the default note length.
     DefaultLength(MmlLength),
+    /// Re-apply the current default note length.
+    DefaultLengthReset,
     /// Set the gate value.
     Gate(u8),
     /// Set the fine gate value using `@q`.
@@ -620,9 +622,10 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                 .parse()
                 .expect("number is valid"),
         ),
-        Rule::default_length => MmlCommand::DefaultLength(parse_length(
-            pair.into_inner().next().expect("length must have a value"),
-        )),
+        Rule::default_length => match pair.into_inner().next() {
+            Some(length) => MmlCommand::DefaultLength(parse_length(length)),
+            None => MmlCommand::DefaultLengthReset,
+        },
         Rule::octave_down => MmlCommand::OctaveDown,
         Rule::octave_up => MmlCommand::OctaveUp,
         Rule::gate => MmlCommand::Gate(parse_single_u16(pair) as u8),
@@ -923,6 +926,20 @@ mod tests {
         assert!(matches!(
             document.tracks[0].commands.as_slice(),
             [MmlCommand::Repeat { count: 2, .. }]
+        ));
+    }
+
+    #[test]
+    fn parses_bare_default_length_reset() {
+        let document = parse("A l8 l c\n").unwrap();
+
+        assert!(matches!(
+            document.tracks[0].commands.as_slice(),
+            [
+                MmlCommand::DefaultLength(MmlLength::Denominator(8)),
+                MmlCommand::DefaultLengthReset,
+                MmlCommand::Note { .. }
+            ]
         ));
     }
 
