@@ -406,7 +406,7 @@ fn compile_commands(
                     lfrq: *lfrq,
                     pmd: 0x80 | *pmd,
                     amd: *amd,
-                    pms_ams: ((*pms & 7) << 4) | (*ams & 0xf),
+                    pms_ams: ((*pms & 0xf) << 4) | (*ams & 0xf),
                 }
                 .into(),
             ),

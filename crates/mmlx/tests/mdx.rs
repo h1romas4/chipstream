@@ -135,6 +135,15 @@ fn compiles_opm_lfo_ast() {
         })
     ));
     assert!(matches!(commands[2], MdxCommand::OpmLfo(_)));
+
+    let wide_sensitivity = compile_source("A MH0,3,3,4,8,15,0\n").tracks[0].clone();
+    assert!(matches!(
+        wide_sensitivity[0],
+        MdxCommand::OpmLfo(soundlog::mdx::command::MdxOpmLfo::Configure {
+            pms_ams: 143,
+            ..
+        })
+    ));
 }
 
 #[test]
