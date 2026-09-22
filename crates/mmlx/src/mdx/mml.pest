@@ -28,7 +28,6 @@ command = _{
 	| repeat_start | repeat_end
 	| pitch_lfo_on | pitch_lfo_off | volume_lfo_on | volume_lfo_off
 	| opm_lfo_on | opm_lfo_off
-	| complex_note | complex_rest
 	| opm_tempo | fine_gate | fine_volume | voice_select
 	| pitch_lfo | volume_lfo | opm_lfo
 	| tempo | note | numeric_note | rest | octave | octave_down | octave_up
@@ -44,19 +43,19 @@ repeat_end = { "]" ~ repeat_count? }
 tempo = { "t" ~ tempo_number }
 opm_tempo = { "@t" ~ opm_tempo_number }
 voice_select = { "@" ~ voice_number }
-note = { note_name ~ accidental? ~ (dotted_length | note_length_number)? }
-complex_note = { note_name ~ accidental? ~ length_expression }
+note = { note_name ~ accidental? ~ length_expression? }
 note_name = @{ 'a'..'g' }
 accidental = { "+" | "-" }
 numeric_note = { "n" ~ note_number ~ ("," ~ duration)? }
-rest = { "r" ~ (dotted_length | note_length_number)? }
-complex_rest = { "r" ~ length_expression }
-duration = { dotted_length | length_expression | number }
-length_expression = { ("%" ~ number ~ ("^" ~ "%"? ~ number)*) | (number ~ ("^" ~ "%"? ~ number)+) }
+rest = { "r" ~ length_expression? }
+duration = { length_expression }
+length_expression = { length_term ~ (length_operator ~ length_term)* }
+length_operator = { "^" | "~" }
+length_term = { ("%" ~ number | note_length_number) ~ "."* }
 octave = { "o" ~ octave_number }
 octave_down = { "<" }
 octave_up = { ">" }
-default_length = { "l" ~ (dotted_length | length_expression | note_length_number)? }
+default_length = { "l" ~ length_expression? }
 gate = { "q" ~ gate_number }
 fine_gate = { "@q" ~ number }
 portamento = { "_" }

@@ -551,6 +551,22 @@ fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
                     value: i64::from(u16::MAX),
                 })
         }),
+        MmlLength::Adjusted { base, adjustments } => {
+            adjustments
+                .iter()
+                .try_fold(length_ticks(base)?, |total, (add, value)| {
+                    let value = length_ticks(value)?;
+                    if *add {
+                        total.checked_add(value)
+                    } else {
+                        total.checked_sub(value)
+                    }
+                    .ok_or(CompileError::InvalidValue {
+                        command: "note length",
+                        value: i64::from(u16::MAX),
+                    })
+                })
+        }
     }
 }
 

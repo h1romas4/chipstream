@@ -209,6 +209,13 @@ pub enum MmlLength {
     Ticks(u16),
     /// A sum of multiple length expressions joined by `^`.
     Sum(Vec<MmlLength>),
+    /// A length expression containing additive or subtractive adjustments.
+    Adjusted {
+        /// Base length before adjustments.
+        base: Box<MmlLength>,
+        /// Adjustments as `(add, length)`, where `false` means subtract.
+        adjustments: Vec<(bool, MmlLength)>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,6 +551,13 @@ fn validate_length(length: &MmlLength) -> Result<(), ParseError> {
             validate_length(value)?;
             Ok::<_, ParseError>(total + length_value(value))
         })?,
+        MmlLength::Adjusted { base, adjustments } => {
+            validate_length(base)?;
+            for (_, value) in adjustments.iter() {
+                validate_length(value)?;
+            }
+            return Ok(());
+        }
     };
     validate_range("note length", total, 1, 256)
 }
@@ -553,6 +567,17 @@ fn length_value(length: &MmlLength) -> i64 {
     match length {
         MmlLength::Denominator(value) | MmlLength::Ticks(value) => *value as i64,
         MmlLength::Sum(values) => values.iter().map(length_value).sum(),
+        MmlLength::Adjusted { base, adjustments } => {
+            adjustments
+                .iter()
+                .fold(length_value(base), |total, (add, value)| {
+                    if *add {
+                        total + length_value(value)
+                    } else {
+                        total - length_value(value)
+                    }
+                })
+        }
     }
 }
 
@@ -661,36 +686,20 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                     Rule::note_length_number => {
                         length = Some(child.as_str().parse().expect("number is valid"))
                     }
-                    Rule::dotted_length => {
-                        return MmlCommand::ExtendedNote {
-                            name,
-                            accidental,
-                            length: parse_length(child),
-                        };
-                    }
+                    Rule::length_expression => match parse_length(child) {
+                        MmlLength::Denominator(value) => length = Some(value),
+                        length => {
+                            return MmlCommand::ExtendedNote {
+                                name,
+                                accidental,
+                                length,
+                            };
+                        }
+                    },
                     _ => unreachable!("unexpected note rule: {:?}", child.as_rule()),
                 }
             }
             MmlCommand::Note {
-                name,
-                accidental,
-                length,
-            }
-        }
-        Rule::complex_note => {
-            let mut children = pair.into_inner();
-            let name = parse_note_name(children.next().expect("note has a name"));
-            let next = children.next().expect("note has a length");
-            let (accidental, length_pair) = if next.as_rule() == Rule::accidental {
-                (
-                    parse_accidental(Some(next)),
-                    children.next().expect("note has a length"),
-                )
-            } else {
-                (None, next)
-            };
-            let length = parse_length(length_pair);
-            MmlCommand::ExtendedNote {
                 name,
                 accidental,
                 length,
@@ -705,8 +714,13 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
         Rule::rest => {
             let length = pair.into_inner().next();
             match length {
-                Some(length) if length.as_rule() == Rule::dotted_length => {
-                    MmlCommand::ExtendedRest(parse_length(length))
+                Some(length) if length.as_rule() == Rule::length_expression => {
+                    match parse_length(length) {
+                        MmlLength::Denominator(value) => MmlCommand::Rest {
+                            length: Some(value),
+                        },
+                        length => MmlCommand::ExtendedRest(length),
+                    }
                 }
                 Some(length) => MmlCommand::Rest {
                     length: Some(length.as_str().parse().expect("number is valid")),
@@ -714,9 +728,6 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                 None => MmlCommand::Rest { length: None },
             }
         }
-        Rule::complex_rest => MmlCommand::ExtendedRest(parse_length(
-            pair.into_inner().next().expect("rest has a length"),
-        )),
         Rule::octave => MmlCommand::Octave(
             pair.into_inner()
                 .next()
@@ -816,23 +827,6 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
     }
 }
 
-/// Extract the single note letter from a note-name grammar pair.
-fn parse_note_name(pair: pest::iterators::Pair<'_, Rule>) -> char {
-    pair.as_str()
-        .chars()
-        .next()
-        .expect("note name is not empty")
-}
-
-/// Convert an optional accidental grammar pair into an AST accidental.
-fn parse_accidental(pair: Option<pest::iterators::Pair<'_, Rule>>) -> Option<Accidental> {
-    pair.map(|pair| match pair.as_str() {
-        "+" => Accidental::Sharp,
-        "-" => Accidental::Flat,
-        _ => unreachable!(),
-    })
-}
-
 /// Parse a grammar pair containing an unsigned integer.
 fn parse_pair_u16(pair: pest::iterators::Pair<'_, Rule>) -> u16 {
     pair.as_str().parse().expect("number is valid")
@@ -890,22 +884,54 @@ fn parse_duration(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
 
 /// Parse the `^`-separated textual form of an extended length expression.
 fn parse_length_expression(source: &str) -> MmlLength {
-    let lengths = source
-        .split('^')
-        .map(|part| {
-            let part = part.trim();
-            if let Some(ticks) = part.strip_prefix('%') {
-                MmlLength::Ticks(ticks.parse().expect("tick length is valid"))
-            } else {
-                MmlLength::Denominator(part.parse().expect("denominator is valid"))
-            }
-        })
+    let mut parts = source.split(|character| character == '^' || character == '~');
+    let base = parse_length_term(parts.next().expect("length expression has a base"));
+    let operators = source
+        .chars()
+        .filter(|character| matches!(character, '^' | '~'))
         .collect::<Vec<_>>();
-    if lengths.len() == 1 {
-        lengths.into_iter().next().unwrap()
-    } else {
+    let terms = parts.map(parse_length_term).collect::<Vec<_>>();
+    if operators.is_empty() {
+        base
+    } else if operators.iter().all(|operator| *operator == '^') {
+        let mut lengths = vec![base];
+        lengths.extend(terms);
         MmlLength::Sum(lengths)
+    } else {
+        MmlLength::Adjusted {
+            base: Box::new(base),
+            adjustments: operators
+                .into_iter()
+                .zip(terms)
+                .map(|(operator, term)| (operator == '^', term))
+                .collect(),
+        }
     }
+}
+
+/// Parse one duration term, including optional dots and `%N` tick notation.
+fn parse_length_term(source: &str) -> MmlLength {
+    let source = source.trim();
+    let number = source.trim_end_matches('.');
+    let dots = source.len() - number.len();
+    let mut value = if let Some(ticks) = number.strip_prefix('%') {
+        MmlLength::Ticks(ticks.parse().expect("tick length is valid"))
+    } else {
+        MmlLength::Denominator(number.parse().expect("denominator is valid"))
+    };
+    if dots == 0 {
+        return value;
+    }
+    let mut lengths = vec![value.clone()];
+    for _ in 0..dots {
+        value = match value {
+            MmlLength::Denominator(value) => MmlLength::Denominator(value * 2),
+            MmlLength::Ticks(value) => MmlLength::Ticks(value / 2),
+            _ => unreachable!("length term is scalar"),
+        };
+        lengths.push(value.clone());
+    }
+    MmlLength::Sum(lengths)
 }
 
 #[cfg(test)]

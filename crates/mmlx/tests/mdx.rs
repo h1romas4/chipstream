@@ -199,6 +199,17 @@ fn compiles_dotted_numeric_note_lengths_ast() {
 }
 
 #[test]
+fn compiles_compound_lengths_with_dots_and_subtraction_ast() {
+    let commands = compile_source("A c4^8. r4~8 n0,4^8.\n").tracks[0].clone();
+
+    assert_eq!(note_values(&commands), vec![(173, 84), (128, 84)]);
+    assert!(matches!(
+        commands[1],
+        MdxCommand::Rest(rest) if rest.ticks == 24
+    ));
+}
+
+#[test]
 fn compiles_named_notes_ast() {
     let commands = compile_source("A @0 cdefgab > cdefgab > c\nB @0 >> c < bagfedc\n").tracks;
 
