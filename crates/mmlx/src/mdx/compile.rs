@@ -110,7 +110,24 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                 position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
                 at_loop_start && matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_))
             });
-            let loop_adjustment = if starts_with_duration { 1 } else { 3 };
+            let loop_start_index = commands
+                .iter()
+                .scan(0_usize, |position, command| {
+                    let current = *position;
+                    *position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
+                    Some((current, command))
+                })
+                .position(|(position, _)| position == loop_start);
+            let has_finite_repeat_after_loop = loop_start_index.is_some_and(|index| {
+                commands[index + 1..]
+                    .iter()
+                    .any(|command| matches!(command, MdxCommand::LoopStart(_)))
+            });
+            let loop_adjustment = if starts_with_duration && has_finite_repeat_after_loop {
+                1
+            } else {
+                3
+            };
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
                 - i32::try_from(track_length).unwrap_or(i32::MAX)
                 - loop_adjustment;

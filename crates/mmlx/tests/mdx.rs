@@ -510,7 +510,7 @@ fn compiles_loop_point_ast() {
     assert!(matches!(commands[1], MdxCommand::Note(_)));
     assert!(matches!(
         commands[2],
-        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -3
+        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -5
     ));
 
     let empty_loop = compile_source("A L\n").tracks[0].clone();
