@@ -195,6 +195,7 @@ fn compile_commands(
 ) -> Result<Vec<MdxCommand>, CompileError> {
     let mut output = Vec::new();
     let mut index = 0;
+    let mut last_note_output: Option<(usize, u16, u16)> = None;
     while index < commands.len() {
         let command = &commands[index];
         let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
@@ -205,17 +206,12 @@ fn compile_commands(
                     command_note_number(command, state.octave)?,
                     command_note_number(target, state.octave)?,
                 ) {
-                    let offset = i32::from(target_note) - i32::from(source_note);
                     let ticks =
                         command_note_ticks(command, state)?.ok_or(CompileError::InvalidValue {
                             command: "portamento",
                             value: 0,
                         })?;
-                    let offset = (16_384 * offset) / i32::from(ticks);
-                    let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
-                        command: "portamento",
-                        value: i64::from(offset),
-                    })?;
+                    let offset = portamento_offset(source_note, target_note, ticks)?;
                     output.push(MdxCommand::Portamento(MdxSignedWord {
                         opcode: 0xf2,
                         offset,
@@ -264,38 +260,40 @@ fn compile_commands(
                 accidental,
                 length,
             } => {
+                let note_output_start = output.len();
+                let note = note_number(state.octave, *name, *accidental)?;
+                let ticks = note_ticks(
+                    length.map(MmlLength::Denominator).as_ref(),
+                    &state.default_length,
+                )?;
                 if note_is_legato {
                     output.push(MdxKeyOffDisable.into());
                 }
-                output.extend(compile_note(
-                    note_number(state.octave, *name, *accidental)?,
-                    note_ticks(
-                        length.map(MmlLength::Denominator).as_ref(),
-                        &state.default_length,
-                    )?,
-                )?);
+                output.extend(compile_note(note, ticks)?);
+                last_note_output = Some((note_output_start, note, ticks));
             }
             MmlCommand::ExtendedNote {
                 name,
                 accidental,
                 length,
             } => {
+                let note_output_start = output.len();
+                let note = note_number(state.octave, *name, *accidental)?;
+                let ticks = length_ticks(length)?;
                 if note_is_legato {
                     output.push(MdxKeyOffDisable.into());
                 }
-                output.extend(compile_note(
-                    note_number(state.octave, *name, *accidental)?,
-                    length_ticks(length)?,
-                )?);
+                output.extend(compile_note(note, ticks)?);
+                last_note_output = Some((note_output_start, note, ticks));
             }
             MmlCommand::NumericNote { note, length } => {
+                let note_output_start = output.len();
+                let ticks = note_ticks(length.as_ref(), &state.default_length)?;
                 if note_is_legato {
                     output.push(MdxKeyOffDisable.into());
                 }
-                output.extend(compile_note(
-                    *note as u16,
-                    note_ticks(length.as_ref(), &state.default_length)?,
-                )?);
+                output.extend(compile_note(*note as u16, ticks)?);
+                last_note_output = Some((note_output_start, *note as u16, ticks));
             }
             MmlCommand::Rest { length } => output.extend(compile_rest(note_ticks(
                 length.map(MmlLength::Denominator).as_ref(),
@@ -314,10 +312,59 @@ fn compile_commands(
                 }
                 .into(),
             ),
-            MmlCommand::Portamento => output.push(MdxCommand::Portamento(MdxSignedWord {
-                opcode: 0xf2,
-                offset: 0,
-            })),
+            MmlCommand::Portamento => {
+                if let Some((note_output_start, source_note, ticks)) = last_note_output {
+                    let mut target_index = index + 1;
+                    let mut target_octave = state.octave;
+                    while let Some(target) = commands.get(target_index) {
+                        match target {
+                            MmlCommand::Octave(value) => {
+                                target_octave = *value;
+                                target_index += 1;
+                            }
+                            MmlCommand::OctaveDown => {
+                                target_octave = target_octave.saturating_sub(1);
+                                target_index += 1;
+                            }
+                            MmlCommand::OctaveUp => {
+                                target_octave = target_octave.saturating_add(1);
+                                target_index += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if let Some(target) = commands.get(target_index) {
+                        if let Some(target_note) = command_note_number(target, target_octave)? {
+                            state.octave = target_octave;
+                            let offset = portamento_offset(source_note, target_note, ticks)?;
+                            output.insert(
+                                note_output_start,
+                                MdxCommand::Portamento(MdxSignedWord {
+                                    opcode: 0xf2,
+                                    offset,
+                                }),
+                            );
+                            last_note_output = Some((note_output_start + 1, source_note, ticks));
+                            consumed = target_index - index + 1;
+                        } else {
+                            output.push(MdxCommand::Portamento(MdxSignedWord {
+                                opcode: 0xf2,
+                                offset: 0,
+                            }));
+                        }
+                    } else {
+                        output.push(MdxCommand::Portamento(MdxSignedWord {
+                            opcode: 0xf2,
+                            offset: 0,
+                        }));
+                    }
+                } else {
+                    output.push(MdxCommand::Portamento(MdxSignedWord {
+                        opcode: 0xf2,
+                        offset: 0,
+                    }));
+                }
+            }
             MmlCommand::Legato => {}
             MmlCommand::Volume(value) => output.push(MdxVolume { value: *value }.into()),
             MmlCommand::FineVolume(value) => output.push(
@@ -460,6 +507,22 @@ fn command_note_ticks(
         }
         _ => Ok(None),
     }
+}
+
+/// Calculate the MDX portamento rate from a source note to a target note.
+fn portamento_offset(source_note: u16, target_note: u16, ticks: u16) -> Result<i16, CompileError> {
+    if ticks == 0 {
+        return Err(CompileError::InvalidValue {
+            command: "portamento",
+            value: 0,
+        });
+    }
+    let delta = i32::from(target_note) - i32::from(source_note);
+    let offset = (16_384 * delta) / i32::from(ticks);
+    i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
+        command: "portamento",
+        value: i64::from(offset),
+    })
 }
 
 /// Encode a note, splitting it when its duration exceeds one MDX note command.

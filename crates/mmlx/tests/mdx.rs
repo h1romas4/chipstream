@@ -342,6 +342,18 @@ fn compiles_portamento_ast() {
 }
 
 #[test]
+fn compiles_portamento_after_legato_source_note_ast() {
+    let commands = compile_source("A c8&c8_d4\n").tracks[0].clone();
+
+    assert!(commands.iter().any(|command| {
+        matches!(
+            command,
+            MdxCommand::Portamento(command) if command.offset == 1365
+        )
+    }));
+}
+
+#[test]
 fn compiles_staccato_ast() {
     let commands = compile_source("A q1 c q8 c @q1 d @q192 d\n").tracks[0].clone();
     let gates: Vec<u8> = commands
