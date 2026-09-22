@@ -110,6 +110,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                 position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
                 at_loop_start && matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_))
             });
+            // Resolve the loop marker's byte offset to its command index.
             let loop_start_index = commands
                 .iter()
                 .scan(0_usize, |position, command| {
@@ -118,6 +119,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                     Some((current, command))
                 })
                 .position(|(position, _)| position == loop_start);
+            // A later finite repeat changes how legacy loop targets are encoded.
             let has_finite_repeat_after_loop = loop_start_index.is_some_and(|index| {
                 commands[index + 1..]
                     .iter()
