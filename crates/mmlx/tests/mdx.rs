@@ -103,7 +103,7 @@ fn compiles_pitch_lfo_ast() {
         commands[1],
         MdxCommand::PitchLfo(soundlog::mdx::command::MdxPitchLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
-            frequency: 4,
+            frequency: 2,
             amplitude: 4096,
         })
     ));
@@ -120,7 +120,7 @@ fn compiles_volume_lfo_ast() {
         commands[1],
         MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
-            frequency: 8,
+            frequency: 4,
             amplitude: 256,
         })
     ));
@@ -353,7 +353,7 @@ fn compiles_repeat_and_loop_commands_ast() {
     assert!(matches!(commands[3], MdxCommand::Note(_)));
     assert!(matches!(
         commands[4],
-        MdxCommand::LoopEnd(command) if command.offset == -12
+        MdxCommand::LoopEnd(command) if command.offset == -10
     ));
     assert!(matches!(
         commands[5],
@@ -370,7 +370,7 @@ fn compiles_repeat_with_default_count_ast() {
     assert!(matches!(commands[2], MdxCommand::Note(_)));
     assert!(matches!(
         commands[3],
-        MdxCommand::LoopEnd(command) if command.offset == -9
+        MdxCommand::LoopEnd(command) if command.offset == -7
     ));
 }
 

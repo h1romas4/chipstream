@@ -247,7 +247,7 @@ fn compile_commands(
                 output.extend(body_commands);
                 output.push(MdxCommand::LoopEnd(MdxRelativeOffset {
                     opcode: 0xf5,
-                    offset: checked_signed_i16("repeat", -(body_length as i32 + 5))?,
+                    offset: checked_signed_i16("repeat", -(body_length as i32 + 3))?,
                 }));
             }
             MmlCommand::Note {
@@ -360,7 +360,7 @@ fn compile_commands(
             } => output.push(
                 MdxPitchLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: checked_u16("pitch LFO period", u32::from(*period) * 2)?,
+                    frequency: checked_u16("pitch LFO period", u32::from(*period))?,
                     amplitude: i16::from_be_bytes(((*amplitude & 0xff) << 8).to_be_bytes()),
                 }
                 .into(),
@@ -376,7 +376,7 @@ fn compile_commands(
             } => output.push(
                 MdxVolumeLfo::Configure {
                     waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: checked_u16("volume LFO period", u32::from(*period) * 2)?,
+                    frequency: checked_u16("volume LFO period", u32::from(*period))?,
                     amplitude: (*amplitude & 0xff) << 8,
                 }
                 .into(),
