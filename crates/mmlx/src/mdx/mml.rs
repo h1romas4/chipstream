@@ -152,7 +152,7 @@ pub enum MmlCommand {
         /// LFO period.
         period: u16,
         /// LFO amplitude.
-        amplitude: u16,
+        amplitude: i16,
     },
     /// Enable pitch LFO.
     PitchLfoOn,
@@ -768,11 +768,19 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
         }
         Rule::sync_wait => MmlCommand::SyncWait,
         Rule::pitch_lfo => {
-            let values = parse_u16_values(pair);
+            let mut values = pair.into_inner();
+            let waveform = parse_pair_u16(values.next().expect("pitch LFO waveform")) as u8;
+            let period = parse_pair_u16(values.next().expect("pitch LFO period"));
+            let amplitude = values
+                .next()
+                .expect("pitch LFO amplitude")
+                .as_str()
+                .parse()
+                .expect("pitch LFO amplitude is valid");
             MmlCommand::PitchLfo {
-                waveform: values[0] as u8,
-                period: values[1],
-                amplitude: values[2],
+                waveform,
+                period,
+                amplitude,
             }
         }
         Rule::pitch_lfo_on => MmlCommand::PitchLfoOn,

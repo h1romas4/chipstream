@@ -95,7 +95,7 @@ fn compiles_metadata_and_tone_ast() {
 
 #[test]
 fn compiles_pitch_lfo_ast() {
-    let compiled = compile_source("A MPON MP2,2,16 MPOF\n");
+    let compiled = compile_source("A MPON MP2,2,16 MP2,64,-24 MPOF\n");
     let commands = &compiled.tracks[0];
 
     assert!(matches!(commands[0], MdxCommand::PitchLfo(_)));
@@ -103,11 +103,19 @@ fn compiles_pitch_lfo_ast() {
         commands[1],
         MdxCommand::PitchLfo(soundlog::mdx::command::MdxPitchLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
-            frequency: 2,
-            amplitude: 4096,
+            frequency: 4,
+            amplitude: 2048,
         })
     ));
-    assert!(matches!(commands[2], MdxCommand::PitchLfo(_)));
+    assert!(matches!(
+        commands[2],
+        MdxCommand::PitchLfo(soundlog::mdx::command::MdxPitchLfo::Configure {
+            frequency: 128,
+            amplitude: -96,
+            ..
+        })
+    ));
+    assert!(matches!(commands[3], MdxCommand::PitchLfo(_)));
 }
 
 #[test]
@@ -120,14 +128,14 @@ fn compiles_volume_lfo_ast() {
         commands[1],
         MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
             waveform: MdxLfoWaveform::Triangle,
-            frequency: 4,
-            amplitude: 256,
+            frequency: 8,
+            amplitude: 16,
         })
     ));
     assert!(matches!(
         commands[2],
         MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
-            amplitude: 512,
+            amplitude: 32,
             ..
         })
     ));
@@ -187,10 +195,7 @@ fn compiles_note_lengths_ast() {
 fn compiles_dotted_numeric_note_lengths_ast() {
     let commands = compile_source("A n0,8. n1,4.\n").tracks[0].clone();
 
-    assert_eq!(
-        note_values(&commands),
-        vec![(128, 36), (129, 72)]
-    );
+    assert_eq!(note_values(&commands), vec![(128, 36), (129, 72)]);
 }
 
 #[test]

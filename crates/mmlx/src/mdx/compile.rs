@@ -357,14 +357,17 @@ fn compile_commands(
                 waveform,
                 period,
                 amplitude,
-            } => output.push(
-                MdxPitchLfo::Configure {
-                    waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: checked_u16("pitch LFO period", u32::from(*period))?,
-                    amplitude: i16::from_be_bytes(((*amplitude & 0xff) << 8).to_be_bytes()),
-                }
-                .into(),
-            ),
+            } => {
+                let (frequency, amplitude) = pitch_lfo_values(*waveform, *period, *amplitude)?;
+                output.push(
+                    MdxPitchLfo::Configure {
+                        waveform: MdxLfoWaveform::from_raw(*waveform),
+                        frequency,
+                        amplitude,
+                    }
+                    .into(),
+                );
+            }
             MmlCommand::PitchLfoOn => output.push(MdxPitchLfo::SetEnabled { enabled: true }.into()),
             MmlCommand::PitchLfoOff => {
                 output.push(MdxPitchLfo::SetEnabled { enabled: false }.into())
@@ -373,14 +376,17 @@ fn compile_commands(
                 waveform,
                 period,
                 amplitude,
-            } => output.push(
-                MdxVolumeLfo::Configure {
-                    waveform: MdxLfoWaveform::from_raw(*waveform),
-                    frequency: checked_u16("volume LFO period", u32::from(*period))?,
-                    amplitude: (*amplitude & 0xff) << 8,
-                }
-                .into(),
-            ),
+            } => {
+                let (frequency, amplitude) = volume_lfo_values(*waveform, *period, *amplitude)?;
+                output.push(
+                    MdxVolumeLfo::Configure {
+                        waveform: MdxLfoWaveform::from_raw(*waveform),
+                        frequency,
+                        amplitude,
+                    }
+                    .into(),
+                );
+            }
             MmlCommand::VolumeLfoOn => {
                 output.push(MdxVolumeLfo::SetEnabled { enabled: true }.into())
             }
@@ -579,6 +585,54 @@ fn checked_u16(command: &'static str, value: u32) -> Result<u16, CompileError> {
         command,
         value: i64::from(value),
     })
+}
+
+/// Convert an MML pitch LFO tuple using MXDRV's waveform-specific scaling.
+fn pitch_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, i16), CompileError> {
+    if period == 0 {
+        return Err(CompileError::InvalidValue {
+            command: "pitch LFO period",
+            value: 0,
+        });
+    }
+    let period = i32::from(period);
+    let depth = i32::from(depth);
+    let (frequency, amplitude) = match waveform {
+        0 => (period * 4, depth * 128 / period),
+        1 => (period * 2, depth * 256),
+        _ => (period * 2, depth * 256 / period),
+    };
+    Ok((
+        checked_u16(
+            "pitch LFO period",
+            u32::try_from(frequency).unwrap_or(u32::MAX),
+        )?,
+        i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
+            command: "pitch LFO amplitude",
+            value: i64::from(amplitude),
+        })?,
+    ))
+}
+
+/// Convert an MML volume LFO tuple using MXDRV's waveform-specific scaling.
+fn volume_lfo_values(waveform: u8, period: u16, depth: u16) -> Result<(u16, u16), CompileError> {
+    if period == 0 {
+        return Err(CompileError::InvalidValue {
+            command: "volume LFO period",
+            value: 0,
+        });
+    }
+    let period = u32::from(period);
+    let depth = u32::from(depth);
+    let (frequency, amplitude) = match waveform {
+        0 => (period * 4, depth * 16),
+        1 => (period * 2, depth * 256),
+        _ => (period * 2, depth * 16),
+    };
+    Ok((
+        checked_u16("volume LFO period", frequency)?,
+        checked_u16("volume LFO amplitude", amplitude)?,
+    ))
 }
 
 /// Convert an unscaled signed integer to an MDX signed 16-bit value.
