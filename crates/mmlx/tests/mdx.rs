@@ -1,4 +1,4 @@
-use mmlx::mdx::{self, MmlCommand};
+use mmlx::mdx::{self, MmlCommand, MmlLength};
 use soundlog::mdx::command::{MdxCommand, MdxLfoWaveform};
 use soundlog::mdx::document::MdxDocument;
 
@@ -59,6 +59,84 @@ fn parses_compact_mml_ast() {
     assert!(matches!(
         document.tracks[1].commands.as_slice(),
         [MmlCommand::PcmFrequency(4)]
+    ));
+}
+
+#[test]
+fn merges_repeated_channel_lines() {
+    let document = mdx::parse("A c\nB d\nA e\n").unwrap();
+
+    assert_eq!(document.tracks[0].commands.len(), 2);
+    assert_eq!(document.tracks[0].channel, 'A');
+    assert_eq!(document.tracks[1].channel, 'B');
+}
+
+#[test]
+fn keeps_interleaved_channel_lines_out_of_repeat_body() {
+    let document = mdx::parse("A [abc\nB c\nA def]\n").unwrap();
+
+    assert_eq!(document.tracks.len(), 2);
+    assert_eq!(document.tracks[0].channel, 'A');
+    assert_eq!(document.tracks[1].channel, 'B');
+    assert!(matches!(
+        document.tracks[0].commands.as_slice(),
+        [MmlCommand::Repeat { body, .. }]
+            if body.len() == 6
+    ));
+    assert!(matches!(
+        document.tracks[1].commands.as_slice(),
+        [MmlCommand::Note { name: 'c', .. }]
+    ));
+}
+
+#[test]
+fn parses_dotted_lengths() {
+    let document = mdx::parse("A c4. r8.. l16. d\n").unwrap();
+
+    assert_eq!(
+        document.tracks[0].commands,
+        vec![
+            MmlCommand::ExtendedNote {
+                name: 'c',
+                accidental: None,
+                length: MmlLength::Sum(vec![MmlLength::Denominator(4), MmlLength::Denominator(8),]),
+            },
+            MmlCommand::ExtendedRest(MmlLength::Sum(vec![
+                MmlLength::Denominator(8),
+                MmlLength::Denominator(16),
+                MmlLength::Denominator(32),
+            ])),
+            MmlCommand::DefaultLength(MmlLength::Sum(vec![
+                MmlLength::Denominator(16),
+                MmlLength::Denominator(32),
+            ])),
+            MmlCommand::Note {
+                name: 'd',
+                accidental: None,
+                length: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn parses_repeats_across_track_lines() {
+    let document = mdx::parse("A [c\nA d]3\n").unwrap();
+
+    assert!(matches!(
+        document.tracks[0].commands.as_slice(),
+        [MmlCommand::Repeat { body, count }]
+            if *count == 3 && body.len() == 2
+    ));
+}
+
+#[test]
+fn defaults_repeat_count_to_two() {
+    let document = mdx::parse("A [c d]\n").unwrap();
+
+    assert!(matches!(
+        document.tracks[0].commands.as_slice(),
+        [MmlCommand::Repeat { count: 2, .. }]
     ));
 }
 

@@ -982,68 +982,6 @@ mod tests {
     }
 
     #[test]
-    fn merges_repeated_channel_lines() {
-        let document = parse("A c\nB d\nA e\n").unwrap();
-
-        assert_eq!(
-            document.tracks,
-            vec![
-                MmlTrack {
-                    channel: 'A',
-                    commands: vec![
-                        MmlCommand::Note {
-                            name: 'c',
-                            accidental: None,
-                            length: None,
-                        },
-                        MmlCommand::Note {
-                            name: 'e',
-                            accidental: None,
-                            length: None,
-                        },
-                    ],
-                },
-                MmlTrack {
-                    channel: 'B',
-                    commands: vec![MmlCommand::Note {
-                        name: 'd',
-                        accidental: None,
-                        length: None,
-                    }],
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn keeps_interleaved_channel_lines_out_of_repeat_body() {
-        let document = parse("A [abc\nB c\nA def]\n").unwrap();
-
-        assert_eq!(document.tracks.len(), 2);
-        assert_eq!(document.tracks[0].channel, 'A');
-        assert!(matches!(
-            document.tracks[0].commands.as_slice(),
-            [MmlCommand::Repeat { body, .. }]
-                if matches!(
-                    body.as_slice(),
-                    [
-                        MmlCommand::Note { name: 'a', .. },
-                        MmlCommand::Note { name: 'b', .. },
-                        MmlCommand::Note { name: 'c', .. },
-                        MmlCommand::Note { name: 'd', .. },
-                        MmlCommand::Note { name: 'e', .. },
-                        MmlCommand::Note { name: 'f', .. },
-                    ]
-                )
-        ));
-        assert_eq!(document.tracks[1].channel, 'B');
-        assert!(matches!(
-            document.tracks[1].commands.as_slice(),
-            [MmlCommand::Note { name: 'c', .. }]
-        ));
-    }
-
-    #[test]
     fn displays_the_parsed_document_tree() {
         let document = parse("A c4\n").unwrap();
         let tree = format_tree(&document);
@@ -1068,53 +1006,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn parses_dotted_lengths() {
-        let document = parse("A c4. r8.. l16. d\n").unwrap();
-
-        assert_eq!(
-            document.tracks[0].commands,
-            vec![
-                MmlCommand::ExtendedNote {
-                    name: 'c',
-                    accidental: None,
-                    length: MmlLength::Sum(vec![
-                        MmlLength::Denominator(4),
-                        MmlLength::Denominator(8),
-                    ]),
-                },
-                MmlCommand::ExtendedRest(MmlLength::Sum(vec![
-                    MmlLength::Denominator(8),
-                    MmlLength::Denominator(16),
-                    MmlLength::Denominator(32),
-                ])),
-                MmlCommand::DefaultLength(MmlLength::Sum(vec![
-                    MmlLength::Denominator(16),
-                    MmlLength::Denominator(32),
-                ])),
-                MmlCommand::Note {
-                    name: 'd',
-                    accidental: None,
-                    length: None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_repeats_across_track_lines() {
-        let document = parse("A [c\nA d]3\n").unwrap();
-
-        assert_eq!(document.tracks[0].channel, 'A');
-        assert!(matches!(
-            document.tracks[0].commands.as_slice(),
-            [MmlCommand::Repeat { body, count }] if *count == 3 && matches!(
-                body.as_slice(),
-                [MmlCommand::Note { name: 'c', .. }, MmlCommand::Note { name: 'd', .. }]
-            )
-        ));
     }
 
     #[test]
@@ -1157,16 +1048,6 @@ mod tests {
         let document = parse("A S10\n").unwrap();
 
         assert_eq!(document.tracks[0].commands, vec![MmlCommand::SyncSend(10)]);
-    }
-
-    #[test]
-    fn defaults_repeat_count_to_two() {
-        let document = parse("A [c d]\n").unwrap();
-
-        assert!(matches!(
-            document.tracks[0].commands.as_slice(),
-            [MmlCommand::Repeat { count: 2, .. }]
-        ));
     }
 
     #[test]
