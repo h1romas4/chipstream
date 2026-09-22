@@ -816,6 +816,9 @@ fn parse_repeat(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
     let mut body = Vec::new();
     let mut count: Option<u16> = None;
     for child in children.by_ref() {
+        if child.as_rule() == Rule::channel {
+            continue;
+        }
         if child.as_rule() == Rule::repeat_count {
             count = Some(child.as_str().parse().expect("repeat count is valid"));
         } else {
@@ -933,6 +936,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parses_repeats_across_track_lines() {
+        let document = parse("A [c\nA d]3\n").unwrap();
+
+        assert_eq!(document.tracks[0].channel, 'A');
+        assert!(matches!(
+            document.tracks[0].commands.as_slice(),
+            [MmlCommand::Repeat { body, count }] if *count == 3 && matches!(
+                body.as_slice(),
+                [MmlCommand::Note { name: 'c', .. }, MmlCommand::Note { name: 'd', .. }]
+            )
+        ));
     }
 
     #[test]
