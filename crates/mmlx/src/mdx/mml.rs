@@ -280,7 +280,7 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
             Rule::voice => document.voices.push(parse_voice(line)),
-            Rule::track => document.tracks.extend(parse_track(line)),
+            Rule::track => append_tracks(&mut document.tracks, parse_track(line)),
             Rule::blank | Rule::comment | Rule::block_comment => {}
             rule => unreachable!("unexpected line rule: {rule:?}"),
         }
@@ -288,6 +288,20 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
 
     validate_document(&document)?;
     Ok(document)
+}
+
+/// Append parsed source lines to their channel's existing AST track.
+fn append_tracks(tracks: &mut Vec<MmlTrack>, incoming: Vec<MmlTrack>) {
+    for track in incoming {
+        if let Some(existing) = tracks
+            .iter_mut()
+            .find(|existing: &&mut MmlTrack| existing.channel == track.channel)
+        {
+            existing.commands.extend(track.commands);
+        } else {
+            tracks.push(track);
+        }
+    }
 }
 
 /// Format a parsed MML document as a readable syntax tree.
@@ -875,6 +889,40 @@ mod tests {
                 .tracks
                 .iter()
                 .all(|track| track.commands.len() == 1)
+        );
+    }
+
+    #[test]
+    fn merges_repeated_channel_lines() {
+        let document = parse("A c\nB d\nA e\n").unwrap();
+
+        assert_eq!(
+            document.tracks,
+            vec![
+                MmlTrack {
+                    channel: 'A',
+                    commands: vec![
+                        MmlCommand::Note {
+                            name: 'c',
+                            accidental: None,
+                            length: None,
+                        },
+                        MmlCommand::Note {
+                            name: 'e',
+                            accidental: None,
+                            length: None,
+                        },
+                    ],
+                },
+                MmlTrack {
+                    channel: 'B',
+                    commands: vec![MmlCommand::Note {
+                        name: 'd',
+                        accidental: None,
+                        length: None,
+                    }],
+                },
+            ]
         );
     }
 
