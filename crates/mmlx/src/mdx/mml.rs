@@ -571,6 +571,13 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                     Rule::note_length_number => {
                         length = Some(child.as_str().parse().expect("number is valid"))
                     }
+                    Rule::dotted_length => {
+                        return MmlCommand::ExtendedNote {
+                            name,
+                            accidental,
+                            length: parse_length(child),
+                        };
+                    }
                     _ => unreachable!("unexpected note rule: {:?}", child.as_rule()),
                 }
             }
@@ -605,12 +612,18 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
             let length = children.next().map(parse_duration);
             MmlCommand::NumericNote { note, length }
         }
-        Rule::rest => MmlCommand::Rest {
-            length: pair
-                .into_inner()
-                .next()
-                .map(|number| number.as_str().parse().expect("number is valid")),
-        },
+        Rule::rest => {
+            let length = pair.into_inner().next();
+            match length {
+                Some(length) if length.as_rule() == Rule::dotted_length => {
+                    MmlCommand::ExtendedRest(parse_length(length))
+                }
+                Some(length) => MmlCommand::Rest {
+                    length: Some(length.as_str().parse().expect("number is valid")),
+                },
+                None => MmlCommand::Rest { length: None },
+            }
+        }
         Rule::complex_rest => MmlCommand::ExtendedRest(parse_length(
             pair.into_inner().next().expect("rest has a length"),
         )),
@@ -753,11 +766,23 @@ fn parse_signed_i16(pair: pest::iterators::Pair<'_, Rule>) -> i16 {
 
 /// Convert either a simple length or an extended expression into the AST.
 fn parse_length(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
-    if pair.as_rule() == Rule::length_expression {
-        parse_length_expression(pair.as_str())
-    } else {
-        MmlLength::Denominator(parse_pair_u16(pair))
+    match pair.as_rule() {
+        Rule::length_expression => parse_length_expression(pair.as_str()),
+        Rule::dotted_length => parse_dotted_length(pair.as_str()),
+        _ => MmlLength::Denominator(parse_pair_u16(pair)),
     }
+}
+
+/// Convert a dotted denominator into the equivalent sum of note lengths.
+fn parse_dotted_length(source: &str) -> MmlLength {
+    let source = source.trim();
+    let number = source.trim_end_matches('.');
+    let denominator: u16 = number.parse().expect("number is valid");
+    let dot_count = source.len() - number.len();
+    let lengths = (0..=dot_count)
+        .map(|shift| MmlLength::Denominator(denominator << shift))
+        .collect();
+    MmlLength::Sum(lengths)
 }
 
 /// Extract and parse the length expression used by a duration argument.
@@ -872,6 +897,39 @@ mod tests {
                     name: 'c',
                     accidental: None,
                     length: MmlLength::Ticks(36),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_dotted_lengths() {
+        let document = parse("A c4. r8.. l16. d\n").unwrap();
+
+        assert_eq!(
+            document.tracks[0].commands,
+            vec![
+                MmlCommand::ExtendedNote {
+                    name: 'c',
+                    accidental: None,
+                    length: MmlLength::Sum(vec![
+                        MmlLength::Denominator(4),
+                        MmlLength::Denominator(8),
+                    ]),
+                },
+                MmlCommand::ExtendedRest(MmlLength::Sum(vec![
+                    MmlLength::Denominator(8),
+                    MmlLength::Denominator(16),
+                    MmlLength::Denominator(32),
+                ])),
+                MmlCommand::DefaultLength(MmlLength::Sum(vec![
+                    MmlLength::Denominator(16),
+                    MmlLength::Denominator(32),
+                ])),
+                MmlCommand::Note {
+                    name: 'd',
+                    accidental: None,
+                    length: None,
                 },
             ]
         );
