@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod mdx;
@@ -11,7 +12,17 @@ pub enum OutputFormat {
 pub fn check(input: &Path, verbose: bool) -> Result<(), String> {
     let document = mdx::parse_input(input)?;
     if verbose {
-        println!("{}", mmlx::mdx::format_tree(&document));
+        let tree = mmlx::mdx::format_tree(&document);
+        let mut stdout = io::BufWriter::new(io::stdout().lock());
+        match stdout
+            .write_all(tree.as_bytes())
+            .and_then(|()| stdout.write_all(b"\n"))
+            .and_then(|()| stdout.flush())
+        {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+            Err(error) => return Err(format!("failed to write verbose output: {error}")),
+        }
     }
     Ok(())
 }
