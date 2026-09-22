@@ -104,9 +104,16 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
     for (track_index, mut commands) in tracks.into_iter().take(track_count).enumerate() {
         if let Some(loop_start) = track_states[track_index].loop_start {
             let track_length = command_bytes(&commands);
+            let mut position = 0_usize;
+            let starts_with_duration = commands.iter().any(|command| {
+                let at_loop_start = position == loop_start;
+                position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
+                at_loop_start && matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_))
+            });
+            let loop_adjustment = if starts_with_duration { 1 } else { 3 };
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
                 - i32::try_from(track_length).unwrap_or(i32::MAX)
-                - 2;
+                - loop_adjustment;
             let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
                 command: "loop start",
                 value: i64::from(offset),
@@ -765,7 +772,7 @@ fn patch_repeat_escape_offsets(
             MdxCommand::LoopEscape(command) if nested_depth == 0 => {
                 let offset = i32::try_from(body_length).unwrap_or(i32::MAX)
                     - i32::try_from(position).unwrap_or(i32::MAX)
-                    + 1;
+                    - 2;
                 command.offset = checked_signed_i16("repeat escape", offset)?;
             }
             _ => {}

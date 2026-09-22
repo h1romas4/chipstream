@@ -476,7 +476,7 @@ fn compiles_repeat_and_loop_commands_ast() {
     assert!(matches!(commands[1], MdxCommand::Note(_)));
     assert!(matches!(
         commands[2],
-        MdxCommand::LoopEscape(command) if command.offset == 6
+        MdxCommand::LoopEscape(command) if command.offset == 3
     ));
     assert!(matches!(commands[3], MdxCommand::Note(_)));
     assert!(matches!(
@@ -485,7 +485,7 @@ fn compiles_repeat_and_loop_commands_ast() {
     ));
     assert!(matches!(
         commands[5],
-        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -15
+        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -16
     ));
 }
 
@@ -510,13 +510,13 @@ fn compiles_loop_point_ast() {
     assert!(matches!(commands[1], MdxCommand::Note(_)));
     assert!(matches!(
         commands[2],
-        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -4
+        MdxCommand::EndOfTrackLoop(command) if command.opcode == 0xf1 && command.offset == -3
     ));
 
     let empty_loop = compile_source("A L\n").tracks[0].clone();
     assert!(matches!(
         empty_loop.as_slice(),
-        [MdxCommand::EndOfTrackLoop(command)] if command.opcode == 0xf1 && command.offset == -2
+        [MdxCommand::EndOfTrackLoop(command)] if command.opcode == 0xf1 && command.offset == -3
     ));
 }
 
