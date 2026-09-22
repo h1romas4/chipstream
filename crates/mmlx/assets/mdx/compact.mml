@@ -1,0 +1,15 @@
+#title "Compact MXDRV parser fixture"
+#pcmfile "fixture.pdx"
+
+@1 = {
+    28, 4, 0, 5, 1, 37, 2, 1, 7, 0, 0,
+    22, 9, 1, 2, 1, 47, 2, 12, 0, 0, 0,
+    29, 4, 3, 6, 1, 37, 1, 3, 3, 0, 0,
+    15, 7, 0, 5, 10, 0, 2, 1, 0, 0, 1,
+    2, 7, 15
+}
+
+; Commands are intentionally adjacent without whitespace.
+A@t200@1t120o4l8c+8d-8e4r8n12,16
+B<>q4@q12_&v8@v100()p3LD-12[c4/d4]2y1,2k3w4S0W
+P F4
