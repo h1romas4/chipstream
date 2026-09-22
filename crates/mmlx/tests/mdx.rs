@@ -184,6 +184,16 @@ fn compiles_note_lengths_ast() {
 }
 
 #[test]
+fn compiles_dotted_numeric_note_lengths_ast() {
+    let commands = compile_source("A n0,8. n1,4.\n").tracks[0].clone();
+
+    assert_eq!(
+        note_values(&commands),
+        vec![(128, 36), (129, 72)]
+    );
+}
+
+#[test]
 fn compiles_named_notes_ast() {
     let commands = compile_source("A @0 cdefgab > cdefgab > c\nB @0 >> c < bagfedc\n").tracks;
 
