@@ -11,6 +11,8 @@ utilities for building and parsing register-write logs such as the VGM
 
 [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
+### soundlog
+
 A debug frontend is provided for easily trying out the `soundlog` crate.
 
 Build all crates:
@@ -45,6 +47,27 @@ Options:
 For detailed usage instructions, please refer to [crates/soundlog-debugger](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-debugger/README.md).
 
 The documentation for the `soundlog` crate library is available at [crates/soundlog](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog/README.md).
+
+### mmlx
+
+`mmlx` parses MXDRV MML files and compiles them to MDX or VGM output.
+
+`target/release/mmlx --help`
+
+```
+Parse MML source files
+
+Usage: mmlx <COMMAND>
+
+Commands:
+  mdx   Parse or compile MML/MDX data
+  pdx   Build PDX sample data
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
 
 ## License
 
