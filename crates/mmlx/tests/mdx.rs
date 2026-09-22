@@ -411,7 +411,7 @@ fn compiles_volume_ast() {
         })
         .collect();
 
-    assert_eq!(volumes, vec![15, 0, 128, 228]);
+    assert_eq!(volumes, vec![15, 0, 255, 155]);
 }
 
 #[test]

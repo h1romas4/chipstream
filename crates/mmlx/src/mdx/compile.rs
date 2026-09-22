@@ -376,7 +376,7 @@ fn compile_commands(
             MmlCommand::Volume(value) => output.push(MdxVolume { value: *value }.into()),
             MmlCommand::FineVolume(value) => output.push(
                 MdxVolume {
-                    value: checked_u8("@v", 128 + i64::from(*value))?,
+                    value: checked_u8("@v", 255 - i64::from(*value))?,
                 }
                 .into(),
             ),
