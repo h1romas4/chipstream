@@ -106,7 +106,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
             let track_length = command_bytes(&commands);
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
                 - i32::try_from(track_length).unwrap_or(i32::MAX)
-                - 3;
+                - 2;
             let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
                 command: "loop start",
                 value: i64::from(offset),
