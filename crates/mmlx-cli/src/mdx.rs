@@ -19,11 +19,11 @@ pub(crate) fn write_vgm(
     input: &Path,
     output: &Path,
 ) -> Result<(), String> {
-    let pdx_bytes = source
+    let pdx_path = source
         .pcm_file
         .as_deref()
-        .map(|name| input.parent().unwrap_or_else(|| Path::new(".")).join(name))
-        .filter(|path| path.is_file())
+        .and_then(|name| find_pdx_path(input, name));
+    let pdx_bytes = pdx_path
         .map(|path| fs::read(&path).map_err(|error| format!("{}: {error}", path.display())))
         .transpose()?;
     let package = MdxPackage::parse_owned(mdx.to_bytes(), pdx_bytes)
@@ -38,6 +38,23 @@ pub(crate) fn write_vgm(
     }
     let bytes: Vec<u8> = (&document).into();
     fs::write(output, bytes).map_err(|error| format!("{}: {error}", output.display()))
+}
+
+fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let path = parent.join(name);
+    if path.is_file() {
+        return Some(path);
+    }
+    if Path::new(name).extension().is_none() {
+        for extension in ["pdx", "PDX"] {
+            let candidate = parent.join(format!("{name}.{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn build_pdx(files: &[PathBuf]) -> Result<(), String> {
@@ -134,6 +151,18 @@ mod tests {
         assert_eq!(document.sample_bytes(0, 0).unwrap().len(), 2);
 
         fs::remove_file(wav_path).unwrap();
+        fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn resolves_pdx_stem_with_uppercase_extension() {
+        let stem = format!("mmlx-pdx-path-{}", std::process::id());
+        let input_path = std::env::temp_dir().join(format!("{stem}.mml"));
+        let pdx_path = std::env::temp_dir().join(format!("{stem}.PDX"));
+        fs::write(&pdx_path, [0_u8]).unwrap();
+
+        assert_eq!(find_pdx_path(&input_path, &stem), Some(pdx_path.clone()));
+
         fs::remove_file(pdx_path).unwrap();
     }
 }
