@@ -28,6 +28,19 @@ pub struct MmlTrack {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedCommand {
+    Command(MmlCommand),
+    RepeatStart,
+    RepeatEnd(u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTrack {
+    channel: char,
+    commands: Vec<ParsedCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MmlVoice {
     pub number: u8,
     pub values: Vec<u8>,
@@ -267,6 +280,7 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
         voices: Vec::new(),
         tracks: Vec::new(),
     };
+    let mut parsed_tracks = Vec::new();
 
     let document_pair = MmlParser::parse(Rule::document, source)
         .map_err(|error| ParseError::Syntax(format_syntax_error(&error, source)))?
@@ -280,27 +294,77 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
             Rule::voice => document.voices.push(parse_voice(line)),
-            Rule::track => append_tracks(&mut document.tracks, parse_track(line)),
+            Rule::track => append_parsed_tracks(&mut parsed_tracks, parse_track(line)),
             Rule::blank | Rule::comment | Rule::block_comment => {}
             rule => unreachable!("unexpected line rule: {rule:?}"),
         }
     }
 
+    for track in parsed_tracks {
+        document.tracks.push(MmlTrack {
+            channel: track.channel,
+            commands: assemble_repeats(track.commands)?,
+        });
+    }
     validate_document(&document)?;
     Ok(document)
 }
 
-/// Append parsed source lines to their channel's existing AST track.
-fn append_tracks(tracks: &mut Vec<MmlTrack>, incoming: Vec<MmlTrack>) {
+/// Append parsed source lines to their channel's existing event track.
+fn append_parsed_tracks(tracks: &mut Vec<ParsedTrack>, incoming: Vec<ParsedTrack>) {
     for track in incoming {
         if let Some(existing) = tracks
             .iter_mut()
-            .find(|existing: &&mut MmlTrack| existing.channel == track.channel)
+            .find(|existing: &&mut ParsedTrack| existing.channel == track.channel)
         {
             existing.commands.extend(track.commands);
         } else {
             tracks.push(track);
         }
+    }
+}
+
+/// Assemble flat loop events into nested repeat commands within one channel.
+fn assemble_repeats(commands: Vec<ParsedCommand>) -> Result<Vec<MmlCommand>, ParseError> {
+    let mut output = Vec::new();
+    let mut stack: Vec<Vec<MmlCommand>> = Vec::new();
+
+    for command in commands {
+        match command {
+            ParsedCommand::RepeatStart => stack.push(Vec::new()),
+            ParsedCommand::RepeatEnd(count) => {
+                let Some(body) = stack.pop() else {
+                    return Err(ParseError::Syntax(
+                        "repeat end without repeat start".to_owned(),
+                    ));
+                };
+                append_assembled_command(
+                    &mut output,
+                    &mut stack,
+                    MmlCommand::Repeat { body, count },
+                );
+            }
+            ParsedCommand::Command(command) => {
+                append_assembled_command(&mut output, &mut stack, command)
+            }
+        }
+    }
+
+    if !stack.is_empty() {
+        return Err(ParseError::Syntax("unterminated repeat".to_owned()));
+    }
+    Ok(output)
+}
+
+fn append_assembled_command(
+    output: &mut Vec<MmlCommand>,
+    stack: &mut [Vec<MmlCommand>],
+    command: MmlCommand,
+) {
+    if let Some(body) = stack.last_mut() {
+        body.push(command);
+    } else {
+        output.push(command);
     }
 }
 
@@ -526,7 +590,7 @@ fn parse_string(line: pest::iterators::Pair<'_, Rule>) -> String {
 }
 
 /// Convert a track line into one typed track per channel in its prefix.
-fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<MmlTrack> {
+fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<ParsedTrack> {
     let mut children = line.into_inner();
     let channels = children
         .next()
@@ -536,22 +600,34 @@ fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<MmlTrack> {
         .collect::<Vec<_>>();
     let commands = children
         .filter(|pair| pair.as_rule() != Rule::block_comment)
-        .map(parse_command)
+        .map(parse_parsed_command)
         .collect::<Vec<_>>();
     channels
         .into_iter()
-        .map(|channel| MmlTrack {
+        .map(|channel| ParsedTrack {
             channel,
             commands: commands.clone(),
         })
         .collect()
 }
 
+fn parse_parsed_command(pair: pest::iterators::Pair<'_, Rule>) -> ParsedCommand {
+    match pair.as_rule() {
+        Rule::repeat_start => ParsedCommand::RepeatStart,
+        Rule::repeat_end => ParsedCommand::RepeatEnd(
+            pair.into_inner()
+                .next()
+                .map(|count| count.as_str().parse().expect("repeat count is valid"))
+                .unwrap_or(2),
+        ),
+        _ => ParsedCommand::Command(parse_command(pair)),
+    }
+}
+
 /// Convert one command grammar pair into its typed AST representation.
 fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
     match pair.as_rule() {
         Rule::block_comment => MmlCommand::Directive(pair.as_str().to_owned()),
-        Rule::repeat => parse_repeat(pair),
         Rule::tempo => MmlCommand::Tempo(
             pair.into_inner()
                 .next()
@@ -824,27 +900,6 @@ fn parse_length_expression(source: &str) -> MmlLength {
     }
 }
 
-/// Convert a repeat grammar pair, including its nested command body.
-fn parse_repeat(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
-    let mut children = pair.into_inner();
-    let mut body = Vec::new();
-    let mut count: Option<u16> = None;
-    for child in children.by_ref() {
-        if child.as_rule() == Rule::channel {
-            continue;
-        }
-        if child.as_rule() == Rule::repeat_count {
-            count = Some(child.as_str().parse().expect("repeat count is valid"));
-        } else {
-            body.push(parse_command(child));
-        }
-    }
-    MmlCommand::Repeat {
-        body,
-        count: count.unwrap_or(2),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +979,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn keeps_interleaved_channel_lines_out_of_repeat_body() {
+        let document = parse("A [abc\nB c\nA def]\n").unwrap();
+
+        assert_eq!(document.tracks.len(), 2);
+        assert_eq!(document.tracks[0].channel, 'A');
+        assert!(matches!(
+            document.tracks[0].commands.as_slice(),
+            [MmlCommand::Repeat { body, .. }]
+                if matches!(
+                    body.as_slice(),
+                    [
+                        MmlCommand::Note { name: 'a', .. },
+                        MmlCommand::Note { name: 'b', .. },
+                        MmlCommand::Note { name: 'c', .. },
+                        MmlCommand::Note { name: 'd', .. },
+                        MmlCommand::Note { name: 'e', .. },
+                        MmlCommand::Note { name: 'f', .. },
+                    ]
+                )
+        ));
+        assert_eq!(document.tracks[1].channel, 'B');
+        assert!(matches!(
+            document.tracks[1].commands.as_slice(),
+            [MmlCommand::Note { name: 'c', .. }]
+        ));
     }
 
     #[test]
