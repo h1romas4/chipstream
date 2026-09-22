@@ -149,6 +149,18 @@ fn compiles_multiple_standard_channels_ast() {
 }
 
 #[test]
+fn compiles_extended_channels_ast() {
+    let compiled = compile_source("A c\nH d\nP n0,8\nQ n1,8\nW n2,8\n");
+
+    assert_eq!(compiled.tracks.len(), 16);
+    assert!(matches!(compiled.tracks[0][1], MdxCommand::Note(_)));
+    assert!(matches!(compiled.tracks[7][0], MdxCommand::Note(_)));
+    assert!(matches!(compiled.tracks[8][0], MdxCommand::Note(_)));
+    assert!(matches!(compiled.tracks[9][0], MdxCommand::Note(_)));
+    assert!(matches!(compiled.tracks[15][0], MdxCommand::Note(_)));
+}
+
+#[test]
 fn compiles_bare_default_length_reset_ast() {
     let commands = compile_source("A l8 l c\n").tracks[0].clone();
 

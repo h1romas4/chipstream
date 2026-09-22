@@ -63,7 +63,7 @@ impl std::error::Error for CompileError {}
 ///
 /// The compiler preserves the MML title, PDX filename, voice definitions, and
 /// channel order. Track indices follow MXDRV's layout: `A` through `H` map to
-/// indices `0` through `7`, and `P` maps to index `8`.
+/// indices `0` through `7`, and `P` through `W` map to indices `8` through `15`.
 ///
 /// # Errors
 ///
@@ -71,8 +71,17 @@ impl std::error::Error for CompileError {}
 /// represented by soundlog's MDX model.
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
-    let mut tracks: [Vec<MdxCommand>; 9] = std::array::from_fn(|_| Vec::new());
-    let mut track_states: [TrackState; 9] = std::array::from_fn(|_| TrackState::default());
+    let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
+    let mut track_states: [TrackState; 16] = std::array::from_fn(|_| TrackState::default());
+    let track_count = if document
+        .tracks
+        .iter()
+        .any(|track| matches!(track.channel, 'P'..='W'))
+    {
+        16
+    } else {
+        9
+    };
     if let Some(title) = &document.title {
         builder.set_title(title);
     }
@@ -92,7 +101,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
         )?);
     }
 
-    for (track_index, mut commands) in tracks.into_iter().enumerate() {
+    for (track_index, mut commands) in tracks.into_iter().take(track_count).enumerate() {
         if let Some(loop_start) = track_states[track_index].loop_start {
             let track_length = command_bytes(&commands);
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
@@ -663,7 +672,7 @@ fn checked_signed_i16(command: &'static str, value: i32) -> Result<i16, CompileE
 fn channel_index(channel: char) -> Result<usize, CompileError> {
     match channel {
         'A'..='H' => Ok(channel as usize - 'A' as usize),
-        'P' => Ok(8),
+        'P'..='W' => Ok(channel as usize - 'P' as usize + 8),
         _ => Err(CompileError::InvalidChannel(channel)),
     }
 }

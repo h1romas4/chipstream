@@ -544,7 +544,7 @@ fn validate_length(length: &MmlLength) -> Result<(), ParseError> {
             *value as i64
         }
         MmlLength::Ticks(value) => {
-            validate_range("note tick length", *value as i64, 1, 256)?;
+            validate_range("note tick length", *value as i64, 1, i64::from(u16::MAX))?;
             *value as i64
         }
         MmlLength::Sum(values) => values.iter().try_fold(0_i64, |total, value| {
@@ -559,7 +559,7 @@ fn validate_length(length: &MmlLength) -> Result<(), ParseError> {
             return Ok(());
         }
     };
-    validate_range("note length", total, 1, 256)
+    validate_range("note length", total, 1, i64::from(u16::MAX))
 }
 
 /// Calculate the total numeric value represented by a length expression.
