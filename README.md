@@ -69,6 +69,8 @@ Options:
   -V, --version  Print version
 ```
 
+For detailed usage instructions, please refer to [crates/mmlx-cli](crates/mmlx-cli/README.md).
+
 ## License
 
 Each crate in this repository follows its own `LICENSE` file or the `license`
