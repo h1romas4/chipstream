@@ -157,7 +157,11 @@ pub fn mdx2vgm(
     options: &MdxToVgmOptions,
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
-    let mut document = to_vgm_document(&package, options)
+    let mut options = *options;
+    if !options.mxdrv16y && is_mxdrv16y_layout(&package)? {
+        options.mxdrv16y = true;
+    }
+    let mut document = to_vgm_document(&package, &options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     if !package.mdx.header.title.is_empty() {
         document.gd3 = Some(Gd3 {
@@ -184,6 +188,21 @@ pub fn mdx2vgm(
             .with_context(|| format!("failed to write VGM output: {}", output.display()))?;
     }
     Ok(())
+}
+
+/// Detects MXDRV16y either through the voice-area heuristic or its characteristic
+/// 16-track control track ending in an unconditional loop.
+fn is_mxdrv16y_layout(package: &MdxPackage) -> Result<bool> {
+    if detect_mxdrv16y(package)? {
+        return Ok(true);
+    }
+    Ok(package.mdx.header.track_count() == 16
+        && package
+            .mdx
+            .tracks
+            .get(15)
+            .and_then(|track| track.last())
+            .is_some_and(|command| matches!(command, MdxCommand::EndOfTrackLoop(_))))
 }
 
 /// Parse an MDX file and print its track commands with source offsets.
