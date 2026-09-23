@@ -544,6 +544,16 @@ fn uses_reference_loop_offset_for_pcm_track() {
 }
 
 #[test]
+fn uses_legacy_loop_offset_for_pcm_rest_start() {
+    let commands = compile_source("P F4 L r1 [r1]7 n33,4\n").tracks[8].clone();
+
+    let Some(MdxCommand::EndOfTrackLoop(command)) = commands.last() else {
+        panic!("expected an end-of-track loop command");
+    };
+    assert_eq!(command.offset, -13);
+}
+
+#[test]
 fn compiles_numeric_rest_and_legato_ast() {
     let commands = compile_source("A n12,8 r%24 c & d\n").tracks[0].clone();
 
