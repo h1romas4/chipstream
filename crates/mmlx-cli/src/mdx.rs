@@ -54,7 +54,18 @@ fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
             }
         }
     }
-    None
+    let requested_name = Path::new(name).file_name()?.to_str()?;
+    fs::read_dir(parent)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|candidate| {
+            candidate.is_file()
+                && candidate
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .is_some_and(|file_name| file_name.eq_ignore_ascii_case(requested_name))
+        })
 }
 
 pub(crate) fn build_pdx(files: &[PathBuf]) -> Result<(), String> {
@@ -162,6 +173,21 @@ mod tests {
         fs::write(&pdx_path, [0_u8]).unwrap();
 
         assert_eq!(find_pdx_path(&input_path, &stem), Some(pdx_path.clone()));
+
+        fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn resolves_pdx_name_case_insensitively() {
+        let stem = format!("mmlx-pdx-case-{}", std::process::id());
+        let input_path = std::env::temp_dir().join(format!("{stem}.mml"));
+        let pdx_path = std::env::temp_dir().join(format!("{stem}.PDX"));
+        fs::write(&pdx_path, [0_u8]).unwrap();
+
+        assert_eq!(
+            find_pdx_path(&input_path, &format!("{stem}.pdx")),
+            Some(pdx_path.clone())
+        );
 
         fs::remove_file(pdx_path).unwrap();
     }
