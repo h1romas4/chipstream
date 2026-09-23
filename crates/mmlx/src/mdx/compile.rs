@@ -110,6 +110,12 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                 position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
                 at_loop_start && matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_))
             });
+            let mut rest_position = 0_usize;
+            let starts_with_rest = commands.iter().any(|command| {
+                let at_loop_start = rest_position == loop_start;
+                rest_position += command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
+                at_loop_start && matches!(command, MdxCommand::Rest(_))
+            });
             // Resolve the loop marker's byte offset to its command index.
             let loop_start_index = commands
                 .iter()
@@ -125,12 +131,14 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                     .iter()
                     .any(|command| matches!(command, MdxCommand::LoopStart(_)))
             });
-            let loop_adjustment =
-                if track_index < 8 && starts_with_duration && has_finite_repeat_after_loop {
-                    1
-                } else {
-                    3
-                };
+            let loop_adjustment = if has_finite_repeat_after_loop
+                && ((track_index < 8 && starts_with_duration)
+                    || (track_index >= 8 && starts_with_rest))
+            {
+                1
+            } else {
+                3
+            };
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
                 - i32::try_from(track_length).unwrap_or(i32::MAX)
                 - loop_adjustment;
