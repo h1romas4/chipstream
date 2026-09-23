@@ -1317,66 +1317,6 @@ fn mdx_converter_reapplies_pan_register_when_voice_changes_algorithm() {
 }
 
 #[test]
-fn mdx_converter_remaps_fm_channel_from_raw_register_0x08_writes_under_mxdrv16y() {
-    let mut builder = MdxBuilder::new();
-    builder
-        .append_tone(MdxTone {
-            voice_number: 0,
-            con: 0,
-            fl: 0,
-            op: 0x0f,
-            operators: [MdxOperator::default(); 4],
-        })
-        .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
-        .add_mdx_command(
-            0,
-            MdxNote {
-                note: 0x80,
-                length: 1,
-            },
-        )
-        .add_mdx_command(
-            0,
-            MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
-                register: 0x08,
-                value: 0x05,
-            }),
-        )
-        .add_mdx_command(
-            0,
-            MdxNote {
-                note: 0x80,
-                length: 1,
-            },
-        );
-    let package = MdxPackage {
-        mdx: builder.finalize().unwrap(),
-        pdx: None,
-    };
-
-    let options = MdxToVgmOptions {
-        mxdrv16y: true,
-        ..MdxToVgmOptions::default()
-    };
-    let document = to_vgm_document(&package, &options).expect("convert notes to VGM");
-    let register_0x08_writes: Vec<u8> = document
-        .commands
-        .iter()
-        .filter_map(|command| match command {
-            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 => Some(spec.value),
-            _ => None,
-        })
-        .collect();
-
-    // First key-on on channel 0 (0x78 | 0), its natural key-off on the same
-    // channel, the raw hint write (0x05) passed through verbatim, then the
-    // second key-on retriggered on channel 5 (0x78 | 5) because the voice
-    // was reapplied to the remapped channel, and its key-off correctly
-    // using the remapped channel too.
-    assert_eq!(register_0x08_writes, vec![0x78, 0x00, 0x05, 0x7d, 0x05]);
-}
-
-#[test]
 fn mdx_converter_applies_fm_volume_commands_to_carrier_level() {
     let mut builder = MdxBuilder::new();
     builder
@@ -1547,49 +1487,6 @@ fn mdx_converter_applies_relative_transpose_after_absolute_transpose() {
         command,
         VgmCommand::Ym2151Write(_, spec) if spec.register == 0x28 && spec.value == 0x0d
     )));
-}
-
-#[test]
-fn mdx_converter_escapes_empty_infinite_loop_under_mxdrv16y() {
-    let mut builder = MdxBuilder::new();
-    builder
-        .add_mdx_command(
-            0,
-            MdxLoopStart {
-                count: 0,
-                reserved: 0,
-            },
-        )
-        .add_mdx_command(
-            0,
-            MdxCommand::LoopEnd(MdxRelativeOffset {
-                opcode: 0xf5,
-                offset: 0,
-            }),
-        )
-        .add_mdx_command(0, MdxRest { ticks: 5 });
-    let package = MdxPackage {
-        mdx: builder.finalize().unwrap(),
-        pdx: None,
-    };
-
-    let default_document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("an empty infinite loop should not hang by default either");
-    assert!(
-        default_document.loop_command_index().is_some(),
-        "without mxdrv16y, an empty infinite loop still becomes a native loop point"
-    );
-
-    let mxdrv16y_options = MdxToVgmOptions {
-        mxdrv16y: true,
-        ..MdxToVgmOptions::default()
-    };
-    let mxdrv16y_document =
-        to_vgm_document(&package, &mxdrv16y_options).expect("mxdrv16y should escape the trap");
-    assert!(
-        mxdrv16y_document.loop_command_index().is_none(),
-        "mxdrv16y must escape the empty loop via its own offset instead of looping"
-    );
 }
 
 #[test]

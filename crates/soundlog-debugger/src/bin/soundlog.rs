@@ -291,7 +291,6 @@ fn main() {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
@@ -315,7 +314,6 @@ fn main() {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
@@ -342,7 +340,6 @@ fn main() {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {

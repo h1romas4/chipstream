@@ -7,11 +7,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
 use soundlog::chip::state::{Okim6258State, Ym2151State};
-use soundlog::mdx::command::MdxCommand;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
-use soundlog::mdx::parser::parse_mdx_command;
 use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
 use soundlog::meta::Gd3;
 use soundlog::vgm::VgmStream;
@@ -39,70 +37,6 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 
     MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
         .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
-}
-
-/// Detects the MXDRV16y layout using the voice-area boundary heuristic from
-/// NanoDriveX. Standard MDX keeps track entries before the voice data, while
-/// MXDRV16y places a track entry after the inferred voice area.
-#[allow(dead_code)]
-fn detect_mxdrv16y(package: &MdxPackage) -> Result<bool> {
-    let bytes = package.mdx.to_bytes();
-    let voice_data_offset = package
-        .mdx
-        .header
-        .tone_data_position()
-        .ok_or_else(|| anyhow!("MDX voice data offset overflow"))?;
-    let mut voice_data_end = bytes.len();
-    let mut detected = false;
-
-    for track in 0..package.mdx.header.track_count() {
-        let Some(track_position) = package.mdx.header.track_position(track) else {
-            continue;
-        };
-        if track_position >= voice_data_offset && track_position < voice_data_end {
-            voice_data_end = track_position;
-            detected = true;
-        }
-    }
-
-    for track in 0..package.mdx.header.track_count() {
-        let Some(mut position) = package.mdx.header.track_position(track) else {
-            continue;
-        };
-        if position >= voice_data_offset {
-            continue;
-        }
-        for _ in 0..64 {
-            if position >= voice_data_offset {
-                if position < voice_data_end {
-                    voice_data_end = position;
-                    detected = true;
-                }
-                break;
-            }
-            let Ok((command, length)) = parse_mdx_command(&bytes, position) else {
-                break;
-            };
-            let next_position = position.saturating_add(length);
-            if matches!(command, MdxCommand::Note(_) | MdxCommand::Rest(_)) {
-                break;
-            }
-            if let MdxCommand::Jump(jump) = command {
-                if jump.offset == 0 {
-                    break;
-                }
-                let Some(jump_position) = next_position.checked_add_signed(jump.offset as isize)
-                else {
-                    break;
-                };
-                position = jump_position;
-            } else {
-                position = next_position;
-            }
-        }
-    }
-
-    Ok(detected && voice_data_end > voice_data_offset)
 }
 
 fn resolve_pdx_path(input: &Path, pdx: Option<&Path>, pdx_name: Option<&str>) -> Option<PathBuf> {
@@ -157,11 +91,7 @@ pub fn mdx2vgm(
     options: &MdxToVgmOptions,
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
-    let mut options = *options;
-    if !options.mxdrv16y && is_mxdrv16y_layout(&package)? {
-        options.mxdrv16y = true;
-    }
-    let mut document = to_vgm_document(&package, &options)
+    let mut document = to_vgm_document(&package, options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
     if !package.mdx.header.title.is_empty() {
         document.gd3 = Some(Gd3 {
@@ -188,21 +118,6 @@ pub fn mdx2vgm(
             .with_context(|| format!("failed to write VGM output: {}", output.display()))?;
     }
     Ok(())
-}
-
-/// Detects MXDRV16y either through the voice-area heuristic or its characteristic
-/// 16-track control track ending in an unconditional loop.
-fn is_mxdrv16y_layout(package: &MdxPackage) -> Result<bool> {
-    if detect_mxdrv16y(package)? {
-        return Ok(true);
-    }
-    Ok(package.mdx.header.track_count() == 16
-        && package
-            .mdx
-            .tracks
-            .get(15)
-            .and_then(|track| track.last())
-            .is_some_and(|command| matches!(command, MdxCommand::EndOfTrackLoop(_))))
 }
 
 /// Parse an MDX file and print its track commands with source offsets.
@@ -238,7 +153,6 @@ pub fn test_mdx(
 ) -> Result<()> {
     let package = read_mdx_package(input, pdx)?;
     let pdx_path = resolve_pdx_path(input, pdx, package.mdx.header.pdx_name.as_deref());
-    let mxdrv16y = options.mxdrv16y;
     if !logger.is_noop() {
         let _ = logger.info(format_args!("MDX:"));
         let mut table = Table::new();
@@ -274,7 +188,6 @@ pub fn test_mdx(
                 Cell::new(pdx.banks.len().to_string()),
             ]);
         }
-        table.add_row(vec![Cell::new("mxdrv16y"), Cell::new(mxdrv16y.to_string())]);
         table.add_row(vec![
             Cell::new("tracks"),
             Cell::new(package.mdx.tracks.len().to_string()),

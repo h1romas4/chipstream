@@ -171,16 +171,6 @@ pub struct MdxToVgmOptions {
     /// by encoding a native VGM loop point instead of repeating internally.
     /// `Some(1)` plays the song once with no repeat.
     pub loop_count: Option<u32>,
-    /// Enables compatibility handling for MXDRV16y-style files, which encode
-    /// the true FM channel via raw `0xFE` register-`0x08` writes instead of
-    /// trusting the track index, and which may contain a zero-length
-    /// "infinite loop" placeholder that must be escaped via its own offset
-    /// rather than treated as the song's repeat point.
-    ///
-    /// This does not attempt to auto-detect such files (unlike the
-    /// reference, which infers it from the tone bank layout); callers must
-    /// opt in explicitly.
-    pub mxdrv16y: bool,
 }
 
 impl Default for MdxToVgmOptions {
@@ -190,7 +180,6 @@ impl Default for MdxToVgmOptions {
             okim6258_clock: pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ,
             adpcm_mode: AdpcmMode::default(),
             loop_count: None,
-            mxdrv16y: false,
         }
     }
 }
@@ -313,8 +302,6 @@ enum LoopEndAction {
     /// The loop body repeats forever (file-encoded count `0`); resolve via
     /// a native VGM loop point back to `start_index`.
     SongLoop(usize),
-    /// MXDRV16y trap: escape the empty infinite loop via its own offset.
-    Escape,
     /// No active loop; continue past this command without jumping.
     Fallthrough,
 }
@@ -332,9 +319,7 @@ struct TrackState {
     key_on: bool,
     /// Currently selected FM voice number, or the PCM bank for PCM tracks.
     voice: u8,
-    /// Set once a voice-select command has run at least once, mirroring
-    /// the reference's `voiceNo != 0xff` check used by MXDRV16y channel
-    /// remapping to decide whether a voice needs reapplying.
+    /// Set once a voice-select command has run at least once.
     voice_selected: bool,
     /// Set by a voice-select command; applying the tone (and register
     /// `0x20`'s CON/FL bits, via `con_fl`) is deferred to the next key-on,
@@ -499,8 +484,6 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Set once a native loop point has been established; conversion stops
     /// here instead of looping the repeat internally forever.
     song_loop_complete: bool,
-    /// Enables MXDRV16y compatibility handling; see `MdxToVgmOptions::mxdrv16y`.
-    mxdrv16y: bool,
     /// Whether an unconditional ("loop forever") repeat should stop and
     /// record a fixed native VGM loop point (`true`, needed by
     /// [`to_vgm_document`] to produce a finite `VgmDocument` with a valid
@@ -517,7 +500,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         pcm_mode: MdxPcmMode,
         adpcm_mode: AdpcmMode,
         loop_count: Option<u32>,
-        mxdrv16y: bool,
         mark_native_loop: bool,
     ) -> Self {
         let has_pcm = package.borrow().drives_okim6258();
@@ -606,7 +588,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             jump_repeat_counts: HashMap::new(),
             song_loop_index: None,
             song_loop_complete: false,
-            mxdrv16y,
             mark_native_loop,
         }
     }
@@ -942,19 +923,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     } else if command.register == 0x1b {
                         self.opm_reg_1b = command.value;
                     }
-                    if self.mxdrv16y && track < 8 && command.register == 0x08 {
-                        // Some MXDRV16y files encode the real FM channel via
-                        // a raw key-on register write rather than trusting
-                        // the track index; reapply the voice to the new
-                        // channel if one was already selected.
-                        let new_channel = command.value & 0x07;
-                        if new_channel != self.tracks[track].fm_channel {
-                            self.tracks[track].fm_channel = new_channel;
-                            if self.tracks[track].voice_selected {
-                                self.tracks[track].voice_pending = true;
-                            }
-                        }
-                    }
                     write_ym2151(builder, command.register, command.value);
                 }
                 MdxCommand::VoiceOrPcmBank(command) if track < 8 => {
@@ -1116,7 +1084,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         .loop_stack
                         .push((u32::from(command.count), command_index));
                 }
-                MdxCommand::LoopEnd(command) => {
+                MdxCommand::LoopEnd(_) => {
                     // The jump target is the position saved at `LoopStart`,
                     // not recomputed from this command's own offset
                     // (mirrors the reference's `pc = loopStack[sp]`, which
@@ -1124,7 +1092,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // offset does not actually point back to the loop
                     // start).
                     let this_command_index = self.tracks[track].command_index - 1;
-                    let mxdrv16y = self.mxdrv16y;
                     // `remaining == 0` is the file's "loop forever" marker.
                     // It can only be reached when `loop_count` is `None`,
                     // since `LoopStart` otherwise overrides it with a finite
@@ -1132,16 +1099,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // than looping forever internally.
                     let action = match self.tracks[track].loop_stack.last_mut() {
                         Some((remaining, start_index)) if *remaining == 0 => {
-                            // MXDRV16y "DD1_00" trap: `F6 00 00` immediately
-                            // followed by `F5` (an empty, unconditionally
-                            // "infinite" loop body) is a placeholder, not a
-                            // real repeat point. Escape via the F5's own
-                            // offset instead of looping on the spot.
-                            if mxdrv16y && *start_index == this_command_index {
-                                LoopEndAction::Escape
-                            } else {
-                                LoopEndAction::SongLoop(*start_index)
-                            }
+                            LoopEndAction::SongLoop(*start_index)
                         }
                         Some((remaining, start_index)) if *remaining > 1 => {
                             *remaining -= 1;
@@ -1167,7 +1125,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                                 builder,
                             );
                         }
-                        LoopEndAction::Escape => self.jump_relative(track, command.offset),
                         LoopEndAction::Fallthrough => {}
                     }
                 }
@@ -1188,11 +1145,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.take_repeating_jump(track, command.offset, builder)
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
-                    if self.mxdrv16y && track == 15 {
-                        self.jump_relative(track, command.offset);
-                    } else {
-                        self.take_repeating_jump(track, command.offset, builder);
-                    }
+                    self.take_repeating_jump(track, command.offset, builder);
                 }
                 MdxCommand::Raw(_) => {}
             }
@@ -2061,7 +2014,6 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
             pcm_mode,
             options.adpcm_mode,
             options.loop_count,
-            options.mxdrv16y,
             mark_native_loop,
         );
         Ok(Self {
