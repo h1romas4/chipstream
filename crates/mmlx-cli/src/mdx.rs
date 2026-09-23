@@ -19,12 +19,18 @@ pub(crate) fn write_vgm(
     input: &Path,
     output: &Path,
 ) -> Result<(), String> {
-    let pdx_path = source
+    let pdx_bytes = source
         .pcm_file
         .as_deref()
-        .and_then(|name| find_pdx_path(input, name));
-    let pdx_bytes = pdx_path
-        .map(|path| fs::read(&path).map_err(|error| format!("{}: {error}", path.display())))
+        .map(|name| {
+            let path = find_pdx_path(input, name).ok_or_else(|| {
+                format!(
+                    "PDX file not found: {name:?} (referenced by {})",
+                    input.display()
+                )
+            })?;
+            fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))
+        })
         .transpose()?;
     let package = MdxPackage::parse_owned(mdx.to_bytes(), pdx_bytes)
         .map_err(|error| format!("failed to prepare VGM conversion: {error}"))?;
@@ -41,7 +47,10 @@ pub(crate) fn write_vgm(
 }
 
 fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let parent = input
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let path = parent.join(name);
     if path.is_file() {
         return Some(path);
@@ -187,6 +196,21 @@ mod tests {
         assert_eq!(
             find_pdx_path(&input_path, &format!("{stem}.pdx")),
             Some(pdx_path.clone())
+        );
+
+        fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn resolves_pdx_for_input_without_parent_directory() {
+        let stem = format!("mmlx-pdx-relative-{}", std::process::id());
+        let input_path = PathBuf::from(format!("{stem}.mml"));
+        let pdx_path = PathBuf::from(format!("{stem}.PDX"));
+        fs::write(&pdx_path, [0_u8]).unwrap();
+
+        assert_eq!(
+            find_pdx_path(&input_path, &format!("{stem}.pdx")),
+            Some(PathBuf::from(format!("./{stem}.PDX")))
         );
 
         fs::remove_file(pdx_path).unwrap();
