@@ -720,7 +720,7 @@ fn pitch_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, i16),
     }
     let period = i32::from(period);
     let depth = i32::from(depth);
-    let (frequency, amplitude) = match waveform {
+    let (frequency, amplitude) = match waveform & 0x03 {
         0 => (period * 4, depth * 128 / period),
         1 => (period * 2, depth * 256),
         _ => (period * 2, depth * 256 / period),
@@ -747,7 +747,7 @@ fn volume_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, u16)
     }
     let period = u32::from(period);
     let depth = i32::from(depth);
-    let (frequency, amplitude) = match waveform {
+    let (frequency, amplitude) = match waveform & 0x03 {
         0 => (period * 4, depth * 16),
         1 => (period * 2, depth * 256),
         _ => (period * 2, depth * 16),

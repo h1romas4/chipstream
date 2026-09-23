@@ -523,7 +523,7 @@ fn validate_command(command: &MmlCommand) -> Result<(), ParseError> {
         MmlCommand::FineGate(value) => validate_range("@q", *value as i64, 1, 256)?,
         MmlCommand::Detune(value) => validate_range("D", *value as i64, -32767, 32767)?,
         MmlCommand::PitchLfo { waveform, .. } | MmlCommand::VolumeLfo { waveform, .. } => {
-            validate_range("LFO waveform", *waveform as i64, 0, 2)?;
+            validate_range("LFO waveform", *waveform as i64, 0, 7)?;
         }
         MmlCommand::OpmLfo {
             waveform, key_sync, ..

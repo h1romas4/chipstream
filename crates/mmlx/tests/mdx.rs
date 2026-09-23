@@ -209,6 +209,20 @@ fn compiles_pitch_lfo_ast() {
 }
 
 #[test]
+fn compiles_extended_pitch_lfo_waveform() {
+    let compiled = compile_source("A MP6,72,-1\n");
+
+    assert!(matches!(
+        compiled.tracks[0][0],
+        MdxCommand::PitchLfo(soundlog::mdx::command::MdxPitchLfo::Configure {
+            waveform: soundlog::mdx::command::MdxLfoWaveform::Unknown(6),
+            frequency: 144,
+            amplitude: -3,
+        })
+    ));
+}
+
+#[test]
 fn compiles_volume_lfo_ast() {
     let compiled = compile_source("A MAON MA2,4,1 MA2,4,2 MAOF\n");
     let commands = &compiled.tracks[0];
