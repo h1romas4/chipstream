@@ -125,11 +125,12 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                     .iter()
                     .any(|command| matches!(command, MdxCommand::LoopStart(_)))
             });
-            let loop_adjustment = if starts_with_duration && has_finite_repeat_after_loop {
-                1
-            } else {
-                3
-            };
+            let loop_adjustment =
+                if track_index < 8 && starts_with_duration && has_finite_repeat_after_loop {
+                    1
+                } else {
+                    3
+                };
             let offset = i32::try_from(loop_start).unwrap_or(i32::MAX)
                 - i32::try_from(track_length).unwrap_or(i32::MAX)
                 - loop_adjustment;

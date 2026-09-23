@@ -534,6 +534,16 @@ fn compiles_loop_point_ast() {
 }
 
 #[test]
+fn uses_reference_loop_offset_for_pcm_track() {
+    let commands = compile_source("P v8@0 L n57,8.F2 n67,%108 F4 [r1]5\n").tracks[8].clone();
+
+    let Some(MdxCommand::EndOfTrackLoop(command)) = commands.last() else {
+        panic!("expected an end-of-track loop command");
+    };
+    assert_eq!(command.offset, -19);
+}
+
+#[test]
 fn compiles_numeric_rest_and_legato_ast() {
     let commands = compile_source("A n12,8 r%24 c & d\n").tracks[0].clone();
 
