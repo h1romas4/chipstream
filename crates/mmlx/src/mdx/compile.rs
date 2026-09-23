@@ -729,7 +729,7 @@ fn pitch_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, i16),
 }
 
 /// Convert an MML volume LFO tuple using MXDRV's waveform-specific scaling.
-fn volume_lfo_values(waveform: u8, period: u16, depth: u16) -> Result<(u16, u16), CompileError> {
+fn volume_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, u16), CompileError> {
     if period == 0 {
         return Err(CompileError::InvalidValue {
             command: "volume LFO period",
@@ -737,16 +737,17 @@ fn volume_lfo_values(waveform: u8, period: u16, depth: u16) -> Result<(u16, u16)
         });
     }
     let period = u32::from(period);
-    let depth = u32::from(depth);
+    let depth = i32::from(depth);
     let (frequency, amplitude) = match waveform {
         0 => (period * 4, depth * 16),
         1 => (period * 2, depth * 256),
         _ => (period * 2, depth * 16),
     };
-    Ok((
-        checked_u16("volume LFO period", frequency)?,
-        checked_u16("volume LFO amplitude", amplitude)?,
-    ))
+    let amplitude = i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
+        command: "volume LFO amplitude",
+        value: i64::from(amplitude),
+    })? as u16;
+    Ok((checked_u16("volume LFO period", frequency)?, amplitude))
 }
 
 /// Convert an unscaled signed integer to an MDX signed 16-bit value.

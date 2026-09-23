@@ -165,7 +165,7 @@ pub enum MmlCommand {
         /// LFO period.
         period: u16,
         /// LFO amplitude.
-        amplitude: u16,
+        amplitude: i16,
     },
     /// Enable volume LFO.
     VolumeLfoOn,
@@ -797,11 +797,19 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
         Rule::pitch_lfo_on => MmlCommand::PitchLfoOn,
         Rule::pitch_lfo_off => MmlCommand::PitchLfoOff,
         Rule::volume_lfo => {
-            let values = parse_u16_values(pair);
+            let mut values = pair.into_inner();
+            let waveform = parse_pair_u16(values.next().expect("volume LFO waveform")) as u8;
+            let period = parse_pair_u16(values.next().expect("volume LFO period"));
+            let amplitude = values
+                .next()
+                .expect("volume LFO amplitude")
+                .as_str()
+                .parse()
+                .expect("volume LFO amplitude is valid");
             MmlCommand::VolumeLfo {
-                waveform: values[0] as u8,
-                period: values[1],
-                amplitude: values[2],
+                waveform,
+                period,
+                amplitude,
             }
         }
         Rule::volume_lfo_on => MmlCommand::VolumeLfoOn,

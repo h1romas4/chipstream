@@ -232,6 +232,19 @@ fn compiles_volume_lfo_ast() {
 }
 
 #[test]
+fn compiles_negative_volume_lfo_amplitude() {
+    let compiled = compile_source("A MA2,56,-1\n");
+
+    assert!(matches!(
+        compiled.tracks[0][0],
+        MdxCommand::VolumeLfo(soundlog::mdx::command::MdxVolumeLfo::Configure {
+            amplitude: 65_520,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn compiles_opm_lfo_ast() {
     let compiled = compile_source("A MHON MH1,3,3,4,5,6,1 MHOF\n");
     let commands = &compiled.tracks[0];
