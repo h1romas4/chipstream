@@ -138,10 +138,6 @@ enum MdxCommands {
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
-        /// Enable MXDRV16y compatibility handling
-        #[arg(long)]
-        mxdrv16y: bool,
-
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
@@ -177,11 +173,6 @@ enum MdxCommands {
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
-        /// Enable MXDRV16y compatibility handling (raw channel remapping via
-        /// register 0x08 writes)
-        #[arg(long)]
-        mxdrv16y: bool,
-
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
@@ -213,11 +204,6 @@ enum MdxCommands {
         /// Total number of iterations for MDX repeat blocks (default: 1)
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
-
-        /// Enable MXDRV16y compatibility handling (raw channel remapping via
-        /// register 0x08 writes)
-        #[arg(long)]
-        mxdrv16y: bool,
 
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
@@ -298,7 +284,6 @@ fn main() {
                 ym2151_clock,
                 okim6258_clock,
                 loop_count,
-                mxdrv16y,
                 adpcm_mode,
             } => {
                 logger = Arc::new(Logger::new_stdout(dry_run));
@@ -306,7 +291,7 @@ fn main() {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y,
+                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
@@ -324,14 +309,13 @@ fn main() {
                 ym2151_clock,
                 okim6258_clock,
                 loop_count,
-                mxdrv16y,
                 adpcm_mode,
             } => {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y,
+                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
@@ -349,7 +333,6 @@ fn main() {
                 ym2151_clock,
                 okim6258_clock,
                 loop_count,
-                mxdrv16y,
                 adpcm_mode,
             } => {
                 // Configure logger according to dry_run so main's messages respect it.
@@ -359,7 +342,7 @@ fn main() {
                     ym2151_clock,
                     okim6258_clock,
                     loop_count,
-                    mxdrv16y,
+                    mxdrv16y: false,
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {

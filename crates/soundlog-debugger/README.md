@@ -262,7 +262,6 @@ soundlog mdx test <INPUT> [OPTIONS]
 
 The test options include `--pdx <FILE>`, `--dry-run`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
-`--mxdrv16y`.
 
 Examples:
 
@@ -282,7 +281,7 @@ soundlog mdx convert <INPUT> <OUTPUT> [OPTIONS]
 
 Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
-`--mxdrv16y`, and `--adpcm-mode <through|resample|lpf>` (default:
+`--adpcm-mode <through|resample|lpf>` (default:
 `through`).
 
 The ADPCM modes follow NanoDriveX naming. For legacy 9-track PCM1, `through`
@@ -313,7 +312,7 @@ soundlog mdx play <INPUT> [OPTIONS]
 
 The playback options include `--pdx <FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
-`--loop-count <COUNT>`, `--mxdrv16y`, and
+`--loop-count <COUNT>`, and
 `--adpcm-mode <through|resample|lpf>` (default: `through`).
 
 Examples:
