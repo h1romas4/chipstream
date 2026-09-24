@@ -171,7 +171,7 @@ pub fn test_mdx(
         .try_into()
         .with_context(|| format!("generated VGM failed to parse: {}", input.display()))?;
     if !logger.is_noop() {
-        crate::cui::vgm::print_vgm_diag_table(&document, &reparsed);
+        crate::cui::vgm::print_vgm_diag_table(&document, &reparsed, &logger);
     }
     Ok(())
 }

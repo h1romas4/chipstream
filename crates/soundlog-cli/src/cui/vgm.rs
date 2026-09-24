@@ -350,7 +350,7 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
     println!("{}", side);
 }
 
-fn print_original_diag_table(document: &VgmDocument) {
+fn print_original_diag_table(document: &VgmDocument, logger: &Logger) {
     let rows = summarize_doc(document);
     let mut table = Table::new();
     table.load_preset(NOTHING);
@@ -364,13 +364,13 @@ fn print_original_diag_table(document: &VgmDocument) {
             ]);
         }
     }
-    println!("{}", table);
+    let _ = logger.info(format_args!("{table}"));
 }
 
 /// Print a VGM heading followed by the original-document diagnostic table.
-pub(crate) fn print_vgm_diag_table(orig: &VgmDocument, _rebuilt: &VgmDocument) {
-    println!("VGM:");
-    print_original_diag_table(orig);
+pub(crate) fn print_vgm_diag_table(orig: &VgmDocument, _rebuilt: &VgmDocument, logger: &Logger) {
+    let _ = logger.info(format_args!("VGM:"));
+    print_original_diag_table(orig, logger);
 }
 
 /// Print a VGM heading followed by the original/rebuilt diagnostic table.
