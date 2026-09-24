@@ -15,8 +15,8 @@ anyhow = "1.0"
 comfy-table = "6"
 unicode-width = "0.1"
 hound = "3"
-mmlx = { path = "../mmlx" }
-soundlog = { path = "../soundlog", features = ["mdx"] }
+mmlx = { workspace = true }
+soundlog = { workspace = true, features = ["mdx"] }
 
 [[bin]]
 name = "soundlog"

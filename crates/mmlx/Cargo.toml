@@ -7,4 +7,4 @@ description = "MML parser and compiler with MXDRV MML input and MDX output suppo
 [dependencies]
 pest = "2.9.1"
 pest_derive = "2.9.1"
-soundlog = { path = "../soundlog", features = ["mdx"] }
+soundlog = { workspace = true, features = ["mdx"] }

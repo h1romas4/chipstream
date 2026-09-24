@@ -6,3 +6,7 @@ members = [
 	"crates/soundlog-cli",
 	"crates/soundlog-gui",
 ]
+
+[workspace.dependencies]
+mmlx = { path = "crates/mmlx", version = "0.1.0" }
+soundlog = { path = "crates/soundlog", version = "0.14.0" }
