@@ -13,7 +13,7 @@ utilities for building and parsing register-write logs such as the VGM
 
 ### soundlog
 
-A debug frontend is provided for easily trying out the `soundlog` crate.
+The `soundlog` binary provides command-line tools for the `soundlog` crate.
 
 Build all crates:
 
@@ -24,9 +24,9 @@ cargo build --release
 `target/release/soundlog --help`:
 
 ```bash
-GUI/CLI frontend for soundlog for debug
+Command-line tools for soundlog.
 
-Usage: soundlog [FILE] [COMMAND]
+Usage: soundlog <COMMAND>
 
 Commands:
   test    Execute parse and build round-trip tests. Also output header details
@@ -34,10 +34,8 @@ Commands:
   parse   Parse and display VGM file commands with offsets and lengths
   play    Play VGM file and display register writes with events
   mdx     MDX file operations
+  pdx     Build PDX sample data from WAV files
   help    Print this message or the help of the given subcommand(s)
-
-Arguments:
-  [FILE]  Path to binary file to display (supports .vgz (gzipped) and raw files)
 
 Options:
   -h, --help     Print help
