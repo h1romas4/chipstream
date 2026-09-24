@@ -44,7 +44,7 @@ Options:
   -V, --version  Print version
 ```
 
-For detailed usage instructions, please refer to [crates/soundlog-debugger](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-debugger/README.md).
+For detailed usage instructions, please refer to [crates/soundlog-cli](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-cli/README.md).
 
 The documentation for the `soundlog` crate library is available at [crates/soundlog](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog/README.md).
 

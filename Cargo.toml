@@ -4,5 +4,6 @@ members = [
 	"crates/mmlx",
 	"crates/mmlx-cli",
 	"crates/soundlog",
-	"crates/soundlog-debugger",
+	"crates/soundlog-cli",
+	"crates/soundlog-gui",
 ]

@@ -1,8 +1,4 @@
-//! Minimal `eframe`/`egui` application that composes the UI module.
-//!
-//! This file wires the UI components into the app. The UI module provides a
-//! left AST pane and a right hex viewer; here we initialize the placeholder
-//! state and call into the module each frame.
+//! Command-line debugger for VGM and MDX files.
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -13,12 +9,10 @@ use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 
-// Use the library crate's modules and types. The library crate (this package)
-// exposes `cui`, `gui`, `logger` and the logging macros via `lib.rs`.
+// Use the library crate's CUI and logger.
 use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions};
-use soundlog_debugger::cui;
-use soundlog_debugger::gui;
-use soundlog_debugger::logger::Logger;
+use soundlog_cli::cui;
+use soundlog_cli::logger::Logger;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum AdpcmModeArg {
@@ -37,7 +31,7 @@ impl From<AdpcmModeArg> for AdpcmMode {
     }
 }
 
-/// Simple CLI: optional subcommand `test`, otherwise optional file path to display
+/// Command-line operations for inspecting and converting sound files.
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Execute parse and build round-trip tests. Also output header details
@@ -219,18 +213,12 @@ enum MdxCommands {
      about = env!("CARGO_PKG_DESCRIPTION"),
  )]
 struct Args {
-    /// Subcommand to run (e.g., `test`)
+    /// Command to run.
     #[command(subcommand)]
-    command: Option<Commands>,
-
-    /// Path to binary file to display (supports .vgz (gzipped) and raw files)
-    file: Option<PathBuf>,
+    command: Commands,
 }
 
-/// Helper: read bytes from a path, automatically handling `.vgz`/`.gz` or gzip header.
-///
-/// This centralizes the logic used both by the `test` subcommand and by the GUI
-/// loader so the detection/decompression implementation isn't duplicated.
+/// Read bytes from a path, automatically handling `.vgz`/`.gz` or gzip headers.
 fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     // Read file contents
     let data =
@@ -258,21 +246,20 @@ fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
 
 /// Entry point.
 ///
-/// This binary uses the library crate's modules and the exported logging macros.
+/// This binary uses the library crate's CUI modules and logging macros.
 fn main() {
-    // Parse CLI args early so we can load the initial bytes before creating the UI.
     let args = Args::parse();
     // Create a default logger; some subcommands will override this based on their dry_run flags.
     let mut logger = Arc::new(Logger::new_stdout(false));
 
     // Handle subcommands
     match args.command {
-        Some(Commands::Mdx { command }) => match command {
+        Commands::Mdx { command } => match command {
             MdxCommands::Parse { input, pdx } => {
                 match cui::mdx::parse_mdx(&input, pdx.as_deref(), logger.clone()) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_debugger::log_error!(&*logger, "mdx parse failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "mdx parse failed: {}", error);
                         process::exit(1);
                     }
                 }
@@ -296,7 +283,7 @@ fn main() {
                 match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_debugger::log_error!(&*logger, "mdx test failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "mdx test failed: {}", error);
                         process::exit(1);
                     }
                 }
@@ -319,7 +306,7 @@ fn main() {
                 match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_debugger::log_error!(&*logger, "convert failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "convert failed: {}", error);
                         process::exit(1);
                     }
                 }
@@ -345,13 +332,13 @@ fn main() {
                 match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_debugger::log_error!(&*logger, "mdx play failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "mdx play failed: {}", error);
                         process::exit(1);
                     }
                 }
             }
         },
-        Some(Commands::Test { file, dry_run }) => {
+        Commands::Test { file, dry_run } => {
             // Configure logger according to dry_run so main's messages respect it.
             logger = Arc::new(Logger::new_stdout(dry_run));
             // Pass `dry_run` through directly so that `--dry-run` results in no normal/stdout output
@@ -361,22 +348,22 @@ fn main() {
                         Ok(_) => process::exit(0),
                         Err(e) => {
                             // Qualify macro with crate name so the exported macro is resolved.
-                            soundlog_debugger::log_error!(&*logger, "test_roundtrip failed: {}", e);
+                            soundlog_cli::log_error!(&*logger, "test_roundtrip failed: {}", e);
                             process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debugger::log_error!(&*logger, "failed to read input for test: {}", e);
+                    soundlog_cli::log_error!(&*logger, "failed to read input for test: {}", e);
                     process::exit(1);
                 }
             }
         }
-        Some(Commands::Redump {
+        Commands::Redump {
             input,
             output,
             diag,
-        }) => {
+        } => {
             // Load input bytes
             match load_bytes_from_path(&input) {
                 Ok(bytes) => {
@@ -387,13 +374,13 @@ fn main() {
                             process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debugger::log_error!(&*logger, "redump failed: {}", e);
+                            soundlog_cli::log_error!(&*logger, "redump failed: {}", e);
                             process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debugger::log_error!(
+                    soundlog_cli::log_error!(
                         &*logger,
                         "failed to read input for redump: {}",
                         e
@@ -402,7 +389,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Parse { file }) => {
+        Commands::Parse { file } => {
             // Load file
             match load_bytes_from_path(&file) {
                 Ok(bytes) => {
@@ -412,24 +399,24 @@ fn main() {
                             process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debugger::log_error!(&*logger, "parse failed: {}", e);
+                            soundlog_cli::log_error!(&*logger, "parse failed: {}", e);
                             process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_cli::log_error!(&*logger, "failed to read file: {}", e);
                     process::exit(1);
                 }
             }
         }
-        Some(Commands::Play {
+        Commands::Play {
             file,
             dry_run,
             loop_count,
             loop_modifier,
             loop_base,
-        }) => {
+        } => {
             // Configure logger according to dry_run so main-level messages respect it.
             logger = Arc::new(Logger::new_stdout(dry_run));
             match load_bytes_from_path(&file) {
@@ -449,35 +436,16 @@ fn main() {
                             process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_debugger::log_error!(&*logger, "play failed: {}", e);
+                            soundlog_cli::log_error!(&*logger, "play failed: {}", e);
                             process::exit(1);
                         }
                     }
                 }
                 Err(e) => {
-                    soundlog_debugger::log_error!(&*logger, "failed to read file: {}", e);
+                    soundlog_cli::log_error!(&*logger, "failed to read file: {}", e);
                     process::exit(1);
                 }
             }
         }
-        None => {}
     }
-
-    let initial_file_name = args
-        .file
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned());
-
-    // Try to load bytes from the provided file, otherwise keep empty vector.
-    let mut initial_bytes: Vec<u8> = Vec::new();
-    if let Some(path) = args.file {
-        match load_bytes_from_path(&path) {
-            Ok(data) => initial_bytes = data,
-            Err(e) => soundlog_debugger::log_error!(&logger, "failed to read file: {}", e),
-        }
-    }
-
-    // Launch GUI in a separate function (implementation is provided by the gui module).
-    gui::run_gui(initial_bytes, initial_file_name);
 }

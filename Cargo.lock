@@ -3088,16 +3088,25 @@ name = "soundlog"
 version = "0.14.0"
 
 [[package]]
-name = "soundlog-debugger"
+name = "soundlog-cli"
 version = "0.14.0"
 dependencies = [
  "anyhow",
  "clap",
  "comfy-table",
- "eframe",
  "flate2",
  "soundlog",
  "unicode-width",
+]
+
+[[package]]
+name = "soundlog-gui"
+version = "0.14.0"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "flate2",
+ "soundlog",
 ]
 
 [[package]]

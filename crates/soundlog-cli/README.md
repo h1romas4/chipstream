@@ -1,9 +1,9 @@
-# soundlog-debugger
+# soundlog-cli
 
-`soundlog-debugger` provides a GUI and a small CLI to inspect, test, and re-dump VGM files processed by the `soundlog` library. 
+`soundlog-cli` provides the `soundlog` CLI for inspecting, testing, and re-dumping VGM and MDX files processed by the `soundlog` library. The independent `soundlog-gui` crate provides a reusable GUI frontend.
 
 > [!IMPORTANT]
-> `soundlog-debugger` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
+> `soundlog-cli` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
 
 Contents:
 
@@ -15,7 +15,7 @@ Contents:
   - `parse`
   - `play`
   - `mdx`
-- GUI notes
+- GUI crate
 - Diagnostic flags and piping
 - Troubleshooting and caveats
 
@@ -34,9 +34,9 @@ target/release/soundlog --help
 ## CLI overview
 
 ```bash
-GUI/CLI frontend for soundlog for debug
+Command-line debugging tools for soundlog.
 
-Usage: soundlog [FILE] [COMMAND]
+Usage: soundlog <COMMAND>
 
 Commands:
   test    Execute parse and build round-trip tests. Also output header details
@@ -46,15 +46,11 @@ Commands:
   mdx     MDX file operations
   help    Print this message or the help of the given subcommand(s)
 
-Arguments:
-  [FILE]  Path to binary file to display (supports .vgz (gzipped) and raw files)
-
 Options:
   -h, --help     Print help
   -V, --version  Print version
 ```
 
-- If no subcommand is given the program will launch the GUI. If a single `FILE` argument is passed without a subcommand, the GUI will open with that file loaded.
 - Use `--help` after any subcommand to get subcommand-specific usage.
 
 ## Subcommands and usage
@@ -322,15 +318,11 @@ soundlog mdx play samples/example.mdx
 soundlog mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
-## GUI notes
+## GUI crate
 
-- Launch the GUI by running the binary with no subcommand:
-
-```bash
-soundlog samples/example.vgz
-```
-
-- The GUI is a simple inspector for parsed VGM documents and command streams. It is intended for interactive debugging and visualization, not for production conversion pipelines.
+The graphical inspector is maintained independently in the `soundlog-gui`
+crate. It provides a native window entry point and reusable AST and byte-viewer
+components; the `soundlog-cli` package only provides command-line tools.
 
 ---
 
