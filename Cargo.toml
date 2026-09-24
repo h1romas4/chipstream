@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
 	"crates/mmlx",
-	"crates/mmlx-cli",
 	"crates/soundlog",
 	"crates/soundlog-cli",
 	"crates/soundlog-gui",

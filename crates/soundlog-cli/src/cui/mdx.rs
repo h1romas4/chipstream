@@ -1,6 +1,5 @@
 use std::convert::TryInto;
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,11 +9,9 @@ use soundlog::chip::state::{Okim6258State, Ym2151State};
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
-use soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
 use soundlog::meta::Gd3;
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::command::Instance;
-use soundlog::vgm::header::Okim6258Flags;
 
 use crate::logger::Logger;
 
@@ -81,43 +78,6 @@ fn find_case_insensitive_file(directory: &Path, candidates: &[PathBuf]) -> Optio
                     })
                     .unwrap_or(false)
         })
-}
-
-/// Converts an MDX file, optionally paired with its PDX file, into VGM.
-pub fn mdx2vgm(
-    input: &Path,
-    output: &Path,
-    pdx: Option<&Path>,
-    options: &MdxToVgmOptions,
-) -> Result<()> {
-    let package = read_mdx_package(input, pdx)?;
-    let mut document = to_vgm_document(&package, options)
-        .map_err(|error| anyhow!("MDX to VGM conversion failed: {error:?}"))?;
-    if !package.mdx.header.title.is_empty() {
-        document.gd3 = Some(Gd3 {
-            track_name_origin: Some(package.mdx.header.title.clone()),
-            ..Gd3::default()
-        });
-    }
-    if package.drives_okim6258() {
-        document.header.okim6258_flags = Okim6258Flags {
-            clock_divider: PCM8_OKIM6258_CLOCK_DIVIDER,
-            adpcm_3bit_select: false,
-            output_12bit: false,
-            reserved: 0,
-        };
-    }
-    let bytes: Vec<u8> = (&document).into();
-
-    if output.as_os_str() == "-" {
-        io::stdout()
-            .write_all(&bytes)
-            .context("failed to write VGM to stdout")?;
-    } else {
-        fs::write(output, bytes)
-            .with_context(|| format!("failed to write VGM output: {}", output.display()))?;
-    }
-    Ok(())
 }
 
 /// Parse an MDX file and print its track commands with source offsets.
@@ -218,8 +178,8 @@ pub fn test_mdx(
 
 /// Convert an MDX file (lazily, via `VgmStream`/`VgmCallbackStream`) and
 /// play it back with the same register-write/event log format as
-/// `soundlog play`. Exercises the lazy `VgmCommandGenerator` path end to
-/// end, unlike `mdx convert` which builds a full `VgmDocument` up front.
+/// `soundlog play`. Exercises the lazy `VgmCommandGenerator` path end to end
+/// without building a full `VgmDocument` up front.
 pub fn play_mdx(
     input: &Path,
     pdx: Option<&Path>,

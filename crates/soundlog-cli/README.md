@@ -15,6 +15,7 @@ Contents:
   - `parse`
   - `play`
   - `mdx`
+  - `pdx`
 - GUI crate
 - Diagnostic flags and piping
 - Troubleshooting and caveats
@@ -203,7 +204,7 @@ Notes:
 
 The `mdx` command group provides MDX parsing, conversion, and playback through
 the same VGM command and register-write processing used by the other CLI
-commands.
+commands. It also provides MML source validation and compilation.
 
 ```bash
 soundlog mdx <COMMAND>
@@ -215,15 +216,37 @@ MDX file operations
 Usage: soundlog mdx <COMMAND>
 
 Commands:
+  check    Parse and validate an MML source file
+  compile  Compile MML source to MDX or VGM
   parse    Parse an MDX file and display its track commands
   test     Convert an MDX file and verify that the generated VGM parses
-  convert  Convert an MDX file to a VGM file
   play     Convert an MDX file lazily and play it, printing the same register write/event log format as `soundlog play`
   help     Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help
 ```
+
+#### `mdx check`
+
+Parse and validate an MML source file. Add `--verbose` to print its typed
+syntax tree.
+
+```bash
+soundlog mdx check <INPUT_MML> [--verbose]
+```
+
+#### `mdx compile`
+
+Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
+instead; MDX is the default.
+
+```bash
+soundlog mdx compile <INPUT_MML> <OUTPUT> [--output-format mdx|vgm]
+```
+
+When producing VGM from MML that declares `#pcmfile`, the referenced PDX file
+is searched for relative to the input MML file.
 
 #### `mdx parse`
 
@@ -266,36 +289,6 @@ soundlog mdx test samples/example.mdx
 soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
-#### `mdx convert`
-
-Convert an MDX file to a VGM file. Use `-` as the output path to write the
-serialized VGM bytes to stdout.
-
-```bash
-soundlog mdx convert <INPUT> <OUTPUT> [OPTIONS]
-```
-
-Available options include `--pdx <FILE>`, `--ym2151-clock <HZ>`,
-`--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
-`--adpcm-mode <through|resample|lpf>` (default:
-`through`).
-
-The ADPCM modes follow NanoDriveX naming. For legacy 9-track PCM1, `through`
-sends the encoded PDX ADPCM bytes directly, while `resample` decodes and
-re-encodes them at the output rate. `lpf` uses the same resampling path and
-additionally applies the NanoDriveX-style LPF/HPF before OKIM6258 ADPCM
-re-encoding. MDX PCM8/PCM8A output is always mixed and re-encoded into the
-single OKIM6258 stream required by VGM, so `through` and `resample` are
-equivalent for that format.
-
-Examples:
-
-```bash
-soundlog mdx convert samples/example.mdx samples/example.vgm
-soundlog mdx convert samples/example.mdx samples/example.vgm \
-  --pdx samples/example.pdx --loop-count 2
-```
-
 #### `mdx play`
 
 Convert an MDX file lazily and print the same register-write and event log
@@ -318,11 +311,35 @@ soundlog mdx play samples/example.mdx
 soundlog mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
+## PDX
+
+Build a PDX sample bank from one or more mono WAV files. The output path is the
+final argument.
+
+```bash
+soundlog pdx build <INPUT_WAV>... <OUTPUT_PDX>
+```
+
+Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
+supported. Stereo WAV files are rejected.
+
 ## GUI crate
 
 The graphical inspector is maintained independently in the `soundlog-gui`
 crate. It provides a native window entry point and reusable AST and byte-viewer
 components; the `soundlog-cli` package only provides command-line tools.
+
+---
+
+## MML profiler
+
+`soundlog-mml-prof` profiles the complete MML-to-VGM streaming path using the
+bundled fixture.
+
+```bash
+RUSTFLAGS="-C debuginfo=2" cargo build --release -p soundlog-cli --bin soundlog-mml-prof
+heaptrack target/release/soundlog-mml-prof
+```
 
 ---
 

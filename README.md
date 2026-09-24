@@ -50,26 +50,15 @@ The documentation for the `soundlog` crate library is available at [crates/sound
 
 ### mmlx
 
-`mmlx` parses MXDRV MML files and compiles them to MDX or VGM output.
+`mmlx` parses MXDRV MML files and compiles them to MDX or VGM output through
+the `soundlog` command-line tool.
 
-`target/release/mmlx --help`
-
-```
-Parse MML source files
-
-Usage: mmlx <COMMAND>
-
-Commands:
-  mdx   Parse or compile MML/MDX data
-  pdx   Build PDX sample data
-  help  Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
+```bash
+soundlog mdx check <INPUT_MML>
+soundlog mdx compile <INPUT_MML> <OUTPUT> [--output-format mdx|vgm]
 ```
 
-For detailed usage instructions, please refer to [crates/mmlx-cli](crates/mmlx-cli/README.md).
+For detailed usage instructions, please refer to [crates/soundlog-cli](crates/soundlog-cli/README.md).
 
 ## License
 

@@ -31,6 +31,21 @@ impl From<AdpcmModeArg> for AdpcmMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MmlOutputFormat {
+    Mdx,
+    Vgm,
+}
+
+impl From<MmlOutputFormat> for soundlog_cli::cui::mml::OutputFormat {
+    fn from(format: MmlOutputFormat) -> Self {
+        match format {
+            MmlOutputFormat::Mdx => Self::Mdx,
+            MmlOutputFormat::Vgm => Self::Vgm,
+        }
+    }
+}
+
 /// Command-line operations for inspecting and converting sound files.
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -92,10 +107,36 @@ enum Commands {
         #[command(subcommand)]
         command: MdxCommands,
     },
+    /// Build PDX sample data from WAV files
+    Pdx {
+        #[command(subcommand)]
+        command: PdxCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 enum MdxCommands {
+    /// Parse and validate an MML source file
+    Check {
+        /// MML source file to parse
+        input: PathBuf,
+
+        /// Print the parsed MML syntax tree
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Compile an MML source file into an MDX or VGM binary file
+    Compile {
+        /// MML source file to parse
+        input: PathBuf,
+
+        /// Output binary file
+        output: PathBuf,
+
+        /// Output format
+        #[arg(long, value_enum, default_value_t = MmlOutputFormat::Mdx)]
+        output_format: MmlOutputFormat,
+    },
     /// Parse an MDX file and display its track commands
     Parse {
         /// MDX input file path
@@ -136,41 +177,6 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
     },
-    /// Convert an MDX file to a VGM file
-    Convert {
-        /// MDX input file path
-        #[arg(value_name = "INPUT")]
-        input: PathBuf,
-
-        /// VGM output file path (use '-' for stdout)
-        #[arg(value_name = "OUTPUT")]
-        output: PathBuf,
-
-        /// Optional PDX file used for PCM references (PCM conversion is deferred)
-        #[arg(long, value_name = "FILE")]
-        pdx: Option<PathBuf>,
-
-        /// YM2151 clock in Hz
-        #[arg(long, default_value_t = 4_000_000)]
-        ym2151_clock: u32,
-
-        /// OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks;
-        /// must stay paired with the fixed `/512` header divider, see
-        /// `soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ`)
-        #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
-        okim6258_clock: u32,
-
-        /// Total number of whole-song playthroughs (for example, 1 plays once)
-        ///
-        /// When omitted, unconditional song repeats are preserved as a native
-        /// VGM loop. This does not override nested MDX repeat blocks; 0 is invalid.
-        #[arg(long, value_name = "COUNT")]
-        loop_count: Option<u32>,
-
-        /// ADPCM mode: through, resample, or lpf (default: through)
-        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
-        adpcm_mode: AdpcmModeArg,
-    },
     /// Convert an MDX file lazily and play it, printing the same register
     /// write/event log format as `soundlog play`
     Play {
@@ -191,7 +197,7 @@ enum MdxCommands {
         ym2151_clock: u32,
 
         /// OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks;
-        /// see `MdxCommands::Convert`'s `okim6258_clock`)
+        /// see `MdxCommands::Test`'s `okim6258_clock`)
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
@@ -202,6 +208,16 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PdxCommands {
+    /// Convert mono WAV files to ADPCM samples and write a PDX file
+    Build {
+        /// Input WAV files followed by the output PDX path
+        #[arg(value_name = "INPUT_WAV_OR_OUTPUT_PDX", num_args = 2..)]
+        files: Vec<PathBuf>,
     },
 }
 
@@ -255,6 +271,24 @@ fn main() {
     // Handle subcommands
     match args.command {
         Commands::Mdx { command } => match command {
+            MdxCommands::Check { input, verbose } => match cui::mml::check(&input, verbose) {
+                Ok(()) => process::exit(0),
+                Err(error) => {
+                    soundlog_cli::log_error!(&*logger, "MML check failed: {error:#}");
+                    process::exit(1);
+                }
+            },
+            MdxCommands::Compile {
+                input,
+                output,
+                output_format,
+            } => match cui::mml::compile(&input, &output, output_format.into()) {
+                Ok(()) => process::exit(0),
+                Err(error) => {
+                    soundlog_cli::log_error!(&*logger, "MML compile failed: {error:#}");
+                    process::exit(1);
+                }
+            },
             MdxCommands::Parse { input, pdx } => {
                 match cui::mdx::parse_mdx(&input, pdx.as_deref(), logger.clone()) {
                     Ok(()) => process::exit(0),
@@ -288,29 +322,6 @@ fn main() {
                     }
                 }
             }
-            MdxCommands::Convert {
-                input,
-                output,
-                pdx,
-                ym2151_clock,
-                okim6258_clock,
-                loop_count,
-                adpcm_mode,
-            } => {
-                let options = MdxToVgmOptions {
-                    ym2151_clock,
-                    okim6258_clock,
-                    loop_count,
-                    adpcm_mode: adpcm_mode.into(),
-                };
-                match cui::mdx::mdx2vgm(&input, &output, pdx.as_deref(), &options) {
-                    Ok(()) => process::exit(0),
-                    Err(error) => {
-                        soundlog_cli::log_error!(&*logger, "convert failed: {}", error);
-                        process::exit(1);
-                    }
-                }
-            }
             MdxCommands::Play {
                 input,
                 pdx,
@@ -336,6 +347,15 @@ fn main() {
                         process::exit(1);
                     }
                 }
+            }
+        },
+        Commands::Pdx {
+            command: PdxCommands::Build { files },
+        } => match cui::mml::build_pdx(&files) {
+            Ok(()) => process::exit(0),
+            Err(error) => {
+                soundlog_cli::log_error!(&*logger, "PDX build failed: {error:#}");
+                process::exit(1);
             }
         },
         Commands::Test { file, dry_run } => {
@@ -380,11 +400,7 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    soundlog_cli::log_error!(
-                        &*logger,
-                        "failed to read input for redump: {}",
-                        e
-                    );
+                    soundlog_cli::log_error!(&*logger, "failed to read input for redump: {}", e);
                     process::exit(1);
                 }
             }

@@ -9,23 +9,23 @@
 //! Build the profiler in release mode with debug symbols:
 //!
 //! ```text
-//! RUSTFLAGS="-C debuginfo=2" cargo build --release -p mmlx-cli --bin mmlx_prof
+//! RUSTFLAGS="-C debuginfo=2" cargo build --release -p soundlog-cli --bin soundlog-mml-prof
 //! ```
 //!
 //! Profile heap usage with Massif:
 //!
 //! ```text
 //! valgrind --tool=massif \
-//!   --massif-out-file=massif-mmlx-prof.out \
-//!   target/release/mmlx_prof
-//! massif-visualizer massif-mmlx-prof.out
+//!   --massif-out-file=massif-soundlog-mml-prof.out \
+//!   target/release/soundlog-mml-prof
+//! massif-visualizer massif-soundlog-mml-prof.out
 //! ```
 //!
 //! Profile allocation hotspots with heaptrack:
 //!
 //! ```text
-//! heaptrack target/release/mmlx_prof
-//! heaptrack_gui heaptrack.mmlx_prof.<pid>.zst
+//! heaptrack target/release/soundlog-mml-prof
+//! heaptrack_gui heaptrack.soundlog_mml_prof.<pid>.zst
 //! ```
 
 use std::hint::black_box;

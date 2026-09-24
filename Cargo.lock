@@ -1908,16 +1908,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mmlx-cli"
-version = "0.14.0"
-dependencies = [
- "clap",
- "hound",
- "mmlx",
- "soundlog",
-]
-
-[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3095,6 +3085,8 @@ dependencies = [
  "clap",
  "comfy-table",
  "flate2",
+ "hound",
+ "mmlx",
  "soundlog",
  "unicode-width",
 ]

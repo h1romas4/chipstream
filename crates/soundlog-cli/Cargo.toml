@@ -14,6 +14,8 @@ flate2 = "1.0"
 anyhow = "1.0"
 comfy-table = "6"
 unicode-width = "0.1"
+hound = "3"
+mmlx = { path = "../mmlx" }
 soundlog = { path = "../soundlog", features = ["mdx"] }
 
 [[bin]]
@@ -27,3 +29,7 @@ path = "src/bin/soundlog_prof.rs"
 [[bin]]
 name = "soundlog-micro"
 path = "src/bin/soundlog_micro.rs"
+
+[[bin]]
+name = "soundlog-mml-prof"
+path = "src/bin/soundlog_mml_prof.rs"
