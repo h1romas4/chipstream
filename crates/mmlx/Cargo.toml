@@ -1,6 +1,6 @@
 [package]
 name = "mmlx"
-version = "0.14.0"
+version = "0.1.0"
 edition = "2024"
 description = "MML parser and compiler with MXDRV MML input and MDX output support."
 

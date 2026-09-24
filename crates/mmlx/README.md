@@ -18,7 +18,7 @@ or format the parsed document before generating MDX data.
 
 ```toml
 [dependencies]
-mmlx = "0.14"
+mmlx = "0.1.0"
 ```
 
 ## Usage
