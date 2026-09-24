@@ -2,7 +2,7 @@
 name = "soundlog-gui"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.97.1"
 description = "GUI frontend for inspecting soundlog-supported audio files."
 license = "MIT"
 authors = ["h1romas4 <h1romas4@gmail.com>"]
