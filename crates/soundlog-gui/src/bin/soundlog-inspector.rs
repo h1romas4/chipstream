@@ -15,7 +15,7 @@ fn run() -> anyhow::Result<()> {
     let mut arguments = std::env::args_os().skip(1);
     let path = arguments.next().map(PathBuf::from);
     if arguments.next().is_some() {
-        bail!("usage: soundlog-gui [FILE]");
+        bail!("usage: soundlog-inspector [FILE]");
     }
 
     let (initial_bytes, initial_file_name) = match path {
