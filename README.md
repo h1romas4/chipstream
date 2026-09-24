@@ -11,17 +11,19 @@ utilities for building and parsing register-write logs such as the VGM
 
 [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
-### soundlog
+## Installation
 
-The `soundlog` binary provides command-line tools for the `soundlog` crate.
+Install the `soundlog` binary from this repository with Cargo:
 
-Build all crates:
+Rust 1.97.1 or later is required.
 
 ```bash
-cargo build --release
+cargo install --git https://github.com/h1romas4/chipstream --bin soundlog --locked --force soundlog-cli
 ```
 
-`target/release/soundlog --help`:
+### soundlog
+
+`soundlog --help`
 
 ```bash
 Command-line tools for soundlog.
