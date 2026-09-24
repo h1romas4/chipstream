@@ -16,7 +16,6 @@ Contents:
   - `play`
   - `mdx`
   - `pdx`
-- GUI crate
 - Diagnostic flags and piping
 - Troubleshooting and caveats
 
@@ -325,14 +324,6 @@ Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
 supported. Signed 16-bit samples are converted to signed 12-bit values by
 shifting right by four bits before ADPCM encoding. Stereo WAV files are
 rejected.
-
-## GUI crate
-
-The graphical inspector is maintained independently in the `soundlog-gui`
-crate. It provides a native window entry point and reusable AST and byte-viewer
-components; the `soundlog-cli` package only provides command-line tools.
-
----
 
 ## MML profiler
 
