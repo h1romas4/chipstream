@@ -79,9 +79,9 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Play a VGM file and display its register writes and detected events
-    Play {
-        /// VGM file path to play
+    /// Stream a VGM file and display its register writes and detected events
+    Stream {
+        /// VGM file path to stream
         #[arg(value_name = "FILE")]
         file: PathBuf,
 
@@ -177,9 +177,9 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
     },
-    /// Convert an MDX file lazily and play it, printing the same register
-    /// write/event log format as `soundlog play`
-    Play {
+    /// Convert an MDX file lazily to a command stream and print register writes
+    /// and events in the same format as `soundlog stream`
+    Stream {
         /// MDX input file path
         #[arg(value_name = "INPUT")]
         input: PathBuf,
@@ -322,7 +322,7 @@ fn main() {
                     }
                 }
             }
-            MdxCommands::Play {
+            MdxCommands::Stream {
                 input,
                 pdx,
                 dry_run,
@@ -340,10 +340,10 @@ fn main() {
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
                 };
-                match cui::mdx::play_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
+                match cui::mdx::stream_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_cli::log_error!(&*logger, "mdx play failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "mdx stream failed: {}", error);
                         process::exit(1);
                     }
                 }
@@ -426,7 +426,7 @@ fn main() {
                 }
             }
         }
-        Commands::Play {
+        Commands::Stream {
             file,
             dry_run,
             loop_count,
@@ -439,8 +439,8 @@ fn main() {
                 Ok(bytes) => {
                     // Default loop_count to Some(1) when unspecified
                     let loop_count = loop_count.or(Some(1));
-                    // Call play_vgm
-                    match cui::play::play_vgm(
+                    // Process the VGM stream.
+                    match cui::stream::stream_vgm(
                         &file,
                         bytes,
                         logger.clone(),
@@ -452,7 +452,7 @@ fn main() {
                             process::exit(0);
                         }
                         Err(e) => {
-                            soundlog_cli::log_error!(&*logger, "play failed: {}", e);
+                            soundlog_cli::log_error!(&*logger, "stream failed: {}", e);
                             process::exit(1);
                         }
                     }

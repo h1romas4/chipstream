@@ -177,10 +177,10 @@ pub fn test_mdx(
 }
 
 /// Convert an MDX file (lazily, via `VgmStream`/`VgmCallbackStream`) and
-/// play it back with the same register-write/event log format as
-/// `soundlog play`. Exercises the lazy `VgmCommandGenerator` path end to end
+/// stream it with the same register-write/event log format as
+/// `soundlog stream`. Exercises the lazy `VgmCommandGenerator` path end to end
 /// without building a full `VgmDocument` up front.
-pub fn play_mdx(
+pub fn stream_mdx(
     input: &Path,
     pdx: Option<&Path>,
     logger: Arc<Logger>,
@@ -193,7 +193,7 @@ pub fn play_mdx(
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error}"))?;
     let stream = VgmStream::from_generator(generator);
 
-    crate::cui::play::run_callback_stream(
+    crate::cui::stream::run_callback_stream(
         stream,
         logger,
         &input.display().to_string(),

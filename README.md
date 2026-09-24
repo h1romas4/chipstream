@@ -41,7 +41,7 @@ Commands:
   test    Test a VGM file with a parse/build round trip and display its header
   redump  Re-dump a VGM file, expanding DAC streams to chip writes
   parse   Parse a VGM file and display its commands, offsets, and lengths
-  play    Play a VGM file and display its register writes and detected events
+  stream  Stream a VGM file and display its register writes and detected events
   mdx     MDX file operations
   pdx     PDX file operations
   help    Print this message or the help of the given subcommand(s)

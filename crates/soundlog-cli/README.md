@@ -13,7 +13,7 @@ Contents:
   - `test`
   - `redump`
   - `parse`
-  - `play`
+  - `stream`
   - `mdx`
   - `pdx`
 - Diagnostic flags and piping
@@ -42,7 +42,7 @@ Commands:
   test    Test a VGM file with a parse/build round trip and display its header
   redump  Re-dump a VGM file, expanding DAC streams to chip writes
   parse   Parse a VGM file and display its commands, offsets, and lengths
-  play    Play a VGM file and display its register writes and detected events
+  stream  Stream a VGM file and display its register writes and detected events
   mdx     MDX file operations
   pdx     PDX file operations
   help    Print this message or the help of the given subcommand(s)
@@ -158,15 +158,15 @@ cat samples/example.vgz | soundlog parse -
 
 Notes:
 
-- The output is intended as an inspection aid — it does not expand DAC streams (use `redump` for expansion) and does not perform state tracking (use `play` for event detection and state tracking).
-- When comparing parse output with `redump` or `play`, note that `redump` may reserialize the document with expanded stream writes and `play` will expand stream-generated writes on the timeline; use those commands accordingly for deeper inspection.
+- The output is intended as an inspection aid — it does not expand DAC streams (use `redump` for expansion) and does not perform state tracking (use `stream` for event detection and state tracking).
+- When comparing parse output with `redump` or `stream`, note that `redump` may reserialize the document with expanded stream writes and `stream` will expand stream-generated writes on the timeline; use those commands accordingly for deeper inspection.
 
-### `play`
+### `stream`
 
-Play a VGM file and display register writes with state events.
+Process a VGM file as a command stream and display register writes with state events.
 
 ```bash
-soundlog play <FILE> [--dry-run]
+soundlog stream <FILE> [--dry-run]
 ```
 
 - `<FILE>`: path to input VGM. Use `-` to read from stdin.
@@ -174,35 +174,35 @@ soundlog play <FILE> [--dry-run]
 
 Behavior:
 
-- The `play` subcommand uses `VgmCallbackStream` to process the VGM document, expand DAC streams where applicable, and perform per-chip state tracking.
-- For each register write emitted by the stream, `play` prints a concise one-line log containing:
+- The `stream` subcommand uses `VgmCallbackStream` to process the VGM document, expand DAC streams where applicable, and perform per-chip state tracking.
+- For each register write emitted by the stream, `stream` prints a concise one-line log containing:
   - The sample offset (timeline position),
   - A brief description of the register write (chip, port/register, value),
   - Any detected events such as `KeyOn`, `KeyOff`, or `ToneChange`, including frequency information when available.
-- Output is oriented toward debugging and inspection rather than real-time audio playback; `play` does not produce sound. It is intended to help verify timing, register sequences, and event detection when developing or validating VGM streams and chip state trackers.
+- Output is oriented toward debugging and inspection; no audio is produced. It is intended to help verify timing, register sequences, and event detection when developing or validating VGM streams and chip state trackers.
 
 Examples:
 
-- Play and print register logs to the terminal:
+- Stream and print register logs to the terminal:
 
 ```bash
-soundlog play samples/example.vgz
+soundlog stream samples/example.vgz
 ```
 
 - Parse and track events but suppress printing (dry-run):
 
 ```bash
-soundlog play samples/example.vgz --dry-run
+soundlog stream samples/example.vgz --dry-run
 ```
 
 Notes:
 
-- `play` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
-- The frequency values shown in `play` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
+- `stream` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
+- The frequency values shown in `stream` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
 
 ### `mdx`
 
-The `mdx` command group provides MDX parsing, conversion, and playback through
+The `mdx` command group provides MDX parsing, conversion, and command streaming through
 the same VGM command and register-write processing used by the other CLI
 commands. It also provides MML source validation and compilation.
 
@@ -220,7 +220,7 @@ Commands:
   compile  Compile MML source to MDX or VGM
   parse    Parse an MDX file and display its track commands
   test     Convert an MDX file and verify that the generated VGM parses
-  play     Convert an MDX file lazily and play it, printing the same register write/event log format as `soundlog play`
+  stream   Convert an MDX file lazily and print the same register write/event log format as `soundlog stream`
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -289,17 +289,17 @@ soundlog mdx test samples/example.mdx
 soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
-#### `mdx play`
+#### `mdx stream`
 
 Convert an MDX file lazily and print the same register-write and event log
-format as `soundlog play`. The complete VGM command list is not built up
+format as `soundlog stream`. The complete VGM command list is not built up
 front.
 
 ```bash
-soundlog mdx play <INPUT> [OPTIONS]
+soundlog mdx stream <INPUT> [OPTIONS]
 ```
 
-The playback options include `--pdx <FILE>`, `--dry-run`,
+The stream options include `--pdx <FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
 `--loop-count <COUNT>`, and
 `--adpcm-mode <through|resample|lpf>` (default: `through`).
@@ -307,8 +307,8 @@ The playback options include `--pdx <FILE>`, `--dry-run`,
 Examples:
 
 ```bash
-soundlog mdx play samples/example.mdx
-soundlog mdx play samples/example.mdx --pdx samples/example.pdx --dry-run
+soundlog mdx stream samples/example.mdx
+soundlog mdx stream samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
 ## PDX
