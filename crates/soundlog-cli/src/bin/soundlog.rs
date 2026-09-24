@@ -180,6 +180,36 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
     },
+    /// Convert an MDX file to a VGM file
+    Convert {
+        /// MDX input file path
+        #[arg(value_name = "MDX_FILE")]
+        input: PathBuf,
+
+        /// VGM output file path
+        #[arg(value_name = "VGM_FILE")]
+        output: PathBuf,
+
+        /// Optional PDX file used for PCM references
+        #[arg(long, value_name = "PDX_FILE")]
+        pdx: Option<PathBuf>,
+
+        /// YM2151 clock in Hz
+        #[arg(long, default_value_t = 4_000_000)]
+        ym2151_clock: u32,
+
+        /// OKIM6258 clock in Hz
+        #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
+        okim6258_clock: u32,
+
+        /// Total number of whole-song playthroughs
+        #[arg(long, value_name = "COUNT")]
+        loop_count: Option<u32>,
+
+        /// ADPCM mode: through, resample, or lpf
+        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
+        adpcm_mode: AdpcmModeArg,
+    },
     /// Convert an MDX file lazily to a command stream and print register writes
     /// and events in the same format as `soundlog stream`
     Stream {
@@ -321,6 +351,29 @@ fn main() {
                     Ok(()) => process::exit(0),
                     Err(error) => {
                         soundlog_cli::log_error!(&*logger, "mdx test failed: {}", error);
+                        process::exit(1);
+                    }
+                }
+            }
+            MdxCommands::Convert {
+                input,
+                output,
+                pdx,
+                ym2151_clock,
+                okim6258_clock,
+                loop_count,
+                adpcm_mode,
+            } => {
+                let options = MdxToVgmOptions {
+                    ym2151_clock,
+                    okim6258_clock,
+                    loop_count,
+                    adpcm_mode: adpcm_mode.into(),
+                };
+                match cui::mdx::convert_mdx(&input, &output, pdx.as_deref(), &options) {
+                    Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_cli::log_error!(&*logger, "mdx convert failed: {}", error);
                         process::exit(1);
                     }
                 }

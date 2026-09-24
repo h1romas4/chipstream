@@ -220,6 +220,7 @@ Commands:
   compile  Compile MML source to MDX or VGM
   parse    Parse an MDX file and display its track commands
   test     Convert an MDX file and verify that the generated VGM parses
+  convert  Convert an MDX file to a VGM file
   stream   Convert an MDX file lazily and print the same register write/event log format as `soundlog stream`
   help     Print this message or the help of the given subcommand(s)
 
@@ -247,6 +248,19 @@ soundlog mdx compile <MML_FILE> <OUTPUT_FILE> [--output-format mdx|vgm]
 
 When producing VGM from MML that declares `#pcmfile`, the referenced PDX file
 is searched for relative to the input MML file.
+
+#### `mdx convert`
+
+Convert an existing MDX file to a VGM file. This is the MDX-to-VGM operation;
+use `mdx compile --output-format vgm` for MML input instead.
+
+```bash
+soundlog mdx convert <MDX_FILE> <VGM_FILE> [OPTIONS]
+```
+
+The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
+`--okim6258-clock <HZ>`, `--loop-count <COUNT>`, and
+`--adpcm-mode <through|resample|lpf>`.
 
 #### `mdx parse`
 
