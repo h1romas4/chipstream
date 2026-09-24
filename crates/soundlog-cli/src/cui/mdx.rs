@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
+use mmlx::mdx::compat::normalize_mxdrv16y_tracks;
 use soundlog::chip::state::{Okim6258State, Ym2151State};
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxDocument;
@@ -20,7 +21,9 @@ use crate::logger::Logger;
 pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
     let mdx_bytes = fs::read(input)
         .with_context(|| format!("failed to read MDX input: {}", input.display()))?;
-    let mdx = MdxDocument::parse(&mdx_bytes)
+    let mdx_bytes = normalize_mxdrv16y_tracks(&mdx_bytes)
+        .map_err(|error| anyhow!("failed to normalize MDX input: {error}"))?;
+    let mdx = MdxDocument::parse(mdx_bytes.as_ref())
         .map_err(|error| anyhow!("failed to parse MDX input: {error}"))?;
 
     let pdx_path = resolve_pdx_path(input, pdx, mdx.header.pdx_name.as_deref());
@@ -32,7 +35,7 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
         })
         .transpose()?;
 
-    MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
+    MdxPackage::parse(mdx_bytes.as_ref(), pdx_bytes.as_deref())
         .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
 }
 

@@ -6,6 +6,7 @@
 //! compilation are separate so callers can validate or inspect the parsed
 //! commands before generating output.
 
+pub mod compat;
 pub mod compile;
 
 mod mml;
