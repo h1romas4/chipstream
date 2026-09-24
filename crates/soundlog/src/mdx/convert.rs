@@ -282,6 +282,28 @@ pub fn to_vgm_document(
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
 
     while generator.run_step()? {}
+
+    // MDX F1 terminators are independent per-track loops, while VGM has one
+    // global loop point. Add a restartable second pass so the loop can begin
+    // from a clean initialization instead of pointing into a short track's
+    // first pass.
+    if options.loop_count.is_none()
+        && generator.playback.song_loop_index.is_none()
+        && generator.playback.track_end_loop_seen
+    {
+        let loop_index = generator.builder.command_count();
+        let repeat_options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..*options
+        };
+        let mut repeat = MdxVgmGenerator::new(package, repeat_options, true)?;
+        while repeat.run_step()? {}
+        for command in repeat.builder.take_commands() {
+            generator.builder.add_vgm_command(command);
+        }
+        generator.playback.song_loop_index = Some(loop_index);
+    }
+
     let mut document = generator.playback.finalize_with_pcm(generator.builder);
     if package.pdx.is_some() {
         document.header.okim6258_flags.clock_divider = pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
@@ -489,6 +511,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// here instead of looping the repeat internally forever. This is used
     /// for whole-song repeats, not independent `F1` track terminators.
     song_loop_complete: bool,
+    /// Whether an `F1` per-track terminator was encountered during playback.
+    track_end_loop_seen: bool,
     /// Whether an unconditional ("loop forever") repeat should stop and
     /// record a fixed native VGM loop point (`true`, needed by
     /// [`to_vgm_document`] to produce a finite `VgmDocument` with a valid
@@ -593,6 +617,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             jump_repeat_counts: HashMap::new(),
             song_loop_index: None,
             song_loop_complete: false,
+            track_end_loop_seen: false,
             mark_native_loop,
         }
     }
@@ -1156,6 +1181,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.take_repeating_jump(track, command.offset, builder)
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
+                    self.track_end_loop_seen = true;
                     if self.mark_native_loop && self.loop_count.is_none() {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so

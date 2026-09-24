@@ -1699,7 +1699,7 @@ fn mdx_converter_resolves_a_whole_song_backward_jump_to_a_native_vgm_loop_point(
 }
 
 #[test]
-fn mdx_converter_does_not_promote_a_track_end_loop_to_a_song_loop() {
+fn mdx_converter_restarts_after_independent_track_end_loop() {
     let mut builder = MdxBuilder::new();
     builder
         .add_mdx_command(0, MdxRest { ticks: 1 })
@@ -1718,7 +1718,7 @@ fn mdx_converter_does_not_promote_a_track_end_loop_to_a_song_loop() {
 
     let document = to_vgm_document(&package, &MdxToVgmOptions::default())
         .expect("a per-track F1 loop should not keep the whole VGM alive");
-    assert!(document.loop_command_index().is_none());
+    assert!(document.loop_command_index().is_some());
 }
 
 #[test]
