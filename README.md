@@ -48,18 +48,6 @@ For detailed usage instructions, please refer to [crates/soundlog-cli](https://g
 
 The documentation for the `soundlog` crate library is available at [crates/soundlog](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog/README.md).
 
-### mmlx
-
-`mmlx` parses MXDRV MML files and compiles them to MDX or VGM output through
-the `soundlog` command-line tool.
-
-```bash
-soundlog mdx check <INPUT_MML>
-soundlog mdx compile <INPUT_MML> <OUTPUT> [--output-format mdx|vgm]
-```
-
-For detailed usage instructions, please refer to [crates/soundlog-cli](crates/soundlog-cli/README.md).
-
 ## License
 
 Each crate in this repository follows its own `LICENSE` file or the `license`
