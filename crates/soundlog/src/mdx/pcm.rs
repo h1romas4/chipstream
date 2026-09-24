@@ -62,6 +62,19 @@ pub fn decode_adpcm(bytes: &[u8]) -> Vec<i16> {
 /// [`PcmDecodeError::OddPcm16ByteCount`]. Empty input is valid for every
 /// format and produces an empty vector.
 pub fn decode_pcm8a(format: Pcm8aFormat, bytes: &[u8]) -> Result<Vec<i16>, PcmDecodeError> {
+    decode_pcm8a_with_pcm16_15khz(format, bytes, false)
+}
+
+/// Decode PCM8A data with the NanoDriveX F5 15.625 kHz PCM16 scaling rule.
+///
+/// F5 PCM16 samples already contain signed 12-bit values and must only be
+/// clamped. Higher-rate PCM16 modes contain full-scale 16-bit values and use
+/// the normal four-bit right shift.
+pub fn decode_pcm8a_with_pcm16_15khz(
+    format: Pcm8aFormat,
+    bytes: &[u8],
+    pcm16_is_15khz: bool,
+) -> Result<Vec<i16>, PcmDecodeError> {
     match format {
         Pcm8aFormat::Adpcm => Ok(decode_adpcm(bytes)),
         Pcm8aFormat::Pcm8 => Ok(bytes
@@ -74,7 +87,14 @@ pub fn decode_pcm8a(format: Pcm8aFormat, bytes: &[u8]) -> Result<Vec<i16>, PcmDe
                 return Err(PcmDecodeError::OddPcm16ByteCount);
             }
             Ok(chunks
-                .map(|chunk| i16::from_be_bytes([chunk[0], chunk[1]]) >> 4)
+                .map(|chunk| {
+                    let sample = i16::from_be_bytes([chunk[0], chunk[1]]);
+                    if pcm16_is_15khz {
+                        sample.clamp(-2048, 2047)
+                    } else {
+                        sample >> 4
+                    }
+                })
                 .collect())
         }
     }
@@ -213,7 +233,10 @@ pub(crate) const INDEX_SHIFT: [isize; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
 
 #[cfg(test)]
 mod tests {
-    use super::{AdpcmEncoder, Pcm8aFormat, PcmDecodeError, decode_adpcm, decode_pcm8a};
+    use super::{
+        AdpcmEncoder, Pcm8aFormat, PcmDecodeError, decode_adpcm, decode_pcm8a,
+        decode_pcm8a_with_pcm16_15khz,
+    };
 
     #[test]
     fn adpcm_decodes_low_nibble_before_high_nibble() {
@@ -278,6 +301,20 @@ mod tests {
         assert_eq!(
             decode_pcm8a(Pcm8aFormat::Pcm16, &[0]),
             Err(PcmDecodeError::OddPcm16ByteCount)
+        );
+    }
+
+    #[test]
+    fn pcm16_f5_preserves_12_bit_amplitude() {
+        let bytes = [0x10, 0x00, 0xF0, 0x00, 0x7F, 0xFF];
+
+        assert_eq!(
+            decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Pcm16, &bytes, true).unwrap(),
+            [0x07ff, -0x0800, 0x07ff]
+        );
+        assert_eq!(
+            decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Pcm16, &bytes, false).unwrap(),
+            [0x0100, -0x0100, 0x07ff]
         );
     }
 }

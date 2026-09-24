@@ -20,7 +20,7 @@ use crate::mdx::command::{
     MdxPitchLfo, MdxVolumeLfo,
 };
 use crate::mdx::package::{MdxPackage, MdxPcmReference};
-use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a};
+use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a_with_pcm16_15khz};
 use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{Instance, WaitSamples};
@@ -444,7 +444,7 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Single decoded PCM arena shared by all PCM channels.
     pcm_samples: Vec<i16>,
     /// Ranges in `pcm_samples` indexed by `(bank, note, format)`.
-    pcm_sample_ranges: HashMap<(usize, usize, u8), (usize, usize)>,
+    pcm_sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     pcm_encoder: AdpcmEncoder,
     /// Persistent NanoDriveX-style output filter state for the mixed PCM8 stream.
@@ -777,7 +777,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 .to_vec();
             self.raw_pcm_position = 0;
         }
-        let range = self.decode_pcm_samples(bank, note_index, format);
+        let range = self.decode_pcm_samples(
+            bank,
+            note_index,
+            format,
+            format == Pcm8aFormat::Pcm16 && rate_step == 0x10000,
+        );
         let state = &mut self.pcm_channels[channel];
         state.block_start = range.map_or(0, |(start, _)| start);
         state.block_length = range.map_or(0, |(_, length)| length as u32);
@@ -800,19 +805,20 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     }
 
     /// Decodes one PDX sample into the shared PCM arena and returns its range.
-    /// Repeated `(bank, note, format)` lookups share the existing range.
+    /// Repeated `(bank, note, format, rate)` lookups share the existing range.
     fn decode_pcm_samples(
         &mut self,
         bank: usize,
         note: usize,
         format: Pcm8aFormat,
+        pcm16_is_15khz: bool,
     ) -> Option<(usize, usize)> {
         let format_key = match format {
             Pcm8aFormat::Adpcm => 0u8,
             Pcm8aFormat::Pcm16 => 1u8,
             Pcm8aFormat::Pcm8 => 2u8,
         };
-        let key = (bank, note, format_key);
+        let key = (bank, note, format_key, pcm16_is_15khz);
         if let Some(&range) = self.pcm_sample_ranges.get(&key) {
             return Some(range);
         }
@@ -822,7 +828,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .pdx
             .as_ref()?
             .sample_bytes(bank, note)?;
-        let decoded = decode_pcm8a(format, bytes).ok()?;
+        let decoded = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz).ok()?;
         let start = self.pcm_samples.len();
         let length = decoded.len();
         self.pcm_samples.extend_from_slice(&decoded);
