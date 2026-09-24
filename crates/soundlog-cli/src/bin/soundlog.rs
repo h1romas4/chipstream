@@ -49,7 +49,7 @@ impl From<MmlOutputFormat> for soundlog_cli::cui::mml::OutputFormat {
 /// Command-line operations for inspecting and converting sound files.
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Execute parse and build round-trip tests. Also output header details
+    /// Test a VGM file with a parse/build round trip and display its header
     Test {
         /// Path to binary file to test (use '-' for stdin)
         #[arg(value_name = "FILE")]
@@ -59,7 +59,7 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Re-dump VGM file with DAC streams expanded to chip writes
+    /// Re-dump a VGM file, expanding DAC streams to chip writes
     Redump {
         /// Input VGM file path
         #[arg(value_name = "INPUT")]
@@ -73,13 +73,13 @@ enum Commands {
         #[arg(long)]
         diag: bool,
     },
-    /// Parse and display VGM file commands with offsets and lengths
+    /// Parse a VGM file and display its commands, offsets, and lengths
     Parse {
         /// VGM file path to parse
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Play VGM file and display register writes with events
+    /// Play a VGM file and display its register writes and detected events
     Play {
         /// VGM file path to play
         #[arg(value_name = "FILE")]
@@ -107,7 +107,7 @@ enum Commands {
         #[command(subcommand)]
         command: MdxCommands,
     },
-    /// Build PDX sample data from WAV files
+    /// PDX file operations
     Pdx {
         #[command(subcommand)]
         command: PdxCommands,

@@ -29,12 +29,12 @@ Command-line tools for soundlog.
 Usage: soundlog <COMMAND>
 
 Commands:
-  test    Execute parse and build round-trip tests. Also output header details
-  redump  Re-dump VGM file with DAC streams expanded to chip writes
-  parse   Parse and display VGM file commands with offsets and lengths
-  play    Play VGM file and display register writes with events
+  test    Test a VGM file with a parse/build round trip and display its header
+  redump  Re-dump a VGM file, expanding DAC streams to chip writes
+  parse   Parse a VGM file and display its commands, offsets, and lengths
+  play    Play a VGM file and display its register writes and detected events
   mdx     MDX file operations
-  pdx     Build PDX sample data from WAV files
+  pdx     PDX file operations
   help    Print this message or the help of the given subcommand(s)
 
 Options:
