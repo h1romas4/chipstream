@@ -321,7 +321,9 @@ soundlog pdx build <INPUT_WAV>... <OUTPUT_PDX>
 ```
 
 Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
-supported. Stereo WAV files are rejected.
+supported. Signed 16-bit samples are converted to signed 12-bit values by
+shifting right by four bits before ADPCM encoding. Stereo WAV files are
+rejected.
 
 ## GUI crate
 
