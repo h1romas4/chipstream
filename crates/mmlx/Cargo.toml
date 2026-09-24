@@ -2,6 +2,7 @@
 name = "mmlx"
 version = "0.14.0"
 edition = "2024"
+description = "MML parser and compiler with MXDRV MML input and MDX output support."
 
 [dependencies]
 pest = "2.9.1"

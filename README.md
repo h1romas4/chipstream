@@ -7,6 +7,15 @@ This repository is organized as a monorepo containing multiple crates and provid
 utilities for building and parsing register-write logs such as the VGM
 (Video Game Music) format.
 
+## Crates
+
+| Crate | Description |
+| --- | --- |
+| `mmlx` | MML parser and compiler; currently supports MXDRV MML input and MDX output. |
+| `soundlog` | Builds and parses VGM data and supports sound-chip log processing. |
+| `soundlog-cli` | Command-line tools for working with soundlog-supported formats. |
+| `soundlog-gui` | GUI for inspecting soundlog-supported audio files. |
+
 ## Quick Start
 
 ## Installation
