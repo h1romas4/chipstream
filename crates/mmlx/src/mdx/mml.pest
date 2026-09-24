@@ -1,3 +1,4 @@
+// Parser definition for the MXDRV MDX MML dialect.
 document = { SOI ~ line* ~ EOI }
 
 line = { title | pcmfile | voice | track | comment | block_comment | blank }

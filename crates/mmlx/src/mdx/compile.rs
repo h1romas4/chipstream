@@ -1,4 +1,9 @@
 //! Conversion from the parsed MML AST to soundlog's typed MDX document.
+//!
+//! The compiler lowers channel commands, voice definitions, and document
+//! metadata into soundlog's MDX model. It reports [`CompileError`] when source
+//! constructs cannot be represented by that model; it does not serialize the
+//! resulting document to bytes.
 
 use std::fmt;
 

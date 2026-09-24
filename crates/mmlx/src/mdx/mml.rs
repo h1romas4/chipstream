@@ -2,6 +2,8 @@
 //!
 //! The [`parse`] function converts an MML source string into an [`MmlDocument`]
 //! containing metadata, voice definitions, and per-channel command streams.
+//! The [`format_tree`] function renders that typed document for inspection;
+//! neither parsing nor formatting produces an MDX document.
 
 use std::fmt;
 
