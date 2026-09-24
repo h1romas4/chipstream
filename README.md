@@ -1,6 +1,6 @@
 # chipstream
 
-![](https://github.com/h1romas4/chipstream/workflows/Build/badge.svg)
+![](https://github.com/h1romas4/chipstream/workflows/Build/badge.svg) [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
 `chipstream` is a toolkit suite for running and working with retro sound chips.
 This repository is organized as a monorepo containing multiple crates and provides
@@ -8,8 +8,6 @@ utilities for building and parsing register-write logs such as the VGM
 (Video Game Music) format.
 
 ## Quick Start
-
-[![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
 
 ## Installation
 
