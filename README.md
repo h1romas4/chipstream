@@ -9,12 +9,12 @@ utilities for building and parsing register-write logs such as the VGM
 
 ## Crates
 
-| Crate | Description |
-| --- | --- |
-| `mmlx` | MML parser and compiler; currently supports MXDRV MML input and MDX output. |
-| `soundlog` | Builds and parses VGM data and supports sound-chip log processing. |
-| `soundlog-cli` | Command-line tools for working with soundlog-supported formats. |
-| `soundlog-gui` | GUI for inspecting soundlog-supported audio files. |
+| Crate | Description | Documentation |
+| --- | --- | --- |
+| `mmlx` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) |
+| `soundlog` | Builds and parses VGM data and supports sound-chip log processing. | [README](crates/soundlog/README.md) |
+| `soundlog-cli` | Command-line tools for working with soundlog-supported formats. | [README](crates/soundlog-cli/README.md) |
+| `soundlog-gui` | GUI for inspecting soundlog-supported audio files. | [README](crates/soundlog-gui/README.md) |
 
 ## Quick Start
 
@@ -52,8 +52,6 @@ Options:
 ```
 
 For detailed usage instructions, please refer to [crates/soundlog-cli](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-cli/README.md).
-
-The documentation for the `soundlog` crate library is available at [crates/soundlog](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog/README.md).
 
 ## License
 
