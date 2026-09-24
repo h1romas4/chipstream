@@ -31,8 +31,8 @@ pub fn run_gui(initial_bytes: Vec<u8>, initial_file_name: Option<String>) {
 
     // Launch native window, moving initial bytes into the closure.
     let window_title = initial_file_name.as_deref().map_or_else(
-        || "soundlog debuger".to_owned(),
-        |name| format!("soundlog debuger - {name}"),
+        || "soundlog-inspector".to_owned(),
+        |name| format!("soundlog-inspector - {name}"),
     );
     if let Err(err) = eframe::run_native(
         &window_title,

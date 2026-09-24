@@ -265,7 +265,7 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
         state.populate_from_bytes(&bytes);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "soundlog debuger - {file_name}"
+            "soundlog-inspector - {file_name}"
         )));
         ctx.request_repaint();
     }
