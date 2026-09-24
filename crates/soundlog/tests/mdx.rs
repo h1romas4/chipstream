@@ -1699,6 +1699,29 @@ fn mdx_converter_resolves_a_whole_song_backward_jump_to_a_native_vgm_loop_point(
 }
 
 #[test]
+fn mdx_converter_does_not_promote_a_track_end_loop_to_a_song_loop() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -3,
+            }),
+        )
+        .add_mdx_command(1, MdxRest { ticks: 3 });
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("a per-track F1 loop should not keep the whole VGM alive");
+    assert!(document.loop_command_index().is_none());
+}
+
+#[test]
 fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
     // Track 0 repeats a 1-tick rest 4 times; track 1 repeats a 2-tick rest 2
     // times. Both total 4 ticks, so with each block's own encoded count

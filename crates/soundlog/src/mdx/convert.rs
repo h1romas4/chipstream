@@ -167,9 +167,11 @@ pub struct MdxToVgmOptions {
     /// authored per track and overriding them independently across tracks
     /// would desynchronize them from each other.
     ///
-    /// `None` (the default) preserves the file's own "loop forever" intent
-    /// by encoding a native VGM loop point instead of repeating internally.
-    /// `Some(1)` plays the song once with no repeat.
+    /// `None` (the default) encodes whole-song repeats as a native VGM loop
+    /// point instead of repeating them internally. Per-track `F1` terminators
+    /// are emitted once in eager conversion because VGM has only one global
+    /// loop point and cannot represent independently phased track loops.
+    /// `Some(1)` plays the song once with no whole-song repeat.
     pub loop_count: Option<u32>,
 }
 
@@ -471,8 +473,10 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// used by all tracks in the reference implementation).
     lfo_rand_seed: u16,
     /// VGM command index recorded the first time an unconditional repeat
-    /// (infinite `LoopEnd`, or a backward whole-song `Jump`) reaches a given
-    /// `(track, target_command_index)`, keyed by that pair.
+    /// (an infinite `LoopEnd`, or a backward whole-song `Jump`) reaches a
+    /// given `(track, target_command_index)`, keyed by that pair. `F1`
+    /// track terminators are intentionally excluded from native-loop
+    /// detection because they may loop independently at different lengths.
     song_loop_starts: HashMap<(usize, usize), usize>,
     /// How many times a `Jump`-based repeat has been taken so far, keyed by
     /// the jump command's own `(track, command_index)`. Only used when
@@ -482,7 +486,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// unconditional repeat has been seen a second time.
     song_loop_index: Option<usize>,
     /// Set once a native loop point has been established; conversion stops
-    /// here instead of looping the repeat internally forever.
+    /// here instead of looping the repeat internally forever. This is used
+    /// for whole-song repeats, not independent `F1` track terminators.
     song_loop_complete: bool,
     /// Whether an unconditional ("loop forever") repeat should stop and
     /// record a fixed native VGM loop point (`true`, needed by
@@ -1151,7 +1156,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.take_repeating_jump(track, command.offset, builder)
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
-                    self.take_repeating_jump(track, command.offset, builder);
+                    if self.mark_native_loop && self.loop_count.is_none() {
+                        // F1 is a per-track terminator in MDX. A short PCM
+                        // track can loop long before the rest of the song, so
+                        // it must not become the global VGM loop point.
+                        self.tracks[track].active = false;
+                    } else {
+                        self.take_repeating_jump(track, command.offset, builder);
+                    }
                 }
                 MdxCommand::Raw(_) => {}
             }
