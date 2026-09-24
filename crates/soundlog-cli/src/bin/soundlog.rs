@@ -49,40 +49,40 @@ impl From<MmlOutputFormat> for soundlog_cli::cui::mml::OutputFormat {
 /// Command-line operations for inspecting and converting sound files.
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Test a VGM file with a parse/build round trip and display its header
+    /// Test a VGM or VGZ file with a parse/build round trip and display its header
     Test {
-        /// Path to binary file to test (use '-' for stdin)
-        #[arg(value_name = "FILE")]
+        /// VGM or VGZ input file path (use '-' for stdin)
+        #[arg(value_name = "VGM_FILE")]
         file: PathBuf,
 
         /// Dry-run: do not print standard one-line outputs; only emit errors/panics
         #[arg(long)]
         dry_run: bool,
     },
-    /// Re-dump a VGM file, expanding DAC streams to chip writes
+    /// Re-dump a VGM or VGZ file, expanding DAC streams to chip writes
     Redump {
-        /// Input VGM file path
-        #[arg(value_name = "INPUT")]
+        /// Input VGM or VGZ file path
+        #[arg(value_name = "INPUT_VGM")]
         input: PathBuf,
 
         /// Output VGM file path (use '-' for stdout)
-        #[arg(value_name = "OUTPUT")]
+        #[arg(value_name = "OUTPUT_VGM")]
         output: PathBuf,
 
         /// Print diagnostic output after redump (re-parse output and show diagnostics)
         #[arg(long)]
         diag: bool,
     },
-    /// Parse a VGM file and display its commands, offsets, and lengths
+    /// Parse a VGM or VGZ file and display its commands, offsets, and lengths
     Parse {
-        /// VGM file path to parse
-        #[arg(value_name = "FILE")]
+        /// VGM or VGZ file path to parse
+        #[arg(value_name = "VGM_FILE")]
         file: PathBuf,
     },
-    /// Stream a VGM file and display its register writes and detected events
+    /// Stream a VGM or VGZ file and display its register writes and detected events
     Stream {
-        /// VGM file path to stream
-        #[arg(value_name = "FILE")]
+        /// VGM or VGZ file path to stream
+        #[arg(value_name = "VGM_FILE")]
         file: PathBuf,
 
         /// Dry-run mode: process the file without printing output (only errors/panics)
@@ -119,6 +119,7 @@ enum MdxCommands {
     /// Parse and validate an MML source file
     Check {
         /// MML source file to parse
+        #[arg(value_name = "MML_FILE")]
         input: PathBuf,
 
         /// Print the parsed MML syntax tree
@@ -128,9 +129,11 @@ enum MdxCommands {
     /// Compile an MML source file into an MDX or VGM binary file
     Compile {
         /// MML source file to parse
+        #[arg(value_name = "MML_FILE")]
         input: PathBuf,
 
-        /// Output binary file
+        /// Output MDX or VGM file path
+        #[arg(value_name = "OUTPUT_FILE")]
         output: PathBuf,
 
         /// Output format
@@ -140,21 +143,21 @@ enum MdxCommands {
     /// Parse an MDX file and display its track commands
     Parse {
         /// MDX input file path
-        #[arg(value_name = "INPUT")]
+        #[arg(value_name = "MDX_FILE")]
         input: PathBuf,
 
         /// Optional PDX file to parse alongside the MDX file
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "PDX_FILE")]
         pdx: Option<PathBuf>,
     },
     /// Convert an MDX file and verify that the generated VGM parses
     Test {
         /// MDX input file path
-        #[arg(value_name = "INPUT")]
+        #[arg(value_name = "MDX_FILE")]
         input: PathBuf,
 
         /// Optional PDX file used for PCM references
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "PDX_FILE")]
         pdx: Option<PathBuf>,
 
         /// Dry-run mode: process the file without printing diagnostics
@@ -181,11 +184,11 @@ enum MdxCommands {
     /// and events in the same format as `soundlog stream`
     Stream {
         /// MDX input file path
-        #[arg(value_name = "INPUT")]
+        #[arg(value_name = "MDX_FILE")]
         input: PathBuf,
 
         /// Optional PDX file used for PCM references
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "PDX_FILE")]
         pdx: Option<PathBuf>,
 
         /// Dry-run mode: process the file without printing output (only errors/panics)
