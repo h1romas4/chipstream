@@ -74,9 +74,9 @@ pub(crate) fn parse_source(input: &Path, source: &str) -> anyhow::Result<mmlx::m
 
 fn syntax_error_location(message: &str) -> Option<(usize, usize)> {
     let coordinates = message.lines().next()?.split_once(" at line ")?.1;
-    let (line, column) = coordinates.split_once(", column ")?;
-    let column = column.split_once(':')?.0;
-    Some((line.parse().ok()?, column.parse().ok()?))
+    let (line, columns) = coordinates.split_once(", columns ")?;
+    let start = columns.split_once('-')?.0;
+    Some((line.parse().ok()?, start.parse().ok()?))
 }
 
 fn write_vgm(
@@ -288,17 +288,24 @@ mod tests {
 
         let syntax_error = parse_source(input, "A c4\nB ]").unwrap_err();
         assert!(
-            syntax_error
-                .to_string()
-                .starts_with("songs/broken.mml:2:3: error: MML syntax error at line 2, column 3")
+            syntax_error.to_string().starts_with(
+                "songs/broken.mml:2:3: error: MML syntax error at line 2, columns 3-4"
+            )
         );
         assert!(syntax_error.to_string().contains("  B ]\n    ^"));
+
+        let grammar_error = parse_source(input, "A z").unwrap_err();
+        assert!(
+            grammar_error.to_string().starts_with(
+                "songs/broken.mml:1:3: error: MML syntax error at line 1, columns 3-4"
+            )
+        );
 
         let value_error = parse_source(input, "A c4\nB t5000").unwrap_err();
         assert!(
             value_error
                 .to_string()
-                .starts_with("songs/broken.mml:2:4: error: MML value error at line 2, column 4")
+                .starts_with("songs/broken.mml:2:4: error: MML value error at line 2, columns 4-8")
         );
     }
 }

@@ -257,6 +257,8 @@ pub enum ParseError {
         line_number: usize,
         /// One-based source column containing the value.
         column: usize,
+        /// One-based exclusive end column of the value.
+        end_column: usize,
         /// Source line containing the value.
         line_text: String,
     },
@@ -279,11 +281,13 @@ impl fmt::Display for ParseError {
                 max,
                 line_number,
                 column,
+                end_column,
                 line_text,
             } => write!(
                 formatter,
-                "MML value error at line {line_number}, column {column}\n  {line_text}\n  {}^\n  reason: {command} value {value} is outside the range {min}..={max}",
+                "MML value error at line {line_number}, columns {column}-{end_column}\n  {line_text}\n  {}{}\n  reason: {command} value {value} is outside the range {min}..={max}",
                 " ".repeat(column.saturating_sub(1)),
+                "^".repeat(end_column.saturating_sub(*column).max(1)),
             ),
         }
     }
@@ -410,12 +414,13 @@ fn format_repeat_error(
     message: &str,
     expected: &str,
 ) -> String {
+    let end_column = position.column + 1;
     let line_text = source
         .lines()
         .nth(position.line_number.saturating_sub(1))
         .unwrap_or("");
     format!(
-        "MML syntax error at line {}, column {}: {message}\n  {line_text}\n  {}^\n  expected: {expected}",
+        "MML syntax error at line {}, columns {}-{end_column}: {message}\n  {line_text}\n  {}^\n  expected: {expected}",
         position.line_number,
         position.column,
         " ".repeat(position.column.saturating_sub(1)),
@@ -454,9 +459,15 @@ pub fn format_tree(document: &MmlDocument) -> String {
 
 /// Convert a PEST error into a compact, source-oriented diagnostic.
 fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String {
-    let (line_number, column) = match error.line_col {
-        LineColLocation::Pos((line, column)) | LineColLocation::Span((line, column), _) => {
-            (line, column)
+    let (line_number, column, end_column) = match error.line_col {
+        LineColLocation::Pos((line, column)) => (line, column, column + 1),
+        LineColLocation::Span((line, column), (end_line, end_column)) => {
+            let end_column = if line == end_line {
+                end_column.max(column + 1)
+            } else {
+                column + 1
+            };
+            (line, column, end_column)
         }
     };
     let line_text = source
@@ -486,8 +497,9 @@ fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String
     };
 
     format!(
-        "MML syntax error at line {line_number}, column {column}: unexpected {actual}\n  {line_text}\n  {}^\n  expected: {expected}",
+        "MML syntax error at line {line_number}, columns {column}-{end_column}: unexpected {actual}\n  {line_text}\n  {}{}\n  expected: {expected}",
         " ".repeat(column.saturating_sub(1)),
+        "^".repeat(end_column.saturating_sub(column).max(1)),
     )
 }
 
@@ -503,17 +515,23 @@ fn describe_rule(rule: &Rule) -> String {
 fn source_location(
     pair: &pest::iterators::Pair<'_, Rule>,
     character_offset: usize,
-) -> (usize, usize, String) {
+) -> (usize, usize, usize, String) {
     let span = pair.as_span();
     let (line_number, start_column) = span.start_pos().line_col();
     let column = start_column + pair.as_str().chars().take(character_offset).count();
+    let width = pair
+        .as_str()
+        .chars()
+        .skip(character_offset)
+        .take_while(char::is_ascii_digit)
+        .count();
     let line_text = span
         .get_input()
         .lines()
         .nth(line_number.saturating_sub(1))
         .unwrap_or("")
         .to_owned();
-    (line_number, column, line_text)
+    (line_number, column, column + width, line_text)
 }
 
 /// Format an integer overflow with the same source marker as a value error.
@@ -522,10 +540,11 @@ fn format_numeric_overflow(
     character_offset: usize,
     command: &str,
 ) -> String {
-    let (line_number, column, line_text) = source_location(pair, character_offset);
+    let (line_number, column, end_column, line_text) = source_location(pair, character_offset);
     format!(
-        "MML value error at line {line_number}, column {column}\n  {line_text}\n  {}^\n  reason: {command} integer is too large to represent",
+        "MML value error at line {line_number}, columns {column}-{end_column}\n  {line_text}\n  {}{}\n  reason: {command} integer is too large to represent",
         " ".repeat(column.saturating_sub(1)),
+        "^".repeat(end_column.saturating_sub(column).max(1)),
     )
 }
 
@@ -538,7 +557,7 @@ fn invalid_value_at(
     min: i32,
     max: i32,
 ) -> ParseError {
-    let (line_number, column, line_text) = source_location(pair, character_offset);
+    let (line_number, column, end_column, line_text) = source_location(pair, character_offset);
 
     ParseError::InvalidValue {
         command,
@@ -547,6 +566,7 @@ fn invalid_value_at(
         max,
         line_number,
         column,
+        end_column,
         line_text,
     }
 }
@@ -1265,11 +1285,11 @@ mod tests {
     fn reports_repeat_structure_errors_at_their_source_locations() {
         assert_eq!(
             parse("A c4\nB ]\n").unwrap_err().to_string(),
-            "MML syntax error at line 2, column 3: unexpected ']'\n  B ]\n    ^\n  expected: repeat start '['"
+            "MML syntax error at line 2, columns 3-4: unexpected ']'\n  B ]\n    ^\n  expected: repeat start '['"
         );
         assert_eq!(
             parse("A c4\nB [c4\n").unwrap_err().to_string(),
-            "MML syntax error at line 2, column 3: repeat is not terminated\n  B [c4\n    ^\n  expected: repeat end ']'"
+            "MML syntax error at line 2, columns 3-4: repeat is not terminated\n  B [c4\n    ^\n  expected: repeat end ']'"
         );
     }
 
@@ -1277,7 +1297,7 @@ mod tests {
     fn explains_numeric_syntax_errors() {
         let error = parse("A @t\n").unwrap_err().to_string();
 
-        assert!(error.contains("line 1, column"));
+        assert!(error.contains("line 1, columns"));
         assert!(error.contains("A @t"));
         assert!(error.contains("expected: unsigned integer"));
 
@@ -1306,18 +1326,18 @@ mod tests {
 
         assert_eq!(
             error,
-            "MML value error at line 1, column 4\n  A t5000\n     ^\n  reason: tempo value 5000 is outside the range 19..=4882"
+            "MML value error at line 1, columns 4-8\n  A t5000\n     ^^^^\n  reason: tempo value 5000 is outside the range 19..=4882"
         );
 
         let error = parse("A c4\nB t5000\n").unwrap_err().to_string();
 
-        assert!(error.contains("MML value error at line 2, column 4"));
-        assert!(error.contains("  B t5000\n     ^"));
+        assert!(error.contains("MML value error at line 2, columns 4-8"));
+        assert!(error.contains("  B t5000\n     ^^^^"));
 
         let error = parse("A c4^300\n").unwrap_err().to_string();
 
-        assert!(error.contains("MML value error at line 1, column 6"));
-        assert!(error.contains("  A c4^300\n       ^"));
+        assert!(error.contains("MML value error at line 1, columns 6-9"));
+        assert!(error.contains("  A c4^300\n       ^^^"));
     }
 
     #[test]
@@ -1361,7 +1381,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("MML value error at line 1, column 4"));
+        assert!(error.contains("MML value error at line 1, columns 4-"));
         assert!(
             error.contains(
                 "  A t999999999999999999999999999999999999999999999999999999999999\n     ^"
@@ -1372,7 +1392,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("MML value error at line 1, column 5"));
+        assert!(error.contains("MML value error at line 1, columns 5-"));
         assert!(error.contains(
             "  A c%999999999999999999999999999999999999999999999999999999999999\n      ^"
         ));
