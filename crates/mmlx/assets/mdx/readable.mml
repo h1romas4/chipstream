@@ -12,11 +12,11 @@
 }
 
 ; Basic timing, pitch, and articulation commands.
-A @t200 @1 t120 o4 l8 c+8 d-8 e4 r8 n12,16
+A W @t200 @1 t120 o4 l8 c+8 d-8 e4 r8 n12,16
 B < > q4 @q12 _ & v8 @v100 ( ) p3
 
 ; Looping, register access, synchronization, and noise.
-C L D-12 [ c4 / d4 ]2 y1,2 k3 w4 S0 W
+C L D-12 [ c4 / d4 ]2 y1,2 k3 w4 S0
 
 ; Pitch LFO and volume LFO.
 D MP0,4,5 MPON MPOF MA0,4,5 MAON MAOF MD3
