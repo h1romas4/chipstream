@@ -139,14 +139,15 @@ impl MdxPcmMode {
 /// before re-encoding. For legacy ADPCM, `Through` passes the encoded source
 /// bytes directly, while `Resample` and `Lpf` use the decoded mixer path.
 ///
-/// Embedded MDX fadeout attenuation is currently applied to FM output only;
-/// PCM output is not faded in any mode. In particular, the legacy ADPCM
-/// `Through` path cannot apply attenuation because it does not decode or mix
-/// the source samples.
+/// Embedded MDX fadeout attenuation is applied to FM output and to PCM
+/// channels that pass through the software mixer. Legacy ADPCM `Through`
+/// output is passed as encoded source bytes and is not attenuated; PCM8A
+/// `Through` still uses the mixer and is attenuated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdpcmMode {
     /// Pass legacy ADPCM source bytes through without decoding or mixing. This
-    /// is the default and does not apply embedded MDX fadeout to PCM output.
+    /// is the default and does not apply embedded MDX fadeout to legacy ADPCM
+    /// output. PCM8A `Through` output still passes through the mixer.
     #[default]
     Through,
     /// Resample the PCM channels without the output filter.
@@ -182,7 +183,8 @@ pub struct MdxToVgmOptions {
     /// loop point and cannot represent independently phased track loops. For
     /// files with an embedded fadeout, track loops continue internally from
     /// their first `F1` until fadeout ends, and FM carrier total-level writes
-    /// reflect the global attenuation.
+    /// reflect the global attenuation. PCM channels routed through the mixer
+    /// follow the same attenuation; legacy ADPCM `Through` bytes remain raw.
     /// `Some(1)` plays the song once with no whole-song repeat.
     pub loop_count: Option<u32>,
 }
@@ -817,7 +819,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         };
         let block_key = (bank, note_index, format_key);
         let rate_step = self.tracks[track].pcm_rate_step;
-        let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
+        let gain = self.pcm_channel_gain(track);
         let same_block = self.pcm_channels[channel].hold
             && self.pcm_channels[channel].block_key == Some(block_key);
         if same_block {
@@ -871,8 +873,26 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// updating a channel's gain immediately rather than only at the next
     /// key-on.
     fn apply_live_pcm_gain(&mut self, track: usize) {
-        let gain = pcm_mixer::pcm8_gain(self.tracks[track].volume);
+        let gain = self.pcm_channel_gain(track);
         self.pcm_channels[track - 8].gain = gain;
+    }
+
+    fn pcm_channel_gain(&self, track: usize) -> u8 {
+        let fadeout_level = if self.pcm_uses_mixer() {
+            self.fadeout_level
+        } else {
+            0
+        };
+        if fadeout_level == 0 {
+            pcm_mixer::pcm8_gain(self.tracks[track].volume)
+        } else {
+            pcm_mixer::pcm8_gain_with_fadeout(self.tracks[track].volume, fadeout_level)
+        }
+    }
+
+    fn pcm_uses_mixer(&self) -> bool {
+        !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+            && matches!(self.adpcm_mode, AdpcmMode::Through))
     }
 
     /// Decodes one PDX sample into the shared PCM arena and returns its range.
@@ -1971,8 +1991,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         256 * u32::from(256u16 - u16::from(self.tempo))
     }
 
-    /// Advances the global fadeout counter and reapplies carrier TL values when
-    /// the attenuation level changes.
+    /// Advances the global fadeout counter and reapplies FM and mixed PCM
+    /// attenuation when the level changes.
     fn advance_fadeout(&mut self, builder: &mut VgmBuilder) {
         if !self.fadeout_seen || self.fadeout_level >= FADEOUT_FINAL_LEVEL {
             return;
@@ -1987,6 +2007,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         for track in 0..8 {
             if self.tracks[track].voice_selected {
                 self.emit_volume(track, builder);
+            }
+        }
+        if self.pcm_uses_mixer() {
+            for track in 8..self.tracks.len().min(16) {
+                let gain = self.pcm_channel_gain(track);
+                self.pcm_channels[track - 8].gain = gain;
             }
         }
     }
@@ -2249,4 +2275,67 @@ fn emit_tone(builder: &mut VgmBuilder, channel: u8, tone: &MdxTone) {
 /// Writes a value to a YM2151 register via the VGM builder.
 fn write_ym2151(builder: &mut VgmBuilder, register: u8, value: u8) {
     builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mdx::command::MdxRest;
+    use crate::mdx::document::MdxBuilder;
+
+    fn playback_state(pcm_mode: MdxPcmMode, adpcm_mode: AdpcmMode) -> PlaybackState<MdxPackage> {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(8, MdxRest { ticks: 1 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        PlaybackState::new(package, pcm_mode, adpcm_mode, None, false)
+    }
+
+    #[test]
+    fn pcm_key_on_and_live_volume_follow_embedded_fadeout() {
+        let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Through);
+        playback.fadeout_level = 3;
+        playback.tracks[8].volume = 8;
+
+        playback.begin_pcm_key_on(8, 0x80);
+
+        assert_eq!(playback.pcm_channels[0].gain, 12);
+
+        playback.tracks[8].volume = 0x80;
+        playback.apply_live_pcm_gain(8);
+
+        assert_eq!(playback.pcm_channels[0].gain, 64);
+    }
+
+    #[test]
+    fn fadeout_level_change_reapplies_gain_to_mixed_pcm_channels() {
+        let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Resample);
+        playback.fadeout_seen = true;
+        playback.fadeout_level = 2;
+        playback.fadeout_counter = -1;
+        playback.tracks[8].volume = 8;
+        playback.pcm_channels[0].gain = 16;
+
+        playback.advance_fadeout(&mut VgmBuilder::new());
+
+        assert_eq!(playback.fadeout_level, 3);
+        assert_eq!(playback.pcm_channels[0].gain, 12);
+    }
+
+    #[test]
+    fn legacy_adpcm_through_does_not_apply_fadeout_to_pcm_gain() {
+        let mut playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+        playback.fadeout_seen = true;
+        playback.fadeout_level = 2;
+        playback.fadeout_counter = -1;
+        playback.tracks[8].volume = 8;
+
+        playback.begin_pcm_key_on(8, 0x80);
+        playback.advance_fadeout(&mut VgmBuilder::new());
+
+        assert_eq!(playback.fadeout_level, 3);
+        assert_eq!(playback.pcm_channels[0].gain, 16);
+    }
 }

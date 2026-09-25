@@ -102,19 +102,36 @@ impl PcmOutputFilter {
 /// `0x80..=0xFF` fine-grained form) into a PCM8 channel gain multiplier,
 /// mirroring `getPcm8Gain()`. A gain of 16 is unity.
 pub(crate) fn pcm8_gain(volume: u8) -> u8 {
-    const VOL_TABLE: [u8; 16] = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80];
-    const TL_TABLE: [u8; 43] = [
+    pcm8_gain_with_fadeout(volume, 0)
+}
+
+/// Converts an MDX PCM volume and global fadeout attenuation level into the
+/// PCM8 mixer gain, following MXDRV's volume, fade-offset, and `PCMVolume`
+/// lookup order. Attenuation values at or above `PCM8_VOLUME_BY_ATTENUATION`
+/// map to PCM8 volume index 0, whose mixer gain is the minimum value 2 rather
+/// than digital silence.
+pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
+    const VOLUME_TABLE: [u8; 16] = [
+        0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05,
+        0x02,
+    ];
+    const PCM8_VOLUME_TABLE: [u8; 16] = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80];
+    const PCM8_VOLUME_BY_ATTENUATION: [u8; 43] = [
         15, 15, 15, 14, 14, 14, 13, 13, 13, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7,
         6, 6, 5, 5, 5, 4, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0,
     ];
 
-    if volume & 0x80 != 0 {
-        let tl = usize::from(volume & 0x7f);
-        let level = TL_TABLE.get(tl).copied().unwrap_or(0);
-        VOL_TABLE[usize::from(level)]
+    let attenuation = if volume & 0x80 != 0 {
+        volume & 0x7f
     } else {
-        VOL_TABLE[usize::from(volume & 0x0f)]
-    }
+        VOLUME_TABLE[usize::from(volume & 0x0f)]
+    };
+    let attenuation = attenuation.saturating_add(fadeout_level);
+    let pcm8_volume = PCM8_VOLUME_BY_ATTENUATION
+        .get(usize::from(attenuation))
+        .copied()
+        .unwrap_or(0);
+    PCM8_VOLUME_TABLE[usize::from(pcm8_volume)]
 }
 
 /// One ADPCM channel's mixer state: a range in the shared decoded PCM arena
@@ -227,6 +244,20 @@ mod tests {
         assert_eq!(pcm8_gain(0x80), 80);
         // 0xff -> tl=0x7f, out of TL_TABLE range -> level 0 -> lowest gain.
         assert_eq!(pcm8_gain(0xff), 2);
+    }
+
+    #[test]
+    fn pcm8_fadeout_adds_to_attenuation_before_volume_lookup() {
+        assert_eq!(pcm8_gain_with_fadeout(8, 0), 16);
+        assert_eq!(pcm8_gain_with_fadeout(8, 3), 12);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 3), 64);
+    }
+
+    #[test]
+    fn pcm8_fadeout_clamps_to_minimum_volume_at_attenuation_limit() {
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 42), 2);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 43), 2);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 62), 2);
     }
 
     #[test]
