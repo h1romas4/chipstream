@@ -1722,6 +1722,60 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 }
 
 #[test]
+fn mdx_converter_ends_fadeout_tracks_instead_of_restarting_them() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            0,
+            MdxCommand::Extended(MdxExtendedCommand::Fadeout { value: 92 }),
+        )
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -7,
+            }),
+        )
+        .add_mdx_command(1, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            1,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -4,
+            }),
+        );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("a fadeout marker should make the default conversion finite");
+    assert!(document.loop_command_index().is_none());
+
+    let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
+        .expect("create fadeout stream generator");
+    let mut stream = VgmStream::from_generator(generator);
+    let mut ended = false;
+    for _ in 0..1024 {
+        match stream.next().expect("stream should produce an end marker") {
+            Ok(StreamResult::Command(_)) => {}
+            Ok(StreamResult::EndOfStream) => {
+                ended = true;
+                break;
+            }
+            Ok(StreamResult::NeedsMoreData) => panic!("generator-backed stream needs no data"),
+            Err(error) => panic!("unexpected stream error: {error}"),
+        }
+    }
+    assert!(
+        ended,
+        "fadeout stream should terminate instead of looping forever"
+    );
+}
+
+#[test]
 fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
     // Track 0 repeats a 1-tick rest 4 times; track 1 repeats a 2-tick rest 2
     // times. Both total 4 ticks, so with each block's own encoded count

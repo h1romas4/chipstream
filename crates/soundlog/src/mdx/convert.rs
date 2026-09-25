@@ -170,7 +170,10 @@ pub struct MdxToVgmOptions {
     /// `None` (the default) encodes whole-song repeats as a native VGM loop
     /// point instead of repeating them internally. Per-track `F1` terminators
     /// are emitted once in eager conversion because VGM has only one global
-    /// loop point and cannot represent independently phased track loops.
+    /// loop point and cannot represent independently phased track loops. If a
+    /// fadeout marker is reached, the following `F1` terminators end playback
+    /// instead of adding the automatic restart pass. Fadeout volume-register
+    /// writes are not emitted yet.
     /// `Some(1)` plays the song once with no whole-song repeat.
     pub loop_count: Option<u32>,
 }
@@ -290,6 +293,7 @@ pub fn to_vgm_document(
     if options.loop_count.is_none()
         && generator.playback.song_loop_index.is_none()
         && generator.playback.track_end_loop_seen
+        && !generator.playback.fadeout_seen
     {
         let loop_index = generator.builder.command_count();
         let repeat_options = MdxToVgmOptions {
@@ -513,6 +517,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     song_loop_complete: bool,
     /// Whether an `F1` per-track terminator was encountered during playback.
     track_end_loop_seen: bool,
+    /// Whether a fadeout marker has been reached during playback.
+    fadeout_seen: bool,
     /// Whether an unconditional ("loop forever") repeat should stop and
     /// record a fixed native VGM loop point (`true`, needed by
     /// [`to_vgm_document`] to produce a finite `VgmDocument` with a valid
@@ -618,6 +624,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             song_loop_index: None,
             song_loop_complete: false,
             track_end_loop_seen: false,
+            fadeout_seen: false,
             mark_native_loop,
         }
     }
@@ -1083,11 +1090,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::LfoDelay(command) => self.tracks[track].lfo_delay = command.value,
                 MdxCommand::PcmMode(_) => {}
                 MdxCommand::Extended(command) => match command {
-                    // None of the E7 sub-commands other than PCM8 direct
-                    // drive (deferred) perform any FM action in the
-                    // reference implementation; they only consume bytes.
-                    MdxExtendedCommand::Fadeout { .. }
-                    | MdxExtendedCommand::Pcm8DirectDrive { .. }
+                    MdxExtendedCommand::Fadeout { .. } => {
+                        // TODO: Emit YM2151 total-level updates for the fadeout.
+                        self.fadeout_seen = true;
+                    }
+                    // None of these E7 sub-commands perform an FM action here.
+                    MdxExtendedCommand::Pcm8DirectDrive { .. }
                     | MdxExtendedCommand::KeyOff { .. }
                     | MdxExtendedCommand::ChannelControl { .. }
                     | MdxExtendedCommand::AddNoteLength { .. }
@@ -1182,7 +1190,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
                     self.track_end_loop_seen = true;
-                    if self.mark_native_loop && self.loop_count.is_none() {
+                    if self.fadeout_seen && self.loop_count.is_none() {
+                        self.tracks[track].active = false;
+                    } else if self.mark_native_loop && self.loop_count.is_none() {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so
                         // it must not become the global VGM loop point.
