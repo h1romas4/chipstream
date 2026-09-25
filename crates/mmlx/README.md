@@ -26,7 +26,9 @@ mmlx = "0.1.0"
 ```rust
 let source = r#"
 #title "Example"
-A c4 d4 e4
+A [c8]4 [g8]4 [c8]8
+B c2 g2 c1
+C e2 b2 e1
 "#;
 
 let parsed = mmlx::mdx::parse(source).expect("valid MML source");
