@@ -273,7 +273,7 @@ impl fmt::Display for ParseError {
                 line_text,
             } => write!(
                 formatter,
-                "MML value error at line {line_number}, column {column}: {command} value {value} is outside the range {min}..={max}\n  {line_text}\n  {}^",
+                "MML value error at line {line_number}, column {column}\n  {line_text}\n  {}^\n  reason: {command} value {value} is outside the range {min}..={max}",
                 " ".repeat(column.saturating_sub(1)),
             ),
         }
@@ -487,7 +487,7 @@ fn format_numeric_overflow(
 ) -> String {
     let (line_number, column, line_text) = source_location(pair, character_offset);
     format!(
-        "MML value error at line {line_number}, column {column}: {command} integer is too large to represent\n  {line_text}\n  {}^",
+        "MML value error at line {line_number}, column {column}\n  {line_text}\n  {}^\n  reason: {command} integer is too large to represent",
         " ".repeat(column.saturating_sub(1)),
     )
 }
@@ -1246,8 +1246,10 @@ mod tests {
 
         let error = parse("A t5000\n").unwrap_err().to_string();
 
-        assert!(error.contains("MML value error at line 1, column 4"));
-        assert!(error.contains("  A t5000\n     ^"));
+        assert_eq!(
+            error,
+            "MML value error at line 1, column 4\n  A t5000\n     ^\n  reason: tempo value 5000 is outside the range 19..=4882"
+        );
 
         let error = parse("A c4\nB t5000\n").unwrap_err().to_string();
 
