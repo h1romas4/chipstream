@@ -10,8 +10,8 @@ or format the parsed document before generating MDX data.
 
 - Parse MML source, including title and PDX metadata, voice definitions, and
   per-channel command streams.
-- Inspect the typed syntax tree through `MmlDocument` and `MmlCommand`, or
-  render it with `format_tree`.
+- Inspect the typed syntax tree through [`MmlDocument`](mdx::MmlDocument) and
+  [`MmlCommand`](mdx::MmlCommand), or render it with [`format_tree`](mdx::format_tree).
 - Compile supported commands into [`MdxDocument`](soundlog::mdx::document::MdxDocument).
 
 ## Example
