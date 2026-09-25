@@ -14,14 +14,7 @@ or format the parsed document before generating MDX data.
   render it with `format_tree`.
 - Compile supported commands into `soundlog::mdx::document::MdxDocument`.
 
-## Installation
-
-```toml
-[dependencies]
-mmlx = "0.1.0"
-```
-
-## Usage
+## Example
 
 ```rust
 let source = r#"
