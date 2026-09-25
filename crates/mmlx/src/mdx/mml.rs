@@ -244,6 +244,12 @@ pub enum ParseError {
         min: i32,
         /// Inclusive upper bound.
         max: i32,
+        /// One-based source line containing the value.
+        line_number: usize,
+        /// One-based source column containing the value.
+        column: usize,
+        /// Source line containing the value.
+        line_text: String,
     },
 }
 
@@ -262,9 +268,13 @@ impl fmt::Display for ParseError {
                 value,
                 min,
                 max,
+                line_number,
+                column,
+                line_text,
             } => write!(
                 formatter,
-                "{command} value {value} is outside the range {min}..={max}"
+                "MML value error at line {line_number}, column {column}: {command} value {value} is outside the range {min}..={max}\n  {line_text}\n  {}^",
+                " ".repeat(column.saturating_sub(1)),
             ),
         }
     }
@@ -453,16 +463,77 @@ fn describe_rule(rule: &Rule) -> String {
 }
 
 /// Return a structured error when a value is outside an inclusive range.
-fn validate_range(command: &'static str, value: i32, min: i32, max: i32) -> Result<(), ParseError> {
+fn source_location(
+    pair: &pest::iterators::Pair<'_, Rule>,
+    character_offset: usize,
+) -> (usize, usize, String) {
+    let span = pair.as_span();
+    let (line_number, start_column) = span.start_pos().line_col();
+    let column = start_column + pair.as_str().chars().take(character_offset).count();
+    let line_text = span
+        .get_input()
+        .lines()
+        .nth(line_number.saturating_sub(1))
+        .unwrap_or("")
+        .to_owned();
+    (line_number, column, line_text)
+}
+
+/// Format an integer overflow with the same source marker as a value error.
+fn format_numeric_overflow(
+    pair: &pest::iterators::Pair<'_, Rule>,
+    character_offset: usize,
+    command: &str,
+) -> String {
+    let (line_number, column, line_text) = source_location(pair, character_offset);
+    format!(
+        "MML value error at line {line_number}, column {column}: {command} integer is too large to represent\n  {line_text}\n  {}^",
+        " ".repeat(column.saturating_sub(1)),
+    )
+}
+
+/// Return a structured error when a value is outside an inclusive range.
+fn invalid_value_at(
+    pair: &pest::iterators::Pair<'_, Rule>,
+    character_offset: usize,
+    command: &'static str,
+    value: i32,
+    min: i32,
+    max: i32,
+) -> ParseError {
+    let (line_number, column, line_text) = source_location(pair, character_offset);
+
+    ParseError::InvalidValue {
+        command,
+        value,
+        min,
+        max,
+        line_number,
+        column,
+        line_text,
+    }
+}
+
+/// Return an error when a source value is outside an inclusive range.
+fn validate_range(
+    pair: &pest::iterators::Pair<'_, Rule>,
+    character_offset: usize,
+    command: &'static str,
+    value: i32,
+    min: i32,
+    max: i32,
+) -> Result<(), ParseError> {
     if (min..=max).contains(&value) {
         Ok(())
     } else {
-        Err(ParseError::InvalidValue {
+        Err(invalid_value_at(
+            pair,
+            character_offset,
             command,
             value,
             min,
             max,
-        })
+        ))
     }
 }
 
@@ -476,8 +547,8 @@ fn validate_pair_range(
     let value = pair
         .as_str()
         .parse::<i32>()
-        .map_err(|_| ParseError::Syntax(format!("{command} integer is too large to represent")))?;
-    validate_range(command, value, min, max)?;
+        .map_err(|_| ParseError::Syntax(format_numeric_overflow(pair, 0, command)))?;
+    validate_range(pair, 0, command, value, min, max)?;
     Ok(value)
 }
 
@@ -622,8 +693,11 @@ fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), P
 fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
     let source = pair.as_str();
     let mut total = 0_i32;
+    let mut source_offset = 0;
+    let mut last_value_offset = 0;
 
     for term in source.split(['^', '~']) {
+        let leading_whitespace = term.len() - term.trim_start().len();
         let term = term.trim();
         let number = term.trim_end_matches('.');
         let dots = term.len() - number.len();
@@ -631,6 +705,8 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
             Some(digits) => (true, digits),
             None => (false, number),
         };
+        let value_offset = source_offset + leading_whitespace + usize::from(ticks);
+        last_value_offset = value_offset;
         let command = if ticks {
             "note tick length"
         } else {
@@ -638,45 +714,52 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
         };
         let max = if ticks { i32::from(u16::MAX) } else { 256 };
         let mut value = digits.parse::<i32>().map_err(|_| {
-            ParseError::Syntax(format!("{command} integer is too large to represent"))
+            ParseError::Syntax(format_numeric_overflow(pair, value_offset, command))
         })?;
-        validate_range(command, value, 1, max)?;
+        validate_range(pair, value_offset, command, value, 1, max)?;
         let mut term_total = value;
         for _ in 0..dots {
             value = if ticks {
                 value / 2
             } else {
-                value
-                    .checked_mul(2)
-                    .ok_or_else(|| ParseError::InvalidValue {
-                        command,
-                        value: i32::MAX,
-                        min: 1,
-                        max,
-                    })?
+                value.checked_mul(2).ok_or_else(|| {
+                    invalid_value_at(pair, value_offset, command, i32::MAX, 1, max)
+                })?
             };
-            validate_range(command, value, 1, max)?;
-            term_total = term_total
-                .checked_add(value)
-                .ok_or_else(|| ParseError::InvalidValue {
-                    command: "note length",
-                    value: i32::MAX,
-                    min: 1,
-                    max: i32::from(u16::MAX),
-                })?;
-        }
-        total = total
-            .checked_add(term_total)
-            .ok_or_else(|| ParseError::InvalidValue {
-                command: "note length",
-                value: i32::MAX,
-                min: 1,
-                max: i32::from(u16::MAX),
+            validate_range(pair, value_offset, command, value, 1, max)?;
+            term_total = term_total.checked_add(value).ok_or_else(|| {
+                invalid_value_at(
+                    pair,
+                    value_offset,
+                    "note length",
+                    i32::MAX,
+                    1,
+                    i32::from(u16::MAX),
+                )
             })?;
+        }
+        total = total.checked_add(term_total).ok_or_else(|| {
+            invalid_value_at(
+                pair,
+                value_offset,
+                "note length",
+                i32::MAX,
+                1,
+                i32::from(u16::MAX),
+            )
+        })?;
+        source_offset += term.len() + leading_whitespace + 1;
     }
 
     if !source.contains('~') {
-        validate_range("note length", total, 1, i32::from(u16::MAX))?;
+        validate_range(
+            pair,
+            last_value_offset,
+            "note length",
+            total,
+            1,
+            i32::from(u16::MAX),
+        )?;
     }
     Ok(())
 }
@@ -1111,6 +1194,7 @@ mod tests {
                 value: 18,
                 min: 19,
                 max: 4882,
+                ..
             })
         ));
         assert!(matches!(
@@ -1120,6 +1204,7 @@ mod tests {
                 value: 4883,
                 min: 19,
                 max: 4882,
+                ..
             })
         ));
         assert!(parse("A t19 t4882\n").is_ok());
@@ -1145,6 +1230,7 @@ mod tests {
                 value: 256,
                 min: 0,
                 max: 255,
+                ..
             })
         ));
         assert!(matches!(
@@ -1154,8 +1240,24 @@ mod tests {
                 value: 32,
                 min: 0,
                 max: 31,
+                ..
             })
         ));
+
+        let error = parse("A t5000\n").unwrap_err().to_string();
+
+        assert!(error.contains("MML value error at line 1, column 4"));
+        assert!(error.contains("  A t5000\n     ^"));
+
+        let error = parse("A c4\nB t5000\n").unwrap_err().to_string();
+
+        assert!(error.contains("MML value error at line 2, column 4"));
+        assert!(error.contains("  B t5000\n     ^"));
+
+        let error = parse("A c4^300\n").unwrap_err().to_string();
+
+        assert!(error.contains("MML value error at line 1, column 6"));
+        assert!(error.contains("  A c4^300\n       ^"));
     }
 
     #[test]
@@ -1182,6 +1284,7 @@ mod tests {
                         value: actual_value,
                         min: actual_min,
                         max: actual_max,
+                        ..
                     }) if actual_command == command
                         && actual_value == value
                         && actual_min == min
@@ -1191,13 +1294,21 @@ mod tests {
             );
         }
 
-        assert!(matches!(
-            parse("A t999999999999999999999999999999999999999999999999999999999999\n"),
-            Err(ParseError::Syntax(_))
-        ));
-        assert!(matches!(
-            parse("A c%999999999999999999999999999999999999999999999999999999999999\n"),
-            Err(ParseError::Syntax(_))
+        let error = parse("A t999999999999999999999999999999999999999999999999999999999999\n")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("MML value error at line 1, column 4"));
+        assert!(error
+            .contains("  A t999999999999999999999999999999999999999999999999999999999999\n     ^"));
+
+        let error = parse("A c%999999999999999999999999999999999999999999999999999999999999\n")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("MML value error at line 1, column 5"));
+        assert!(error.contains(
+            "  A c%999999999999999999999999999999999999999999999999999999999999\n      ^"
         ));
     }
 
