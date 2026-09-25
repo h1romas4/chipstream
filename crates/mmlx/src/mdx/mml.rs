@@ -495,7 +495,6 @@ fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String
 fn describe_rule(rule: &Rule) -> String {
     match rule {
         Rule::number => "unsigned integer".to_owned(),
-        Rule::note_length_number => "note length (up to 3 digits)".to_owned(),
         other => format!("{other:?}"),
     }
 }
@@ -845,9 +844,7 @@ fn parse_command(pair: pest::iterators::Pair<'_, Rule>) -> MmlCommand {
                             _ => unreachable!(),
                         })
                     }
-                    Rule::note_length_number => {
-                        length = Some(child.as_str().parse().expect("number is valid"))
-                    }
+                    Rule::number => length = Some(child.as_str().parse().expect("number is valid")),
                     Rule::length_expression => match parse_length(child) {
                         MmlLength::Denominator(value) => length = Some(value),
                         length => {
@@ -1323,7 +1320,10 @@ mod tests {
 
     #[test]
     fn validates_numeric_ranges_after_parsing() {
+        assert!(parse("A c0004\n").is_ok());
+
         let cases = [
+            ("A c1000\n", "note length", 1000, 1, 256),
             ("A @256\n", "voice", 256, 0, 255),
             ("A n96\n", "note number", 96, 0, 95),
             ("A o9\n", "octave", 9, 0, 8),
