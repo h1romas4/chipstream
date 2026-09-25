@@ -21,6 +21,18 @@ use soundlog::mdx::parser::parse_mdx_command;
 ///
 /// This is deliberately a narrow normalization step; it does not attempt to
 /// emulate MXDRV16y playback or reinterpret arbitrary MDX commands.
+///
+/// # Examples
+///
+/// ```
+/// let parsed = mmlx::mdx::parse("A c4 d4").expect("valid MML source");
+/// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
+/// let standard_mdx_bytes = document.to_bytes();
+/// let normalized =
+///     mmlx::mdx::compat::normalize_mxdrv16y_tracks(&standard_mdx_bytes).expect("valid MDX");
+///
+/// assert_eq!(normalized.as_ref(), standard_mdx_bytes.as_slice());
+/// ```
 pub fn normalize_mxdrv16y_tracks(bytes: &[u8]) -> Result<Cow<'_, [u8]>, String> {
     let (header, _) = MdxHeader::parse(bytes).map_err(|error| error.to_string())?;
     let mut targets = Vec::with_capacity(header.track_count());

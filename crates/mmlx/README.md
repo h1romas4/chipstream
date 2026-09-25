@@ -24,20 +24,17 @@ mmlx = "0.1.0"
 ## Usage
 
 ```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = r#"
+let source = r#"
 #title "Example"
 A c4 d4 e4
 "#;
 
-    let parsed = mmlx::mdx::parse(source)?;
-    println!("{}", mmlx::mdx::format_tree(&parsed));
+let parsed = mmlx::mdx::parse(source).expect("valid MML source");
+println!("{}", mmlx::mdx::format_tree(&parsed));
 
-    let document = mmlx::mdx::compile(&parsed)?;
-    let mdx_bytes = document.to_bytes();
-    println!("Generated {} MDX bytes", mdx_bytes.len());
-    Ok(())
-}
+let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
+let mdx_bytes = document.to_bytes();
+println!("Generated {} MDX bytes", mdx_bytes.len());
 ```
 
 `parse` returns a syntax tree and reports malformed syntax or values outside the

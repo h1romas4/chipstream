@@ -282,6 +282,16 @@ impl std::error::Error for ParseError {}
 ///
 /// Returns [`ParseError::Syntax`] when the source does not match the grammar or
 /// [`ParseError::InvalidValue`] when a parsed value violates a command range.
+///
+/// # Examples
+///
+/// ```
+/// let source = "#title \"Example\"\nA c4 d4 e4";
+/// let document = mmlx::mdx::parse(source).expect("valid MML source");
+///
+/// assert_eq!(document.title.as_deref(), Some("Example"));
+/// assert_eq!(document.tracks[0].channel, 'A');
+/// ```
 pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
     let mut document = MmlDocument {
         title: None,
@@ -382,6 +392,15 @@ fn append_assembled_command(
 /// This uses the typed AST produced by [`parse`]. The original Pest pairs and
 /// source trivia are not retained after parsing, so whitespace and comments
 /// are not included in the formatted tree.
+///
+/// # Examples
+///
+/// ```
+/// let document = mmlx::mdx::parse("A c4 d4").expect("valid MML source");
+/// let tree = mmlx::mdx::format_tree(&document);
+///
+/// assert!(tree.contains("MmlDocument"));
+/// ```
 pub fn format_tree(document: &MmlDocument) -> String {
     format!("{document:#?}")
 }

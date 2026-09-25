@@ -74,6 +74,17 @@ impl std::error::Error for CompileError {}
 ///
 /// Returns [`CompileError`] when a channel, voice, value, or command cannot be
 /// represented by soundlog's MDX model.
+///
+/// # Examples
+///
+/// ```
+/// let parsed = mmlx::mdx::parse("#title \"Example\"\nA c4 d4 e4")
+///     .expect("valid MML source");
+/// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
+/// let mdx_bytes = document.to_bytes();
+///
+/// assert!(!mdx_bytes.is_empty());
+/// ```
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
     let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
