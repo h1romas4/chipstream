@@ -107,9 +107,9 @@ pub(crate) fn pcm8_gain(volume: u8) -> u8 {
 
 /// Converts an MDX PCM volume and global fadeout attenuation level into the
 /// PCM8 mixer gain, following MXDRV's volume, fade-offset, and `PCMVolume`
-/// lookup order. Attenuation values at or above `PCM8_VOLUME_BY_ATTENUATION`
-/// map to PCM8 volume index 0, whose mixer gain is the minimum value 2 rather
-/// than digital silence.
+/// lookup order. During an active fadeout, the table's zero-volume entries map
+/// to digital silence so the mixer does not leave a quiet residual signal.
+/// With no fadeout, PCM8 volume index 0 retains its normal minimum gain of 2.
 pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
     const VOLUME_TABLE: [u8; 16] = [
         0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05,
@@ -131,7 +131,11 @@ pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
         .get(usize::from(attenuation))
         .copied()
         .unwrap_or(0);
-    PCM8_VOLUME_TABLE[usize::from(pcm8_volume)]
+    if fadeout_level != 0 && pcm8_volume == 0 {
+        0
+    } else {
+        PCM8_VOLUME_TABLE[usize::from(pcm8_volume)]
+    }
 }
 
 /// One ADPCM channel's mixer state: a range in the shared decoded PCM arena
@@ -254,10 +258,18 @@ mod tests {
     }
 
     #[test]
-    fn pcm8_fadeout_clamps_to_minimum_volume_at_attenuation_limit() {
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 42), 2);
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 43), 2);
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 62), 2);
+    fn pcm8_fadeout_reaches_silence_at_zero_volume_table_entries() {
+        assert_eq!(pcm8_gain_with_fadeout(8, 19), 3);
+        assert_eq!(pcm8_gain_with_fadeout(8, 20), 0);
+        assert_eq!(pcm8_gain_with_fadeout(8, 21), 0);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 42), 0);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 62), 0);
+    }
+
+    #[test]
+    fn pcm8_without_fadeout_keeps_hardware_minimum_gain() {
+        assert_eq!(pcm8_gain(0), 2);
+        assert_eq!(pcm8_gain_with_fadeout(0, 0), 2);
     }
 
     #[test]
