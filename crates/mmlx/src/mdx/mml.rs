@@ -481,7 +481,7 @@ fn describe_numeric_context(line: &str, column: usize) -> Option<&'static str> {
     } else if prefix.ends_with('p') {
         Some("pan: 0..=3, 1 digit")
     } else if prefix.ends_with('w') {
-        Some("noise frequency: 0..=311, up to 3 digits")
+        Some("noise frequency: 0..=31, up to 2 digits")
     } else if prefix.ends_with('o') {
         Some("octave: 0..=8, 1 digit")
     } else {
@@ -1128,6 +1128,10 @@ mod tests {
         assert!(error.contains("line 1, column"));
         assert!(error.contains("A @t999"));
         assert!(error.contains("expected: OPM tempo: 0..=255, up to 3 digits"));
+
+        let error = parse("A w32\n").unwrap_err().to_string();
+
+        assert!(error.contains("expected: noise frequency: 0..=31, up to 2 digits"));
     }
 
     #[test]
