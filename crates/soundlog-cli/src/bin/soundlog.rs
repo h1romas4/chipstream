@@ -118,9 +118,13 @@ enum Commands {
 enum MdxCommands {
     /// Parse and validate an MML source file
     Check {
-        /// MML source file to parse
+        /// MML source file to parse, or '-' to read from stdin
         #[arg(value_name = "MML_FILE")]
         input: PathBuf,
+
+        /// Read source from stdin while using MML_FILE for diagnostic locations
+        #[arg(long)]
+        stdin: bool,
 
         /// Print the parsed MML syntax tree
         #[arg(short, long)]
@@ -304,7 +308,11 @@ fn main() {
     // Handle subcommands
     match args.command {
         Commands::Mdx { command } => match command {
-            MdxCommands::Check { input, verbose } => match cui::mml::check(&input, verbose) {
+            MdxCommands::Check {
+                input,
+                stdin,
+                verbose,
+            } => match cui::mml::check_with_stdin(&input, verbose, stdin) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
                     soundlog_cli::log_error!(&*logger, "{error:#}");

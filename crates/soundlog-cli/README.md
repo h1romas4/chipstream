@@ -230,11 +230,16 @@ Options:
 
 #### `mdx check`
 
-Parse and validate an MML source file. Add `--verbose` to print its typed
-syntax tree.
+Parse and validate an MML source file. Pass `-` as the file to read from stdin;
+use `--stdin` to read stdin while keeping the supplied filename in diagnostics
+(useful for editor integrations). Add `--verbose` to print the typed syntax
+tree.
 
 ```bash
-soundlog mdx check <MML_FILE> [--verbose]
+soundlog mdx check <MML_FILE|-> [--stdin] [--verbose]
+cat song.mml | soundlog mdx check -
+# For efm-langserver and similar LSP lint integrations:
+cat unsaved.mml | soundlog mdx check songs/song.mml --stdin
 ```
 
 To run the check on the active MML file from VS Code and report diagnostics in

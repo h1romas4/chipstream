@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
@@ -17,7 +17,16 @@ pub enum OutputFormat {
 
 /// Parse an MML file and optionally print its typed syntax tree.
 pub fn check(input: &Path, verbose: bool) -> anyhow::Result<()> {
-    let document = parse_input(input)?;
+    check_with_stdin(input, verbose, false)
+}
+
+/// Parse an MML file or stdin and optionally print its typed syntax tree.
+pub fn check_with_stdin(input: &Path, verbose: bool, stdin: bool) -> anyhow::Result<()> {
+    let document = if stdin || input == Path::new("-") {
+        parse_reader(input, io::stdin().lock())?
+    } else {
+        parse_input(input)?
+    };
     if verbose {
         let tree = mmlx::mdx::format_tree(&document);
         let mut stdout = io::BufWriter::new(io::stdout().lock());
@@ -49,6 +58,17 @@ pub fn compile(input: &Path, output: &Path, output_format: OutputFormat) -> anyh
 fn parse_input(input: &Path) -> anyhow::Result<mmlx::mdx::MmlDocument> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read MML input: {}", input.display()))?;
+    parse_source(input, &source)
+}
+
+fn parse_reader<R: Read>(input: &Path, mut reader: R) -> anyhow::Result<mmlx::mdx::MmlDocument> {
+    let mut source = String::new();
+    reader.read_to_string(&mut source).with_context(|| {
+        format!(
+            "failed to read MML input from stdin for {}",
+            input.display()
+        )
+    })?;
     parse_source(input, &source)
 }
 
@@ -307,5 +327,19 @@ mod tests {
                 .to_string()
                 .starts_with("songs/broken.mml:2:4: error: MML value error at line 2, columns 4-8")
         );
+    }
+
+    #[test]
+    fn parses_stdin_and_keeps_the_input_path_in_diagnostics() {
+        let input = Path::new("songs/unsaved.mml");
+
+        assert!(
+            parse_reader(input, io::Cursor::new("A c4\nB t5000")).is_err_and(|error| {
+                error
+                    .to_string()
+                    .starts_with("songs/unsaved.mml:2:4: error: MML value error")
+            })
+        );
+        assert!(parse_reader(input, io::Cursor::new("A c4")).is_ok());
     }
 }
