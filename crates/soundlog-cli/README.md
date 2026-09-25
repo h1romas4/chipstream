@@ -218,10 +218,10 @@ Usage: soundlog mdx <COMMAND>
 Commands:
   check    Parse and validate an MML source file
   compile  Compile MML source to MDX or VGM
-  parse    Parse an MDX file and display its track commands
+  parse    Parse an MDX or MML file and display its track commands
   test     Convert an MDX file and verify that the generated VGM parses
   convert  Convert an MDX file to a VGM file
-  stream   Convert an MDX file lazily and print the same register write/event log format as `soundlog stream`
+  stream   Convert an MDX or MML file lazily and print the same register write/event log format as `soundlog stream`
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -251,8 +251,8 @@ is searched for relative to the input MML file.
 
 #### `mdx convert`
 
-Convert an existing MDX file to a VGM file. This is the MDX-to-VGM operation;
-use `mdx compile --output-format vgm` for MML input instead.
+Convert an MDX file to a VGM file. Use `mdx compile --output-format vgm` for
+MML input.
 
 ```bash
 soundlog mdx convert <MDX_FILE> <VGM_FILE> [OPTIONS]
@@ -307,12 +307,12 @@ soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 
 #### `mdx stream`
 
-Convert an MDX file lazily and print the same register-write and event log
-format as `soundlog stream`. The complete VGM command list is not built up
-front.
+Convert an MDX or MML file lazily and print the same register-write and event
+log format as `soundlog stream`. MML input is compiled to MDX first; the
+complete VGM command list is not built up front.
 
 ```bash
-soundlog mdx stream <MDX_FILE> [OPTIONS]
+soundlog mdx stream <MDX_OR_MML_FILE> [OPTIONS]
 ```
 
 The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
@@ -325,6 +325,7 @@ Examples:
 ```bash
 soundlog mdx stream samples/example.mdx
 soundlog mdx stream samples/example.mdx --pdx samples/example.pdx --dry-run
+soundlog mdx stream samples/example.mml
 ```
 
 ## PDX

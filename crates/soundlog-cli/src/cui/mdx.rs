@@ -26,17 +26,49 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
     let mdx = MdxDocument::parse(mdx_bytes.as_ref())
         .map_err(|error| anyhow!("failed to parse MDX input: {error}"))?;
 
-    let pdx_path = resolve_pdx_path(input, pdx, mdx.header.pdx_name.as_deref());
-    let pdx_bytes = pdx_path
+    let pdx_bytes = read_pdx_bytes(input, pdx, mdx.header.pdx_name.as_deref())?;
+    MdxPackage::parse(mdx_bytes.as_ref(), pdx_bytes.as_deref())
+        .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
+}
+
+fn read_mml_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
+    let source = fs::read_to_string(input)
+        .with_context(|| format!("failed to read MML input: {}", input.display()))?;
+    let parsed =
+        mmlx::mdx::parse(&source).map_err(|error| anyhow!("failed to parse MML input: {error}"))?;
+    let mdx = mmlx::mdx::compile(&parsed)
+        .map_err(|error| anyhow!("failed to compile MML input: {error}"))?;
+    let mdx_bytes = mdx.to_bytes();
+    let pdx_bytes = read_pdx_bytes(input, pdx, mdx.header.pdx_name.as_deref())?;
+    MdxPackage::parse(&mdx_bytes, pdx_bytes.as_deref())
+        .map_err(|error| anyhow!("failed to parse compiled MML package: {error}"))
+}
+
+fn read_mdx_or_mml_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
+    if input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mml"))
+    {
+        read_mml_package(input, pdx)
+    } else {
+        read_mdx_package(input, pdx)
+    }
+}
+
+fn read_pdx_bytes(
+    input: &Path,
+    pdx: Option<&Path>,
+    pdx_name: Option<&str>,
+) -> Result<Option<Vec<u8>>> {
+    let pdx_path = resolve_pdx_path(input, pdx, pdx_name);
+    pdx_path
         .as_deref()
         .filter(|path| path.is_file())
         .map(|path| {
             fs::read(path).with_context(|| format!("failed to read PDX input: {}", path.display()))
         })
-        .transpose()?;
-
-    MdxPackage::parse(mdx_bytes.as_ref(), pdx_bytes.as_deref())
-        .map_err(|error| anyhow!("failed to parse MDX package: {error}"))
+        .transpose()
 }
 
 fn resolve_pdx_path(input: &Path, pdx: Option<&Path>, pdx_name: Option<&str>) -> Option<PathBuf> {
@@ -85,23 +117,8 @@ fn find_case_insensitive_file(directory: &Path, candidates: &[PathBuf]) -> Optio
 
 /// Parse an MDX or MML file and print its track commands with source offsets.
 pub fn parse_mdx(input: &Path, pdx: Option<&Path>, logger: Arc<Logger>) -> Result<()> {
-    let mdx = if input
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mml"))
-    {
-        if pdx.is_some() {
-            return Err(anyhow!("--pdx can only be used with MDX input"));
-        }
-        let source = fs::read_to_string(input)
-            .with_context(|| format!("failed to read MML input: {}", input.display()))?;
-        let parsed = mmlx::mdx::parse(&source)
-            .map_err(|error| anyhow!("failed to parse MML input: {error}"))?;
-        mmlx::mdx::compile(&parsed)
-            .map_err(|error| anyhow!("failed to compile MML input: {error}"))?
-    } else {
-        read_mdx_package(input, pdx)?.mdx
-    };
+    let package = read_mdx_or_mml_package(input, pdx)?;
+    let mdx = &package.mdx;
     let _ = logger.info(format_args!(
         "{:<8} {:<8} {:<8} {:<8} {}",
         "Track", "Index", "Offset", "Length", "Command"
@@ -217,7 +234,7 @@ pub fn convert_mdx(
     Ok(())
 }
 
-/// Convert an MDX file (lazily, via `VgmStream`/`VgmCallbackStream`) and
+/// Convert an MDX or MML file (lazily, via `VgmStream`/`VgmCallbackStream`) and
 /// stream it with the same register-write/event log format as
 /// `soundlog stream`. Exercises the lazy `VgmCommandGenerator` path end to end
 /// without building a full `VgmDocument` up front.
@@ -227,7 +244,7 @@ pub fn stream_mdx(
     logger: Arc<Logger>,
     options: &MdxToVgmOptions,
 ) -> Result<()> {
-    let package = read_mdx_package(input, pdx)?;
+    let package = read_mdx_or_mml_package(input, pdx)?;
     let has_pcm = package.drives_okim6258();
 
     let generator = to_vgm_stream_generator(package, *options)
@@ -250,4 +267,20 @@ pub fn stream_mdx(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_mdx_or_mml_package;
+
+    #[test]
+    fn reads_mml_as_an_mdx_package() {
+        let input =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mmlx/assets/mdx/compact.mml");
+
+        let package = read_mdx_or_mml_package(&input, None).expect("parse MML package");
+
+        assert_eq!(package.mdx.header.title, "Compact MXDRV parser fixture");
+        assert_eq!(package.mdx.tracks.len(), 16);
+    }
 }

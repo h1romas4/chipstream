@@ -210,11 +210,11 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
     },
-    /// Convert an MDX file lazily to a command stream and print register writes
+    /// Convert an MDX or MML file lazily to a command stream and print register writes
     /// and events in the same format as `soundlog stream`
     Stream {
-        /// MDX input file path
-        #[arg(value_name = "MDX_FILE")]
+        /// MDX or MML input file path
+        #[arg(value_name = "MDX_OR_MML_FILE")]
         input: PathBuf,
 
         /// Optional PDX file used for PCM references
