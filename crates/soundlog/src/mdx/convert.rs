@@ -133,13 +133,20 @@ impl MdxPcmMode {
 
 /// ADPCM processing mode for MDX PCM output.
 ///
-/// MDX PCM8/PCM8A is always mixed and re-encoded into the single OKIM6258
-/// stream required by the VGM output. `Through` and `Resample` therefore
-/// share the unfiltered path here; `Lpf` additionally applies the
-/// NanoDriveX-style output filter before re-encoding.
+/// PCM8A playback is mixed and re-encoded into the single OKIM6258 stream
+/// required by VGM. `Through` and `Resample` share the unfiltered path for
+/// PCM8A; `Lpf` additionally applies the NanoDriveX-style output filter
+/// before re-encoding. For legacy ADPCM, `Through` passes the encoded source
+/// bytes directly, while `Resample` and `Lpf` use the decoded mixer path.
+///
+/// Embedded MDX fadeout attenuation is currently applied to FM output only;
+/// PCM output is not faded in any mode. In particular, the legacy ADPCM
+/// `Through` path cannot apply attenuation because it does not decode or mix
+/// the source samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdpcmMode {
-    /// No output filter. This is the default.
+    /// Pass legacy ADPCM source bytes through without decoding or mixing. This
+    /// is the default and does not apply embedded MDX fadeout to PCM output.
     #[default]
     Through,
     /// Resample the PCM channels without the output filter.
