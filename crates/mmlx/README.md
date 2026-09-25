@@ -1,7 +1,7 @@
 # mmlx
 
 `mmlx` parses MML source and compiles it into typed documents supported by
-[`soundlog`]. It currently supports MXDRV MML input and MDX output.
+[`soundlog`](https://crates.io/crates/soundlog). It currently supports MXDRV MML input and MDX output.
 
 The crate keeps parsing and compilation separate, so applications can inspect
 or format the parsed document before generating MDX data.
@@ -53,5 +53,5 @@ command can be compiled to MDX.
 
 ## See also
 
-[`soundlog`] can convert an `MdxDocument` (with optional PDX data) into a
+[`soundlog`](https://crates.io/crates/soundlog) can convert an `MdxDocument` (with optional PDX data) into a
 `VgmDocument` or a streaming `VgmStream`.
