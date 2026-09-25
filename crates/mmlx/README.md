@@ -26,9 +26,18 @@ mmlx = "0.1.0"
 ```rust
 let source = r#"
 #title "Example"
-A [c8]4 [g8]4 [c8]8
-B c2 g2 c1
-C e2 b2 e1
+@1 = {
+  /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
+     28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
+     22, 9,  1,  2, 1,  47, 2, 12, 0,  0,  0,
+     29, 4,  3,  6, 1,  37, 1, 3,  3,  0,  0,
+     15, 7,  0,  5, 10,  0, 2, 1,  0,  0,  1,
+  /* CON FL OP */
+     2,  7, 15
+}
+A @1 [c8]4 [g8]4 [c8]8
+B @1 c2 g2 c1
+C @1 e2 b2 e1
 "#;
 
 let parsed = mmlx::mdx::parse(source).expect("valid MML source");
