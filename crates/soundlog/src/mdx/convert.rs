@@ -172,10 +172,10 @@ pub struct MdxToVgmOptions {
     /// `None` (the default) encodes whole-song repeats as a native VGM loop
     /// point instead of repeating them internally. Per-track `F1` terminators
     /// are emitted once in eager conversion because VGM has only one global
-    /// loop point and cannot represent independently phased track loops. If a
-    /// fadeout marker is reached, the following `F1` terminators end playback
-    /// instead of adding the automatic restart pass. Fadeout volume-register
-    /// writes are not emitted yet.
+    /// loop point and cannot represent independently phased track loops. For
+    /// files with an embedded fadeout, track loops continue internally from
+    /// their first `F1` until fadeout ends, and FM carrier total-level writes
+    /// reflect the global attenuation.
     /// `Some(1)` plays the song once with no whole-song repeat.
     pub loop_count: Option<u32>,
 }
@@ -466,6 +466,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     adpcm_mode: AdpcmMode,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
+    /// Whether any track contains an embedded fadeout command.
+    has_fadeout_command: bool,
     /// True for files with PCM8/PCM8A tracks (>= 9 MDX tracks); gates all
     /// PCM8 mixer/VGM-stream output.
     has_pcm: bool,
@@ -524,7 +526,7 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Fadeout counter reload value supplied by the MDX command.
     fadeout_speed: u8,
     /// Remaining fadeout counter value, decremented by two on each tick.
-    fadeout_counter: u8,
+    fadeout_counter: i16,
     /// Current global fadeout attenuation level.
     fadeout_level: u8,
     /// Whether an unconditional ("loop forever") repeat should stop and
@@ -546,6 +548,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         mark_native_loop: bool,
     ) -> Self {
         let has_pcm = package.borrow().drives_okim6258();
+        let has_fadeout_command = package.borrow().mdx.tracks.iter().flatten().any(|command| {
+            matches!(
+                command,
+                MdxCommand::Extended(MdxExtendedCommand::Fadeout { .. })
+            )
+        });
         let tracks = package
             .borrow()
             .mdx
@@ -612,6 +620,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             pcm_mode,
             adpcm_mode,
             tracks,
+            has_fadeout_command,
             has_pcm,
             pcm_channels: Default::default(),
             pcm_samples: Vec::new(),
@@ -640,8 +649,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Checks if the playback has finished, either due to the song loop being complete
-    /// or all tracks being inactive and all pending PCM output being drained.
+    /// Checks if playback has finished due to a completed song loop, a completed
+    /// fadeout, or all tracks and pending PCM output being drained.
     fn finished(&self) -> bool {
         self.song_loop_complete
             || (self.fadeout_seen && self.fadeout_level >= FADEOUT_FINAL_LEVEL)
@@ -703,7 +712,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// portamento, and command execution. Returns an error if any track
     /// encounters an issue during processing.
     fn process_tick(&mut self, builder: &mut VgmBuilder) -> Result<(), MdxConvertError> {
-        self.advance_fadeout();
+        self.advance_fadeout(builder);
         if self.fadeout_level >= FADEOUT_FINAL_LEVEL {
             return Ok(());
         }
@@ -1109,10 +1118,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::PcmMode(_) => {}
                 MdxCommand::Extended(command) => match command {
                     MdxExtendedCommand::Fadeout { value } => {
-                        // TODO: Emit YM2151 total-level updates for the fadeout.
                         self.fadeout_seen = true;
                         self.fadeout_speed = value;
-                        self.fadeout_counter = value;
+                        self.fadeout_counter = i16::from(value);
                     }
                     // None of these E7 sub-commands perform an FM action here.
                     MdxExtendedCommand::Pcm8DirectDrive { .. }
@@ -1210,13 +1218,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
                     self.track_end_loop_seen = true;
-                    if self.fadeout_seen && self.loop_count.is_none() {
-                        self.tracks[track].active = false;
-                    } else if self.mark_native_loop && self.loop_count.is_none() {
+                    if self.mark_native_loop
+                        && self.loop_count.is_none()
+                        && !self.has_fadeout_command
+                    {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so
                         // it must not become the global VGM loop point.
                         self.tracks[track].active = false;
+                    } else if self.mark_native_loop && self.loop_count.is_none() {
+                        self.jump_relative(track, command.offset);
                     } else {
                         self.take_repeating_jump(track, command.offset, builder);
                     }
@@ -1463,7 +1474,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             u16::from(FM_VOLUME_TABLE[self.tracks[track].volume.min(15) as usize])
         };
         let lfo_attenuation = self.tracks[track].volume_lfo_offset >> 8;
-        let attenuation = base_attenuation + lfo_attenuation;
+        let attenuation = base_attenuation + lfo_attenuation + u16::from(self.fadeout_level);
         let carrier_mask = CARRIER_TL_SLOTS[(tone.con & 0x07) as usize];
         let fm_channel = self.tracks[track].fm_channel;
         for (operator, value) in tone.operators.iter().enumerate() {
@@ -1838,6 +1849,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     ///   keeps repeating indefinitely, exactly like real hardware would.
     ///   Nothing needs to be remembered since the stream never rewinds to
     ///   a previously produced command.
+    /// - Once an embedded fadeout has started, repeats remain internal in
+    ///   either path until the global fadeout reaches its final level.
     fn take_repeating_jump_to(
         &mut self,
         track: usize,
@@ -1857,7 +1870,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.tracks[track].command_index = target_index;
             return;
         }
-        if !self.mark_native_loop {
+        if self.fadeout_seen || !self.mark_native_loop {
             self.tracks[track].command_index = target_index;
             return;
         }
@@ -1951,16 +1964,23 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         256 * u32::from(256u16 - u16::from(self.tempo))
     }
 
-    /// Advances the global fadeout counter and attenuation level by one tick.
-    fn advance_fadeout(&mut self) {
+    /// Advances the global fadeout counter and reapplies carrier TL values when
+    /// the attenuation level changes.
+    fn advance_fadeout(&mut self, builder: &mut VgmBuilder) {
         if !self.fadeout_seen || self.fadeout_level >= FADEOUT_FINAL_LEVEL {
             return;
         }
-        if self.fadeout_counter <= 2 {
-            self.fadeout_level += 1;
-            self.fadeout_counter = self.fadeout_speed;
-        } else {
+        if self.fadeout_counter >= 0 {
             self.fadeout_counter -= 2;
+            return;
+        }
+
+        self.fadeout_level += 1;
+        self.fadeout_counter = i16::from(self.fadeout_speed);
+        for track in 0..8 {
+            if self.tracks[track].voice_selected {
+                self.emit_volume(track, builder);
+            }
         }
     }
 

@@ -1723,14 +1723,53 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 
 #[test]
 fn mdx_converter_waits_for_timed_fadeout_before_ending_the_song() {
+    let tone = MdxTone {
+        voice_number: 1,
+        con: 0,
+        fl: 0,
+        op: 0x0f,
+        operators: [MdxOperator {
+            ar: 0,
+            dr: 0,
+            sr: 0,
+            rr: 0,
+            sl: 0,
+            ol: 0,
+            ks: 0,
+            ml: 0,
+            dt1: 0,
+            dt2: 0,
+            ame: 0,
+        }; 4],
+    };
     let mut builder = MdxBuilder::new();
     builder
+        .append_tone(tone)
         .add_mdx_command(0, MdxCommand::Tempo(MdxTempo { value: 225 }))
-        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(0, MdxRest { ticks: 30 })
+        .add_mdx_command(
+            0,
+            MdxCommand::VoiceOrPcmBank(MdxVoiceOrPcmBank { value: 1 }),
+        )
+        .add_mdx_command(
+            0,
+            MdxNote {
+                note: 0x80,
+                length: 1,
+            },
+        )
         .add_mdx_command(
             0,
             MdxCommand::Extended(MdxExtendedCommand::Fadeout { value: 92 }),
         )
+        .add_mdx_command(
+            0,
+            MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+                register: 0x18,
+                value: 0x33,
+            }),
+        )
+        .add_mdx_command(0, MdxRest { ticks: 1 })
         .add_mdx_command(
             0,
             MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
@@ -1741,9 +1780,28 @@ fn mdx_converter_waits_for_timed_fadeout_before_ending_the_song() {
         .add_mdx_command(1, MdxRest { ticks: 1 })
         .add_mdx_command(
             1,
+            MdxCommand::VoiceOrPcmBank(MdxVoiceOrPcmBank { value: 1 }),
+        )
+        .add_mdx_command(
+            1,
+            MdxNote {
+                note: 0x80,
+                length: 1,
+            },
+        )
+        .add_mdx_command(
+            1,
+            MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+                register: 0x19,
+                value: 0x44,
+            }),
+        )
+        .add_mdx_command(1, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            1,
             MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
                 opcode: 0xf1,
-                offset: -4,
+                offset: -9,
             }),
         );
     let package = MdxPackage {
@@ -1754,6 +1812,52 @@ fn mdx_converter_waits_for_timed_fadeout_before_ending_the_song() {
     let document = to_vgm_document(&package, &MdxToVgmOptions::default())
         .expect("a fadeout marker should make the default conversion finite");
     assert!(document.loop_command_index().is_none());
+    let looped_register_writes = document
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec) if spec.register == 0x18 && spec.value == 0x33
+            )
+        })
+        .count();
+    assert!(
+        looped_register_writes > 100,
+        "F1 track loop should continue during the fadeout"
+    );
+    let second_track_register_writes = document
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec) if spec.register == 0x19 && spec.value == 0x44
+            )
+        })
+        .count();
+    assert!(
+        second_track_register_writes > 100,
+        "a track reaching F1 before the fadeout should keep looping"
+    );
+    let second_track_key_ons = document
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec) if spec.register == 0x08 && spec.value == 0x79
+            )
+        })
+        .count();
+    assert!(
+        second_track_key_ons > 100,
+        "a track reaching F1 before the fadeout should keep triggering notes"
+    );
+    assert!(document.commands.iter().any(|command| matches!(
+        command,
+        VgmCommand::Ym2151Write(_, spec) if spec.register == 0x79 && spec.value == 0x53
+    )));
 
     let total_samples: u64 = document
         .commands
@@ -1773,7 +1877,7 @@ fn mdx_converter_waits_for_timed_fadeout_before_ending_the_song() {
         .expect("create fadeout stream generator");
     let mut stream = VgmStream::from_generator(generator);
     let mut ended = false;
-    for _ in 0..4096 {
+    for _ in 0..16384 {
         match stream.next().expect("stream should produce an end marker") {
             Ok(StreamResult::Command(_)) => {}
             Ok(StreamResult::EndOfStream) => {
