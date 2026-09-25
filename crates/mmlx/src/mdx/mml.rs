@@ -29,11 +29,20 @@ pub struct MmlTrack {
     pub commands: Vec<MmlCommand>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourcePosition {
+    line_number: usize,
+    column: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedCommand {
     Command(MmlCommand),
-    RepeatStart,
-    RepeatEnd(u16),
+    RepeatStart(SourcePosition),
+    RepeatEnd {
+        count: u16,
+        position: SourcePosition,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,7 +341,7 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
     for track in parsed_tracks {
         document.tracks.push(MmlTrack {
             channel: track.channel,
-            commands: assemble_repeats(track.commands)?,
+            commands: assemble_repeats(track.commands, source)?,
         });
     }
     Ok(document)
@@ -353,18 +362,24 @@ fn append_parsed_tracks(tracks: &mut Vec<ParsedTrack>, incoming: Vec<ParsedTrack
 }
 
 /// Assemble flat loop events into nested repeat commands within one channel.
-fn assemble_repeats(commands: Vec<ParsedCommand>) -> Result<Vec<MmlCommand>, ParseError> {
+fn assemble_repeats(
+    commands: Vec<ParsedCommand>,
+    source: &str,
+) -> Result<Vec<MmlCommand>, ParseError> {
     let mut output = Vec::new();
-    let mut stack: Vec<Vec<MmlCommand>> = Vec::new();
+    let mut stack: Vec<(Vec<MmlCommand>, SourcePosition)> = Vec::new();
 
     for command in commands {
         match command {
-            ParsedCommand::RepeatStart => stack.push(Vec::new()),
-            ParsedCommand::RepeatEnd(count) => {
-                let Some(body) = stack.pop() else {
-                    return Err(ParseError::Syntax(
-                        "repeat end without repeat start".to_owned(),
-                    ));
+            ParsedCommand::RepeatStart(position) => stack.push((Vec::new(), position)),
+            ParsedCommand::RepeatEnd { count, position } => {
+                let Some((body, _)) = stack.pop() else {
+                    return Err(ParseError::Syntax(format_repeat_error(
+                        source,
+                        position,
+                        "unexpected ']'",
+                        "repeat start '['",
+                    )));
                 };
                 append_assembled_command(
                     &mut output,
@@ -378,18 +393,41 @@ fn assemble_repeats(commands: Vec<ParsedCommand>) -> Result<Vec<MmlCommand>, Par
         }
     }
 
-    if !stack.is_empty() {
-        return Err(ParseError::Syntax("unterminated repeat".to_owned()));
+    if let Some((_, position)) = stack.last() {
+        return Err(ParseError::Syntax(format_repeat_error(
+            source,
+            *position,
+            "repeat is not terminated",
+            "repeat end ']'",
+        )));
     }
     Ok(output)
 }
 
+fn format_repeat_error(
+    source: &str,
+    position: SourcePosition,
+    message: &str,
+    expected: &str,
+) -> String {
+    let line_text = source
+        .lines()
+        .nth(position.line_number.saturating_sub(1))
+        .unwrap_or("");
+    format!(
+        "MML syntax error at line {}, column {}: {message}\n  {line_text}\n  {}^\n  expected: {expected}",
+        position.line_number,
+        position.column,
+        " ".repeat(position.column.saturating_sub(1)),
+    )
+}
+
 fn append_assembled_command(
     output: &mut Vec<MmlCommand>,
-    stack: &mut [Vec<MmlCommand>],
+    stack: &mut [(Vec<MmlCommand>, SourcePosition)],
     command: MmlCommand,
 ) {
-    if let Some(body) = stack.last_mut() {
+    if let Some((body, _)) = stack.last_mut() {
         body.push(command);
     } else {
         output.push(command);
@@ -602,21 +640,30 @@ fn parse_parsed_command(
     pair: pest::iterators::Pair<'_, Rule>,
 ) -> Result<ParsedCommand, ParseError> {
     Ok(match pair.as_rule() {
-        Rule::repeat_start => ParsedCommand::RepeatStart,
+        Rule::repeat_start => ParsedCommand::RepeatStart(source_position(&pair)),
         Rule::repeat_end => {
+            let position = source_position(&pair);
             let count = pair
                 .into_inner()
                 .next()
                 .map(|count| validate_pair_range(&count, "repeat", 2, 255))
                 .transpose()?
                 .unwrap_or(2) as u16;
-            ParsedCommand::RepeatEnd(count)
+            ParsedCommand::RepeatEnd { count, position }
         }
         _ => {
             validate_command_pair(&pair)?;
             ParsedCommand::Command(parse_command(pair))
         }
     })
+}
+
+fn source_position(pair: &pest::iterators::Pair<'_, Rule>) -> SourcePosition {
+    let (line_number, column) = pair.as_span().start_pos().line_col();
+    SourcePosition {
+        line_number,
+        column,
+    }
 }
 
 /// Validate numeric arguments before converting them into the AST's narrow integer types.
@@ -1213,6 +1260,18 @@ mod tests {
     #[test]
     fn rejects_unknown_command() {
         assert!(parse("A z\n").is_err());
+    }
+
+    #[test]
+    fn reports_repeat_structure_errors_at_their_source_locations() {
+        assert_eq!(
+            parse("A c4\nB ]\n").unwrap_err().to_string(),
+            "MML syntax error at line 2, column 3: unexpected ']'\n  B ]\n    ^\n  expected: repeat start '['"
+        );
+        assert_eq!(
+            parse("A c4\nB [c4\n").unwrap_err().to_string(),
+            "MML syntax error at line 2, column 3: repeat is not terminated\n  B [c4\n    ^\n  expected: repeat end ']'"
+        );
     }
 
     #[test]
