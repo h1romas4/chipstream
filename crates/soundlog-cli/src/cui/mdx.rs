@@ -83,15 +83,31 @@ fn find_case_insensitive_file(directory: &Path, candidates: &[PathBuf]) -> Optio
         })
 }
 
-/// Parse an MDX file and print its track commands with source offsets.
+/// Parse an MDX or MML file and print its track commands with source offsets.
 pub fn parse_mdx(input: &Path, pdx: Option<&Path>, logger: Arc<Logger>) -> Result<()> {
-    let package = read_mdx_package(input, pdx)?;
+    let mdx = if input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mml"))
+    {
+        if pdx.is_some() {
+            return Err(anyhow!("--pdx can only be used with MDX input"));
+        }
+        let source = fs::read_to_string(input)
+            .with_context(|| format!("failed to read MML input: {}", input.display()))?;
+        let parsed = mmlx::mdx::parse(&source)
+            .map_err(|error| anyhow!("failed to parse MML input: {error}"))?;
+        mmlx::mdx::compile(&parsed)
+            .map_err(|error| anyhow!("failed to compile MML input: {error}"))?
+    } else {
+        read_mdx_package(input, pdx)?.mdx
+    };
     let _ = logger.info(format_args!(
         "{:<8} {:<8} {:<8} {:<8} {}",
         "Track", "Index", "Offset", "Length", "Command"
     ));
-    let source_map = package.mdx.sourcemap();
-    for (track, commands) in package.mdx.tracks.iter().enumerate() {
+    let source_map = mdx.sourcemap();
+    for (track, commands) in mdx.tracks.iter().enumerate() {
         for (command_index, command) in commands.iter().enumerate() {
             let (offset, length) = source_map
                 .get(track)

@@ -140,13 +140,13 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = MmlOutputFormat::Mdx)]
         output_format: MmlOutputFormat,
     },
-    /// Parse an MDX file and display its track commands
+    /// Parse an MDX or MML file and display its track commands
     Parse {
-        /// MDX input file path
-        #[arg(value_name = "MDX_FILE")]
+        /// MDX or MML input file path
+        #[arg(value_name = "MDX_OR_MML_FILE")]
         input: PathBuf,
 
-        /// Optional PDX file to parse alongside the MDX file
+        /// Optional PDX file to parse alongside an MDX input
         #[arg(long, value_name = "PDX_FILE")]
         pdx: Option<PathBuf>,
     },

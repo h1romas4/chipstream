@@ -265,11 +265,12 @@ The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 #### `mdx parse`
 
 Parse an MDX file and display its track commands with source offsets and
-lengths, in the same inspection style as `soundlog parse`. An optional PDX
-file can be supplied for packages that reference external PCM data.
+lengths, in the same inspection style as `soundlog parse`. MML files are also
+accepted; they are compiled to MDX commands for display. An optional PDX file
+can be supplied for MDX packages that reference external PCM data.
 
 ```bash
-soundlog mdx parse <MDX_FILE> [--pdx <PDX_FILE>]
+soundlog mdx parse <MDX_OR_MML_FILE> [--pdx <PDX_FILE>]
 ```
 
 Examples:
@@ -277,6 +278,7 @@ Examples:
 ```bash
 soundlog mdx parse samples/example.mdx
 soundlog mdx parse samples/example.mdx --pdx samples/example.pdx
+soundlog mdx parse samples/example.mml
 ```
 
 When `--pdx <PDX_FILE>` is omitted, the PDX filename stored in the MDX header is
