@@ -1,7 +1,8 @@
 //! Command-line debugger for VGM and MDX files.
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -78,6 +79,11 @@ enum Commands {
         /// VGM or VGZ file path to parse
         #[arg(value_name = "VGM_FILE")]
         file: PathBuf,
+    },
+    /// Generate shell completion scripts
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
     },
     /// Stream a VGM or VGZ file and display its register writes and detected events
     Stream {
@@ -489,6 +495,12 @@ fn main() {
                     process::exit(1);
                 }
             }
+        }
+        Commands::Completions { shell } => {
+            let mut command = Args::command();
+            let mut stdout = std::io::stdout();
+            generate(shell, &mut command, "soundlog", &mut stdout);
+            process::exit(0);
         }
         Commands::Stream {
             file,

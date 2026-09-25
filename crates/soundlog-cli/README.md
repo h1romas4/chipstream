@@ -9,6 +9,7 @@ Contents:
 
 - Building and running
 - CLI overview and help example
+- Shell completions
 - Subcommand details and usage examples
   - `test`
   - `redump`
@@ -42,6 +43,7 @@ Commands:
   test    Test a VGM or VGZ file with a parse/build round trip and display its header
   redump  Re-dump a VGM or VGZ file, expanding DAC streams to chip writes
   parse   Parse a VGM or VGZ file and display its commands, offsets, and lengths
+  completions  Generate shell completion scripts
   stream  Stream a VGM or VGZ file and display its register writes and detected events
   mdx     MDX file operations
   pdx     PDX file operations
@@ -53,6 +55,29 @@ Options:
 ```
 
 - Use `--help` after any subcommand to get subcommand-specific usage.
+
+## Shell completions
+
+Generate a completion script from the current CLI definition with `clap_complete`:
+
+```bash
+soundlog completions bash
+```
+
+To enable Bash completion in the current shell session:
+
+```bash
+source <(soundlog completions bash)
+```
+
+You can also save the generated script and source it later:
+
+```bash
+soundlog completions bash > soundlog.bash
+source ./soundlog.bash
+```
+
+The `shell` argument selects the target shell; run `soundlog completions --help` to see the supported values.
 
 ## Subcommands and usage
 

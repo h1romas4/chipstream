@@ -38,13 +38,14 @@ Command-line tools for soundlog.
 Usage: soundlog <COMMAND>
 
 Commands:
-  test    Test a VGM file with a parse/build round trip and display its header
-  redump  Re-dump a VGM file, expanding DAC streams to chip writes
-  parse   Parse a VGM file and display its commands, offsets, and lengths
-  stream  Stream a VGM file and display its register writes and detected events
-  mdx     MDX file operations
-  pdx     PDX file operations
-  help    Print this message or the help of the given subcommand(s)
+  test         Test a VGM or VGZ file with a parse/build round trip and display its header
+  redump       Re-dump a VGM or VGZ file, expanding DAC streams to chip writes
+  parse        Parse a VGM or VGZ file and display its commands, offsets, and lengths
+  completions  Generate shell completion scripts
+  stream       Stream a VGM or VGZ file and display its register writes and detected events
+  mdx          MDX file operations
+  pdx          PDX file operations
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
