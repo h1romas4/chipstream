@@ -275,6 +275,45 @@ requires `soundlog` to be available on `PATH`.
 Run **MML: check current file** with **Tasks: Run Task**. Parser diagnostics
 include an end column, which the matcher uses to mark the full source range.
 
+##### Helix with `efm-langserver`
+
+Install `efm-langserver` and make both `efm-langserver` and `soundlog`
+available on `PATH`. Add the following to
+`~/.config/helix/languages.toml`:
+
+```toml
+[language-server.efm]
+command = "efm-langserver"
+
+[[language]]
+name = "mml"
+scope = "source.mml"
+file-types = ["mml"]
+language-servers = [{ name = "efm", only-features = ["diagnostics"] }]
+```
+
+Add the lint definition to `~/.config/efm-langserver/config.yaml`:
+
+```yaml
+version: 2
+
+tools:
+  soundlog-mml: &soundlog-mml
+    lint-command: "soundlog mdx check ${INPUT} --stdin"
+    lint-stdin: true
+    lint-ignore-exit-code: true
+    lint-formats:
+      - "%f:%l:%c: %m"
+
+languages:
+  mml:
+    - <<: *soundlog-mml
+```
+
+The linter reads the current buffer from stdin while `${INPUT}` preserves its
+filename in diagnostics. In Helix, use `]d` and `[d` to move between diagnostics
+or `Space d` to open the diagnostic picker.
+
 #### `mdx compile`
 
 Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
