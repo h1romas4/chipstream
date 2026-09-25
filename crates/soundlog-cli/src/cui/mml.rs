@@ -37,8 +37,8 @@ pub fn check(input: &Path, verbose: bool) -> anyhow::Result<()> {
 /// Compile an MML file to MDX or VGM.
 pub fn compile(input: &Path, output: &Path, output_format: OutputFormat) -> anyhow::Result<()> {
     let source = parse_input(input)?;
-    let mdx_document =
-        mmlx::mdx::compile(&source).map_err(|error| anyhow!("compile error: {error}"))?;
+    let mdx_document = mmlx::mdx::compile(&source)
+        .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
     match output_format {
         OutputFormat::Mdx => fs::write(output, mdx_document.to_bytes())
             .with_context(|| format!("failed to write MDX output: {}", output.display())),
@@ -49,7 +49,34 @@ pub fn compile(input: &Path, output: &Path, output_format: OutputFormat) -> anyh
 fn parse_input(input: &Path) -> anyhow::Result<mmlx::mdx::MmlDocument> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read MML input: {}", input.display()))?;
-    mmlx::mdx::parse(&source).map_err(|error| anyhow!("parse error: {error}"))
+    parse_source(input, &source)
+}
+
+pub(crate) fn parse_source(input: &Path, source: &str) -> anyhow::Result<mmlx::mdx::MmlDocument> {
+    mmlx::mdx::parse(source).map_err(|error| {
+        let location = match &error {
+            mmlx::mdx::ParseError::Syntax(message) => syntax_error_location(message),
+            mmlx::mdx::ParseError::InvalidValue {
+                line_number,
+                column,
+                ..
+            } => Some((*line_number, *column)),
+        };
+        let message = error.to_string();
+        match location {
+            Some((line, column)) => {
+                anyhow!("{}:{line}:{column}: error: {message}", input.display())
+            }
+            None => anyhow!("{}: error: {message}", input.display()),
+        }
+    })
+}
+
+fn syntax_error_location(message: &str) -> Option<(usize, usize)> {
+    let coordinates = message.lines().next()?.split_once(" at line ")?.1;
+    let (line, column) = coordinates.split_once(", column ")?;
+    let column = column.split_once(':')?.0;
+    Some((line.parse().ok()?, column.parse().ok()?))
 }
 
 fn write_vgm(
@@ -253,5 +280,25 @@ mod tests {
         );
 
         fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn formats_parse_errors_as_editor_diagnostics() {
+        let input = Path::new("songs/broken.mml");
+
+        let syntax_error = parse_source(input, "A c4\nB ]").unwrap_err();
+        assert!(
+            syntax_error
+                .to_string()
+                .starts_with("songs/broken.mml:2:3: error: MML syntax error at line 2, column 3")
+        );
+        assert!(syntax_error.to_string().contains("  B ]\n    ^"));
+
+        let value_error = parse_source(input, "A c4\nB t5000").unwrap_err();
+        assert!(
+            value_error
+                .to_string()
+                .starts_with("songs/broken.mml:2:4: error: MML value error at line 2, column 4")
+        );
     }
 }

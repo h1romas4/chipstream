@@ -307,7 +307,7 @@ fn main() {
             MdxCommands::Check { input, verbose } => match cui::mml::check(&input, verbose) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
-                    soundlog_cli::log_error!(&*logger, "MML check failed: {error:#}");
+                    soundlog_cli::log_error!(&*logger, "{error:#}");
                     process::exit(1);
                 }
             },
@@ -318,7 +318,7 @@ fn main() {
             } => match cui::mml::compile(&input, &output, output_format.into()) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
-                    soundlog_cli::log_error!(&*logger, "MML compile failed: {error:#}");
+                    soundlog_cli::log_error!(&*logger, "{error:#}");
                     process::exit(1);
                 }
             },
@@ -326,7 +326,7 @@ fn main() {
                 match cui::mdx::parse_mdx(&input, pdx.as_deref(), logger.clone()) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_cli::log_error!(&*logger, "mdx parse failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "{error:#}");
                         process::exit(1);
                     }
                 }
@@ -399,7 +399,7 @@ fn main() {
                 match cui::mdx::stream_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
-                        soundlog_cli::log_error!(&*logger, "mdx stream failed: {}", error);
+                        soundlog_cli::log_error!(&*logger, "{error:#}");
                         process::exit(1);
                     }
                 }

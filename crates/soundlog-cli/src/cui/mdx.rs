@@ -34,10 +34,9 @@ pub(crate) fn read_mdx_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPa
 fn read_mml_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read MML input: {}", input.display()))?;
-    let parsed =
-        mmlx::mdx::parse(&source).map_err(|error| anyhow!("failed to parse MML input: {error}"))?;
+    let parsed = crate::cui::mml::parse_source(input, &source)?;
     let mdx = mmlx::mdx::compile(&parsed)
-        .map_err(|error| anyhow!("failed to compile MML input: {error}"))?;
+        .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
     let mdx_bytes = mdx.to_bytes();
     let pdx_bytes = read_pdx_bytes(input, pdx, mdx.header.pdx_name.as_deref())?;
     MdxPackage::parse(&mdx_bytes, pdx_bytes.as_deref())
