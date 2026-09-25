@@ -8,9 +8,9 @@
 
 use std::borrow::Cow;
 
-use soundlog::mdx::command::MdxCommand;
-use soundlog::mdx::header::MdxHeader;
-use soundlog::mdx::parser::parse_mdx_command;
+use super::command::MdxCommand;
+use super::header::MdxHeader;
+use super::parser::parse_mdx_command;
 
 /// Normalize an MXDRV16y track table before normal MDX parsing.
 ///
@@ -25,11 +25,14 @@ use soundlog::mdx::parser::parse_mdx_command;
 /// # Examples
 ///
 /// ```
-/// let parsed = mmlx::mdx::parse("A c4 d4").expect("valid MML source");
-/// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
-/// let standard_mdx_bytes = document.to_bytes();
-/// let normalized =
-///     mmlx::mdx::compat::normalize_mxdrv16y_tracks(&standard_mdx_bytes).expect("valid MDX");
+/// let mut builder = soundlog::mdx::document::MdxBuilder::new();
+/// builder.add_mdx_command(
+///     0,
+///     soundlog::mdx::command::MdxRest::new(1).expect("valid rest length"),
+/// );
+/// let standard_mdx_bytes = builder.finalize().expect("valid MDX").to_bytes();
+/// let normalized = soundlog::mdx::compat::normalize_mxdrv16y_tracks(&standard_mdx_bytes)
+///     .expect("valid MDX");
 ///
 /// assert_eq!(normalized.as_ref(), standard_mdx_bytes.as_slice());
 /// ```
@@ -183,8 +186,8 @@ mod tests {
 
     #[test]
     fn borrows_standard_mdx_bytes_without_rebuilding() {
-        let mut builder = soundlog::mdx::document::MdxBuilder::new();
-        builder.add_mdx_command(0, soundlog::mdx::command::MdxRest::new(1).unwrap());
+        let mut builder = super::super::document::MdxBuilder::new();
+        builder.add_mdx_command(0, super::super::command::MdxRest::new(1).unwrap());
         let bytes = builder.finalize().unwrap().to_bytes();
         let normalized = normalize_mxdrv16y_tracks(&bytes).unwrap();
 

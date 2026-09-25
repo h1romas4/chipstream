@@ -1,6 +1,7 @@
 //! MDX utilities and command definitions.
 
 pub mod command;
+pub mod compat;
 pub mod convert;
 pub mod document;
 pub mod encoding;

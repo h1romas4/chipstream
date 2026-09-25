@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
-use mmlx::mdx::compat::normalize_mxdrv16y_tracks;
 use soundlog::chip::state::{Okim6258State, Ym2151State};
+use soundlog::mdx::compat::normalize_mxdrv16y_tracks;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
