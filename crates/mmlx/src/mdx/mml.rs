@@ -7,8 +7,8 @@
 
 use std::fmt;
 
-use pest::Parser;
 use pest::error::{ErrorVariant, LineColLocation};
+use pest::Parser;
 use pest_derive::Parser;
 
 #[derive(Parser)]
@@ -239,11 +239,11 @@ pub enum ParseError {
         /// Command associated with the invalid value.
         command: &'static str,
         /// Parsed numeric value.
-        value: i64,
+        value: i32,
         /// Inclusive lower bound.
-        min: i64,
+        min: i32,
         /// Inclusive upper bound.
-        max: i64,
+        max: i32,
     },
 }
 
@@ -312,8 +312,8 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
         match line.as_rule() {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
-            Rule::voice => document.voices.push(parse_voice(line)),
-            Rule::track => append_parsed_tracks(&mut parsed_tracks, parse_track(line)),
+            Rule::voice => document.voices.push(parse_voice(line)?),
+            Rule::track => append_parsed_tracks(&mut parsed_tracks, parse_track(line)?),
             Rule::blank | Rule::comment | Rule::block_comment => {}
             rule => unreachable!("unexpected line rule: {rule:?}"),
         }
@@ -325,7 +325,6 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
             commands: assemble_repeats(track.commands)?,
         });
     }
-    validate_document(&document)?;
     Ok(document)
 }
 
@@ -421,20 +420,16 @@ fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String
         .nth(column.saturating_sub(1))
         .map(|character| format!("{character:?}"))
         .unwrap_or_else(|| "<end of input>".to_owned());
-    let numeric_context = describe_numeric_context(line_text, column);
-    let expected = match numeric_context {
-        Some(description) => description.to_owned(),
-        None => match &error.variant {
-            ErrorVariant::ParsingError { positives, .. } if positives.len() > 8 => {
-                "a valid MML command or end of line".to_owned()
-            }
-            ErrorVariant::ParsingError { positives, .. } => positives
-                .iter()
-                .map(describe_rule)
-                .collect::<Vec<_>>()
-                .join(", "),
-            ErrorVariant::CustomError { message } => message.clone(),
-        },
+    let expected = match &error.variant {
+        ErrorVariant::ParsingError { positives, .. } if positives.len() > 8 => {
+            "a valid MML command or end of line".to_owned()
+        }
+        ErrorVariant::ParsingError { positives, .. } => positives
+            .iter()
+            .map(describe_rule)
+            .collect::<Vec<_>>()
+            .join(", "),
+        ErrorVariant::CustomError { message } => message.clone(),
     };
     let expected = if expected.is_empty() {
         "a valid MML command".to_owned()
@@ -448,160 +443,17 @@ fn format_syntax_error(error: &pest::error::Error<Rule>, source: &str) -> String
     )
 }
 
-/// Describe the numeric argument expected at a syntax-error location.
-fn describe_numeric_context(line: &str, column: usize) -> Option<&'static str> {
-    let characters = line.chars().collect::<Vec<_>>();
-    let position = column.saturating_sub(1).min(characters.len());
-    let mut number_start = position;
-    while number_start > 0 && characters[number_start - 1].is_ascii_digit() {
-        number_start -= 1;
-    }
-    let prefix = characters[..number_start].iter().collect::<String>();
-    if prefix.ends_with("@t") {
-        Some("OPM tempo: 0..=255, up to 3 digits")
-    } else if prefix.ends_with("@v") {
-        Some("fine volume: 0..=127, up to 3 digits")
-    } else if prefix.ends_with("@q") {
-        Some("fine gate: 1..=256, up to 3 digits")
-    } else if prefix.ends_with("MD") {
-        Some("LFO delay: numeric argument")
-    } else if prefix.ends_with('F') {
-        Some("PCM frequency: 0..=12, up to 2 digits")
-    } else if prefix.ends_with('n') {
-        Some("note number: 0..=95, up to 2 digits")
-    } else if prefix.ends_with('l') {
-        Some("default note length: up to 3 digits")
-    } else if prefix.ends_with('q') {
-        Some("gate: 1..=8, 1 digit")
-    } else if prefix.ends_with('v') {
-        Some("volume: 0..=15, up to 2 digits")
-    } else if prefix.ends_with('p') {
-        Some("pan: 0..=3, 1 digit")
-    } else if prefix.ends_with('w') {
-        Some("noise frequency: 0..=31, up to 2 digits")
-    } else if prefix.ends_with('o') {
-        Some("octave: 0..=8, 1 digit")
-    } else {
-        None
-    }
-}
-
 /// Turn a grammar rule into a user-facing expectation description.
 fn describe_rule(rule: &Rule) -> String {
     match rule {
-        Rule::byte_number => "byte number (0..=255, up to 3 digits)".to_owned(),
         Rule::number => "unsigned integer".to_owned(),
-        Rule::repeat_count => "repeat count (2..=255, up to 3 digits)".to_owned(),
-        Rule::note_number => "note number (0..=95, up to 2 digits)".to_owned(),
         Rule::note_length_number => "note length (up to 3 digits)".to_owned(),
-        Rule::fine_volume_number => "fine volume (0..=127, up to 3 digits)".to_owned(),
-        Rule::volume_number => "volume (0..=15, up to 2 digits)".to_owned(),
-        Rule::pcm_frequency_number => "PCM frequency (0..=12, up to 2 digits)".to_owned(),
-        Rule::octave_number => "octave (0..=8, 1 digit)".to_owned(),
-        Rule::gate_number => "gate (1..=8, 1 digit)".to_owned(),
-        Rule::pan_number => "pan (0..=3, 1 digit)".to_owned(),
-        Rule::noise_number => "noise frequency (0..=31, up to 2 digits)".to_owned(),
         other => format!("{other:?}"),
     }
 }
 
-/// Validate every command in a parsed document, including nested repeats.
-fn validate_document(document: &MmlDocument) -> Result<(), ParseError> {
-    for track in &document.tracks {
-        for command in &track.commands {
-            validate_command(command)?;
-        }
-    }
-    Ok(())
-}
-
-/// Validate command-specific ranges and recursively validate repeat bodies.
-fn validate_command(command: &MmlCommand) -> Result<(), ParseError> {
-    match command {
-        MmlCommand::Tempo(value) => validate_range("tempo", *value as i64, 19, 4882)?,
-        MmlCommand::Repeat { body, count } => {
-            validate_range("repeat", *count as i64, 2, 255)?;
-            for command in body {
-                validate_command(command)?;
-            }
-        }
-        MmlCommand::Note {
-            length: Some(length),
-            ..
-        }
-        | MmlCommand::Rest {
-            length: Some(length),
-        } => validate_range("note length", *length as i64, 1, 256)?,
-        MmlCommand::ExtendedNote { length, .. }
-        | MmlCommand::ExtendedRest(length)
-        | MmlCommand::DefaultLength(length)
-        | MmlCommand::NumericNote {
-            length: Some(length),
-            ..
-        } => validate_length(length)?,
-        MmlCommand::FineGate(value) => validate_range("@q", *value as i64, 1, 256)?,
-        MmlCommand::Detune(value) => validate_range("D", *value as i64, -32767, 32767)?,
-        MmlCommand::PitchLfo { waveform, .. } | MmlCommand::VolumeLfo { waveform, .. } => {
-            validate_range("LFO waveform", *waveform as i64, 0, 7)?;
-        }
-        MmlCommand::OpmLfo {
-            waveform, key_sync, ..
-        } => {
-            validate_range("OPM LFO waveform", *waveform as i64, 0, 3)?;
-            validate_range("OPM LFO key sync", *key_sync as i64, 0, 1)?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Validate each component and the total value of a length expression.
-fn validate_length(length: &MmlLength) -> Result<(), ParseError> {
-    let total = match length {
-        MmlLength::Denominator(value) => {
-            validate_range("note length", *value as i64, 1, 256)?;
-            *value as i64
-        }
-        MmlLength::Ticks(value) => {
-            validate_range("note tick length", *value as i64, 1, i64::from(u16::MAX))?;
-            *value as i64
-        }
-        MmlLength::Sum(values) => values.iter().try_fold(0_i64, |total, value| {
-            validate_length(value)?;
-            Ok::<_, ParseError>(total + length_value(value))
-        })?,
-        MmlLength::Adjusted { base, adjustments } => {
-            validate_length(base)?;
-            for (_, value) in adjustments.iter() {
-                validate_length(value)?;
-            }
-            return Ok(());
-        }
-    };
-    validate_range("note length", total, 1, i64::from(u16::MAX))
-}
-
-/// Calculate the total numeric value represented by a length expression.
-fn length_value(length: &MmlLength) -> i64 {
-    match length {
-        MmlLength::Denominator(value) | MmlLength::Ticks(value) => *value as i64,
-        MmlLength::Sum(values) => values.iter().map(length_value).sum(),
-        MmlLength::Adjusted { base, adjustments } => {
-            adjustments
-                .iter()
-                .fold(length_value(base), |total, (add, value)| {
-                    if *add {
-                        total + length_value(value)
-                    } else {
-                        total - length_value(value)
-                    }
-                })
-        }
-    }
-}
-
 /// Return a structured error when a value is outside an inclusive range.
-fn validate_range(command: &'static str, value: i64, min: i64, max: i64) -> Result<(), ParseError> {
+fn validate_range(command: &'static str, value: i32, min: i32, max: i32) -> Result<(), ParseError> {
     if (min..=max).contains(&value) {
         Ok(())
     } else {
@@ -614,15 +466,35 @@ fn validate_range(command: &'static str, value: i64, min: i64, max: i64) -> Resu
     }
 }
 
+/// Parse an integer from a grammar pair and validate its semantic range.
+fn validate_pair_range(
+    pair: &pest::iterators::Pair<'_, Rule>,
+    command: &'static str,
+    min: i32,
+    max: i32,
+) -> Result<i32, ParseError> {
+    let value = pair
+        .as_str()
+        .parse::<i32>()
+        .map_err(|_| ParseError::Syntax(format!("{command} integer is too large to represent")))?;
+    validate_range(command, value, min, max)?;
+    Ok(value)
+}
+
 /// Convert a `voice` grammar pair into a voice definition.
-fn parse_voice(voice: pest::iterators::Pair<'_, Rule>) -> MmlVoice {
+fn parse_voice(voice: pest::iterators::Pair<'_, Rule>) -> Result<MmlVoice, ParseError> {
     let mut numbers = voice
+        .clone()
         .into_inner()
         .filter(|pair| matches!(pair.as_rule(), Rule::voice_number | Rule::number))
-        .map(|number| number.as_str().parse().expect("voice value is valid"));
+        .map(|number| {
+            validate_pair_range(&number, "voice parameter", 0, 255).map(|value| value as u8)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
     let number = numbers.next().expect("voice must have a number");
     let values = numbers.collect();
-    MmlVoice { number, values }
+    Ok(MmlVoice { number, values })
 }
 
 /// Extract the quoted string from a metadata grammar pair.
@@ -634,7 +506,7 @@ fn parse_string(line: pest::iterators::Pair<'_, Rule>) -> String {
 }
 
 /// Convert a track line into one typed track per channel in its prefix.
-fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<ParsedTrack> {
+fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Result<Vec<ParsedTrack>, ParseError> {
     let mut children = line.into_inner();
     let channels = children
         .next()
@@ -645,27 +517,168 @@ fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Vec<ParsedTrack> {
     let commands = children
         .filter(|pair| pair.as_rule() != Rule::block_comment)
         .map(parse_parsed_command)
-        .collect::<Vec<_>>();
-    channels
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(channels
         .into_iter()
         .map(|channel| ParsedTrack {
             channel,
             commands: commands.clone(),
         })
-        .collect()
+        .collect())
 }
 
-fn parse_parsed_command(pair: pest::iterators::Pair<'_, Rule>) -> ParsedCommand {
-    match pair.as_rule() {
+fn parse_parsed_command(
+    pair: pest::iterators::Pair<'_, Rule>,
+) -> Result<ParsedCommand, ParseError> {
+    Ok(match pair.as_rule() {
         Rule::repeat_start => ParsedCommand::RepeatStart,
-        Rule::repeat_end => ParsedCommand::RepeatEnd(
-            pair.into_inner()
+        Rule::repeat_end => {
+            let count = pair
+                .into_inner()
                 .next()
-                .map(|count| count.as_str().parse().expect("repeat count is valid"))
-                .unwrap_or(2),
-        ),
-        _ => ParsedCommand::Command(parse_command(pair)),
+                .map(|count| validate_pair_range(&count, "repeat", 2, 255))
+                .transpose()?
+                .unwrap_or(2) as u16;
+            ParsedCommand::RepeatEnd(count)
+        }
+        _ => {
+            validate_command_pair(&pair)?;
+            ParsedCommand::Command(parse_command(pair))
+        }
+    })
+}
+
+/// Validate numeric arguments before converting them into the AST's narrow integer types.
+fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
+    let children = pair.clone().into_inner().collect::<Vec<_>>();
+    let check = |index, command, min, max| {
+        validate_pair_range(&children[index], command, min, max).map(|_| ())
+    };
+
+    match pair.as_rule() {
+        Rule::tempo => check(0, "tempo", 19, 4882)?,
+        Rule::opm_tempo => check(0, "@t", 0, 255)?,
+        Rule::voice_select => check(0, "voice", 0, 255)?,
+        Rule::note => {
+            for child in &children {
+                if child.as_rule() == Rule::length_expression {
+                    validate_length_pair(child)?;
+                }
+            }
+        }
+        Rule::numeric_note => {
+            check(0, "note number", 0, 95)?;
+            if let Some(length) = children.get(1) {
+                validate_length_pair(length)?;
+            }
+        }
+        Rule::rest | Rule::default_length => {
+            for child in &children {
+                validate_length_pair(child)?;
+            }
+        }
+        Rule::octave => check(0, "octave", 0, 8)?,
+        Rule::gate => check(0, "q", 1, 8)?,
+        Rule::fine_gate => check(0, "@q", 1, 256)?,
+        Rule::volume => check(0, "v", 0, 15)?,
+        Rule::fine_volume => check(0, "@v", 0, 127)?,
+        Rule::pan => check(0, "p", 0, 3)?,
+        Rule::detune => check(0, "D", -32767, 32767)?,
+        Rule::register_write => {
+            check(0, "register", 0, 255)?;
+            check(1, "register value", 0, 255)?;
+        }
+        Rule::key_on_delay => check(0, "k", 0, 255)?,
+        Rule::noise_frequency => check(0, "w", 0, 31)?,
+        Rule::sync_send => {
+            if children[0]
+                .as_str()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            {
+                check(0, "sync channel", 0, 255)?;
+            }
+        }
+        Rule::pitch_lfo | Rule::volume_lfo => {
+            check(0, "LFO waveform", 0, 7)?;
+            check(1, "LFO period", 0, u16::MAX as i32)?;
+            check(2, "LFO amplitude", i16::MIN as i32, i16::MAX as i32)?;
+        }
+        Rule::lfo_delay => check(0, "MD", 0, 255)?,
+        Rule::opm_lfo => {
+            check(0, "OPM LFO waveform", 0, 3)?;
+            for index in 1..6 {
+                check(index, "OPM LFO value", 0, 255)?;
+            }
+            check(6, "OPM LFO key sync", 0, 1)?;
+        }
+        Rule::pcm_frequency => check(0, "PCM frequency", 0, 12)?,
+        _ => {}
     }
+    Ok(())
+}
+
+/// Validate every scalar in a length expression before parsing it as `u16`.
+fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
+    let source = pair.as_str();
+    let mut total = 0_i32;
+
+    for term in source.split(['^', '~']) {
+        let term = term.trim();
+        let number = term.trim_end_matches('.');
+        let dots = term.len() - number.len();
+        let (ticks, digits) = match number.strip_prefix('%') {
+            Some(digits) => (true, digits),
+            None => (false, number),
+        };
+        let command = if ticks {
+            "note tick length"
+        } else {
+            "note length"
+        };
+        let max = if ticks { i32::from(u16::MAX) } else { 256 };
+        let mut value = digits.parse::<i32>().map_err(|_| {
+            ParseError::Syntax(format!("{command} integer is too large to represent"))
+        })?;
+        validate_range(command, value, 1, max)?;
+        let mut term_total = value;
+        for _ in 0..dots {
+            value = if ticks {
+                value / 2
+            } else {
+                value
+                    .checked_mul(2)
+                    .ok_or_else(|| ParseError::InvalidValue {
+                        command,
+                        value: i32::MAX,
+                        min: 1,
+                        max,
+                    })?
+            };
+            validate_range(command, value, 1, max)?;
+            term_total = term_total
+                .checked_add(value)
+                .ok_or_else(|| ParseError::InvalidValue {
+                    command: "note length",
+                    value: i32::MAX,
+                    min: 1,
+                    max: i32::from(u16::MAX),
+                })?;
+        }
+        total = total
+            .checked_add(term_total)
+            .ok_or_else(|| ParseError::InvalidValue {
+                command: "note length",
+                value: i32::MAX,
+                min: 1,
+                max: i32::from(u16::MAX),
+            })?;
+    }
+
+    if !source.contains('~') {
+        validate_range("note length", total, 1, i32::from(u16::MAX))?;
+    }
+    Ok(())
 }
 
 /// Convert one command grammar pair into its typed AST representation.
@@ -1000,12 +1013,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
         );
-        assert!(
-            document
-                .tracks
-                .iter()
-                .all(|track| track.commands.len() == 1)
-        );
+        assert!(document
+            .tracks
+            .iter()
+            .all(|track| track.commands.len() == 1));
     }
 
     #[test]
@@ -1121,23 +1132,73 @@ mod tests {
 
     #[test]
     fn explains_numeric_syntax_errors() {
-        let error = parse("A @t999\n").unwrap_err().to_string();
+        let error = parse("A @t\n").unwrap_err().to_string();
 
         assert!(error.contains("line 1, column"));
-        assert!(error.contains("A @t999"));
-        assert!(error.contains("expected: OPM tempo: 0..=255, up to 3 digits"));
-
-        let error = parse("A w32\n").unwrap_err().to_string();
-
-        assert!(error.contains("expected: noise frequency: 0..=31, up to 2 digits"));
-
-        let error = parse("A MD\n").unwrap_err().to_string();
-
-        assert!(error.contains("expected: LFO delay: numeric argument"));
-
-        let error = parse("A k\n").unwrap_err().to_string();
-
+        assert!(error.contains("A @t"));
         assert!(error.contains("expected: unsigned integer"));
+
+        assert!(matches!(
+            parse("A @t256\n"),
+            Err(ParseError::InvalidValue {
+                command: "@t",
+                value: 256,
+                min: 0,
+                max: 255,
+            })
+        ));
+        assert!(matches!(
+            parse("A w32\n"),
+            Err(ParseError::InvalidValue {
+                command: "w",
+                value: 32,
+                min: 0,
+                max: 31,
+            })
+        ));
+    }
+
+    #[test]
+    fn validates_numeric_ranges_after_parsing() {
+        let cases = [
+            ("A @256\n", "voice", 256, 0, 255),
+            ("A n96\n", "note number", 96, 0, 95),
+            ("A o9\n", "octave", 9, 0, 8),
+            ("A q0\n", "q", 0, 1, 8),
+            ("A v16\n", "v", 16, 0, 15),
+            ("A @v128\n", "@v", 128, 0, 127),
+            ("A p4\n", "p", 4, 0, 3),
+            ("A y256,0\n", "register", 256, 0, 255),
+            ("A F13\n", "PCM frequency", 13, 0, 12),
+            ("A [c]256\n", "repeat", 256, 2, 255),
+        ];
+
+        for (source, command, value, min, max) in cases {
+            assert!(
+                matches!(
+                    parse(source),
+                    Err(ParseError::InvalidValue {
+                        command: actual_command,
+                        value: actual_value,
+                        min: actual_min,
+                        max: actual_max,
+                    }) if actual_command == command
+                        && actual_value == value
+                        && actual_min == min
+                        && actual_max == max
+                ),
+                "unexpected result for {source:?}"
+            );
+        }
+
+        assert!(matches!(
+            parse("A t999999999999999999999999999999999999999999999999999999999999\n"),
+            Err(ParseError::Syntax(_))
+        ));
+        assert!(matches!(
+            parse("A c%999999999999999999999999999999999999999999999999999999999999\n"),
+            Err(ParseError::Syntax(_))
+        ));
     }
 
     #[test]
