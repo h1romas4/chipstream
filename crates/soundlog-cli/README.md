@@ -237,6 +237,39 @@ syntax tree.
 soundlog mdx check <MML_FILE> [--verbose]
 ```
 
+To run the check on the active MML file from VS Code and report diagnostics in
+the Problems panel, add the following task to `.vscode/tasks.json`. This
+requires `soundlog` to be available on `PATH`.
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "MML: check current file",
+      "type": "process",
+      "command": "soundlog",
+      "args": ["mdx", "check", "${file}"],
+      "problemMatcher": {
+        "owner": "mmlx",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+): error: (?=.*?, columns \\d+-(\\d+)(?:: .*)?$)(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "endColumn": 4,
+          "message": 5
+        }
+      }
+    }
+  ]
+}
+```
+
+Run **MML: check current file** with **Tasks: Run Task**. Parser diagnostics
+include an end column, which the matcher uses to mark the full source range.
+
 #### `mdx compile`
 
 Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
