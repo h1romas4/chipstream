@@ -7,8 +7,8 @@
 
 use std::fmt;
 
-use pest::error::{ErrorVariant, LineColLocation};
 use pest::Parser;
+use pest::error::{ErrorVariant, LineColLocation};
 use pest_derive::Parser;
 
 #[derive(Parser)]
@@ -1140,10 +1140,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
         );
-        assert!(document
-            .tracks
-            .iter()
-            .all(|track| track.commands.len() == 1));
+        assert!(
+            document
+                .tracks
+                .iter()
+                .all(|track| track.commands.len() == 1)
+        );
     }
 
     #[test]
@@ -1360,8 +1362,11 @@ mod tests {
             .to_string();
 
         assert!(error.contains("MML value error at line 1, column 4"));
-        assert!(error
-            .contains("  A t999999999999999999999999999999999999999999999999999999999999\n     ^"));
+        assert!(
+            error.contains(
+                "  A t999999999999999999999999999999999999999999999999999999999999\n     ^"
+            )
+        );
 
         let error = parse("A c%999999999999999999999999999999999999999999999999999999999999\n")
             .unwrap_err()

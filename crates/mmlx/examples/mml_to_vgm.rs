@@ -7,10 +7,10 @@
 use std::error::Error;
 
 use soundlog::chip::state::Ym2151State;
-use soundlog::mdx::convert::{to_vgm_stream_generator, MdxToVgmOptions};
+use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
 use soundlog::mdx::package::MdxPackage;
-use soundlog::vgm::command::Instance;
 use soundlog::vgm::VgmCallbackStream;
+use soundlog::vgm::command::Instance;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let source = r#"
