@@ -35,6 +35,8 @@ use std::fmt;
 const MICROSECONDS_PER_SECOND: u32 = 1_000_000;
 /// MXDRV tempo used when an MDX stream has not issued a tempo command yet.
 const DEFAULT_TEMPO: u8 = 200;
+/// Fadeout attenuation level at which MXDRV ends playback.
+const FADEOUT_FINAL_LEVEL: u8 = 0x3e;
 /// YM2151 key-code values indexed by the 7-bit pitch key-code field.
 const YM2151_KEYCODE_TABLE: [u8; 96] = [
     0x00, 0x01, 0x02, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0c, 0x0d, 0x0e, 0x10, 0x11, 0x12, 0x14,
@@ -519,6 +521,12 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     track_end_loop_seen: bool,
     /// Whether a fadeout marker has been reached during playback.
     fadeout_seen: bool,
+    /// Fadeout counter reload value supplied by the MDX command.
+    fadeout_speed: u8,
+    /// Remaining fadeout counter value, decremented by two on each tick.
+    fadeout_counter: u8,
+    /// Current global fadeout attenuation level.
+    fadeout_level: u8,
     /// Whether an unconditional ("loop forever") repeat should stop and
     /// record a fixed native VGM loop point (`true`, needed by
     /// [`to_vgm_document`] to produce a finite `VgmDocument` with a valid
@@ -625,6 +633,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             song_loop_complete: false,
             track_end_loop_seen: false,
             fadeout_seen: false,
+            fadeout_speed: 0,
+            fadeout_counter: 0,
+            fadeout_level: 0,
             mark_native_loop,
         }
     }
@@ -633,7 +644,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// or all tracks being inactive and all pending PCM output being drained.
     fn finished(&self) -> bool {
         self.song_loop_complete
-            || (self.tracks.iter().all(|track| !track.active) && !self.has_pending_pcm_output())
+            || (self.fadeout_seen && self.fadeout_level >= FADEOUT_FINAL_LEVEL)
+            || (!self.fadeout_seen
+                && self.tracks.iter().all(|track| !track.active)
+                && !self.has_pending_pcm_output())
     }
 
     fn has_pending_pcm_output(&self) -> bool {
@@ -689,6 +703,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// portamento, and command execution. Returns an error if any track
     /// encounters an issue during processing.
     fn process_tick(&mut self, builder: &mut VgmBuilder) -> Result<(), MdxConvertError> {
+        self.advance_fadeout();
+        if self.fadeout_level >= FADEOUT_FINAL_LEVEL {
+            return Ok(());
+        }
         for track_index in 0..self.tracks.len() {
             if !self.tracks[track_index].active {
                 continue;
@@ -1090,9 +1108,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::LfoDelay(command) => self.tracks[track].lfo_delay = command.value,
                 MdxCommand::PcmMode(_) => {}
                 MdxCommand::Extended(command) => match command {
-                    MdxExtendedCommand::Fadeout { .. } => {
+                    MdxExtendedCommand::Fadeout { value } => {
                         // TODO: Emit YM2151 total-level updates for the fadeout.
                         self.fadeout_seen = true;
+                        self.fadeout_speed = value;
+                        self.fadeout_counter = value;
                     }
                     // None of these E7 sub-commands perform an FM action here.
                     MdxExtendedCommand::Pcm8DirectDrive { .. }
@@ -1929,6 +1949,19 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// mixer's own sample clock so both stay in sync with the same tempo.
     fn tick_microseconds(&self) -> u32 {
         256 * u32::from(256u16 - u16::from(self.tempo))
+    }
+
+    /// Advances the global fadeout counter and attenuation level by one tick.
+    fn advance_fadeout(&mut self) {
+        if !self.fadeout_seen || self.fadeout_level >= FADEOUT_FINAL_LEVEL {
+            return;
+        }
+        if self.fadeout_counter <= 2 {
+            self.fadeout_level += 1;
+            self.fadeout_counter = self.fadeout_speed;
+        } else {
+            self.fadeout_counter -= 2;
+        }
     }
 
     /// Applies NanoDriveX's legacy PCM1 clock/divider selection for `0xed`

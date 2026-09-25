@@ -8,8 +8,8 @@ use std::path::Path;
 use soundlog::mdx::command::{
     MdxAdpcmOrNoiseFrequency, MdxCommand, MdxEndOfTrack, MdxExtended2Command, MdxExtendedCommand,
     MdxKeyOffDisable, MdxLfoWaveform, MdxLoopStart, MdxNote, MdxOpmLfo, MdxOpmRegisterWrite,
-    MdxPan, MdxPitchLfo, MdxRawCommand, MdxRelativeOffset, MdxRest, MdxVoiceOrPcmBank, MdxVolume,
-    MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
+    MdxPan, MdxPitchLfo, MdxRawCommand, MdxRelativeOffset, MdxRest, MdxTempo, MdxVoiceOrPcmBank,
+    MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
     MdxConvertError, MdxToVgmOptions, to_vgm_document, to_vgm_stream_generator,
@@ -1722,9 +1722,10 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 }
 
 #[test]
-fn mdx_converter_ends_fadeout_tracks_instead_of_restarting_them() {
+fn mdx_converter_waits_for_timed_fadeout_before_ending_the_song() {
     let mut builder = MdxBuilder::new();
     builder
+        .add_mdx_command(0, MdxCommand::Tempo(MdxTempo { value: 225 }))
         .add_mdx_command(0, MdxRest { ticks: 1 })
         .add_mdx_command(
             0,
@@ -1754,11 +1755,25 @@ fn mdx_converter_ends_fadeout_tracks_instead_of_restarting_them() {
         .expect("a fadeout marker should make the default conversion finite");
     assert!(document.loop_command_index().is_none());
 
+    let total_samples: u64 = document
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            VgmCommand::WaitSamples(WaitSamples(value)) => Some(u64::from(*value)),
+            _ => None,
+        })
+        .sum();
+    let duration_seconds = total_samples as f64 / 44_100.0;
+    assert!(
+        (20.0..24.0).contains(&duration_seconds),
+        "fadeout should run for about 23 seconds, got {duration_seconds:.2}s"
+    );
+
     let generator = to_vgm_stream_generator(package, MdxToVgmOptions::default())
         .expect("create fadeout stream generator");
     let mut stream = VgmStream::from_generator(generator);
     let mut ended = false;
-    for _ in 0..1024 {
+    for _ in 0..4096 {
         match stream.next().expect("stream should produce an end marker") {
             Ok(StreamResult::Command(_)) => {}
             Ok(StreamResult::EndOfStream) => {
