@@ -456,9 +456,6 @@ fn describe_numeric_context(line: &str, column: usize) -> Option<&'static str> {
     while number_start > 0 && characters[number_start - 1].is_ascii_digit() {
         number_start -= 1;
     }
-    if number_start == position {
-        return None;
-    }
     let prefix = characters[..number_start].iter().collect::<String>();
     if prefix.ends_with("@t") {
         Some("OPM tempo: 0..=255, up to 3 digits")
@@ -493,6 +490,7 @@ fn describe_numeric_context(line: &str, column: usize) -> Option<&'static str> {
 fn describe_rule(rule: &Rule) -> String {
     match rule {
         Rule::byte_number => "byte number (0..=255, up to 3 digits)".to_owned(),
+        Rule::number => "unsigned integer".to_owned(),
         Rule::repeat_count => "repeat count (2..=255, up to 3 digits)".to_owned(),
         Rule::note_number => "note number (0..=95, up to 2 digits)".to_owned(),
         Rule::note_length_number => "note length (up to 3 digits)".to_owned(),
@@ -1132,6 +1130,14 @@ mod tests {
         let error = parse("A w32\n").unwrap_err().to_string();
 
         assert!(error.contains("expected: noise frequency: 0..=31, up to 2 digits"));
+
+        let error = parse("A MD\n").unwrap_err().to_string();
+
+        assert!(error.contains("expected: LFO delay: numeric argument"));
+
+        let error = parse("A k\n").unwrap_err().to_string();
+
+        assert!(error.contains("expected: unsigned integer"));
     }
 
     #[test]
