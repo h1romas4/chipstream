@@ -1,7 +1,7 @@
 # mmlx
 
 `mmlx` parses MML source and compiles it into typed documents supported by
-[`soundlog`](https://docs.rs/soundlog/latest/soundlog/). It currently supports MXDRV MML input and MDX output.
+[`soundlog`]. It currently supports MXDRV MML input and MDX output.
 
 The crate keeps parsing and compilation separate, so applications can inspect
 or format the parsed document before generating MDX data.
@@ -12,7 +12,7 @@ or format the parsed document before generating MDX data.
   per-channel command streams.
 - Inspect the typed syntax tree through `MmlDocument` and `MmlCommand`, or
   render it with `format_tree`.
-- Compile supported commands into `soundlog::mdx::document::MdxDocument`.
+- Compile supported commands into [`MdxDocument`](soundlog::mdx::document::MdxDocument).
 
 ## Example
 
@@ -53,5 +53,6 @@ command can be compiled to MDX.
 
 ## See also
 
-[`soundlog`](https://docs.rs/soundlog/latest/soundlog/) can convert an `MdxDocument` (with optional PDX data) into a
-`VgmDocument` or a streaming `VgmStream`.
+[`soundlog`] can convert an [`MdxDocument`](soundlog::mdx::document::MdxDocument)
+(with optional PDX data) into a [`VgmDocument`](soundlog::vgm::VgmDocument) or a
+streaming [`VgmStream`](soundlog::vgm::VgmStream).
