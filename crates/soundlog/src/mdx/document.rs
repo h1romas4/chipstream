@@ -66,6 +66,77 @@ pub struct MdxDocument {
     lz_compressed: bool,
 }
 
+struct MdxLayout {
+    track_positions: Vec<Option<usize>>,
+    tone_position: usize,
+    body_end: usize,
+}
+
+impl MdxLayout {
+    fn calculate(
+        header: &mut MdxHeader,
+        tracks: &[Vec<MdxCommand>],
+        track_lengths: &[usize],
+        tone_length: usize,
+    ) -> Self {
+        header.track_offsets.resize(tracks.len(), None);
+        header.base_offset = header.title_raw_bytes.len()
+            + 3
+            + header.pdx_name_raw_bytes.as_ref().map_or(0, Vec::len)
+            + 1;
+        let header_length = header.base_offset + 2 + tracks.len() * 2;
+        let initial_tone_position = if header.tone_data_offset == 0 {
+            header_length
+        } else {
+            header.tone_data_position().unwrap_or(header_length)
+        };
+        let mut position = if tone_length != 0 && initial_tone_position == header_length {
+            initial_tone_position.saturating_add(tone_length)
+        } else {
+            header_length
+        };
+
+        for (track, commands) in tracks.iter().enumerate() {
+            if commands.is_empty() {
+                header.track_offsets[track] = None;
+                continue;
+            }
+            header.track_offsets[track] = position
+                .checked_sub(header.base_offset)
+                .and_then(|offset| u16::try_from(offset).ok());
+            position = position.saturating_add(track_lengths[track]);
+        }
+        if tone_length != 0 && header.tone_data_offset == 0 {
+            header.tone_data_offset =
+                u16::try_from(position.saturating_sub(header.base_offset)).unwrap_or(u16::MAX);
+        }
+
+        let track_positions = (0..tracks.len())
+            .map(|track| header.track_position(track))
+            .collect::<Vec<_>>();
+        let tone_position = if header.tone_data_offset == 0 {
+            header_length
+        } else {
+            header.tone_data_position().unwrap_or(header_length)
+        };
+        let body_end = track_positions
+            .iter()
+            .enumerate()
+            .filter_map(|(track, position)| {
+                position.map(|position| position.saturating_add(track_lengths[track]))
+            })
+            .chain([header_length, tone_position.saturating_add(tone_length)])
+            .max()
+            .unwrap_or(header_length);
+
+        Self {
+            track_positions,
+            tone_position,
+            body_end,
+        }
+    }
+}
+
 /// Builder for constructing an [`MdxDocument`] from typed track commands.
 ///
 /// A new builder starts with nine empty tracks, which is the standard MDX
@@ -353,15 +424,22 @@ impl MdxDocument {
     /// Unknown commands whose serialized form is not available produce a zero
     /// length range.
     pub fn sourcemap(&self) -> Vec<Vec<(usize, usize)>> {
-        self.tracks
+        let mut header = self.header.clone();
+        Self::synchronize_header_text(&mut header);
+        let encoded_tracks = serialize_track_commands(&self.tracks);
+        let track_lengths = encoded_track_lengths(&encoded_tracks);
+        let tone_length = self.tone_bank.to_bytes().len();
+        let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length);
+
+        encoded_tracks
             .iter()
             .enumerate()
             .map(|(track, commands)| {
-                let mut offset = self.header.track_position(track).unwrap_or(0);
+                let mut offset = layout.track_positions[track].unwrap_or(0);
                 commands
                     .iter()
-                    .map(|command| {
-                        let length = command.to_mdx_bytes().map_or(0, |bytes| bytes.len());
+                    .map(|command_bytes| {
+                        let length = command_bytes.as_ref().map_or(0, Vec::len);
                         let range = (offset, length);
                         offset = offset.saturating_add(length);
                         range
@@ -386,72 +464,40 @@ impl MdxDocument {
     /// encoded using the NanoDriveX-compatible format. Documents parsed from
     /// compressed input are not automatically marked for compressed output.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut document = self.clone();
-        document.synchronize_header_text();
-        document.recalculate_offsets();
-        let mut bytes = document.header.to_bytes();
-        let tone_bytes = document.tone_bank.to_bytes();
-        let header_length = document.header.base_offset + 2 + document.tracks.len() * 2;
-        let tone_position = if document.header.tone_data_offset == 0 {
-            header_length
-        } else {
-            document.header.tone_data_position().unwrap_or(bytes.len())
-        };
-        let mut track_bytes = Vec::with_capacity(document.tracks.len());
-        for track in &document.tracks {
-            track_bytes.push(
-                track
-                    .iter()
-                    .filter_map(|command| command.to_mdx_bytes())
-                    .flatten()
-                    .collect::<Vec<_>>(),
-            );
-        }
-        let body_end = document
-            .header
-            .track_offsets
-            .iter()
-            .enumerate()
-            .filter_map(|(track, offset)| {
-                offset.and_then(|_| {
-                    document
-                        .header
-                        .track_position(track)
-                        .map(|position| position.saturating_add(track_bytes[track].len()))
-                })
-            })
-            .chain(Some(
-                document
-                    .header
-                    .tone_data_position()
-                    .filter(|_| document.header.tone_data_offset != 0)
-                    .unwrap_or(header_length)
-                    .saturating_add(tone_bytes.len()),
-            ))
-            .chain(Some(bytes.len()))
-            .max()
-            .unwrap_or(bytes.len());
-        bytes.resize(body_end, 0);
-        if let Some(end) = tone_position.checked_add(tone_bytes.len())
+        let mut header = self.header.clone();
+        Self::synchronize_header_text(&mut header);
+        let tone_bytes = self.tone_bank.to_bytes();
+        let encoded_tracks = serialize_track_commands(&self.tracks);
+        let track_lengths = encoded_track_lengths(&encoded_tracks);
+        let layout =
+            MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_bytes.len());
+        let mut bytes = header.to_bytes();
+        bytes.resize(layout.body_end, 0);
+        if let Some(end) = layout.tone_position.checked_add(tone_bytes.len())
             && end <= bytes.len()
         {
-            bytes[tone_position..end].copy_from_slice(&tone_bytes);
+            bytes[layout.tone_position..end].copy_from_slice(&tone_bytes);
         }
-        for (track, data) in track_bytes.iter().enumerate() {
-            let Some(position) = document.header.track_position(track) else {
+        for (track, commands) in encoded_tracks.iter().enumerate() {
+            let Some(position) = layout.track_positions[track] else {
                 continue;
             };
-            let Some(end) = position.checked_add(data.len()) else {
+            let Some(end) = position.checked_add(track_lengths[track]) else {
                 continue;
             };
             if end <= bytes.len() {
-                bytes[position..end].copy_from_slice(data);
+                let mut command_position = position;
+                for command_bytes in commands.iter().flatten() {
+                    let command_end = command_position + command_bytes.len();
+                    bytes[command_position..command_end].copy_from_slice(command_bytes);
+                    command_position = command_end;
+                }
             }
         }
-        if !document.lz_compressed {
+        if !self.lz_compressed {
             return bytes;
         }
-        let body_start = document.header.base_offset;
+        let body_start = header.base_offset;
         let mut compressed = bytes[..body_start].to_vec();
         compressed.extend_from_slice(&LZ_STREAM_MARKER);
         compressed.extend_from_slice(&lz::encode(&bytes[body_start..]));
@@ -460,21 +506,18 @@ impl MdxDocument {
 
     /// Synchronizes decoded public header fields with their retained encoded
     /// representation while preserving raw bytes when the fields are unchanged.
-    fn synchronize_header_text(&mut self) {
-        let decoded_title = crate::mdx::encoding::decode_shift_jis(&self.header.title_raw_bytes);
-        if decoded_title != self.header.title {
-            self.header.title_raw_bytes =
-                crate::mdx::encoding::encode_shift_jis(&self.header.title);
+    fn synchronize_header_text(header: &mut MdxHeader) {
+        let decoded_title = crate::mdx::encoding::decode_shift_jis(&header.title_raw_bytes);
+        if decoded_title != header.title {
+            header.title_raw_bytes = crate::mdx::encoding::encode_shift_jis(&header.title);
         }
 
-        let decoded_pdx_name = self
-            .header
+        let decoded_pdx_name = header
             .pdx_name_raw_bytes
             .as_deref()
             .map(crate::mdx::encoding::decode_shift_jis);
-        if decoded_pdx_name != self.header.pdx_name {
-            self.header.pdx_name_raw_bytes = self
-                .header
+        if decoded_pdx_name != header.pdx_name {
+            header.pdx_name_raw_bytes = header
                 .pdx_name
                 .as_deref()
                 .map(crate::mdx::encoding::encode_shift_jis);
@@ -487,46 +530,37 @@ impl MdxDocument {
     /// that the track offsets in the header are consistent with the actual positions
     /// of the track data in the MDX document.
     fn recalculate_offsets(&mut self) {
-        self.header.track_offsets.resize(self.tracks.len(), None);
-        self.header.base_offset = self.header.title_raw_bytes.len()
-            + 3
-            + self.header.pdx_name_raw_bytes.as_ref().map_or(0, Vec::len)
-            + 1;
-        let header_length = self.header.base_offset + 2 + self.tracks.len() * 2;
+        let track_lengths = serialized_track_lengths(&self.tracks);
         let tone_length = self.tone_bank.to_bytes().len();
-        let tone_table_end = self.header.base_offset + 2 + self.tracks.len() * 2;
-        let tone_position = if self.header.tone_data_offset == 0 {
-            header_length
-        } else {
-            self.header.tone_data_position().unwrap_or(header_length)
-        };
-        let mut position = if tone_length != 0 && tone_position == tone_table_end {
-            tone_position.saturating_add(tone_length)
-        } else {
-            header_length
-        };
-        for (track, commands) in self.tracks.iter().enumerate() {
-            if commands.is_empty() {
-                self.header.track_offsets[track] = None;
-                continue;
-            }
-            let relative = position
-                .checked_sub(self.header.base_offset)
-                .and_then(|offset| u16::try_from(offset).ok());
-            self.header.track_offsets[track] = relative;
-            position = position.saturating_add(
-                commands
-                    .iter()
-                    .filter_map(|command| command.to_mdx_bytes())
-                    .map(|bytes| bytes.len())
-                    .sum::<usize>(),
-            );
-        }
-        if tone_length != 0 && self.header.tone_data_offset == 0 {
-            self.header.tone_data_offset =
-                u16::try_from(position.saturating_sub(self.header.base_offset)).unwrap_or(u16::MAX);
-        }
+        MdxLayout::calculate(&mut self.header, &self.tracks, &track_lengths, tone_length);
     }
+}
+
+fn serialize_track_commands(tracks: &[Vec<MdxCommand>]) -> Vec<Vec<Option<Vec<u8>>>> {
+    tracks
+        .iter()
+        .map(|track| track.iter().map(MdxCommand::to_mdx_bytes).collect())
+        .collect()
+}
+
+fn encoded_track_lengths(encoded_tracks: &[Vec<Option<Vec<u8>>>]) -> Vec<usize> {
+    encoded_tracks
+        .iter()
+        .map(|track| track.iter().filter_map(Option::as_ref).map(Vec::len).sum())
+        .collect()
+}
+
+fn serialized_track_lengths(tracks: &[Vec<MdxCommand>]) -> Vec<usize> {
+    tracks
+        .iter()
+        .map(|track| {
+            track
+                .iter()
+                .filter_map(MdxCommand::to_mdx_bytes)
+                .map(|bytes| bytes.len())
+                .sum()
+        })
+        .collect()
 }
 
 impl TryFrom<&[u8]> for MdxDocument {

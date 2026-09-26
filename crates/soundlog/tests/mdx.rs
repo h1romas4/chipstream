@@ -295,6 +295,23 @@ fn mdx_document_parses_tracks_and_builds_absolute_sourcemap() {
 }
 
 #[test]
+fn mdx_document_sourcemap_matches_serialized_layout_after_edits() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .set_title("TITLE")
+        .add_mdx_command(0, MdxRest { ticks: 1 });
+    let mut document = builder.finalize().expect("finalize MDX document");
+
+    document.header.title = "A longer title".to_string();
+    document.tracks[0].insert(1, MdxCommand::Rest(MdxRest { ticks: 2 }));
+
+    let source_map = document.sourcemap();
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized edits");
+
+    assert_eq!(reparsed.sourcemap(), source_map);
+}
+
+#[test]
 fn mdx_track_ends_at_next_track_offset_without_end_command() {
     let mut bytes = b"TITLE\r\n\x1a\0".to_vec();
     bytes.extend_from_slice(&0u16.to_be_bytes());
