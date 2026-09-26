@@ -30,7 +30,7 @@ use soundlog::chip::{self, Chip};
 use soundlog::vgm::command::Instance;
 use soundlog::{VgmBuilder, VgmCallbackStream};
 
-const TARGET_A4_HZ: f32 = 440.0_f32;
+const TARGET_FREQUENCY_HZ: f32 = 440.0_f32;
 /// Allowed absolute Hz tolerance when comparing produced frequency to target.
 const YM2151_TOLERANCE_HZ: f32 = 2.0;
 
@@ -208,9 +208,9 @@ pub fn write_ym2151_keyoff(builder: &mut VgmBuilder, instance: Instance, channel
 }
 
 #[test]
-fn test_ym2151_keyon_and_tone_freq_matches_a4() {
+fn test_ym2151_keyon_and_tone_freq_matches_440_hz() {
     // Target pitch and chip configuration
-    let target_hz = TARGET_A4_HZ;
+    let target_hz = TARGET_FREQUENCY_HZ;
 
     // YM2151 master clock for arcade systems (NTSC colorburst frequency)
     let master_clock = 3_579_545.0_f32;
@@ -221,7 +221,7 @@ fn test_ym2151_keyon_and_tone_freq_matches_a4() {
     // YM2151 frequency encoding:
     // KC register: bits 6-4 = octave, bits 3-0 = YM2151 note code
     // KF register: bits 7-2 = kf_fraction (6 bits)
-    let kc_value = 0x4c;
+    let kc_value = 0x4a;
     let kf_value = 0x00;
 
     // Build VGM
@@ -253,7 +253,7 @@ fn test_ym2151_keyon_and_tone_freq_matches_a4() {
     let vgm_bytes: Vec<u8> = (&doc).into();
     super::maybe_write_vgm("ym2151_a4.vgm", &vgm_bytes);
 
-    // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
+    // State-tracking assertion: KeyOn must report the expected KC/KF frequency.
     let mut callback_stream = VgmCallbackStream::from_document(doc);
     callback_stream.track_state::<Ym2151State>(Instance::Primary, master_clock);
 
@@ -284,7 +284,7 @@ fn test_ym2151_keyon_and_tone_freq_matches_a4() {
         "Expected KeyOn StateEvent with ToneInfo.freq_hz, but none was captured"
     );
     let freq = got_opt.unwrap();
-    // Use the tuned.actual_freq_hz as expected frequency (closest representable)
+    // Compare against the phase-increment curve approximation.
     let diff = (freq - target_hz).abs();
     assert!(
         diff <= YM2151_TOLERANCE_HZ,

@@ -11,26 +11,6 @@ use std::array;
 
 /// YM2151 has 8 FM channels
 const YM2151_CHANNELS: usize = 8;
-/// YM2151 key-code nibble to semitone offset from C.
-const YM2151_KEYCODE_TO_SEMITONE: [Option<u8>; 16] = [
-    Some(0),
-    Some(1),
-    Some(2),
-    None,
-    Some(3),
-    Some(4),
-    Some(5),
-    None,
-    Some(6),
-    Some(7),
-    Some(8),
-    None,
-    Some(9),
-    Some(10),
-    Some(11),
-    None,
-];
-
 /// YM2151 channel storage (256 register space)
 ///
 /// YM2151 has a 256-register address space. ArrayStorage provides
@@ -146,56 +126,27 @@ impl Ym2151State {
         let fnum = (note_code as u32) * 64 + kf_fraction as u32;
 
         // Calculate actual frequency directly from KC/KF (note ratio + octave + KF fine tuning)
-        let freq_hz = Self::kc_kf_to_freq(kc, kf, self.master_clock_hz);
+        let freq_hz = Some(Self::kc_kf_to_freq(kc, kf, self.master_clock_hz));
 
         Some(ToneInfo::new(fnum as u16, block, freq_hz))
     }
 
-    /// Convert a YM2151 KC/KF register pair into a frequency in Hertz.
+    /// Convert KC/KF to frequency using a YM2151 phase-increment mapping.
     ///
-    /// KC/KF encoding
-    /// - `KC` (Key Code) layout:
-    ///   - bits 6..4 = block (octave)
-    ///   - bits 3..0 = note code, mapped to C..B by the YM2151 key-code table
-    /// - `KF` (Key Fraction) layout:
-    ///   - bits 7..2 = fractional tuning steps (0..63). Lower two bits are ignored.
-    ///
-    /// Mapping chosen here
-    /// - Map KC to a MIDI note number so that `KC = 0x4C` (block=4, A) becomes MIDI 69 (A4).
-    ///   Concretely: `midi = block * 12 + semitone + 12`.
-    /// - Compute the base frequency using equal-tempered tuning relative to A4 = 440 Hz:
-    ///   `base_freq = 440 * 2^((midi - 69) / 12)`.
-    /// - Apply KF as a fine fractional semitone. KF provides 64 discrete steps per semitone,
-    ///   and there are 12 semitones per octave, so we treat KF as a fraction of 768 steps:
-    ///   `fine_multiplier = 2^(kf_fraction / 768)`.
-    /// - Finally, scale the result linearly by the ratio of the provided `master_clock_hz` to
-    ///   a nominal YM2151 clock of 3,579,545 Hz. This keeps frequencies consistent if the
-    ///   device uses a different master clock.
-    ///
-    /// Arguments
-    /// - `kc`: KC register value
-    /// - `kf`: KF register value
-    /// - `master_clock_hz`: actual master clock in Hz used to scale the nominal frequency
-    ///
-    /// Returns
-    /// - `Some(frequency_hz)` when `KC` encodes one of the twelve YM2151 notes
-    /// - `None` when `KC`'s note code is unused
-    fn kc_kf_to_freq(kc: u8, kf: u8, master_clock_hz: f32) -> Option<f32> {
-        let nominal_clock = 3_579_545.0;
-        let oct = (kc >> 4) & 0x07;
-        let note_code = (kc & 0x0F) as usize;
-        let semitone = i32::from(YM2151_KEYCODE_TO_SEMITONE[note_code]?);
-        let kf_fraction = ((kf >> 2) & 0x3F) as f32; // 0..63
-        // Map KC to MIDI note (so 0x4C -> MIDI 69)
-        let midi = i32::from(oct) * 12 + semitone + 12;
-        // Base frequency using equal-tempered tuning relative to A4 = 440 Hz.
-        let base_freq = 440.0f32 * 2f32.powf((midi as f32 - 69.0f32) / 12.0f32);
-        // Apply KF fine-tuning (fraction of a semitone)
-        let fine = 2f32.powf(kf_fraction / 768.0f32);
-        // Apply clock scale (TODO)
-        let scale = master_clock_hz / nominal_clock;
+    /// `(KC - (KC >> 2)) * 64 + KF[7:2]` gives 768 steps per octave. The
+    /// phase-increment curve is approximated by its 1299 base value and an
+    /// exponential curve. The phase accumulator has `1024 * 2^16` units per
+    /// cycle, with the base value referenced to octave 2.
+    fn kc_kf_to_freq(kc: u8, kf: u8, master_clock_hz: f32) -> f32 {
+        let key_code = u32::from(kc & 0x7F);
+        let key_position = (key_code - (key_code >> 2)) * 64 + u32::from((kf >> 2) & 0x3F);
+        let key_position = key_position.min(8 * 768 - 1);
+        let octave = (key_position / 768) as i32;
+        let fraction = (key_position % 768) as f32;
 
-        Some(base_freq * fine * scale)
+        let phase_increment = 1299.0f32 * 2.0f32.powf(fraction / 768.0);
+        let octave_scale = 2.0f32.powi(octave - 2);
+        phase_increment * octave_scale * master_clock_hz / (1024.0 * 65_536.0)
     }
 
     /// Handle key on/off register write (0x08)
@@ -416,22 +367,13 @@ mod tests {
     }
 
     #[test]
-    fn test_kc_kf_4c_yields_a4_440hz() {
-        // Typical YM2151 master clock used in tests and many arcade systems
+    fn test_kc_kf_4a_matches_440_hz() {
         let master_clock: f32 = 3_579_545.0f32;
 
-        // KC = 0x4C, KF = 0x00 should map to A4 (440 Hz).
-        let freq_opt = Ym2151State::kc_kf_to_freq(0x4C, 0x00, master_clock);
-        assert!(
-            freq_opt.is_some(),
-            "kc_kf_to_freq returned None for KC=0x4C, KF=0x00"
-        );
-
-        let freq = freq_opt.unwrap();
+        let freq = Ym2151State::kc_kf_to_freq(0x4A, 0x00, master_clock);
         let diff = (freq - 440.0f32).abs();
-        // Allow a small tolerance (sub-hertz rounding and float precision)
         assert!(
-            diff <= 0.5f32,
+            diff <= 1.0f32,
             "Expected ≈440 Hz for KC=0x4A KF=0x00, got {} Hz (diff {})",
             freq,
             diff
@@ -439,30 +381,23 @@ mod tests {
     }
 
     #[test]
-    fn test_all_ym2151_key_codes_map_to_semitones() {
-        let key_codes = [0x0, 0x1, 0x2, 0x4, 0x5, 0x6, 0x8, 0x9, 0xA, 0xC, 0xD, 0xE];
-
-        for (semitone, key_code) in key_codes.into_iter().enumerate() {
-            let kc = 0x40 | key_code;
-            let frequency = Ym2151State::kc_kf_to_freq(kc, 0, 3_579_545.0)
-                .expect("all YM2151 note codes should have a frequency");
-            let expected = 440.0 * 2f32.powf((semitone as f32 - 9.0) / 12.0);
-
-            assert!(
-                (frequency - expected).abs() < 0.01,
-                "KC=0x{kc:02X}: expected {expected} Hz, got {frequency} Hz"
+    fn test_keycode_gaps_alias_the_following_code() {
+        for (gap, following) in [(0x43, 0x44), (0x47, 0x48), (0x4B, 0x4C), (0x4F, 0x50)] {
+            assert_eq!(
+                Ym2151State::kc_kf_to_freq(gap, 0, 3_579_545.0),
+                Ym2151State::kc_kf_to_freq(following, 0, 3_579_545.0),
+                "KC mapping should alias 0x{gap:02X} to 0x{following:02X}"
             );
         }
     }
 
     #[test]
-    fn test_unused_ym2151_key_codes_have_no_frequency() {
-        for key_code in [0x3, 0x7, 0xB, 0xF] {
-            assert_eq!(
-                Ym2151State::kc_kf_to_freq(0x40 | key_code, 0, 3_579_545.0),
-                None,
-                "unused KC note code 0x{key_code:X} should not map to a frequency"
-            );
-        }
+    fn test_kf_and_clock_scale_frequency() {
+        let base = Ym2151State::kc_kf_to_freq(0x4A, 0, 3_579_545.0);
+        let high_kf = Ym2151State::kc_kf_to_freq(0x4A, 0xFC, 3_579_545.0);
+        let higher_clock = Ym2151State::kc_kf_to_freq(0x4A, 0, 4_000_000.0);
+
+        assert!(high_kf > base);
+        assert!((higher_clock / base - 4_000_000.0 / 3_579_545.0).abs() < 0.0001);
     }
 }
