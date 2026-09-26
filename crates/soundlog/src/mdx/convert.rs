@@ -345,47 +345,97 @@ enum LoopEndAction {
     Fallthrough,
 }
 
-struct TrackState {
-    /// Index of the next MDX command to process for this track.
-    command_index: usize,
-    /// Remaining ticks before this track can process another command.
-    wait_ticks: u16,
-    /// Remaining ticks before the currently sounding note is keyed off.
-    key_off_ticks: u16,
-    /// Whether this track still has commands or a pending playback state.
-    active: bool,
+struct PcmTrackConfig {
+    /// PDX bank selector for tracks >= 8, set by `0xfd`.
+    bank: u8,
+    /// Q16.16 resampler rate step; `0x10000` is 1.0x playback speed.
+    rate_step: u32,
+    /// Sample data format selected by the last `0xed` on a PCM8A track.
+    data_kind: Pcm8aFormat,
+}
+
+#[derive(Default)]
+struct LfoState {
+    /// Per-channel PMS/AMS sensitivity, applied to register `0x38+ch`.
+    pms_ams: u8,
+    /// Whether the OPM's hardware LFO waveform position is reset on the
+    /// next key-on (register `0x01` LFO_RESET pulse).
+    opm_reset_pending: bool,
+    /// Configured and remaining delay before pitch and volume LFO activation.
+    delay: u8,
+    /// Ticks remaining before the delayed LFOs are reset and activated.
+    delay_counter: u8,
+    /// Whether the pitch LFO is enabled.
+    pitch_enabled: bool,
+    /// Selected pitch LFO waveform.
+    pitch_type: Option<MdxLfoWaveform>,
+    /// Configured pitch LFO period in ticks.
+    pitch_length: u16,
+    /// Effective pitch LFO period after waveform-specific adjustment.
+    pitch_length_cooked: u16,
+    /// Ticks remaining in the current pitch LFO period.
+    pitch_length_counter: u16,
+    /// Initial pitch LFO step in fixed-point units.
+    pitch_delta_start: i32,
+    /// Current pitch LFO step in fixed-point units.
+    pitch_delta: i32,
+    /// Initial pitch LFO offset in fixed-point units.
+    pitch_offset_start: i32,
+    /// Current pitch LFO offset in fixed-point units.
+    pitch_offset: i32,
+    /// Whether the volume LFO is enabled.
+    volume_enabled: bool,
+    /// Selected volume LFO waveform.
+    volume_type: Option<MdxLfoWaveform>,
+    /// Configured volume LFO period in ticks.
+    volume_length: u16,
+    /// Ticks remaining in the current volume LFO period.
+    volume_length_counter: u16,
+    /// Initial volume LFO step.
+    volume_delta_start: u16,
+    /// Current volume LFO step.
+    volume_delta: u16,
+    /// Waveform-adjusted volume LFO step used by the update logic.
+    volume_delta_cooked: u16,
+    /// Current volume LFO attenuation offset.
+    volume_offset: u16,
+}
+
+impl Default for PcmTrackConfig {
+    fn default() -> Self {
+        Self {
+            bank: 0,
+            rate_step: 0x10000,
+            data_kind: Pcm8aFormat::Adpcm,
+        }
+    }
+}
+
+/// Per-track voice and note state; volume and key-off settings also feed PCM playback.
+struct FmTrackState {
     /// Whether an FM note is currently keyed on.
     key_on: bool,
-    /// Currently selected FM voice number, or the PCM bank for PCM tracks.
+    /// Currently selected FM voice number.
     voice: u8,
     /// Set once a voice-select command has run at least once.
     voice_selected: bool,
-    /// Set by a voice-select command; applying the tone (and register
-    /// `0x20`'s CON/FL bits, via `con_fl`) is deferred to the next key-on,
-    /// mirroring `_applyPendingFmState`'s "voice update pending" flag.
+    /// Whether a voice update is pending until the next key-on.
     voice_pending: bool,
-    /// Set by a pan command; writing register `0x20` is deferred to the
-    /// next key-on, mirroring `_applyPendingFmState`'s "pan update
-    /// pending" flag. Note that register `0x20` (pan combined with CON/FL)
-    /// is therefore never written for a track that has no pan command.
+    /// Whether a pan update is pending until the next key-on.
     pan_pending: bool,
-    /// CON/FL of the currently selected tone (`con | fl << 3`), used for
-    /// register `0x20` and to resolve the key-on slot fallback.
+    /// CON/FL of the currently selected tone (`con | fl << 3`).
     con_fl: u8,
-    /// Raw key-on slot mask (tone `op` byte, shifted) combined with the FM
-    /// channel. A zero mask (top 5 bits clear) falls back to the
-    /// algorithm's default carrier slots, resolved at key-on time.
+    /// Tone key-on slot mask combined with the FM channel.
     key_on_slot: u8,
     /// Physical YM2151 channel currently used by this track.
     fm_channel: u8,
     /// FM pan bits written to YM2151 register `0x20`.
     pan: u8,
-    /// Current MDX volume value, using the MDX signed attenuation encoding.
+    /// Current MDX volume value, using the signed attenuation encoding.
     volume: u8,
     /// Gate ratio or signed gate adjustment used to calculate key-off timing.
     gate: i8,
-    /// Whether the next note should preserve the current sound instead of
-    /// scheduling a key-off.
+    /// Whether the next note preserves the current sound instead of keying off.
     key_off_disabled: bool,
     /// Number of ticks to delay the next FM key-on.
     key_on_delay: u8,
@@ -399,71 +449,64 @@ struct TrackState {
     transpose: i32,
     /// Current MDX note pitch before bend and LFO offsets are applied.
     note_pitch: Option<u16>,
-    /// Last pitch actually written to the OPM registers, used to avoid
-    /// redundant writes (mirrors `writePitchIfChanged` in the reference).
+    /// Last pitch written to the OPM registers, used to avoid redundant writes.
     last_written_pitch: Option<u16>,
-    /// Accumulated pitch-bend offset in the fixed-point representation used
-    /// by the playback simulation.
+    /// Accumulated pitch-bend offset in the playback fixed-point representation.
     bend_offset: i32,
     /// Per-tick pitch-bend increment from the portamento command.
     bend_delta: i32,
-    /// Whether portamento applies this tick; cleared before each new batch
-    /// of commands is processed, so it only affects the note it precedes.
+    /// Whether portamento applies to the current note.
     portamento_active: bool,
+}
+
+impl Default for FmTrackState {
+    fn default() -> Self {
+        Self {
+            key_on: false,
+            voice: 0,
+            voice_selected: false,
+            voice_pending: false,
+            pan_pending: false,
+            con_fl: 0,
+            key_on_slot: 0,
+            fm_channel: 0,
+            pan: 0xc0,
+            volume: 8,
+            gate: 8,
+            key_off_disabled: false,
+            key_on_delay: 0,
+            key_on_delay_counter: 0,
+            key_on_pending: false,
+            detune: 0,
+            transpose: 0,
+            note_pitch: None,
+            last_written_pitch: None,
+            bend_offset: 0,
+            bend_delta: 0,
+            portamento_active: false,
+        }
+    }
+}
+
+struct TrackState {
+    /// Index of the next MDX command to process for this track.
+    command_index: usize,
+    /// Remaining ticks before this track can process another command.
+    wait_ticks: u16,
+    /// Remaining ticks before the currently sounding note is keyed off.
+    key_off_ticks: u16,
+    /// Whether this track still has commands or a pending playback state.
+    active: bool,
+    /// FM voice, pitch, key-on, and volume state for this track.
+    fm: FmTrackState,
     /// Whether this track is blocked at a synchronization wait.
     sync_wait: bool,
     /// Nested loop stack containing remaining counts and command indices.
     loop_stack: Vec<(u32, usize)>,
-    /// Per-channel PMS/AMS sensitivity, applied to register `0x38+ch`.
-    pms_ams: u8,
-    /// Whether the OPM's hardware LFO waveform position is reset on the
-    /// next key-on (register `0x01` LFO_RESET pulse).
-    opm_lfo_reset_pending: bool,
-    /// Number of ticks to delay pitch and volume LFO activation after key-on.
-    lfo_delay: u8,
-    /// Remaining ticks in the current LFO delay.
-    lfo_delay_counter: u8,
-    /// Whether the pitch LFO is enabled.
-    pitch_lfo_enabled: bool,
-    /// Selected pitch LFO waveform and mode.
-    pitch_lfo_type: Option<MdxLfoWaveform>,
-    /// Configured pitch LFO period in ticks.
-    pitch_lfo_length: u16,
-    /// Effective pitch LFO period after waveform-specific adjustment.
-    pitch_lfo_length_cooked: u16,
-    /// Remaining ticks in the current pitch LFO period.
-    pitch_lfo_length_counter: u16,
-    /// Initial pitch LFO step in fixed-point units.
-    pitch_lfo_delta_start: i32,
-    /// Current pitch LFO step in fixed-point units.
-    pitch_lfo_delta: i32,
-    /// Initial pitch LFO offset in fixed-point units.
-    pitch_lfo_offset_start: i32,
-    /// Current pitch LFO offset in fixed-point units.
-    pitch_lfo_offset: i32,
-    /// Whether the volume LFO is enabled.
-    volume_lfo_enabled: bool,
-    /// Selected volume LFO waveform and mode.
-    volume_lfo_type: Option<MdxLfoWaveform>,
-    /// Configured volume LFO period in ticks.
-    volume_lfo_length: u16,
-    /// Remaining ticks in the current volume LFO period.
-    volume_lfo_length_counter: u16,
-    /// Initial volume LFO step.
-    volume_lfo_delta_start: u16,
-    /// Current volume LFO step.
-    volume_lfo_delta: u16,
-    /// Waveform-adjusted volume LFO step used by the update logic.
-    volume_lfo_delta_cooked: u16,
-    /// Current volume LFO attenuation offset.
-    volume_lfo_offset: u16,
-    /// PDX bank selector for tracks >= 8, set by `0xfd`.
-    pcm_bank: u8,
-    /// Q16.16 resampler rate step for tracks >= 8, set by `0xed` on a
-    /// PCM8A track (`0x10000` is 1.0x playback speed).
-    pcm_rate_step: u32,
-    /// Sample data format selected by the last `0xed` on a PCM8A track.
-    pcm_data_kind: Pcm8aFormat,
+    /// OPM hardware and software LFO configuration and phase.
+    lfo: LfoState,
+    /// Per-track PCM playback selection for PCM tracks >= 8.
+    pcm: PcmTrackConfig,
 }
 
 struct PlaybackState<P: Borrow<MdxPackage>> {
@@ -574,54 +617,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 wait_ticks: 0,
                 key_off_ticks: 0,
                 active: !commands.is_empty(),
-                key_on: false,
-                voice: 0,
-                voice_selected: false,
-                voice_pending: false,
-                pan_pending: false,
-                con_fl: 0,
-                key_on_slot: 0,
-                fm_channel: track as u8,
-                pan: 0xc0,
-                volume: 8,
-                gate: 8,
-                key_off_disabled: false,
-                key_on_delay: 0,
-                key_on_delay_counter: 0,
-                key_on_pending: false,
-                detune: 0,
-                transpose: 0,
-                note_pitch: None,
-                last_written_pitch: None,
-                bend_offset: 0,
-                bend_delta: 0,
-                portamento_active: false,
+                fm: FmTrackState {
+                    fm_channel: track as u8,
+                    ..FmTrackState::default()
+                },
                 sync_wait: false,
                 loop_stack: Vec::new(),
-                pms_ams: 0,
-                opm_lfo_reset_pending: false,
-                lfo_delay: 0,
-                lfo_delay_counter: 0,
-                pitch_lfo_enabled: false,
-                pitch_lfo_type: None,
-                pitch_lfo_length: 0,
-                pitch_lfo_length_cooked: 0,
-                pitch_lfo_length_counter: 0,
-                pitch_lfo_delta_start: 0,
-                pitch_lfo_delta: 0,
-                pitch_lfo_offset_start: 0,
-                pitch_lfo_offset: 0,
-                volume_lfo_enabled: false,
-                volume_lfo_type: None,
-                volume_lfo_length: 0,
-                volume_lfo_length_counter: 0,
-                volume_lfo_delta_start: 0,
-                volume_lfo_delta: 0,
-                volume_lfo_delta_cooked: 0,
-                volume_lfo_offset: 0,
-                pcm_bank: 0,
-                pcm_rate_step: 0x10000,
-                pcm_data_kind: Pcm8aFormat::Adpcm,
+                lfo: LfoState::default(),
+                pcm: PcmTrackConfig::default(),
             })
             .collect();
         Self {
@@ -746,7 +749,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 continue;
             }
             // Portamento only affects the note it immediately precedes.
-            self.tracks[track_index].portamento_active = false;
+            self.tracks[track_index].fm.portamento_active = false;
             self.process_commands(track_index, builder)?;
         }
         Ok(())
@@ -770,9 +773,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             return;
         }
         if track < 8 {
-            if self.tracks[track].key_on {
-                write_ym2151(builder, 0x08, self.tracks[track].fm_channel);
-                self.tracks[track].key_on = false;
+            if self.tracks[track].fm.key_on {
+                write_ym2151(builder, 0x08, self.tracks[track].fm.fm_channel);
+                self.tracks[track].fm.key_on = false;
             }
         } else {
             self.stop_pcm_channel(track);
@@ -785,7 +788,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// note is not retriggered.
     fn stop_pcm_channel(&mut self, track: usize) {
         let channel = track - 8;
-        let hold = self.tracks[track].key_off_disabled;
+        let hold = self.tracks[track].fm.key_off_disabled;
         let state = &mut self.pcm_channels[channel];
         if hold {
             state.hold = true;
@@ -806,10 +809,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let Some(note_index) = note.checked_sub(0x80) else {
             return;
         };
-        let bank = usize::from(self.tracks[track].pcm_bank);
+        let bank = usize::from(self.tracks[track].pcm.bank);
         let note_index = usize::from(note_index);
-        let format = self.tracks[track].pcm_data_kind;
-        let tie = self.tracks[track].key_off_disabled;
+        let format = self.tracks[track].pcm.data_kind;
+        let tie = self.tracks[track].fm.key_off_disabled;
         let channel = track - 8;
 
         let format_key = match format {
@@ -818,7 +821,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             Pcm8aFormat::Pcm8 => 2u8,
         };
         let block_key = (bank, note_index, format_key);
-        let rate_step = self.tracks[track].pcm_rate_step;
+        let rate_step = self.tracks[track].pcm.rate_step;
         let gain = self.pcm_channel_gain(track);
         let same_block = self.pcm_channels[channel].hold
             && self.pcm_channels[channel].block_key == Some(block_key);
@@ -884,9 +887,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             0
         };
         if fadeout_level == 0 {
-            pcm_mixer::pcm8_gain(self.tracks[track].volume)
+            pcm_mixer::pcm8_gain(self.tracks[track].fm.volume)
         } else {
-            pcm_mixer::pcm8_gain_with_fadeout(self.tracks[track].volume, fadeout_level)
+            pcm_mixer::pcm8_gain_with_fadeout(self.tracks[track].fm.volume, fadeout_level)
         }
     }
 
@@ -956,7 +959,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // Rest always (re)starts the key-off countdown and
                     // cancels any pending tie, regardless of prior state.
                     self.tracks[track].key_off_ticks = command.ticks;
-                    self.tracks[track].key_off_disabled = false;
+                    self.tracks[track].fm.key_off_disabled = false;
                     if track >= 8 {
                         // NanoDriveX clears the ADPCM hold at a rest while
                         // allowing the sample to continue to its own end.
@@ -964,22 +967,23 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     }
                 }
                 MdxCommand::Note(command) if track < 8 => {
-                    let note = i32::from(command.note - 0x80) + self.tracks[track].transpose;
+                    let note = i32::from(command.note - 0x80) + self.tracks[track].fm.transpose;
                     let note = note.clamp(0, 127) as u16;
                     let pitch = (note << 6)
                         .saturating_add(5)
-                        .saturating_add_signed(self.tracks[track].detune);
-                    self.tracks[track].note_pitch = Some(pitch);
+                        .saturating_add_signed(self.tracks[track].fm.detune);
+                    self.tracks[track].fm.note_pitch = Some(pitch);
                     self.write_pitch(track, builder, pitch);
-                    if self.tracks[track].key_on_delay == 0 {
+                    if self.tracks[track].fm.key_on_delay == 0 {
                         self.begin_key_on(track, builder)?;
                     } else {
-                        self.tracks[track].key_on_delay_counter = self.tracks[track].key_on_delay;
-                        self.tracks[track].key_on_pending = true;
+                        self.tracks[track].fm.key_on_delay_counter =
+                            self.tracks[track].fm.key_on_delay;
+                        self.tracks[track].fm.key_on_pending = true;
                     }
                     self.tracks[track].wait_ticks = command.length;
-                    if !self.tracks[track].key_off_disabled {
-                        let gate = i16::from(self.tracks[track].gate);
+                    if !self.tracks[track].fm.key_off_disabled {
+                        let gate = i16::from(self.tracks[track].fm.gate);
                         let raw_length = (command.length - 1).min(i16::MAX as u16) as i16;
                         let key_off = if gate >= 0 {
                             ((raw_length * gate) >> 3) + 1
@@ -990,15 +994,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     } else {
                         self.tracks[track].key_off_ticks = 0;
                     }
-                    self.tracks[track].key_off_disabled = false;
+                    self.tracks[track].fm.key_off_disabled = false;
                 }
                 MdxCommand::Note(command) => {
                     // PCM key-on: `note` is an 0x80-based index into the
                     // track's current PDX bank rather than a pitch.
                     self.begin_pcm_key_on(track, command.note);
                     self.tracks[track].wait_ticks = command.length;
-                    if !self.tracks[track].key_off_disabled {
-                        let gate = i16::from(self.tracks[track].gate);
+                    if !self.tracks[track].fm.key_off_disabled {
+                        let gate = i16::from(self.tracks[track].fm.gate);
                         let raw_length = (command.length - 1).min(i16::MAX as u16) as i16;
                         let key_off = if gate >= 0 {
                             ((raw_length * gate) >> 3) + 1
@@ -1009,7 +1013,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     } else {
                         self.tracks[track].key_off_ticks = 0;
                     }
-                    self.tracks[track].key_off_disabled = false;
+                    self.tracks[track].fm.key_off_disabled = false;
                 }
                 MdxCommand::Tempo(command) => {
                     self.tempo = command.value.max(1);
@@ -1023,28 +1027,28 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     write_ym2151(builder, command.register, command.value);
                 }
                 MdxCommand::VoiceOrPcmBank(command) if track < 8 => {
-                    self.tracks[track].voice = command.value;
-                    self.tracks[track].voice_selected = true;
-                    self.tracks[track].voice_pending = true;
+                    self.tracks[track].fm.voice = command.value;
+                    self.tracks[track].fm.voice_selected = true;
+                    self.tracks[track].fm.voice_pending = true;
                 }
                 MdxCommand::VoiceOrPcmBank(command) => {
-                    self.tracks[track].pcm_bank = command.value;
+                    self.tracks[track].pcm.bank = command.value;
                 }
                 MdxCommand::EndOfTrack(_) => {
                     // The reference clears the key-on flag without sending
                     // an explicit key-off; the note's own gate/key-off
                     // countdown is expected to have already released it.
                     self.tracks[track].active = false;
-                    self.tracks[track].key_on = false;
+                    self.tracks[track].fm.key_on = false;
                 }
                 MdxCommand::Pan(command) if track < 8 => {
-                    self.tracks[track].pan = match command {
+                    self.tracks[track].fm.pan = match command {
                         MdxPan::Right => 0x40,
                         MdxPan::Left => 0x80,
                         MdxPan::Center => 0xc0,
                         MdxPan::Mute | MdxPan::Unknown(_) => 0,
                     };
-                    self.tracks[track].pan_pending = true;
+                    self.tracks[track].fm.pan_pending = true;
                 }
                 MdxCommand::Pan(command) => {
                     // MDX ADPCM pan values are 0=mute, 1=left, 2=right,
@@ -1066,11 +1070,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     ));
                 }
                 MdxCommand::Volume(command) if track < 8 => {
-                    self.tracks[track].volume = command.value;
+                    self.tracks[track].fm.volume = command.value;
                     self.emit_volume(track, builder);
                 }
                 MdxCommand::Volume(command) => {
-                    self.tracks[track].volume = command.value;
+                    self.tracks[track].fm.volume = command.value;
                     self.apply_live_pcm_gain(track);
                 }
                 MdxCommand::VolumeDown(_) if track < 8 => {
@@ -1089,17 +1093,17 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.volume_up(track);
                     self.apply_live_pcm_gain(track);
                 }
-                MdxCommand::Gate(command) => self.tracks[track].gate = command.value as i8,
-                MdxCommand::KeyOffDisable(_) => self.tracks[track].key_off_disabled = true,
+                MdxCommand::Gate(command) => self.tracks[track].fm.gate = command.value as i8,
+                MdxCommand::KeyOffDisable(_) => self.tracks[track].fm.key_off_disabled = true,
                 MdxCommand::KeyOnDelay(command) => {
-                    self.tracks[track].key_on_delay = command.value;
-                    self.tracks[track].key_on_delay_counter = 0;
-                    self.tracks[track].key_on_pending = false;
+                    self.tracks[track].fm.key_on_delay = command.value;
+                    self.tracks[track].fm.key_on_delay_counter = 0;
+                    self.tracks[track].fm.key_on_pending = false;
                 }
-                MdxCommand::Detune(command) => self.tracks[track].detune = command.offset,
+                MdxCommand::Detune(command) => self.tracks[track].fm.detune = command.offset,
                 MdxCommand::Portamento(command) => {
-                    self.tracks[track].bend_delta = i32::from(command.offset) << 8;
-                    self.tracks[track].portamento_active = true;
+                    self.tracks[track].fm.bend_delta = i32::from(command.offset) << 8;
+                    self.tracks[track].fm.portamento_active = true;
                 }
                 MdxCommand::SyncWait(_) => {
                     self.tracks[track].sync_wait = true;
@@ -1131,8 +1135,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                                 || data_kind == Pcm8aFormat::Adpcm
                         });
                     if let Some((rate_step, data_kind)) = mode {
-                        self.tracks[track].pcm_rate_step = rate_step;
-                        self.tracks[track].pcm_data_kind = data_kind;
+                        self.tracks[track].pcm.rate_step = rate_step;
+                        self.tracks[track].pcm.data_kind = data_kind;
                         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
                             self.set_legacy_pcm_rate(command.value, builder);
                         }
@@ -1141,7 +1145,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::OpmLfo(command) => self.apply_opm_lfo(track, command, builder),
                 MdxCommand::PitchLfo(command) => self.apply_pitch_lfo(track, command),
                 MdxCommand::VolumeLfo(command) => self.apply_volume_lfo(track, command),
-                MdxCommand::LfoDelay(command) => self.tracks[track].lfo_delay = command.value,
+                MdxCommand::LfoDelay(command) => self.tracks[track].lfo.delay = command.value,
                 MdxCommand::PcmMode(_) => {}
                 MdxCommand::Extended(command) => match command {
                     MdxExtendedCommand::Fadeout { value } => {
@@ -1160,11 +1164,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 },
                 MdxCommand::Extended2(command) => match command {
                     MdxExtended2Command::Transpose { value } => {
-                        self.tracks[track].transpose = i32::from(value)
+                        self.tracks[track].fm.transpose = i32::from(value)
                     }
                     MdxExtended2Command::RelativeTranspose { value } => {
-                        let next = self.tracks[track].transpose + i32::from(value);
-                        self.tracks[track].transpose = next.clamp(-127, 127);
+                        let next = self.tracks[track].fm.transpose + i32::from(value);
+                        self.tracks[track].fm.transpose = next.clamp(-127, 127);
                     }
                     // Relative detune is parsed but not applied in the
                     // reference implementation.
@@ -1273,7 +1277,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         track: usize,
         builder: &mut VgmBuilder,
     ) -> Result<(), MdxConvertError> {
-        let voice = self.tracks[track].voice;
+        let voice = self.tracks[track].fm.voice;
         let tone = self
             .package
             .borrow()
@@ -1283,16 +1287,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .iter()
             .find(|tone| tone.voice_number == voice)
             .ok_or(MdxConvertError::MissingTone { voice })?;
-        let fm_channel = self.tracks[track].fm_channel;
-        self.tracks[track].con_fl = tone.con | (tone.fl << 3);
+        let fm_channel = self.tracks[track].fm.fm_channel;
+        self.tracks[track].fm.con_fl = tone.con | (tone.fl << 3);
         // Loading a voice always re-arms the pan-pending flag too (even
         // without a new Pan command), so register 0x20's CON/FL bits get
         // refreshed for the new algorithm at the next key-on. Mirrors
         // `_setVoice`'s unconditional `flags |= 0x04`.
-        self.tracks[track].pan_pending = true;
+        self.tracks[track].fm.pan_pending = true;
         // Store the tone's own key-on slot mask combined with the channel;
         // a zero mask falls back to the algorithm default at key-on time.
-        self.tracks[track].key_on_slot = ((tone.op & 0x0f) << 3) | fm_channel;
+        self.tracks[track].fm.key_on_slot = ((tone.op & 0x0f) << 3) | fm_channel;
         emit_tone(builder, fm_channel, tone);
         self.emit_volume(track, builder);
         Ok(())
@@ -1302,10 +1306,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// default carrier slots when the tone did not specify its own mask.
     fn resolved_key_on_slot(&self, track: usize) -> u8 {
         let state = &self.tracks[track];
-        if state.key_on_slot & 0xf8 == 0 {
-            CARRIER_KEYON_SLOTS[(state.con_fl & 0x07) as usize] | state.fm_channel
+        if state.fm.key_on_slot & 0xf8 == 0 {
+            CARRIER_KEYON_SLOTS[(state.fm.con_fl & 0x07) as usize] | state.fm.fm_channel
         } else {
-            state.key_on_slot
+            state.fm.key_on_slot
         }
     }
 
@@ -1317,15 +1321,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         track: usize,
         builder: &mut VgmBuilder,
     ) -> Result<(), MdxConvertError> {
-        if self.tracks[track].voice_pending {
+        if self.tracks[track].fm.voice_pending {
             self.emit_voice(track, builder)?;
-            self.tracks[track].voice_pending = false;
+            self.tracks[track].fm.voice_pending = false;
         }
-        if self.tracks[track].pan_pending {
-            let fm_channel = self.tracks[track].fm_channel;
-            let value = self.tracks[track].pan | (self.tracks[track].con_fl & 0x3f);
+        if self.tracks[track].fm.pan_pending {
+            let fm_channel = self.tracks[track].fm.fm_channel;
+            let value = self.tracks[track].fm.pan | (self.tracks[track].fm.con_fl & 0x3f);
             write_ym2151(builder, 0x20 + fm_channel, value);
-            self.tracks[track].pan_pending = false;
+            self.tracks[track].fm.pan_pending = false;
         }
         Ok(())
     }
@@ -1339,18 +1343,18 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         builder: &mut VgmBuilder,
     ) -> Result<(), MdxConvertError> {
         self.apply_pending_fm_state(track, builder)?;
-        let already_on = self.tracks[track].key_on;
-        if !already_on && self.tracks[track].lfo_delay > 0 {
+        let already_on = self.tracks[track].fm.key_on;
+        if !already_on && self.tracks[track].lfo.delay > 0 {
             self.start_lfo_delay(track);
         }
-        self.tracks[track].bend_offset = 0;
+        self.tracks[track].fm.bend_offset = 0;
         if !already_on {
             self.reset_opm_lfo_if_needed(track, builder);
             let slot = self.resolved_key_on_slot(track);
             write_ym2151(builder, 0x08, slot);
-            self.tracks[track].key_on = true;
+            self.tracks[track].fm.key_on = true;
         }
-        self.tracks[track].key_on_pending = false;
+        self.tracks[track].fm.key_on_pending = false;
         Ok(())
     }
 
@@ -1363,11 +1367,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         track: usize,
         builder: &mut VgmBuilder,
     ) -> Result<(), MdxConvertError> {
-        if self.tracks[track].key_on_delay_counter == 0 || !self.tracks[track].key_on_pending {
+        if self.tracks[track].fm.key_on_delay_counter == 0 || !self.tracks[track].fm.key_on_pending
+        {
             return Ok(());
         }
-        self.tracks[track].key_on_delay_counter -= 1;
-        if self.tracks[track].key_on_delay_counter == 0 {
+        self.tracks[track].fm.key_on_delay_counter -= 1;
+        if self.tracks[track].fm.key_on_delay_counter == 0 {
             self.begin_key_on(track, builder)?;
         }
         Ok(())
@@ -1376,28 +1381,31 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Per-tick FM modulation: pitch bend accumulation, pitch/volume LFO
     /// updates (gated by LFO delay), and the resulting register writes.
     fn update_fm_tick(&mut self, track: usize, builder: &mut VgmBuilder) {
-        let prev_volume_lfo_offset = self.tracks[track].volume_lfo_offset;
+        let prev_volume_lfo_offset = self.tracks[track].lfo.volume_offset;
         // Updates the FM state for the current tick, including pitch bend
         // accumulation, LFO updates (if the LFO delay has elapsed), and
         // register writes for pitch and volume changes.
-        if self.tracks[track].portamento_active && self.tracks[track].key_on_delay_counter == 0 {
-            self.tracks[track].bend_offset = self.tracks[track]
+        if self.tracks[track].fm.portamento_active
+            && self.tracks[track].fm.key_on_delay_counter == 0
+        {
+            self.tracks[track].fm.bend_offset = self.tracks[track]
+                .fm
                 .bend_offset
-                .wrapping_add(self.tracks[track].bend_delta);
+                .wrapping_add(self.tracks[track].fm.bend_delta);
         }
         // Determines whether the LFO updates should be skipped for this tick based on
         // the LFO delay and key-on delay counters.
         let mut skip_lfo = false;
-        if self.tracks[track].lfo_delay > 0 {
-            if self.tracks[track].key_on_delay_counter != 0 {
+        if self.tracks[track].lfo.delay > 0 {
+            if self.tracks[track].fm.key_on_delay_counter != 0 {
                 skip_lfo = true;
-            } else if self.tracks[track].lfo_delay_counter > 0 {
-                self.tracks[track].lfo_delay_counter -= 1;
-                if self.tracks[track].lfo_delay_counter == 0 {
-                    if self.tracks[track].pitch_lfo_enabled {
+            } else if self.tracks[track].lfo.delay_counter > 0 {
+                self.tracks[track].lfo.delay_counter -= 1;
+                if self.tracks[track].lfo.delay_counter == 0 {
+                    if self.tracks[track].lfo.pitch_enabled {
                         self.reset_pitch_lfo(track);
                     }
-                    if self.tracks[track].volume_lfo_enabled {
+                    if self.tracks[track].lfo.volume_enabled {
                         self.reset_volume_lfo(track);
                     }
                 }
@@ -1409,11 +1417,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.update_volume_lfo(track);
         }
         // Updates the pitch and volume for the current tick based on the LFO and pitch bend.
-        if self.tracks[track].note_pitch.is_some() {
+        if self.tracks[track].fm.note_pitch.is_some() {
             self.update_pitch(track, builder);
         }
         // Emits the volume register write if the volume LFO offset has changed.
-        if self.tracks[track].volume_lfo_offset != prev_volume_lfo_offset {
+        if self.tracks[track].lfo.volume_offset != prev_volume_lfo_offset {
             self.emit_volume(track, builder);
         }
     }
@@ -1421,16 +1429,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Writes the pitch registers only if the computed pitch changed
     /// (mirrors `writePitchIfChanged` in the reference).
     fn update_pitch(&mut self, track: usize, builder: &mut VgmBuilder) {
-        let Some(note_pitch) = self.tracks[track].note_pitch else {
+        let Some(note_pitch) = self.tracks[track].fm.note_pitch else {
             return;
         };
-        let bend = self.tracks[track].bend_offset >> 16;
-        let lfo = self.tracks[track].pitch_lfo_offset >> 16;
+        let bend = self.tracks[track].fm.bend_offset >> 16;
+        let lfo = self.tracks[track].lfo.pitch_offset >> 16;
         let pitch = i32::from(note_pitch)
             .saturating_add(bend)
             .saturating_add(lfo)
             .clamp(0, 0x17ff) as u16;
-        if self.tracks[track].last_written_pitch == Some(pitch) {
+        if self.tracks[track].fm.last_written_pitch == Some(pitch) {
             return;
         }
         self.write_pitch(track, builder, pitch);
@@ -1439,13 +1447,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Writes the computed pitch to the YM2151 registers for the specified track.
     /// Updates the last written pitch to avoid redundant writes.
     fn write_pitch(&mut self, track: usize, builder: &mut VgmBuilder, pitch: u16) {
-        let fm_channel = self.tracks[track].fm_channel;
+        let fm_channel = self.tracks[track].fm.fm_channel;
         let pitch_register = pitch << 2;
         let key_fraction = pitch_register as u8;
         let key_code = YM2151_KEYCODE_TABLE[((pitch_register >> 8) & 0x7f) as usize];
         write_ym2151(builder, 0x30 + fm_channel, key_fraction);
         write_ym2151(builder, 0x28 + fm_channel, key_code);
-        self.tracks[track].last_written_pitch = Some(pitch);
+        self.tracks[track].fm.last_written_pitch = Some(pitch);
     }
 
     /// Decreases the volume of the specified track, taking into account the
@@ -1454,8 +1462,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// is in the upper 7 bits (indicating attenuation), it is incremented
     /// by 1 unless it is already at the maximum.
     fn volume_down(&mut self, track: usize) {
-        let volume = self.tracks[track].volume;
-        self.tracks[track].volume = if volume & 0x80 == 0 {
+        let volume = self.tracks[track].fm.volume;
+        self.tracks[track].fm.volume = if volume & 0x80 == 0 {
             volume.saturating_sub(1)
         } else if volume != 0xff {
             volume + 1
@@ -1470,8 +1478,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// is in the upper 7 bits (indicating attenuation), it is decremented
     /// by 1 unless it is already at the minimum.
     fn volume_up(&mut self, track: usize) {
-        let volume = self.tracks[track].volume;
-        self.tracks[track].volume = if volume & 0x80 == 0 {
+        let volume = self.tracks[track].fm.volume;
+        self.tracks[track].fm.volume = if volume & 0x80 == 0 {
             if volume < 15 { volume + 1 } else { volume }
         } else if volume != 0x80 {
             volume - 1
@@ -1491,19 +1499,19 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .tone_bank
             .tones
             .iter()
-            .find(|tone| tone.voice_number == self.tracks[track].voice)
+            .find(|tone| tone.voice_number == self.tracks[track].fm.voice)
         else {
             return;
         };
-        let base_attenuation = if self.tracks[track].volume & 0x80 != 0 {
-            u16::from(self.tracks[track].volume & 0x7f)
+        let base_attenuation = if self.tracks[track].fm.volume & 0x80 != 0 {
+            u16::from(self.tracks[track].fm.volume & 0x7f)
         } else {
-            u16::from(FM_VOLUME_TABLE[self.tracks[track].volume.min(15) as usize])
+            u16::from(FM_VOLUME_TABLE[self.tracks[track].fm.volume.min(15) as usize])
         };
-        let lfo_attenuation = self.tracks[track].volume_lfo_offset >> 8;
+        let lfo_attenuation = self.tracks[track].lfo.volume_offset >> 8;
         let attenuation = base_attenuation + lfo_attenuation + u16::from(self.fadeout_level);
         let carrier_mask = CARRIER_TL_SLOTS[(tone.con & 0x07) as usize];
-        let fm_channel = self.tracks[track].fm_channel;
+        let fm_channel = self.tracks[track].fm.fm_channel;
         for (operator, value) in tone.operators.iter().enumerate() {
             let level = if carrier_mask & (1 << operator) != 0 {
                 (u16::from(value.ol) + attenuation).min(0x7f) as u8
@@ -1520,9 +1528,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn apply_opm_lfo(&mut self, track: usize, command: MdxOpmLfo, builder: &mut VgmBuilder) {
         match command {
             MdxOpmLfo::SetEnabled { enabled } => {
-                let fm_channel = self.tracks[track].fm_channel;
+                let fm_channel = self.tracks[track].fm.fm_channel;
                 let value = if enabled {
-                    self.tracks[track].pms_ams
+                    self.tracks[track].lfo.pms_ams
                 } else {
                     0
                 };
@@ -1535,13 +1543,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 amd,
                 pms_ams,
             } => {
-                self.tracks[track].opm_lfo_reset_pending = control & 0x40 != 0;
+                self.tracks[track].lfo.opm_reset_pending = control & 0x40 != 0;
                 // Preserve the CT1/CT2 bits (0xc0) already held in register
                 // 0x1b; only the waveform/enable bits are updated here.
                 let masked = (control & !0x40) | (self.opm_reg_1b & 0xc0);
                 self.opm_reg_1b = masked;
-                self.tracks[track].pms_ams = pms_ams;
-                let fm_channel = self.tracks[track].fm_channel;
+                self.tracks[track].lfo.pms_ams = pms_ams;
+                let fm_channel = self.tracks[track].fm.fm_channel;
                 write_ym2151(builder, 0x1b, masked);
                 write_ym2151(builder, 0x18, lfrq);
                 write_ym2151(builder, 0x19, pmd);
@@ -1559,10 +1567,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             MdxPitchLfo::SetEnabled { enabled } => {
                 if enabled {
                     self.reset_pitch_lfo(track);
-                    self.tracks[track].pitch_lfo_enabled = true;
+                    self.tracks[track].lfo.pitch_enabled = true;
                 } else {
-                    self.tracks[track].pitch_lfo_enabled = false;
-                    self.tracks[track].pitch_lfo_offset = 0;
+                    self.tracks[track].lfo.pitch_enabled = false;
+                    self.tracks[track].lfo.pitch_offset = 0;
                 }
             }
             MdxPitchLfo::Configure {
@@ -1570,11 +1578,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 frequency,
                 amplitude,
             } => {
-                self.tracks[track].pitch_lfo_enabled = true;
+                self.tracks[track].lfo.pitch_enabled = true;
                 let wave_type = waveform.base();
                 let mode = wave_type << 1;
-                self.tracks[track].pitch_lfo_type = Some(waveform.base_waveform());
-                self.tracks[track].pitch_lfo_length = frequency;
+                self.tracks[track].lfo.pitch_type = Some(waveform.base_waveform());
+                self.tracks[track].lfo.pitch_length = frequency;
 
                 let mut cooked = frequency;
                 if mode != 0x02 {
@@ -1583,21 +1591,21 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         cooked = 1;
                     }
                 }
-                self.tracks[track].pitch_lfo_length_cooked = cooked;
+                self.tracks[track].lfo.pitch_length_cooked = cooked;
 
                 let mut delta = i32::from(amplitude) << 8;
                 let wave_check = waveform.base();
                 if waveform.has_extended_amplitude() {
                     delta <<= 8;
                 }
-                self.tracks[track].pitch_lfo_delta_start = delta;
-                self.tracks[track].pitch_lfo_offset_start =
+                self.tracks[track].lfo.pitch_delta_start = delta;
+                self.tracks[track].lfo.pitch_offset_start =
                     if wave_check == 0x02 { delta } else { 0 };
 
-                self.tracks[track].pitch_lfo_length_counter =
-                    self.tracks[track].pitch_lfo_length_cooked;
-                self.tracks[track].pitch_lfo_delta = self.tracks[track].pitch_lfo_delta_start;
-                self.tracks[track].pitch_lfo_offset = self.tracks[track].pitch_lfo_offset_start;
+                self.tracks[track].lfo.pitch_length_counter =
+                    self.tracks[track].lfo.pitch_length_cooked;
+                self.tracks[track].lfo.pitch_delta = self.tracks[track].lfo.pitch_delta_start;
+                self.tracks[track].lfo.pitch_offset = self.tracks[track].lfo.pitch_offset_start;
             }
         }
     }
@@ -1610,10 +1618,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             MdxVolumeLfo::SetEnabled { enabled } => {
                 if enabled {
                     self.reset_volume_lfo(track);
-                    self.tracks[track].volume_lfo_enabled = true;
+                    self.tracks[track].lfo.volume_enabled = true;
                 } else {
-                    self.tracks[track].volume_lfo_enabled = false;
-                    self.tracks[track].volume_lfo_offset = 0;
+                    self.tracks[track].lfo.volume_enabled = false;
+                    self.tracks[track].lfo.volume_offset = 0;
                 }
             }
             MdxVolumeLfo::Configure {
@@ -1621,11 +1629,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 frequency,
                 amplitude,
             } => {
-                self.tracks[track].volume_lfo_enabled = true;
+                self.tracks[track].lfo.volume_enabled = true;
                 let mode = waveform.raw() << 1;
-                self.tracks[track].volume_lfo_type = Some(waveform.base_waveform());
-                self.tracks[track].volume_lfo_length = frequency;
-                self.tracks[track].volume_lfo_delta_start = amplitude;
+                self.tracks[track].lfo.volume_type = Some(waveform.base_waveform());
+                self.tracks[track].lfo.volume_length = frequency;
+                self.tracks[track].lfo.volume_delta_start = amplitude;
 
                 let mut cooked = i32::from(amplitude as i16);
                 if mode & 0x02 == 0 {
@@ -1635,42 +1643,42 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 if cooked < 0 {
                     cooked = 0;
                 }
-                self.tracks[track].volume_lfo_delta_cooked = cooked as u16;
+                self.tracks[track].lfo.volume_delta_cooked = cooked as u16;
 
-                self.tracks[track].volume_lfo_length_counter = self.tracks[track].volume_lfo_length;
-                self.tracks[track].volume_lfo_delta = self.tracks[track].volume_lfo_delta_start;
-                self.tracks[track].volume_lfo_offset = self.tracks[track].volume_lfo_delta_cooked;
+                self.tracks[track].lfo.volume_length_counter = self.tracks[track].lfo.volume_length;
+                self.tracks[track].lfo.volume_delta = self.tracks[track].lfo.volume_delta_start;
+                self.tracks[track].lfo.volume_offset = self.tracks[track].lfo.volume_delta_cooked;
             }
         }
     }
 
     /// Resets the pitch LFO for the specified track to its initial state.
     fn reset_pitch_lfo(&mut self, track: usize) {
-        self.tracks[track].pitch_lfo_length_counter = self.tracks[track].pitch_lfo_length_cooked;
-        self.tracks[track].pitch_lfo_delta = self.tracks[track].pitch_lfo_delta_start;
-        self.tracks[track].pitch_lfo_offset = self.tracks[track].pitch_lfo_offset_start;
+        self.tracks[track].lfo.pitch_length_counter = self.tracks[track].lfo.pitch_length_cooked;
+        self.tracks[track].lfo.pitch_delta = self.tracks[track].lfo.pitch_delta_start;
+        self.tracks[track].lfo.pitch_offset = self.tracks[track].lfo.pitch_offset_start;
     }
 
     /// Resets the volume LFO for the specified track to its initial state.
     fn reset_volume_lfo(&mut self, track: usize) {
-        self.tracks[track].volume_lfo_length_counter = self.tracks[track].volume_lfo_length;
-        self.tracks[track].volume_lfo_delta = self.tracks[track].volume_lfo_delta_start;
-        self.tracks[track].volume_lfo_offset = self.tracks[track].volume_lfo_delta_cooked;
+        self.tracks[track].lfo.volume_length_counter = self.tracks[track].lfo.volume_length;
+        self.tracks[track].lfo.volume_delta = self.tracks[track].lfo.volume_delta_start;
+        self.tracks[track].lfo.volume_offset = self.tracks[track].lfo.volume_delta_cooked;
     }
 
     /// Starts the LFO delay for the specified track. Initializes the delay counter
     /// and resets the pitch and volume LFO offsets. If the delay counter reaches zero,
     /// the pitch and volume LFOs are reset immediately.
     fn start_lfo_delay(&mut self, track: usize) {
-        self.tracks[track].lfo_delay_counter = self.tracks[track].lfo_delay;
-        self.tracks[track].pitch_lfo_offset = 0;
-        self.tracks[track].volume_lfo_offset = 0;
-        self.tracks[track].lfo_delay_counter = self.tracks[track].lfo_delay_counter.wrapping_sub(1);
-        if self.tracks[track].lfo_delay_counter == 0 {
-            if self.tracks[track].pitch_lfo_enabled {
+        self.tracks[track].lfo.delay_counter = self.tracks[track].lfo.delay;
+        self.tracks[track].lfo.pitch_offset = 0;
+        self.tracks[track].lfo.volume_offset = 0;
+        self.tracks[track].lfo.delay_counter = self.tracks[track].lfo.delay_counter.wrapping_sub(1);
+        if self.tracks[track].lfo.delay_counter == 0 {
+            if self.tracks[track].lfo.pitch_enabled {
                 self.reset_pitch_lfo(track);
             }
-            if self.tracks[track].volume_lfo_enabled {
+            if self.tracks[track].lfo.volume_enabled {
                 self.reset_volume_lfo(track);
             }
         }
@@ -1679,7 +1687,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Resets the OPM LFO for the specified track if a reset is pending.
     /// Writes the necessary commands to the YM2151 registers to perform the reset.
     fn reset_opm_lfo_if_needed(&self, track: usize, builder: &mut VgmBuilder) {
-        if !self.tracks[track].opm_lfo_reset_pending {
+        if !self.tracks[track].lfo.opm_reset_pending {
             return;
         }
         write_ym2151(builder, 0x01, 0x02);
@@ -1690,63 +1698,65 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Handles sawtooth, square, and triangle waveforms, updating the internal offset and
     /// length counter accordingly.
     fn update_pitch_lfo(&mut self, track: usize) {
-        if !self.tracks[track].pitch_lfo_enabled {
+        if !self.tracks[track].lfo.pitch_enabled {
             return;
         }
-        let Some(waveform) = self.tracks[track].pitch_lfo_type else {
+        let Some(waveform) = self.tracks[track].lfo.pitch_type else {
             return;
         };
         match waveform {
             MdxLfoWaveform::Sawtooth => {
                 // Sawtooth: ramp, then flip sign at the end of each period.
-                self.tracks[track].pitch_lfo_offset = self.tracks[track]
-                    .pitch_lfo_offset
-                    .wrapping_add(self.tracks[track].pitch_lfo_delta);
-                self.tracks[track].pitch_lfo_length_counter =
-                    self.tracks[track].pitch_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].pitch_lfo_length_counter == 0 {
-                    self.tracks[track].pitch_lfo_length_counter =
-                        self.tracks[track].pitch_lfo_length;
-                    self.tracks[track].pitch_lfo_offset =
-                        self.tracks[track].pitch_lfo_offset.wrapping_neg();
+                self.tracks[track].lfo.pitch_offset = self.tracks[track]
+                    .lfo
+                    .pitch_offset
+                    .wrapping_add(self.tracks[track].lfo.pitch_delta);
+                self.tracks[track].lfo.pitch_length_counter =
+                    self.tracks[track].lfo.pitch_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.pitch_length_counter == 0 {
+                    self.tracks[track].lfo.pitch_length_counter =
+                        self.tracks[track].lfo.pitch_length;
+                    self.tracks[track].lfo.pitch_offset =
+                        self.tracks[track].lfo.pitch_offset.wrapping_neg();
                 }
             }
             MdxLfoWaveform::Square => {
                 // Square: hold at delta, flip sign at the end of each period.
-                self.tracks[track].pitch_lfo_offset = self.tracks[track].pitch_lfo_delta;
-                self.tracks[track].pitch_lfo_length_counter =
-                    self.tracks[track].pitch_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].pitch_lfo_length_counter == 0 {
-                    self.tracks[track].pitch_lfo_length_counter =
-                        self.tracks[track].pitch_lfo_length;
-                    self.tracks[track].pitch_lfo_delta =
-                        self.tracks[track].pitch_lfo_delta.wrapping_neg();
+                self.tracks[track].lfo.pitch_offset = self.tracks[track].lfo.pitch_delta;
+                self.tracks[track].lfo.pitch_length_counter =
+                    self.tracks[track].lfo.pitch_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.pitch_length_counter == 0 {
+                    self.tracks[track].lfo.pitch_length_counter =
+                        self.tracks[track].lfo.pitch_length;
+                    self.tracks[track].lfo.pitch_delta =
+                        self.tracks[track].lfo.pitch_delta.wrapping_neg();
                 }
             }
             MdxLfoWaveform::Triangle => {
                 // Triangle: ramp continuously, flip sign at each period end.
-                self.tracks[track].pitch_lfo_offset = self.tracks[track]
-                    .pitch_lfo_offset
-                    .wrapping_add(self.tracks[track].pitch_lfo_delta);
-                self.tracks[track].pitch_lfo_length_counter =
-                    self.tracks[track].pitch_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].pitch_lfo_length_counter == 0 {
-                    self.tracks[track].pitch_lfo_length_counter =
-                        self.tracks[track].pitch_lfo_length;
-                    self.tracks[track].pitch_lfo_delta =
-                        self.tracks[track].pitch_lfo_delta.wrapping_neg();
+                self.tracks[track].lfo.pitch_offset = self.tracks[track]
+                    .lfo
+                    .pitch_offset
+                    .wrapping_add(self.tracks[track].lfo.pitch_delta);
+                self.tracks[track].lfo.pitch_length_counter =
+                    self.tracks[track].lfo.pitch_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.pitch_length_counter == 0 {
+                    self.tracks[track].lfo.pitch_length_counter =
+                        self.tracks[track].lfo.pitch_length;
+                    self.tracks[track].lfo.pitch_delta =
+                        self.tracks[track].lfo.pitch_delta.wrapping_neg();
                 }
             }
             MdxLfoWaveform::RandomNoise => {
                 // Random: reload with a new random offset each period.
-                self.tracks[track].pitch_lfo_length_counter =
-                    self.tracks[track].pitch_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].pitch_lfo_length_counter == 0 {
+                self.tracks[track].lfo.pitch_length_counter =
+                    self.tracks[track].lfo.pitch_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.pitch_length_counter == 0 {
                     let random = i32::from(self.next_lfo_rand() as i16);
-                    self.tracks[track].pitch_lfo_offset =
-                        random.wrapping_mul(self.tracks[track].pitch_lfo_delta);
-                    self.tracks[track].pitch_lfo_length_counter =
-                        self.tracks[track].pitch_lfo_length;
+                    self.tracks[track].lfo.pitch_offset =
+                        random.wrapping_mul(self.tracks[track].lfo.pitch_delta);
+                    self.tracks[track].lfo.pitch_length_counter =
+                        self.tracks[track].lfo.pitch_length;
                 }
             }
             MdxLfoWaveform::Unknown(_) => {}
@@ -1757,65 +1767,68 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Handles sawtooth, square, and triangle waveforms, updating the internal offset and
     /// length counter accordingly.
     fn update_volume_lfo(&mut self, track: usize) {
-        if !self.tracks[track].volume_lfo_enabled {
+        if !self.tracks[track].lfo.volume_enabled {
             return;
         }
-        let Some(waveform) = self.tracks[track].volume_lfo_type else {
+        let Some(waveform) = self.tracks[track].lfo.volume_type else {
             return;
         };
         match waveform {
             MdxLfoWaveform::Sawtooth => {
                 // Sawtooth: ramp, then reset to the cooked baseline.
-                self.tracks[track].volume_lfo_offset = self.tracks[track]
-                    .volume_lfo_offset
-                    .wrapping_add(self.tracks[track].volume_lfo_delta);
-                self.tracks[track].volume_lfo_length_counter =
-                    self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].volume_lfo_length_counter == 0 {
-                    self.tracks[track].volume_lfo_length_counter =
-                        self.tracks[track].volume_lfo_length;
-                    self.tracks[track].volume_lfo_offset =
-                        self.tracks[track].volume_lfo_delta_cooked;
+                self.tracks[track].lfo.volume_offset = self.tracks[track]
+                    .lfo
+                    .volume_offset
+                    .wrapping_add(self.tracks[track].lfo.volume_delta);
+                self.tracks[track].lfo.volume_length_counter =
+                    self.tracks[track].lfo.volume_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.volume_length_counter == 0 {
+                    self.tracks[track].lfo.volume_length_counter =
+                        self.tracks[track].lfo.volume_length;
+                    self.tracks[track].lfo.volume_offset =
+                        self.tracks[track].lfo.volume_delta_cooked;
                 }
             }
             MdxLfoWaveform::Square => {
                 // Square: step at each period end, then flip sign.
-                self.tracks[track].volume_lfo_length_counter =
-                    self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].volume_lfo_length_counter == 0 {
-                    self.tracks[track].volume_lfo_length_counter =
-                        self.tracks[track].volume_lfo_length;
-                    self.tracks[track].volume_lfo_offset = self.tracks[track]
-                        .volume_lfo_offset
-                        .wrapping_add(self.tracks[track].volume_lfo_delta);
-                    self.tracks[track].volume_lfo_delta =
-                        self.tracks[track].volume_lfo_delta.wrapping_neg();
+                self.tracks[track].lfo.volume_length_counter =
+                    self.tracks[track].lfo.volume_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.volume_length_counter == 0 {
+                    self.tracks[track].lfo.volume_length_counter =
+                        self.tracks[track].lfo.volume_length;
+                    self.tracks[track].lfo.volume_offset = self.tracks[track]
+                        .lfo
+                        .volume_offset
+                        .wrapping_add(self.tracks[track].lfo.volume_delta);
+                    self.tracks[track].lfo.volume_delta =
+                        self.tracks[track].lfo.volume_delta.wrapping_neg();
                 }
             }
             MdxLfoWaveform::Triangle => {
                 // Triangle: ramp continuously, flip sign at each period end.
-                self.tracks[track].volume_lfo_offset = self.tracks[track]
-                    .volume_lfo_offset
-                    .wrapping_add(self.tracks[track].volume_lfo_delta);
-                self.tracks[track].volume_lfo_length_counter =
-                    self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].volume_lfo_length_counter == 0 {
-                    self.tracks[track].volume_lfo_length_counter =
-                        self.tracks[track].volume_lfo_length;
-                    self.tracks[track].volume_lfo_delta =
-                        self.tracks[track].volume_lfo_delta.wrapping_neg();
+                self.tracks[track].lfo.volume_offset = self.tracks[track]
+                    .lfo
+                    .volume_offset
+                    .wrapping_add(self.tracks[track].lfo.volume_delta);
+                self.tracks[track].lfo.volume_length_counter =
+                    self.tracks[track].lfo.volume_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.volume_length_counter == 0 {
+                    self.tracks[track].lfo.volume_length_counter =
+                        self.tracks[track].lfo.volume_length;
+                    self.tracks[track].lfo.volume_delta =
+                        self.tracks[track].lfo.volume_delta.wrapping_neg();
                 }
             }
             MdxLfoWaveform::RandomNoise => {
                 // Random: reload with a new random offset each period.
-                self.tracks[track].volume_lfo_length_counter =
-                    self.tracks[track].volume_lfo_length_counter.wrapping_sub(1);
-                if self.tracks[track].volume_lfo_length_counter == 0 {
+                self.tracks[track].lfo.volume_length_counter =
+                    self.tracks[track].lfo.volume_length_counter.wrapping_sub(1);
+                if self.tracks[track].lfo.volume_length_counter == 0 {
                     let random = i32::from(self.next_lfo_rand() as i16);
-                    let delta = i32::from(self.tracks[track].volume_lfo_delta as i16);
-                    self.tracks[track].volume_lfo_offset = random.wrapping_mul(delta) as u16;
-                    self.tracks[track].volume_lfo_length_counter =
-                        self.tracks[track].volume_lfo_length;
+                    let delta = i32::from(self.tracks[track].lfo.volume_delta as i16);
+                    self.tracks[track].lfo.volume_offset = random.wrapping_mul(delta) as u16;
+                    self.tracks[track].lfo.volume_length_counter =
+                        self.tracks[track].lfo.volume_length;
                 }
             }
             MdxLfoWaveform::Unknown(_) => {}
@@ -2005,7 +2018,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.fadeout_level += 1;
         self.fadeout_counter = i16::from(self.fadeout_speed);
         for track in 0..8 {
-            if self.tracks[track].voice_selected {
+            if self.tracks[track].fm.voice_selected {
                 self.emit_volume(track, builder);
             }
         }
@@ -2297,13 +2310,13 @@ mod tests {
     fn pcm_key_on_and_live_volume_follow_embedded_fadeout() {
         let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Through);
         playback.fadeout_level = 3;
-        playback.tracks[8].volume = 8;
+        playback.tracks[8].fm.volume = 8;
 
         playback.begin_pcm_key_on(8, 0x80);
 
         assert_eq!(playback.pcm_channels[0].gain, 12);
 
-        playback.tracks[8].volume = 0x80;
+        playback.tracks[8].fm.volume = 0x80;
         playback.apply_live_pcm_gain(8);
 
         assert_eq!(playback.pcm_channels[0].gain, 64);
@@ -2315,7 +2328,7 @@ mod tests {
         playback.fadeout_seen = true;
         playback.fadeout_level = 2;
         playback.fadeout_counter = -1;
-        playback.tracks[8].volume = 8;
+        playback.tracks[8].fm.volume = 8;
         playback.pcm_channels[0].gain = 16;
 
         playback.advance_fadeout(&mut VgmBuilder::new());
@@ -2330,7 +2343,7 @@ mod tests {
         playback.fadeout_seen = true;
         playback.fadeout_level = 2;
         playback.fadeout_counter = -1;
-        playback.tracks[8].volume = 8;
+        playback.tracks[8].fm.volume = 8;
 
         playback.begin_pcm_key_on(8, 0x80);
         playback.advance_fadeout(&mut VgmBuilder::new());
