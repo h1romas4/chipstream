@@ -302,9 +302,9 @@ pub fn to_vgm_document(
     // from a clean initialization instead of pointing into a short track's
     // first pass.
     if options.loop_count.is_none()
-        && generator.playback.song_loop_index.is_none()
-        && generator.playback.track_end_loop_seen
-        && !generator.playback.fadeout_seen
+        && generator.playback.song_loop.loop_index.is_none()
+        && generator.playback.song_loop.track_end_loop_seen
+        && !generator.playback.fadeout.seen
     {
         let loop_index = generator.builder.command_count();
         let repeat_options = MdxToVgmOptions {
@@ -316,7 +316,7 @@ pub fn to_vgm_document(
         for command in repeat.builder.take_commands() {
             generator.builder.add_vgm_command(command);
         }
-        generator.playback.song_loop_index = Some(loop_index);
+        generator.playback.song_loop.loop_index = Some(loop_index);
     }
 
     let mut document = generator.playback.finalize_with_pcm(generator.builder);
@@ -509,6 +509,106 @@ struct TrackState {
     pcm: PcmTrackConfig,
 }
 
+struct PcmOutputState {
+    /// Whether the package contains PCM playback for the OKIM6258 path.
+    has_pcm: bool,
+    /// Per-channel ADPCM/PCM playback state for tracks 8-15.
+    channels: [PcmChannelState; 8],
+    /// Single decoded PCM arena shared by all PCM channels.
+    samples: Vec<i16>,
+    /// Ranges in `samples` indexed by `(bank, note, format)`.
+    sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
+    /// Persistent re-encoder state for the whole song's mixed PCM8 output.
+    encoder: AdpcmEncoder,
+    /// Persistent NanoDriveX-style output filter state for the mixed PCM8 stream.
+    filter: PcmOutputFilter,
+    /// Raw PCM1 ADPCM payload used by the `Through` mode.
+    raw_bytes: Vec<u8>,
+    /// Next raw byte to emit in the `Through` mode.
+    raw_position: usize,
+    /// MCK-driven OKIM6258 data-register write scheduler.
+    mck_scheduler: MckScheduler,
+}
+
+impl PcmOutputState {
+    fn new(has_pcm: bool, adpcm_mode: AdpcmMode) -> Self {
+        Self {
+            has_pcm,
+            channels: Default::default(),
+            samples: Vec::new(),
+            sample_ranges: HashMap::new(),
+            encoder: AdpcmEncoder::default(),
+            filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
+            raw_bytes: Vec::new(),
+            raw_position: 0,
+            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct PlaybackTimingState {
+    /// Current MDX tempo, used to derive the duration of one playback tick.
+    tempo: u8,
+    /// Fractional VGM samples owed after converting elapsed tick time at the
+    /// configured output sample rate.
+    sample_remainder: u32,
+}
+
+impl PlaybackTimingState {
+    fn new() -> Self {
+        Self {
+            tempo: DEFAULT_TEMPO,
+            sample_remainder: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SongLoopState {
+    /// Optional finite repeat limit for an unconditional whole-song repeat.
+    loop_count: Option<u32>,
+    /// VGM command index recorded on the first visit to each repeat target.
+    loop_starts: HashMap<(usize, usize), usize>,
+    /// Number of finite backward jumps taken at each jump command.
+    jump_repeat_counts: HashMap<(usize, usize), u32>,
+    /// VGM command index to use as the native loop point, once detected.
+    loop_index: Option<usize>,
+    /// Set once a native loop point is established and internal playback stops.
+    loop_complete: bool,
+    /// Whether an `F1` per-track terminator was encountered.
+    track_end_loop_seen: bool,
+    /// Whether an unconditional repeat should be recorded as a native VGM loop.
+    ///
+    /// Eager conversion records a fixed loop point and stops at its second
+    /// visit; lazy streaming keeps repeating because it cannot rewind output.
+    mark_native_loop: bool,
+}
+
+impl SongLoopState {
+    fn new(loop_count: Option<u32>, mark_native_loop: bool) -> Self {
+        Self {
+            loop_count,
+            mark_native_loop,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Default)]
+struct FadeoutState {
+    /// Whether any track contains an embedded fadeout command.
+    has_command: bool,
+    /// Whether a fadeout marker has been reached during playback.
+    seen: bool,
+    /// Fadeout counter reload value supplied by the MDX command.
+    speed: u8,
+    /// Remaining fadeout counter value, decremented by two on each tick.
+    counter: i16,
+    /// Current global fadeout attenuation level.
+    level: u8,
+}
+
 struct PlaybackState<P: Borrow<MdxPackage>> {
     /// MDX/PDX package being consumed by the playback simulation.
     package: P,
@@ -518,33 +618,10 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     adpcm_mode: AdpcmMode,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
-    /// Whether any track contains an embedded fadeout command.
-    has_fadeout_command: bool,
-    /// True for files with PCM8/PCM8A tracks (>= 9 MDX tracks); gates all
-    /// PCM8 mixer/VGM-stream output.
-    has_pcm: bool,
-    /// Per-channel ADPCM/PCM playback state for tracks 8-15.
-    pcm_channels: [PcmChannelState; 8],
-    /// Single decoded PCM arena shared by all PCM channels.
-    pcm_samples: Vec<i16>,
-    /// Ranges in `pcm_samples` indexed by `(bank, note, format)`.
-    pcm_sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
-    /// Persistent re-encoder state for the whole song's mixed PCM8 output.
-    pcm_encoder: AdpcmEncoder,
-    /// Persistent NanoDriveX-style output filter state for the mixed PCM8 stream.
-    pcm_filter: PcmOutputFilter,
-    /// Raw PCM1 ADPCM payload used by the `Through` mode.
-    raw_pcm_bytes: Vec<u8>,
-    raw_pcm_position: usize,
-    /// MCK-driven OKIM6258 data-register write scheduler.
-    mck_scheduler: MckScheduler,
-    /// Current MDX tempo, used to derive the duration of one playback tick.
-    tempo: u8,
-    /// Fractional VGM samples owed after converting elapsed tick time at the
-    /// configured output sample rate, scaled by `MICROSECONDS_PER_SECOND`.
-    sample_remainder: u32,
-    /// Optional finite repeat limit for an unconditional whole-song repeat.
-    loop_count: Option<u32>,
+    /// PCM channel, sample, encoder, and byte-scheduler state.
+    pcm_output: PcmOutputState,
+    /// Tempo and fractional VGM sample timing state.
+    timing: PlaybackTimingState,
     /// Shadow of OPM register `0x0f` (noise enable + frequency), needed to
     /// preserve the noise-enable bit when only the frequency is updated.
     opm_reg_0f: u8,
@@ -554,41 +631,10 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Shared LFO random generator seed (mirrors the single global PRNG
     /// used by all tracks in the reference implementation).
     lfo_rand_seed: u16,
-    /// VGM command index recorded the first time an unconditional repeat
-    /// (an infinite `LoopEnd`, or a backward whole-song `Jump`) reaches a
-    /// given `(track, target_command_index)`, keyed by that pair. `F1`
-    /// track terminators are intentionally excluded from native-loop
-    /// detection because they may loop independently at different lengths.
-    song_loop_starts: HashMap<(usize, usize), usize>,
-    /// How many times a `Jump`-based repeat has been taken so far, keyed by
-    /// the jump command's own `(track, command_index)`. Only used when
-    /// `loop_count` overrides the (otherwise unconditional) repeat.
-    jump_repeat_counts: HashMap<(usize, usize), u32>,
-    /// VGM command index to use as the native loop point, once an
-    /// unconditional repeat has been seen a second time.
-    song_loop_index: Option<usize>,
-    /// Set once a native loop point has been established; conversion stops
-    /// here instead of looping the repeat internally forever. This is used
-    /// for whole-song repeats, not independent `F1` track terminators.
-    song_loop_complete: bool,
-    /// Whether an `F1` per-track terminator was encountered during playback.
-    track_end_loop_seen: bool,
-    /// Whether a fadeout marker has been reached during playback.
-    fadeout_seen: bool,
-    /// Fadeout counter reload value supplied by the MDX command.
-    fadeout_speed: u8,
-    /// Remaining fadeout counter value, decremented by two on each tick.
-    fadeout_counter: i16,
-    /// Current global fadeout attenuation level.
-    fadeout_level: u8,
-    /// Whether an unconditional ("loop forever") repeat should stop and
-    /// record a fixed native VGM loop point (`true`, needed by
-    /// [`to_vgm_document`] to produce a finite `VgmDocument` with a valid
-    /// loop header) or simply keep repeating indefinitely, producing new
-    /// commands for each pass without ever finishing (`false`, used by the
-    /// streaming [`MdxVgmGenerator`] path, which never retains enough
-    /// history to rewind to a remembered position anyway).
-    mark_native_loop: bool,
+    /// Whole-song repeat detection and native VGM loop-point state.
+    song_loop: SongLoopState,
+    /// Embedded fadeout detection and attenuation progression.
+    fadeout: FadeoutState,
 }
 
 impl<P: Borrow<MdxPackage>> PlaybackState<P> {
@@ -632,52 +678,37 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             pcm_mode,
             adpcm_mode,
             tracks,
-            has_fadeout_command,
-            has_pcm,
-            pcm_channels: Default::default(),
-            pcm_samples: Vec::new(),
-            pcm_sample_ranges: HashMap::new(),
-            pcm_encoder: AdpcmEncoder::default(),
-            pcm_filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
-            raw_pcm_bytes: Vec::new(),
-            raw_pcm_position: 0,
-            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ),
-            tempo: DEFAULT_TEMPO,
-            sample_remainder: 0,
-            loop_count,
+            pcm_output: PcmOutputState::new(has_pcm, adpcm_mode),
+            timing: PlaybackTimingState::new(),
             opm_reg_0f: 0,
             opm_reg_1b: 0,
             lfo_rand_seed: 0x1234,
-            song_loop_starts: HashMap::new(),
-            jump_repeat_counts: HashMap::new(),
-            song_loop_index: None,
-            song_loop_complete: false,
-            track_end_loop_seen: false,
-            fadeout_seen: false,
-            fadeout_speed: 0,
-            fadeout_counter: 0,
-            fadeout_level: 0,
-            mark_native_loop,
+            song_loop: SongLoopState::new(loop_count, mark_native_loop),
+            fadeout: FadeoutState {
+                has_command: has_fadeout_command,
+                ..FadeoutState::default()
+            },
         }
     }
 
     /// Checks if playback has finished due to a completed song loop, a completed
     /// fadeout, or all tracks and pending PCM output being drained.
     fn finished(&self) -> bool {
-        self.song_loop_complete
-            || (self.fadeout_seen && self.fadeout_level >= FADEOUT_FINAL_LEVEL)
-            || (!self.fadeout_seen
+        self.song_loop.loop_complete
+            || (self.fadeout.seen && self.fadeout.level >= FADEOUT_FINAL_LEVEL)
+            || (!self.fadeout.seen
                 && self.tracks.iter().all(|track| !track.active)
                 && !self.has_pending_pcm_output())
     }
 
     fn has_pending_pcm_output(&self) -> bool {
         let raw_pending = matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
-            && self.raw_pcm_position < self.raw_pcm_bytes.len();
+            && self.pcm_output.raw_position < self.pcm_output.raw_bytes.len();
         let mixed_pending = !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through))
             && self
-                .pcm_channels
+                .pcm_output
+                .channels
                 .iter()
                 .any(|channel| channel.block_length != 0);
         raw_pending || mixed_pending
@@ -701,7 +732,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Finalizes the document, applying the native VGM loop point detected
     /// from an unconditional repeat, if any (see `take_repeating_jump`).
     fn finalize(&self, mut builder: VgmBuilder) -> VgmDocument {
-        if let Some(loop_index) = self.song_loop_index {
+        if let Some(loop_index) = self.song_loop.loop_index {
             builder.set_loop_index(loop_index);
         }
         builder.finalize()
@@ -725,7 +756,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// encounters an issue during processing.
     fn process_tick(&mut self, builder: &mut VgmBuilder) -> Result<(), MdxConvertError> {
         self.advance_fadeout(builder);
-        if self.fadeout_level >= FADEOUT_FINAL_LEVEL {
+        if self.fadeout.level >= FADEOUT_FINAL_LEVEL {
             return Ok(());
         }
         for track_index in 0..self.tracks.len() {
@@ -789,7 +820,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn stop_pcm_channel(&mut self, track: usize) {
         let channel = track - 8;
         let hold = self.tracks[track].fm.key_off_disabled;
-        let state = &mut self.pcm_channels[channel];
+        let state = &mut self.pcm_output.channels[channel];
         if hold {
             state.hold = true;
         } else {
@@ -823,8 +854,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let block_key = (bank, note_index, format_key);
         let rate_step = self.tracks[track].pcm.rate_step;
         let gain = self.pcm_channel_gain(track);
-        let same_block = self.pcm_channels[channel].hold
-            && self.pcm_channels[channel].block_key == Some(block_key);
+        let same_block = self.pcm_output.channels[channel].hold
+            && self.pcm_output.channels[channel].block_key == Some(block_key);
         if same_block {
             // F7 followed by the same PCM note is a held note, not a second
             // trigger. This is the NanoDriveX "WAPICO" compatibility case.
@@ -845,13 +876,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     .as_ref()
                     .and_then(|pdx| pdx.entry(bank, note_index)),
             };
-            self.raw_pcm_bytes = self
+            self.pcm_output.raw_bytes = self
                 .package
                 .borrow()
                 .pcm_sample_bytes(&reference)
                 .unwrap_or_default()
                 .to_vec();
-            self.raw_pcm_position = 0;
+            self.pcm_output.raw_position = 0;
         }
         let range = self.decode_pcm_samples(
             bank,
@@ -859,13 +890,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             format,
             format == Pcm8aFormat::Pcm16 && rate_step == 0x10000,
         );
-        let state = &mut self.pcm_channels[channel];
+        let state = &mut self.pcm_output.channels[channel];
         state.block_start = range.map_or(0, |(start, _)| start);
         state.block_length = range.map_or(0, |(_, length)| length as u32);
         state.block_key = range.map(|_| block_key);
         state.pos_in_block = 0;
         state.rate_counter = 0;
-        let state = &mut self.pcm_channels[channel];
+        let state = &mut self.pcm_output.channels[channel];
         state.rate_step = rate_step;
         state.gain = gain;
         state.hold = tie;
@@ -877,12 +908,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// key-on.
     fn apply_live_pcm_gain(&mut self, track: usize) {
         let gain = self.pcm_channel_gain(track);
-        self.pcm_channels[track - 8].gain = gain;
+        self.pcm_output.channels[track - 8].gain = gain;
     }
 
     fn pcm_channel_gain(&self, track: usize) -> u8 {
         let fadeout_level = if self.pcm_uses_mixer() {
-            self.fadeout_level
+            self.fadeout.level
         } else {
             0
         };
@@ -913,7 +944,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             Pcm8aFormat::Pcm8 => 2u8,
         };
         let key = (bank, note, format_key, pcm16_is_15khz);
-        if let Some(&range) = self.pcm_sample_ranges.get(&key) {
+        if let Some(&range) = self.pcm_output.sample_ranges.get(&key) {
             return Some(range);
         }
         let bytes = self
@@ -923,11 +954,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .as_ref()?
             .sample_bytes(bank, note)?;
         let decoded = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz).ok()?;
-        let start = self.pcm_samples.len();
+        let start = self.pcm_output.samples.len();
         let length = decoded.len();
-        self.pcm_samples.extend_from_slice(&decoded);
+        self.pcm_output.samples.extend_from_slice(&decoded);
         let range = (start, length);
-        self.pcm_sample_ranges.insert(key, range);
+        self.pcm_output.sample_ranges.insert(key, range);
         Some(range)
     }
 
@@ -950,8 +981,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             };
             self.tracks[track].command_index += 1;
             if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
-                self.raw_pcm_bytes.clear();
-                self.raw_pcm_position = 0;
+                self.pcm_output.raw_bytes.clear();
+                self.pcm_output.raw_position = 0;
             }
             match command {
                 MdxCommand::Rest(command) => {
@@ -963,7 +994,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     if track >= 8 {
                         // NanoDriveX clears the ADPCM hold at a rest while
                         // allowing the sample to continue to its own end.
-                        self.pcm_channels[track - 8].hold = false;
+                        self.pcm_output.channels[track - 8].hold = false;
                     }
                 }
                 MdxCommand::Note(command) if track < 8 => {
@@ -1016,7 +1047,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].fm.key_off_disabled = false;
                 }
                 MdxCommand::Tempo(command) => {
-                    self.tempo = command.value.max(1);
+                    self.timing.tempo = command.value.max(1);
                 }
                 MdxCommand::OpmRegisterWrite(command) => {
                     if command.register == 0x0f {
@@ -1149,9 +1180,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::PcmMode(_) => {}
                 MdxCommand::Extended(command) => match command {
                     MdxExtendedCommand::Fadeout { value } => {
-                        self.fadeout_seen = true;
-                        self.fadeout_speed = value;
-                        self.fadeout_counter = i16::from(value);
+                        self.fadeout.seen = true;
+                        self.fadeout.speed = value;
+                        self.fadeout.counter = i16::from(value);
                     }
                     // None of these E7 sub-commands perform an FM action here.
                     MdxExtendedCommand::Pcm8DirectDrive { .. }
@@ -1248,16 +1279,17 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.take_repeating_jump(track, command.offset, builder)
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
-                    self.track_end_loop_seen = true;
-                    if self.mark_native_loop
-                        && self.loop_count.is_none()
-                        && !self.has_fadeout_command
+                    self.song_loop.track_end_loop_seen = true;
+                    if self.song_loop.mark_native_loop
+                        && self.song_loop.loop_count.is_none()
+                        && !self.fadeout.has_command
                     {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so
                         // it must not become the global VGM loop point.
                         self.tracks[track].active = false;
-                    } else if self.mark_native_loop && self.loop_count.is_none() {
+                    } else if self.song_loop.mark_native_loop && self.song_loop.loop_count.is_none()
+                    {
                         self.jump_relative(track, command.offset);
                     } else {
                         self.take_repeating_jump(track, command.offset, builder);
@@ -1509,7 +1541,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             u16::from(FM_VOLUME_TABLE[self.tracks[track].fm.volume.min(15) as usize])
         };
         let lfo_attenuation = self.tracks[track].lfo.volume_offset >> 8;
-        let attenuation = base_attenuation + lfo_attenuation + u16::from(self.fadeout_level);
+        let attenuation = base_attenuation + lfo_attenuation + u16::from(self.fadeout.level);
         let carrier_mask = CARRIER_TL_SLOTS[(tone.con & 0x07) as usize];
         let fm_channel = self.tracks[track].fm.fm_channel;
         for (operator, value) in tone.operators.iter().enumerate() {
@@ -1898,8 +1930,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         target_index: usize,
         builder: &mut VgmBuilder,
     ) {
-        if let Some(limit) = self.loop_count {
+        if let Some(limit) = self.song_loop.loop_count {
             let count = self
+                .song_loop
                 .jump_repeat_counts
                 .entry((track, jump_command_index))
                 .or_insert(0);
@@ -1910,17 +1943,19 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.tracks[track].command_index = target_index;
             return;
         }
-        if self.fadeout_seen || !self.mark_native_loop {
+        if self.fadeout.seen || !self.song_loop.mark_native_loop {
             self.tracks[track].command_index = target_index;
             return;
         }
         let key = (track, target_index);
-        if let Some(&loop_index) = self.song_loop_starts.get(&key) {
-            self.song_loop_index.get_or_insert(loop_index);
-            self.song_loop_complete = true;
+        if let Some(&loop_index) = self.song_loop.loop_starts.get(&key) {
+            self.song_loop.loop_index.get_or_insert(loop_index);
+            self.song_loop.loop_complete = true;
             return;
         }
-        self.song_loop_starts.insert(key, builder.command_count());
+        self.song_loop
+            .loop_starts
+            .insert(key, builder.command_count());
         self.tracks[track].command_index = target_index;
     }
 
@@ -1940,16 +1975,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// samples to maintain accurate playback timing.
     fn emit_wait(&mut self, builder: &mut VgmBuilder) {
         let tick_microseconds = self.tick_microseconds();
-        let sample_accumulator = self.sample_remainder + tick_microseconds * VGM_SAMPLE_RATE;
+        let sample_accumulator = self.timing.sample_remainder + tick_microseconds * VGM_SAMPLE_RATE;
         let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
-        self.sample_remainder = sample_accumulator % MICROSECONDS_PER_SECOND;
+        self.timing.sample_remainder = sample_accumulator % MICROSECONDS_PER_SECOND;
 
-        if !self.has_pcm {
+        if !self.pcm_output.has_pcm {
             Self::emit_wait_chunks(builder, samples);
             return;
         }
 
-        let pcm_bytes_due = self.mck_scheduler.advance(tick_microseconds);
+        let pcm_bytes_due = self.pcm_output.mck_scheduler.advance(tick_microseconds);
         if pcm_bytes_due == 0 {
             Self::emit_wait_chunks(builder, samples);
             return;
@@ -1960,7 +1995,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         // segments) so each byte lands close to its real playback position
         // without resorting to a wait-1-sample-per-byte command stream.
         let mut emitted_samples = 0;
-        let first_byte_at_zero = self.mck_scheduler.take_initial_event();
+        let first_byte_at_zero = self.pcm_output.mck_scheduler.take_initial_event();
         let start_index = if first_byte_at_zero {
             self.emit_pcm_byte(builder);
             1
@@ -2001,22 +2036,22 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// microseconds; shared by the FM wait-sample clock and the PCM8
     /// mixer's own sample clock so both stay in sync with the same tempo.
     fn tick_microseconds(&self) -> u32 {
-        256 * u32::from(256u16 - u16::from(self.tempo))
+        256 * u32::from(256u16 - u16::from(self.timing.tempo))
     }
 
     /// Advances the global fadeout counter and reapplies FM and mixed PCM
     /// attenuation when the level changes.
     fn advance_fadeout(&mut self, builder: &mut VgmBuilder) {
-        if !self.fadeout_seen || self.fadeout_level >= FADEOUT_FINAL_LEVEL {
+        if !self.fadeout.seen || self.fadeout.level >= FADEOUT_FINAL_LEVEL {
             return;
         }
-        if self.fadeout_counter >= 0 {
-            self.fadeout_counter -= 2;
+        if self.fadeout.counter >= 0 {
+            self.fadeout.counter -= 2;
             return;
         }
 
-        self.fadeout_level += 1;
-        self.fadeout_counter = i16::from(self.fadeout_speed);
+        self.fadeout.level += 1;
+        self.fadeout.counter = i16::from(self.fadeout.speed);
         for track in 0..8 {
             if self.tracks[track].fm.voice_selected {
                 self.emit_volume(track, builder);
@@ -2025,7 +2060,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.pcm_uses_mixer() {
             for track in 8..self.tracks.len().min(16) {
                 let gain = self.pcm_channel_gain(track);
-                self.pcm_channels[track - 8].gain = gain;
+                self.pcm_output.channels[track - 8].gain = gain;
             }
         }
     }
@@ -2049,7 +2084,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }) else {
             return;
         };
-        self.mck_scheduler.set_byte_rate(byte_rate_hz);
+        self.pcm_output.mck_scheduler.set_byte_rate(byte_rate_hz);
         for (register, value) in (0x08..=0x0b).zip(clock_bytes) {
             builder.add_vgm_command((Instance::Primary, Okim6258Spec { register, value }));
         }
@@ -2069,18 +2104,19 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             && matches!(self.adpcm_mode, AdpcmMode::Through)
         {
             let byte = self
-                .raw_pcm_bytes
-                .get(self.raw_pcm_position)
+                .pcm_output
+                .raw_bytes
+                .get(self.pcm_output.raw_position)
                 .copied()
                 .unwrap_or(0x80);
-            self.raw_pcm_position = self.raw_pcm_position.saturating_add(1);
+            self.pcm_output.raw_position = self.pcm_output.raw_position.saturating_add(1);
             byte
         } else {
             pcm_mixer::mix_and_encode_byte(
-                &mut self.pcm_channels,
-                &self.pcm_samples,
-                &mut self.pcm_encoder,
-                &mut self.pcm_filter,
+                &mut self.pcm_output.channels,
+                &self.pcm_output.samples,
+                &mut self.pcm_output.encoder,
+                &mut self.pcm_output.filter,
             )
         };
         builder.add_vgm_command((
@@ -2105,7 +2141,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// [`MdxVgmGenerator`], which has no use for a complete `VgmDocument`
     /// and therefore never calls `VgmBuilder::finalize()`.
     fn emit_closing_commands(&self, builder: &mut VgmBuilder) {
-        if self.has_pcm && self.song_loop_index.is_none() {
+        if self.pcm_output.has_pcm && self.song_loop.loop_index.is_none() {
             builder.add_vgm_command((
                 Instance::Primary,
                 Okim6258Spec {
@@ -2134,7 +2170,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 /// per-tick scratch space and drained via [`VgmBuilder::take_commands`]
 /// into `pending` after every step, so memory use stays bounded to at most
 /// one tick's worth of commands rather than growing with the length of the
-/// song (see [`PlaybackState::mark_native_loop`], which is `false` for this
+/// song (see [`SongLoopState::mark_native_loop`], which is `false` for this
 /// path).
 struct MdxVgmGenerator<P: Borrow<MdxPackage>> {
     playback: PlaybackState<P>,
@@ -2154,7 +2190,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
     /// `mark_native_loop` is `true` for the eager [`to_vgm_document`] path
     /// (which needs a fixed native VGM loop point) and `false` for the
     /// streaming [`to_vgm_stream_generator`] path (which just keeps
-    /// repeating indefinitely); see [`PlaybackState::mark_native_loop`].
+    /// repeating indefinitely); see [`SongLoopState::mark_native_loop`].
     fn new(
         package: P,
         options: MdxToVgmOptions,
@@ -2188,7 +2224,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
         }
         if !self.initialized {
             self.initialized = true;
-            if self.playback.has_pcm {
+            if self.playback.pcm_output.has_pcm {
                 self.builder.register_chip(
                     Chip::Okim6258,
                     Instance::Primary,
@@ -2196,7 +2232,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
                 );
             }
             self.playback.emit_initialization(&mut self.builder);
-            if self.playback.has_pcm {
+            if self.playback.pcm_output.has_pcm {
                 self.builder.add_vgm_command((
                     Instance::Primary,
                     Okim6258Spec {
@@ -2309,46 +2345,46 @@ mod tests {
     #[test]
     fn pcm_key_on_and_live_volume_follow_embedded_fadeout() {
         let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Through);
-        playback.fadeout_level = 3;
+        playback.fadeout.level = 3;
         playback.tracks[8].fm.volume = 8;
 
         playback.begin_pcm_key_on(8, 0x80);
 
-        assert_eq!(playback.pcm_channels[0].gain, 12);
+        assert_eq!(playback.pcm_output.channels[0].gain, 12);
 
         playback.tracks[8].fm.volume = 0x80;
         playback.apply_live_pcm_gain(8);
 
-        assert_eq!(playback.pcm_channels[0].gain, 64);
+        assert_eq!(playback.pcm_output.channels[0].gain, 64);
     }
 
     #[test]
     fn fadeout_level_change_reapplies_gain_to_mixed_pcm_channels() {
         let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Resample);
-        playback.fadeout_seen = true;
-        playback.fadeout_level = 2;
-        playback.fadeout_counter = -1;
+        playback.fadeout.seen = true;
+        playback.fadeout.level = 2;
+        playback.fadeout.counter = -1;
         playback.tracks[8].fm.volume = 8;
-        playback.pcm_channels[0].gain = 16;
+        playback.pcm_output.channels[0].gain = 16;
 
         playback.advance_fadeout(&mut VgmBuilder::new());
 
-        assert_eq!(playback.fadeout_level, 3);
-        assert_eq!(playback.pcm_channels[0].gain, 12);
+        assert_eq!(playback.fadeout.level, 3);
+        assert_eq!(playback.pcm_output.channels[0].gain, 12);
     }
 
     #[test]
     fn legacy_adpcm_through_does_not_apply_fadeout_to_pcm_gain() {
         let mut playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
-        playback.fadeout_seen = true;
-        playback.fadeout_level = 2;
-        playback.fadeout_counter = -1;
+        playback.fadeout.seen = true;
+        playback.fadeout.level = 2;
+        playback.fadeout.counter = -1;
         playback.tracks[8].fm.volume = 8;
 
         playback.begin_pcm_key_on(8, 0x80);
         playback.advance_fadeout(&mut VgmBuilder::new());
 
-        assert_eq!(playback.fadeout_level, 3);
-        assert_eq!(playback.pcm_channels[0].gain, 16);
+        assert_eq!(playback.fadeout.level, 3);
+        assert_eq!(playback.pcm_output.channels[0].gain, 16);
     }
 }
