@@ -11,6 +11,25 @@ use std::array;
 
 /// YM2151 has 8 FM channels
 const YM2151_CHANNELS: usize = 8;
+/// YM2151 key-code nibble to semitone offset from C.
+const YM2151_KEYCODE_TO_SEMITONE: [Option<u8>; 16] = [
+    Some(0),
+    Some(1),
+    Some(2),
+    None,
+    Some(3),
+    Some(4),
+    Some(5),
+    None,
+    Some(6),
+    Some(7),
+    Some(8),
+    None,
+    Some(9),
+    Some(10),
+    Some(11),
+    None,
+];
 
 /// YM2151 channel storage (256 register space)
 ///
@@ -137,13 +156,13 @@ impl Ym2151State {
     /// KC/KF encoding
     /// - `KC` (Key Code) layout:
     ///   - bits 6..4 = block (octave)
-    ///   - bits 3..0 = note index (0..11 for C..B). Values > 11 are considered invalid.
+    ///   - bits 3..0 = note code, mapped to C..B by the YM2151 key-code table
     /// - `KF` (Key Fraction) layout:
     ///   - bits 7..2 = fractional tuning steps (0..63). Lower two bits are ignored.
     ///
     /// Mapping chosen here
-    /// - Map KC to a MIDI note number so that `KC = 0x4A` (block=4, note=10) becomes MIDI 69 (A4).
-    ///   Concretely: `midi = block * 12 + note + 11`.
+    /// - Map KC to a MIDI note number so that `KC = 0x4C` (block=4, A) becomes MIDI 69 (A4).
+    ///   Concretely: `midi = block * 12 + semitone + 12`.
     /// - Compute the base frequency using equal-tempered tuning relative to A4 = 440 Hz:
     ///   `base_freq = 440 * 2^((midi - 69) / 12)`.
     /// - Apply KF as a fine fractional semitone. KF provides 64 discrete steps per semitone,
@@ -159,18 +178,16 @@ impl Ym2151State {
     /// - `master_clock_hz`: actual master clock in Hz used to scale the nominal frequency
     ///
     /// Returns
-    /// - `Some(frequency_hz)` when `KC` encodes a valid note (note <= 11)
-    /// - `None` when `KC`'s note field is out of range
+    /// - `Some(frequency_hz)` when `KC` encodes one of the twelve YM2151 notes
+    /// - `None` when `KC`'s note code is unused
     fn kc_kf_to_freq(kc: u8, kf: u8, master_clock_hz: f32) -> Option<f32> {
         let nominal_clock = 3_579_545.0;
         let oct = (kc >> 4) & 0x07;
-        let note = (kc & 0x0F) as i32;
-        if note > 11 {
-            return None;
-        }
+        let note_code = (kc & 0x0F) as usize;
+        let semitone = i32::from(YM2151_KEYCODE_TO_SEMITONE[note_code]?);
         let kf_fraction = ((kf >> 2) & 0x3F) as f32; // 0..63
-        // Map KC to MIDI note (so 0x4A -> MIDI 69)
-        let midi = (oct as i32) * 12 + note + 11;
+        // Map KC to MIDI note (so 0x4C -> MIDI 69)
+        let midi = i32::from(oct) * 12 + semitone + 12;
         // Base frequency using equal-tempered tuning relative to A4 = 440 Hz.
         let base_freq = 440.0f32 * 2f32.powf((midi as f32 - 69.0f32) / 12.0f32);
         // Apply KF fine-tuning (fraction of a semitone)
@@ -328,7 +345,7 @@ mod tests {
         let mut state = Ym2151State::new(3_579_545.0f32);
 
         // Write KC and KF for channel 0
-        state.on_register_write(0x28, 0x4A); // KC: note=A
+        state.on_register_write(0x28, 0x4C); // KC: note=A
         state.on_register_write(0x30, 0x00); // KF: no fraction
 
         // Key on channel 0, all operators
@@ -399,15 +416,15 @@ mod tests {
     }
 
     #[test]
-    fn test_kc_kf_4a_yields_a4_440hz() {
+    fn test_kc_kf_4c_yields_a4_440hz() {
         // Typical YM2151 master clock used in tests and many arcade systems
         let master_clock: f32 = 3_579_545.0f32;
 
-        // KC = 0x4A, KF = 0x00 should map to A4 (440 Hz) with our KC/KF->freq mapping
-        let freq_opt = Ym2151State::kc_kf_to_freq(0x4A, 0x00, master_clock);
+        // KC = 0x4C, KF = 0x00 should map to A4 (440 Hz).
+        let freq_opt = Ym2151State::kc_kf_to_freq(0x4C, 0x00, master_clock);
         assert!(
             freq_opt.is_some(),
-            "kc_kf_to_freq returned None for KC=0x4A, KF=0x00"
+            "kc_kf_to_freq returned None for KC=0x4C, KF=0x00"
         );
 
         let freq = freq_opt.unwrap();
@@ -419,5 +436,33 @@ mod tests {
             freq,
             diff
         );
+    }
+
+    #[test]
+    fn test_all_ym2151_key_codes_map_to_semitones() {
+        let key_codes = [0x0, 0x1, 0x2, 0x4, 0x5, 0x6, 0x8, 0x9, 0xA, 0xC, 0xD, 0xE];
+
+        for (semitone, key_code) in key_codes.into_iter().enumerate() {
+            let kc = 0x40 | key_code;
+            let frequency = Ym2151State::kc_kf_to_freq(kc, 0, 3_579_545.0)
+                .expect("all YM2151 note codes should have a frequency");
+            let expected = 440.0 * 2f32.powf((semitone as f32 - 9.0) / 12.0);
+
+            assert!(
+                (frequency - expected).abs() < 0.01,
+                "KC=0x{kc:02X}: expected {expected} Hz, got {frequency} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unused_ym2151_key_codes_have_no_frequency() {
+        for key_code in [0x3, 0x7, 0xB, 0xF] {
+            assert_eq!(
+                Ym2151State::kc_kf_to_freq(0x40 | key_code, 0, 3_579_545.0),
+                None,
+                "unused KC note code 0x{key_code:X} should not map to a frequency"
+            );
+        }
     }
 }

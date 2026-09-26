@@ -162,7 +162,7 @@ pub fn write_ym2151_sine_voice(builder: &mut VgmBuilder, instance: Instance, cha
 /// - KC (0x28+ch): bits 6-4 = octave (block), bits 3-0 = note code
 /// - KF (0x30+ch): bits 7-2 = key fraction (6 bits)
 ///
-/// The effective F-number is: fnum = (note_code * 64) + kf_fraction
+/// KC note codes use the YM2151's 12-entry C-through-B encoding table.
 ///
 /// # Arguments
 /// * `channel`  – 0-7.
@@ -219,9 +219,9 @@ fn test_ym2151_keyon_and_tone_freq_matches_a4() {
     let channel: u8 = 0;
 
     // YM2151 frequency encoding:
-    // KC register: bits 6-4 = oct, bits 3-0 = note_code
+    // KC register: bits 6-4 = octave, bits 3-0 = YM2151 note code
     // KF register: bits 7-2 = kf_fraction (6 bits)
-    let kc_value = 0x4a;
+    let kc_value = 0x4c;
     let kf_value = 0x00;
 
     // Build VGM
