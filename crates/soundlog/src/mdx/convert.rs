@@ -14,6 +14,7 @@
 //! - Expose conversion options and errors without leaking playback state into
 //!   the public format model.
 
+use crate::binutil::ParseError;
 use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
 use crate::mdx::command::{
     MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPan,
@@ -23,7 +24,8 @@ use crate::mdx::package::{MdxPackage, MdxPcmReference};
 use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a_with_pcm16_15khz};
 use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
-use crate::vgm::command::{Instance, WaitSamples};
+use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
+use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
@@ -264,7 +266,7 @@ impl MdxToVgmOptions {
 pub fn to_vgm_stream_generator(
     package: MdxPackage,
     options: MdxToVgmOptions,
-) -> Result<Box<dyn crate::vgm::stream::VgmCommandGenerator>, MdxConvertError> {
+) -> Result<Box<dyn VgmCommandGenerator>, MdxConvertError> {
     Ok(Box::new(MdxVgmGenerator::new(package, options, false)?))
 }
 
@@ -2181,7 +2183,7 @@ struct MdxVgmGenerator<P: Borrow<MdxPackage>> {
     builder: VgmBuilder,
     /// Commands produced by the most recent tick(s) that have not yet been
     /// handed out via `next_command`.
-    pending: VecDeque<crate::vgm::command::VgmCommand>,
+    pending: VecDeque<VgmCommand>,
     initialized: bool,
     finished: bool,
 }
@@ -2251,8 +2253,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
                 // still relies on an explicit `EndOfData` command to signal
                 // end-of-stream/looping, so append one here to match what
                 // `finalize()` would have guaranteed.
-                self.builder
-                    .add_vgm_command(crate::vgm::command::EndOfData {});
+                self.builder.add_vgm_command(EndOfData {});
                 self.finished = true;
                 Ok(false)
             }
@@ -2269,10 +2270,8 @@ impl<P: Borrow<MdxPackage>> fmt::Debug for MdxVgmGenerator<P> {
 
 /// Implements the `VgmCommandGenerator` trait for `MdxVgmGenerator`, allowing it to
 /// produce a stream of VGM commands based on the MDX playback state.
-impl<P: Borrow<MdxPackage>> crate::vgm::stream::VgmCommandGenerator for MdxVgmGenerator<P> {
-    fn next_command(
-        &mut self,
-    ) -> Result<Option<crate::vgm::command::VgmCommand>, crate::binutil::ParseError> {
+impl<P: Borrow<MdxPackage>> VgmCommandGenerator for MdxVgmGenerator<P> {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
         loop {
             if let Some(command) = self.pending.pop_front() {
                 return Ok(Some(command));
@@ -2281,7 +2280,7 @@ impl<P: Borrow<MdxPackage>> crate::vgm::stream::VgmCommandGenerator for MdxVgmGe
                 return Ok(None);
             }
             self.run_step()
-                .map_err(|e| crate::binutil::ParseError::Other(e.to_string()))?;
+                .map_err(|e| ParseError::Other(e.to_string()))?;
             self.pending.extend(self.builder.take_commands());
         }
     }
