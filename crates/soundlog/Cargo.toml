@@ -17,5 +17,5 @@ exclude = [
 ]
 
 [features]
-default = ["mdx"]
+default = []
 mdx = []

@@ -27,6 +27,7 @@ use crate::vgm::detail;
 use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 use crate::vgm::parser;
 use std::convert::TryFrom;
+#[cfg(feature = "mdx")]
 use std::mem;
 use std::slice;
 use std::vec;
@@ -184,6 +185,7 @@ impl VgmBuilder {
     /// implementations) that reuse the same builder as scratch space across
     /// many small batches of commands instead of accumulating a whole
     /// document, so it never grows unbounded with playback time.
+    #[cfg(feature = "mdx")]
     pub(crate) fn take_commands(&mut self) -> Vec<VgmCommand> {
         mem::take(&mut self.document.commands)
     }

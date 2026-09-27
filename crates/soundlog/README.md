@@ -357,8 +357,12 @@ For playback of another supported format, such as MDX, create a package from
 in-memory source data and pass the lazy generator returned by its conversion
 API to `VgmStream::from_generator`. Commands are converted as they are
 consumed, so the complete VGM command list does not need to be kept in memory.
+MDX support is disabled by default; enable it in your dependency declaration
+with `soundlog = { version = "0.14", features = ["mdx"] }`.
 
 ```rust
+# #[cfg(feature = "mdx")]
+# {
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
 use soundlog::mdx::document::MdxBuilder;
 use soundlog::mdx::package::MdxPackage;
@@ -384,6 +388,7 @@ for result in &mut stream {
         Err(error) => panic!("stream error: {error}"),
     }
 }
+# }
 ```
 
 ## VgmCallbackStream overview

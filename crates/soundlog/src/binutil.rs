@@ -214,6 +214,7 @@ pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
 /// Returns `Ok(u16)` when the two bytes starting at `off` are available and
 /// were successfully interpreted as a big-endian `u16`. Returns
 /// `Err(ParseError::OffsetOutOfRange)` when the buffer is too short.
+#[cfg(feature = "mdx")]
 pub fn read_u16_be_at(bytes: &[u8], off: usize) -> Result<u16, ParseError> {
     if bytes.len() < off + 2 {
         return Err(ParseError::OffsetOutOfRange {
@@ -232,6 +233,7 @@ pub fn read_u16_be_at(bytes: &[u8], off: usize) -> Result<u16, ParseError> {
 ///
 /// This preserves the two-byte representation read by `read_u16_be_at` and
 /// interprets it as an `i16`.
+#[cfg(feature = "mdx")]
 pub fn read_i16_be_at(bytes: &[u8], off: usize) -> Result<i16, ParseError> {
     let value = read_u16_be_at(bytes, off)?;
     Ok(i16::from_be_bytes(value.to_be_bytes()))
