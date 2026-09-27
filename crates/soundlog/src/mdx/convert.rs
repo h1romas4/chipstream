@@ -84,9 +84,9 @@ enum MdxPcmMode {
 
 /// Schedules the OKIM6258 data-register writes driven by the hardware MCK.
 ///
-/// NanoDrive8 receives one output event per PCM byte from its MCK interrupt.
-/// VGM has no MCK command, so this scheduler carries the fractional event
-/// phase across MDX ticks and exposes the number of events due in each tick.
+/// The hardware MCK produces one output event per PCM byte. VGM has no MCK
+/// command, so this scheduler carries the fractional event phase across MDX
+/// ticks and exposes the number of events due in each tick.
 struct MckScheduler {
     byte_rate_hz: u32,
     time_remainder: u32,
@@ -136,9 +136,9 @@ impl MdxPcmMode {
 ///
 /// PCM8A playback is mixed and re-encoded into the single OKIM6258 stream
 /// required by VGM. `Through` and `Resample` share the unfiltered path for
-/// PCM8A; `Lpf` additionally applies the NanoDrive8-style output filter
-/// before re-encoding. For legacy ADPCM, `Through` passes the encoded source
-/// bytes directly, while `Resample` and `Lpf` use the decoded mixer path.
+/// PCM8A; `Lpf` additionally applies the output filter before re-encoding.
+/// For legacy ADPCM, `Through` passes the encoded source bytes directly, while
+/// `Resample` and `Lpf` use the decoded mixer path.
 ///
 /// Embedded MDX fadeout attenuation is applied to FM output and to PCM
 /// channels that pass through the software mixer. Legacy ADPCM `Through`
@@ -153,7 +153,7 @@ pub enum AdpcmMode {
     Through,
     /// Resample the PCM channels without the output filter.
     Resample,
-    /// Resample and apply the NanoDrive8-style LPF/HPF.
+    /// Resample and apply the output filter.
     Lpf,
 }
 
@@ -521,7 +521,7 @@ struct PcmOutputState {
     sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     encoder: AdpcmEncoder,
-    /// Persistent NanoDrive8-style output filter state for the mixed PCM8 stream.
+    /// Persistent output-filter state for the mixed PCM8 stream.
     filter: PcmOutputFilter,
     /// Raw PCM1 ADPCM payload used by the `Through` mode.
     raw_bytes: Vec<u8>,
@@ -631,8 +631,7 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     /// Shadow of OPM register `0x1b` (CT1/CT2 + LFO waveform), needed to
     /// preserve the CT bits when only the LFO waveform is updated.
     opm_reg_1b: u8,
-    /// Shared LFO random generator seed (mirrors the single global PRNG
-    /// used by all tracks in the reference implementation).
+    /// Shared LFO random generator seed used across tracks.
     lfo_rand_seed: u16,
     /// Whole-song repeat detection and native VGM loop-point state.
     song_loop: SongLoopState,
@@ -816,10 +815,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Stops the ADPCM/PCM channel mapped to `track` (>= 8), mirroring
-    /// `stopPcm8Channel`: a tie (`key_off_disabled`) holds the channel at
-    /// the end of its block instead of clearing it, so a following tied
-    /// note is not retriggered.
+    /// Stops the ADPCM/PCM channel mapped to `track` (>= 8). A tie
+    /// (`key_off_disabled`) holds the channel at the end of its block instead
+    /// of clearing it, so a following tied note is not retriggered.
     fn stop_pcm_channel(&mut self, track: usize) {
         let channel = track - 8;
         let hold = self.tracks[track].fm.key_off_disabled;
@@ -837,8 +835,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 
     /// Applies an ADPCM/PCM key-on for `track` (>= 8): resolves the note
     /// (`0x80`-based) against the track's current PDX bank and data format,
-    /// decoding and caching the sample data as needed. Mirrors the
-    /// reference's block-id lookup and its `adpcmHold` re-trigger guard.
+    /// decoding and caching the sample data as needed. A held channel playing
+    /// the same sample is not triggered again.
     fn begin_pcm_key_on(&mut self, track: usize, note: u8) {
         let Some(note_index) = note.checked_sub(0x80) else {
             return;
@@ -861,7 +859,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             && self.pcm_output.channels[channel].block_key == Some(block_key);
         if same_block {
             // F7 followed by the same PCM note is a held note, not a second
-            // trigger. This is the NanoDrive8 "WAPICO" compatibility case.
+            // trigger.
             return;
         }
         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
@@ -905,10 +903,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         state.hold = tie;
     }
 
-    /// Applies a live volume change to a currently-playing ADPCM/PCM
-    /// channel (`track` >= 8), mirroring `pcm8SetVolume`'s behavior of
-    /// updating a channel's gain immediately rather than only at the next
-    /// key-on.
+    /// Applies a volume change immediately to a currently playing ADPCM/PCM
+    /// channel (`track` >= 8), rather than waiting for the next key-on.
     fn apply_live_pcm_gain(&mut self, track: usize) {
         let gain = self.pcm_channel_gain(track);
         self.pcm_output.channels[track - 8].gain = gain;
@@ -998,8 +994,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].key_off_ticks = command.ticks;
                     self.tracks[track].fm.key_off_disabled = false;
                     if track >= 8 {
-                        // NanoDrive8 clears the ADPCM hold at a rest while
-                        // allowing the sample to continue to its own end.
+                        // A rest clears the ADPCM hold while allowing the
+                        // sample to continue to its own end.
                         self.pcm_output.channels[track - 8].hold = false;
                     }
                 }
@@ -1207,8 +1203,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         let next = self.tracks[track].fm.transpose + i32::from(value);
                         self.tracks[track].fm.transpose = next.clamp(-127, 127);
                     }
-                    // Relative detune is parsed but not applied in the
-                    // reference implementation.
+                    // Relative detune is parsed but has no playback effect.
                     MdxExtended2Command::RelativeDetune { .. }
                     | MdxExtended2Command::Error
                     | MdxExtended2Command::Unknown(_) => {}
@@ -1225,12 +1220,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         .push((u32::from(command.count), command_index));
                 }
                 MdxCommand::LoopEnd(_) => {
-                    // The jump target is the position saved at `LoopStart`,
-                    // not recomputed from this command's own offset
-                    // (mirrors the reference's `pc = loopStack[sp]`, which
-                    // stays correct even if a malformed file's encoded
-                    // offset does not actually point back to the loop
-                    // start).
+                    // Use the position saved at `LoopStart` instead of
+                    // recomputing it from this command's offset. This also
+                    // keeps malformed offsets from redirecting the repeat.
                     let this_command_index = self.tracks[track].command_index - 1;
                     // `remaining == 0` is the file's "loop forever" marker.
                     // It can only be reached when `loop_count` is `None`,
@@ -1250,7 +1242,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                             LoopEndAction::Fallthrough
                         }
                         // No active loop on the stack: fall through without
-                        // jumping, matching the reference's `sp == 0` guard.
+                        // jumping.
                         None => LoopEndAction::Fallthrough,
                     };
                     match action {
@@ -1275,9 +1267,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         .is_some_and(|(count, _)| *count == 1);
                     if should_jump {
                         self.tracks[track].loop_stack.pop();
-                        // The reference's offset targets the corresponding
-                        // 0xF5 opcode itself; add 2 to land past its
-                        // operand and fully break out of the loop.
+                        // The offset targets the corresponding 0xF5 opcode;
+                        // add 2 to land past its operand and break out of the
+                        // loop.
                         self.jump_relative(track, command.offset.saturating_add(2));
                     }
                 }
@@ -1305,9 +1297,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         Ok(())
     }
 
-    /// Applies the tone (operator registers only; register `0x20` is
-    /// handled separately by `apply_pending_fm_state`), mirroring
-    /// `_setVoice`.
+    /// Applies the tone's operator registers. Register `0x20` is handled
+    /// separately when pending FM state is applied.
     fn emit_voice(
         &mut self,
         track: usize,
@@ -1325,10 +1316,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .ok_or(MdxConvertError::MissingTone { voice })?;
         let fm_channel = self.tracks[track].fm.fm_channel;
         self.tracks[track].fm.con_fl = tone.con | (tone.fl << 3);
-        // Loading a voice always re-arms the pan-pending flag too (even
-        // without a new Pan command), so register 0x20's CON/FL bits get
-        // refreshed for the new algorithm at the next key-on. Mirrors
-        // `_setVoice`'s unconditional `flags |= 0x04`.
+        // Loading a voice also marks pan as pending, so register 0x20's
+        // CON/FL bits are refreshed for the new algorithm at the next key-on.
         self.tracks[track].fm.pan_pending = true;
         // Store the tone's own key-on slot mask combined with the channel;
         // a zero mask falls back to the algorithm default at key-on time.
@@ -1349,9 +1338,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Applies a pending voice select and/or pan change, mirroring
-    /// `_applyPendingFmState`. Both are deferred from the command that set
-    /// them until the next key-on.
+    /// Applies a pending voice select and/or pan change. Both are deferred
+    /// from the command that set them until the next key-on.
     fn apply_pending_fm_state(
         &mut self,
         track: usize,
@@ -1370,9 +1358,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         Ok(())
     }
 
-    /// Applies FM key-on, mirroring `_applyPendingFmState`'s tie handling:
-    /// an already-sounding note (tie/legato) is not retriggered, so its
-    /// envelope and LFO delay continue uninterrupted.
+    /// Applies an FM key-on. An already-sounding note (tie/legato) is not
+    /// retriggered, so its envelope and LFO delay continue uninterrupted.
     fn begin_key_on(
         &mut self,
         track: usize,
@@ -1462,8 +1449,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Writes the pitch registers only if the computed pitch changed
-    /// (mirrors `writePitchIfChanged` in the reference).
+    /// Writes the pitch registers only if the computed pitch changed.
     fn update_pitch(&mut self, track: usize, builder: &mut VgmBuilder) {
         let Some(note_pitch) = self.tracks[track].fm.note_pitch else {
             return;
@@ -2104,8 +2090,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Applies NanoDrive8's legacy PCM1 clock/divider selection for `0xed`
-    /// F0-F4. OKIM6258 clock bytes are written to registers `0x08`-`0x0b`;
+    /// Applies the legacy PCM1 clock/divider selection for `0xed` F0-F4.
+    /// OKIM6258 clock bytes are written to registers `0x08`-`0x0b`;
     /// libvgm commits the new clock when register `0x0b` is written. The
     /// following `0x0c` write selects the divider.
     fn set_legacy_pcm_rate(&mut self, mode: u8, builder: &mut VgmBuilder) {
