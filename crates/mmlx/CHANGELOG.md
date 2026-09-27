@@ -1,5 +1,5 @@
 # Changelog
 
-## Unreleased
+## v0.1.0
 
-- [ ] Add: Initial MXDRV MML support, including parsing and MDX compilation.
+- [x] Add: Initial MXDRV MML support, including parsing and MDX compilation.
