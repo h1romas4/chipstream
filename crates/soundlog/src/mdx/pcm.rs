@@ -8,7 +8,7 @@
 //! It contains decoding primitives only; track timing, channel resampling,
 //! and output-chip command generation belong to neighboring modules.
 
-/// PCM8A sample storage formats used by NanoDriveX and MDX PCM references.
+/// PCM8A sample storage formats used by NanoDrive8 and MDX PCM references.
 ///
 /// The format selects how the bytes returned by a PDX sample entry are
 /// interpreted. All variants are decoded into signed [`i16`] samples in the
@@ -31,7 +31,7 @@ pub enum Pcm8aFormat {
 ///
 /// Each input byte produces two output samples: its low nibble is decoded
 /// first, followed by its high nibble. The decoder starts from signal `-2` and
-/// step index `0`, matching the state used by the NanoDriveX hardware path.
+/// step index `0`, matching the state used by the NanoDrive8 hardware path.
 /// The output range is `-2048..=2047`, matching the signal range used by the
 /// OKIM6258/MSM6258 implementation.
 ///
@@ -65,7 +65,7 @@ pub fn decode_pcm8a(format: Pcm8aFormat, bytes: &[u8]) -> Result<Vec<i16>, PcmDe
     decode_pcm8a_with_pcm16_15khz(format, bytes, false)
 }
 
-/// Decode PCM8A data with the NanoDriveX F5 15.625 kHz PCM16 scaling rule.
+/// Decode PCM8A data with the NanoDrive8 F5 15.625 kHz PCM16 scaling rule.
 ///
 /// F5 PCM16 samples already contain signed 12-bit values and must only be
 /// clamped. Higher-rate PCM16 modes contain full-scale 16-bit values and use
@@ -133,7 +133,7 @@ impl AdpcmDecoder {
 }
 
 /// Applies one ADPCM nibble to `signal`/`step_index`, mirroring the shared
-/// `applyNibble()` step used by both NanoDriveX's decoder and re-encoder.
+/// `applyNibble()` step used by both NanoDrive8's decoder and re-encoder.
 fn apply_nibble(signal: &mut i32, step_index: &mut usize, nibble: u8) {
     let step = STEP_TABLE[*step_index];
     let mut difference = step >> 3;
@@ -160,7 +160,7 @@ fn apply_nibble(signal: &mut i32, step_index: &mut usize, nibble: u8) {
         .min(STEP_TABLE.len() - 1);
 }
 
-/// Target-tracking ADPCM re-encoder, mirroring NanoDriveX's
+/// Target-tracking ADPCM re-encoder, mirroring NanoDrive8's
 /// `encodeNibbleFast()`/`OKIM6258::encodePair()`. Used to recompress a
 /// software-mixed PCM8 stream back into 4-bit OKIM6258 ADPCM for VGM output.
 #[derive(Debug, Clone, Copy, Default)]

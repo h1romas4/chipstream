@@ -105,7 +105,7 @@ impl MdxPackage {
 
     /// Returns whether conversion should drive OKIM6258 ADPCM/PCM8 playback.
     ///
-    /// Mirrors NanoDriveX's real MDX player (`src/mdx.cpp`), which gates
+    /// Mirrors NanoDrive8's real MDX player (`src/mdx.cpp`), which gates
     /// *all* OKIM6258 engagement — the initial `0x02` (ADPCM on) register
     /// write and every subsequent per-tick data byte — purely on whether a
     /// PDX file was actually loaded (`pdxLoaded`), not on whether any track

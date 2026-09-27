@@ -4,7 +4,7 @@
 //! semantics needed to produce VGM output. It supports both eager document
 //! conversion and lazy command generation for bounded-memory streaming.
 //! The playback semantics and PCM8/PCM8A handling are informed by the
-//! NanoDriveX (by Fujix), particularly its `src/mdx.cpp` and
+//! NanoDrive8 (by Fujix), particularly its `src/mdx.cpp` and
 //! `include/mdx.h` sources.
 //!
 //! Responsibilities:
@@ -85,7 +85,7 @@ enum MdxPcmMode {
 
 /// Schedules the OKIM6258 data-register writes driven by the hardware MCK.
 ///
-/// NanoDriveX receives one output event per PCM byte from its MCK interrupt.
+/// NanoDrive8 receives one output event per PCM byte from its MCK interrupt.
 /// VGM has no MCK command, so this scheduler carries the fractional event
 /// phase across MDX ticks and exposes the number of events due in each tick.
 struct MckScheduler {
@@ -137,7 +137,7 @@ impl MdxPcmMode {
 ///
 /// PCM8A playback is mixed and re-encoded into the single OKIM6258 stream
 /// required by VGM. `Through` and `Resample` share the unfiltered path for
-/// PCM8A; `Lpf` additionally applies the NanoDriveX-style output filter
+/// PCM8A; `Lpf` additionally applies the NanoDrive8-style output filter
 /// before re-encoding. For legacy ADPCM, `Through` passes the encoded source
 /// bytes directly, while `Resample` and `Lpf` use the decoded mixer path.
 ///
@@ -154,7 +154,7 @@ pub enum AdpcmMode {
     Through,
     /// Resample the PCM channels without the output filter.
     Resample,
-    /// Resample and apply the NanoDriveX-style LPF/HPF.
+    /// Resample and apply the NanoDrive8-style LPF/HPF.
     Lpf,
 }
 
@@ -522,7 +522,7 @@ struct PcmOutputState {
     sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     encoder: AdpcmEncoder,
-    /// Persistent NanoDriveX-style output filter state for the mixed PCM8 stream.
+    /// Persistent NanoDrive8-style output filter state for the mixed PCM8 stream.
     filter: PcmOutputFilter,
     /// Raw PCM1 ADPCM payload used by the `Through` mode.
     raw_bytes: Vec<u8>,
@@ -860,7 +860,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             && self.pcm_output.channels[channel].block_key == Some(block_key);
         if same_block {
             // F7 followed by the same PCM note is a held note, not a second
-            // trigger. This is the NanoDriveX "WAPICO" compatibility case.
+            // trigger. This is the NanoDrive8 "WAPICO" compatibility case.
             return;
         }
         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
@@ -994,7 +994,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].key_off_ticks = command.ticks;
                     self.tracks[track].fm.key_off_disabled = false;
                     if track >= 8 {
-                        // NanoDriveX clears the ADPCM hold at a rest while
+                        // NanoDrive8 clears the ADPCM hold at a rest while
                         // allowing the sample to continue to its own end.
                         self.pcm_output.channels[track - 8].hold = false;
                     }
@@ -2067,7 +2067,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Applies NanoDriveX's legacy PCM1 clock/divider selection for `0xed`
+    /// Applies NanoDrive8's legacy PCM1 clock/divider selection for `0xed`
     /// F0-F4. OKIM6258 clock bytes are written to registers `0x08`-`0x0b`;
     /// libvgm commits the new clock when register `0x0b` is written. The
     /// following `0x0c` write selects the divider.

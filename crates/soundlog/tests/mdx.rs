@@ -1974,7 +1974,7 @@ fn mdx_converter_loop_count_does_not_override_nested_repeat_blocks() {
 
 #[test]
 fn mdx_converter_does_not_emit_okim6258_without_pdx() {
-    // Mirrors NanoDriveX's real MDX player (`src/mdx.cpp`), which gates all
+    // Mirrors NanoDrive8's real MDX player (`src/mdx.cpp`), which gates all
     // OKIM6258 engagement purely on `pdxLoaded`, regardless of whether any
     // track references a PCM note — so even a track 8 PCM key-on must not
     // drive OKIM6258 when no PDX was supplied.

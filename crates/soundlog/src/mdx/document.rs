@@ -20,7 +20,7 @@ use crate::mdx::tone::{MdxTone, MdxToneBank};
 const DEFAULT_TRACK_COUNT: usize = 9;
 /// Minimum number of tracks allocated when an extended track is requested.
 const EXTENDED_TRACK_COUNT: usize = 16;
-/// Marker that identifies the NanoDriveX-compatible compressed MDX body.
+/// Marker that identifies the NanoDrive8-compatible compressed MDX body.
 const LZ_STREAM_MARKER: [u8; 4] = [0x7f, 0xff, 0xff, 0x4c];
 /// Maximum decoded MDX size accepted by the LZ parser.
 const MAX_DECODED_MDX_SIZE: usize = 64 * 1024 * 1024;
@@ -248,7 +248,7 @@ impl MdxBuilder {
         self
     }
 
-    /// Enables or disables NanoDriveX-compatible LZ compression on serialization.
+    /// Enables or disables NanoDrive8-compatible LZ compression on serialization.
     ///
     /// Compression is applied by [`MdxDocument::to_bytes`] after the document
     /// has been finalized. This setting does not change the typed commands
@@ -353,7 +353,7 @@ impl Default for MdxBuilder {
 impl MdxDocument {
     /// Parses an MDX byte stream and all present tracks.
     ///
-    /// Both standard and NanoDriveX-compatible LZ-compressed MDX bodies are
+    /// Both standard and NanoDrive8-compatible LZ-compressed MDX bodies are
     /// accepted. Parsing validates the header offsets and command boundaries,
     /// decodes the tone table, and converts each command into its typed
     /// [`MdxCommand`] representation.
@@ -461,7 +461,7 @@ impl MdxDocument {
     /// values remain intact for lossless round trips.
     ///
     /// If LZ compression was enabled on the builder, the serialized body is
-    /// encoded using the NanoDriveX-compatible format. Documents parsed from
+    /// encoded using the NanoDrive8-compatible format. Documents parsed from
     /// compressed input are not automatically marked for compressed output.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut header = self.header.clone();

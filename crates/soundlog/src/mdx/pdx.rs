@@ -20,7 +20,7 @@ const ENTRY_SIZE: usize = 8;
 const BANK_SIZE: usize = ENTRIES_PER_BANK * ENTRY_SIZE;
 /// Maximum number of bank tables accepted by the parser and builder.
 const MAX_BANKS: usize = 32;
-/// Four-byte marker that prefixes a NanoDriveX-compatible LZ stream.
+/// Four-byte marker that prefixes a NanoDrive8-compatible LZ stream.
 const LZ_STREAM_MARKER: [u8; 4] = [0x7f, 0xff, 0xff, 0x4c];
 /// Initial decoded size allocated for a compressed PDX payload.
 const INITIAL_DECODED_PDX_SIZE: usize = 64 * 1024;
@@ -142,7 +142,7 @@ impl PdxBuilder {
         Ok(self)
     }
 
-    /// Enable or disable NanoDriveX-compatible LZ compression on output.
+    /// Enable or disable NanoDrive8-compatible LZ compression on output.
     ///
     /// This changes only how [`Self::finalize`] serializes the decoded PDX
     /// representation; sample bytes and table contents are unchanged.
@@ -228,7 +228,7 @@ pub struct PdxDocument {
 }
 
 impl PdxDocument {
-    /// Parse an uncompressed or NanoDriveX-compatible LZ-compressed PDX file.
+    /// Parse an uncompressed or NanoDrive8-compatible LZ-compressed PDX file.
     ///
     /// The input slice is copied before parsing. Use [`Self::parse_owned`] to
     /// transfer ownership of an existing `Vec<u8>` and avoid retaining that
@@ -256,7 +256,7 @@ impl PdxDocument {
     /// Serialize the document, preserving its compressed or uncompressed mode.
     ///
     /// Uncompressed documents return their decoded bytes. Compressed documents
-    /// are prefixed with the NanoDriveX marker and re-encoded using the MDX/PDX
+    /// are prefixed with the NanoDrive8 marker and re-encoded using the MDX/PDX
     /// LZ encoder. The result is canonical and is not required to be
     /// byte-for-byte identical to the input stream.
     pub fn to_bytes(&self) -> Vec<u8> {

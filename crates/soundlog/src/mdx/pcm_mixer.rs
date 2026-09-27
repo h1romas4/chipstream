@@ -1,4 +1,4 @@
-//! Software 8-channel PCM8/PCM8A mixer, ported from NanoDriveX's
+//! Software 8-channel PCM8/PCM8A mixer, ported from NanoDrive8's
 //! `buildPcm8AdpcmByte()` (`okim6258.cpp`).
 //!
 //! MXDRV's PCM8/PCM8A mode drives a single physical OKIM6258 chip with a
@@ -7,7 +7,7 @@
 //! module reproduces that mixing + re-encoding step so it can be replayed
 //! faithfully from a single OKIM6258 chip in VGM.
 //!
-//! The real hardware output stage is approximated with the NanoDriveX
+//! The real hardware output stage is approximated with the NanoDrive8
 //! 15,625 Hz `/512` 3rd-order low-pass and 183 Hz high-pass filters before
 //! re-encoding.
 //!
@@ -21,7 +21,7 @@ use crate::mdx::pcm::AdpcmEncoder;
 ///
 /// This is the nominal "1.0x" rate used by `PCM8A_MODE_TABLE`'s F4/F5/F6
 /// entries; every channel's own `rate_step` is relative to this fixed
-/// master rate, exactly like NanoDriveX's `okim6258_mck_isr` driving
+/// master rate, exactly like NanoDrive8's `okim6258_mck_isr` driving
 /// `buildPcm8AdpcmByte()` at a fixed hardware cadence while each channel
 /// independently resamples its own source data against it.
 pub const PCM8_MASTER_SAMPLE_RATE: u32 = 15_625;
@@ -66,7 +66,7 @@ impl PcmOutputFilter {
         }
     }
 
-    // NanoDriveX's Pcm8LpfDiv512 coefficients for a 15,625 Hz OKIM6258 rate.
+    // NanoDrive8's Pcm8LpfDiv512 coefficients for a 15,625 Hz OKIM6258 rate.
     const LPF_B0: f32 = 0.548918487;
     const LPF_B1: f32 = 0.564018086;
     const LPF_B2: f32 = 0.141551943;
@@ -75,7 +75,7 @@ impl PcmOutputFilter {
     const LPF_A2: f32 = -0.019938263;
     const LPF_A3: f32 = 0.085306545;
 
-    // NanoDriveX's Pcm8HpfDiv512 coefficients (183 Hz high-pass).
+    // NanoDrive8's Pcm8HpfDiv512 coefficients (183 Hz high-pass).
     const HPF_B0: f32 = 0.964495990;
     const HPF_A1: f32 = 0.928991979;
 

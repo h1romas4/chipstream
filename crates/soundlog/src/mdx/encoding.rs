@@ -12,7 +12,7 @@
 /// Decode MDX text using the CP932-compatible Shift JIS mapping used by MXDRV.
 ///
 /// ASCII and half-width katakana are handled directly. Unknown or truncated
-/// sequences are represented by `?`, matching NanoDriveX's display behavior.
+/// sequences are represented by `?`, matching NanoDrive8's display behavior.
 pub(crate) fn decode_shift_jis(bytes: &[u8]) -> String {
     let mut result = String::with_capacity(bytes.len());
     let mut offset = 0;
@@ -83,7 +83,7 @@ fn cp932_to_unicode(code: u16) -> Option<u32> {
         .map(|index| u32::from(CP932_MAPPINGS[index].1))
 }
 
-// X68000-specific gaiji mappings derived from NanoDriveX's sjis.cpp.
+// X68000-specific gaiji mappings derived from NanoDrive8's sjis.cpp.
 fn x68k_extended_to_unicode(code: u16) -> Option<u32> {
     match code {
         0xec4c => Some(0x20),
