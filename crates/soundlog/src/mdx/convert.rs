@@ -94,6 +94,7 @@ struct MckScheduler {
 }
 
 impl MckScheduler {
+    /// Creates a scheduler for the given PCM-byte event rate.
     fn new(byte_rate_hz: u32) -> Self {
         Self {
             byte_rate_hz,
@@ -102,10 +103,12 @@ impl MckScheduler {
         }
     }
 
+    /// Changes the event rate while preserving the accumulated fractional phase.
     fn set_byte_rate(&mut self, byte_rate_hz: u32) {
         self.byte_rate_hz = byte_rate_hz;
     }
 
+    /// Advances elapsed time and returns the number of PCM-byte events due.
     fn advance(&mut self, tick_microseconds: u32) -> u32 {
         let accumulator = self.time_remainder + tick_microseconds.saturating_mul(self.byte_rate_hz);
         let bytes_due = accumulator / MICROSECONDS_PER_SECOND;
@@ -113,6 +116,7 @@ impl MckScheduler {
         bytes_due
     }
 
+    /// Returns `true` once to emit the stream's initial PCM-byte event.
     fn take_initial_event(&mut self) -> bool {
         if self.started {
             false
@@ -123,6 +127,7 @@ impl MckScheduler {
     }
 }
 impl MdxPcmMode {
+    /// Selects PCM8A for 16-track MDX files and legacy ADPCM otherwise.
     fn from_track_count(track_count: usize) -> Self {
         if track_count == 16 {
             Self::Pcm8a
@@ -532,6 +537,7 @@ struct PcmOutputState {
 }
 
 impl PcmOutputState {
+    /// Initializes PCM output state for the package and selected processing mode.
     fn new(has_pcm: bool, adpcm_mode: AdpcmMode) -> Self {
         Self {
             has_pcm,
@@ -557,6 +563,7 @@ struct PlaybackTimingState {
 }
 
 impl PlaybackTimingState {
+    /// Starts at the default MDX tempo with no fractional samples carried over.
     fn new() -> Self {
         Self {
             tempo: DEFAULT_TEMPO,
@@ -589,6 +596,7 @@ struct SongLoopState {
 }
 
 impl SongLoopState {
+    /// Initializes repeat tracking with the requested count and loop-point policy.
     fn new(loop_count: Option<u32>, mark_native_loop: bool) -> Self {
         Self {
             loop_count,
@@ -640,6 +648,7 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
 }
 
 impl<P: Borrow<MdxPackage>> PlaybackState<P> {
+    /// Initializes track, timing, PCM, loop, and fadeout state for playback.
     fn new(
         package: P,
         pcm_mode: MdxPcmMode,
@@ -703,6 +712,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 && !self.has_pending_pcm_output())
     }
 
+    /// Returns whether raw or mixed PCM output remains to be emitted.
     fn has_pending_pcm_output(&self) -> bool {
         let raw_pending = matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && self.pcm_output.raw_position < self.pcm_output.raw_bytes.len();
@@ -910,6 +920,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.pcm_output.channels[track - 8].gain = gain;
     }
 
+    /// Calculates a PCM track's output gain, including fadeout when it is mixed.
     fn pcm_channel_gain(&self, track: usize) -> u8 {
         let fadeout_level = if self.pcm_uses_mixer() {
             self.fadeout.level
@@ -923,6 +934,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
+    /// Returns whether PCM is decoded and mixed instead of passed through raw.
     fn pcm_uses_mixer(&self) -> bool {
         !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through))
