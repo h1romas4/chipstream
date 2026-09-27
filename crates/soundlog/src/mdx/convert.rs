@@ -28,7 +28,7 @@ use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -574,8 +574,8 @@ struct SongLoopState {
     loop_starts: HashMap<(usize, usize), usize>,
     /// Number of finite backward jumps taken at each jump command.
     jump_repeat_counts: HashMap<(usize, usize), u32>,
-    /// Valid per-track F1 sites participating in finite whole-song playback.
-    track_end_loop_sites: HashSet<(usize, usize)>,
+    /// Number of F1 loop jumps reached by each track during finite playback.
+    track_loop_counts: HashMap<usize, u32>,
     /// VGM command index to use as the native loop point, once detected.
     loop_index: Option<usize>,
     /// Set once a native loop point is established and internal playback stops.
@@ -641,25 +641,6 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     fadeout: FadeoutState,
 }
 
-fn resolve_jump_target_from_source_map(
-    source_map: &[Vec<(usize, usize)>],
-    track: usize,
-    command_index: usize,
-    offset: i16,
-) -> Option<usize> {
-    let track_map = source_map.get(track)?;
-    let (command_offset, command_length) = track_map.get(command_index)?;
-    let command_end = command_offset.checked_add(*command_length)?;
-    let target_offset = if offset >= 0 {
-        command_end.checked_add(offset as usize)?
-    } else {
-        command_end.checked_sub(usize::from(offset.unsigned_abs()))?
-    };
-    track_map
-        .iter()
-        .position(|(offset, _)| *offset == target_offset)
-}
-
 impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn new(
         package: P,
@@ -669,24 +650,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         mark_native_loop: bool,
     ) -> Self {
         let has_pcm = package.borrow().drives_okim6258();
-        let source_package = package.borrow();
-        let source_map = source_package.mdx.sourcemap();
-        let mut track_end_loop_sites = HashSet::new();
-        for (track, commands) in source_package.mdx.tracks.iter().enumerate() {
-            for (command_index, command) in commands.iter().enumerate() {
-                if let MdxCommand::EndOfTrackLoop(command) = command
-                    && resolve_jump_target_from_source_map(
-                        &source_map,
-                        track,
-                        command_index,
-                        command.offset,
-                    )
-                    .is_some()
-                {
-                    track_end_loop_sites.insert((track, command_index));
-                }
-            }
-        }
         let has_fadeout_command = package.borrow().mdx.tracks.iter().flatten().any(|command| {
             matches!(
                 command,
@@ -724,10 +687,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             opm_reg_0f: 0,
             opm_reg_1b: 0,
             lfo_rand_seed: 0x1234,
-            song_loop: SongLoopState {
-                track_end_loop_sites,
-                ..SongLoopState::new(loop_count, mark_native_loop)
-            },
+            song_loop: SongLoopState::new(loop_count, mark_native_loop),
             fadeout: FadeoutState {
                 has_command: has_fadeout_command,
                 ..FadeoutState::default()
@@ -2014,8 +1974,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.take_repeating_jump_to(track, jump_command_index, target_index, builder);
     }
 
-    /// Keeps independent F1 tracks looping until every valid F1 site has
-    /// reached the requested whole-song playthrough count.
+    /// Keeps independent F1 tracks looping until every active song track has
+    /// reached the requested loop count or ended.
     fn take_finite_track_end_loop(&mut self, track: usize, offset: i16) {
         let Some(limit) = self.song_loop.loop_count else {
             return;
@@ -2024,19 +1984,26 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let Some(target_index) = self.resolve_jump_target(track, offset) else {
             return;
         };
-        let key = (track, command_index);
-        let count = self.song_loop.jump_repeat_counts.entry(key).or_insert(0);
+        if offset >= 0 {
+            self.tracks[track].command_index = target_index;
+            return;
+        }
+        let count = self.song_loop.track_loop_counts.entry(track).or_insert(0);
         *count = count.saturating_add(1);
 
-        let all_tracks_reached_limit = !self.song_loop.track_end_loop_sites.is_empty()
-            && self.song_loop.track_end_loop_sites.iter().all(|site| {
-                self.song_loop
-                    .jump_repeat_counts
-                    .get(site)
+        let all_tracks_reached_limit = self.tracks.iter().enumerate().all(|(track, state)| {
+            !state.active
+                || state.sync_wait
+                || self
+                    .song_loop
+                    .track_loop_counts
+                    .get(&track)
                     .is_some_and(|count| *count >= limit)
-            });
+        });
         if all_tracks_reached_limit {
             self.song_loop.loop_complete = true;
+        } else if target_index == command_index {
+            self.tracks[track].active = false;
         } else {
             self.tracks[track].command_index = target_index;
         }
@@ -2459,7 +2426,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_loop_count_keeps_short_track_loops_playing_to_song_horizon() {
+    fn finite_loop_count_waits_for_active_tracks_and_ignores_unreached_f1() {
         let mut builder = MdxBuilder::new();
         for (track, rest_ticks) in [(0, 1), (1, 8)] {
             builder
@@ -2479,10 +2446,24 @@ mod tests {
                     }),
                 );
         }
+        builder
+            .add_mdx_command(
+                2,
+                MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack),
+            )
+            .add_mdx_command(2, MdxRest { ticks: 1 })
+            .add_mdx_command(
+                2,
+                MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: 0,
+                }),
+            );
         let mut mdx = builder.finalize().unwrap();
-        for track in 0..2 {
+        for track in 0..3 {
             let source_map = mdx.sourcemap();
-            let target = source_map[track][0].0;
+            let target_command = if track == 2 { 1 } else { 0 };
+            let target = source_map[track][target_command].0;
             let (loop_offset, loop_length) = source_map[track][2];
             let relative =
                 i32::try_from(target).unwrap() - i32::try_from(loop_offset + loop_length).unwrap();
