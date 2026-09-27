@@ -24,9 +24,9 @@ fn main() -> Result<(), Box<dyn Error>> {
   /* CON FL OP */
       2,  7, 15
 }
-A t120 @1 [c4 d4 e4]2
-B t120 @1 [e4 f4 g4]2
-C t120 @1 [g4 a4 b4]2
+A t120 @1 l8 [[cdef]2]2
+B t120 @1 l8 [[efga]2]2
+C t120 @1 l8 [[gab>c<]2]2
 "#;
 
     let parsed = mmlx::mdx::parse(source)?;
