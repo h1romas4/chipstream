@@ -3,9 +3,8 @@
 //! This module drives parsed MDX tracks through the MXDRV timing and control
 //! semantics needed to produce VGM output. It supports both eager document
 //! conversion and lazy command generation for bounded-memory streaming.
-//! The playback semantics and PCM8/PCM8A handling are informed by the
-//! NanoDrive8 (by Fujix), particularly its `src/mdx.cpp` and
-//! `include/mdx.h` sources.
+//! Playback semantics and PCM8/PCM8A handling are informed by the behavior of
+//! NanoDrive8 (by Fujix-san).
 //!
 //! Responsibilities:
 //! - Translate OPM register writes, waits, loops, LFOs, and track control into
