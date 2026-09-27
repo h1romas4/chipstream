@@ -1578,6 +1578,7 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
 fn mdx_converter_does_not_retrigger_a_held_pcm_block() {
     let mut builder = MdxBuilder::new();
     builder
+        .add_mdx_command(8, MdxTempo { value: 216 })
         .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
         .add_mdx_command(8, MdxKeyOffDisable)
@@ -1618,6 +1619,7 @@ fn mdx_converter_does_not_retrigger_a_held_pcm_block() {
     assert!(pcm_bytes.len() > 120);
     assert_eq!(pcm_bytes[100], 100);
     assert_eq!(pcm_bytes[110], 110);
+    assert_eq!(pcm_bytes[350], 94);
 }
 
 #[test]

@@ -982,7 +982,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 break;
             };
             self.tracks[track].command_index += 1;
-            if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+            if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+                && track == 8
+                && !matches!(&command, MdxCommand::Note(_))
+            {
                 self.pcm_output.raw_bytes.clear();
                 self.pcm_output.raw_position = 0;
             }
