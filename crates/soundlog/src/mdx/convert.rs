@@ -799,6 +799,47 @@ struct TrackState {
     pcm: PcmTrackConfig,
 }
 
+impl TrackState {
+    /// Decrements the command wait timer by one tick, if it is active.
+    fn advance_wait(&mut self) {
+        self.wait_ticks = self.wait_ticks.saturating_sub(1);
+    }
+
+    /// Decrements the key-off timer and reports when it reaches zero.
+    fn advance_key_off(&mut self) -> bool {
+        if self.key_off_ticks == 0 {
+            return false;
+        }
+        self.key_off_ticks -= 1;
+        self.key_off_ticks == 0
+    }
+
+    /// Starts note timers using the track's gate and tie settings.
+    fn start_note(&mut self, length: u16) {
+        self.wait_ticks = length;
+        self.key_off_ticks = if self.fm.key_off_disabled {
+            0
+        } else {
+            let gate = i16::from(self.fm.gate);
+            let raw_length = (length - 1).min(i16::MAX as u16) as i16;
+            let key_off = if gate >= 0 {
+                ((raw_length * gate) >> 3) + 1
+            } else {
+                (raw_length + gate).max(0) + 1
+            };
+            key_off as u16
+        };
+        self.fm.key_off_disabled = false;
+    }
+
+    /// Starts a rest and cancels any pending tie.
+    fn start_rest(&mut self, ticks: u16) {
+        self.wait_ticks = ticks;
+        self.key_off_ticks = ticks;
+        self.fm.key_off_disabled = false;
+    }
+}
+
 struct PcmOutputState {
     /// Whether the package contains PCM playback for the OKIM6258 path.
     has_pcm: bool,
@@ -1209,9 +1250,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             if !self.tracks[track_index].active {
                 continue;
             }
-            if self.tracks[track_index].wait_ticks > 0 {
-                self.tracks[track_index].wait_ticks -= 1;
-            }
+            self.tracks[track_index].advance_wait();
             if track_index < 8 {
                 self.update_fm_tick(track_index, builder);
             }
@@ -1237,16 +1276,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// sends the key-off command to the YM2151. For ADPCM/PCM channels (>= 8),
     /// it stops the PCM channel according to the track's key-off state.
     fn process_key_off(&mut self, track: usize, builder: &mut VgmBuilder) {
-        let reached_zero = {
-            let state = &mut self.tracks[track];
-            if state.key_off_ticks == 0 {
-                false
-            } else {
-                state.key_off_ticks -= 1;
-                state.key_off_ticks == 0
-            }
-        };
-        if !reached_zero {
+        if !self.tracks[track].advance_key_off() {
             return;
         }
         if track < 8 {
@@ -1379,11 +1409,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             }
             match command {
                 MdxCommand::Rest(command) => {
-                    self.tracks[track].wait_ticks = command.ticks;
                     // Rest always (re)starts the key-off countdown and
                     // cancels any pending tie, regardless of prior state.
-                    self.tracks[track].key_off_ticks = command.ticks;
-                    self.tracks[track].fm.key_off_disabled = false;
+                    self.tracks[track].start_rest(command.ticks);
                     if track >= 8 {
                         // A rest clears the ADPCM hold while allowing the
                         // sample to continue to its own end.
@@ -1405,39 +1433,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                             self.tracks[track].fm.key_on_delay;
                         self.tracks[track].fm.key_on_pending = true;
                     }
-                    self.tracks[track].wait_ticks = command.length;
-                    if !self.tracks[track].fm.key_off_disabled {
-                        let gate = i16::from(self.tracks[track].fm.gate);
-                        let raw_length = (command.length - 1).min(i16::MAX as u16) as i16;
-                        let key_off = if gate >= 0 {
-                            ((raw_length * gate) >> 3) + 1
-                        } else {
-                            (raw_length + gate).max(0) + 1
-                        };
-                        self.tracks[track].key_off_ticks = key_off as u16;
-                    } else {
-                        self.tracks[track].key_off_ticks = 0;
-                    }
-                    self.tracks[track].fm.key_off_disabled = false;
+                    self.tracks[track].start_note(command.length);
                 }
                 MdxCommand::Note(command) => {
                     // PCM key-on: `note` is an 0x80-based index into the
                     // track's current PDX bank rather than a pitch.
                     self.begin_pcm_key_on(track, command.note);
-                    self.tracks[track].wait_ticks = command.length;
-                    if !self.tracks[track].fm.key_off_disabled {
-                        let gate = i16::from(self.tracks[track].fm.gate);
-                        let raw_length = (command.length - 1).min(i16::MAX as u16) as i16;
-                        let key_off = if gate >= 0 {
-                            ((raw_length * gate) >> 3) + 1
-                        } else {
-                            (raw_length + gate).max(0) + 1
-                        };
-                        self.tracks[track].key_off_ticks = key_off as u16;
-                    } else {
-                        self.tracks[track].key_off_ticks = 0;
-                    }
-                    self.tracks[track].fm.key_off_disabled = false;
+                    self.tracks[track].start_note(command.length);
                 }
                 MdxCommand::Tempo(command) => {
                     self.timing.tempo = command.value.max(1);
