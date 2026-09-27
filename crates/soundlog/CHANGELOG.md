@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-- [x] Add: Initial MDX format support (`mdx` feature).
-    - [x] Parse and serialize MDX Extended Commands
-      - [x] Implemented: `E6` Transpose / Relative Transpose
-      - [x] Implemented: Parse and round-trip all `E7` subcommands
-      - [ ] Not implemented: Playback of `E6` Relative Detune
-      - [ ] Not implemented: VGM playback for `E7` Fadeout / PCM8 Direct Drive / Key Off / Channel Control / Add Note Length / Set Flag
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
@@ -15,7 +9,12 @@
   - [ ] Doc: NES APU Mapping
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
-- [ ] Add: Playback support for concatenated VGM files. (Concatenated VGM files will be split into individual VGM files before being passed to soundlog, rather than handled internally.)
+
+## v0.14.0
+
+- [x] Add: Initial MDX format support (`mdx` feature).
+- [x] Add: Support streaming MDX playback with `VgmStream::from_generator`.
+- [x] Fix: Correct YM2151 state tracking.
 
 ## v0.13.0
 
