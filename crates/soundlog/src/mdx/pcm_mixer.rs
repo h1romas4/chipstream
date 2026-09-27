@@ -163,12 +163,17 @@ impl PcmChannelState {
     /// body of `buildPcm8AdpcmByte`.
     fn advance(&mut self, samples: &[i16]) -> i32 {
         if self.block_length == 0 {
+            if !self.hold {
+                self.block_key = None;
+            }
             return 0;
         }
         let len = self.block_length;
         if self.pos_in_block >= len {
             self.block_length = 0;
-            self.block_key = None;
+            if !self.hold {
+                self.block_key = None;
+            }
             return 0;
         }
 
@@ -196,7 +201,9 @@ impl PcmChannelState {
             self.pos_in_block = new_pos.min(len);
             if self.pos_in_block >= len {
                 self.block_length = 0;
-                self.block_key = None;
+                if !self.hold {
+                    self.block_key = None;
+                }
             }
         }
         contribution
@@ -337,6 +344,31 @@ mod tests {
             0,
             "a stopped channel stays silent"
         );
+    }
+
+    #[test]
+    fn held_channel_retains_its_block_key_after_natural_end() {
+        let block_key = (0, 10, 0);
+        let mut channel = PcmChannelState {
+            block_start: 0,
+            block_length: 1,
+            block_key: Some(block_key),
+            pos_in_block: 0,
+            rate_counter: 0,
+            rate_step: 0x10000,
+            gain: 16,
+            hold: true,
+        };
+
+        assert_eq!(channel.advance(&[100]), 100 * 16);
+        assert_eq!(channel.block_key, Some(block_key));
+        assert!(channel.hold);
+        assert_eq!(channel.advance(&[100]), 0);
+        assert_eq!(channel.block_key, Some(block_key));
+
+        channel.hold = false;
+        assert_eq!(channel.advance(&[100]), 0);
+        assert_eq!(channel.block_key, None);
     }
 
     #[test]

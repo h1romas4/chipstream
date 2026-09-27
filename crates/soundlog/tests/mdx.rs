@@ -1623,6 +1623,75 @@ fn mdx_converter_does_not_retrigger_a_held_pcm_block() {
 }
 
 #[test]
+fn mdx_converter_does_not_retrigger_a_naturally_ended_held_pcm8a_block() {
+    let convert = |repeat_held_note: bool| {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(8, MdxTempo { value: 216 })
+            .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
+            .add_mdx_command(8, MdxKeyOffDisable)
+            .add_mdx_command(
+                8,
+                MdxNote {
+                    note: 0x8a,
+                    length: 192,
+                },
+            );
+        if repeat_held_note {
+            builder
+                .add_mdx_command(8, MdxKeyOffDisable)
+                .add_mdx_command(
+                    8,
+                    MdxNote {
+                        note: 0x8a,
+                        length: 2,
+                    },
+                )
+                .add_mdx_command(8, MdxRest { ticks: 2 });
+        } else {
+            builder
+                .add_mdx_command(8, MdxRest { ticks: 2 })
+                .add_mdx_command(8, MdxRest { ticks: 2 });
+        }
+        builder
+            .add_mdx_command(9, MdxRest { ticks: 1 });
+
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 10, vec![0x77; 8]).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+            .expect("PCM8A package should convert");
+
+        let mut sample_position = 0u32;
+        let mut pcm_writes = Vec::new();
+        for command in &document.commands {
+            match command {
+                VgmCommand::WaitSamples(WaitSamples(samples)) => {
+                    sample_position += u32::from(*samples);
+                }
+                VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => {
+                    pcm_writes.push((sample_position, spec.value));
+                }
+                _ => {}
+            }
+        }
+        pcm_writes
+    };
+
+    let repeated = convert(true);
+    let reference = convert(false);
+    assert_eq!(
+        repeated.iter().zip(&reference).position(|(left, right)| left != right),
+        None,
+        "held PCM8A note changed the encoded stream"
+    );
+    assert_eq!(repeated.len(), reference.len());
+}
+
+#[test]
 fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
     let mut builder = MdxBuilder::new();
     builder
