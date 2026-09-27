@@ -757,21 +757,39 @@ fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), P
 
 /// Validate every scalar in a length expression before parsing it as `u16`.
 fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
-    let source = pair.as_str();
+    let expression = if pair.as_rule() == Rule::duration {
+        pair.clone()
+            .into_inner()
+            .next()
+            .expect("duration has a length expression")
+    } else {
+        pair.clone()
+    };
     let mut total = 0_i32;
-    let mut source_offset = 0;
     let mut last_value_offset = 0;
+    let children = expression.clone().into_inner().collect::<Vec<_>>();
+    let has_adjustment = children
+        .iter()
+        .any(|child| child.as_rule() == Rule::length_operator && child.as_str() == "~");
 
-    for term in source.split(['^', '~']) {
-        let leading_whitespace = term.len() - term.trim_start().len();
-        let term = term.trim();
-        let number = term.trim_end_matches('.');
-        let dots = term.len() - number.len();
-        let (ticks, digits) = match number.strip_prefix('%') {
-            Some(digits) => (true, digits),
-            None => (false, number),
+    for term in children
+        .iter()
+        .filter(|child| child.as_rule() == Rule::length_term)
+    {
+        let mut term_children = term.clone().into_inner();
+        let first = term_children.next().expect("length term has a value");
+        let (ticks, digits) = if first.as_rule() == Rule::length_ticks {
+            (
+                true,
+                term_children.next().expect("tick length has a number"),
+            )
+        } else {
+            (false, first)
         };
-        let value_offset = source_offset + leading_whitespace + usize::from(ticks);
+        let dots = term_children
+            .filter(|child| child.as_rule() == Rule::length_dot)
+            .count();
+        let value_offset = digits.as_span().start() - expression.as_span().start();
         last_value_offset = value_offset;
         let command = if ticks {
             "note tick length"
@@ -779,23 +797,23 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
             "note length"
         };
         let max = if ticks { i32::from(u16::MAX) } else { 256 };
-        let mut value = digits.parse::<i32>().map_err(|_| {
-            ParseError::Syntax(format_numeric_overflow(pair, value_offset, command))
+        let mut value = digits.as_str().parse::<i32>().map_err(|_| {
+            ParseError::Syntax(format_numeric_overflow(&expression, value_offset, command))
         })?;
-        validate_range(pair, value_offset, command, value, 1, max)?;
+        validate_range(&expression, value_offset, command, value, 1, max)?;
         let mut term_total = value;
         for _ in 0..dots {
             value = if ticks {
                 value / 2
             } else {
                 value.checked_mul(2).ok_or_else(|| {
-                    invalid_value_at(pair, value_offset, command, i32::MAX, 1, max)
+                    invalid_value_at(&expression, value_offset, command, i32::MAX, 1, max)
                 })?
             };
-            validate_range(pair, value_offset, command, value, 1, max)?;
+            validate_range(&expression, value_offset, command, value, 1, max)?;
             term_total = term_total.checked_add(value).ok_or_else(|| {
                 invalid_value_at(
-                    pair,
+                    &expression,
                     value_offset,
                     "note length",
                     i32::MAX,
@@ -806,7 +824,7 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
         }
         total = total.checked_add(term_total).ok_or_else(|| {
             invalid_value_at(
-                pair,
+                &expression,
                 value_offset,
                 "note length",
                 i32::MAX,
@@ -814,12 +832,11 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
                 i32::from(u16::MAX),
             )
         })?;
-        source_offset += term.len() + leading_whitespace + 1;
     }
 
-    if !source.contains('~') {
+    if !has_adjustment {
         validate_range(
-            pair,
+            &expression,
             last_value_offset,
             "note length",
             total,
@@ -1046,7 +1063,7 @@ fn parse_signed_i16(pair: pest::iterators::Pair<'_, Rule>) -> i16 {
 /// Convert either a simple length or an extended expression into the AST.
 fn parse_length(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
     match pair.as_rule() {
-        Rule::length_expression => parse_length_expression(pair.as_str()),
+        Rule::length_expression => parse_length_expression(pair),
         Rule::dotted_length => parse_dotted_length(pair.as_str()),
         _ => MmlLength::Denominator(parse_pair_u16(pair)),
     }
@@ -1069,15 +1086,21 @@ fn parse_duration(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
     parse_length(pair.into_inner().next().expect("duration has a value"))
 }
 
-/// Parse the `^`-separated textual form of an extended length expression.
-fn parse_length_expression(source: &str) -> MmlLength {
-    let mut parts = source.split(|character| character == '^' || character == '~');
-    let base = parse_length_term(parts.next().expect("length expression has a base"));
-    let operators = source
-        .chars()
-        .filter(|character| matches!(character, '^' | '~'))
-        .collect::<Vec<_>>();
-    let terms = parts.map(parse_length_term).collect::<Vec<_>>();
+/// Parse an extended length expression from its grammar pairs.
+fn parse_length_expression(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
+    let mut children = pair.into_inner();
+    let base = parse_length_term(children.next().expect("length expression has a base"));
+    let mut operators = Vec::new();
+    let mut terms = Vec::new();
+    while let Some(operator) = children.next() {
+        operators.push(operator.as_str().chars().next().unwrap());
+        terms.push(parse_length_term(
+            children
+                .next()
+                .expect("length operator has a following term"),
+        ));
+    }
+
     if operators.is_empty() {
         base
     } else if operators.iter().all(|operator| *operator == '^') {
@@ -1097,15 +1120,17 @@ fn parse_length_expression(source: &str) -> MmlLength {
 }
 
 /// Parse one duration term, including optional dots and `%N` tick notation.
-fn parse_length_term(source: &str) -> MmlLength {
-    let source = source.trim();
-    let number = source.trim_end_matches('.');
-    let dots = source.len() - number.len();
-    let mut value = if let Some(ticks) = number.strip_prefix('%') {
-        MmlLength::Ticks(ticks.parse().expect("tick length is valid"))
+fn parse_length_term(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
+    let mut children = pair.into_inner();
+    let first = children.next().expect("length term has a value");
+    let mut value = if first.as_rule() == Rule::length_ticks {
+        MmlLength::Ticks(parse_pair_u16(
+            children.next().expect("tick length has a number"),
+        ))
     } else {
-        MmlLength::Denominator(number.parse().expect("denominator is valid"))
+        MmlLength::Denominator(parse_pair_u16(first))
     };
+    let dots = children.count();
     if dots == 0 {
         return value;
     }
@@ -1409,6 +1434,94 @@ mod tests {
         assert_eq!(document.voices[0].number, 1);
         assert_eq!(document.voices[0].values.len(), 47);
         assert_eq!(document.tracks.len(), 1);
+    }
+
+    #[test]
+    fn accepts_block_comments_between_voice_and_track_tokens() {
+        let source = r#"@/*a*/1/*b*/=/*c*/{
+/*d*/28/*e*/,/*f*/4,0,5,1,37,2,1,7,0,0,
+22,9,1,2,1,47,2,12,0,0,0,
+29,4,3,6,1,37,1,3,3,0,0,
+15,7,0,5,10,0,2,1,0,0,1,
+2,7,15/*g*/
+}
+A t/*h*/120 c4/*i*/d4
+"#;
+        let document = parse(source).unwrap();
+
+        assert_eq!(document.voices.len(), 1);
+        assert_eq!(document.voices[0].number, 1);
+        assert_eq!(document.voices[0].values.len(), 47);
+        assert_eq!(document.tracks[0].commands.len(), 3);
+    }
+
+    #[test]
+    fn accepts_block_comments_inside_length_expressions_and_metadata() {
+        let source = r#"#title/*before value*/"Song /*literal*/"/*after value*/
+A c4/*before add*/^/*after add*/8~/*before ticks*/%/*before tick count*/24
+"#;
+        let document = parse(source).unwrap();
+
+        assert_eq!(document.title.as_deref(), Some("Song /*literal*/"));
+        assert_eq!(
+            document.tracks[0].commands,
+            vec![MmlCommand::ExtendedNote {
+                name: 'c',
+                accidental: None,
+                length: MmlLength::Adjusted {
+                    base: Box::new(MmlLength::Denominator(4)),
+                    adjustments: vec![
+                        (true, MmlLength::Denominator(8)),
+                        (false, MmlLength::Ticks(24)),
+                    ],
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn accepts_line_comments_at_voice_token_boundaries() {
+        let source = r#"@; marker
+1; voice number
+=; equals
+{; opening brace
+28; before comma
+,; after comma
+4,0,5,1,37,2,1,7,0,0,
+22,9,1,2,1,47,2,12,0,0,0,
+29,4,3,6,1,37,1,3,3,0,0,
+15,7,0,5,10,0,2,1,0,0,1,
+2,7,15; before closing brace
+}
+A c4
+"#;
+        let document = parse(source).unwrap();
+
+        assert_eq!(document.voices.len(), 1);
+        assert_eq!(document.voices[0].number, 1);
+        assert_eq!(document.voices[0].values.len(), 47);
+    }
+
+    #[test]
+    fn accepts_semicolon_comments_at_line_ends() {
+        let source = r#"#title "Song"; title comment
+#pcmfile "song.pdx"; pcm comment
+@1 = {
+28,4,0,5,1,37,2,1,7,0,0,
+22,9,1,2,1,47,2,12,0,0,0,
+29,4,3,6,1,37,1,3,3,0,0,
+15,7,0,5,10,0,2,1,0,0,1,
+2,7,15
+}; voice comment
+A c4; track comment
+"#;
+        let document = parse(source).unwrap();
+
+        assert_eq!(document.title.as_deref(), Some("Song"));
+        assert_eq!(document.pcm_file.as_deref(), Some("song.pdx"));
+        assert_eq!(document.voices.len(), 1);
+        assert_eq!(document.voices[0].values.len(), 47);
+        assert_eq!(document.tracks[0].commands.len(), 1);
     }
 
     #[test]

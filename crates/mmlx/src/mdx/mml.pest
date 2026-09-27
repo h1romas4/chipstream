@@ -7,7 +7,8 @@ title = { ^"#title" ~ string ~ NEWLINE? }
 pcmfile = { ^"#pcmfile" ~ string ~ NEWLINE? }
 
 voice = {
-	"@" ~ voice_number ~ "=" ~ "{" ~ voice_padding*
+	"@" ~ voice_padding* ~ voice_number ~ voice_padding* ~ "="
+	~ voice_padding* ~ "{" ~ voice_padding*
 	~ voice_operator ~ voice_operator ~ voice_operator ~ voice_operator
 	~ voice_global ~ voice_padding* ~ "}" ~ NEWLINE?
 }
@@ -18,7 +19,7 @@ voice_operator = _{
 	~ number ~ voice_separator ~ number ~ voice_separator
 }
 voice_global = _{ number ~ voice_separator ~ number ~ voice_separator ~ number }
-voice_separator = _{ "," ~ voice_padding* }
+voice_separator = _{ voice_padding* ~ "," ~ voice_padding* }
 voice_padding = _{ block_comment | comment | NEWLINE }
 
 track = { channel ~ command* ~ NEWLINE? }
@@ -52,7 +53,9 @@ rest = { "r" ~ length_expression? }
 duration = { length_expression }
 length_expression = { length_term ~ (length_operator ~ length_term)* }
 length_operator = { "^" | "~" }
-length_term = { ("%" ~ number | number) ~ "."* }
+length_term = { length_ticks? ~ number ~ length_dot* }
+length_ticks = { "%" }
+length_dot = { "." }
 octave = { "o" ~ number }
 octave_down = { "<" }
 octave_up = { ">" }
@@ -96,8 +99,8 @@ channel_ref = @{ 'A'..'H' | 'P'..'W' | number }
 
 string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 comment = { ";" ~ (!NEWLINE ~ ANY)* ~ NEWLINE? }
-block_comment = { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+block_comment = @{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 blank = { NEWLINE }
 
 NEWLINE = _{ "\r\n" | "\n" }
-WHITESPACE = _{ " " | "\t" }
+WHITESPACE = _{ " " | "\t" | block_comment }
