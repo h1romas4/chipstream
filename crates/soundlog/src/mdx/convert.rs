@@ -28,7 +28,7 @@ use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -574,6 +574,8 @@ struct SongLoopState {
     loop_starts: HashMap<(usize, usize), usize>,
     /// Number of finite backward jumps taken at each jump command.
     jump_repeat_counts: HashMap<(usize, usize), u32>,
+    /// Valid per-track F1 sites participating in finite whole-song playback.
+    track_end_loop_sites: HashSet<(usize, usize)>,
     /// VGM command index to use as the native loop point, once detected.
     loop_index: Option<usize>,
     /// Set once a native loop point is established and internal playback stops.
@@ -639,6 +641,25 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     fadeout: FadeoutState,
 }
 
+fn resolve_jump_target_from_source_map(
+    source_map: &[Vec<(usize, usize)>],
+    track: usize,
+    command_index: usize,
+    offset: i16,
+) -> Option<usize> {
+    let track_map = source_map.get(track)?;
+    let (command_offset, command_length) = track_map.get(command_index)?;
+    let command_end = command_offset.checked_add(*command_length)?;
+    let target_offset = if offset >= 0 {
+        command_end.checked_add(offset as usize)?
+    } else {
+        command_end.checked_sub(usize::from(offset.unsigned_abs()))?
+    };
+    track_map
+        .iter()
+        .position(|(offset, _)| *offset == target_offset)
+}
+
 impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn new(
         package: P,
@@ -648,6 +669,24 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         mark_native_loop: bool,
     ) -> Self {
         let has_pcm = package.borrow().drives_okim6258();
+        let source_package = package.borrow();
+        let source_map = source_package.mdx.sourcemap();
+        let mut track_end_loop_sites = HashSet::new();
+        for (track, commands) in source_package.mdx.tracks.iter().enumerate() {
+            for (command_index, command) in commands.iter().enumerate() {
+                if let MdxCommand::EndOfTrackLoop(command) = command
+                    && resolve_jump_target_from_source_map(
+                        &source_map,
+                        track,
+                        command_index,
+                        command.offset,
+                    )
+                    .is_some()
+                {
+                    track_end_loop_sites.insert((track, command_index));
+                }
+            }
+        }
         let has_fadeout_command = package.borrow().mdx.tracks.iter().flatten().any(|command| {
             matches!(
                 command,
@@ -685,7 +724,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             opm_reg_0f: 0,
             opm_reg_1b: 0,
             lfo_rand_seed: 0x1234,
-            song_loop: SongLoopState::new(loop_count, mark_native_loop),
+            song_loop: SongLoopState {
+                track_end_loop_sites,
+                ..SongLoopState::new(loop_count, mark_native_loop)
+            },
             fadeout: FadeoutState {
                 has_command: has_fadeout_command,
                 ..FadeoutState::default()
@@ -1285,16 +1327,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
                     self.song_loop.track_end_loop_seen = true;
-                    if self.song_loop.mark_native_loop
-                        && self.song_loop.loop_count.is_none()
-                        && !self.fadeout.has_command
-                    {
+                    if self.song_loop.loop_count.is_some() {
+                        self.take_finite_track_end_loop(track, command.offset);
+                    } else if self.song_loop.mark_native_loop && !self.fadeout.has_command {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so
                         // it must not become the global VGM loop point.
                         self.tracks[track].active = false;
-                    } else if self.song_loop.mark_native_loop && self.song_loop.loop_count.is_none()
-                    {
+                    } else if self.song_loop.mark_native_loop {
                         self.jump_relative(track, command.offset);
                     } else {
                         self.take_repeating_jump(track, command.offset, builder);
@@ -1974,6 +2014,34 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.take_repeating_jump_to(track, jump_command_index, target_index, builder);
     }
 
+    /// Keeps independent F1 tracks looping until every valid F1 site has
+    /// reached the requested whole-song playthrough count.
+    fn take_finite_track_end_loop(&mut self, track: usize, offset: i16) {
+        let Some(limit) = self.song_loop.loop_count else {
+            return;
+        };
+        let command_index = self.tracks[track].command_index - 1;
+        let Some(target_index) = self.resolve_jump_target(track, offset) else {
+            return;
+        };
+        let key = (track, command_index);
+        let count = self.song_loop.jump_repeat_counts.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+
+        let all_tracks_reached_limit = !self.song_loop.track_end_loop_sites.is_empty()
+            && self.song_loop.track_end_loop_sites.iter().all(|site| {
+                self.song_loop
+                    .jump_repeat_counts
+                    .get(site)
+                    .is_some_and(|count| *count >= limit)
+            });
+        if all_tracks_reached_limit {
+            self.song_loop.loop_complete = true;
+        } else {
+            self.tracks[track].command_index = target_index;
+        }
+    }
+
     /// Emits the necessary wait commands to the VGM builder to account for the passage
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
@@ -2388,5 +2456,66 @@ mod tests {
 
         assert_eq!(playback.fadeout.level, 3);
         assert_eq!(playback.pcm_output.channels[0].gain, 16);
+    }
+
+    #[test]
+    fn finite_loop_count_keeps_short_track_loops_playing_to_song_horizon() {
+        let mut builder = MdxBuilder::new();
+        for (track, rest_ticks) in [(0, 1), (1, 8)] {
+            builder
+                .add_mdx_command(
+                    track,
+                    MdxCommand::OpmRegisterWrite(crate::mdx::command::MdxOpmRegisterWrite {
+                        register: 0x08,
+                        value: 0x78 | track as u8,
+                    }),
+                )
+                .add_mdx_command(track, MdxRest { ticks: rest_ticks })
+                .add_mdx_command(
+                    track,
+                    MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                        opcode: 0xf1,
+                        offset: 0,
+                    }),
+                );
+        }
+        let mut mdx = builder.finalize().unwrap();
+        for track in 0..2 {
+            let source_map = mdx.sourcemap();
+            let target = source_map[track][0].0;
+            let (loop_offset, loop_length) = source_map[track][2];
+            let relative =
+                i32::try_from(target).unwrap() - i32::try_from(loop_offset + loop_length).unwrap();
+            let MdxCommand::EndOfTrackLoop(command) = &mut mdx.tracks[track][2] else {
+                unreachable!("last command is the F1 loop terminator");
+            };
+            command.offset = i16::try_from(relative).unwrap();
+        }
+        let package = MdxPackage { mdx, pdx: None };
+        let options = MdxToVgmOptions {
+            loop_count: Some(2),
+            ..MdxToVgmOptions::default()
+        };
+
+        let document = to_vgm_document(&package, &options).expect("convert finite loops");
+        let key_on_count = |channel: u8| {
+            document
+                .commands
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command,
+                        VgmCommand::Ym2151Write(_, spec)
+                            if spec.register == 0x08 && spec.value & 0x07 == channel
+                    )
+                })
+                .count()
+        };
+
+        assert_eq!(key_on_count(1), 2, "long-period track repeats once");
+        assert!(
+            key_on_count(0) > 2,
+            "short-period track should continue looping until the song horizon"
+        );
     }
 }
