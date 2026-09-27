@@ -408,6 +408,7 @@ fn assemble_repeats(
     Ok(output)
 }
 
+/// Format a repeat-structure error with its source line, marker, and expectation.
 fn format_repeat_error(
     source: &str,
     position: SourcePosition,
@@ -427,6 +428,7 @@ fn format_repeat_error(
     )
 }
 
+/// Append a command to the innermost open repeat, or to the top-level output.
 fn append_assembled_command(
     output: &mut Vec<MmlCommand>,
     stack: &mut [(Vec<MmlCommand>, SourcePosition)],
@@ -655,6 +657,7 @@ fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Result<Vec<ParsedTrack>
         .collect())
 }
 
+/// Convert one grammar pair into an intermediate command, validating its values.
 fn parse_parsed_command(
     pair: pest::iterators::Pair<'_, Rule>,
 ) -> Result<ParsedCommand, ParseError> {
@@ -677,6 +680,7 @@ fn parse_parsed_command(
     })
 }
 
+/// Return the one-based source line and column where a grammar pair begins.
 fn source_position(pair: &pest::iterators::Pair<'_, Rule>) -> SourcePosition {
     let (line_number, column) = pair.as_span().start_pos().line_col();
     SourcePosition {
