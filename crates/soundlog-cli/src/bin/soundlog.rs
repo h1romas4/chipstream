@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use flate2::read::GzDecoder;
 use std::fs;
 use std::io::{Cursor, Read};

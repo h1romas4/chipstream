@@ -1653,8 +1653,7 @@ fn mdx_converter_does_not_retrigger_a_naturally_ended_held_pcm8a_block() {
                 .add_mdx_command(8, MdxRest { ticks: 2 })
                 .add_mdx_command(8, MdxRest { ticks: 2 });
         }
-        builder
-            .add_mdx_command(9, MdxRest { ticks: 1 });
+        builder.add_mdx_command(9, MdxRest { ticks: 1 });
 
         let mut pdx_builder = PdxBuilder::new();
         pdx_builder.set_sample(0, 10, vec![0x77; 8]).unwrap();
@@ -1684,7 +1683,10 @@ fn mdx_converter_does_not_retrigger_a_naturally_ended_held_pcm8a_block() {
     let repeated = convert(true);
     let reference = convert(false);
     assert_eq!(
-        repeated.iter().zip(&reference).position(|(left, right)| left != right),
+        repeated
+            .iter()
+            .zip(&reference)
+            .position(|(left, right)| left != right),
         None,
         "held PCM8A note changed the encoded stream"
     );

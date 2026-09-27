@@ -126,6 +126,7 @@ impl MckScheduler {
         }
     }
 }
+
 impl MdxPcmMode {
     /// Selects PCM8A for 16-track MDX files and legacy ADPCM otherwise.
     fn from_track_count(track_count: usize) -> Self {
@@ -209,9 +210,20 @@ impl Default for MdxToVgmOptions {
 /// Errors returned while converting an MDX playback stream into VGM.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MdxConvertError {
+    /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
-    UnsupportedCommand { track: usize, command: &'static str },
-    MissingTone { voice: u8 },
+    /// A track contains a command that the converter cannot process.
+    UnsupportedCommand {
+        /// Zero-based index of the track containing the command.
+        track: usize,
+        /// Name of the unsupported command.
+        command: &'static str,
+    },
+    /// An FM track selects a voice that has no tone definition.
+    MissingTone {
+        /// Voice number whose tone definition is missing.
+        voice: u8,
+    },
 }
 
 impl fmt::Display for MdxConvertError {

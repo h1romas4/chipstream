@@ -144,12 +144,19 @@ pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
 /// `pcmRateStep`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PcmChannelState {
+    /// Starting sample index of this block in the shared decoded PCM arena.
     pub block_start: usize,
+    /// Number of samples in the active block; zero means no active block.
     pub block_length: u32,
+    /// Identity of the source block used to avoid redundant decoding.
     pub block_key: Option<(usize, usize, u8)>,
+    /// Q16.16 playback position within the active block.
     pub pos_in_block: u32,
+    /// Fractional phase accumulated toward the next source-sample step.
     pub rate_counter: u32,
+    /// Q16.16 source-sample advance per output sample.
     pub rate_step: u32,
+    /// Linear channel gain applied to the interpolated sample.
     pub gain: u8,
     /// Tie (`0xF7`) key-off: the note ends but the sample keeps playing to
     /// its own end instead of being cut immediately.

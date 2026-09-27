@@ -62,7 +62,9 @@ pub struct MdxPcmReference {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdxPackage {
+    /// Parsed MDX document and its track commands.
     pub mdx: MdxDocument,
+    /// Parsed PDX sample data, when supplied by the caller.
     pub pdx: Option<PdxDocument>,
 }
 

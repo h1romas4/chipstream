@@ -60,8 +60,11 @@ const MAX_DECODED_MDX_SIZE: usize = 64 * 1024 * 1024;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdxDocument {
+    /// Parsed MDX title, PDX reference, and track-offset metadata.
     pub header: MdxHeader,
+    /// FM tone definitions stored in the document.
     pub tone_bank: MdxToneBank,
+    /// Parsed commands grouped by zero-based track index.
     pub tracks: Vec<Vec<MdxCommand>>,
     lz_compressed: bool,
 }

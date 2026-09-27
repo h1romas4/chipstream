@@ -24,36 +24,67 @@ pub(crate) trait MdxCommandSpec: Sized {
 /// A typed MDX track command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MdxCommand {
+    /// Wait for the specified number of ticks.
     Rest(MdxRest),
+    /// Play a note for the specified number of ticks.
     Note(MdxNote),
+    /// Set the track tempo.
     Tempo(MdxTempo),
+    /// Write a value to an OPM register.
     OpmRegisterWrite(MdxOpmRegisterWrite),
+    /// Select an FM voice or PCM bank.
     VoiceOrPcmBank(MdxVoiceOrPcmBank),
+    /// Set the track pan.
     Pan(MdxPan),
+    /// Set the track volume.
     Volume(MdxVolume),
+    /// Decrease the track volume by one step.
     VolumeDown(MdxVolumeDown),
+    /// Increase the track volume by one step.
     VolumeUp(MdxVolumeUp),
+    /// Set the track gate time.
     Gate(MdxGate),
+    /// Disable key-off handling.
     KeyOffDisable(MdxKeyOffDisable),
+    /// Begin a repeat block.
     LoopStart(MdxLoopStart),
+    /// End a repeat block at a relative track offset.
     LoopEnd(MdxRelativeOffset),
+    /// Escape a repeat block at a relative track offset.
     LoopEscape(MdxRelativeOffset),
+    /// Set signed detune.
     Detune(MdxSignedWord),
+    /// Set portamento using a signed operand.
     Portamento(MdxSignedWord),
+    /// End the current track.
     EndOfTrack(MdxEndOfTrack),
+    /// End the track and loop to a relative offset.
     EndOfTrackLoop(MdxRelativeOffset),
+    /// Jump to a relative track offset.
     Jump(MdxRelativeOffset),
+    /// Set key-on delay.
     KeyOnDelay(MdxKeyOnDelay),
+    /// Send a synchronization value.
     SyncSend(MdxSyncSend),
+    /// Wait for synchronization.
     SyncWait(MdxSyncWait),
+    /// Set the ADPCM or noise frequency.
     AdpcmOrNoiseFrequency(MdxAdpcmOrNoiseFrequency),
+    /// Configure or enable the pitch LFO.
     PitchLfo(MdxPitchLfo),
+    /// Configure or enable the volume LFO.
     VolumeLfo(MdxVolumeLfo),
+    /// Configure or enable the OPM LFO.
     OpmLfo(MdxOpmLfo),
+    /// Set the LFO delay.
     LfoDelay(MdxLfoDelay),
+    /// Enable PCM playback mode.
     PcmMode(MdxPcmMode),
+    /// An extended MML command.
     Extended(MdxExtendedCommand),
+    /// An extended MML command from the second command group.
     Extended2(MdxExtended2Command),
+    /// A command preserved without interpreting its payload.
     Raw(MdxRawCommand),
 }
 
@@ -97,21 +128,27 @@ impl MdxCommand {
     }
 }
 
+/// Decrease the track volume by one step (`0xfa`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxVolumeDown;
 
+/// Increase the track volume by one step (`0xf9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxVolumeUp;
 
+/// Disable key-off handling (`0xf7`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxKeyOffDisable;
 
+/// Wait for a synchronization event (`0xee`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxSyncWait;
 
+/// Enable PCM playback mode (`0xe8`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxPcmMode;
 
+/// End the current track (`0xf1 0x00`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxEndOfTrack;
 
@@ -193,6 +230,7 @@ impl MdxCommandSpec for MdxPcmMode {
 /// A rest command (`0x00..=0x7f`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxRest {
+    /// Duration of the rest in MDX ticks (`1..=128`).
     pub ticks: u16,
 }
 
@@ -211,6 +249,7 @@ impl MdxCommandSpec for MdxRest {
 }
 
 impl MdxRest {
+    /// Creates a rest when `ticks` is in the encodable range `1..=128`.
     pub const fn new(ticks: u16) -> Option<Self> {
         if ticks == 0 || ticks > 0x80 {
             None
@@ -219,6 +258,7 @@ impl MdxRest {
         }
     }
 
+    /// Returns the opcode encoding this rest's duration.
     pub const fn opcode(self) -> u8 {
         (self.ticks - 1) as u8
     }
@@ -227,11 +267,14 @@ impl MdxRest {
 /// A note command (`0x80..=0xdf`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxNote {
+    /// Raw MDX note opcode (`0x80..=0xdf`).
     pub note: u8,
+    /// Note duration in MDX ticks (`1..=256`).
     pub length: u16,
 }
 
 impl MdxNote {
+    /// Creates a note for a valid note opcode and duration in `1..=256` ticks.
     pub const fn new(note: u8, length: u16) -> Option<Self> {
         if note < 0x80 || note > 0xdf || length == 0 || length > 0x100 {
             None
@@ -240,6 +283,7 @@ impl MdxNote {
         }
     }
 
+    /// Returns the note duration operand, encoded as `length - 1`.
     pub const fn length_byte(self) -> u8 {
         (self.length - 1) as u8
     }
@@ -264,6 +308,7 @@ impl MdxCommandSpec for MdxNote {
 /// Set tempo (`0xff tempo`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxTempo {
+    /// Raw tempo operand encoded after opcode `0xff`.
     pub value: u8,
 }
 
@@ -304,6 +349,7 @@ pub enum MdxPan {
 }
 
 impl MdxPan {
+    /// Converts a raw MDX pan operand while preserving unrecognized values.
     pub const fn from_raw(value: u8) -> Self {
         match value {
             0 => Self::Mute,
@@ -314,6 +360,7 @@ impl MdxPan {
         }
     }
 
+    /// Returns the raw MDX pan operand represented by this value.
     pub const fn raw(self) -> u8 {
         match self {
             Self::Mute => 0,
@@ -340,6 +387,7 @@ impl MdxCommandSpec for MdxPan {
 /// Set gate time (`0xf8 gate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxGate {
+    /// Raw gate-time operand encoded after opcode `0xf8`.
     pub value: u8,
 }
 
@@ -363,6 +411,7 @@ impl MdxCommandSpec for MdxGate {
 /// Select an FM voice or PCM bank (`0xfd value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxVoiceOrPcmBank {
+    /// Raw voice or bank number encoded after opcode `0xfd`.
     pub value: u8,
 }
 
@@ -386,6 +435,7 @@ impl MdxCommandSpec for MdxVoiceOrPcmBank {
 /// Set track volume (`0xfb value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxVolume {
+    /// Raw track-volume operand encoded after opcode `0xfb`.
     pub value: u8,
 }
 
@@ -409,6 +459,7 @@ impl MdxCommandSpec for MdxVolume {
 /// Set key-on delay (`0xf0 value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxKeyOnDelay {
+    /// Raw key-on-delay operand encoded after opcode `0xf0`.
     pub value: u8,
 }
 
@@ -432,6 +483,7 @@ impl MdxCommandSpec for MdxKeyOnDelay {
 /// Send a synchronization value (`0xef value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxSyncSend {
+    /// Synchronization value sent by this command.
     pub value: u8,
 }
 
@@ -455,6 +507,7 @@ impl MdxCommandSpec for MdxSyncSend {
 /// Set ADPCM or noise frequency (`0xed value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxAdpcmOrNoiseFrequency {
+    /// Raw frequency operand encoded after opcode `0xed`.
     pub value: u8,
 }
 
@@ -478,6 +531,7 @@ impl MdxCommandSpec for MdxAdpcmOrNoiseFrequency {
 /// Set LFO delay (`0xe9 value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxLfoDelay {
+    /// Raw LFO-delay operand encoded after opcode `0xe9`.
     pub value: u8,
 }
 
@@ -501,7 +555,9 @@ impl MdxCommandSpec for MdxLfoDelay {
 /// A signed big-endian 16-bit command operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxSignedWord {
+    /// Opcode selecting the command that owns this operand.
     pub opcode: u8,
+    /// Signed 16-bit big-endian command operand.
     pub offset: i16,
 }
 
@@ -527,7 +583,9 @@ impl MdxCommandSpec for MdxSignedWord {
 /// A relative big-endian 16-bit track offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxRelativeOffset {
+    /// Opcode selecting the relative-offset command.
     pub opcode: u8,
+    /// Signed 16-bit big-endian track-relative offset.
     pub offset: i16,
 }
 
@@ -553,7 +611,9 @@ impl MdxCommandSpec for MdxRelativeOffset {
 /// A repeat start (`0xf6 count 0x00`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxLoopStart {
+    /// Repeat count encoded by the command.
     pub count: u8,
+    /// Reserved byte following the repeat count, preserved as read.
     pub reserved: u8,
 }
 
@@ -578,7 +638,9 @@ impl MdxCommandSpec for MdxLoopStart {
 /// Write one OPM register (`0xfe register value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxOpmRegisterWrite {
+    /// OPM register address.
     pub register: u8,
+    /// Value written to the register.
     pub value: u8,
 }
 
@@ -605,14 +667,20 @@ impl MdxCommandSpec for MdxOpmRegisterWrite {
 /// Values with bit 7 set are reserved for the separate enable/disable form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdxLfoWaveform {
+    /// Sawtooth waveform (raw value `0x00`).
     Sawtooth,
+    /// Square waveform (raw value `0x01`).
     Square,
+    /// Triangle waveform (raw value `0x02`).
     Triangle,
+    /// Random-noise waveform (raw value `0x03`).
     RandomNoise,
+    /// An unrecognized raw waveform value, preserved for round-tripping.
     Unknown(u8),
 }
 
 impl MdxLfoWaveform {
+    /// Converts a raw LFO waveform operand without discarding unknown values.
     pub const fn from_raw(value: u8) -> Self {
         match value {
             0x00 => Self::Sawtooth,
@@ -623,6 +691,7 @@ impl MdxLfoWaveform {
         }
     }
 
+    /// Returns the raw waveform value represented by this variant.
     pub const fn raw(self) -> u8 {
         match self {
             Self::Sawtooth => 0x00,
@@ -633,10 +702,12 @@ impl MdxLfoWaveform {
         }
     }
 
+    /// Returns the low two bits used to select the base waveform.
     pub const fn base(self) -> u8 {
         self.raw() & 0x03
     }
 
+    /// Returns the waveform selected by the low two bits, ignoring other bits.
     pub const fn base_waveform(self) -> Self {
         match self.base() {
             0 => Self::Sawtooth,
@@ -646,6 +717,7 @@ impl MdxLfoWaveform {
         }
     }
 
+    /// Returns whether the raw value uses an extended-amplitude encoding.
     pub const fn has_extended_amplitude(self) -> bool {
         self.raw() >= 0x04
     }
@@ -654,12 +726,18 @@ impl MdxLfoWaveform {
 /// Pitch LFO configuration or state change (`0xec`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdxPitchLfo {
+    /// Change whether the pitch LFO is enabled.
     SetEnabled {
+        /// Whether to enable the LFO.
         enabled: bool,
     },
+    /// Set pitch-LFO parameters.
     Configure {
+        /// LFO waveform selected by the raw command value.
         waveform: MdxLfoWaveform,
+        /// Raw 16-bit big-endian frequency parameter.
         frequency: u16,
+        /// Signed 16-bit big-endian amplitude parameter.
         amplitude: i16,
     },
 }
@@ -708,12 +786,18 @@ impl MdxCommandSpec for MdxPitchLfo {
 /// Volume LFO configuration or state change (`0xeb`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdxVolumeLfo {
+    /// Change whether the volume LFO is enabled.
     SetEnabled {
+        /// Whether to enable the LFO.
         enabled: bool,
     },
+    /// Set volume-LFO parameters.
     Configure {
+        /// LFO waveform selected by the raw command value.
         waveform: MdxLfoWaveform,
+        /// Raw 16-bit big-endian frequency parameter.
         frequency: u16,
+        /// Raw 16-bit big-endian amplitude parameter.
         amplitude: u16,
     },
 }
@@ -762,14 +846,22 @@ impl MdxCommandSpec for MdxVolumeLfo {
 /// OPM LFO configuration or state change (`0xea`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdxOpmLfo {
+    /// Change whether the OPM LFO is enabled.
     SetEnabled {
+        /// Whether to enable the LFO.
         enabled: bool,
     },
+    /// Set OPM LFO registers from the command payload.
     Configure {
+        /// OPM LFO control value.
         control: u8,
+        /// LFO frequency register value.
         lfrq: u8,
+        /// Phase modulation depth register value.
         pmd: u8,
+        /// Amplitude modulation depth register value.
         amd: u8,
+        /// Packed phase and amplitude sensitivity register value.
         pms_ams: u8,
     },
 }
@@ -817,20 +909,48 @@ impl MdxCommandSpec for MdxOpmLfo {
 /// Extended MML command (`0xe7`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MdxExtendedCommand {
+    /// The extended-command error subcommand (`0x00`).
     Error,
-    Fadeout { value: u8 },
-    Pcm8DirectDrive { data: [u8; 6] },
-    KeyOff { flag: u8 },
-    ChannelControl { channel: u8 },
-    AddNoteLength { value: u8 },
-    SetFlag { value: u8 },
+    /// Set the fadeout value.
+    Fadeout {
+        /// Raw fadeout operand.
+        value: u8,
+    },
+    /// Send six bytes directly to the PCM8 interface.
+    Pcm8DirectDrive {
+        /// Six raw bytes sent to the PCM8 interface.
+        data: [u8; 6],
+    },
+    /// Apply the extended key-off flag.
+    KeyOff {
+        /// Raw key-off flag operand.
+        flag: u8,
+    },
+    /// Set the PCM8 channel control value.
+    ChannelControl {
+        /// Raw PCM8 channel-control operand.
+        channel: u8,
+    },
+    /// Add to the note length.
+    AddNoteLength {
+        /// Raw note-length increment.
+        value: u8,
+    },
+    /// Set an MDX playback flag.
+    SetFlag {
+        /// Raw playback-flag operand.
+        value: u8,
+    },
+    /// Preserve an unrecognized extended subcommand.
     Unknown(MdxExtendedUnknownCommand),
 }
 
 /// An unrecognized `0xe7` extended command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdxExtendedUnknownCommand {
+    /// Unrecognized extended-command subopcode.
     pub opcode: u8,
+    /// Payload byte when this subcommand encoding includes one.
     pub operand: Option<u8>,
 }
 
@@ -923,16 +1043,31 @@ impl MdxExtendedCommand {
 /// Extended MML command 2 (`0xe6`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MdxExtended2Command {
+    /// The extended-command error subcommand (`0x00`).
     Error,
-    RelativeDetune { value: u16 },
-    Transpose { value: i8 },
-    RelativeTranspose { value: i8 },
+    /// Set relative detune using an unsigned 16-bit value.
+    RelativeDetune {
+        /// Unsigned 16-bit big-endian relative-detune operand.
+        value: u16,
+    },
+    /// Set absolute transpose using a signed semitone value.
+    Transpose {
+        /// Signed semitone offset from the original pitch.
+        value: i8,
+    },
+    /// Adjust transpose using a signed semitone value.
+    RelativeTranspose {
+        /// Signed semitone offset added to the current transpose.
+        value: i8,
+    },
+    /// Preserve an unrecognized extended subcommand.
     Unknown(MdxExtended2UnknownCommand),
 }
 
 /// An unrecognized `0xe6` extended command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdxExtended2UnknownCommand {
+    /// Unrecognized extended-command subopcode.
     pub opcode: u8,
 }
 
@@ -995,10 +1130,12 @@ impl MdxExtended2Command {
 /// An MDX command whose payload is preserved without interpretation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdxRawCommand {
+    /// Opcode of the command whose payload is not interpreted.
     pub opcode: u8,
 }
 
 impl MdxRawCommand {
+    /// Creates a raw command for an opcode in the command range `0xe0..=0xff`.
     pub fn new(opcode: u8) -> Option<Self> {
         if opcode >= 0xe0 {
             Some(Self { opcode })

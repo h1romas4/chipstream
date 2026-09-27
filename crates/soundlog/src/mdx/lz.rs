@@ -25,19 +25,28 @@ const MAX_MATCH_LENGTH: usize = 256;
 /// Result of an LZ decoding operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Result {
+    /// Decoding completed successfully.
     Ok,
+    /// The input or destination arguments are invalid.
     InvalidArgument,
+    /// The expected compressed-stream marker is absent.
     MarkerNotFound,
+    /// The compressed input ended before decoding completed.
     InputOverrun,
+    /// Decoded output would exceed the destination buffer.
     OutputOverrun,
+    /// A back-reference points outside the decoded history.
     InvalidBackReference,
 }
 
 /// Information returned by [`decode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeResult {
+    /// Status of the decoding operation.
     pub result: Result,
+    /// Number of decoded bytes written to the destination.
     pub bytes_written: usize,
+    /// Number of compressed input bytes consumed.
     pub bytes_read: usize,
 }
 
