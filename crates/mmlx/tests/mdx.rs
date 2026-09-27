@@ -486,6 +486,20 @@ fn compiles_noise_and_pcm_frequency_ast() {
 }
 
 #[test]
+fn compiles_extended_pcm_frequency_modes_without_truncation() {
+    let commands = compile_source("P F8 F12\n").tracks[8].clone();
+    let frequencies: Vec<u8> = commands
+        .iter()
+        .filter_map(|command| match command {
+            MdxCommand::AdpcmOrNoiseFrequency(command) => Some(command.value),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(frequencies, vec![8, 12]);
+}
+
+#[test]
 fn compiles_multidigit_sync_channel_ast() {
     let commands = compile_source("A S10\n").tracks[0].clone();
 

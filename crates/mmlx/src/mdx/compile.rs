@@ -452,12 +452,9 @@ fn compile_commands(
                 }
                 .into(),
             ),
-            MmlCommand::PcmFrequency(value) => output.push(
-                MdxAdpcmOrNoiseFrequency {
-                    value: *value & 0x07,
-                }
-                .into(),
-            ),
+            MmlCommand::PcmFrequency(value) => {
+                output.push(MdxAdpcmOrNoiseFrequency { value: *value }.into())
+            }
             MmlCommand::SyncSend(value) => output.push(MdxSyncSend { value: *value }.into()),
             MmlCommand::SyncWait => output.push(soundlog::mdx::command::MdxSyncWait.into()),
             MmlCommand::PitchLfo {
@@ -663,7 +660,7 @@ fn note_ticks(length: Option<&MmlLength>, default_length: &MmlLength) -> Result<
 
 /// Convert a parsed MML length expression into MDX ticks.
 fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
-    match length {
+    let ticks = match length {
         MmlLength::Denominator(value) => ticks_from_denominator(*value, "note length"),
         MmlLength::Ticks(value) => Ok(*value),
         MmlLength::Sum(values) => values.iter().try_fold(0_u16, |total, value| {
@@ -690,7 +687,14 @@ fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
                     })
                 })
         }
+    }?;
+    if ticks == 0 {
+        return Err(CompileError::InvalidValue {
+            command: "note length",
+            value: 0,
+        });
     }
+    Ok(ticks)
 }
 
 /// Convert a BPM-style MML tempo into the OPM tempo byte used by MDX.
@@ -898,5 +902,19 @@ mod tests {
         assert!(matches!(commands[2], MdxCommand::Note(_)));
         assert!(matches!(commands[3], MdxCommand::Note(_)));
         assert!(matches!(commands[4], MdxCommand::EndOfTrack(_)));
+    }
+
+    #[test]
+    fn rejects_note_and_rest_lengths_that_resolve_to_zero_ticks() {
+        for source in ["A c193\n", "A r193\n", "A c4~4\n", "A r4~4\n"] {
+            let document = parse(source).unwrap();
+            assert!(matches!(
+                compile(&document),
+                Err(CompileError::InvalidValue {
+                    command: "note length",
+                    value: 0
+                })
+            ));
+        }
     }
 }
