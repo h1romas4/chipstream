@@ -212,9 +212,9 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of whole-song playthroughs
-        #[arg(long, value_name = "COUNT")]
-        loop_count: Option<u32>,
+        /// Total number of whole-song playthroughs to write (default: 1; no VGM loop point)
+        #[arg(long, value_name = "COUNT", default_value_t = 1)]
+        loop_count: u32,
 
         /// ADPCM mode: through, resample, or lpf
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
@@ -381,7 +381,7 @@ fn main() {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
-                    loop_count,
+                    loop_count: Some(loop_count),
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::convert_mdx(&input, &output, pdx.as_deref(), &options) {

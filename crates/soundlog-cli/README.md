@@ -364,6 +364,10 @@ The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, and
 `--adpcm-mode <through|resample|lpf>`.
 
+By default, conversion writes one playthrough. `--loop-count <COUNT>` writes
+that many MDX playthroughs into the VGM command stream and does not set a VGM
+loop point, so playback ends normally after the requested count.
+
 #### `mdx parse`
 
 Parse an MDX file and display its track commands with source offsets and
