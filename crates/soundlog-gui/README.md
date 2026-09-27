@@ -4,14 +4,17 @@
 by the `soundlog` library. It contains the AST view, byte viewer, and format
 source mapping used by the native GUI.
 
-The package provides the `soundlog-inspector` executable and the reusable
-`soundlog_gui::run_gui` library entry point. Additional GUI executables can be
-added under `src/bin/`; Cargo uses each source file's name as its binary name.
+Inspect parsed VGM and MDX structure, browse the raw bytes, and navigate between
+the displayed data and its source locations.
 
-Run the GUI with no file to open an empty document, or pass a VGM or MDX file:
+## Executables
+
+### `soundlog-inspector`
+
+Open an empty document, or pass a VGM or MDX file to inspect:
 
 ```bash
-cargo run -p soundlog-gui --bin soundlog-inspector -- [FILE]
+soundlog-inspector [FILE]
 ```
 
 Gzipped input files are decompressed automatically.

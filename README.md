@@ -28,6 +28,12 @@ Rust 1.97.1 or later is required.
 cargo install --git https://github.com/h1romas4/chipstream --bin soundlog --locked --force soundlog-cli
 ```
 
+Optionally install the GUI inspector:
+
+```bash
+cargo install --git https://github.com/h1romas4/chipstream --bin soundlog-inspector --locked --force soundlog-gui
+```
+
 ### soundlog
 
 `soundlog --help`
@@ -53,6 +59,10 @@ Options:
 ```
 
 For detailed usage instructions, please refer to [crates/soundlog-cli](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-cli/README.md).
+
+### soundlog-inspector
+
+For GUI usage instructions, please refer to [crates/soundlog-gui](crates/soundlog-gui/README.md).
 
 ## License
 
