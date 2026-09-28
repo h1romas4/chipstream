@@ -13,4 +13,5 @@ readme = "README.md"
 anyhow = "1.0"
 eframe = "0.36.2"
 flate2 = "1.0"
+rfd = "0.15.4"
 soundlog = { workspace = true, features = ["mdx"] }

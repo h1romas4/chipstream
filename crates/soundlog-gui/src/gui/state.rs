@@ -31,12 +31,22 @@ use crate::gui::ast::source_node_to_ast;
 use std::collections::HashMap;
 use std::fs;
 use std::mem;
+use std::path::PathBuf;
 use std::sync::mpsc;
+use std::thread;
+
+struct FileLoadMessage {
+    generation: u64,
+    path: PathBuf,
+    result: Result<(Vec<u8>, Vec<u8>), String>,
+}
 
 /// UI state holding AST, raw bytes and supporting maps for lazy-loading.
 pub struct UiState {
     pub ast_root: Vec<AstNode>,
     pub bytes: Vec<u8>,
+    pub open_error: Option<String>,
+    pub file_loading: bool,
     pub selected_ast: Option<Vec<usize>>,
     /// The last observed selected AST label rect (widget coords). Used to
     /// scroll the left pane so keyboard-driven selection is visible.
@@ -77,11 +87,16 @@ pub struct UiState {
 
     /// Temporary set of enqueued requests to prevent duplicate deferred loads.
     pub enqueued_requests: HashMap<String, bool>,
+
+    file_load_tx: mpsc::Sender<FileLoadMessage>,
+    file_load_rx: mpsc::Receiver<FileLoadMessage>,
+    file_load_generation: u64,
 }
 
 impl UiState {
     #[allow(dead_code)]
     pub fn new_with_placeholders() -> Self {
+        let (file_load_tx, file_load_rx) = mpsc::channel();
         let ast_root = vec![
             AstNode::new("VGM Header", "Header fields and metadata").with_children(vec![
                 AstNode::new("Ident", "VgmIdent: 'Vgm '"),
@@ -95,6 +110,8 @@ impl UiState {
         Self {
             ast_root,
             bytes,
+            open_error: None,
+            file_loading: false,
             selected_ast: None,
             last_selected_ast_rect: None,
             pending_focus: None,
@@ -109,13 +126,19 @@ impl UiState {
             lazy_chunk_size: 200,
             deferred_loads: Vec::new(),
             enqueued_requests: HashMap::new(),
+            file_load_tx,
+            file_load_rx,
+            file_load_generation: 0,
         }
     }
 
     pub fn new_empty() -> Self {
+        let (file_load_tx, file_load_rx) = mpsc::channel();
         Self {
             ast_root: Vec::new(),
             bytes: Vec::new(),
+            open_error: None,
+            file_loading: false,
             selected_ast: None,
             last_selected_ast_rect: None,
             pending_focus: None,
@@ -130,6 +153,62 @@ impl UiState {
             lazy_chunk_size: 200,
             deferred_loads: Vec::new(),
             enqueued_requests: HashMap::new(),
+            file_load_tx,
+            file_load_rx,
+            file_load_generation: 0,
+        }
+    }
+
+    fn start_file_load(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.file_load_generation = self.file_load_generation.wrapping_add(1);
+        let generation = self.file_load_generation;
+        self.file_loading = true;
+        self.open_error = None;
+
+        let tx = self.file_load_tx.clone();
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = fs::read(&path)
+                .map(|bytes| {
+                    let parse_bytes = bytes.clone();
+                    (bytes, parse_bytes)
+                })
+                .map_err(|error| error.to_string());
+            let _ = tx.send(FileLoadMessage {
+                generation,
+                path,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_file_load(&mut self, ctx: &egui::Context) {
+        while let Ok(message) = self.file_load_rx.try_recv() {
+            if message.generation != self.file_load_generation {
+                continue;
+            }
+
+            self.file_loading = false;
+            match message.result {
+                Ok((bytes, parse_bytes)) => {
+                    let file_name = message
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| message.path.to_string_lossy().into_owned());
+                    self.populate_from_owned_bytes(bytes, parse_bytes);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                        "soundlog-inspector - {file_name}"
+                    )));
+                }
+                Err(error) => {
+                    self.open_error = Some(format!(
+                        "Could not open {}: {error}",
+                        message.path.display()
+                    ));
+                }
+            }
         }
     }
 
@@ -145,16 +224,7 @@ impl UiState {
     pub fn populate_from_bytes(&mut self, bytes: &[u8]) {
         let input_changed = self.bytes != bytes;
         if input_changed {
-            self.ast_root.clear();
-            self.lazy.clear();
-            self.rebuilt_bytes = None;
-            self.selected_ast = None;
-            self.pending_focus = None;
-            self.last_selected_ast_rect = None;
-            self.last_focused_widget = None;
-            self.deferred_loads.clear();
-            self.enqueued_requests.clear();
-            self.hex_viewer.reset_document_state();
+            self.reset_document_state();
         }
         self.bytes = bytes.to_vec();
 
@@ -173,6 +243,31 @@ impl UiState {
         self.ast_building = true;
 
         spawn_initial_parse(self.bytes.clone(), generation, tx);
+    }
+
+    fn populate_from_owned_bytes(&mut self, bytes: Vec<u8>, parse_bytes: Vec<u8>) {
+        self.reset_document_state();
+        self.bytes = bytes;
+        self.parse_generation = self.parse_generation.wrapping_add(1);
+        let generation = self.parse_generation;
+        let (tx, rx) = mpsc::channel::<AstBuildMessage>();
+        self.ast_build_rx = Some(rx);
+        self.ast_build_tx = Some(tx.clone());
+        self.ast_building = true;
+        spawn_initial_parse(parse_bytes, generation, tx);
+    }
+
+    fn reset_document_state(&mut self) {
+        self.ast_root.clear();
+        self.lazy.clear();
+        self.rebuilt_bytes = None;
+        self.selected_ast = None;
+        self.pending_focus = None;
+        self.last_selected_ast_rect = None;
+        self.last_focused_widget = None;
+        self.deferred_loads.clear();
+        self.enqueued_requests.clear();
+        self.hex_viewer.reset_document_state();
     }
 
     /// Request a chunk of children for the node identified by `path`.
@@ -249,6 +344,24 @@ impl UiState {
 pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
     let ctx = ui.ctx().clone();
 
+    egui::Panel::top("menu_bar").show(ui, |ui| {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("Open...").clicked() {
+                    ui.close();
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        open_file(state, &ctx, path);
+                    }
+                }
+                ui.separator();
+                if ui.button("Quit").clicked() {
+                    ui.close();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    });
+
     // Native file drops provide a path. Load the first dropped file and send it
     // through the same parse/reset path used by the initial document.
     if let Some(path) = ctx.input(|input| {
@@ -257,18 +370,11 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             .dropped_files
             .first()
             .map(|file| file.path().to_path_buf())
-    }) && let Ok(bytes) = fs::read(&path)
-    {
-        let file_name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
-        state.populate_from_bytes(&bytes);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "soundlog-inspector - {file_name}"
-        )));
-        ctx.request_repaint();
+    }) {
+        open_file(state, &ctx, path);
     }
+
+    state.poll_file_load(&ctx);
 
     // If we have bytes but no AST yet, start initial populate.
     if state.ast_root.is_empty() && !state.bytes.is_empty() {
@@ -317,9 +423,15 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
         .exact_size(32.0)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                if state.ast_building {
+                if state.file_loading {
+                    ui.add_space(10.0);
+                    ui.colored_label(ui.visuals().selection.bg_fill, "Loading file...");
+                } else if state.ast_building {
                     ui.add_space(10.0);
                     ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
+                }
+                if let Some(error) = &state.open_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 state.hex_viewer.show_status_bar(ui);
             });
@@ -490,6 +602,11 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             state.request_children(path, start, count);
         }
     }
+}
+
+fn open_file(state: &mut UiState, ctx: &egui::Context, path: std::path::PathBuf) {
+    state.start_file_load(path, ctx);
+    ctx.request_repaint();
 }
 
 #[cfg(test)]
