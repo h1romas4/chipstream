@@ -20,7 +20,7 @@ thread all at once and keeps the UI responsive for very large VGM files.
 
 use crate::gui::file::{FileLoadMessage, spawn_file_load};
 use crate::gui::lazy::{LazyLoadState, resolve_request};
-use crate::gui::loader::{spawn_children_parse, spawn_initial_parse};
+use crate::gui::loader::{InputFormat, spawn_children_parse, spawn_initial_parse};
 use crate::gui::messages::apply_message;
 use crate::gui::tree::{handle_keyboard_selection, path_key, render_ast_tree};
 use crate::gui::{AstBuildMessage, AstNode, HexViewer};
@@ -179,7 +179,8 @@ impl UiState {
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| message.path.to_string_lossy().into_owned());
-                    self.populate_from_owned_bytes(bytes, parse_bytes);
+                    let input_format = InputFormat::from_path(&message.path);
+                    self.populate_from_owned_bytes(bytes, parse_bytes, input_format);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                         "soundlog-inspector - {file_name}"
                     )));
@@ -224,10 +225,15 @@ impl UiState {
         self.ast_build_tx = Some(tx.clone());
         self.ast_building = true;
 
-        spawn_initial_parse(self.bytes.clone(), generation, tx);
+        spawn_initial_parse(self.bytes.clone(), generation, tx, InputFormat::Auto);
     }
 
-    fn populate_from_owned_bytes(&mut self, bytes: Vec<u8>, parse_bytes: Vec<u8>) {
+    fn populate_from_owned_bytes(
+        &mut self,
+        bytes: Vec<u8>,
+        parse_bytes: Vec<u8>,
+        input_format: InputFormat,
+    ) {
         self.reset_document_state();
         self.bytes = bytes;
         self.parse_generation = self.parse_generation.wrapping_add(1);
@@ -236,7 +242,7 @@ impl UiState {
         self.ast_build_rx = Some(rx);
         self.ast_build_tx = Some(tx.clone());
         self.ast_building = true;
-        spawn_initial_parse(parse_bytes, generation, tx);
+        spawn_initial_parse(parse_bytes, generation, tx, input_format);
     }
 
     fn reset_document_state(&mut self) {
@@ -594,7 +600,10 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
 
 fn choose_file(state: &mut UiState, ctx: &egui::Context) {
     if let Some(path) = rfd::FileDialog::new()
-        .add_filter("MDX/VGM files", &["mdx", "MDX", "vgm", "vgz"])
+        .add_filter(
+            "MDX/VGM/PDX files",
+            &["mdx", "MDX", "vgm", "vgz", "pdx", "PDX"],
+        )
         .pick_file()
     {
         open_file(state, ctx, path);
