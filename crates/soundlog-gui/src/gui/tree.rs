@@ -117,7 +117,12 @@ pub(crate) fn draw_ast_node(
         let title_text = egui::RichText::new(display_label).size(state.hex_viewer.font_size());
         let response = ui.selectable_label(selected, title_text);
         response.clone().context_menu(|ui| {
-            if ui.button("Copy").clicked() {
+            let copy_label = if node.copy_text.is_some() {
+                "Copy MML voice definition"
+            } else {
+                "Copy"
+            };
+            if ui.button(copy_label).clicked() {
                 let copy_text = node.copy_text.as_ref().unwrap_or(&label_str).clone();
                 ui.ctx().output_mut(|output| {
                     output
