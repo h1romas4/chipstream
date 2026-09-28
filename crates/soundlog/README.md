@@ -353,10 +353,16 @@ for chunk in chunks {
 
 ### `VgmStream::from_generator` — streaming playback for other formats
 
-For playback of another supported format, such as MDX, create a package from
-in-memory source data and pass the lazy generator returned by its conversion
-API to `VgmStream::from_generator`. Commands are converted as they are
-consumed, so the complete VGM command list does not need to be kept in memory.
+`VgmCommandGenerator` is the extension point for producing VGM commands from
+your own source or another file format. Implement `next_command()` and pass
+your boxed generator to `VgmStream::from_generator`.
+
+MDX conversion uses the same interface: its lazy generator is one
+`VgmCommandGenerator` implementation. The example below shows how to use it;
+the `mdx` feature is only required when using the MDX implementation.
+
+Commands are converted as they are consumed, so the complete VGM command list
+does not need to be kept in memory.
 MDX support is disabled by default; enable it in your dependency declaration
 with `soundlog = { version = "0.14", features = ["mdx"] }`.
 
