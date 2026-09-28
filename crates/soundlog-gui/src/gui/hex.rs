@@ -339,7 +339,7 @@ impl HexViewer {
 
     /// Show the diff navigation controls in the window status bar.
     pub fn show_status_bar(&mut self, ui: &mut egui::Ui) {
-        let button_size = egui::vec2(24.0, 22.0);
+        let button_size = egui::vec2(20.0, 20.0);
         let has_diffs = self.has_diffs();
         let total = self.diff_ranges.len();
         let current = self.current_diff_idx.map_or(0, |index| index + 1);
@@ -358,9 +358,13 @@ impl HexViewer {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(112.0, button_size.y),
-                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.colored_label(ui.visuals().text_color(), address_text);
+                    ui.label(
+                        egui::RichText::new(address_text)
+                            .text_style(egui::TextStyle::Button)
+                            .color(ui.visuals().text_color()),
+                    );
                 },
             );
 
@@ -369,7 +373,11 @@ impl HexViewer {
                 egui::vec2(48.0, button_size.y),
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                 |ui| {
-                    ui.colored_label(ui.visuals().text_color(), diff_text);
+                    ui.label(
+                        egui::RichText::new(diff_text)
+                            .text_style(egui::TextStyle::Button)
+                            .color(ui.visuals().text_color()),
+                    );
                 },
             );
 
@@ -391,7 +399,11 @@ impl HexViewer {
                 egui::vec2(34.0, button_size.y),
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                 |ui| {
-                    ui.colored_label(ui.visuals().weak_text_color(), "DIFF");
+                    ui.label(
+                        egui::RichText::new("DIFF")
+                            .text_style(egui::TextStyle::Button)
+                            .color(ui.visuals().weak_text_color()),
+                    );
                 },
             );
         });
@@ -446,7 +458,7 @@ impl HexViewer {
             ),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(17.0),
+            ui.style().text_styles[&egui::TextStyle::Button].clone(),
             text_color,
         );
         response.on_hover_text(tooltip)
