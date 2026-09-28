@@ -25,7 +25,7 @@ const LZ_STREAM_MARKER: [u8; 4] = [0x7f, 0xff, 0xff, 0x4c];
 /// Initial decoded size allocated for a compressed PDX payload.
 const INITIAL_DECODED_PDX_SIZE: usize = 64 * 1024;
 /// Safety limit for a compressed PDX payload after growth.
-const MAX_DECODED_PDX_SIZE: usize = 256 * 1024;
+const MAX_DECODED_PDX_SIZE: usize = 64 * 1024 * 1024;
 
 /// A PDX sample table entry.
 ///

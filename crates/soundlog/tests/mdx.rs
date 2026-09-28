@@ -773,6 +773,23 @@ fn pdx_document_grows_lz_decode_buffer_past_initial_capacity() {
 }
 
 #[test]
+fn pdx_document_grows_lz_decode_buffer_past_previous_limit() {
+    let sample = vec![0x5a; 300 * 1024];
+    let mut builder = PdxBuilder::new();
+    builder
+        .set_sample(0, 0, sample.clone())
+        .expect("set large PDX sample")
+        .set_lz_compressed(true);
+    let document = builder.finalize();
+    let compressed = document.to_bytes();
+
+    let reparsed = PdxDocument::parse(&compressed).expect("parse PDX larger than 256 KiB");
+
+    assert_eq!(reparsed.decoded_bytes(), document.decoded_bytes());
+    assert_eq!(reparsed.sample_bytes(0, 0), Some(sample.as_slice()));
+}
+
+#[test]
 fn pdx_document_owned_parse_round_trips_without_retaining_input() {
     let mut decoded = vec![0u8; 0x300 + 8 + 4];
     decoded[0..4].copy_from_slice(&0x308u32.to_be_bytes());
