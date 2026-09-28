@@ -682,6 +682,25 @@ fn pdx_document_parses_and_round_trips_fixtures() {
 }
 
 #[test]
+fn pdx_document_sourcemap_covers_bank_tables_and_sample_data() {
+    let mut builder = PdxBuilder::new();
+    builder
+        .set_sample(1, 3, b"PCM1".to_vec())
+        .expect("set sample in second bank");
+    let document = builder.finalize();
+
+    let sourcemap = document.sourcemap();
+    assert_eq!(sourcemap.len(), 2);
+    assert_eq!(sourcemap[0].table_range, (0x000, 0x300));
+    assert_eq!(sourcemap[1].table_range, (0x300, 0x300));
+    assert_eq!(sourcemap[1].entries.len(), 96);
+    assert_eq!(sourcemap[1].entries[2].table_entry_range, (0x310, 8));
+    assert_eq!(sourcemap[1].entries[2].sample_range, None);
+    assert_eq!(sourcemap[1].entries[3].table_entry_range, (0x318, 8));
+    assert_eq!(sourcemap[1].entries[3].sample_range, Some((0x600, 4)));
+}
+
+#[test]
 #[ignore = "explicitly regenerates committed MDX fixtures"]
 fn regenerate_mdx_fixtures() {
     let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mdx");
@@ -730,6 +749,10 @@ fn pdx_document_round_trips_lz_compressed_data() {
     assert!(document.is_compressed());
     assert_eq!(document.to_bytes(), compressed);
     assert_eq!(document.sample_bytes(0, 0), Some(&b"PCM1"[..]));
+    assert_eq!(
+        document.sourcemap()[0].entries[0].sample_range,
+        Some((0x308, 4))
+    );
 }
 
 #[test]

@@ -53,6 +53,24 @@ pub struct PdxBank {
     pub entries: [Option<PdxSample>; ENTRIES_PER_BANK],
 }
 
+/// Byte ranges for one bank in the decoded PDX representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdxBankSourceMap {
+    /// `(offset, length)` of this bank's complete sample table.
+    pub table_range: (usize, usize),
+    /// Source ranges for the bank's note entries, indexed by note number.
+    pub entries: Vec<PdxEntrySourceMap>,
+}
+
+/// Byte ranges for one PDX sample-table entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdxEntrySourceMap {
+    /// `(offset, length)` of this entry in the bank table.
+    pub table_entry_range: (usize, usize),
+    /// `(offset, length)` of the encoded sample payload, or `None` if empty.
+    pub sample_range: Option<(usize, usize)>,
+}
+
 /// Builder for creating a PDX document from encoded sample bytes.
 ///
 /// Samples are supplied already encoded for the selected playback format;
@@ -308,6 +326,44 @@ impl PdxDocument {
         let size = usize::try_from(sample.size).ok()?;
         let end = start.checked_add(size)?;
         self.decoded_bytes.get(start..end)
+    }
+
+    /// Return byte ranges for banks, table entries, and sample payloads.
+    ///
+    /// All ranges address [`Self::decoded_bytes`], including when the input
+    /// PDX was LZ-compressed. They do not map to byte offsets in the original
+    /// compressed file.
+    pub fn sourcemap(&self) -> Vec<PdxBankSourceMap> {
+        self.banks
+            .iter()
+            .enumerate()
+            .map(|(bank_index, bank)| {
+                let bank_start = bank_index * BANK_SIZE;
+                let entries = bank
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(note, sample)| {
+                        let table_entry_start = bank_start + note * ENTRY_SIZE;
+                        let sample_range = sample.and_then(|sample| {
+                            let start = usize::try_from(sample.start).ok()?;
+                            let size = usize::try_from(sample.size).ok()?;
+                            let end = start.checked_add(size)?;
+                            self.decoded_bytes.get(start..end)?;
+                            Some((start, size))
+                        });
+                        PdxEntrySourceMap {
+                            table_entry_range: (table_entry_start, ENTRY_SIZE),
+                            sample_range,
+                        }
+                    })
+                    .collect();
+                PdxBankSourceMap {
+                    table_range: (bank_start, BANK_SIZE),
+                    entries,
+                }
+            })
+            .collect()
     }
 }
 

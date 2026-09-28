@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Add: Expose decoded PDX bank-table and sample-data source ranges.
 - [x] Change: Use `u32` instead of `u64` when calculating MDX PCM sample positions.
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
