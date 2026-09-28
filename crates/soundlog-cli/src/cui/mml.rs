@@ -173,6 +173,44 @@ fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
 
 /// Build a PDX file from WAV or raw ADPCM samples, using the final path as output.
 pub fn build_pdx(files: &[PathBuf], enable_lz: bool) -> anyhow::Result<()> {
+    build_pdx_with_report(files, enable_lz, false).map(|_| ())
+}
+
+#[derive(Debug, Clone)]
+pub struct PdxBuildReport {
+    pub output_path: PathBuf,
+    pub file_bytes: usize,
+    pub decoded_bytes: usize,
+    pub lz_compressed: bool,
+    pub banks: usize,
+    pub samples: Vec<PdxBuildSampleReport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdxBuildSampleReport {
+    pub input_path: PathBuf,
+    pub input_format: &'static str,
+    pub input_bit_depth: Option<u16>,
+    pub conversion: &'static str,
+    pub input_bytes: u64,
+    pub bank: usize,
+    pub note: usize,
+    pub adpcm_bytes: usize,
+}
+
+struct WavSampleData {
+    samples: Vec<i16>,
+    format: &'static str,
+    bits_per_sample: u16,
+    conversion: &'static str,
+}
+
+/// Build a PDX file and return details for optional verbose reporting.
+pub fn build_pdx_with_report(
+    files: &[PathBuf],
+    enable_lz: bool,
+    disable_12bit_conversion: bool,
+) -> anyhow::Result<PdxBuildReport> {
     let (output, inputs) = files
         .split_last()
         .ok_or_else(|| anyhow!("expected at least one input WAV and one output PDX"))?;
@@ -189,14 +227,39 @@ pub fn build_pdx(files: &[PathBuf], enable_lz: bool) -> anyhow::Result<()> {
         ));
     }
     let mut used_slots = HashSet::new();
+    let mut sample_reports = Vec::with_capacity(inputs.len());
 
     for (sample_index, input) in inputs.iter().enumerate() {
-        let encoded = match input.extension().and_then(|extension| extension.to_str()) {
+        let (encoded, input_format, input_bit_depth, conversion, input_bytes) = match input
+            .extension()
+            .and_then(|extension| extension.to_str())
+        {
             Some(extension) if extension.eq_ignore_ascii_case("wav") => {
-                encode_adpcm(&read_wav_samples(input)?)
+                let wav = read_wav_samples(input, disable_12bit_conversion)?;
+                let input_bytes = fs::metadata(input)
+                    .with_context(|| format!("failed to read WAV metadata: {}", input.display()))?
+                    .len();
+                (
+                    encode_adpcm(&wav.samples),
+                    wav.format,
+                    Some(wav.bits_per_sample),
+                    wav.conversion,
+                    input_bytes,
+                )
             }
-            Some(extension) if extension.eq_ignore_ascii_case("raw") => fs::read(input)
-                .with_context(|| format!("failed to read raw ADPCM input: {}", input.display()))?,
+            Some(extension) if extension.eq_ignore_ascii_case("raw") => {
+                let encoded = fs::read(input).with_context(|| {
+                    format!("failed to read raw ADPCM input: {}", input.display())
+                })?;
+                let input_bytes = encoded.len() as u64;
+                (
+                    encoded,
+                    "raw ADPCM",
+                    None,
+                    "no (raw bytes copied)",
+                    input_bytes,
+                )
+            }
             _ => {
                 return Err(anyhow!(
                     "unsupported PDX sample input {}; expected WAV or raw ADPCM",
@@ -211,13 +274,34 @@ pub fn build_pdx(files: &[PathBuf], enable_lz: bool) -> anyhow::Result<()> {
                 "duplicate PDX sample slot: bank {bank}, note {note}"
             ));
         }
+        sample_reports.push(PdxBuildSampleReport {
+            input_path: input.clone(),
+            input_format,
+            input_bit_depth,
+            conversion,
+            input_bytes,
+            bank,
+            note,
+            adpcm_bytes: encoded.len(),
+        });
         builder
             .set_sample(bank, note, encoded)
             .with_context(|| format!("failed to encode sample from {}", input.display()))?;
     }
 
-    fs::write(output, builder.finalize().to_bytes())
-        .with_context(|| format!("failed to write PDX output: {}", output.display()))
+    let output_bytes = builder.finalize().to_bytes();
+    let document = PdxDocument::parse(&output_bytes).context("failed to validate built PDX")?;
+    fs::write(output, &output_bytes)
+        .with_context(|| format!("failed to write PDX output: {}", output.display()))?;
+
+    Ok(PdxBuildReport {
+        output_path: output.clone(),
+        file_bytes: output_bytes.len(),
+        decoded_bytes: document.decoded_bytes().len(),
+        lz_compressed: document.is_compressed(),
+        banks: document.banks.len(),
+        samples: sample_reports,
+    })
 }
 
 fn parse_exported_sample_slot(path: &Path) -> Option<(usize, usize)> {
@@ -295,7 +379,7 @@ pub fn export_pdx(
     Ok(exported)
 }
 
-fn read_wav_samples(path: &Path) -> anyhow::Result<Vec<i16>> {
+fn read_wav_samples(path: &Path, disable_12bit_conversion: bool) -> anyhow::Result<WavSampleData> {
     let mut reader = hound::WavReader::open(path)
         .with_context(|| format!("failed to read WAV input: {}", path.display()))?;
     let spec = reader.spec();
@@ -307,39 +391,81 @@ fn read_wav_samples(path: &Path) -> anyhow::Result<Vec<i16>> {
         .with_context(|| path.display().to_string());
     }
 
-    match spec.sample_format {
+    let (samples, format, conversion) = match spec.sample_format {
         hound::SampleFormat::Int => match spec.bits_per_sample {
-            8 => reader
-                .samples::<i8>()
-                .map(|sample| sample.map(|value| i16::from(value) << 4))
-                .collect::<Result<Vec<_>, _>>()
-                .with_context(|| format!("failed to read WAV samples: {}", path.display())),
-            16 => reader
-                .samples::<i16>()
-                .map(|sample| sample.map(|value| value >> 4))
-                .collect::<Result<Vec<_>, _>>()
-                .with_context(|| format!("failed to read WAV samples: {}", path.display())),
-            24 | 32 => reader
-                .samples::<i32>()
-                .map(|sample| {
-                    sample.map(|value| {
-                        let shift = u32::from(spec.bits_per_sample - 12);
-                        (value >> shift).clamp(-2048, 2047) as i16
+            8 => (
+                reader
+                    .samples::<i8>()
+                    .map(|sample| sample.map(|value| i16::from(value) << 4))
+                    .collect::<Result<Vec<_>, _>>()
+                    .with_context(|| format!("failed to read WAV samples: {}", path.display()))?,
+                "integer PCM",
+                "yes (8 -> 12 bit, << 4)",
+            ),
+            16 => {
+                let samples = reader
+                    .samples::<i16>()
+                    .map(|sample| {
+                        sample.map(|value| {
+                            if disable_12bit_conversion {
+                                value
+                            } else {
+                                value >> 4
+                            }
+                        })
                     })
+                    .collect::<Result<Vec<_>, _>>()
+                    .with_context(|| format!("failed to read WAV samples: {}", path.display()))?;
+                (
+                    samples,
+                    "integer PCM",
+                    if disable_12bit_conversion {
+                        "no (16-bit passed through; encoder clamps to 12-bit)"
+                    } else {
+                        "yes (16 -> 12 bit, >> 4)"
+                    },
+                )
+            }
+            24 | 32 => (
+                reader
+                    .samples::<i32>()
+                    .map(|sample| {
+                        sample.map(|value| {
+                            let shift = u32::from(spec.bits_per_sample - 12);
+                            (value >> shift).clamp(-2048, 2047) as i16
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .with_context(|| format!("failed to read WAV samples: {}", path.display()))?,
+                "integer PCM",
+                if spec.bits_per_sample == 24 {
+                    "yes (24 -> 12 bit, >> 12)"
+                } else {
+                    "yes (32 -> 12 bit, >> 20)"
+                },
+            ),
+            bits => Err(anyhow!("unsupported integer WAV bit depth {bits}"))
+                .with_context(|| path.display().to_string())?,
+        },
+        hound::SampleFormat::Float => (
+            reader
+                .samples::<f32>()
+                .map(|sample| {
+                    sample.map(|value| (value * 2047.0).round().clamp(-2048.0, 2047.0) as i16)
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .with_context(|| format!("failed to read WAV samples: {}", path.display())),
-            bits => Err(anyhow!("unsupported integer WAV bit depth {bits}"))
-                .with_context(|| path.display().to_string()),
-        },
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .map(|sample| {
-                sample.map(|value| (value * 2047.0).round().clamp(-2048.0, 2047.0) as i16)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to read WAV samples: {}", path.display())),
-    }
+                .with_context(|| format!("failed to read WAV samples: {}", path.display()))?,
+            "float PCM",
+            "yes (float -> 12 bit, scale/clamp)",
+        ),
+    };
+
+    Ok(WavSampleData {
+        samples,
+        format,
+        bits_per_sample: spec.bits_per_sample,
+        conversion,
+    })
 }
 
 #[cfg(test)]
@@ -364,12 +490,61 @@ mod tests {
         }
         writer.finalize().unwrap();
 
-        build_pdx(&[wav_path.clone(), pdx_path.clone()], false).unwrap();
+        let report =
+            build_pdx_with_report(&[wav_path.clone(), pdx_path.clone()], false, false).unwrap();
+        assert_eq!(report.samples[0].input_bit_depth, Some(16));
+        assert_eq!(report.samples[0].conversion, "yes (16 -> 12 bit, >> 4)");
         let document = PdxDocument::parse(&fs::read(&pdx_path).unwrap()).unwrap();
         assert_eq!(document.sample_bytes(0, 0).unwrap().len(), 2);
 
         fs::remove_file(wav_path).unwrap();
         fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn can_disable_16bit_pcm_scaling_before_adpcm_encoding() {
+        let stem = format!("soundlog-cli-pdx-no-12bit-{}", std::process::id());
+        let wav_path = std::env::temp_dir().join(format!("{stem}.wav"));
+        let default_pdx = std::env::temp_dir().join(format!("{stem}-default.pdx"));
+        let unscaled_pdx = std::env::temp_dir().join(format!("{stem}-unscaled.pdx"));
+        let mut writer = hound::WavWriter::create(
+            &wav_path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 8_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [0_i16, 8_192, -8_192, 1_024] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let default_report =
+            build_pdx_with_report(&[wav_path.clone(), default_pdx.clone()], false, false).unwrap();
+        let unscaled_report =
+            build_pdx_with_report(&[wav_path.clone(), unscaled_pdx.clone()], false, true).unwrap();
+
+        assert_eq!(
+            default_report.samples[0].conversion,
+            "yes (16 -> 12 bit, >> 4)"
+        );
+        assert_eq!(
+            unscaled_report.samples[0].conversion,
+            "no (16-bit passed through; encoder clamps to 12-bit)"
+        );
+        let default_document = PdxDocument::parse(&fs::read(&default_pdx).unwrap()).unwrap();
+        let unscaled_document = PdxDocument::parse(&fs::read(&unscaled_pdx).unwrap()).unwrap();
+        assert_ne!(
+            default_document.sample_bytes(0, 0),
+            unscaled_document.sample_bytes(0, 0)
+        );
+
+        fs::remove_file(wav_path).unwrap();
+        fs::remove_file(default_pdx).unwrap();
+        fs::remove_file(unscaled_pdx).unwrap();
     }
 
     #[test]

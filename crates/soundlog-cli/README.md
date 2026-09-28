@@ -446,14 +446,20 @@ soundlog pdx test <PDX_FILE> [--dry-run]
 `--dry-run` performs validation while suppressing the summary output.
 
 Build a PDX sample bank from one or more mono WAV or raw ADPCM samples. The
-output path is the final argument. Add `--enable-lz` to LZ-compress the PDX
-payload; output is uncompressed by default. Samples exported by `pdx export`
+output path is the final argument. Successful builds are quiet by default; add
+`--verbose` to show per-input conversion details and output totals. Add
+`--enable-lz` to LZ-compress the PDX payload; output is uncompressed by default.
+The verbose report includes WAV bit depth and whether/how PCM was converted to
+12-bit samples; raw ADPCM is marked as copied without PCM conversion.
+For 16-bit WAV input, `--disable-12bit-conversion` skips the default `>> 4`
+scaling. The ADPCM encoder still clamps values to its signed 12-bit range.
+Samples exported by `pdx export`
 retain their bank/note positions when passed back to `pdx build`; ordinary
 input names continue to use sequential positions.
 
 ```bash
 soundlog pdx build <INPUT_WAV>... <OUTPUT_PDX>
-soundlog pdx build <INPUT_WAV_OR_RAW>... <OUTPUT_PDX> --enable-lz
+soundlog pdx build <INPUT_WAV_OR_RAW>... <OUTPUT_PDX> [--enable-lz] [--verbose] [--disable-12bit-conversion]
 ```
 
 To restore exported samples to their original slots, keep the

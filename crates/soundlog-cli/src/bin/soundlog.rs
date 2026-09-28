@@ -280,6 +280,14 @@ enum PdxCommands {
         #[arg(value_name = "INPUT_WAV_OR_RAW_OR_OUTPUT_PDX", num_args = 2..)]
         files: Vec<PathBuf>,
 
+        /// Print detailed input and output information
+        #[arg(long)]
+        verbose: bool,
+
+        /// Skip 16-bit WAV PCM scaling; the ADPCM encoder still clamps to signed 12-bit
+        #[arg(long)]
+        disable_12bit_conversion: bool,
+
         /// Store the PDX payload using LZ compression
         #[arg(long)]
         enable_lz: bool,
@@ -475,11 +483,31 @@ fn main() {
             }
         }
         Commands::Pdx {
-            command: PdxCommands::Build { files, enable_lz },
-        } => match cui::mml::build_pdx(&files, enable_lz) {
-            Ok(()) => process::exit(0),
+            command:
+                PdxCommands::Build {
+                    files,
+                    verbose,
+                    disable_12bit_conversion,
+                    enable_lz,
+                },
+        } => match cui::mml::build_pdx_with_report(&files, enable_lz, disable_12bit_conversion) {
+            Ok(report) => {
+                if verbose {
+                    let stdout_logger = Logger::new_stdout(false);
+                    if let Err(error) = cui::pdx::log_build_report(&report, &stdout_logger) {
+                        let stderr_logger = Logger::new_stderr(false);
+                        soundlog_cli::log_error!(
+                            &stderr_logger,
+                            "failed to write PDX build report: {error:#}"
+                        );
+                        process::exit(1);
+                    }
+                }
+                process::exit(0);
+            }
             Err(error) => {
-                soundlog_cli::log_error!(&*logger, "PDX build failed: {error:#}");
+                let stderr_logger = Logger::new_stderr(false);
+                soundlog_cli::log_error!(&stderr_logger, "PDX build failed: {error:#}");
                 process::exit(1);
             }
         },

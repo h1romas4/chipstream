@@ -6,7 +6,68 @@ use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
 use soundlog::mdx::pdx::{PdxDocument, PdxSample};
 
+use crate::cui::mml::PdxBuildReport;
 use crate::logger::Logger;
+
+/// Print detailed information about a completed PDX build.
+pub fn log_build_report(report: &PdxBuildReport, logger: &Logger) -> Result<()> {
+    logger.info(format_args!("PDX build complete:"))?;
+
+    let mut summary = Table::new();
+    summary.load_style(NOTHING);
+    summary.set_content_arrangement(ContentArrangement::Dynamic);
+    summary.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
+    summary.add_row(vec![
+        Cell::new("output"),
+        Cell::new(report.output_path.display()),
+    ]);
+    summary.add_row(vec![Cell::new("file_bytes"), Cell::new(report.file_bytes)]);
+    summary.add_row(vec![
+        Cell::new("decoded_bytes"),
+        Cell::new(report.decoded_bytes),
+    ]);
+    summary.add_row(vec![
+        Cell::new("lz_compressed"),
+        Cell::new(report.lz_compressed),
+    ]);
+    summary.add_row(vec![Cell::new("banks"), Cell::new(report.banks)]);
+    summary.add_row(vec![Cell::new("samples"), Cell::new(report.samples.len())]);
+    logger.info(format_args!("{summary}"))?;
+
+    let mut sample_table = Table::new();
+    sample_table.load_style(NOTHING);
+    sample_table.set_content_arrangement(ContentArrangement::Dynamic);
+    sample_table.set_header(vec![
+        Cell::new("Input"),
+        Cell::new("Format"),
+        Cell::new("Bit depth"),
+        Cell::new("12-bit conversion"),
+        Cell::new("Input bytes"),
+        Cell::new("Bank"),
+        Cell::new("Note"),
+        Cell::new("ADPCM bytes"),
+    ]);
+    for sample in &report.samples {
+        sample_table.add_row(vec![
+            Cell::new(sample.input_path.display()),
+            Cell::new(sample.input_format),
+            Cell::new(
+                sample
+                    .input_bit_depth
+                    .map(|bits| format!("{bits}-bit"))
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            Cell::new(sample.conversion),
+            Cell::new(sample.input_bytes),
+            Cell::new(sample.bank),
+            Cell::new(sample.note),
+            Cell::new(sample.adpcm_bytes),
+        ]);
+    }
+    logger.info(format_args!("Samples (bank/note indices are zero-based):"))?;
+    logger.info(format_args!("{sample_table}"))?;
+    Ok(())
+}
 
 /// Parse and validate a PDX file, then print its bank and sample allocation.
 pub fn test_pdx(input: &Path, logger: Arc<Logger>) -> Result<()> {
