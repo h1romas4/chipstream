@@ -263,6 +263,16 @@ enum MdxCommands {
 
 #[derive(Subcommand, Debug)]
 enum PdxCommands {
+    /// Validate a PDX file and display its banks and sample allocation
+    Test {
+        /// PDX input file
+        #[arg(value_name = "PDX_FILE")]
+        input: PathBuf,
+
+        /// Dry-run: validate the file without printing its summary
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Convert WAV/raw samples to ADPCM as needed and write a PDX file
     #[command(override_usage = "soundlog pdx build [OPTIONS] <INPUT_WAV_OR_RAW>... <OUTPUT_PDX>")]
     Build {
@@ -452,6 +462,18 @@ fn main() {
                 }
             }
         },
+        Commands::Pdx {
+            command: PdxCommands::Test { input, dry_run },
+        } => {
+            logger = Arc::new(Logger::new_stdout(dry_run));
+            match cui::pdx::test_pdx(&input, logger.clone()) {
+                Ok(()) => process::exit(0),
+                Err(error) => {
+                    soundlog_cli::log_error!(&*logger, "PDX test failed: {error:#}");
+                    process::exit(1);
+                }
+            }
+        }
         Commands::Pdx {
             command: PdxCommands::Build { files, enable_lz },
         } => match cui::mml::build_pdx(&files, enable_lz) {

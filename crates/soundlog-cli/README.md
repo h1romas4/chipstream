@@ -436,6 +436,15 @@ soundlog mdx stream samples/example.mml
 
 ## PDX
 
+Inspect a PDX file, validate its sample ranges, and display compression,
+bank/sample counts, per-bank allocation totals, and each populated note slot.
+
+```bash
+soundlog pdx test <PDX_FILE> [--dry-run]
+```
+
+`--dry-run` performs validation while suppressing the summary output.
+
 Build a PDX sample bank from one or more mono WAV or raw ADPCM samples. The
 output path is the final argument. Add `--enable-lz` to LZ-compress the PDX
 payload; output is uncompressed by default. Samples exported by `pdx export`
