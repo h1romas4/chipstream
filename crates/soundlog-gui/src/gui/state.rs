@@ -593,7 +593,10 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
 }
 
 fn choose_file(state: &mut UiState, ctx: &egui::Context) {
-    if let Some(path) = rfd::FileDialog::new().pick_file() {
+    if let Some(path) = rfd::FileDialog::new()
+        .add_filter("MDX/VGM files", &["mdx", "MDX", "vgm", "vgz"])
+        .pick_file()
+    {
         open_file(state, ctx, path);
     }
 }
