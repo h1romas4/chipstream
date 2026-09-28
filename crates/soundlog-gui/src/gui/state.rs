@@ -332,25 +332,27 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    egui::Panel::top("menu_bar").show(ui, |ui| {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                let open_button = egui::Button::new("Open...")
-                    .shortcut_text(ctx.format_shortcut(&OPEN_FILE_SHORTCUT));
-                if ui.add(open_button).clicked() {
-                    ui.close();
-                    choose_file(state, &ctx);
-                }
-                ui.separator();
-                let quit_button =
-                    egui::Button::new("Quit").shortcut_text(ctx.format_shortcut(&QUIT_SHORTCUT));
-                if ui.add(quit_button).clicked() {
-                    ui.close();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+    egui::Panel::top("menu_bar")
+        .exact_size(32.0)
+        .show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    let open_button = egui::Button::new("Open...")
+                        .shortcut_text(ctx.format_shortcut(&OPEN_FILE_SHORTCUT));
+                    if ui.add(open_button).clicked() {
+                        ui.close();
+                        choose_file(state, &ctx);
+                    }
+                    ui.separator();
+                    let quit_button = egui::Button::new("Quit")
+                        .shortcut_text(ctx.format_shortcut(&QUIT_SHORTCUT));
+                    if ui.add(quit_button).clicked() {
+                        ui.close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
             });
         });
-    });
 
     // Native file drops provide a path. Load the first dropped file and send it
     // through the same parse/reset path used by the initial document.
@@ -409,23 +411,21 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
         }
     }
 
-    egui::Panel::bottom("status_bar")
-        .exact_size(32.0)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if state.file_loading {
-                    ui.add_space(10.0);
-                    ui.colored_label(ui.visuals().selection.bg_fill, "Loading file...");
-                } else if state.ast_building {
-                    ui.add_space(10.0);
-                    ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
-                }
-                if let Some(error) = &state.open_error {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-                state.hex_viewer.show_status_bar(ui);
-            });
+    egui::Panel::bottom("status_bar").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            if state.file_loading {
+                ui.add_space(10.0);
+                ui.colored_label(ui.visuals().selection.bg_fill, "Loading file...");
+            } else if state.ast_building {
+                ui.add_space(10.0);
+                ui.colored_label(ui.visuals().selection.bg_fill, "Parsing...");
+            }
+            if let Some(error) = &state.open_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            state.hex_viewer.show_status_bar(ui);
         });
+    });
 
     // Left sidebar AST
     egui::Panel::left("ast_panel")
