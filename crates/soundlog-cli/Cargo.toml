@@ -1,6 +1,6 @@
 [package]
 name = "soundlog-cli"
-version = "0.14.0"
+version = "0.15.0-dev"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Command-line tools for soundlog."
