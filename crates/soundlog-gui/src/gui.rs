@@ -1,5 +1,6 @@
 mod app;
 mod ast;
+mod file;
 mod hex;
 mod lazy;
 mod loader;

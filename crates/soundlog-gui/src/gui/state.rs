@@ -18,6 +18,7 @@ This avoids doing large string allocation and widget construction on the UI
 thread all at once and keeps the UI responsive for very large VGM files.
 */
 
+use crate::gui::file::{FileLoadMessage, spawn_file_load};
 use crate::gui::lazy::{LazyLoadState, resolve_request};
 use crate::gui::loader::{spawn_children_parse, spawn_initial_parse};
 use crate::gui::messages::apply_message;
@@ -29,17 +30,9 @@ use eframe::egui;
 use crate::gui::ast::source_node_to_ast;
 
 use std::collections::HashMap;
-use std::fs;
 use std::mem;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::thread;
-
-struct FileLoadMessage {
-    generation: u64,
-    path: PathBuf,
-    result: Result<(Vec<u8>, Vec<u8>), String>,
-}
 
 /// UI state holding AST, raw bytes and supporting maps for lazy-loading.
 pub struct UiState {
@@ -164,23 +157,7 @@ impl UiState {
         let generation = self.file_load_generation;
         self.file_loading = true;
         self.open_error = None;
-
-        let tx = self.file_load_tx.clone();
-        let ctx = ctx.clone();
-        thread::spawn(move || {
-            let result = fs::read(&path)
-                .map(|bytes| {
-                    let parse_bytes = bytes.clone();
-                    (bytes, parse_bytes)
-                })
-                .map_err(|error| error.to_string());
-            let _ = tx.send(FileLoadMessage {
-                generation,
-                path,
-                result,
-            });
-            ctx.request_repaint();
-        });
+        spawn_file_load(path, generation, self.file_load_tx.clone(), ctx.clone());
     }
 
     fn poll_file_load(&mut self, ctx: &egui::Context) {
