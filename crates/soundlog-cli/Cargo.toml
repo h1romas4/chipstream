@@ -13,8 +13,8 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 flate2 = "1.0"
 anyhow = "1.0"
-comfy-table = "6"
-unicode-width = "0.1"
+comfy-table = "8"
+unicode-width = "0.2"
 hound = "3"
 mmlx = { workspace = true }
 soundlog = { workspace = true, features = ["mdx"] }

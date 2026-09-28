@@ -151,7 +151,7 @@ pub fn test_mdx(
     if !logger.is_noop() {
         let _ = logger.info(format_args!("MDX:"));
         let mut table = Table::new();
-        table.load_preset(NOTHING);
+        table.load_style(NOTHING);
         table.set_content_arrangement(ContentArrangement::Dynamic);
         table.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
         table.add_row(vec![

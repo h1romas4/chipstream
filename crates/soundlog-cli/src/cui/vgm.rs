@@ -306,7 +306,7 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
     let orig_rows = summarize_doc(orig);
     let rebuilt_rows = summarize_doc(rebuilt);
     let mut side = Table::new();
-    side.load_preset(NOTHING);
+    side.load_style(NOTHING);
     side.set_content_arrangement(ContentArrangement::Dynamic);
     side.set_header(vec![
         Cell::new("Field"),
@@ -353,7 +353,7 @@ pub(crate) fn print_diag_table(orig: &VgmDocument, rebuilt: &VgmDocument) {
 fn print_original_diag_table(document: &VgmDocument, logger: &Logger) {
     let rows = summarize_doc(document);
     let mut table = Table::new();
-    table.load_preset(NOTHING);
+    table.load_style(NOTHING);
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
     for (key, value) in &rows {
