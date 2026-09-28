@@ -30,7 +30,7 @@ pub enum CompileError {
     /// A voice does not contain the required 47 parameters.
     InvalidVoice { number: u8, parameter_count: usize },
     /// A parsed value cannot be represented by the target MDX type.
-    InvalidValue { command: &'static str, value: i64 },
+    InvalidValue { command: &'static str, value: i32 },
     /// The source command has no soundlog MDX equivalent.
     UnsupportedCommand(&'static str),
     /// The soundlog builder rejected the generated document.
@@ -160,7 +160,7 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
                 - loop_adjustment;
             let offset = i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
                 command: "loop start",
-                value: i64::from(offset),
+                value: offset,
             })?;
             commands.push(MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
                 opcode: 0xf1,
@@ -295,7 +295,7 @@ fn compile_commands(
                 patch_repeat_escape_offsets(&mut body_commands, body_length)?;
                 output.push(
                     MdxLoopStart {
-                        count: checked_u8("repeat", *count as i64)?,
+                        count: checked_u8("repeat", i32::from(*count))?,
                         reserved: 0,
                     }
                     .into(),
@@ -359,7 +359,7 @@ fn compile_commands(
             MmlCommand::Gate(value) => output.push(MdxGate { value: *value }.into()),
             MmlCommand::FineGate(value) => output.push(
                 MdxGate {
-                    value: checked_u8("@q", 256 - i64::from(*value))?,
+                    value: checked_u8("@q", 256 - i32::from(*value))?,
                 }
                 .into(),
             ),
@@ -420,7 +420,7 @@ fn compile_commands(
             MmlCommand::Volume(value) => output.push(MdxVolume { value: *value }.into()),
             MmlCommand::FineVolume(value) => output.push(
                 MdxVolume {
-                    value: checked_u8("@v", 255 - i64::from(*value))?,
+                    value: checked_u8("@v", 255 - i32::from(*value))?,
                 }
                 .into(),
             ),
@@ -569,7 +569,7 @@ fn portamento_offset(source_note: u16, target_note: u16, ticks: u16) -> Result<i
     let offset = (16_384 * delta) / i32::from(ticks);
     i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
         command: "portamento",
-        value: i64::from(offset),
+        value: i32::from(offset),
     })
 }
 
@@ -579,7 +579,7 @@ fn compile_note(note: u16, ticks: u16) -> Result<Vec<MdxCommand>, CompileError> 
     if !(FIRST_NOTE..=LAST_NOTE).contains(&opcode) {
         return Err(CompileError::InvalidValue {
             command: "note",
-            value: note as i64,
+            value: i32::from(note),
         });
     }
     let mut commands = Vec::new();
@@ -590,7 +590,7 @@ fn compile_note(note: u16, ticks: u16) -> Result<Vec<MdxCommand>, CompileError> 
             MdxNote::new(opcode as u8, length)
                 .ok_or(CompileError::InvalidValue {
                     command: "note length",
-                    value: length as i64,
+                    value: i32::from(length),
                 })?
                 .into(),
         );
@@ -632,7 +632,7 @@ fn note_number(
         _ => {
             return Err(CompileError::InvalidValue {
                 command: "note name",
-                value: name as i64,
+                value: name as i32,
             });
         }
     };
@@ -645,7 +645,7 @@ fn note_number(
     if !(0..=95).contains(&absolute) {
         return Err(CompileError::InvalidValue {
             command: "note",
-            value: i64::from(absolute),
+            value: absolute,
         });
     }
     Ok(absolute as u16)
@@ -668,7 +668,7 @@ fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
                 .checked_add(length_ticks(value)?)
                 .ok_or(CompileError::InvalidValue {
                     command: "note length",
-                    value: i64::from(u16::MAX),
+                    value: i32::from(u16::MAX),
                 })
         }),
         MmlLength::Adjusted { base, adjustments } => {
@@ -683,7 +683,7 @@ fn length_ticks(length: &MmlLength) -> Result<u16, CompileError> {
                     }
                     .ok_or(CompileError::InvalidValue {
                         command: "note length",
-                        value: i64::from(u16::MAX),
+                        value: i32::from(u16::MAX),
                     })
                 })
         }
@@ -705,8 +705,11 @@ fn tempo_value(bpm: u32) -> Result<u8, CompileError> {
             value: 0,
         });
     }
-    let decrement = 78_125 / (16_u64 * u64::from(bpm));
-    Ok(256_u64.saturating_sub(decrement).min(u64::from(u8::MAX)) as u8)
+    if bpm > 78_125 / 16 {
+        return Ok(u8::MAX);
+    }
+    let decrement = 78_125 / (16 * bpm);
+    Ok(256_u32.saturating_sub(decrement).min(u32::from(u8::MAX)) as u8)
 }
 
 /// Convert a denominator-based length into ticks for a whole note of 192 ticks.
@@ -718,7 +721,7 @@ fn ticks_from_denominator(value: u16, command: &'static str) -> Result<u16, Comp
 }
 
 /// Convert a signed integer to an MDX unsigned byte value.
-fn checked_u8(command: &'static str, value: i64) -> Result<u8, CompileError> {
+fn checked_u8(command: &'static str, value: i32) -> Result<u8, CompileError> {
     u8::try_from(value).map_err(|_| CompileError::InvalidValue { command, value })
 }
 
@@ -726,7 +729,7 @@ fn checked_u8(command: &'static str, value: i64) -> Result<u8, CompileError> {
 fn checked_u16(command: &'static str, value: u32) -> Result<u16, CompileError> {
     u16::try_from(value).map_err(|_| CompileError::InvalidValue {
         command,
-        value: i64::from(value),
+        value: i32::try_from(value).unwrap_or(i32::MAX),
     })
 }
 
@@ -752,7 +755,7 @@ fn pitch_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, i16),
         )?,
         i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
             command: "pitch LFO amplitude",
-            value: i64::from(amplitude),
+            value: i32::from(amplitude),
         })?,
     ))
 }
@@ -774,17 +777,14 @@ fn volume_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, u16)
     };
     let amplitude = i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
         command: "volume LFO amplitude",
-        value: i64::from(amplitude),
+        value: i32::from(amplitude),
     })? as u16;
     Ok((checked_u16("volume LFO period", frequency)?, amplitude))
 }
 
 /// Convert an unscaled signed integer to an MDX signed 16-bit value.
 fn checked_signed_i16(command: &'static str, value: i32) -> Result<i16, CompileError> {
-    i16::try_from(value).map_err(|_| CompileError::InvalidValue {
-        command,
-        value: i64::from(value),
-    })
+    i16::try_from(value).map_err(|_| CompileError::InvalidValue { command, value })
 }
 
 /// Map an MML track channel to its zero-based MDX track index.
@@ -890,6 +890,7 @@ mod tests {
             compiled.tracks[0][1],
             MdxCommand::Tempo(MdxTempo { value: 255 })
         ));
+        assert_eq!(tempo_value(u32::MAX), Ok(u8::MAX));
     }
 
     #[test]
