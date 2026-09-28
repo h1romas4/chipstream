@@ -34,6 +34,11 @@ use std::mem;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
+const OPEN_FILE_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+const QUIT_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Q);
+
 /// UI state holding AST, raw bytes and supporting maps for lazy-loading.
 pub struct UiState {
     pub ast_root: Vec<AstNode>,
@@ -320,18 +325,26 @@ impl UiState {
 /// Top-level UI entry called each frame.
 pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
     let ctx = ui.ctx().clone();
+    if ctx.input_mut(|input| input.consume_shortcut(&OPEN_FILE_SHORTCUT)) {
+        choose_file(state, &ctx);
+    }
+    if ctx.input_mut(|input| input.consume_shortcut(&QUIT_SHORTCUT)) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
 
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Open...").clicked() {
+                let open_button = egui::Button::new("Open...")
+                    .shortcut_text(ctx.format_shortcut(&OPEN_FILE_SHORTCUT));
+                if ui.add(open_button).clicked() {
                     ui.close();
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        open_file(state, &ctx, path);
-                    }
+                    choose_file(state, &ctx);
                 }
                 ui.separator();
-                if ui.button("Quit").clicked() {
+                let quit_button =
+                    egui::Button::new("Quit").shortcut_text(ctx.format_shortcut(&QUIT_SHORTCUT));
+                if ui.add(quit_button).clicked() {
                     ui.close();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -578,6 +591,12 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
             state.enqueued_requests.remove(&key);
             state.request_children(path, start, count);
         }
+    }
+}
+
+fn choose_file(state: &mut UiState, ctx: &egui::Context) {
+    if let Some(path) = rfd::FileDialog::new().pick_file() {
+        open_file(state, ctx, path);
     }
 }
 
