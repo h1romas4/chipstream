@@ -1,5 +1,6 @@
 mod mdx;
 mod model;
+mod pdx;
 mod raw;
 mod vgm;
 
@@ -7,6 +8,7 @@ use anyhow::Result;
 
 pub use mdx::MdxAdapter;
 pub use model::{ByteCoordinateSpace, ByteRange, MappedRange, NodeId, SourceNode};
+pub use pdx::PdxAdapter;
 pub use raw::RawBinaryAdapter;
 pub use vgm::VgmAdapter;
 
