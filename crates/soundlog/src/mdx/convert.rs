@@ -2106,8 +2106,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             } else {
                 byte_index + 1
             };
-            let target_samples =
-                (u64::from(target_index) * u64::from(samples) / u64::from(pcm_bytes_due)) as u32;
+            let target_samples = target_index * samples / pcm_bytes_due;
             Self::emit_wait_chunks(builder, target_samples - emitted_samples);
             emitted_samples = target_samples;
             self.emit_pcm_byte(builder);
