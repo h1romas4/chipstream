@@ -38,6 +38,13 @@ enum MmlOutputFormat {
     Vgm,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum PdxExportFormatArg {
+    #[default]
+    Raw,
+    Wav,
+}
+
 impl From<MmlOutputFormat> for soundlog_cli::cui::mml::OutputFormat {
     fn from(format: MmlOutputFormat) -> Self {
         match format {
@@ -256,25 +263,36 @@ enum MdxCommands {
 
 #[derive(Subcommand, Debug)]
 enum PdxCommands {
-    /// Convert mono WAV files to ADPCM samples and write a PDX file
+    /// Convert WAV/raw samples to ADPCM as needed and write a PDX file
     Build {
-        /// Input WAV files followed by the output PDX path
-        #[arg(value_name = "INPUT_WAV_OR_OUTPUT_PDX", num_args = 2..)]
+        /// Input WAV/raw samples followed by the output PDX path
+        #[arg(value_name = "INPUT_WAV_OR_RAW_OR_OUTPUT_PDX", num_args = 2..)]
         files: Vec<PathBuf>,
+
+        /// Store the PDX payload using LZ compression
+        #[arg(long)]
+        enable_lz: bool,
     },
-    /// Export PDX ADPCM samples as mono WAV files
+    /// Export PDX samples as raw ADPCM bytes or mono WAV files
+    ///
+    /// LZ-compressed PDX input is decompressed first. Raw output contains the
+    /// original ADPCM sample bytes, not the PDX-level LZ stream.
     Export {
         /// Input PDX file
         #[arg(value_name = "INPUT_PDX")]
         input: PathBuf,
 
-        /// Directory for exported WAV files
+        /// Directory for exported sample files
         #[arg(value_name = "OUTPUT_DIR")]
         output_dir: PathBuf,
 
-        /// Sample rate to write into exported WAV files
+        /// Sample rate for WAV output (ignored for raw output)
         #[arg(long, default_value_t = 15_625, value_name = "HZ")]
         sample_rate: u32,
+
+        /// Export samples as raw ADPCM bytes or decoded WAV audio
+        #[arg(long, value_enum, default_value_t = PdxExportFormatArg::Raw)]
+        output_format: PdxExportFormatArg,
     },
 }
 
@@ -434,8 +452,8 @@ fn main() {
             }
         },
         Commands::Pdx {
-            command: PdxCommands::Build { files },
-        } => match cui::mml::build_pdx(&files) {
+            command: PdxCommands::Build { files, enable_lz },
+        } => match cui::mml::build_pdx(&files, enable_lz) {
             Ok(()) => process::exit(0),
             Err(error) => {
                 soundlog_cli::log_error!(&*logger, "PDX build failed: {error:#}");
@@ -448,12 +466,21 @@ fn main() {
                     input,
                     output_dir,
                     sample_rate,
+                    output_format,
                 },
-        } => match cui::mml::export_pdx(&input, &output_dir, sample_rate) {
+        } => match cui::mml::export_pdx(
+            &input,
+            &output_dir,
+            sample_rate,
+            match output_format {
+                PdxExportFormatArg::Raw => cui::mml::PdxExportFormat::Raw,
+                PdxExportFormatArg::Wav => cui::mml::PdxExportFormat::Wav,
+            },
+        ) {
             Ok(sample_count) => {
                 println!(
-                    "Exported {sample_count} WAV samples to {}",
-                    output_dir.display()
+                    "Exported {sample_count} PDX samples to {}",
+                    output_dir.display(),
                 );
                 process::exit(0);
             }

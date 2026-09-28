@@ -16,6 +16,12 @@ pub enum OutputFormat {
     Vgm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdxExportFormat {
+    Raw,
+    Wav,
+}
+
 /// Parse an MML file and optionally print its typed syntax tree.
 pub fn check(input: &Path, verbose: bool) -> anyhow::Result<()> {
     check_with_stdin(input, verbose, false)
@@ -165,12 +171,13 @@ fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
         })
 }
 
-/// Build a PDX file from mono WAV samples, using the final path as output.
-pub fn build_pdx(files: &[PathBuf]) -> anyhow::Result<()> {
+/// Build a PDX file from WAV or raw ADPCM samples, using the final path as output.
+pub fn build_pdx(files: &[PathBuf], enable_lz: bool) -> anyhow::Result<()> {
     let (output, inputs) = files
         .split_last()
         .ok_or_else(|| anyhow!("expected at least one input WAV and one output PDX"))?;
     let mut builder = PdxBuilder::new();
+    builder.set_lz_compressed(enable_lz);
     let exported_slots = inputs
         .iter()
         .map(|input| parse_exported_sample_slot(input))
@@ -184,8 +191,19 @@ pub fn build_pdx(files: &[PathBuf]) -> anyhow::Result<()> {
     let mut used_slots = HashSet::new();
 
     for (sample_index, input) in inputs.iter().enumerate() {
-        let samples = read_wav_samples(input)?;
-        let encoded = encode_adpcm(&samples);
+        let encoded = match input.extension().and_then(|extension| extension.to_str()) {
+            Some(extension) if extension.eq_ignore_ascii_case("wav") => {
+                encode_adpcm(&read_wav_samples(input)?)
+            }
+            Some(extension) if extension.eq_ignore_ascii_case("raw") => fs::read(input)
+                .with_context(|| format!("failed to read raw ADPCM input: {}", input.display()))?,
+            _ => {
+                return Err(anyhow!(
+                    "unsupported PDX sample input {}; expected WAV or raw ADPCM",
+                    input.display()
+                ));
+            }
+        };
         let (bank, note) =
             exported_slots[sample_index].unwrap_or((sample_index / 96, sample_index % 96));
         if !used_slots.insert((bank, note)) {
@@ -209,9 +227,14 @@ fn parse_exported_sample_slot(path: &Path) -> Option<(usize, usize)> {
     Some((bank.parse().ok()?, note.parse().ok()?))
 }
 
-/// Export every populated PDX ADPCM sample as a mono 16-bit WAV file.
-pub fn export_pdx(input: &Path, output_dir: &Path, sample_rate: u32) -> anyhow::Result<usize> {
-    if sample_rate == 0 {
+/// Export populated PDX ADPCM samples as raw bytes or decoded mono 16-bit WAV files.
+pub fn export_pdx(
+    input: &Path,
+    output_dir: &Path,
+    sample_rate: u32,
+    output_format: PdxExportFormat,
+) -> anyhow::Result<usize> {
+    if output_format == PdxExportFormat::Wav && sample_rate == 0 {
         return Err(anyhow!("WAV sample rate must be greater than zero"));
     }
     let bytes = fs::read(input)
@@ -225,7 +248,7 @@ pub fn export_pdx(input: &Path, output_dir: &Path, sample_rate: u32) -> anyhow::
         )
     })?;
 
-    let spec = hound::WavSpec {
+    let wav_spec = hound::WavSpec {
         channels: 1,
         sample_rate,
         bits_per_sample: 16,
@@ -240,17 +263,32 @@ pub fn export_pdx(input: &Path, output_dir: &Path, sample_rate: u32) -> anyhow::
             let adpcm = document
                 .sample_bytes(bank, note)
                 .ok_or_else(|| anyhow!("invalid PDX sample range: bank {bank}, note {note}"))?;
-            let output = output_dir.join(format!("bank-{bank:02}-note-{note:02}.wav"));
-            let mut writer = hound::WavWriter::create(&output, spec)
-                .with_context(|| format!("failed to create WAV output: {}", output.display()))?;
-            for sample in decode_adpcm(adpcm) {
-                writer.write_sample(sample << 4).with_context(|| {
-                    format!("failed to write WAV samples: {}", output.display())
-                })?;
+            let extension = match output_format {
+                PdxExportFormat::Raw => "raw",
+                PdxExportFormat::Wav => "wav",
+            };
+            let output = output_dir.join(format!("bank-{bank:02}-note-{note:02}.{extension}"));
+            match output_format {
+                PdxExportFormat::Raw => {
+                    fs::write(&output, adpcm).with_context(|| {
+                        format!("failed to write raw ADPCM output: {}", output.display())
+                    })?;
+                }
+                PdxExportFormat::Wav => {
+                    let mut writer =
+                        hound::WavWriter::create(&output, wav_spec).with_context(|| {
+                            format!("failed to create WAV output: {}", output.display())
+                        })?;
+                    for sample in decode_adpcm(adpcm) {
+                        writer.write_sample(sample << 4).with_context(|| {
+                            format!("failed to write WAV samples: {}", output.display())
+                        })?;
+                    }
+                    writer.finalize().with_context(|| {
+                        format!("failed to finalize WAV output: {}", output.display())
+                    })?;
+                }
             }
-            writer
-                .finalize()
-                .with_context(|| format!("failed to finalize WAV output: {}", output.display()))?;
             exported += 1;
         }
     }
@@ -326,11 +364,28 @@ mod tests {
         }
         writer.finalize().unwrap();
 
-        build_pdx(&[wav_path.clone(), pdx_path.clone()]).unwrap();
+        build_pdx(&[wav_path.clone(), pdx_path.clone()], false).unwrap();
         let document = PdxDocument::parse(&fs::read(&pdx_path).unwrap()).unwrap();
         assert_eq!(document.sample_bytes(0, 0).unwrap().len(), 2);
 
         fs::remove_file(wav_path).unwrap();
+        fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn builds_lz_compressed_pdx_when_enabled() {
+        let stem = format!("soundlog-cli-pdx-lz-{}", std::process::id());
+        let raw_path = std::env::temp_dir().join(format!("{stem}.raw"));
+        let pdx_path = std::env::temp_dir().join(format!("{stem}.pdx"));
+        let expected_adpcm = vec![0x00, 0x17, 0x8f, 0x42];
+        fs::write(&raw_path, &expected_adpcm).unwrap();
+
+        build_pdx(&[raw_path.clone(), pdx_path.clone()], true).unwrap();
+        let document = PdxDocument::parse(&fs::read(&pdx_path).unwrap()).unwrap();
+        assert!(document.is_compressed());
+        assert_eq!(document.sample_bytes(0, 0).unwrap(), expected_adpcm);
+
+        fs::remove_file(raw_path).unwrap();
         fs::remove_file(pdx_path).unwrap();
     }
 
@@ -351,7 +406,10 @@ mod tests {
         let original_bytes = builder.finalize().to_bytes();
         fs::write(&input_pdx, &original_bytes).unwrap();
 
-        assert_eq!(export_pdx(&input_pdx, &export_dir, 15_625).unwrap(), 2);
+        assert_eq!(
+            export_pdx(&input_pdx, &export_dir, 15_625, PdxExportFormat::Wav).unwrap(),
+            2
+        );
         let mut wav_files = fs::read_dir(&export_dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -373,7 +431,34 @@ mod tests {
 
         let mut build_files = wav_files;
         build_files.push(rebuilt_pdx.clone());
-        build_pdx(&build_files).unwrap();
+        build_pdx(&build_files, false).unwrap();
+        assert_eq!(fs::read(&rebuilt_pdx).unwrap(), original_bytes);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn raw_export_build_round_trip_preserves_adpcm_bytes() {
+        let stem = format!("soundlog-cli-pdx-raw-{}", std::process::id());
+        let directory = std::env::temp_dir().join(stem);
+        let input_pdx = directory.join("original.pdx");
+        let export_dir = directory.join("adpcm");
+        let rebuilt_pdx = directory.join("rebuilt.pdx");
+        fs::create_dir_all(&directory).unwrap();
+
+        let mut builder = PdxBuilder::new();
+        let expected_adpcm = vec![0x00, 0x17, 0x8f, 0x42];
+        builder.set_sample(1, 3, expected_adpcm.clone()).unwrap();
+        let original_bytes = builder.finalize().to_bytes();
+        fs::write(&input_pdx, &original_bytes).unwrap();
+
+        assert_eq!(
+            export_pdx(&input_pdx, &export_dir, 0, PdxExportFormat::Raw).unwrap(),
+            1
+        );
+        let raw_path = export_dir.join("bank-01-note-03.raw");
+        assert_eq!(fs::read(&raw_path).unwrap(), expected_adpcm);
+        build_pdx(&[raw_path, rebuilt_pdx.clone()], false).unwrap();
         assert_eq!(fs::read(&rebuilt_pdx).unwrap(), original_bytes);
 
         fs::remove_dir_all(directory).unwrap();
@@ -402,7 +487,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let error = build_pdx(&[exported, ordinary, output]).unwrap_err();
+        let error = build_pdx(&[exported, ordinary, output], false).unwrap_err();
         assert!(error.to_string().contains("cannot mix"));
         fs::remove_dir_all(directory).unwrap();
     }

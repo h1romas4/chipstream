@@ -436,38 +436,43 @@ soundlog mdx stream samples/example.mml
 
 ## PDX
 
-Build a PDX sample bank from one or more mono WAV files. The output path is the
-final argument. WAVs exported by `pdx export` retain their bank/note positions
-when passed back to `pdx build`; ordinary WAV names continue to use sequential
-positions.
+Build a PDX sample bank from one or more mono WAV or raw ADPCM samples. The
+output path is the final argument. Add `--enable-lz` to LZ-compress the PDX
+payload; output is uncompressed by default. Samples exported by `pdx export`
+retain their bank/note positions when passed back to `pdx build`; ordinary
+input names continue to use sequential positions.
 
 ```bash
 soundlog pdx build <INPUT_WAV>... <OUTPUT_PDX>
+soundlog pdx build <INPUT_WAV_OR_RAW>... <OUTPUT_PDX> --enable-lz
 ```
 
-To restore exported WAVs to their original slots, keep the
-`bank-<BANK>-note-<NOTE>.wav` naming format. For example,
-`bank-01-note-03.wav` targets bank 1, note 3 (both indices are zero-based).
-Do not mix these names with ordinary WAV names in one build command.
+To restore exported samples to their original slots, keep the
+`bank-<BANK>-note-<NOTE>` filename format. For example, `bank-01-note-03.wav`
+or `bank-01-note-03.raw` targets bank 1, note 3 (both indices are zero-based).
+WAV input is ADPCM-encoded during build; `.raw` input is copied as-is. Do not
+mix slot-named inputs with ordinary names in one build command.
 
 Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
 supported. Signed 16-bit samples are converted to signed 12-bit values by
 shifting right by four bits before ADPCM encoding. Stereo WAV files are
 rejected.
 
-Export each populated ADPCM sample as a mono 16-bit PCM WAV. Files are named
-`bank-00-note-00.wav` so their original PDX slots can be restored by `pdx build`.
+By default (`--output-format raw`), export each populated ADPCM sample as its
+original raw bytes in a `bank-00-note-00.raw` file. Pass
+`--output-format wav` to decode samples into mono 16-bit PCM WAV files instead.
 PDX files do not contain a sample rate, so exported WAVs default to 15,625 Hz;
 override it with `--sample-rate` when appropriate.
 
 ```bash
-soundlog pdx export samples.pdx exported-samples --sample-rate 15625
-soundlog pdx build exported-samples/bank-00-note-00.wav exported-samples/bank-01-note-03.wav rebuilt.pdx
+soundlog pdx export samples.pdx exported-samples
+soundlog pdx build exported-samples/bank-00-note-00.raw exported-samples/bank-01-note-03.raw rebuilt.pdx
+soundlog pdx export samples.pdx exported-wavs --output-format wav --sample-rate 15625
 ```
 
-Exported audio is the decoded ADPCM signal, not the original WAV samples used to
-build the PDX. Rebuilding the exported WAVs preserves the PDX's encoded sample
-data and populated bank/note slots.
+WAV export contains decoded ADPCM audio, not the original WAV samples used to
+build the PDX. Rebuilding either raw ADPCM exports or WAV exports preserves the
+PDX's encoded sample data and populated bank/note slots.
 
 ## MML profiler
 
