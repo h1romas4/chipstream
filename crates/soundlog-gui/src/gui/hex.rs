@@ -354,10 +354,7 @@ impl HexViewer {
         let address_text = self
             .selected
             .or_else(|| self.selection_range.map(|(start, _)| start))
-            .map_or_else(
-                || "ADDR --".to_owned(),
-                |address| format!("ADDR 0x{address:08X}"),
-            );
+            .map_or_else(|| "--".to_owned(), |address| format!("0x{address:08X}"));
 
         // Build from right to left so the complete status group stays aligned to
         // the window's right edge while reading left-to-right as:
