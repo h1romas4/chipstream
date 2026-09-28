@@ -264,6 +264,7 @@ enum MdxCommands {
 #[derive(Subcommand, Debug)]
 enum PdxCommands {
     /// Convert WAV/raw samples to ADPCM as needed and write a PDX file
+    #[command(override_usage = "soundlog pdx build [OPTIONS] <INPUT_WAV_OR_RAW>... <OUTPUT_PDX>")]
     Build {
         /// Input WAV/raw samples followed by the output PDX path
         #[arg(value_name = "INPUT_WAV_OR_RAW_OR_OUTPUT_PDX", num_args = 2..)]
