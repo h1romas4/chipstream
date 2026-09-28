@@ -212,7 +212,7 @@ pub(crate) fn handle_keyboard_selection(
         if let Some((start, end)) = selection_range(node, state.bytes.len()) {
             state.hex_viewer.set_selection_range(start, end);
             state.hex_viewer.set_reference_markers(vec![start]);
-            state.hex_viewer.set_pending_scroll_to(start, end);
+            state.hex_viewer.set_pending_scroll_to_start(start, end);
         }
     }
 }
@@ -264,7 +264,9 @@ pub(crate) fn apply_node_selection(
             .min(state.bytes.len().saturating_sub(1));
         state.hex_viewer.set_selection_range(range.start, end);
         state.hex_viewer.set_reference_markers(vec![range.start]);
-        state.hex_viewer.set_pending_scroll_to(range.start, end);
+        state
+            .hex_viewer
+            .set_pending_scroll_to_start(range.start, end);
         state
             .hex_viewer
             .set_fill_only_ranges(vec![(range.start, end)]);
@@ -281,7 +283,7 @@ pub(crate) fn apply_node_selection(
                 .set_reference_markers(vec![child_range.start]);
             state
                 .hex_viewer
-                .set_pending_scroll_to(child_range.start, child_end);
+                .set_pending_scroll_to_start(child_range.start, child_end);
         }
         applied = true;
     }
@@ -290,7 +292,7 @@ pub(crate) fn apply_node_selection(
         if let Some((start, end)) = selection_range(node, state.bytes.len()) {
             state.hex_viewer.set_selection_range(start, end);
             state.hex_viewer.set_reference_markers(vec![start]);
-            state.hex_viewer.set_pending_scroll_to(start, end);
+            state.hex_viewer.set_pending_scroll_to_start(start, end);
         }
     }
 }

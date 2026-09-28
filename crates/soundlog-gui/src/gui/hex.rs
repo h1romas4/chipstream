@@ -41,8 +41,8 @@ pub struct HexViewer {
     /// scroll the surrounding ScrollArea so the requested byte range is visible.
     pending_scroll_to: Option<(usize, usize)>,
     /// If true, the pending scroll (when present) should align to the top (0.0)
-    /// of the ScrollArea instead of centering the target rect. Used when we
-    /// want the viewer top to be 0x0 (for example immediately after diff detection).
+    /// of the ScrollArea instead of centering the target rect. Used to align
+    /// selected binary ranges and the initial diff with the top of the viewer.
     pending_scroll_align_top: bool,
     /// The last computed selection rect in widget coordinates (if any).
     /// This can be consumed by the caller to coordinate scrolling if desired.
@@ -323,11 +323,18 @@ impl HexViewer {
     /// on the next `show()` call. The call will be consumed after the scroll is
     /// attempted.
     pub fn set_pending_scroll_to(&mut self, start: usize, end: usize) {
+        self.pending_scroll_align_top = false;
         if end >= start {
             self.pending_scroll_to = Some((start, end));
         } else {
             self.pending_scroll_to = Some((end, start));
         }
+    }
+
+    /// Request scrolling to a selected range with its first byte at the top.
+    pub fn set_pending_scroll_to_start(&mut self, start: usize, end: usize) {
+        self.set_pending_scroll_to(start, end);
+        self.pending_scroll_align_top = true;
     }
 
     /// Take the last computed selection rect (if any) produced during `show()` and clear it.
@@ -1197,6 +1204,20 @@ impl HexViewer {
         let ss = scroll_s.min(bytes_len.saturating_sub(1));
         let ee = scroll_e.min(bytes_len.saturating_sub(1));
         let s_line = ss / bpl;
+        if align_top {
+            let target_rect = Self::first_byte_scroll_target(
+                ss,
+                data_top,
+                row_height,
+                bpl,
+                base_x,
+                offset_width,
+                hex_cell_w,
+            );
+            ui.scroll_to_rect(target_rect, Some(egui::Align::Min));
+            return;
+        }
+
         let e_line = ee / bpl;
         let mut scroll_union: Option<egui::Rect> = None;
         for line in s_line..=e_line {
@@ -1222,10 +1243,27 @@ impl HexViewer {
 
         if let Some(target_rect) = scroll_union {
             ui.scroll_to_rect(target_rect, Some(egui::Align::Center));
-            if align_top {
-                ui.scroll_to_rect(target_rect, Some(egui::Align::Min));
-            }
         }
+    }
+
+    fn first_byte_scroll_target(
+        start: usize,
+        data_top: f32,
+        row_height: f32,
+        bpl: usize,
+        base_x: f32,
+        offset_width: f32,
+        hex_cell_w: f32,
+    ) -> egui::Rect {
+        // The offset header is pinned over the scroll area. Align an invisible
+        // target one header row above the byte so the byte lands below it.
+        let line_top = data_top + ((start / bpl) as f32) * row_height + 2.0 - row_height;
+        let line_start = (start % bpl) as f32;
+        let x0 = base_x + offset_width + line_start * hex_cell_w + 1.0;
+        egui::Rect::from_min_max(
+            egui::pos2(x0, line_top + 1.0),
+            egui::pos2(x0 + hex_cell_w - 2.0, line_top + row_height - 4.0),
+        )
     }
 
     fn draw_visible_lines(
@@ -1452,5 +1490,23 @@ mod tests {
         assert!(viewer.outline_ranges.is_empty());
         assert!(viewer.fill_only_ranges.is_empty());
         assert!(viewer.rebuilt_bytes.is_none());
+    }
+
+    #[test]
+    fn selected_range_scroll_request_aligns_its_start_at_the_top() {
+        let mut viewer = HexViewer::new();
+        viewer.set_pending_scroll_to_start(0x21, 0x4f);
+
+        assert_eq!(viewer.pending_scroll_to, Some((0x21, 0x4f)));
+        assert!(viewer.pending_scroll_align_top);
+    }
+
+    #[test]
+    fn top_scroll_target_is_only_the_first_byte_cell() {
+        let target = HexViewer::first_byte_scroll_target(0x21, 5.0, 20.0, 16, 8.0, 16.0, 6.0);
+
+        assert_eq!(target.min.y, 28.0);
+        assert_eq!(target.max.y, 43.0);
+        assert_eq!(target.height(), 15.0);
     }
 }
