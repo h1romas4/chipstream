@@ -45,7 +45,7 @@ enum PdxExportFormatArg {
     Wav,
 }
 
-impl From<MmlOutputFormat> for soundlog_cli::cui::mml::OutputFormat {
+impl From<MmlOutputFormat> for soundlog_cli::cui::mdx::OutputFormat {
     fn from(format: MmlOutputFormat) -> Self {
         match format {
             MmlOutputFormat::Mdx => Self::Mdx,
@@ -372,7 +372,7 @@ fn main() {
                 input,
                 stdin,
                 verbose,
-            } => match cui::mml::check_with_stdin(&input, verbose, stdin) {
+            } => match cui::mdx::check_with_stdin(&input, verbose, stdin) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
                     soundlog_cli::log_error!(&*logger, "{error:#}");
@@ -383,7 +383,7 @@ fn main() {
                 input,
                 output,
                 output_format,
-            } => match cui::mml::compile(&input, &output, output_format.into()) {
+            } => match cui::mdx::compile(&input, &output, output_format.into()) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
                     soundlog_cli::log_error!(&*logger, "{error:#}");
@@ -493,7 +493,7 @@ fn main() {
                     disable_12bit_conversion,
                     enable_lz,
                 },
-        } => match cui::mml::build_pdx_with_report(&files, enable_lz, disable_12bit_conversion) {
+        } => match cui::pdx::build_pdx_with_report(&files, enable_lz, disable_12bit_conversion) {
             Ok(report) => {
                 if verbose {
                     let stdout_logger = Logger::new_stdout(false);
@@ -523,13 +523,13 @@ fn main() {
                     output_format,
                     verbose,
                 },
-        } => match cui::mml::export_pdx_with_report(
+        } => match cui::pdx::export_pdx_with_report(
             &input,
             &output_dir,
             sample_rate,
             match output_format {
-                PdxExportFormatArg::Raw => cui::mml::PdxExportFormat::Raw,
-                PdxExportFormatArg::Wav => cui::mml::PdxExportFormat::Wav,
+                PdxExportFormatArg::Raw => cui::pdx::PdxExportFormat::Raw,
+                PdxExportFormatArg::Wav => cui::pdx::PdxExportFormat::Wav,
             },
         ) {
             Ok(report) => {
