@@ -34,11 +34,11 @@ jobs:
 
       - name: Test
         run: |
-          cargo test
+          cargo test --workspace --all-features
 
       - name: Test (rustdoc)
         run: |
-          cargo test --doc
+          cargo test --doc --workspace --all-features
 
       - name: Compile
         run: |
