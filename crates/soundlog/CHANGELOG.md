@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Change: Use `u32` instead of `u64` when calculating MDX PCM sample positions.
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
