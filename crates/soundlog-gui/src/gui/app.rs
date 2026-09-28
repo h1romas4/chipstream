@@ -10,6 +10,7 @@ use eframe::egui;
 use eframe::{CreationContext, Frame, NativeOptions};
 
 use super::UiState;
+use super::loader::InputFormat;
 use soundlog::VgmBuilder;
 use soundlog::meta::Gd3;
 use soundlog::vgm::command::WaitSamples;
@@ -34,11 +35,16 @@ pub fn run_gui(initial_bytes: Vec<u8>, initial_file_name: Option<String>) {
         || "soundlog-inspector".to_owned(),
         |name| format!("soundlog-inspector - {name}"),
     );
+    let input_format = InputFormat::from_file_name(initial_file_name.as_deref());
     if let Err(err) = eframe::run_native(
         &window_title,
         native_options,
         Box::new(move |cc: &CreationContext| {
-            Ok(Box::new(Debuger::new_with_bytes(cc, initial_bytes.clone())))
+            Ok(Box::new(Debuger::new_with_input_format(
+                cc,
+                initial_bytes.clone(),
+                input_format,
+            )))
         }),
     ) {
         eprintln!("failed to launch native window: {:?}", err);
@@ -53,8 +59,11 @@ pub struct Debuger {
 }
 
 impl Debuger {
-    /// Create the application and set initial bytes into the UI state.
-    pub fn new_with_bytes(cc: &CreationContext, initial_bytes: Vec<u8>) -> Self {
+    fn new_with_input_format(
+        cc: &CreationContext,
+        initial_bytes: Vec<u8>,
+        input_format: InputFormat,
+    ) -> Self {
         // Increase UI scaling by 1.2x for better readability.
         let ctx = &cc.egui_ctx;
         ctx.set_theme(egui::Theme::Dark);
@@ -89,7 +98,7 @@ impl Debuger {
             s
         } else {
             let mut s = UiState::new_empty();
-            s.populate_from_bytes(&initial_bytes);
+            s.populate_from_bytes_with_format(&initial_bytes, input_format);
             s
         };
 

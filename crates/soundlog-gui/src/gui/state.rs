@@ -205,6 +205,14 @@ impl UiState {
     /// Kick off initial parse in background. This will produce a lightweight
     /// AST where the `Commands` node has `lazy_count = Some(total)`.
     pub fn populate_from_bytes(&mut self, bytes: &[u8]) {
+        self.populate_from_bytes_with_format(bytes, InputFormat::Auto);
+    }
+
+    pub(crate) fn populate_from_bytes_with_format(
+        &mut self,
+        bytes: &[u8],
+        input_format: InputFormat,
+    ) {
         let input_changed = self.bytes != bytes;
         if input_changed {
             self.reset_document_state();
@@ -225,7 +233,7 @@ impl UiState {
         self.ast_build_tx = Some(tx.clone());
         self.ast_building = true;
 
-        spawn_initial_parse(self.bytes.clone(), generation, tx, InputFormat::Auto);
+        spawn_initial_parse(self.bytes.clone(), generation, tx, input_format);
     }
 
     fn populate_from_owned_bytes(

@@ -13,6 +13,10 @@ pub(crate) enum InputFormat {
 }
 
 impl InputFormat {
+    pub(crate) fn from_file_name(file_name: Option<&str>) -> Self {
+        file_name.map_or(Self::Auto, |name| Self::from_path(Path::new(name)))
+    }
+
     pub(crate) fn from_path(path: &Path) -> Self {
         if path
             .extension()
@@ -35,9 +39,6 @@ pub(crate) fn spawn_initial_parse(
     thread::spawn(move || {
         if input_format == InputFormat::Pdx {
             let nodes = match PdxAdapter::parse(&data) {
-                Ok(document) if document.is_compressed() => {
-                    build_raw_binary_nodes(&data, "LZ-compressed PDX viewing is not supported yet")
-                }
                 Ok(document) => vec![source_node_to_ast(PdxAdapter::root_node(&document))],
                 Err(error) => build_raw_binary_nodes(&data, &format!("PDX: {error}")),
             };
@@ -275,6 +276,11 @@ mod tests {
             InputFormat::from_path(Path::new("music.mdx")),
             InputFormat::Auto
         );
+        assert_eq!(
+            InputFormat::from_file_name(Some("sample.pdx")),
+            InputFormat::Pdx
+        );
+        assert_eq!(InputFormat::from_file_name(None), InputFormat::Auto);
     }
 
     #[test]
@@ -296,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn pdx_worker_keeps_compressed_input_in_raw_view_until_supported() {
+    fn pdx_worker_emits_source_tree_for_compressed_input() {
         let mut builder = PdxBuilder::new();
         builder.set_sample(0, 0, b"PCM1".to_vec()).unwrap();
         builder.set_lz_compressed(true);
@@ -305,12 +311,14 @@ mod tests {
 
         match receive_message(rx) {
             AstBuildMessage::Full { nodes, .. } => {
-                assert_eq!(nodes[0].title, "Raw Binary");
-                assert!(
-                    nodes[0]
-                        .detail
-                        .contains("compressed PDX viewing is not supported")
+                assert_eq!(nodes[0].title, "PDX");
+                assert_eq!(nodes[0].children[0].title, "Bank 0");
+                assert_eq!(nodes[0].children[0].children[0].title, "Note 0");
+                assert_eq!(
+                    nodes[0].mapped_range.unwrap().space,
+                    crate::sourcemap::ByteCoordinateSpace::Logical
                 );
+                assert!(nodes[0].byte_range.is_none());
             }
             AstBuildMessage::Error { message, .. } => panic!("unexpected worker error: {message}"),
             _ => panic!("expected a Full message"),
