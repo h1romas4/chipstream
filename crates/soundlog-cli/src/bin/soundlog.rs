@@ -262,6 +262,20 @@ enum PdxCommands {
         #[arg(value_name = "INPUT_WAV_OR_OUTPUT_PDX", num_args = 2..)]
         files: Vec<PathBuf>,
     },
+    /// Export PDX ADPCM samples as mono WAV files
+    Export {
+        /// Input PDX file
+        #[arg(value_name = "INPUT_PDX")]
+        input: PathBuf,
+
+        /// Directory for exported WAV files
+        #[arg(value_name = "OUTPUT_DIR")]
+        output_dir: PathBuf,
+
+        /// Sample rate to write into exported WAV files
+        #[arg(long, default_value_t = 15_625, value_name = "HZ")]
+        sample_rate: u32,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -425,6 +439,26 @@ fn main() {
             Ok(()) => process::exit(0),
             Err(error) => {
                 soundlog_cli::log_error!(&*logger, "PDX build failed: {error:#}");
+                process::exit(1);
+            }
+        },
+        Commands::Pdx {
+            command:
+                PdxCommands::Export {
+                    input,
+                    output_dir,
+                    sample_rate,
+                },
+        } => match cui::mml::export_pdx(&input, &output_dir, sample_rate) {
+            Ok(sample_count) => {
+                println!(
+                    "Exported {sample_count} WAV samples to {}",
+                    output_dir.display()
+                );
+                process::exit(0);
+            }
+            Err(error) => {
+                soundlog_cli::log_error!(&*logger, "PDX export failed: {error:#}");
                 process::exit(1);
             }
         },

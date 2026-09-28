@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -5,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
 use soundlog::mdx::package::MdxPackage;
-use soundlog::mdx::pcm::encode_adpcm;
-use soundlog::mdx::pdx::PdxBuilder;
+use soundlog::mdx::pcm::{decode_adpcm, encode_adpcm};
+use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 use soundlog::meta::Gd3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,17 +171,90 @@ pub fn build_pdx(files: &[PathBuf]) -> anyhow::Result<()> {
         .split_last()
         .ok_or_else(|| anyhow!("expected at least one input WAV and one output PDX"))?;
     let mut builder = PdxBuilder::new();
+    let exported_slots = inputs
+        .iter()
+        .map(|input| parse_exported_sample_slot(input))
+        .collect::<Vec<_>>();
+    let exported_count = exported_slots.iter().filter(|slot| slot.is_some()).count();
+    if exported_count != 0 && exported_count != inputs.len() {
+        return Err(anyhow!(
+            "cannot mix exported bank-note WAV names with ordinary WAV input names"
+        ));
+    }
+    let mut used_slots = HashSet::new();
 
     for (sample_index, input) in inputs.iter().enumerate() {
         let samples = read_wav_samples(input)?;
         let encoded = encode_adpcm(&samples);
+        let (bank, note) =
+            exported_slots[sample_index].unwrap_or((sample_index / 96, sample_index % 96));
+        if !used_slots.insert((bank, note)) {
+            return Err(anyhow!(
+                "duplicate PDX sample slot: bank {bank}, note {note}"
+            ));
+        }
         builder
-            .set_sample(sample_index / 96, sample_index % 96, encoded)
+            .set_sample(bank, note, encoded)
             .with_context(|| format!("failed to encode sample from {}", input.display()))?;
     }
 
     fs::write(output, builder.finalize().to_bytes())
         .with_context(|| format!("failed to write PDX output: {}", output.display()))
+}
+
+fn parse_exported_sample_slot(path: &Path) -> Option<(usize, usize)> {
+    let stem = path.file_stem()?.to_str()?;
+    let coordinates = stem.strip_prefix("bank-")?;
+    let (bank, note) = coordinates.split_once("-note-")?;
+    Some((bank.parse().ok()?, note.parse().ok()?))
+}
+
+/// Export every populated PDX ADPCM sample as a mono 16-bit WAV file.
+pub fn export_pdx(input: &Path, output_dir: &Path, sample_rate: u32) -> anyhow::Result<usize> {
+    if sample_rate == 0 {
+        return Err(anyhow!("WAV sample rate must be greater than zero"));
+    }
+    let bytes = fs::read(input)
+        .with_context(|| format!("failed to read PDX input: {}", input.display()))?;
+    let document = PdxDocument::parse(&bytes)
+        .with_context(|| format!("failed to parse PDX input: {}", input.display()))?;
+    fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "failed to create output directory: {}",
+            output_dir.display()
+        )
+    })?;
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut exported = 0;
+    for (bank, bank_data) in document.banks.iter().enumerate() {
+        for (note, entry) in bank_data.entries.iter().enumerate() {
+            if entry.is_none() {
+                continue;
+            }
+            let adpcm = document
+                .sample_bytes(bank, note)
+                .ok_or_else(|| anyhow!("invalid PDX sample range: bank {bank}, note {note}"))?;
+            let output = output_dir.join(format!("bank-{bank:02}-note-{note:02}.wav"));
+            let mut writer = hound::WavWriter::create(&output, spec)
+                .with_context(|| format!("failed to create WAV output: {}", output.display()))?;
+            for sample in decode_adpcm(adpcm) {
+                writer.write_sample(sample << 4).with_context(|| {
+                    format!("failed to write WAV samples: {}", output.display())
+                })?;
+            }
+            writer
+                .finalize()
+                .with_context(|| format!("failed to finalize WAV output: {}", output.display()))?;
+            exported += 1;
+        }
+    }
+    Ok(exported)
 }
 
 fn read_wav_samples(path: &Path) -> anyhow::Result<Vec<i16>> {
@@ -233,7 +307,7 @@ fn read_wav_samples(path: &Path) -> anyhow::Result<Vec<i16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundlog::mdx::pdx::PdxDocument;
+    use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 
     #[test]
     fn builds_pdx_from_wav_input() {
@@ -258,6 +332,79 @@ mod tests {
 
         fs::remove_file(wav_path).unwrap();
         fs::remove_file(pdx_path).unwrap();
+    }
+
+    #[test]
+    fn export_build_round_trip_preserves_sparse_sample_slots() {
+        let stem = format!("soundlog-cli-pdx-roundtrip-{}", std::process::id());
+        let directory = std::env::temp_dir().join(stem);
+        let input_pdx = directory.join("original.pdx");
+        let export_dir = directory.join("wav");
+        let rebuilt_pdx = directory.join("rebuilt.pdx");
+        fs::create_dir_all(&directory).unwrap();
+
+        let mut builder = PdxBuilder::new();
+        builder.set_sample(0, 5, vec![0x70, 0x9c, 0x47]).unwrap();
+        builder
+            .set_sample(1, 2, vec![0x01, 0x23, 0x45, 0x67])
+            .unwrap();
+        let original_bytes = builder.finalize().to_bytes();
+        fs::write(&input_pdx, &original_bytes).unwrap();
+
+        assert_eq!(export_pdx(&input_pdx, &export_dir, 15_625).unwrap(), 2);
+        let mut wav_files = fs::read_dir(&export_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        wav_files.sort();
+        assert_eq!(
+            wav_files
+                .iter()
+                .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+                .collect::<Vec<_>>(),
+            ["bank-00-note-05.wav", "bank-01-note-02.wav"]
+        );
+        for wav_path in &wav_files {
+            assert_eq!(
+                hound::WavReader::open(wav_path).unwrap().spec().sample_rate,
+                15_625
+            );
+        }
+
+        let mut build_files = wav_files;
+        build_files.push(rebuilt_pdx.clone());
+        build_pdx(&build_files).unwrap();
+        assert_eq!(fs::read(&rebuilt_pdx).unwrap(), original_bytes);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn build_rejects_mixed_exported_and_ordinary_wav_names() {
+        let stem = format!("soundlog-cli-pdx-mixed-{}", std::process::id());
+        let directory = std::env::temp_dir().join(stem);
+        fs::create_dir_all(&directory).unwrap();
+        let exported = directory.join("bank-00-note-00.wav");
+        let ordinary = directory.join("sample.wav");
+        let output = directory.join("output.pdx");
+
+        for path in [&exported, &ordinary] {
+            let writer = hound::WavWriter::create(
+                path,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 15_625,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            writer.finalize().unwrap();
+        }
+
+        let error = build_pdx(&[exported, ordinary, output]).unwrap_err();
+        assert!(error.to_string().contains("cannot mix"));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
