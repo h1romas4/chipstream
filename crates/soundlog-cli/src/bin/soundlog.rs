@@ -281,7 +281,7 @@ enum PdxCommands {
         files: Vec<PathBuf>,
 
         /// Print detailed input and output information
-        #[arg(long)]
+        #[arg(short = 'v', long)]
         verbose: bool,
 
         /// Skip 16-bit WAV PCM scaling; the ADPCM encoder still clamps to signed 12-bit
@@ -312,6 +312,9 @@ enum PdxCommands {
         /// Export samples as raw ADPCM bytes or decoded WAV audio
         #[arg(long, value_enum, default_value_t = PdxExportFormatArg::Raw)]
         output_format: PdxExportFormatArg,
+        /// Print detailed information about exported samples
+        #[arg(short = 'v', long)]
+        verbose: bool,
     },
 }
 
@@ -518,8 +521,9 @@ fn main() {
                     output_dir,
                     sample_rate,
                     output_format,
+                    verbose,
                 },
-        } => match cui::mml::export_pdx(
+        } => match cui::mml::export_pdx_with_report(
             &input,
             &output_dir,
             sample_rate,
@@ -528,15 +532,23 @@ fn main() {
                 PdxExportFormatArg::Wav => cui::mml::PdxExportFormat::Wav,
             },
         ) {
-            Ok(sample_count) => {
-                println!(
-                    "Exported {sample_count} PDX samples to {}",
-                    output_dir.display(),
-                );
+            Ok(report) => {
+                if verbose {
+                    let stdout_logger = Logger::new_stdout(false);
+                    if let Err(error) = cui::pdx::log_export_report(&report, &stdout_logger) {
+                        let stderr_logger = Logger::new_stderr(false);
+                        soundlog_cli::log_error!(
+                            &stderr_logger,
+                            "failed to write PDX export report: {error:#}"
+                        );
+                        process::exit(1);
+                    }
+                }
                 process::exit(0);
             }
             Err(error) => {
-                soundlog_cli::log_error!(&*logger, "PDX export failed: {error:#}");
+                let stderr_logger = Logger::new_stderr(false);
+                soundlog_cli::log_error!(&stderr_logger, "PDX export failed: {error:#}");
                 process::exit(1);
             }
         },

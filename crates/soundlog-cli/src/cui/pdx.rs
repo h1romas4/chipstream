@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::NOTHING};
 use soundlog::mdx::pdx::{PdxDocument, PdxSample};
 
-use crate::cui::mml::PdxBuildReport;
+use crate::cui::mml::{PdxBuildReport, PdxExportFormat, PdxExportReport};
 use crate::logger::Logger;
 
 /// Print detailed information about a completed PDX build.
@@ -62,6 +62,84 @@ pub fn log_build_report(report: &PdxBuildReport, logger: &Logger) -> Result<()> 
             Cell::new(sample.bank),
             Cell::new(sample.note),
             Cell::new(sample.adpcm_bytes),
+        ]);
+    }
+    logger.info(format_args!("Samples (bank/note indices are zero-based):"))?;
+    logger.info(format_args!("{sample_table}"))?;
+    Ok(())
+}
+
+/// Print detailed information about exported PDX samples.
+pub fn log_export_report(report: &PdxExportReport, logger: &Logger) -> Result<()> {
+    logger.info(format_args!("PDX export complete:"))?;
+
+    let mut summary = Table::new();
+    summary.load_style(NOTHING);
+    summary.set_content_arrangement(ContentArrangement::Dynamic);
+    summary.set_header(vec![Cell::new("Field"), Cell::new("Value")]);
+    summary.add_row(vec![
+        Cell::new("input"),
+        Cell::new(report.input_path.display()),
+    ]);
+    summary.add_row(vec![
+        Cell::new("input_bytes"),
+        Cell::new(report.input_bytes),
+    ]);
+    summary.add_row(vec![
+        Cell::new("decoded_bytes"),
+        Cell::new(report.decoded_bytes),
+    ]);
+    summary.add_row(vec![
+        Cell::new("lz_compressed"),
+        Cell::new(report.lz_compressed),
+    ]);
+    summary.add_row(vec![
+        Cell::new("output_dir"),
+        Cell::new(report.output_dir.display()),
+    ]);
+    summary.add_row(vec![
+        Cell::new("output_format"),
+        Cell::new(match report.output_format {
+            PdxExportFormat::Raw => "raw ADPCM",
+            PdxExportFormat::Wav => "mono 16-bit PCM WAV",
+        }),
+    ]);
+    summary.add_row(vec![
+        Cell::new("sample_rate_hz"),
+        Cell::new(
+            report
+                .sample_rate
+                .map(|rate| rate.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+        ),
+    ]);
+    summary.add_row(vec![Cell::new("samples"), Cell::new(report.samples.len())]);
+    logger.info(format_args!("{summary}"))?;
+
+    let mut sample_table = Table::new();
+    sample_table.load_style(NOTHING);
+    sample_table.set_content_arrangement(ContentArrangement::Dynamic);
+    sample_table.set_header(vec![
+        Cell::new("Bank"),
+        Cell::new("Note"),
+        Cell::new("Output"),
+        Cell::new("ADPCM bytes"),
+        Cell::new("Output bytes"),
+        Cell::new("Frames"),
+    ]);
+    for sample in &report.samples {
+        sample_table.add_row(vec![
+            Cell::new(sample.bank),
+            Cell::new(sample.note),
+            Cell::new(sample.output_path.display()),
+            Cell::new(sample.adpcm_bytes),
+            Cell::new(sample.output_bytes),
+            Cell::new(
+                sample
+                    .frames
+                    .map(|frames| frames.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
         ]);
     }
     logger.info(format_args!("Samples (bank/note indices are zero-based):"))?;

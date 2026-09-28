@@ -318,6 +318,39 @@ pub fn export_pdx(
     sample_rate: u32,
     output_format: PdxExportFormat,
 ) -> anyhow::Result<usize> {
+    export_pdx_with_report(input, output_dir, sample_rate, output_format)
+        .map(|report| report.samples.len())
+}
+
+#[derive(Debug, Clone)]
+pub struct PdxExportReport {
+    pub input_path: PathBuf,
+    pub input_bytes: usize,
+    pub decoded_bytes: usize,
+    pub lz_compressed: bool,
+    pub output_dir: PathBuf,
+    pub output_format: PdxExportFormat,
+    pub sample_rate: Option<u32>,
+    pub samples: Vec<PdxExportSampleReport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdxExportSampleReport {
+    pub bank: usize,
+    pub note: usize,
+    pub output_path: PathBuf,
+    pub adpcm_bytes: usize,
+    pub output_bytes: u64,
+    pub frames: Option<usize>,
+}
+
+/// Export PDX samples and return details for optional verbose reporting.
+pub fn export_pdx_with_report(
+    input: &Path,
+    output_dir: &Path,
+    sample_rate: u32,
+    output_format: PdxExportFormat,
+) -> anyhow::Result<PdxExportReport> {
     if output_format == PdxExportFormat::Wav && sample_rate == 0 {
         return Err(anyhow!("WAV sample rate must be greater than zero"));
     }
@@ -338,7 +371,7 @@ pub fn export_pdx(
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut exported = 0;
+    let mut sample_reports = Vec::new();
     for (bank, bank_data) in document.banks.iter().enumerate() {
         for (note, entry) in bank_data.entries.iter().enumerate() {
             if entry.is_none() {
@@ -373,10 +406,36 @@ pub fn export_pdx(
                     })?;
                 }
             }
-            exported += 1;
+            let output_bytes = fs::metadata(&output)
+                .with_context(|| format!("failed to read output metadata: {}", output.display()))?
+                .len();
+            sample_reports.push(PdxExportSampleReport {
+                bank,
+                note,
+                output_path: output,
+                adpcm_bytes: adpcm.len(),
+                output_bytes,
+                frames: match output_format {
+                    PdxExportFormat::Raw => None,
+                    PdxExportFormat::Wav => Some(adpcm.len() * 2),
+                },
+            });
         }
     }
-    Ok(exported)
+
+    Ok(PdxExportReport {
+        input_path: input.to_path_buf(),
+        input_bytes: bytes.len(),
+        decoded_bytes: document.decoded_bytes().len(),
+        lz_compressed: document.is_compressed(),
+        output_dir: output_dir.to_path_buf(),
+        output_format,
+        sample_rate: match output_format {
+            PdxExportFormat::Raw => None,
+            PdxExportFormat::Wav => Some(sample_rate),
+        },
+        samples: sample_reports,
+    })
 }
 
 fn read_wav_samples(path: &Path, disable_12bit_conversion: bool) -> anyhow::Result<WavSampleData> {

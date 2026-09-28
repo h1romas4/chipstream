@@ -477,12 +477,14 @@ By default (`--output-format raw`), export each populated ADPCM sample as its
 original raw bytes in a `bank-00-note-00.raw` file. Pass
 `--output-format wav` to decode samples into mono 16-bit PCM WAV files instead.
 PDX files do not contain a sample rate, so exported WAVs default to 15,625 Hz;
-override it with `--sample-rate` when appropriate.
+override it with `--sample-rate` when appropriate. Export is quiet by default;
+use `--verbose` to list each output file, its bank/note slot, and byte/frame
+counts.
 
 ```bash
-soundlog pdx export samples.pdx exported-samples
+soundlog pdx export samples.pdx exported-samples [--verbose]
 soundlog pdx build exported-samples/bank-00-note-00.raw exported-samples/bank-01-note-03.raw rebuilt.pdx
-soundlog pdx export samples.pdx exported-wavs --output-format wav --sample-rate 15625
+soundlog pdx export samples.pdx exported-wavs --output-format wav --sample-rate 15625 --verbose
 ```
 
 WAV export contains decoded ADPCM audio, not the original WAV samples used to
