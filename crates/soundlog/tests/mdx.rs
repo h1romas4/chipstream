@@ -2081,21 +2081,24 @@ fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
         2,
         "each track intro should be emitted once per finite conversion"
     );
-    for (register, value) in [(0x20, 0x22), (0x21, 0x44)] {
-        assert_eq!(
-            finite_document
-                .commands
-                .iter()
-                .filter(|command| matches!(
+    let loop_write_count = |register, value| {
+        finite_document
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
                     command,
                     VgmCommand::Ym2151Write(_, spec)
                         if (spec.register, spec.value) == (register, value)
-                ))
-                .count(),
-            2,
-            "loop_count=2 should emit each track's L body twice"
-        );
-    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(loop_write_count(0x21, 0x44), 2);
+    assert!(
+        loop_write_count(0x20, 0x22) > loop_write_count(0x21, 0x44),
+        "short-period track should keep traversing its L body while the long track reaches F1"
+    );
 
     let zero_loop_document = to_vgm_document(
         &package,

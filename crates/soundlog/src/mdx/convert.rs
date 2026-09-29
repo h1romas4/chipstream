@@ -2151,6 +2151,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Marks a loop track as arrived, then lets it continue from its target
     /// while the other participating tracks reach the shared boundary.
     fn park_at_synchronized_f1(&mut self, track: usize, offset: i16) {
+        let command_index = self.tracks[track].command_index - 1;
         let Some(target_index) = self.resolve_jump_target(track, offset) else {
             self.song_loop.synchronized_f1_tracks.remove(&track);
             self.tracks[track].active = false;
@@ -2162,7 +2163,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .or_insert(target_index);
         self.song_loop.synchronized_f1_arrivals.insert(track);
         self.tracks[track].command_index = target_index;
-        self.tracks[track].active = true;
+        self.tracks[track].active = target_index != command_index;
     }
 
     fn synchronized_f1_barrier_ready(&self) -> bool {
