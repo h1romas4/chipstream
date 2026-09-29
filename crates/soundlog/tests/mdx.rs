@@ -1849,6 +1849,77 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 }
 
 #[test]
+fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 16 })
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: 0,
+            }),
+        )
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 1,
+            },
+        )
+        .add_mdx_command(8, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            8,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: 0,
+            }),
+        );
+
+    let mut mdx = builder.finalize().unwrap();
+    for (track, loop_command_index) in [(0, 1), (8, 2)] {
+        let source_map = mdx.sourcemap();
+        let loop_start = source_map[track][0].0;
+        let (command_offset, command_length) = source_map[track][loop_command_index];
+        let command_end = command_offset + command_length;
+        let relative_offset =
+            i32::try_from(loop_start).unwrap() - i32::try_from(command_end).unwrap();
+        let MdxCommand::EndOfTrackLoop(command) = &mut mdx.tracks[track][loop_command_index] else {
+            unreachable!("expected F1 loop marker");
+        };
+        command.offset = i16::try_from(relative_offset).unwrap();
+    }
+
+    let mut pdx_builder = PdxBuilder::new();
+    pdx_builder.set_sample(0, 0, vec![0x11, 0x22]).unwrap();
+    let package = MdxPackage {
+        mdx,
+        pdx: Some(pdx_builder.finalize()),
+    };
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..MdxToVgmOptions::default()
+    };
+
+    let document = to_vgm_document(&package, &options).expect("convert short PCM loop");
+    let first_sample_byte_writes = document
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                VgmCommand::Okim6258Write(_, spec) if spec.register == 1 && spec.value == 0x11
+            )
+        })
+        .count();
+
+    assert!(
+        first_sample_byte_writes > 1,
+        "the shorter PCM track should retrigger while the longer track reaches F1"
+    );
+}
+
+#[test]
 fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
     struct LoopSection {
         register: u8,

@@ -2125,7 +2125,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .entry(track)
             .or_insert(target_index);
         self.song_loop.synchronized_f1_arrivals.insert(track);
-        self.tracks[track].active = false;
+        if track >= 8 {
+            self.tracks[track].command_index = target_index;
+        } else {
+            self.tracks[track].active = false;
+        }
     }
 
     /// Starts a loop pass or finishes playback after the requested number of
