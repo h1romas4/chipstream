@@ -189,7 +189,7 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of iterations for MDX repeat blocks
+        /// Number of whole-song playthroughs; COUNT follows VGM semantics (0 means 1)
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
@@ -219,9 +219,15 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of whole-song playthroughs to write (default: 1; no VGM loop point)
-        #[arg(long, value_name = "COUNT", default_value_t = 1)]
-        loop_count: u32,
+        /// Number of whole-song playthroughs to write (default: 1; 0 means 1; no VGM loop point)
+        #[arg(long, value_name = "COUNT", conflicts_with = "native_loop")]
+        loop_count: Option<u32>,
+
+        /// Use a native VGM loop point instead of a finite loop count.
+        /// Sets VGM header loop_offset and loop_samples when a loop is detected.
+        /// The estimated loop point may be inaccurate for per-track MDX F1 loops.
+        #[arg(long, conflicts_with = "loop_count")]
+        native_loop: bool,
 
         /// ADPCM mode: through, resample, or lpf
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
@@ -251,7 +257,7 @@ enum MdxCommands {
         #[arg(long, default_value_t = soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ)]
         okim6258_clock: u32,
 
-        /// Total number of iterations for MDX repeat blocks (default: 1)
+        /// Number of whole-song playthroughs (default: 1; COUNT follows VGM semantics, 0 means 1)
         #[arg(long, value_name = "COUNT")]
         loop_count: Option<u32>,
 
@@ -430,12 +436,17 @@ fn main() {
                 ym2151_clock,
                 okim6258_clock,
                 loop_count,
+                native_loop,
                 adpcm_mode,
             } => {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
                     okim6258_clock,
-                    loop_count: Some(loop_count),
+                    loop_count: if native_loop {
+                        None
+                    } else {
+                        Some(loop_count.unwrap_or(1))
+                    },
                     adpcm_mode: adpcm_mode.into(),
                 };
                 match cui::mdx::convert_mdx(&input, &output, pdx.as_deref(), &options) {

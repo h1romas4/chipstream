@@ -361,12 +361,21 @@ soundlog mdx convert <MDX_FILE> <VGM_FILE> [OPTIONS]
 ```
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
-`--okim6258-clock <HZ>`, `--loop-count <COUNT>`, and
+`--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
 `--adpcm-mode <through|resample|lpf>`.
 
-By default, conversion writes one playthrough. `--loop-count <COUNT>` writes
-that many MDX playthroughs into the VGM command stream and does not set a VGM
-loop point, so playback ends normally after the requested count.
+By default, conversion writes one loop iteration as a finite VGM with no loop
+point. `--loop-count <COUNT>` uses the same count convention as VGM playback:
+with L markers, the intro plays once and the loop section is emitted COUNT
+times. A count of `0` is treated as `1`. `--native-loop` instead sets the VGM header's `loop_offset` and
+`loop_samples` when a loop point can be detected, allowing the VGM player to
+repeat it. Since MDX F1 markers are per-track, the estimated global loop point
+may be inaccurate when tracks have different L positions or loop lengths.
+
+The explicit `--loop-count <COUNT>` option uses the same whole-song loop
+iteration count in `mdx test` and `mdx stream`. For example, `--loop-count 2`
+plays the intro once and emits two passes through the L region; `--loop-count 0`
+is equivalent to `--loop-count 1`.
 
 #### `mdx parse`
 
@@ -402,7 +411,10 @@ soundlog mdx test <MDX_FILE> [OPTIONS]
 ```
 
 The test options include `--pdx <PDX_FILE>`, `--dry-run`, `--ym2151-clock <HZ>`,
-`--okim6258-clock <HZ>`, `--sample-rate <HZ>`, `--loop-count <COUNT>`, and
+`--okim6258-clock <HZ>`, `--sample-rate <HZ>`, and `--loop-count <COUNT>`.
+An explicit `--loop-count` uses the same iteration count as VGM playback: with
+L markers, `--loop-count 2` plays the intro once and traverses the loop region
+twice. If omitted, the test uses native loop handling.
 
 Examples:
 
@@ -425,6 +437,9 @@ The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
 `--loop-count <COUNT>`, and
 `--adpcm-mode <through|resample|lpf>` (default: `through`).
+The default loop count is 1. Explicit counts follow VGM playback semantics;
+for L markers, `--loop-count 2` plays the intro once and traverses the loop
+region twice, synchronizing tracks at their F1 markers.
 
 Examples:
 

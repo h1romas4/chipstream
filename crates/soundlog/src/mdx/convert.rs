@@ -27,7 +27,7 @@ use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -176,24 +176,30 @@ pub struct MdxToVgmOptions {
     pub okim6258_clock: u32,
     /// ADPCM processing mode for PCM8/PCM8A output.
     pub adpcm_mode: AdpcmMode,
-    /// Total number of playthroughs of the whole song's repeat.
+    /// Target number of traversals for song-level repeats.
     ///
-    /// This only affects the song-level repeat: a backward `Jump`, or a
-    /// `LoopEnd` whose count is encoded as `0` (the file's "loop forever"
-    /// marker). It does not override the counts of ordinary nested repeat
-    /// blocks (`LoopStart`/`LoopEnd` with a nonzero count), since those are
-    /// authored per track and overriding them independently across tracks
-    /// would desynchronize them from each other.
+    /// This affects backward `Jump`s, `LoopEnd`s whose count is encoded as
+    /// `0` (the file's "loop forever" marker), and per-track `F1`
+    /// (`EndOfTrackLoop`) markers. It does not override ordinary nested
+    /// repeat blocks (`LoopStart`/`LoopEnd` with a nonzero count), since those
+    /// are authored per track.
     ///
-    /// `None` (the default) encodes whole-song repeats as a native VGM loop
-    /// point instead of repeating them internally. Per-track `F1` terminators
-    /// are emitted once in eager conversion because VGM has only one global
-    /// loop point and cannot represent independently phased track loops. For
-    /// files with an embedded fadeout, track loops continue internally from
-    /// their first `F1` until fadeout ends, and FM carrier total-level writes
-    /// reflect the global attenuation. PCM channels routed through the mixer
-    /// follow the same attenuation; legacy ADPCM `Through` bytes remain raw.
-    /// `Some(1)` plays the song once with no whole-song repeat.
+    /// `None` (the default) uses a native VGM loop point for eager conversion
+    /// when possible, while lazy streaming repeats internally. In eager
+    /// conversion, tracks with `F1` markers synchronize at a shared boundary:
+    /// the loop point is placed after every loop track reaches its marker and
+    /// every non-loop track finishes, then the loop body starts each loop
+    /// track from its own target. This does not preserve independently phased
+    /// track loops. For files with an embedded fadeout, track loops continue
+    /// internally until fadeout ends; FM carrier total-level writes and PCM
+    /// channels routed through the mixer reflect the global attenuation, but
+    /// legacy ADPCM `Through` bytes remain raw.
+    ///
+    /// `Some(n)` plays `n` whole-song playthroughs without a native VGM loop
+    /// point. With `F1` markers, the first playthrough includes the intro and
+    /// one traversal of each loop body; each additional playthrough traverses
+    /// the loop bodies once more. A shorter track waits at its F1 marker for
+    /// the others. `Some(0)` is normalized to `Some(1)`, matching `VgmStream`.
     pub loop_count: Option<u32>,
 }
 
@@ -242,15 +248,12 @@ impl fmt::Display for MdxConvertError {
 impl Error for MdxConvertError {}
 
 impl MdxToVgmOptions {
-    /// Validates option combinations shared by both the eager
-    /// [`to_vgm_document`] path and the lazy [`MdxVgmGenerator`].
-    fn validate(&self) -> Result<(), MdxConvertError> {
+    /// Normalizes values shared by both the eager [`to_vgm_document`] path
+    /// and the lazy [`MdxVgmGenerator`].
+    fn normalize(&mut self) {
         if self.loop_count == Some(0) {
-            return Err(MdxConvertError::InvalidOptions(
-                "loop count must be greater than zero",
-            ));
+            self.loop_count = Some(1);
         }
-        Ok(())
     }
 }
 
@@ -316,10 +319,9 @@ pub fn to_vgm_document(
 
     while generator.run_step()? {}
 
-    // MDX F1 terminators are independent per-track loops, while VGM has one
-    // global loop point. Add a restartable second pass so the loop can begin
-    // from a clean initialization instead of pointing into a short track's
-    // first pass.
+    // For F1 cases that could not establish a synchronized native loop point,
+    // retain the finite restart-pass fallback. Ordinary eager F1 loops record
+    // their shared point directly at the first all-track barrier.
     if options.loop_count.is_none()
         && generator.playback.song_loop.loop_index.is_none()
         && generator.playback.song_loop.track_end_loop_seen
@@ -1039,8 +1041,16 @@ struct SongLoopState {
     loop_starts: HashMap<(usize, usize), usize>,
     /// Number of finite backward jumps taken at each jump command.
     jump_repeat_counts: HashMap<(usize, usize), u32>,
-    /// Number of F1 loop jumps reached by each track during finite playback.
+    /// Number of F1 boundaries reached by each track in unsynchronized cases.
     track_loop_counts: HashMap<usize, u32>,
+    /// Tracks participating in a synchronized F1 loop.
+    synchronized_f1_tracks: HashSet<usize>,
+    /// Per-track command indices targeted by each track's F1 loop.
+    synchronized_f1_targets: HashMap<usize, usize>,
+    /// Tracks that have reached F1 during the current synchronized pass.
+    synchronized_f1_arrivals: HashSet<usize>,
+    /// Number of complete synchronized F1 loop bodies emitted for finite playback.
+    f1_loop_passes_completed: u32,
     /// VGM command index to use as the native loop point, once detected.
     loop_index: Option<usize>,
     /// Set once a native loop point is established and internal playback stops.
@@ -1056,10 +1066,15 @@ struct SongLoopState {
 
 impl SongLoopState {
     /// Initializes repeat tracking with the requested count and loop-point policy.
-    fn new(loop_count: Option<u32>, mark_native_loop: bool) -> Self {
+    fn new(
+        loop_count: Option<u32>,
+        mark_native_loop: bool,
+        synchronized_f1_tracks: HashSet<usize>,
+    ) -> Self {
         Self {
             loop_count,
             mark_native_loop,
+            synchronized_f1_tracks,
             ..Self::default()
         }
     }
@@ -1146,6 +1161,33 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::Extended(MdxExtendedCommand::Fadeout { .. })
             )
         });
+        let has_other_unbounded_loop =
+            package.borrow().mdx.tracks.iter().flatten().any(|command| {
+                matches!(command, MdxCommand::Jump(jump) if jump.offset < 0)
+                    || matches!(command, MdxCommand::LoopStart(start) if start.count == 0)
+            });
+        let synchronized_f1_tracks = if !has_other_unbounded_loop
+            && (loop_count.is_some() || (mark_native_loop && !has_fadeout_command))
+        {
+            package
+                .borrow()
+                .mdx
+                .tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(track, commands)| {
+                    commands
+                        .iter()
+                        .take_while(|command| !matches!(command, MdxCommand::EndOfTrack(_)))
+                        .any(|command| {
+                            matches!(command, MdxCommand::EndOfTrackLoop(offset) if offset.offset < 0)
+                        })
+                        .then_some(track)
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let tracks = package
             .borrow()
             .mdx
@@ -1177,7 +1219,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             opm_reg_0f: 0,
             opm_reg_1b: 0,
             lfo_rand_seed: 0x1234,
-            song_loop: SongLoopState::new(loop_count, mark_native_loop),
+            song_loop: SongLoopState::new(loop_count, mark_native_loop, synchronized_f1_tracks),
             fadeout: FadeoutState {
                 has_command: has_fadeout_command,
                 ..FadeoutState::default()
@@ -1268,6 +1310,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.tracks[track_index].fm.portamento_active = false;
             self.process_commands(track_index, builder)?;
         }
+        self.complete_synchronized_f1_barrier(builder);
         Ok(())
     }
 
@@ -1669,7 +1712,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
                     self.song_loop.track_end_loop_seen = true;
-                    if self.song_loop.loop_count.is_some() {
+                    if self.song_loop.synchronized_f1_tracks.contains(&track) {
+                        self.park_at_synchronized_f1(track, command.offset);
+                    } else if self.song_loop.loop_count.is_some() {
                         self.take_finite_track_end_loop(track, command.offset);
                     } else if self.song_loop.mark_native_loop && !self.fadeout.has_command {
                         // F1 is a per-track terminator in MDX. A short PCM
@@ -2067,6 +2112,62 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
+    /// Parks a loop track at F1 until all participating tracks reach the same
+    /// song-loop boundary.
+    fn park_at_synchronized_f1(&mut self, track: usize, offset: i16) {
+        let Some(target_index) = self.resolve_jump_target(track, offset) else {
+            self.song_loop.synchronized_f1_tracks.remove(&track);
+            self.tracks[track].active = false;
+            return;
+        };
+        self.song_loop
+            .synchronized_f1_targets
+            .entry(track)
+            .or_insert(target_index);
+        self.song_loop.synchronized_f1_arrivals.insert(track);
+        self.tracks[track].active = false;
+    }
+
+    /// Starts a loop pass or finishes playback after the requested number of
+    /// passes once all loop tracks and one-shot tracks reach the boundary.
+    fn complete_synchronized_f1_barrier(&mut self, builder: &mut VgmBuilder) {
+        let loop_tracks = &self.song_loop.synchronized_f1_tracks;
+        if loop_tracks.is_empty()
+            || !loop_tracks
+                .iter()
+                .all(|track| self.song_loop.synchronized_f1_arrivals.contains(track))
+            || self
+                .tracks
+                .iter()
+                .enumerate()
+                .any(|(track, state)| !loop_tracks.contains(&track) && state.active)
+        {
+            return;
+        }
+
+        if let Some(limit) = self.song_loop.loop_count {
+            self.song_loop.f1_loop_passes_completed =
+                self.song_loop.f1_loop_passes_completed.saturating_add(1);
+            if self.song_loop.f1_loop_passes_completed >= limit {
+                self.song_loop.loop_complete = true;
+                return;
+            }
+        } else if self.song_loop.loop_index.is_some() {
+            self.song_loop.loop_complete = true;
+            return;
+        } else {
+            self.song_loop.loop_index = Some(builder.command_count());
+        }
+
+        for (&track, &target_index) in &self.song_loop.synchronized_f1_targets {
+            let state = &mut self.tracks[track];
+            state.command_index = target_index;
+            state.wait_ticks = 0;
+            state.active = true;
+        }
+        self.song_loop.synchronized_f1_arrivals.clear();
+    }
+
     /// Emits the necessary wait commands to the VGM builder to account for the passage
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
@@ -2257,10 +2358,10 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
     /// repeating indefinitely); see [`SongLoopState::mark_native_loop`].
     fn new(
         package: P,
-        options: MdxToVgmOptions,
+        mut options: MdxToVgmOptions,
         mark_native_loop: bool,
     ) -> Result<Self, MdxConvertError> {
-        options.validate()?;
+        options.normalize();
         let pcm_mode = MdxPcmMode::from_track_count(package.borrow().mdx.header.track_count());
         let playback = PlaybackState::new(
             package,
@@ -2450,7 +2551,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_loop_count_waits_for_active_tracks_and_ignores_unreached_f1() {
+    fn finite_loop_count_synchronizes_active_tracks_and_ignores_unreached_f1() {
         let mut builder = MdxBuilder::new();
         for (track, rest_ticks) in [(0, 1), (1, 8)] {
             builder
@@ -2517,10 +2618,7 @@ mod tests {
                 .count()
         };
 
-        assert_eq!(key_on_count(1), 2, "long-period track repeats once");
-        assert!(
-            key_on_count(0) > 2,
-            "short-period track should continue looping until the song horizon"
-        );
+        assert_eq!(key_on_count(0), 2, "short-period track loops twice");
+        assert_eq!(key_on_count(1), 2, "long-period track loops twice");
     }
 }

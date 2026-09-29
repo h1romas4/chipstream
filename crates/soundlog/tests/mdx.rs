@@ -950,7 +950,7 @@ fn mdx_converter_emits_fm_initialization_and_rest_duration() {
 }
 
 #[test]
-fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
+fn mdx_converter_treats_zero_loop_count_as_one_for_eager_and_lazy_paths() {
     let package = MdxPackage {
         mdx: MdxBuilder::new().finalize().unwrap(),
         pdx: None,
@@ -960,18 +960,15 @@ fn mdx_converter_rejects_invalid_options_for_eager_and_lazy_paths() {
         loop_count: Some(0),
         ..MdxToVgmOptions::default()
     };
-    assert_eq!(
-        to_vgm_document(&package, &zero_loop_count),
-        Err(MdxConvertError::InvalidOptions(
-            "loop count must be greater than zero"
-        ))
-    );
-    assert_eq!(
-        to_vgm_stream_generator(package, zero_loop_count).map(|_| ()),
-        Err(MdxConvertError::InvalidOptions(
-            "loop count must be greater than zero"
-        ))
-    );
+    let one_loop_count = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..MdxToVgmOptions::default()
+    };
+    let zero_document = to_vgm_document(&package, &zero_loop_count).unwrap();
+    let one_document = to_vgm_document(&package, &one_loop_count).unwrap();
+    assert_eq!(zero_document.commands, one_document.commands);
+    assert!(to_vgm_stream_generator(package.clone(), zero_loop_count).is_ok());
+    assert!(to_vgm_stream_generator(package, one_loop_count).is_ok());
 }
 
 #[test]
@@ -1849,6 +1846,181 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
     let document = to_vgm_document(&package, &MdxToVgmOptions::default())
         .expect("a per-track F1 loop should not keep the whole VGM alive");
     assert!(document.loop_command_index().is_some());
+}
+
+#[test]
+fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
+    fn add_looping_track(
+        builder: &mut MdxBuilder,
+        track: usize,
+        intro_register: u8,
+        intro_value: u8,
+        intro_ticks: u16,
+        loop_register: u8,
+        loop_value: u8,
+        loop_ticks: u16,
+    ) {
+        let loop_commands = [
+            MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+                register: loop_register,
+                value: loop_value,
+            }),
+            MdxCommand::Rest(MdxRest { ticks: loop_ticks }),
+        ];
+        let loop_body_bytes = loop_commands
+            .iter()
+            .map(|command| command.to_mdx_bytes().unwrap().len())
+            .sum::<usize>();
+        let loop_offset = -i16::try_from(loop_body_bytes + 3).unwrap();
+
+        builder
+            .add_mdx_command(
+                track,
+                MdxOpmRegisterWrite {
+                    register: intro_register,
+                    value: intro_value,
+                },
+            )
+            .add_mdx_command(track, MdxRest { ticks: intro_ticks });
+        for command in loop_commands {
+            builder.add_mdx_command(track, command);
+        }
+        builder.add_mdx_command(
+            track,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: loop_offset,
+            }),
+        );
+    }
+
+    let mut builder = MdxBuilder::new();
+    add_looping_track(&mut builder, 0, 0x20, 0x11, 2, 0x20, 0x22, 1);
+    add_looping_track(&mut builder, 1, 0x21, 0x33, 4, 0x21, 0x44, 2);
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+
+    let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+        .expect("convert synchronized whole-song loop");
+    let loop_index = document
+        .loop_command_index()
+        .expect("eager conversion should record an L loop point");
+    let is_intro_write = |command: &VgmCommand| {
+        matches!(
+            command,
+            VgmCommand::Ym2151Write(_, spec)
+                if matches!((spec.register, spec.value), (0x20, 0x11) | (0x21, 0x33))
+        )
+    };
+
+    assert!(document.commands[..loop_index].iter().any(is_intro_write));
+    assert!(
+        document.commands[loop_index..]
+            .iter()
+            .any(|command| matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec)
+                    if matches!((spec.register, spec.value), (0x20, 0x22) | (0x21, 0x44))
+            )),
+        "loop section should contain the tracks' L-region commands"
+    );
+    assert!(
+        !document.commands[loop_index..].iter().any(is_intro_write),
+        "loop section must not replay commands from before L"
+    );
+    assert!(document.header.loop_samples > 0);
+
+    let finite_document = to_vgm_document(
+        &package,
+        &MdxToVgmOptions {
+            loop_count: Some(2),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("convert two loop iterations");
+    assert!(finite_document.loop_command_index().is_none());
+    assert_eq!(
+        finite_document
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                VgmCommand::Ym2151Write(_, spec)
+                    if (spec.register, spec.value) == (0x20, 0x11)
+                        || (spec.register, spec.value) == (0x21, 0x33)
+            ))
+            .count(),
+        2,
+        "each track intro should be emitted once per finite conversion"
+    );
+    for (register, value) in [(0x20, 0x22), (0x21, 0x44)] {
+        assert_eq!(
+            finite_document
+                .commands
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    VgmCommand::Ym2151Write(_, spec)
+                        if (spec.register, spec.value) == (register, value)
+                ))
+                .count(),
+            2,
+            "loop_count=2 should emit each track's L body twice"
+        );
+    }
+
+    let zero_loop_document = to_vgm_document(
+        &package,
+        &MdxToVgmOptions {
+            loop_count: Some(0),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("convert zero loops as one playthrough");
+    let one_loop_document = to_vgm_document(
+        &package,
+        &MdxToVgmOptions {
+            loop_count: Some(1),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("convert one playthrough");
+    assert_eq!(zero_loop_document.commands, one_loop_document.commands);
+
+    let eager_commands = drain_finite_stream(VgmStream::from_document(finite_document));
+    let generator = to_vgm_stream_generator(
+        package.clone(),
+        MdxToVgmOptions {
+            loop_count: Some(2),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("create finite two-loop lazy generator");
+    let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
+    assert_eq!(lazy_commands, eager_commands);
+
+    let zero_generator = to_vgm_stream_generator(
+        package.clone(),
+        MdxToVgmOptions {
+            loop_count: Some(0),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("create zero-count lazy generator");
+    let one_generator = to_vgm_stream_generator(
+        package,
+        MdxToVgmOptions {
+            loop_count: Some(1),
+            ..MdxToVgmOptions::default()
+        },
+    )
+    .expect("create one-count lazy generator");
+    assert_eq!(
+        drain_finite_stream(VgmStream::from_generator(zero_generator)),
+        drain_finite_stream(VgmStream::from_generator(one_generator))
+    );
 }
 
 #[test]
