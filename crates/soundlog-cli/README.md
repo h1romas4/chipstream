@@ -434,7 +434,9 @@ soundlog mdx stream samples/example.mdx --pdx samples/example.pdx --dry-run
 soundlog mdx stream samples/example.mml
 ```
 
-## PDX
+### `pdx`
+
+#### `pdx test`
 
 Inspect a PDX file, validate its sample ranges, and display compression,
 bank/sample counts, per-bank allocation totals, and each populated note slot.
@@ -444,6 +446,8 @@ soundlog pdx test <PDX_FILE> [--dry-run]
 ```
 
 `--dry-run` performs validation while suppressing the summary output.
+
+#### `pdx build`
 
 Build a PDX sample bank from one or more mono WAV or raw ADPCM samples. The
 output path is the final argument. Successful builds are quiet by default; add
@@ -458,8 +462,8 @@ retain their bank/note positions when passed back to `pdx build`; ordinary
 input names continue to use sequential positions.
 
 ```bash
-soundlog pdx build <INPUT_WAV>... <OUTPUT_PDX>
 soundlog pdx build <INPUT_WAV_OR_RAW>... <OUTPUT_PDX> [--enable-lz] [--verbose] [--disable-12bit-conversion]
+soundlog pdx build exported-samples/bank-00-note-00.raw exported-samples/bank-01-note-03.raw rebuilt.pdx
 ```
 
 To restore exported samples to their original slots, keep the
@@ -473,6 +477,8 @@ supported. Signed 16-bit samples are converted to signed 12-bit values by
 shifting right by four bits before ADPCM encoding. Stereo WAV files are
 rejected.
 
+#### `pdx export`
+
 By default (`--output-format raw`), export each populated ADPCM sample as its
 original raw bytes in a `bank-00-note-00.raw` file. Pass
 `--output-format wav` to decode samples into mono 16-bit PCM WAV files instead.
@@ -483,13 +489,14 @@ counts.
 
 ```bash
 soundlog pdx export samples.pdx exported-samples [--verbose]
-soundlog pdx build exported-samples/bank-00-note-00.raw exported-samples/bank-01-note-03.raw rebuilt.pdx
 soundlog pdx export samples.pdx exported-wavs --output-format wav --sample-rate 15625 --verbose
 ```
 
 WAV export contains decoded ADPCM audio, not the original WAV samples used to
 build the PDX. Rebuilding either raw ADPCM exports or WAV exports preserves the
 PDX's encoded sample data and populated bank/note slots.
+
+---
 
 ## MML profiler
 
@@ -500,8 +507,6 @@ bundled fixture.
 RUSTFLAGS="-C debuginfo=2" cargo build --release -p soundlog-cli --bin soundlog-mml-prof
 heaptrack target/release/soundlog-mml-prof
 ```
-
----
 
 ## Test Heaptrack
 
