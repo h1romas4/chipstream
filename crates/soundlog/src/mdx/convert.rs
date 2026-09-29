@@ -215,9 +215,9 @@ pub struct MdxToVgmOptions {
     /// when possible, while lazy streaming repeats internally. In eager
     /// conversion, tracks with `F1` markers synchronize at a shared boundary:
     /// the loop point is placed after every loop track reaches its marker and
-    /// every non-loop track finishes, then the loop body starts each loop
-    /// track from its own target. This does not preserve independently phased
-    /// track loops. For files with an embedded fadeout, track loops continue
+    /// every non-loop track finishes. Each loop track continues from its own
+    /// phase at that boundary, preserving independently phased track loops.
+    /// For files with an embedded fadeout, track loops continue
     /// internally until fadeout ends; FM carrier total-level writes and PCM
     /// channels routed through the mixer reflect the global attenuation, but
     /// legacy ADPCM `Through` bytes remain raw.
@@ -225,8 +225,9 @@ pub struct MdxToVgmOptions {
     /// `Some(n)` plays `n` whole-song playthroughs without a native VGM loop
     /// point. With `F1` markers, the first playthrough includes the intro and
     /// one traversal of each loop body; each additional playthrough traverses
-    /// the loop bodies once more. A shorter track waits at its F1 marker for
-    /// the others. `Some(0)` is normalized to `Some(1)`, matching `VgmStream`.
+    /// the loop bodies once more. A shorter track continues looping from its
+    /// F1 target while the others reach the shared boundary. `Some(0)` is
+    /// normalized to `Some(1)`, matching `VgmStream`.
     pub loop_count: Option<u32>,
 }
 
@@ -2147,8 +2148,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Parks a loop track at F1 until all participating tracks reach the same
-    /// song-loop boundary.
+    /// Marks a loop track as arrived, then lets it continue from its target
+    /// while the other participating tracks reach the shared boundary.
     fn park_at_synchronized_f1(&mut self, track: usize, offset: i16) {
         let Some(target_index) = self.resolve_jump_target(track, offset) else {
             self.song_loop.synchronized_f1_tracks.remove(&track);
@@ -2160,11 +2161,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .entry(track)
             .or_insert(target_index);
         self.song_loop.synchronized_f1_arrivals.insert(track);
-        if track >= 8 {
-            self.tracks[track].command_index = target_index;
-        } else {
-            self.tracks[track].active = false;
-        }
+        self.tracks[track].command_index = target_index;
+        self.tracks[track].active = true;
     }
 
     fn synchronized_f1_barrier_ready(&self) -> bool {
@@ -2201,13 +2199,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.song_loop.loop_index = Some(builder.command_count());
         }
 
-        for (&track, &target_index) in &self.song_loop.synchronized_f1_targets {
-            let state = &mut self.tracks[track];
-            if track < 8 {
-                state.command_index = target_index;
-                state.wait_ticks = 0;
-            }
-            state.active = true;
+        for &track in self.song_loop.synchronized_f1_targets.keys() {
+            self.tracks[track].active = true;
         }
         self.song_loop.synchronized_f1_arrivals.clear();
         true
@@ -2629,6 +2622,51 @@ mod tests {
     }
 
     #[test]
+    fn synchronized_f1_barrier_preserves_early_fm_loop_phase() {
+        let mut builder = MdxBuilder::new();
+        for (track, ticks) in [(0, 5), (1, 8)] {
+            builder
+                .add_mdx_command(track, MdxRest { ticks })
+                .add_mdx_command(
+                    track,
+                    MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                        opcode: 0xf1,
+                        offset: 0,
+                    }),
+                );
+        }
+        let mut mdx = builder.finalize().unwrap();
+        for track in 0..2 {
+            let source_map = mdx.sourcemap();
+            let target = source_map[track][0].0;
+            let (loop_offset, loop_length) = source_map[track][1];
+            let relative =
+                i32::try_from(target).unwrap() - i32::try_from(loop_offset + loop_length).unwrap();
+            let MdxCommand::EndOfTrackLoop(command) = &mut mdx.tracks[track][1] else {
+                unreachable!("expected F1 loop marker");
+            };
+            command.offset = i16::try_from(relative).unwrap();
+        }
+        let package = MdxPackage { mdx, pdx: None };
+        let mut playback = PlaybackState::new(
+            package,
+            MdxPcmMode::Pcm8a,
+            AdpcmMode::Through,
+            Some(2),
+            false,
+        );
+        let mut vgm_builder = VgmBuilder::new();
+
+        while playback.song_loop.f1_loop_passes_completed == 0 {
+            playback.step(&mut vgm_builder).unwrap();
+        }
+
+        assert!(playback.tracks[0].active);
+        assert_eq!(playback.tracks[0].command_index, 1);
+        assert_eq!(playback.tracks[0].wait_ticks, 2);
+    }
+
+    #[test]
     fn pcm_key_on_and_live_volume_follow_embedded_fadeout() {
         let mut playback = playback_state(MdxPcmMode::Pcm8a, AdpcmMode::Through);
         playback.fadeout.level = 3;
@@ -2742,7 +2780,10 @@ mod tests {
                 .count()
         };
 
-        assert_eq!(key_on_count(0), 2, "short-period track loops twice");
         assert_eq!(key_on_count(1), 2, "long-period track loops twice");
+        assert!(
+            key_on_count(0) > key_on_count(1),
+            "short-period track keeps looping while the long track reaches its boundary"
+        );
     }
 }
