@@ -139,16 +139,28 @@ pub(crate) fn compute_diff_ranges(original: &[u8], rebuilt: &[u8]) -> Vec<(usize
     diffs
 }
 
-pub(crate) fn spawn_children_parse(
-    data: Vec<u8>,
-    generation: u64,
-    tx: mpsc::Sender<AstBuildMessage>,
-    path: Vec<usize>,
-    relative_start: usize,
-    absolute_start: usize,
-    count: usize,
-    mdx_track: Option<usize>,
-) {
+pub(crate) struct ChildParseRequest {
+    pub(crate) data: Vec<u8>,
+    pub(crate) generation: u64,
+    pub(crate) tx: mpsc::Sender<AstBuildMessage>,
+    pub(crate) path: Vec<usize>,
+    pub(crate) relative_start: usize,
+    pub(crate) absolute_start: usize,
+    pub(crate) count: usize,
+    pub(crate) mdx_track: Option<usize>,
+}
+
+pub(crate) fn spawn_children_parse(request: ChildParseRequest) {
+    let ChildParseRequest {
+        data,
+        generation,
+        tx,
+        path,
+        relative_start,
+        absolute_start,
+        count,
+        mdx_track,
+    } = request;
     thread::spawn(move || {
         if let Some(track) = mdx_track {
             match parse_with_adapter::<MdxAdapter>(&data) {
@@ -230,7 +242,7 @@ fn canonical_bytes_with_adapter<A: SourceAdapter>(document: &A::Document) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use super::{InputFormat, spawn_children_parse, spawn_initial_parse};
+    use super::{ChildParseRequest, InputFormat, spawn_children_parse, spawn_initial_parse};
     use crate::gui::AstBuildMessage;
     use soundlog::VgmBuilder;
     use soundlog::mdx::command::MdxRest;
@@ -328,7 +340,16 @@ mod tests {
     #[test]
     fn vgm_worker_emits_command_nodes_with_generation_and_path() {
         let (tx, rx) = mpsc::channel();
-        spawn_children_parse(sample_vgm_bytes(), 11, tx, vec![1, 0], 3, 0, 1, None);
+        spawn_children_parse(ChildParseRequest {
+            data: sample_vgm_bytes(),
+            generation: 11,
+            tx,
+            path: vec![1, 0],
+            relative_start: 3,
+            absolute_start: 0,
+            count: 1,
+            mdx_track: None,
+        });
 
         match receive_message(rx) {
             AstBuildMessage::Partial {
@@ -352,7 +373,16 @@ mod tests {
     #[test]
     fn mdx_worker_emits_track_nodes_with_generation_and_path() {
         let (tx, rx) = mpsc::channel();
-        spawn_children_parse(sample_mdx_bytes(), 12, tx, vec![2], 0, 0, 1, Some(0));
+        spawn_children_parse(ChildParseRequest {
+            data: sample_mdx_bytes(),
+            generation: 12,
+            tx,
+            path: vec![2],
+            relative_start: 0,
+            absolute_start: 0,
+            count: 1,
+            mdx_track: Some(0),
+        });
 
         match receive_message(rx) {
             AstBuildMessage::Partial {
@@ -375,7 +405,16 @@ mod tests {
     #[test]
     fn worker_returns_empty_partial_for_out_of_range_start() {
         let (tx, rx) = mpsc::channel();
-        spawn_children_parse(sample_vgm_bytes(), 13, tx, vec![1], 7, usize::MAX, 4, None);
+        spawn_children_parse(ChildParseRequest {
+            data: sample_vgm_bytes(),
+            generation: 13,
+            tx,
+            path: vec![1],
+            relative_start: 7,
+            absolute_start: usize::MAX,
+            count: 4,
+            mdx_track: None,
+        });
 
         match receive_message(rx) {
             AstBuildMessage::Partial {
@@ -396,7 +435,16 @@ mod tests {
     #[test]
     fn worker_emits_error_for_unparseable_data() {
         let (tx, rx) = mpsc::channel();
-        spawn_children_parse(vec![0, 1, 2], 14, tx, vec![0], 0, 0, 1, None);
+        spawn_children_parse(ChildParseRequest {
+            data: vec![0, 1, 2],
+            generation: 14,
+            tx,
+            path: vec![0],
+            relative_start: 0,
+            absolute_start: 0,
+            count: 1,
+            mdx_track: None,
+        });
 
         match receive_message(rx) {
             AstBuildMessage::Error {

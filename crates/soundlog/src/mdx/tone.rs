@@ -172,14 +172,14 @@ impl MdxToneBank {
     /// remainder shorter than one record is copied into `trailing_bytes`.
     /// This function does not reject or otherwise interpret the remainder.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let tone_length = bytes.len() / MdxTone::BYTE_LENGTH * MdxTone::BYTE_LENGTH;
-        let tones = bytes[..tone_length]
-            .chunks_exact(MdxTone::BYTE_LENGTH)
-            .filter_map(MdxTone::from_bytes)
+        let (tone_bytes, trailing_bytes) = bytes.as_chunks::<{ MdxTone::BYTE_LENGTH }>();
+        let tones = tone_bytes
+            .iter()
+            .filter_map(|tone_bytes| MdxTone::from_bytes(tone_bytes))
             .collect();
         Self {
             tones,
-            trailing_bytes: bytes[tone_length..].to_vec(),
+            trailing_bytes: trailing_bytes.to_vec(),
         }
     }
 

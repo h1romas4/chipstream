@@ -20,7 +20,9 @@ thread all at once and keeps the UI responsive for very large VGM files.
 
 use crate::gui::file::{FileLoadMessage, spawn_file_load};
 use crate::gui::lazy::{LazyLoadState, resolve_request};
-use crate::gui::loader::{InputFormat, spawn_children_parse, spawn_initial_parse};
+use crate::gui::loader::{
+    ChildParseRequest, InputFormat, spawn_children_parse, spawn_initial_parse,
+};
 use crate::gui::messages::apply_message;
 use crate::gui::tree::{handle_keyboard_selection, path_key, render_ast_tree};
 use crate::gui::{AstBuildMessage, AstNode, HexViewer};
@@ -323,7 +325,7 @@ impl UiState {
         // Compute absolute start for parsing.
         let absolute_start = resolved.absolute_start;
 
-        spawn_children_parse(
+        spawn_children_parse(ChildParseRequest {
             data,
             generation,
             tx,
@@ -331,8 +333,8 @@ impl UiState {
             relative_start,
             absolute_start,
             count,
-            resolved.mdx_track,
-        );
+            mdx_track: resolved.mdx_track,
+        });
     }
 }
 
@@ -544,11 +546,11 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
 
         // 1) Check top-level AST nodes (e.g., Header, Commands, GD3) for a byte_range that covers the click.
         for (i, node) in state.ast_root.iter().enumerate() {
-            if let Some(range) = node.byte_range {
-                if range.contains(clicked) {
-                    found_path = Some(vec![i]);
-                    break;
-                }
+            if let Some(range) = node.byte_range
+                && range.contains(clicked)
+            {
+                found_path = Some(vec![i]);
+                break;
             }
         }
 
@@ -566,13 +568,13 @@ pub fn show_ui(state: &mut UiState, ui: &mut egui::Ui, _frame: &mut eframe::Fram
                 };
 
                 for (idx, n) in nodes.iter().enumerate() {
-                    if let Some(range) = n.byte_range {
-                        if range.contains(clicked) {
-                            let mut full_path = base_path.clone();
-                            full_path.push(idx);
-                            found_path = Some(full_path);
-                            break 'outer;
-                        }
+                    if let Some(range) = n.byte_range
+                        && range.contains(clicked)
+                    {
+                        let mut full_path = base_path.clone();
+                        full_path.push(idx);
+                        found_path = Some(full_path);
+                        break 'outer;
                     }
                 }
             }

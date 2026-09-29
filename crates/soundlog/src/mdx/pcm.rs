@@ -82,13 +82,14 @@ pub fn decode_pcm8a_with_pcm16_15khz(
             .map(|&sample| i16::from(i8::from_ne_bytes([sample])) << 4)
             .collect()),
         Pcm8aFormat::Pcm16 => {
-            let chunks = bytes.chunks_exact(2);
-            if !chunks.remainder().is_empty() {
+            let (chunks, remainder) = bytes.as_chunks::<2>();
+            if !remainder.is_empty() {
                 return Err(PcmDecodeError::OddPcm16ByteCount);
             }
             Ok(chunks
+                .iter()
                 .map(|chunk| {
-                    let sample = i16::from_be_bytes([chunk[0], chunk[1]]);
+                    let sample = i16::from_be_bytes(*chunk);
                     if pcm16_is_15khz {
                         sample.clamp(-2048, 2047)
                     } else {

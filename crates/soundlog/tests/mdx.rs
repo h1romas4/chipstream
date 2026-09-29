@@ -1850,22 +1850,26 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 
 #[test]
 fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
+    struct LoopSection {
+        register: u8,
+        value: u8,
+        ticks: u16,
+    }
+
     fn add_looping_track(
         builder: &mut MdxBuilder,
         track: usize,
-        intro_register: u8,
-        intro_value: u8,
-        intro_ticks: u16,
-        loop_register: u8,
-        loop_value: u8,
-        loop_ticks: u16,
+        intro: LoopSection,
+        loop_section: LoopSection,
     ) {
         let loop_commands = [
             MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
-                register: loop_register,
-                value: loop_value,
+                register: loop_section.register,
+                value: loop_section.value,
             }),
-            MdxCommand::Rest(MdxRest { ticks: loop_ticks }),
+            MdxCommand::Rest(MdxRest {
+                ticks: loop_section.ticks,
+            }),
         ];
         let loop_body_bytes = loop_commands
             .iter()
@@ -1877,11 +1881,11 @@ fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
             .add_mdx_command(
                 track,
                 MdxOpmRegisterWrite {
-                    register: intro_register,
-                    value: intro_value,
+                    register: intro.register,
+                    value: intro.value,
                 },
             )
-            .add_mdx_command(track, MdxRest { ticks: intro_ticks });
+            .add_mdx_command(track, MdxRest { ticks: intro.ticks });
         for command in loop_commands {
             builder.add_mdx_command(track, command);
         }
@@ -1895,8 +1899,34 @@ fn mdx_converter_eager_loop_point_excludes_per_track_intros() {
     }
 
     let mut builder = MdxBuilder::new();
-    add_looping_track(&mut builder, 0, 0x20, 0x11, 2, 0x20, 0x22, 1);
-    add_looping_track(&mut builder, 1, 0x21, 0x33, 4, 0x21, 0x44, 2);
+    add_looping_track(
+        &mut builder,
+        0,
+        LoopSection {
+            register: 0x20,
+            value: 0x11,
+            ticks: 2,
+        },
+        LoopSection {
+            register: 0x20,
+            value: 0x22,
+            ticks: 1,
+        },
+    );
+    add_looping_track(
+        &mut builder,
+        1,
+        LoopSection {
+            register: 0x21,
+            value: 0x33,
+            ticks: 4,
+        },
+        LoopSection {
+            register: 0x21,
+            value: 0x44,
+            ticks: 2,
+        },
+    );
     let package = MdxPackage {
         mdx: builder.finalize().unwrap(),
         pdx: None,
@@ -2335,13 +2365,10 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
 
     assert_eq!(document.header.okim6258_clock, 8_000_000);
     assert_eq!(document.header.okim6258_flags.clock_divider, 2);
-    assert!(matches!(
-        document.commands.iter().find(|command| matches!(
-            command,
-            VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x02
-        )),
-        Some(_)
-    ));
+    assert!(document.commands.iter().any(|command| matches!(
+        command,
+        VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x02
+    )));
 
     let pcm_bytes: Vec<u8> = document
         .commands

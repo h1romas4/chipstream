@@ -208,12 +208,12 @@ pub(crate) fn handle_keyboard_selection(
     state.hex_viewer.clear_outline_ranges();
     state.hex_viewer.set_selection_outline_enabled(true);
 
-    if let Some(node) = state.ast_root.get(index) {
-        if let Some((start, end)) = selection_range(node, state.bytes.len()) {
-            state.hex_viewer.set_selection_range(start, end);
-            state.hex_viewer.set_reference_markers(vec![start]);
-            state.hex_viewer.set_pending_scroll_to_start(start, end);
-        }
+    if let Some(node) = state.ast_root.get(index)
+        && let Some((start, end)) = selection_range(node, state.bytes.len())
+    {
+        state.hex_viewer.set_selection_range(start, end);
+        state.hex_viewer.set_reference_markers(vec![start]);
+        state.hex_viewer.set_pending_scroll_to_start(start, end);
     }
 }
 
@@ -288,12 +288,10 @@ pub(crate) fn apply_node_selection(
         applied = true;
     }
 
-    if !applied {
-        if let Some((start, end)) = selection_range(node, state.bytes.len()) {
-            state.hex_viewer.set_selection_range(start, end);
-            state.hex_viewer.set_reference_markers(vec![start]);
-            state.hex_viewer.set_pending_scroll_to_start(start, end);
-        }
+    if !applied && let Some((start, end)) = selection_range(node, state.bytes.len()) {
+        state.hex_viewer.set_selection_range(start, end);
+        state.hex_viewer.set_reference_markers(vec![start]);
+        state.hex_viewer.set_pending_scroll_to_start(start, end);
     }
 }
 
@@ -314,10 +312,10 @@ pub(crate) fn parse_address_from_detail(detail: &str) -> Option<usize> {
             .chars()
             .take_while(|character| character.is_ascii_hexdigit())
             .collect::<String>();
-        if !hex.is_empty() {
-            if let Ok(value) = usize::from_str_radix(&hex, 16) {
-                return Some(value);
-            }
+        if !hex.is_empty()
+            && let Ok(value) = usize::from_str_radix(&hex, 16)
+        {
+            return Some(value);
         }
     }
 

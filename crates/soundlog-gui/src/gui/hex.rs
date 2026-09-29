@@ -14,6 +14,25 @@
 use eframe::egui;
 use std::mem;
 
+#[derive(Clone, Copy)]
+struct HexLayout {
+    data_top: f32,
+    row_height: f32,
+    bytes_per_line: usize,
+    base_x: f32,
+    offset_width: f32,
+    hex_cell_w: f32,
+    ascii_base_x: f32,
+}
+
+struct HexDraw<'a> {
+    ui: &'a egui::Ui,
+    painter: &'a egui::Painter,
+    rect: egui::Rect,
+    font: &'a egui::FontId,
+    mono_text_height: f32,
+}
+
 /// Stateful painter-based hex viewer.
 pub struct HexViewer {
     /// Bytes shown per line.
@@ -533,6 +552,15 @@ impl HexViewer {
 
         // Precompute ascii column start X
         let ascii_base_x = base_x + offset_width + (bpl as f32) * hex_cell_w + sep_gap;
+        let layout = HexLayout {
+            data_top,
+            row_height,
+            bytes_per_line: bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ascii_base_x,
+        };
 
         // Draw reference markers in the margin (small circles) for marked offsets.
         for &r in &self.reference_markers {
@@ -547,20 +575,16 @@ impl HexViewer {
         }
 
         self.draw_visible_lines(
-            ui,
-            &painter,
             bytes,
-            rect,
-            data_top,
             lines,
-            row_height,
-            bpl,
-            base_x,
-            offset_width,
-            hex_cell_w,
-            ascii_base_x,
-            &font,
-            mono_text_height,
+            layout,
+            HexDraw {
+                ui,
+                painter: &painter,
+                rect,
+                font: &font,
+                mono_text_height,
+            },
         );
 
         // Draw selection_range as a continuous filled band (per-line segments) and stroke with a dark red outline.
@@ -738,16 +762,7 @@ impl HexViewer {
             let Some((ds, de)) = Self::clamp_range((d_s, d_e), bytes.len()) else {
                 continue;
             };
-            for d_rect in Self::range_rects(
-                ds,
-                de,
-                data_top,
-                row_height,
-                bpl,
-                base_x,
-                offset_width,
-                hex_cell_w,
-            ) {
+            for d_rect in Self::range_rects((ds, de), layout) {
                 self.draw_diff_segment(&painter, d_rect, idx);
 
                 // If the pointer is hovering over this diff overlay segment, show a tooltip
@@ -1021,28 +1036,9 @@ impl HexViewer {
             }
         }
 
-        self.apply_pending_scroll(
-            ui,
-            bytes.len(),
-            data_top,
-            row_height,
-            bpl,
-            base_x,
-            offset_width,
-            hex_cell_w,
-        );
+        self.apply_pending_scroll(ui, bytes.len(), layout);
 
-        self.handle_click(
-            ui,
-            resp.clicked(),
-            bytes.len(),
-            data_top,
-            row_height,
-            bpl,
-            base_x,
-            offset_width,
-            hex_cell_w,
-        );
+        self.handle_click(ui, resp.clicked(), bytes.len(), layout);
     }
 
     pub fn paint_header(&self, ui: &mut egui::Ui, viewport: egui::Rect) {
@@ -1147,15 +1143,18 @@ impl HexViewer {
     }
 
     fn range_rects(
-        start: usize,
-        end: usize,
-        data_top: f32,
-        row_height: f32,
-        bpl: usize,
-        base_x: f32,
-        offset_width: f32,
-        hex_cell_w: f32,
+        (start, end): (usize, usize),
+        layout: HexLayout,
     ) -> impl Iterator<Item = egui::Rect> {
+        let HexLayout {
+            data_top,
+            row_height,
+            bytes_per_line: bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ..
+        } = layout;
         let start_line = start / bpl;
         let end_line = end / bpl;
         (start_line..=end_line).map(move |line| {
@@ -1179,17 +1178,16 @@ impl HexViewer {
         })
     }
 
-    fn apply_pending_scroll(
-        &mut self,
-        ui: &mut egui::Ui,
-        bytes_len: usize,
-        data_top: f32,
-        row_height: f32,
-        bpl: usize,
-        base_x: f32,
-        offset_width: f32,
-        hex_cell_w: f32,
-    ) {
+    fn apply_pending_scroll(&mut self, ui: &mut egui::Ui, bytes_len: usize, layout: HexLayout) {
+        let HexLayout {
+            data_top,
+            row_height,
+            bytes_per_line: bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ..
+        } = layout;
         let Some((scroll_s, scroll_e)) = self.pending_scroll_to.take() else {
             return;
         };
@@ -1263,23 +1261,23 @@ impl HexViewer {
         )
     }
 
-    fn draw_visible_lines(
-        &self,
-        ui: &egui::Ui,
-        painter: &egui::Painter,
-        bytes: &[u8],
-        rect: egui::Rect,
-        data_top: f32,
-        lines: usize,
-        row_height: f32,
-        bpl: usize,
-        base_x: f32,
-        offset_width: f32,
-        hex_cell_w: f32,
-        ascii_base_x: f32,
-        font: &egui::FontId,
-        mono_text_height: f32,
-    ) {
+    fn draw_visible_lines(&self, bytes: &[u8], lines: usize, layout: HexLayout, draw: HexDraw<'_>) {
+        let HexLayout {
+            data_top,
+            row_height,
+            bytes_per_line: bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ascii_base_x,
+        } = layout;
+        let HexDraw {
+            ui,
+            painter,
+            rect,
+            font,
+            mono_text_height,
+        } = draw;
         let clip_rect = ui.clip_rect();
         let visible_top = clip_rect.min.y.max(data_top);
         let visible_bottom = clip_rect.max.y.min(rect.max.y);
@@ -1395,13 +1393,17 @@ impl HexViewer {
         ui: &mut egui::Ui,
         clicked: bool,
         bytes_len: usize,
-        data_top: f32,
-        row_height: f32,
-        bpl: usize,
-        base_x: f32,
-        offset_width: f32,
-        hex_cell_w: f32,
+        layout: HexLayout,
     ) {
+        let HexLayout {
+            data_top,
+            row_height,
+            bytes_per_line: bpl,
+            base_x,
+            offset_width,
+            hex_cell_w,
+            ..
+        } = layout;
         let Some(pos) = clicked
             .then(|| ui.input(|i| i.pointer.hover_pos()))
             .flatten()

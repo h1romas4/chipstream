@@ -251,25 +251,23 @@ fn compile_commands(
         let command = &commands[index];
         let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
         let mut consumed = 1;
-        if matches!(commands.get(index + 1), Some(MmlCommand::Portamento)) {
-            if let Some(target) = commands.get(index + 2) {
-                if let (Some(source_note), Some(target_note)) = (
-                    command_note_number(command, state.octave)?,
-                    command_note_number(target, state.octave)?,
-                ) {
-                    let ticks =
-                        command_note_ticks(command, state)?.ok_or(CompileError::InvalidValue {
-                            command: "portamento",
-                            value: 0,
-                        })?;
-                    let offset = portamento_offset(source_note, target_note, ticks)?;
-                    output.push(MdxCommand::Portamento(MdxSignedWord {
-                        opcode: 0xf2,
-                        offset,
-                    }));
-                    consumed = 3;
-                }
-            }
+        if matches!(commands.get(index + 1), Some(MmlCommand::Portamento))
+            && let Some(target) = commands.get(index + 2)
+            && let (Some(source_note), Some(target_note)) = (
+                command_note_number(command, state.octave)?,
+                command_note_number(target, state.octave)?,
+            )
+        {
+            let ticks = command_note_ticks(command, state)?.ok_or(CompileError::InvalidValue {
+                command: "portamento",
+                value: 0,
+            })?;
+            let offset = portamento_offset(source_note, target_note, ticks)?;
+            output.push(MdxCommand::Portamento(MdxSignedWord {
+                opcode: 0xf2,
+                offset,
+            }));
+            consumed = 3;
         }
         match command {
             MmlCommand::OpmTempo(value) => {
@@ -569,7 +567,7 @@ fn portamento_offset(source_note: u16, target_note: u16, ticks: u16) -> Result<i
     let offset = (16_384 * delta) / i32::from(ticks);
     i16::try_from(offset).map_err(|_| CompileError::InvalidValue {
         command: "portamento",
-        value: i32::from(offset),
+        value: offset,
     })
 }
 
@@ -755,7 +753,7 @@ fn pitch_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, i16),
         )?,
         i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
             command: "pitch LFO amplitude",
-            value: i32::from(amplitude),
+            value: amplitude,
         })?,
     ))
 }
@@ -777,7 +775,7 @@ fn volume_lfo_values(waveform: u8, period: u16, depth: i16) -> Result<(u16, u16)
     };
     let amplitude = i16::try_from(amplitude).map_err(|_| CompileError::InvalidValue {
         command: "volume LFO amplitude",
-        value: i32::from(amplitude),
+        value: amplitude,
     })? as u16;
     Ok((checked_u16("volume LFO period", frequency)?, amplitude))
 }

@@ -67,17 +67,17 @@ impl PcmOutputFilter {
     }
 
     // NanoDrive8's Pcm8LpfDiv512 coefficients for a 15,625 Hz OKIM6258 rate.
-    const LPF_B0: f32 = 0.548918487;
-    const LPF_B1: f32 = 0.564018086;
-    const LPF_B2: f32 = 0.141551943;
+    const LPF_B0: f32 = 0.548_918_5;
+    const LPF_B1: f32 = 0.564_018_1;
+    const LPF_B2: f32 = 0.141_551_94;
     const LPF_B3: f32 = 0.011922191;
-    const LPF_A1: f32 = 0.201042424;
+    const LPF_A1: f32 = 0.201_042_43;
     const LPF_A2: f32 = -0.019938263;
-    const LPF_A3: f32 = 0.085306545;
+    const LPF_A3: f32 = 0.085_306_55;
 
     // NanoDrive8's Pcm8HpfDiv512 coefficients (183 Hz high-pass).
-    const HPF_B0: f32 = 0.964495990;
-    const HPF_A1: f32 = 0.928991979;
+    const HPF_B0: f32 = 0.964_496;
+    const HPF_A1: f32 = 0.928_992;
 
     fn process_sample(&mut self, sample: i16) -> i16 {
         if !self.enabled {
@@ -201,8 +201,8 @@ impl PcmChannelState {
         let contribution = sample * i32::from(self.gain);
 
         let acc = self.rate_counter + self.rate_step;
-        let advance = (acc >> 16) as u32;
-        self.rate_counter = (acc & 0xFFFF) as u32;
+        let advance = acc >> 16;
+        self.rate_counter = acc & 0xFFFF;
         if advance != 0 {
             let new_pos = self.pos_in_block + advance;
             self.pos_in_block = new_pos.min(len);
