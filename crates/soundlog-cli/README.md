@@ -77,6 +77,12 @@ soundlog completions bash > soundlog.bash
 source ./soundlog.bash
 ```
 
+For PowerShell, load completions into the current session with:
+
+```powershell
+soundlog completions powershell | Out-String | Invoke-Expression
+```
+
 The `shell` argument selects the target shell; run `soundlog completions --help` to see the supported values.
 
 ## Subcommands and usage
