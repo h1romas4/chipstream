@@ -88,33 +88,42 @@ enum MdxPcmMode {
 /// The hardware MCK produces one output event per PCM byte. VGM has no MCK
 /// command, so this scheduler carries the fractional event phase across MDX
 /// ticks and exposes the number of events due in each tick.
+const MCK_RATE_DENOMINATOR: u32 = 24;
+
 struct MckScheduler {
-    byte_rate_hz: u32,
+    byte_rate_units: u32,
     time_remainder: u32,
     started: bool,
 }
 
 impl MckScheduler {
-    /// Creates a scheduler for the given PCM-byte event rate.
-    fn new(byte_rate_hz: u32) -> Self {
+    /// Creates a scheduler for a rational PCM-byte event rate in Hz.
+    fn new(byte_rate_numerator_hz: u32, byte_rate_denominator: u32) -> Self {
         Self {
-            byte_rate_hz,
+            byte_rate_units: Self::rate_units(byte_rate_numerator_hz, byte_rate_denominator),
             time_remainder: 0,
             started: false,
         }
     }
 
     /// Changes the event rate while preserving the accumulated fractional phase.
-    fn set_byte_rate(&mut self, byte_rate_hz: u32) {
-        self.byte_rate_hz = byte_rate_hz;
+    fn set_byte_rate(&mut self, byte_rate_numerator_hz: u32, byte_rate_denominator: u32) {
+        self.byte_rate_units = Self::rate_units(byte_rate_numerator_hz, byte_rate_denominator);
     }
 
     /// Advances elapsed time and returns the number of PCM-byte events due.
     fn advance(&mut self, tick_microseconds: u32) -> u32 {
-        let accumulator = self.time_remainder + tick_microseconds.saturating_mul(self.byte_rate_hz);
-        let bytes_due = accumulator / MICROSECONDS_PER_SECOND;
-        self.time_remainder = accumulator % MICROSECONDS_PER_SECOND;
-        bytes_due
+        let denominator = MICROSECONDS_PER_SECOND * MCK_RATE_DENOMINATOR;
+        let whole_rate_hz = self.byte_rate_units / MCK_RATE_DENOMINATOR;
+        let fractional_rate_units = self.byte_rate_units % MCK_RATE_DENOMINATOR;
+        let whole_rate_accumulator = tick_microseconds * whole_rate_hz;
+        let bytes_due = whole_rate_accumulator / MICROSECONDS_PER_SECOND;
+        let fractional_accumulator = self.time_remainder
+            + (whole_rate_accumulator % MICROSECONDS_PER_SECOND) * MCK_RATE_DENOMINATOR
+            + tick_microseconds * fractional_rate_units;
+        let fractional_bytes_due = fractional_accumulator / denominator;
+        self.time_remainder = fractional_accumulator % denominator;
+        bytes_due + fractional_bytes_due
     }
 
     /// Returns `true` once to emit the stream's initial PCM-byte event.
@@ -126,6 +135,24 @@ impl MckScheduler {
             true
         }
     }
+
+    /// Converts a rational byte rate into units of the shared denominator.
+    fn rate_units(byte_rate_numerator_hz: u32, byte_rate_denominator: u32) -> u32 {
+        assert!(byte_rate_denominator != 0);
+        let common_divisor = gcd(byte_rate_numerator_hz, byte_rate_denominator);
+        let numerator = byte_rate_numerator_hz / common_divisor;
+        let denominator = byte_rate_denominator / common_divisor;
+        assert_eq!(MCK_RATE_DENOMINATOR % denominator, 0);
+        numerator * (MCK_RATE_DENOMINATOR / denominator)
+    }
+}
+
+/// Returns the greatest common divisor of two non-negative integers.
+fn gcd(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left
 }
 
 impl MdxPcmMode {
@@ -875,7 +902,7 @@ impl PcmOutputState {
             filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
             raw_bytes: Vec::new(),
             raw_position: 0,
-            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ),
+            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE, 2),
         }
     }
 
@@ -1250,9 +1277,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
-        self.process_tick(builder)?;
+        let loop_restarted = self.process_tick(builder)?;
         if self.finished() {
             return Ok(StepOutcome::Finished);
+        }
+        if loop_restarted {
+            return Ok(StepOutcome::Continue);
         }
         self.emit_wait(builder);
         Ok(StepOutcome::Continue)
@@ -1283,12 +1313,15 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Processes one tick for all active tracks, handling key-off, key-on,
     /// portamento, and command execution. Returns an error if any track
     /// encounters an issue during processing.
-    fn process_tick(&mut self, builder: &mut VgmBuilder) -> Result<(), MdxConvertError> {
+    fn process_tick(&mut self, builder: &mut VgmBuilder) -> Result<bool, MdxConvertError> {
         self.advance_fadeout(builder);
         if self.fadeout.level >= FADEOUT_FINAL_LEVEL {
-            return Ok(());
+            return Ok(false);
         }
         for track_index in 0..self.tracks.len() {
+            if track_index >= 8 && self.synchronized_f1_barrier_ready() {
+                break;
+            }
             if !self.tracks[track_index].active {
                 continue;
             }
@@ -1310,8 +1343,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.tracks[track_index].fm.portamento_active = false;
             self.process_commands(track_index, builder)?;
         }
-        self.complete_synchronized_f1_barrier(builder);
-        Ok(())
+        Ok(self.complete_synchronized_f1_barrier(builder))
     }
 
     /// Processes a key-off event for the specified track, handling both FM
@@ -1714,6 +1746,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.song_loop.track_end_loop_seen = true;
                     if self.song_loop.synchronized_f1_tracks.contains(&track) {
                         self.park_at_synchronized_f1(track, command.offset);
+                        if self.synchronized_f1_barrier_ready() {
+                            break;
+                        }
                     } else if self.song_loop.loop_count.is_some() {
                         self.take_finite_track_end_loop(track, command.offset);
                     } else if self.song_loop.mark_native_loop && !self.fadeout.has_command {
@@ -2132,21 +2167,24 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Starts a loop pass or finishes playback after the requested number of
-    /// passes once all loop tracks and one-shot tracks reach the boundary.
-    fn complete_synchronized_f1_barrier(&mut self, builder: &mut VgmBuilder) {
+    fn synchronized_f1_barrier_ready(&self) -> bool {
         let loop_tracks = &self.song_loop.synchronized_f1_tracks;
-        if loop_tracks.is_empty()
-            || !loop_tracks
+        !loop_tracks.is_empty()
+            && loop_tracks
                 .iter()
                 .all(|track| self.song_loop.synchronized_f1_arrivals.contains(track))
-            || self
+            && !self
                 .tracks
                 .iter()
                 .enumerate()
                 .any(|(track, state)| !loop_tracks.contains(&track) && state.active)
-        {
-            return;
+    }
+
+    /// Starts a loop pass or finishes playback after the requested number of
+    /// passes once all loop tracks and one-shot tracks reach the boundary.
+    fn complete_synchronized_f1_barrier(&mut self, builder: &mut VgmBuilder) -> bool {
+        if !self.synchronized_f1_barrier_ready() {
+            return false;
         }
 
         if let Some(limit) = self.song_loop.loop_count {
@@ -2154,22 +2192,25 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 self.song_loop.f1_loop_passes_completed.saturating_add(1);
             if self.song_loop.f1_loop_passes_completed >= limit {
                 self.song_loop.loop_complete = true;
-                return;
+                return false;
             }
         } else if self.song_loop.loop_index.is_some() {
             self.song_loop.loop_complete = true;
-            return;
+            return false;
         } else {
             self.song_loop.loop_index = Some(builder.command_count());
         }
 
         for (&track, &target_index) in &self.song_loop.synchronized_f1_targets {
             let state = &mut self.tracks[track];
-            state.command_index = target_index;
-            state.wait_ticks = 0;
+            if track < 8 {
+                state.command_index = target_index;
+                state.wait_ticks = 0;
+            }
             state.active = true;
         }
         self.song_loop.synchronized_f1_arrivals.clear();
+        true
     }
 
     /// Emits the necessary wait commands to the VGM builder to account for the passage
@@ -2255,21 +2296,21 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// libvgm commits the new clock when register `0x0b` is written. The
     /// following `0x0c` write selects the divider.
     fn set_legacy_pcm_rate(&mut self, mode: u8, builder: &mut VgmBuilder) {
-        let Some((byte_rate_hz, clock_bytes, divider_value)) = (match mode {
-            0 => Some((1_953, [0x00, 0x09, 0x3d, 0x00], 0)), // 4 MHz / 1024
-            1 => Some((2_604, [0x00, 0x09, 0x3d, 0x00], 1)), // 4 MHz / 768
-            2 => Some((3_906, [0x00, 0x12, 0x7a, 0x00], 0)), // 8 MHz / 1024
-            3 => Some((5_208, [0x00, 0x12, 0x7a, 0x00], 1)), // 8 MHz / 768
-            4 => Some((
-                pcm_mixer::PCM8_STREAM_BYTE_RATE_HZ,
-                [0x00, 0x12, 0x7a, 0x00],
-                2,
-            )), // 8 MHz / 512
-            _ => None,
-        }) else {
+        let Some((byte_rate_numerator_hz, byte_rate_denominator, clock_bytes, divider_value)) =
+            (match mode {
+                0 => Some((4_000_000, 2_048, [0x00, 0x09, 0x3d, 0x00], 0)), // 4 MHz / 1024
+                1 => Some((4_000_000, 1_536, [0x00, 0x09, 0x3d, 0x00], 1)), // 4 MHz / 768
+                2 => Some((8_000_000, 2_048, [0x00, 0x12, 0x7a, 0x00], 0)), // 8 MHz / 1024
+                3 => Some((8_000_000, 1_536, [0x00, 0x12, 0x7a, 0x00], 1)), // 8 MHz / 768
+                4 => Some((8_000_000, 1_024, [0x00, 0x12, 0x7a, 0x00], 2)), // 8 MHz / 512
+                _ => None,
+            })
+        else {
             return;
         };
-        self.pcm_output.mck_scheduler.set_byte_rate(byte_rate_hz);
+        self.pcm_output
+            .mck_scheduler
+            .set_byte_rate(byte_rate_numerator_hz, byte_rate_denominator);
         for (register, value) in (0x08..=0x0b).zip(clock_bytes) {
             builder.add_vgm_command((Instance::Primary, Okim6258Spec { register, value }));
         }
@@ -2506,6 +2547,85 @@ mod tests {
             pdx: None,
         };
         PlaybackState::new(package, pcm_mode, adpcm_mode, None, false)
+    }
+
+    #[test]
+    fn mck_scheduler_preserves_fractional_pcm_byte_rate() {
+        let mut scheduler = MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE, 2);
+        let bytes_due = (0..768).map(|_| scheduler.advance(22_272)).sum::<u32>();
+
+        assert_eq!(bytes_due, 133_632);
+    }
+
+    #[test]
+    fn mck_scheduler_handles_maximum_tick_at_legacy_rates() {
+        for ((numerator, denominator), expected) in [
+            ((4_000_000, 2_048), 127),
+            ((4_000_000, 1_536), 170),
+            ((8_000_000, 2_048), 255),
+            ((8_000_000, 1_536), 340),
+            ((8_000_000, 1_024), 510),
+        ] {
+            let mut scheduler = MckScheduler::new(numerator, denominator);
+            assert_eq!(scheduler.advance(65_280), expected);
+        }
+    }
+
+    #[test]
+    fn synchronized_f1_barrier_preserves_pcm_loop_phase() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(0, MdxRest { ticks: 5 })
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: 0,
+                }),
+            )
+            .add_mdx_command(
+                8,
+                MdxCommand::Note(crate::mdx::command::MdxNote {
+                    note: 0x80,
+                    length: 1,
+                }),
+            )
+            .add_mdx_command(8, MdxRest { ticks: 1 })
+            .add_mdx_command(
+                8,
+                MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: 0,
+                }),
+            );
+        let mut mdx = builder.finalize().unwrap();
+        for (track, loop_index) in [(0, 1), (8, 2)] {
+            let source_map = mdx.sourcemap();
+            let target = source_map[track][0].0;
+            let (loop_offset, loop_length) = source_map[track][loop_index];
+            let relative =
+                i32::try_from(target).unwrap() - i32::try_from(loop_offset + loop_length).unwrap();
+            let MdxCommand::EndOfTrackLoop(command) = &mut mdx.tracks[track][loop_index] else {
+                unreachable!("expected F1 loop marker");
+            };
+            command.offset = i16::try_from(relative).unwrap();
+        }
+        let package = MdxPackage { mdx, pdx: None };
+        let mut playback = PlaybackState::new(
+            package,
+            MdxPcmMode::Pcm8a,
+            AdpcmMode::Through,
+            Some(2),
+            false,
+        );
+        let mut vgm_builder = VgmBuilder::new();
+
+        while playback.song_loop.f1_loop_passes_completed == 0 {
+            playback.step(&mut vgm_builder).unwrap();
+        }
+
+        assert_eq!(playback.tracks[8].command_index, 1);
+        assert_eq!(playback.tracks[8].wait_ticks, 1);
     }
 
     #[test]

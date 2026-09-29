@@ -1852,6 +1852,14 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
     let mut builder = MdxBuilder::new();
     builder
+        .add_mdx_command(0, MdxTempo { value: 169 })
+        .add_mdx_command(
+            0,
+            MdxOpmRegisterWrite {
+                register: 0x1a,
+                value: 0x55,
+            },
+        )
         .add_mdx_command(0, MdxRest { ticks: 16 })
         .add_mdx_command(
             0,
@@ -1877,7 +1885,7 @@ fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
         );
 
     let mut mdx = builder.finalize().unwrap();
-    for (track, loop_command_index) in [(0, 1), (8, 2)] {
+    for (track, loop_command_index) in [(0, 3), (8, 2)] {
         let source_map = mdx.sourcemap();
         let loop_start = source_map[track][0].0;
         let (command_offset, command_length) = source_map[track][loop_command_index];
@@ -1897,22 +1905,39 @@ fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
         pdx: Some(pdx_builder.finalize()),
     };
     let options = MdxToVgmOptions {
-        loop_count: Some(1),
+        loop_count: Some(2),
         ..MdxToVgmOptions::default()
     };
 
     let document = to_vgm_document(&package, &options).expect("convert short PCM loop");
+    let mut sample_position = 0u64;
+    let mut loop_marker_positions = Vec::new();
     let first_sample_byte_writes = document
         .commands
         .iter()
-        .filter(|command| {
-            matches!(
-                command,
-                VgmCommand::Okim6258Write(_, spec) if spec.register == 1 && spec.value == 0x11
-            )
+        .filter(|command| match command {
+            VgmCommand::WaitSamples(WaitSamples(samples)) => {
+                sample_position += u64::from(*samples);
+                false
+            }
+            VgmCommand::Ym2151Write(_, spec) if spec.register == 0x1a && spec.value == 0x55 => {
+                loop_marker_positions.push(sample_position);
+                false
+            }
+            VgmCommand::Okim6258Write(_, spec) => spec.register == 1 && spec.value == 0x11,
+            _ => false,
         })
         .count();
 
+    let expected_loop_samples = u64::from(16u32 * 256 * (256 - 169))
+        * u64::from(soundlog::vgm::VGM_SAMPLE_RATE)
+        / 1_000_000;
+    assert_eq!(loop_marker_positions.len(), 2);
+    assert_eq!(
+        loop_marker_positions[1] - loop_marker_positions[0],
+        expected_loop_samples,
+        "the loop body should restart at its F1 barrier without an extra tick"
+    );
     assert!(
         first_sample_byte_writes > 1,
         "the shorter PCM track should retrigger while the longer track reaches F1"
