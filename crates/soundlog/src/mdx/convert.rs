@@ -2166,6 +2166,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.tracks[track].active = target_index != command_index;
     }
 
+    /// Returns whether every synchronized F1 track has arrived and all other
+    /// tracks have finished.
     fn synchronized_f1_barrier_ready(&self) -> bool {
         let loop_tracks = &self.song_loop.synchronized_f1_tracks;
         !loop_tracks.is_empty()
