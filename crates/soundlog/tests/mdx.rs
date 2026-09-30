@@ -2845,6 +2845,278 @@ fn mdx_converter_selects_pcm8a_sample_formats() {
     );
 }
 
+/// Checks shared PCM8 samples, all eight mixer channels, and signed saturation.
+#[test]
+fn mdx_converter_pcm8a_shared_sample_mix_matches_expected_adpcm() {
+    let source = [0x40, 0x40, 0xc0, 0xc0, 0, 0, 8, 8];
+    for channel_count in [1, 2, 8] {
+        let mut builder = MdxBuilder::new();
+        for track in 8..8 + channel_count {
+            builder
+                .add_mdx_command(track, MdxAdpcmOrNoiseFrequency { value: 6 })
+                .add_mdx_command(track, MdxVolume { value: 8 })
+                .add_mdx_command(
+                    track,
+                    MdxNote {
+                        note: 0x80,
+                        length: 1,
+                    },
+                )
+                .add_mdx_command(track, MdxRest { ticks: 2 });
+        }
+        builder.add_mdx_command(15, MdxRest { ticks: 3 });
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 0, source.to_vec()).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let expected_samples = source
+            .iter()
+            .map(|&sample| {
+                (i32::from(sample as i8) * 16 * channel_count as i32).clamp(-2048, 2047) as i16
+            })
+            .collect::<Vec<_>>();
+        assert_pcm8a_output(package, &expected_samples);
+    }
+}
+
+/// Checks mixed PCM output, fixed hardware cadence, and eager/lazy stream equality.
+fn assert_pcm8a_output(package: MdxPackage, expected_samples: &[i16]) {
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..Default::default()
+    };
+    let document = to_vgm_document(&package, &options).unwrap();
+    let mut position = 0;
+    let mut pcm_writes = Vec::new();
+    for command in &document.commands {
+        match command {
+            VgmCommand::WaitSamples(WaitSamples(samples)) => position += u32::from(*samples),
+            VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => {
+                pcm_writes.push((position, spec.value));
+            }
+            VgmCommand::Okim6258Write(_, spec) => {
+                assert!(
+                    !(0x08..=0x0c).contains(&spec.register),
+                    "PCM8A must not change the legacy PCM1 clock"
+                );
+            }
+            _ => {}
+        }
+    }
+    let expected = soundlog::mdx::pcm::encode_adpcm(expected_samples);
+    assert!(!expected.is_empty());
+    assert!(pcm_writes.len() >= expected.len().max(4));
+    assert_eq!(
+        pcm_writes
+            .iter()
+            .take(4)
+            .map(|&(time, _)| time)
+            .collect::<Vec<_>>(),
+        [0, 5, 11, 16]
+    );
+    for (index, (&expected_byte, &(_, actual_byte))) in expected.iter().zip(&pcm_writes).enumerate()
+    {
+        assert_eq!(actual_byte, expected_byte, "PCM byte {index}");
+    }
+    assert_eq!(document.header.okim6258_flags.clock_divider, 2);
+
+    let eager_commands = drain_finite_stream(VgmStream::from_document(document));
+    let generator = to_vgm_stream_generator(package, options).unwrap();
+    let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
+    assert_eq!(lazy_commands, eager_commands);
+}
+
+/// Checks that a shared PDX block is decoded separately for each storage format.
+#[test]
+fn mdx_converter_pcm8a_shared_sample_cache_distinguishes_formats() {
+    let source = [0x04, 0x00, 0xfc, 0x00, 0x02, 0x00, 0xfe, 0x00];
+    let decoded = [
+        soundlog::mdx::pcm::decode_adpcm(&source),
+        soundlog::mdx::pcm::decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Pcm16, &source, true)
+            .unwrap(),
+        soundlog::mdx::pcm::decode_pcm8a(Pcm8aFormat::Pcm8, &source).unwrap(),
+    ];
+    let expected_samples = (0..16)
+        .map(|index| {
+            decoded
+                .iter()
+                .map(|samples| i32::from(samples.get(index).copied().unwrap_or(0)))
+                .sum::<i32>()
+                .clamp(-2048, 2047) as i16
+        })
+        .collect::<Vec<_>>();
+    for modes in [[4, 5, 6], [6, 5, 4]] {
+        let mut builder = MdxBuilder::new();
+        for (track, mode) in (8..).zip(modes) {
+            builder
+                .add_mdx_command(track, MdxAdpcmOrNoiseFrequency { value: mode })
+                .add_mdx_command(track, MdxVolume { value: 8 })
+                .add_mdx_command(
+                    track,
+                    MdxNote {
+                        note: 0x80,
+                        length: 1,
+                    },
+                )
+                .add_mdx_command(track, MdxRest { ticks: 2 });
+        }
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 0, source.to_vec()).unwrap();
+        assert_pcm8a_output(
+            MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx: Some(pdx_builder.finalize()),
+            },
+            &expected_samples,
+        );
+    }
+}
+
+/// Checks rate-specific PCM16 scaling and the two-sample advance of F11.
+#[test]
+fn mdx_converter_pcm8a_shared_pcm16_cache_distinguishes_f5_and_f11() {
+    let source = [1024i16, 1024, -1024, -1024, 0, 0, 2048, -2048];
+    let bytes = source
+        .iter()
+        .flat_map(|sample| sample.to_be_bytes())
+        .collect::<Vec<_>>();
+    let expected_samples = [1088, 960, -1024, -896, 0, 0, 2047, -2048];
+    for modes in [[5, 11], [11, 5]] {
+        let mut builder = MdxBuilder::new();
+        for (track, mode) in (8..).zip(modes) {
+            builder
+                .add_mdx_command(track, MdxAdpcmOrNoiseFrequency { value: mode })
+                .add_mdx_command(track, MdxVolume { value: 8 })
+                .add_mdx_command(
+                    track,
+                    MdxNote {
+                        note: 0x80,
+                        length: 1,
+                    },
+                )
+                .add_mdx_command(track, MdxRest { ticks: 2 });
+        }
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 0, bytes.clone()).unwrap();
+        assert_pcm8a_output(
+            MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx: Some(pdx_builder.finalize()),
+            },
+            &expected_samples,
+        );
+    }
+}
+
+/// Checks that empty, missing, and malformed samples leave other PCM8A channels audible.
+#[test]
+fn mdx_converter_pcm8a_invalid_samples_do_not_disrupt_other_channels() {
+    for (sample, bank, note, mode) in [
+        (vec![], 0, 0x80, 6),
+        (vec![0x04, 0, 0xff], 0, 0x80, 5),
+        (vec![0x04, 0], 0, 0x81, 6),
+        (vec![0x04, 0], 1, 0x80, 6),
+    ] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(8, MdxVoiceOrPcmBank { value: bank })
+            .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: mode })
+            .add_mdx_command(8, MdxVolume { value: 8 })
+            .add_mdx_command(8, MdxNote { note, length: 1 })
+            .add_mdx_command(8, MdxRest { ticks: 2 })
+            .add_mdx_command(15, MdxAdpcmOrNoiseFrequency { value: 6 })
+            .add_mdx_command(15, MdxVolume { value: 8 })
+            .add_mdx_command(
+                15,
+                MdxNote {
+                    note: 0x82,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(15, MdxRest { ticks: 2 });
+        let mut pdx_builder = PdxBuilder::new();
+        if !sample.is_empty() {
+            pdx_builder.set_sample(0, 0, sample).unwrap();
+        }
+        pdx_builder
+            .set_sample(0, 2, vec![0x20, 0xe0, 0x40, 0xc0, 0, 0, 0, 0])
+            .unwrap();
+        assert_pcm8a_output(
+            MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx: Some(pdx_builder.finalize()),
+            },
+            &[512, -512, 1024, -1024, 0, 0, 0, 0],
+        );
+    }
+}
+
+/// Checks that live volume commands affect held PCM8A output without resetting the encoder.
+#[test]
+fn mdx_converter_pcm8a_live_volume_updates_held_sample_output() {
+    for (volume_command, expected_sample) in [
+        (MdxCommand::Volume(MdxVolume { value: 7 }), 192),
+        (MdxCommand::VolumeDown(MdxVolumeDown), 192),
+        (MdxCommand::VolumeUp(MdxVolumeUp), 320),
+        (MdxCommand::Volume(MdxVolume { value: 0x80 }), 1280),
+    ] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 6 })
+            .add_mdx_command(8, MdxVolume { value: 8 })
+            .add_mdx_command(8, MdxKeyOffDisable)
+            .add_mdx_command(
+                8,
+                MdxNote {
+                    note: 0x80,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(8, volume_command)
+            .add_mdx_command(
+                8,
+                MdxOpmRegisterWrite {
+                    register: 0x1a,
+                    value: 0x55,
+                },
+            )
+            .add_mdx_command(8, MdxKeyOffDisable)
+            .add_mdx_command(
+                8,
+                MdxNote {
+                    note: 0x80,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(15, MdxRest { ticks: 3 });
+        let mut pdx_builder = PdxBuilder::new();
+        pdx_builder.set_sample(0, 0, vec![0x10; 1024]).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let document = to_vgm_document(&package, &MdxToVgmOptions::default()).unwrap();
+        let marker = document.commands.iter().position(|command| matches!(
+            command, VgmCommand::Ym2151Write(_, spec) if spec.register == 0x1a && spec.value == 0x55
+        )).expect("volume-change marker");
+        let frames_before_change = document.commands[..marker]
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command, VgmCommand::Okim6258Write(_, spec) if spec.register == 1
+                )
+            })
+            .count()
+            * 2;
+        assert!(frames_before_change > 0);
+        let mut expected_samples = vec![256; frames_before_change];
+        expected_samples.extend(iter::repeat_n(expected_sample, 16));
+        assert_pcm8a_output(package, &expected_samples);
+    }
+}
+
 #[test]
 fn mdx_converter_pcm_eager_and_lazy_paths_match() {
     let mut builder = MdxBuilder::new();
