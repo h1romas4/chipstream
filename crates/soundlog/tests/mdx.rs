@@ -27,6 +27,50 @@ use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::{VgmCallbackStream, VgmStream};
 
 #[test]
+fn mdx_document_sourcemap_matches_encoded_commands_across_variants_and_edits() {
+    let mut document = MdxBuilder::new().finalize().unwrap();
+    for opcode in u8::MIN..=u8::MAX {
+        for operand in [0, 1, 2, 6, 0x80, 0xff] {
+            let bytes = [opcode, operand, 0, 0xff, 0x80, 1, 0x7f, 0, 0, 0];
+            if let Ok((command, _)) = parse_mdx_command(&bytes, 0) {
+                let track = usize::from(opcode) % document.tracks.len();
+                document.tracks[track].push(command);
+            }
+        }
+    }
+
+    for edited in [false, true] {
+        if edited {
+            document.header.title = "edited layout with variable-length commands".into();
+            document.tracks[0].insert(
+                0,
+                MdxCommand::Extended(MdxExtendedCommand::Unknown(
+                    soundlog::mdx::command::MdxExtendedUnknownCommand {
+                        opcode: 0x07,
+                        operand: Some(0xff),
+                    },
+                )),
+            );
+            document.tone_bank = soundlog::mdx::tone::MdxToneBank::from_bytes(&[0x55; 28]);
+        }
+        let bytes = document.try_to_bytes().unwrap();
+        let source_map = document.sourcemap();
+        for (track, ranges) in document.tracks.iter().zip(&source_map) {
+            assert_eq!(track.len(), ranges.len());
+            for (command, &(offset, length)) in track.iter().zip(ranges) {
+                let encoded = command.to_mdx_bytes().unwrap();
+                assert_eq!(length, encoded.len(), "{command:?}, edited: {edited}");
+                assert_eq!(&bytes[offset..offset + length], encoded);
+            }
+            for adjacent in ranges.windows(2) {
+                assert_eq!(adjacent[0].0 + adjacent[0].1, adjacent[1].0);
+            }
+        }
+        assert!(bytes.ends_with(&document.tone_bank.to_bytes()));
+    }
+}
+
+#[test]
 fn mdx_rest_uses_one_based_tick_length() {
     let rest = MdxRest::new(1).expect("one tick rest should be valid");
     assert_eq!(rest.opcode(), 0x00);

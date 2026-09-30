@@ -183,13 +183,17 @@ impl MdxToneBank {
         }
     }
 
+    /// Returns the serialized length of all tones and trailing bytes without allocating.
+    pub(crate) fn encoded_len(&self) -> usize {
+        self.tones.len() * MdxTone::BYTE_LENGTH + self.trailing_bytes.len()
+    }
+
     /// Serialize all tones followed by the preserved trailing bytes.
     ///
     /// The result is canonical for the typed tone records while retaining the
     /// original incomplete suffix unchanged.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes =
-            Vec::with_capacity(self.tones.len() * MdxTone::BYTE_LENGTH + self.trailing_bytes.len());
+        let mut bytes = Vec::with_capacity(self.encoded_len());
         for tone in &self.tones {
             bytes.extend_from_slice(&tone.to_bytes());
         }

@@ -444,30 +444,26 @@ impl MdxDocument {
     /// direct field edits and may differ from the original input after a
     /// document has been modified.
     ///
-    /// Unknown commands whose serialized form is not available produce a zero
-    /// length range.
-    ///
     /// # Panics
     ///
     /// Panics if direct edits make a track or tone data offset unrepresentable.
     pub fn sourcemap(&self) -> Vec<Vec<(usize, usize)>> {
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
-        let encoded_tracks = serialize_track_commands(&self.tracks);
-        let track_lengths = encoded_track_lengths(&encoded_tracks);
-        let tone_length = self.tone_bank.to_bytes().len();
+        let track_lengths = serialized_track_lengths(&self.tracks);
+        let tone_length = self.tone_bank.encoded_len();
         let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length)
             .expect("MDX source map requires representable offsets");
 
-        encoded_tracks
+        self.tracks
             .iter()
             .enumerate()
             .map(|(track, commands)| {
                 let mut offset = layout.track_positions[track].unwrap_or(0);
                 commands
                     .iter()
-                    .map(|command_bytes| {
-                        let length = command_bytes.as_ref().map_or(0, Vec::len);
+                    .map(|command| {
+                        let length = command.encoded_len();
                         let range = (offset, length);
                         offset = offset.saturating_add(length);
                         range
@@ -579,7 +575,7 @@ impl MdxDocument {
     /// of the track data in the MDX document.
     fn recalculate_offsets(&mut self) -> Result<(), ParseError> {
         let track_lengths = serialized_track_lengths(&self.tracks);
-        let tone_length = self.tone_bank.to_bytes().len();
+        let tone_length = self.tone_bank.encoded_len();
         MdxLayout::calculate(&mut self.header, &self.tracks, &track_lengths, tone_length)?;
         Ok(())
     }
@@ -602,13 +598,7 @@ fn encoded_track_lengths(encoded_tracks: &[Vec<Option<Vec<u8>>>]) -> Vec<usize> 
 fn serialized_track_lengths(tracks: &[Vec<MdxCommand>]) -> Vec<usize> {
     tracks
         .iter()
-        .map(|track| {
-            track
-                .iter()
-                .filter_map(MdxCommand::to_mdx_bytes)
-                .map(|bytes| bytes.len())
-                .sum()
-        })
+        .map(|track| track.iter().map(MdxCommand::encoded_len).sum())
         .collect()
 }
 

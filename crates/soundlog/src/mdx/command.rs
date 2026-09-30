@@ -126,6 +126,60 @@ impl MdxCommand {
         }
         Some(bytes)
     }
+
+    /// Returns the serialized command length without allocating a byte buffer.
+    pub(crate) fn encoded_len(&self) -> usize {
+        match self {
+            Self::Rest(_)
+            | Self::VolumeDown(_)
+            | Self::VolumeUp(_)
+            | Self::KeyOffDisable(_)
+            | Self::SyncWait(_)
+            | Self::PcmMode(_)
+            | Self::Raw(_) => 1,
+            Self::Note(_)
+            | Self::Tempo(_)
+            | Self::VoiceOrPcmBank(_)
+            | Self::Pan(_)
+            | Self::Volume(_)
+            | Self::Gate(_)
+            | Self::EndOfTrack(_)
+            | Self::KeyOnDelay(_)
+            | Self::SyncSend(_)
+            | Self::AdpcmOrNoiseFrequency(_)
+            | Self::LfoDelay(_) => 2,
+            Self::OpmRegisterWrite(_)
+            | Self::LoopStart(_)
+            | Self::LoopEnd(_)
+            | Self::LoopEscape(_)
+            | Self::Detune(_)
+            | Self::Portamento(_)
+            | Self::EndOfTrackLoop(_)
+            | Self::Jump(_) => 3,
+            Self::PitchLfo(MdxPitchLfo::SetEnabled { .. })
+            | Self::VolumeLfo(MdxVolumeLfo::SetEnabled { .. })
+            | Self::OpmLfo(MdxOpmLfo::SetEnabled { .. }) => 2,
+            Self::PitchLfo(MdxPitchLfo::Configure { .. })
+            | Self::VolumeLfo(MdxVolumeLfo::Configure { .. })
+            | Self::OpmLfo(MdxOpmLfo::Configure { .. }) => 6,
+            Self::Extended(command) => match command {
+                MdxExtendedCommand::Error => 2,
+                MdxExtendedCommand::Pcm8DirectDrive { .. } => 8,
+                MdxExtendedCommand::Unknown(command) => 2 + usize::from(command.operand.is_some()),
+                MdxExtendedCommand::Fadeout { .. }
+                | MdxExtendedCommand::KeyOff { .. }
+                | MdxExtendedCommand::ChannelControl { .. }
+                | MdxExtendedCommand::AddNoteLength { .. }
+                | MdxExtendedCommand::SetFlag { .. } => 3,
+            },
+            Self::Extended2(command) => match command {
+                MdxExtended2Command::Error | MdxExtended2Command::Unknown(_) => 2,
+                MdxExtended2Command::RelativeDetune { .. } => 4,
+                MdxExtended2Command::Transpose { .. }
+                | MdxExtended2Command::RelativeTranspose { .. } => 3,
+            },
+        }
+    }
 }
 
 /// Decrease the track volume by one step (`0xfa`).
@@ -1306,5 +1360,44 @@ impl From<MdxExtended2Command> for MdxCommand {
 impl From<MdxRawCommand> for MdxCommand {
     fn from(command: MdxRawCommand) -> Self {
         Self::Raw(command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mdx::parser::parse_mdx_command;
+
+    /// Checks encoded lengths against serialization for every parseable opcode and first operand.
+    #[test]
+    fn encoded_lengths_match_serialization_for_all_opcodes_and_first_operands() {
+        for opcode in u8::MIN..=u8::MAX {
+            for operand in u8::MIN..=u8::MAX {
+                let bytes = [opcode, operand, 0, 0xff, 0x80, 1, 0x7f, 0, 0, 0];
+                if let Ok((command, _)) = parse_mdx_command(&bytes, 0) {
+                    assert_eq!(
+                        command.encoded_len(),
+                        command.to_mdx_bytes().unwrap().len(),
+                        "opcode {opcode:#04x}, operand {operand:#04x}: {command:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Checks that unknown-command lengths reflect directly edited optional operands.
+    #[test]
+    fn encoded_lengths_follow_edited_unknown_operands() {
+        for opcode in u8::MIN..=u8::MAX {
+            for operand in [None, Some(0), Some(u8::MAX)] {
+                let command =
+                    MdxCommand::Extended(MdxExtendedCommand::Unknown(MdxExtendedUnknownCommand {
+                        opcode,
+                        operand,
+                    }));
+                assert_eq!(command.encoded_len(), 2 + usize::from(operand.is_some()));
+                assert_eq!(command.encoded_len(), command.to_mdx_bytes().unwrap().len());
+            }
+        }
     }
 }
