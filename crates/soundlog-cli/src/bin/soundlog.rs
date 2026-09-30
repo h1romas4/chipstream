@@ -156,6 +156,10 @@ enum MdxCommands {
         /// Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`).
         #[arg(long, value_enum, default_value_t = MmlOutputFormat::Mdx)]
         output_format: MmlOutputFormat,
+
+        /// ADPCM processing mode for VGM output
+        #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
+        adpcm_mode: AdpcmModeArg,
     },
     /// Parse an MDX or MML file and display its track commands
     Parse {
@@ -389,13 +393,16 @@ fn main() {
                 input,
                 output,
                 output_format,
-            } => match cui::mdx::compile(&input, &output, output_format.into()) {
-                Ok(()) => process::exit(0),
-                Err(error) => {
-                    soundlog_cli::log_error!(&*logger, "{error:#}");
-                    process::exit(1);
+                adpcm_mode,
+            } => {
+                match cui::mdx::compile(&input, &output, output_format.into(), adpcm_mode.into()) {
+                    Ok(()) => process::exit(0),
+                    Err(error) => {
+                        soundlog_cli::log_error!(&*logger, "{error:#}");
+                        process::exit(1);
+                    }
                 }
-            },
+            }
             MdxCommands::Parse { input, pdx } => {
                 match cui::mdx::parse_mdx(&input, pdx.as_deref(), logger.clone()) {
                     Ok(()) => process::exit(0),

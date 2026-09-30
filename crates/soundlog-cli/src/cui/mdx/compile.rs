@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
+use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions, to_vgm_document};
 use soundlog::mdx::package::MdxPackage;
 use soundlog::meta::Gd3;
 
@@ -16,14 +16,19 @@ pub enum OutputFormat {
 }
 
 /// Compile an MML file to MDX or VGM.
-pub fn compile(input: &Path, output: &Path, output_format: OutputFormat) -> Result<()> {
+pub fn compile(
+    input: &Path,
+    output: &Path,
+    output_format: OutputFormat,
+    adpcm_mode: AdpcmMode,
+) -> Result<()> {
     let source = parse_input(input)?;
     let mdx_document = mmlx::mdx::compile(&source)
         .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
     match output_format {
         OutputFormat::Mdx => fs::write(output, mdx_document.to_bytes())
             .with_context(|| format!("failed to write MDX output: {}", output.display())),
-        OutputFormat::Vgm => write_vgm(&source, &mdx_document, input, output),
+        OutputFormat::Vgm => write_vgm(&source, &mdx_document, input, output, adpcm_mode),
     }
 }
 
@@ -32,6 +37,7 @@ fn write_vgm(
     mdx: &soundlog::mdx::document::MdxDocument,
     input: &Path,
     output: &Path,
+    adpcm_mode: AdpcmMode,
 ) -> Result<()> {
     let pdx_bytes = source
         .pcm_file
@@ -48,7 +54,11 @@ fn write_vgm(
         .transpose()?;
     let package = MdxPackage::parse_owned(mdx.to_bytes(), pdx_bytes)
         .context("failed to prepare VGM conversion")?;
-    let mut document = to_vgm_document(&package, &MdxToVgmOptions::default())
+    let options = MdxToVgmOptions {
+        adpcm_mode,
+        ..MdxToVgmOptions::default()
+    };
+    let mut document = to_vgm_document(&package, &options)
         .map_err(|error| anyhow!("MDX to VGM conversion failed: {error}"))?;
     if let Some(title) = source.title.as_deref() {
         document.gd3 = Some(Gd3 {

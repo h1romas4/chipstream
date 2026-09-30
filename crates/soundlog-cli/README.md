@@ -439,15 +439,18 @@ Arguments:
 
 Options:
       --output-format <OUTPUT_FORMAT>  Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`) [default: mdx] [possible values: mdx, vgm]
+      --adpcm-mode <ADPCM_MODE>        ADPCM processing mode for VGM output [default: through] [possible values: through, resample, lpf]
   -h, --help                           Print help
 ```
 
 Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
 instead; MDX is the default. VGM output uses the default conversion settings,
-including native VGM looping, equivalent to `mdx convert --native-loop`.
+including native VGM looping, equivalent to `mdx convert --native-loop`. Use
+`--adpcm-mode` to select ADPCM processing for VGM output; the default is
+`through`. The option has no effect when writing MDX.
 
 ```bash
-soundlog mdx compile <MML_FILE> <OUTPUT_FILE> [--output-format mdx|vgm]
+soundlog mdx compile <MML_FILE> <OUTPUT_FILE> [--output-format mdx|vgm] [--adpcm-mode through|resample|lpf]
 ```
 
 
