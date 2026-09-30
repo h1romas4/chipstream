@@ -341,8 +341,18 @@ PDX files are never loaded by `check`. Short synthetic PCM payloads exercise the
 playback paths but do not validate actual PDX files, sample formats, lengths, audio,
 or behavior dependent on real sample lengths. Only reached playback paths and
 errors reported by the converter are checked; missing/malformed real samples are
-not detected. Runtime errors include zero-based MDX track/command coordinates
-when available, not MML line/column positions. Parse errors retain source locations.
+not detected. Runtime errors use `file:line:column: error: ...` when the executed
+command can be mapped to MML. Lines and columns are one-based, with columns counted
+in characters; zero-based MDX track/command coordinates remain in the message.
+A missing tone is reported at the note that triggers key-on, not the earlier
+voice selection. Errors without a source position, such as tick-budget exhaustion,
+use `file: error: ...`. Parse errors retain source locations.
+
+The original input text is retained by the CLI, including stdin buffers. Only
+after a positioned playback error occurs is that text reparsed and recompiled to
+recover its source location; playback is not rerun. Successful checks allocate
+no MML/MDX source map, and no source information is added to MDX packages or the
+playback engine.
 
 Use `--parse-only` for the previous lightweight parser-only behavior, particularly
 for editor linting while voice definitions are still incomplete. It cannot be
@@ -376,12 +386,12 @@ requires `soundlog` to be available on `PATH`.
         "owner": "mmlx",
         "fileLocation": "absolute",
         "pattern": {
-          "regexp": "^(.*):(\\d+):(\\d+): error: (?=.*?, columns \\d+-(\\d+)(?:: .*)?$)(.*)$",
+          "regexp": "^(.*):(\\d+):(\\d+): error: (?=(.*)$)(?:.*?, columns \\d+-(\\d+)(?:: .*)?|.*)$",
           "file": 1,
           "line": 2,
           "column": 3,
-          "endColumn": 4,
-          "message": 5
+          "endColumn": 5,
+          "message": 4
         }
       }
     }
@@ -390,7 +400,8 @@ requires `soundlog` to be available on `PATH`.
 ```
 
 Run **MML: check current file** with **Tasks: Run Task**. Parser diagnostics
-include an end column, which the matcher uses to mark the full source range.
+include an end column, which the matcher uses to mark the full source range;
+positioned playback diagnostics mark the originating command's start position.
 
 ##### Helix with `efm-langserver`
 
@@ -431,7 +442,8 @@ languages:
 The linter reads the current buffer from stdin while `${INPUT}` preserves its
 filename in diagnostics. The second lint format accepts compilation and playback
 errors without MML line/column coordinates; these are shown at the start of the
-file, not at the MDX command's source location. In Helix, use `]d` and `[d` to move
+file. Positioned playback errors use the first format and point to the originating
+MML command. In Helix, use `]d` and `[d` to move
 between diagnostics or `Space d` to open the diagnostic picker. After changing
 the efm configuration, run `:lsp-restart` and edit the buffer to trigger linting.
 
@@ -469,7 +481,8 @@ run. Run `mdx check` separately with custom budgets or loop counts when needed.
 
 VGM output reports playback errors during the actual conversion, without a
 separate validation pass or playback-check budgets. Both output formats report
-available zero-based MDX track/command coordinates, not MML source lines.
+available MML line/column positions, recovered only on failure from the retained
+original source, with zero-based MDX track/command coordinates in the message.
 `--no-playback-check` does not suppress errors from VGM conversion.
 
 When producing VGM from MML that declares `#pcmfile`, the referenced PDX file

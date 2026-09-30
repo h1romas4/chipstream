@@ -8,7 +8,7 @@ use soundlog::meta::Gd3;
 
 use super::check::{CheckOptions, check_compiled_document};
 use super::find_pdx_path;
-use super::mml::parse_input;
+use super::mml::{parse_input_with_source, playback_error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -36,18 +36,30 @@ pub fn compile_with_playback_check(
     adpcm_mode: AdpcmMode,
     playback_check: bool,
 ) -> Result<()> {
-    let source = parse_input(input)?;
+    let (source, source_text) = parse_input_with_source(input)?;
     let mdx_document = mmlx::mdx::compile(&source)
         .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
     match output_format {
         OutputFormat::Mdx => {
             if playback_check {
-                check_compiled_document(input, mdx_document.clone(), CheckOptions::default())?;
+                check_compiled_document(
+                    input,
+                    mdx_document.clone(),
+                    &source_text,
+                    CheckOptions::default(),
+                )?;
             }
             fs::write(output, mdx_document.to_bytes())
                 .with_context(|| format!("failed to write MDX output: {}", output.display()))
         }
-        OutputFormat::Vgm => write_vgm(&source, &mdx_document, input, output, adpcm_mode),
+        OutputFormat::Vgm => write_vgm(
+            &source,
+            &mdx_document,
+            input,
+            output,
+            adpcm_mode,
+            &source_text,
+        ),
     }
 }
 
@@ -57,6 +69,7 @@ fn write_vgm(
     input: &Path,
     output: &Path,
     adpcm_mode: AdpcmMode,
+    source_text: &str,
 ) -> Result<()> {
     let pdx_bytes = source
         .pcm_file
@@ -78,7 +91,7 @@ fn write_vgm(
         ..MdxToVgmOptions::default()
     };
     let mut document = to_vgm_document_with_diagnostics(&package, &options)
-        .map_err(|error| anyhow!("{}: error: {error}", input.display()))?;
+        .map_err(|error| playback_error(input, source_text, error))?;
     if let Some(title) = source.title.as_deref() {
         document.gd3 = Some(Gd3 {
             track_name_origin: Some(title.to_owned()),
@@ -107,20 +120,27 @@ mod tests {
         let input = directory.join("song.mml");
         let output = directory.join("song.mdx");
         fs::write(&output, b"existing output").unwrap();
-        fs::write(&input, "A @42 c4").unwrap();
-        for format in [OutputFormat::Mdx, OutputFormat::Vgm] {
-            let error = compile(&input, &output, format, AdpcmMode::Through)
-                .unwrap_err()
-                .to_string();
-            assert_eq!(
-                error,
-                format!(
-                    "{}: error: missing tone for voice 42 (track 0, MDX command 1)",
-                    input.display()
-                )
-            );
-            assert_eq!(fs::read(&output).unwrap(), b"existing output");
+        for (source, line, column, command) in [
+            ("A @42 c4", 1, 7, 1),
+            ("AB @42 c4\nP r4", 1, 8, 2),
+            ("A r4\nA k2 @42 c4", 2, 10, 3),
+        ] {
+            fs::write(&input, source).unwrap();
+            for format in [OutputFormat::Mdx, OutputFormat::Vgm] {
+                let error = compile(&input, &output, format, AdpcmMode::Through)
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(
+                    error,
+                    format!(
+                        "{}:{line}:{column}: error: missing tone for voice 42 (track 0, MDX command {command})",
+                        input.display()
+                    )
+                );
+                assert_eq!(fs::read(&output).unwrap(), b"existing output");
+            }
         }
+        fs::write(&input, "A @42 c4").unwrap();
         compile_with_playback_check(
             &input,
             &output,

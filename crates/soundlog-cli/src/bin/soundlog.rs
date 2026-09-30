@@ -131,8 +131,8 @@ enum Commands {
 enum MdxCommands {
     /// Parse, compile, and check finite lazy playback of MML without loading PDX
     ///
-    /// Uses synthetic PCM samples, not actual PDX data. Runtime coordinates are
-    /// zero-based MDX track/command indices, not MML source lines.
+    /// Uses synthetic PCM samples, not actual PDX data. Runtime diagnostics
+    /// include MML source locations when available and zero-based MDX indices.
     Check {
         /// MML source file to parse, or '-' to read from stdin
         #[arg(value_name = "MML_FILE")]

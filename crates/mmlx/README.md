@@ -13,6 +13,7 @@ or format the parsed document before generating MDX data.
 - Inspect the typed syntax tree through [`MmlDocument`](mdx::MmlDocument) and
   [`MmlCommand`](mdx::MmlCommand), or render it with [`format_tree`](mdx::format_tree).
 - Compile supported commands into [`MdxDocument`](soundlog::mdx::document::MdxDocument).
+- Recover an MML source position from an MDX track/command index with [`locate_source_command`](mdx::locate_source_command), for post-failure diagnostics.
 
 ## Example
 
@@ -48,6 +49,13 @@ as `CompileError`. The compiler returns a typed MDX document; call its
 The accepted syntax and command coverage follow the MXDRV MML dialect
 implemented by this crate. Parsing successfully does not guarantee that every
 command can be compiled to MDX.
+
+`locate_source_command` reparses and recompiles the supplied original source,
+without running playback. It returns one-based line/character-column coordinates,
+or `None` for invalid input, out-of-range indices, and synthetic commands without
+a source location. Call it only after a playback error to avoid source-map
+allocations on successful compilation or playback. The source map is never stored
+in the generated MDX document.
 
 ## Streaming Example
 

@@ -9,7 +9,7 @@ use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 
-use super::mml::{parse_input, parse_reader};
+use super::mml::{parse_input_with_source, parse_reader_with_source, playback_error};
 
 /// Options for parsing and bounded lazy playback validation.
 #[derive(Debug, Clone, Copy)]
@@ -46,19 +46,20 @@ pub fn check_with_stdin(input: &Path, verbose: bool, stdin: bool) -> Result<()> 
 ///
 /// Synthetic PCM payloads exercise playback but do not validate actual PDX files,
 /// source-sample formats, audio, or sample-length-dependent behavior. Runtime
-/// coordinates refer to zero-based MDX commands, not MML line and column numbers.
+/// diagnostics include MML line/column coordinates when their command can be
+/// located, with zero-based MDX coordinates retained in the message.
 pub fn check_with_options(
     input: &Path,
     verbose: bool,
     stdin: bool,
     options: CheckOptions,
 ) -> Result<()> {
-    let document = if stdin || input == Path::new("-") {
-        parse_reader(input, io::stdin().lock())?
+    let (document, source) = if stdin || input == Path::new("-") {
+        parse_reader_with_source(input, io::stdin().lock())?
     } else {
-        parse_input(input)?
+        parse_input_with_source(input)?
     };
-    check_document(input, &document, options)?;
+    check_document(input, &document, &source, options)?;
     if verbose {
         let tree = mmlx::mdx::format_tree(&document);
         let mut stdout = io::BufWriter::new(io::stdout().lock());
@@ -79,6 +80,7 @@ pub fn check_with_options(
 fn check_document(
     input: &Path,
     document: &mmlx::mdx::MmlDocument,
+    source: &str,
     options: CheckOptions,
 ) -> Result<()> {
     if options.parse_only {
@@ -92,12 +94,13 @@ fn check_document(
     }
     let mdx = mmlx::mdx::compile(document)
         .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
-    check_compiled_document(input, mdx, options)
+    check_compiled_document(input, mdx, source, options)
 }
 
 pub(super) fn check_compiled_document(
     input: &Path,
     mdx: MdxDocument,
+    source: &str,
     options: CheckOptions,
 ) -> Result<()> {
     let pdx = dummy_pdx(&mdx)
@@ -111,7 +114,7 @@ pub(super) fn check_compiled_document(
         },
         options.limits,
     )
-    .map_err(|error| anyhow!("{}: error: {error}", input.display()))
+    .map_err(|error| playback_error(input, source, error))
 }
 
 /// Populate possible PCM bank/note combinations with short, even-length silence.
@@ -154,17 +157,17 @@ mod tests {
         let input = Path::new("songs/check.mml");
         for source in ["A r4", "#pcmfile \"does-not-exist.pdx\"\nP c4"] {
             let document = super::super::mml::parse_source(input, source).unwrap();
-            check_document(input, &document, CheckOptions::default()).unwrap();
+            check_document(input, &document, source, CheckOptions::default()).unwrap();
         }
         for (source, message) in [
             ("A c193", "compile error"),
             ("A @42 c4", "missing tone for voice 42"),
         ] {
             let document = super::super::mml::parse_source(input, source).unwrap();
-            let error = check_document(input, &document, CheckOptions::default())
+            let error = check_document(input, &document, source, CheckOptions::default())
                 .unwrap_err()
                 .to_string();
-            assert!(error.starts_with("songs/check.mml: error:"));
+            assert!(error.starts_with("songs/check.mml:"));
             assert!(error.contains(message), "{error}");
             if source.contains("@42") {
                 assert!(error.contains("track 0, MDX command 1"), "{error}");
@@ -172,6 +175,7 @@ mod tests {
             check_document(
                 input,
                 &document,
+                source,
                 CheckOptions {
                     parse_only: true,
                     ..Default::default()
@@ -185,7 +189,7 @@ mod tests {
     #[test]
     fn checks_requested_loop_count_and_reader_input() {
         let input = Path::new("songs/unsaved.mml");
-        let document = parse_reader(input, Cursor::new("P L c4")).unwrap();
+        let (document, source) = parse_reader_with_source(input, Cursor::new("P L c4")).unwrap();
         let options = CheckOptions {
             limits: MdxPlaybackCheckLimits {
                 max_ticks: 64,
@@ -193,10 +197,11 @@ mod tests {
             },
             ..Default::default()
         };
-        check_document(input, &document, options).unwrap();
+        check_document(input, &document, &source, options).unwrap();
         let error = check_document(
             input,
             &document,
+            &source,
             CheckOptions {
                 loop_count: 3,
                 ..options
@@ -214,6 +219,7 @@ mod tests {
             check_document(
                 input,
                 &document,
+                &source,
                 CheckOptions {
                     loop_count: 0,
                     ..options
@@ -221,13 +227,60 @@ mod tests {
             )
             .is_err()
         );
-        let document = parse_reader(input, Cursor::new("A @42 c4")).unwrap();
-        let error = check_document(input, &document, CheckOptions::default())
+        let (document, source) = parse_reader_with_source(input, Cursor::new("A @42 c4")).unwrap();
+        let error = check_document(input, &document, &source, CheckOptions::default())
             .unwrap_err()
             .to_string();
         assert_eq!(
             error,
-            "songs/unsaved.mml: error: missing tone for voice 42 (track 0, MDX command 1)"
+            "songs/unsaved.mml:1:7: error: missing tone for voice 42 (track 0, MDX command 1)"
+        );
+    }
+
+    #[test]
+    fn checks_locate_runtime_errors_in_original_multiline_reader_source() {
+        let input = Path::new("songs/unsaved.mml");
+        for (source, line, column) in [
+            ("A @42 c4", 1, 7),
+            ("A k2 @42 c4", 1, 10),
+            ("AP r4\nA @42 c4\nP c4", 2, 7),
+            ("A @42 c4\nP r4", 1, 7),
+            ("AB r4\nB @42 [r4 [c%600]2]3", 2, 12),
+            ("#title \"\u{66f2}\"\nA /* \u{65e5} */ @42 c4", 2, 15),
+            ("A @42 c4_>d4 e4", 1, 7),
+        ] {
+            let (document, original) =
+                parse_reader_with_source(input, Cursor::new(source)).unwrap();
+            assert_eq!(original, source);
+            let error = check_document(input, &document, &original, CheckOptions::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "songs/unsaved.mml:{line}:{column}: error: missing tone for voice 42"
+                )),
+                "{source}: {error}"
+            );
+        }
+        let source = "A [r4]2";
+        let document = super::super::mml::parse_source(input, source).unwrap();
+        let error = check_document(
+            input,
+            &document,
+            source,
+            CheckOptions {
+                limits: MdxPlaybackCheckLimits {
+                    max_ticks: 1000,
+                    max_commands: 1,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "songs/unsaved.mml:1:4: error: playback check incomplete: MDX command limit exceeded (track 0, MDX command 1)"
         );
     }
 

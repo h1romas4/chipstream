@@ -30,14 +30,36 @@ pub struct MmlTrack {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SourcePosition {
-    line_number: usize,
-    column: usize,
+/// One-based MML source coordinates, with columns counted in characters.
+pub struct SourcePosition {
+    pub line_number: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CommandSource {
+    pub position: SourcePosition,
+    pub end_position: Option<SourcePosition>,
+    pub body: Vec<CommandSource>,
+}
+
+pub(super) type MmlSourceMap = Vec<Vec<CommandSource>>;
+
+type RepeatFrame = (Vec<MmlCommand>, SourcePosition, Vec<CommandSource>);
+
+impl CommandSource {
+    fn new(position: SourcePosition) -> Self {
+        Self {
+            position,
+            end_position: None,
+            body: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedCommand {
-    Command(MmlCommand),
+    Command(MmlCommand, Option<SourcePosition>),
     RepeatStart(SourcePosition),
     RepeatEnd {
         count: u16,
@@ -316,6 +338,21 @@ impl std::error::Error for ParseError {}
 /// assert_eq!(document.tracks[0].channel, 'A');
 /// ```
 pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
+    parse_internal(source, None)
+}
+
+pub(super) fn parse_with_positions(
+    source: &str,
+) -> Result<(MmlDocument, MmlSourceMap), ParseError> {
+    let mut positions = Vec::new();
+    let document = parse_internal(source, Some(&mut positions))?;
+    Ok((document, positions))
+}
+
+fn parse_internal(
+    source: &str,
+    mut positions: Option<&mut MmlSourceMap>,
+) -> Result<MmlDocument, ParseError> {
     let mut document = MmlDocument {
         title: None,
         pcm_file: None,
@@ -336,17 +373,27 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
             Rule::voice => document.voices.push(parse_voice(line)?),
-            Rule::track => append_parsed_tracks(&mut parsed_tracks, parse_track(line)?),
+            Rule::track => {
+                append_parsed_tracks(&mut parsed_tracks, parse_track(line, positions.is_some())?)
+            }
             Rule::blank | Rule::comment | Rule::block_comment => {}
             rule => unreachable!("unexpected line rule: {rule:?}"),
         }
     }
 
     for track in parsed_tracks {
+        let mut track_positions = Vec::new();
         document.tracks.push(MmlTrack {
             channel: track.channel,
-            commands: assemble_repeats(track.commands, source)?,
+            commands: assemble_repeats(
+                track.commands,
+                source,
+                positions.as_ref().map(|_| &mut track_positions),
+            )?,
         });
+        if let Some(positions) = &mut positions {
+            positions.push(track_positions);
+        }
     }
     Ok(document)
 }
@@ -369,15 +416,16 @@ fn append_parsed_tracks(tracks: &mut Vec<ParsedTrack>, incoming: Vec<ParsedTrack
 fn assemble_repeats(
     commands: Vec<ParsedCommand>,
     source: &str,
+    mut positions: Option<&mut Vec<CommandSource>>,
 ) -> Result<Vec<MmlCommand>, ParseError> {
     let mut output = Vec::new();
-    let mut stack: Vec<(Vec<MmlCommand>, SourcePosition)> = Vec::new();
+    let mut stack: Vec<RepeatFrame> = Vec::new();
 
     for command in commands {
         match command {
-            ParsedCommand::RepeatStart(position) => stack.push((Vec::new(), position)),
+            ParsedCommand::RepeatStart(position) => stack.push((Vec::new(), position, Vec::new())),
             ParsedCommand::RepeatEnd { count, position } => {
-                let Some((body, _)) = stack.pop() else {
+                let Some((body, start_position, body_positions)) = stack.pop() else {
                     return Err(ParseError::Syntax(format_repeat_error(
                         source,
                         position,
@@ -385,19 +433,30 @@ fn assemble_repeats(
                         "repeat start '['",
                     )));
                 };
+                let repeat_source = positions.as_ref().map(|_| CommandSource {
+                    position: start_position,
+                    end_position: Some(position),
+                    body: body_positions,
+                });
                 append_assembled_command(
                     &mut output,
                     &mut stack,
                     MmlCommand::Repeat { body, count },
+                    positions.as_deref_mut(),
+                    repeat_source,
                 );
             }
-            ParsedCommand::Command(command) => {
-                append_assembled_command(&mut output, &mut stack, command)
-            }
+            ParsedCommand::Command(command, position) => append_assembled_command(
+                &mut output,
+                &mut stack,
+                command,
+                positions.as_deref_mut(),
+                position.map(CommandSource::new),
+            ),
         }
     }
 
-    if let Some((_, position)) = stack.last() {
+    if let Some((_, position, _)) = stack.last() {
         return Err(ParseError::Syntax(format_repeat_error(
             source,
             *position,
@@ -431,13 +490,21 @@ fn format_repeat_error(
 /// Append a command to the innermost open repeat, or to the top-level output.
 fn append_assembled_command(
     output: &mut Vec<MmlCommand>,
-    stack: &mut [(Vec<MmlCommand>, SourcePosition)],
+    stack: &mut [RepeatFrame],
     command: MmlCommand,
+    positions: Option<&mut Vec<CommandSource>>,
+    position: Option<CommandSource>,
 ) {
-    if let Some((body, _)) = stack.last_mut() {
+    if let Some((body, _, body_positions)) = stack.last_mut() {
         body.push(command);
+        if let Some(position) = position {
+            body_positions.push(position);
+        }
     } else {
         output.push(command);
+        if let (Some(positions), Some(position)) = (positions, position) {
+            positions.push(position);
+        }
     }
 }
 
@@ -636,7 +703,10 @@ fn parse_string(line: pest::iterators::Pair<'_, Rule>) -> String {
 }
 
 /// Convert a track line into one typed track per channel in its prefix.
-fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Result<Vec<ParsedTrack>, ParseError> {
+fn parse_track(
+    line: pest::iterators::Pair<'_, Rule>,
+    capture_positions: bool,
+) -> Result<Vec<ParsedTrack>, ParseError> {
     let mut children = line.into_inner();
     let channels = children
         .next()
@@ -646,7 +716,7 @@ fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Result<Vec<ParsedTrack>
         .collect::<Vec<_>>();
     let commands = children
         .filter(|pair| pair.as_rule() != Rule::block_comment)
-        .map(parse_parsed_command)
+        .map(|pair| parse_parsed_command(pair, capture_positions))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(channels
         .into_iter()
@@ -660,6 +730,7 @@ fn parse_track(line: pest::iterators::Pair<'_, Rule>) -> Result<Vec<ParsedTrack>
 /// Convert one grammar pair into an intermediate command, validating its values.
 fn parse_parsed_command(
     pair: pest::iterators::Pair<'_, Rule>,
+    capture_positions: bool,
 ) -> Result<ParsedCommand, ParseError> {
     Ok(match pair.as_rule() {
         Rule::repeat_start => ParsedCommand::RepeatStart(source_position(&pair)),
@@ -675,7 +746,8 @@ fn parse_parsed_command(
         }
         _ => {
             validate_command_pair(&pair)?;
-            ParsedCommand::Command(parse_command(pair))
+            let position = capture_positions.then(|| source_position(&pair));
+            ParsedCommand::Command(parse_command(pair), position)
         }
     })
 }
@@ -1153,6 +1225,49 @@ fn parse_length_term(pair: pest::iterators::Pair<'_, Rule>) -> MmlLength {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_positions_preserve_ast_and_nested_multiline_channel_mapping() {
+        let source = "AB @42 [r4\nA [c4]2\nAB d4]3\n";
+        let (document, positions) = parse_with_positions(source).unwrap();
+        assert_eq!(document, parse(source).unwrap());
+        assert_eq!(positions.len(), 2);
+        assert_eq!(
+            positions[0][0].position,
+            SourcePosition {
+                line_number: 1,
+                column: 4
+            }
+        );
+        assert_eq!(
+            positions[0][1].position,
+            SourcePosition {
+                line_number: 1,
+                column: 8
+            }
+        );
+        assert_eq!(
+            positions[0][1].end_position,
+            Some(SourcePosition {
+                line_number: 3,
+                column: 6
+            })
+        );
+        assert_eq!(
+            positions[0][1].body[1].body[0].position,
+            SourcePosition {
+                line_number: 2,
+                column: 4
+            }
+        );
+        assert_eq!(
+            positions[1][1].body[1].position,
+            SourcePosition {
+                line_number: 3,
+                column: 4
+            }
+        );
+    }
 
     #[test]
     fn parses_metadata_and_track_commands() {

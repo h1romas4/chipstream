@@ -16,7 +16,13 @@ use soundlog::mdx::command::{
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
-use super::mml::{Accidental, MmlCommand, MmlDocument, MmlLength, MmlVoice};
+use super::mml::{
+    Accidental, CommandSource, MmlCommand, MmlDocument, MmlLength, MmlSourceMap, MmlVoice,
+    SourcePosition, parse_with_positions,
+};
+
+type MdxSourceMap = [Vec<Option<SourcePosition>>; 16];
+type CompiledCommands = (Vec<MdxCommand>, Option<Vec<Option<SourcePosition>>>);
 
 const TICKS_PER_WHOLE: u16 = 192;
 const FIRST_NOTE: u16 = 0x80;
@@ -86,6 +92,34 @@ impl std::error::Error for CompileError {}
 /// assert!(!mdx_bytes.is_empty());
 /// ```
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
+    compile_internal(document, None, None)
+}
+
+/// Locate the MML command that generated a zero-based MDX track/command index.
+///
+/// Intended for diagnostics after playback fails: reparses and recompiles the
+/// original source without running playback or modifying its data. Returns
+/// `None` for invalid source, absent coordinates, or synthetic track terminators.
+/// Normal [`compile`] does not allocate source maps.
+pub fn locate_source_command(
+    source: &str,
+    track: usize,
+    command_index: usize,
+) -> Option<SourcePosition> {
+    if track >= 16 {
+        return None;
+    }
+    let (document, sources) = parse_with_positions(source).ok()?;
+    let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
+    compile_internal(&document, Some(&sources), Some(&mut positions)).ok()?;
+    positions[track].get(command_index).copied().flatten()
+}
+
+fn compile_internal(
+    document: &MmlDocument,
+    sources: Option<&MmlSourceMap>,
+    mut positions: Option<&mut MdxSourceMap>,
+) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
     let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
     let mut track_states: [TrackState; 16] = std::array::from_fn(|_| TrackState::default());
@@ -107,14 +141,21 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
         builder.append_tone(compile_voice(voice)?);
     }
 
-    for track in &document.tracks {
+    for (source_index, track) in document.tracks.iter().enumerate() {
         let track_index = channel_index(track.channel)?;
         let base_offset = command_bytes(&tracks[track_index]);
-        tracks[track_index].extend(compile_track(
+        let (commands, command_positions) = compile_track(
             &track.commands,
             &mut track_states[track_index],
             base_offset,
-        )?);
+            sources
+                .and_then(|sources| sources.get(source_index))
+                .map(Vec::as_slice),
+        )?;
+        tracks[track_index].extend(commands);
+        if let (Some(positions), Some(command_positions)) = (&mut positions, command_positions) {
+            positions[track_index].extend(command_positions);
+        }
     }
 
     for (track_index, mut commands) in tracks.into_iter().take(track_count).enumerate() {
@@ -172,9 +213,18 @@ pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
         builder.set_track(track_index, commands);
     }
 
-    builder
+    let document = builder
         .finalize()
-        .map_err(|error| CompileError::Builder(error.to_string()))
+        .map_err(|error| CompileError::Builder(error.to_string()))?;
+    if let Some(positions) = positions {
+        if matches!(document.tracks[0].first(), Some(MdxCommand::PcmMode(_))) {
+            positions[0].insert(0, None);
+        }
+        for (track, commands) in document.tracks.iter().enumerate() {
+            positions[track].resize(commands.len(), None);
+        }
+    }
+    Ok(document)
 }
 
 /// Convert one MML voice definition into an MDX tone.
@@ -234,8 +284,9 @@ fn compile_track(
     commands: &[MmlCommand],
     state: &mut TrackState,
     base_offset: usize,
-) -> Result<Vec<MdxCommand>, CompileError> {
-    compile_commands(commands, state, base_offset)
+    sources: Option<&[CommandSource]>,
+) -> Result<CompiledCommands, CompileError> {
+    compile_commands(commands, state, base_offset, sources)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -243,12 +294,16 @@ fn compile_commands(
     commands: &[MmlCommand],
     state: &mut TrackState,
     base_offset: usize,
-) -> Result<Vec<MdxCommand>, CompileError> {
+    sources: Option<&[CommandSource]>,
+) -> Result<CompiledCommands, CompileError> {
     let mut output = Vec::new();
+    let mut output_positions = sources.map(|_| Vec::new());
     let mut index = 0;
     let mut last_note_output: Option<(usize, u16, u16)> = None;
     while index < commands.len() {
         let command = &commands[index];
+        let command_source = sources.and_then(|sources| sources.get(index));
+        let position = command_source.map(|source| source.position);
         let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
         let mut consumed = 1;
         if matches!(commands.get(index + 1), Some(MmlCommand::Portamento))
@@ -288,9 +343,20 @@ fn compile_commands(
             MmlCommand::Ignore => break,
             MmlCommand::Repeat { body, count } => {
                 let body_base = base_offset + command_bytes(&output);
-                let mut body_commands = compile_commands(body, state, body_base)?;
+                let (mut body_commands, body_positions) = compile_commands(
+                    body,
+                    state,
+                    body_base,
+                    command_source.map(|source| source.body.as_slice()),
+                )?;
                 let body_length = command_bytes(&body_commands);
                 patch_repeat_escape_offsets(&mut body_commands, body_length)?;
+                if let Some(positions) = &mut output_positions {
+                    positions.push(position);
+                    positions
+                        .extend(body_positions.unwrap_or_else(|| vec![None; body_commands.len()]));
+                    positions.push(command_source.and_then(|source| source.end_position));
+                }
                 output.push(
                     MdxLoopStart {
                         count: checked_u8("repeat", i32::from(*count))?,
@@ -393,6 +459,9 @@ fn compile_commands(
                                     offset,
                                 }),
                             );
+                            if let Some(positions) = &mut output_positions {
+                                positions.insert(note_output_start, position);
+                            }
                             last_note_output = Some((note_output_start + 1, source_note, ticks));
                             consumed = target_index - index + 1;
                         } else {
@@ -517,9 +586,12 @@ fn compile_commands(
             MmlCommand::OpmLfoOn => output.push(MdxOpmLfo::SetEnabled { enabled: true }.into()),
             MmlCommand::OpmLfoOff => output.push(MdxOpmLfo::SetEnabled { enabled: false }.into()),
         }
+        if let Some(positions) = &mut output_positions {
+            positions.resize(output.len(), position);
+        }
         index += consumed;
     }
-    Ok(output)
+    Ok((output, output_positions))
 }
 
 /// Return the note number represented by a note command at the current octave.
@@ -832,6 +904,78 @@ fn patch_repeat_escape_offsets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_mapping_preserves_compilation_and_maps_split_notes_and_repeats() {
+        for source in [
+            "AB @42 c%600& r%300 d4",
+            "AB @42 [r4\nA [c4]2\nAB d4]3\n",
+            "A @42 c4_d4 e4",
+            "A @42 c4_>d4 e4",
+            "A L r4 c4\nA d4",
+            "AP @42 c%600& d4",
+            "P [c4 [d4]2]3\nA @42 e4",
+            "A r4 ! c4",
+        ] {
+            let (document, sources) = parse_with_positions(source).unwrap();
+            let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
+            let diagnosed =
+                compile_internal(&document, Some(&sources), Some(&mut positions)).unwrap();
+            let normal = compile(&document).unwrap();
+            assert_eq!(diagnosed.to_bytes(), normal.to_bytes(), "{source}");
+            for (track, commands) in diagnosed.tracks.iter().enumerate() {
+                for (index, command) in commands.iter().enumerate() {
+                    if matches!(command, MdxCommand::Note(_)) {
+                        let position = positions[track][index].unwrap();
+                        let character = source
+                            .lines()
+                            .nth(position.line_number - 1)
+                            .unwrap()
+                            .chars()
+                            .nth(position.column - 1)
+                            .unwrap();
+                        assert!(matches!(character, 'a'..='g'), "{source}: {position:?}");
+                        assert_eq!(locate_source_command(source, track, index), Some(position));
+                    }
+                }
+            }
+        }
+        let source = "AB @42 [r4\nA [c4]2\nAB d4]3\n";
+        assert_eq!(
+            locate_source_command(source, 0, 4),
+            Some(SourcePosition {
+                line_number: 2,
+                column: 4
+            })
+        );
+        assert_eq!(
+            locate_source_command(source, 1, 3),
+            Some(SourcePosition {
+                line_number: 3,
+                column: 4
+            })
+        );
+        assert_eq!(locate_source_command("A r4", 0, 1), None);
+        assert_eq!(locate_source_command("A r4", 16, 0), None);
+        assert_eq!(locate_source_command("A r4", 0, usize::MAX), None);
+        assert_eq!(locate_source_command("A ?", 0, 0), None);
+        assert_eq!(locate_source_command("AP @42 c4", 0, 0), None);
+        assert_eq!(
+            locate_source_command("AP @42 c4", 0, 2),
+            Some(SourcePosition {
+                line_number: 1,
+                column: 8
+            })
+        );
+        assert_eq!(
+            locate_source_command("AP @42 c4", 8, 1),
+            Some(SourcePosition {
+                line_number: 1,
+                column: 8
+            })
+        );
+        assert_eq!(locate_source_command("A L r4 c4", 0, 2), None);
+    }
     use crate::mdx::parse;
     use soundlog::mdx::command::{MdxEndOfTrack, MdxTempo};
 
