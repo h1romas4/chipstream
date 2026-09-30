@@ -360,6 +360,155 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
 }
 
 #[test]
+fn mdx_document_rejects_commands_crossing_track_boundaries() {
+    for command_bytes in [vec![0xf1], vec![0xf1, 0xff], vec![0x80], vec![0xfe, 0x08]] {
+        let mut bytes = b"TITLE\r\n\x1a\0".to_vec();
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&0x0014u16.to_be_bytes());
+        bytes.extend_from_slice(&(0x0014 + command_bytes.len() as u16).to_be_bytes());
+        bytes.extend(iter::repeat_n(0xffffu16, 7).flat_map(u16::to_be_bytes));
+        bytes.extend_from_slice(&command_bytes);
+        bytes.extend_from_slice(&[0x00, 0xf1, 0x00]);
+
+        assert!(
+            MdxDocument::parse(&bytes).is_err(),
+            "accepted a command crossing a track boundary: {command_bytes:?}"
+        );
+    }
+}
+
+#[test]
+fn mdx_document_rejects_end_commands_crossing_tone_boundaries() {
+    for command_bytes in [vec![0xf1], vec![0xf1, 0xff]] {
+        let mut bytes = b"TITLE\r\n\x1a\0".to_vec();
+        bytes.extend_from_slice(&(0x0014 + command_bytes.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&0x0014u16.to_be_bytes());
+        bytes.extend(iter::repeat_n(0xffffu16, 8).flat_map(u16::to_be_bytes));
+        bytes.extend_from_slice(&command_bytes);
+        bytes.extend_from_slice(&[0; MdxTone::BYTE_LENGTH]);
+
+        assert!(MdxDocument::parse(&bytes).is_err());
+    }
+}
+
+#[test]
+fn mdx_document_rejects_track_end_outside_file() {
+    let mut bytes = b"TITLE\r\n\x1a\0".to_vec();
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&0x0014u16.to_be_bytes());
+    bytes.extend_from_slice(&0x0100u16.to_be_bytes());
+    bytes.extend(iter::repeat_n(0xffffu16, 7).flat_map(u16::to_be_bytes));
+    bytes.extend_from_slice(&[0x00, 0xf1, 0x00]);
+
+    assert!(MdxDocument::parse(&bytes).is_err());
+}
+
+#[test]
+fn mdx_builder_accepts_last_representable_track_offset() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .set_track(0, vec![MdxCommand::Rest(MdxRest { ticks: 1 }); 65_512])
+        .add_mdx_command(1, MdxRest { ticks: 1 });
+
+    let document = builder.finalize().expect("offset 0xfffe is representable");
+    assert_eq!(document.header.track_offsets[1], Some(0xfffe));
+    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse boundary offset");
+    assert_eq!(reparsed.tracks, document.tracks);
+}
+
+#[test]
+fn mdx_builder_rejects_reserved_and_overflowing_track_offsets() {
+    for rest_count in [65_513, 65_514] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .set_track(0, vec![MdxCommand::Rest(MdxRest { ticks: 1 }); rest_count])
+            .add_mdx_command(1, MdxRest { ticks: 1 });
+
+        assert!(
+            matches!(
+                builder.finalize(),
+                Err(soundlog::ParseError::DataInconsistency(_))
+            ),
+            "accepted an unrepresentable track offset after {rest_count} rests"
+        );
+    }
+}
+
+#[test]
+fn mdx_builder_checks_tone_offset_limit() {
+    let tone = MdxTone::from_bytes(&[0; MdxTone::BYTE_LENGTH]).unwrap();
+    for rest_count in [65_486, 65_487] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .append_tone(tone.clone())
+            .set_track(0, vec![MdxCommand::Rest(MdxRest { ticks: 1 }); rest_count]);
+
+        let result = builder.finalize();
+        if rest_count == 65_486 {
+            let document = result.expect("tone offset 0xffff is representable");
+            assert_eq!(document.header.tone_data_offset, 0xffff);
+            let bytes = document.try_to_bytes().expect("serialize boundary offset");
+            assert!(bytes.len() > usize::from(u16::MAX));
+            let reparsed = MdxDocument::parse(&bytes).expect("parse boundary tone offset");
+            assert_eq!(reparsed.tracks, document.tracks);
+            assert_eq!(reparsed.tone_bank, document.tone_bank);
+        } else {
+            assert!(matches!(
+                result,
+                Err(soundlog::ParseError::DataInconsistency(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn mdx_document_rejects_unrepresentable_track_offsets_after_edits() {
+    for compressed in [false, true] {
+        for rest_count in [65_513, 65_514] {
+            let mut builder = MdxBuilder::new();
+            builder.set_lz_compressed(compressed);
+            let mut document = builder.finalize().unwrap();
+            document.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); rest_count];
+            document.tracks[0].push(MdxCommand::EndOfTrack(MdxEndOfTrack));
+            document.tracks[1] = vec![MdxCommand::EndOfTrack(MdxEndOfTrack)];
+
+            assert!(matches!(
+                document.try_to_bytes(),
+                Err(soundlog::ParseError::DataInconsistency(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn mdx_document_checks_tone_offset_limit_after_track_edits() {
+    let tone = MdxTone::from_bytes(&[0; MdxTone::BYTE_LENGTH]).unwrap();
+    for rest_count in [65_513, 65_514] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .append_tone(tone.clone())
+            .add_mdx_command(0, MdxRest { ticks: 1 });
+        let mut document = builder.finalize().unwrap();
+        document.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); rest_count];
+        document.tracks[0].push(MdxCommand::EndOfTrack(MdxEndOfTrack));
+
+        let result = document.try_to_bytes();
+        if rest_count == 65_513 {
+            let bytes = result.expect("tone offset 0xffff is representable after edits");
+            let reparsed = MdxDocument::parse(&bytes).expect("parse edited boundary layout");
+            assert_eq!(reparsed.header.tone_data_offset, 0xffff);
+            assert_eq!(reparsed.tracks, document.tracks);
+            assert_eq!(reparsed.tone_bank, document.tone_bank);
+        } else {
+            assert!(matches!(
+                result,
+                Err(soundlog::ParseError::DataInconsistency(_))
+            ));
+        }
+    }
+}
+
+#[test]
 fn mdx_document_serializes_direct_header_field_edits() {
     let mut builder = MdxBuilder::new();
     builder

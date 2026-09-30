@@ -81,7 +81,7 @@ impl MdxLayout {
         tracks: &[Vec<MdxCommand>],
         track_lengths: &[usize],
         tone_length: usize,
-    ) -> Self {
+    ) -> Result<Self, ParseError> {
         header.track_offsets.resize(tracks.len(), None);
         header.base_offset = header.title_raw_bytes.len()
             + 3
@@ -104,14 +104,32 @@ impl MdxLayout {
                 header.track_offsets[track] = None;
                 continue;
             }
-            header.track_offsets[track] = position
+            let offset = position
                 .checked_sub(header.base_offset)
-                .and_then(|offset| u16::try_from(offset).ok());
-            position = position.saturating_add(track_lengths[track]);
+                .and_then(|offset| u16::try_from(offset).ok())
+                .filter(|&offset| offset != u16::MAX)
+                .ok_or_else(|| {
+                    ParseError::DataInconsistency(format!(
+                        "MDX track {track} offset exceeds the maximum 0xfffe"
+                    ))
+                })?;
+            header.track_offsets[track] = Some(offset);
+            position = position.checked_add(track_lengths[track]).ok_or_else(|| {
+                ParseError::DataInconsistency("MDX track data position overflow".into())
+            })?;
         }
-        if tone_length != 0 && header.tone_data_offset == 0 {
-            header.tone_data_offset =
-                u16::try_from(position.saturating_sub(header.base_offset)).unwrap_or(u16::MAX);
+        if tone_length != 0
+            && (header.tone_data_offset == 0
+                || (initial_tone_position != header_length && position > initial_tone_position))
+        {
+            header.tone_data_offset = position
+                .checked_sub(header.base_offset)
+                .and_then(|offset| u16::try_from(offset).ok())
+                .ok_or_else(|| {
+                    ParseError::DataInconsistency(
+                        "MDX tone data offset exceeds the maximum 0xffff".into(),
+                    )
+                })?;
         }
 
         let track_positions = (0..tracks.len())
@@ -132,11 +150,11 @@ impl MdxLayout {
             .max()
             .unwrap_or(header_length);
 
-        Self {
+        Ok(Self {
             track_positions,
             tone_position,
             body_end,
-        }
+        })
     }
 }
 
@@ -322,7 +340,9 @@ impl MdxBuilder {
     /// one. The returned [`MdxDocument`] is ready for [`to_bytes`][MdxDocument::to_bytes]
     /// or for conversion to a playback stream. Calling this method consumes
     /// the builder. Invalid track indices are returned here instead of
-    /// interrupting the chainable builder methods.
+    /// interrupting the chainable builder methods. Track offsets above
+    /// `0xfffe` (including the absent-track marker `0xffff`) and tone data
+    /// offsets above `0xffff` are also rejected.
     pub fn finalize(mut self) -> Result<MdxDocument, ParseError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -342,7 +362,7 @@ impl MdxBuilder {
                 track.push(MdxCommand::EndOfTrack(crate::mdx::command::MdxEndOfTrack));
             }
         }
-        self.document.recalculate_offsets();
+        self.document.recalculate_offsets()?;
         Ok(self.document)
     }
 }
@@ -426,13 +446,18 @@ impl MdxDocument {
     ///
     /// Unknown commands whose serialized form is not available produce a zero
     /// length range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if direct edits make a track or tone data offset unrepresentable.
     pub fn sourcemap(&self) -> Vec<Vec<(usize, usize)>> {
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
         let encoded_tracks = serialize_track_commands(&self.tracks);
         let track_lengths = encoded_track_lengths(&encoded_tracks);
         let tone_length = self.tone_bank.to_bytes().len();
-        let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length);
+        let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length)
+            .expect("MDX source map requires representable offsets");
 
         encoded_tracks
             .iter()
@@ -466,14 +491,34 @@ impl MdxDocument {
     /// If LZ compression was enabled on the builder, the serialized body is
     /// encoded using the NanoDrive8-compatible format. Documents parsed from
     /// compressed input are not automatically marked for compressed output.
+    ///
+    /// # Panics
+    ///
+    /// Panics if direct edits make a track or tone data offset unrepresentable.
+    /// Use [`try_to_bytes`][Self::try_to_bytes] to handle these errors.
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.try_to_bytes()
+            .expect("MDX serialization requires representable offsets")
+    }
+
+    /// Serializes the current document, rejecting unrepresentable offsets.
+    ///
+    /// This is the fallible counterpart of [`to_bytes`][Self::to_bytes],
+    /// including for documents whose public fields were edited directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::DataInconsistency`] if a track offset exceeds
+    /// `0xfffe` or a tone data offset exceeds `0xffff`. Tone data following
+    /// the tracks is moved forward when track edits would overlap it.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>, ParseError> {
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
         let tone_bytes = self.tone_bank.to_bytes();
         let encoded_tracks = serialize_track_commands(&self.tracks);
         let track_lengths = encoded_track_lengths(&encoded_tracks);
         let layout =
-            MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_bytes.len());
+            MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_bytes.len())?;
         let mut bytes = header.to_bytes();
         bytes.resize(layout.body_end, 0);
         if let Some(end) = layout.tone_position.checked_add(tone_bytes.len())
@@ -498,13 +543,13 @@ impl MdxDocument {
             }
         }
         if !self.lz_compressed {
-            return bytes;
+            return Ok(bytes);
         }
         let body_start = header.base_offset;
         let mut compressed = bytes[..body_start].to_vec();
         compressed.extend_from_slice(&LZ_STREAM_MARKER);
         compressed.extend_from_slice(&lz::encode(&bytes[body_start..]));
-        compressed
+        Ok(compressed)
     }
 
     /// Synchronizes decoded public header fields with their retained encoded
@@ -532,10 +577,11 @@ impl MdxDocument {
     /// This should be called whenever the tracks or tone bank are modified to ensure
     /// that the track offsets in the header are consistent with the actual positions
     /// of the track data in the MDX document.
-    fn recalculate_offsets(&mut self) {
+    fn recalculate_offsets(&mut self) -> Result<(), ParseError> {
         let track_lengths = serialized_track_lengths(&self.tracks);
         let tone_length = self.tone_bank.to_bytes().len();
-        MdxLayout::calculate(&mut self.header, &self.tracks, &track_lengths, tone_length);
+        MdxLayout::calculate(&mut self.header, &self.tracks, &track_lengths, tone_length)?;
+        Ok(())
     }
 }
 
@@ -635,10 +681,13 @@ fn parse_track(
     end: usize,
     track: usize,
 ) -> Result<Vec<MdxCommand>, ParseError> {
+    let track_bytes = bytes.get(..end).ok_or_else(|| {
+        ParseError::DataInconsistency(format!("MDX track {track} end is outside the file"))
+    })?;
     let mut commands = Vec::new();
 
     while offset < end {
-        let (command, length) = parse_mdx_command(bytes, offset)?;
+        let (command, length) = parse_mdx_command(track_bytes, offset)?;
         if length == 0 {
             return Err(ParseError::DataInconsistency(format!(
                 "MDX track {track} parser returned a zero-length command"
