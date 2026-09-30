@@ -58,6 +58,18 @@ Options:
 
 ## Shell completions
 
+```text
+Generate shell completion scripts
+
+Usage: soundlog completions <SHELL>
+
+Arguments:
+  <SHELL>  [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -h, --help  Print help
+```
+
 Generate a completion script from the current CLI definition with `clap_complete`:
 
 ```bash
@@ -83,20 +95,28 @@ For PowerShell, load completions into the current session with:
 soundlog completions powershell | Out-String | Invoke-Expression
 ```
 
-The `shell` argument selects the target shell; run `soundlog completions --help` to see the supported values.
-
 ## Subcommands and usage
 
 ### `test`
+
+```text
+Test a VGM or VGZ file with a parse/build round trip and display its header
+
+Usage: soundlog test [OPTIONS] <VGM_FILE>
+
+Arguments:
+  <VGM_FILE>  VGM or VGZ input file path (use '-' for stdin)
+
+Options:
+      --dry-run  Dry-run: do not print standard one-line outputs; only emit errors/panics
+  -h, --help     Print help
+```
 
 Run a headless test / round-trip check on a VGM or VGZ file. Useful for automated verification and CI.
 
 ```bash
 soundlog test <VGM_FILE> [--dry-run]
 ```
-
-- `<VGM_FILE>`: path to input VGM or VGZ. Use `-` to read from stdin.
-- `--dry-run`: process the input and run the checks without printing the usual one-line result or diagnostic output. 
 
 Examples:
 
@@ -118,6 +138,20 @@ Behavior:
 - Input detection supports `.vgz`/`.gz` extensions and will attempt gzip decompression when appropriate.
 
 ### `redump`
+
+```text
+Re-dump a VGM or VGZ file, expanding DAC streams to chip writes
+
+Usage: soundlog redump [OPTIONS] <INPUT_VGM> <OUTPUT_VGM>
+
+Arguments:
+  <INPUT_VGM>   Input VGM or VGZ file path
+  <OUTPUT_VGM>  Output VGM file path (use '-' for stdout)
+
+Options:
+      --diag  Print diagnostic output after redump (re-parse output and show diagnostics)
+  -h, --help  Print help
+```
 
 Expand DAC streams from a VGM or VGZ file into explicit chip writes and re-serialize as a VGM file.
 This converts synthesized DAC/digital streams into the equivalent sequence of chip register writes,
@@ -153,7 +187,20 @@ Notes:
 - The `redump` implementation copies header chip registration and some chip-specific configuration fields from the original header into the rebuilt document so the expanded output preserves timing and chip configuration where possible.
 - If `--diag` is specified the rebuilt bytes are re-parsed with the same parser used for input, and a comparison table or diagnostics are printed. This is helpful to validate that expansion and serialization did not change the command semantics.
 
+
 ### `parse`
+
+```text
+Parse a VGM or VGZ file and display its commands, offsets, and lengths
+
+Usage: soundlog parse <VGM_FILE>
+
+Arguments:
+  <VGM_FILE>  VGM or VGZ file path to parse
+
+Options:
+  -h, --help  Print help
+```
 
 Parse a VGM or VGZ file and display its command stream with offsets and lengths.
 
@@ -192,7 +239,24 @@ Notes:
 - The output is intended as an inspection aid — it does not expand DAC streams (use `redump` for expansion) and does not perform state tracking (use `stream` for event detection and state tracking).
 - When comparing parse output with `redump` or `stream`, note that `redump` may reserialize the document with expanded stream writes and `stream` will expand stream-generated writes on the timeline; use those commands accordingly for deeper inspection.
 
+
 ### `stream`
+
+```text
+Stream a VGM or VGZ file and display its register writes and detected events
+
+Usage: soundlog stream [OPTIONS] <VGM_FILE>
+
+Arguments:
+  <VGM_FILE>  VGM or VGZ file to stream
+
+Options:
+      --dry-run                        Dry-run mode: process the file without printing output (only errors/panics)
+      --loop-count <LOOP_COUNT>        Loop count limit (default: 1 when unspecified — play once). Pass an explicit value to override (e.g. `--loop-count 2` to play twice)
+      --loop-modifier <LOOP_MODIFIER>  VGM loop_modifier override (0 = use file default; see VGM spec §loop_modifier)
+      --loop-base <LOOP_BASE>          VGM loop_base override (see VGM spec §loop_base)
+  -h, --help                           Print help
+```
 
 Process a VGM or VGZ file as a command stream and display register writes with state events.
 
@@ -231,15 +295,8 @@ Notes:
 - `stream` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
 - The frequency values shown in `stream` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
 
+
 ### `mdx`
-
-The `mdx` command group provides MDX parsing, conversion, and command streaming through
-the same VGM command and register-write processing used by the other CLI
-commands. It also provides MML source validation and compilation.
-
-```bash
-soundlog mdx <COMMAND>
-```
 
 ```text
 MDX file operations
@@ -259,7 +316,30 @@ Options:
   -h, --help  Print help
 ```
 
+The `mdx` command group provides MDX parsing, conversion, and command streaming through
+the same VGM command and register-write processing used by the other CLI
+commands. It also provides MML source validation and compilation.
+
+```bash
+soundlog mdx <COMMAND>
+```
+
+
 #### `mdx check`
+
+```text
+Parse and validate an MML source file
+
+Usage: soundlog mdx check [OPTIONS] <MML_FILE>
+
+Arguments:
+  <MML_FILE>  MML source file to parse, or '-' to read from stdin
+
+Options:
+      --stdin    Read source from stdin while using MML_FILE for diagnostic locations
+  -v, --verbose  Print the parsed MML syntax tree
+  -h, --help     Print help
+```
 
 Parse and validate an MML source file. Pass `-` as the file to read from stdin;
 use `--stdin` to read stdin while keeping the supplied filename in diagnostics
@@ -272,6 +352,7 @@ cat song.mml | soundlog mdx check -
 # For efm-langserver and similar LSP lint integrations:
 cat unsaved.mml | soundlog mdx check songs/song.mml --stdin
 ```
+
 
 To run the check on the active MML file from VS Code and report diagnostics in
 the Problems panel, add the following task to `.vscode/tasks.json`. This
@@ -347,6 +428,20 @@ or `Space d` to open the diagnostic picker.
 
 #### `mdx compile`
 
+```text
+Compile an MML source file into an MDX or VGM binary file
+
+Usage: soundlog mdx compile [OPTIONS] <MML_FILE> <OUTPUT_FILE>
+
+Arguments:
+  <MML_FILE>     MML source file to parse
+  <OUTPUT_FILE>  Output MDX or VGM file path
+
+Options:
+      --output-format <OUTPUT_FORMAT>  Output format [default: mdx] [possible values: mdx, vgm]
+  -h, --help                           Print help
+```
+
 Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
 instead; MDX is the default.
 
@@ -354,10 +449,37 @@ instead; MDX is the default.
 soundlog mdx compile <MML_FILE> <OUTPUT_FILE> [--output-format mdx|vgm]
 ```
 
+
 When producing VGM from MML that declares `#pcmfile`, the referenced PDX file
 is searched for relative to the input MML file.
 
 #### `mdx convert`
+
+```text
+Convert an MDX file to a VGM file
+
+Usage: soundlog mdx convert [OPTIONS] <MDX_FILE> <VGM_FILE>
+
+Arguments:
+  <MDX_FILE>  MDX input file path
+  <VGM_FILE>  VGM output file path
+
+Options:
+    --pdx <PDX_FILE>
+      Optional PDX file used for PCM references
+    --ym2151-clock <YM2151_CLOCK>
+      YM2151 clock in Hz [default: 4000000]
+    --okim6258-clock <OKIM6258_CLOCK>
+      OKIM6258 clock in Hz [default: 8000000]
+    --loop-count <COUNT>
+      Number of whole-song playthroughs to write (default: 1; 0 means 1; no VGM loop point)
+    --native-loop
+      Use a native VGM loop point instead of a finite loop count. Sets VGM header loop_offset and loop_samples when a loop is detected. The estimated loop point may be inaccurate for per-track MDX F1 loops
+    --adpcm-mode <ADPCM_MODE>
+      ADPCM mode: through, resample, or lpf [default: through] [possible values: through, resample, lpf]
+  -h, --help
+      Print help
+```
 
 Convert an MDX file to a VGM file. Use `mdx compile --output-format vgm` for
 MML input.
@@ -365,6 +487,7 @@ MML input.
 ```bash
 soundlog mdx convert <MDX_FILE> <VGM_FILE> [OPTIONS]
 ```
+
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
@@ -385,6 +508,19 @@ is equivalent to `--loop-count 1`.
 
 #### `mdx parse`
 
+```text
+Parse an MDX or MML file and display its track commands
+
+Usage: soundlog mdx parse [OPTIONS] <MDX_OR_MML_FILE>
+
+Arguments:
+  <MDX_OR_MML_FILE>  MDX or MML input file path
+
+Options:
+      --pdx <PDX_FILE>  Optional PDX file to parse alongside an MDX input
+  -h, --help            Print help
+```
+
 Parse an MDX file and display its track commands with source offsets and
 lengths, in the same inspection style as `soundlog parse`. MML files are also
 accepted; they are compiled to MDX commands for display. An optional PDX file
@@ -393,6 +529,7 @@ can be supplied for MDX packages that reference external PCM data.
 ```bash
 soundlog mdx parse <MDX_OR_MML_FILE> [--pdx <PDX_FILE>]
 ```
+
 
 Examples:
 
@@ -409,12 +546,38 @@ matching file is found, processing continues without PDX data.
 
 #### `mdx test`
 
+```text
+Convert an MDX file and verify that the generated VGM parses
+
+Usage: soundlog mdx test [OPTIONS] <MDX_FILE>
+
+Arguments:
+  <MDX_FILE>  MDX input file path
+
+Options:
+    --pdx <PDX_FILE>
+      Optional PDX file used for PCM references
+    --dry-run
+      Dry-run mode: process the file without printing diagnostics
+    --ym2151-clock <YM2151_CLOCK>
+      YM2151 clock in Hz [default: 4000000]
+    --okim6258-clock <OKIM6258_CLOCK>
+      OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks) [default: 8000000]
+    --loop-count <COUNT>
+      Number of whole-song playthroughs; COUNT follows VGM semantics (0 means 1)
+    --adpcm-mode <ADPCM_MODE>
+      ADPCM mode: through, resample, or lpf (default: through) [default: through] [possible values: through, resample, lpf]
+  -h, --help
+      Print help
+```
+
 Convert an MDX file to VGM in memory and verify that the generated VGM can be
 parsed as a VGM document.
 
 ```bash
 soundlog mdx test <MDX_FILE> [OPTIONS]
 ```
+
 
 The test options include `--pdx <PDX_FILE>`, `--dry-run`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--sample-rate <HZ>`, and `--loop-count <COUNT>`.
@@ -431,6 +594,31 @@ soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 
 #### `mdx stream`
 
+```text
+Convert an MDX or MML file lazily to a command stream and print register writes and events in the same format as `soundlog stream`
+
+Usage: soundlog mdx stream [OPTIONS] <MDX_OR_MML_FILE>
+
+Arguments:
+  <MDX_OR_MML_FILE>  MDX or MML input file path
+
+Options:
+    --pdx <PDX_FILE>
+      Optional PDX file used for PCM references
+    --dry-run
+      Dry-run mode: process the file without printing output (only errors/panics)
+    --ym2151-clock <YM2151_CLOCK>
+      YM2151 clock in Hz [default: 4000000]
+    --okim6258-clock <OKIM6258_CLOCK>
+      OKIM6258 clock in Hz (only used for files with PCM8/PCM8A tracks; see `MdxCommands::Test`'s `okim6258_clock`) [default: 8000000]
+    --loop-count <COUNT>
+      Number of whole-song playthroughs (default: 1; COUNT follows VGM semantics, 0 means 1)
+    --adpcm-mode <ADPCM_MODE>
+      ADPCM mode: through, resample, or lpf (default: through) [default: through] [possible values: through, resample, lpf]
+  -h, --help
+      Print help
+```
+
 Convert an MDX or MML file lazily and print the same register-write and event
 log format as `soundlog stream`. MML input is compiled to MDX first; the
 complete VGM command list is not built up front.
@@ -438,6 +626,7 @@ complete VGM command list is not built up front.
 ```bash
 soundlog mdx stream <MDX_OR_MML_FILE> [OPTIONS]
 ```
+
 
 The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
@@ -457,7 +646,35 @@ soundlog mdx stream samples/example.mml
 
 ### `pdx`
 
+```text
+PDX file operations
+
+Usage: soundlog pdx <COMMAND>
+
+Commands:
+  test    Validate a PDX file and display its banks and sample allocation
+  build   Convert WAV/raw samples to ADPCM as needed and write a PDX file
+  export  Export PDX samples as raw ADPCM bytes or mono WAV files
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
 #### `pdx test`
+
+```text
+Validate a PDX file and display its banks and sample allocation
+
+Usage: soundlog pdx test [OPTIONS] <PDX_FILE>
+
+Arguments:
+  <PDX_FILE>  PDX input file
+
+Options:
+      --dry-run  Dry-run: validate the file without printing its summary
+  -h, --help     Print help
+```
 
 Inspect a PDX file, validate its sample ranges, and display compression,
 bank/sample counts, per-bank allocation totals, and each populated note slot.
@@ -466,9 +683,26 @@ bank/sample counts, per-bank allocation totals, and each populated note slot.
 soundlog pdx test <PDX_FILE> [--dry-run]
 ```
 
+
 `--dry-run` performs validation while suppressing the summary output.
 
 #### `pdx build`
+
+```text
+Convert WAV/raw samples to ADPCM as needed and write a PDX file
+
+Usage: soundlog pdx build [OPTIONS] <INPUT_WAV_OR_RAW>... <OUTPUT_PDX>
+
+Arguments:
+  [INPUT_WAV_OR_RAW_OR_OUTPUT_PDX] [INPUT_WAV_OR_RAW_OR_OUTPUT_PDX]...
+          Input WAV/raw samples followed by the output PDX path
+
+Options:
+  -v, --verbose                   Print detailed input and output information
+      --disable-12bit-conversion  Skip 16-bit WAV PCM scaling; the ADPCM encoder still clamps to signed 12-bit
+      --enable-lz                 Store the PDX payload using LZ compression
+  -h, --help                      Print help
+```
 
 Build a PDX sample bank from one or more mono WAV or raw ADPCM samples. The
 output path is the final argument. Successful builds are quiet by default; add
@@ -487,6 +721,7 @@ soundlog pdx build <INPUT_WAV_OR_RAW>... <OUTPUT_PDX> [--enable-lz] [--verbose] 
 soundlog pdx build exported-samples/bank-00-note-00.raw exported-samples/bank-01-note-03.raw rebuilt.pdx
 ```
 
+
 To restore exported samples to their original slots, keep the
 `bank-<BANK>-note-<NOTE>` filename format. For example, `bank-01-note-03.wav`
 or `bank-01-note-03.raw` targets bank 1, note 3 (both indices are zero-based).
@@ -500,6 +735,35 @@ rejected.
 
 #### `pdx export`
 
+```text
+Export PDX samples as raw ADPCM bytes or mono WAV files
+
+LZ-compressed PDX input is decompressed first. Raw output contains the original
+ADPCM sample bytes, not the PDX-level LZ stream.
+
+Usage: soundlog pdx export [OPTIONS] <INPUT_PDX> <OUTPUT_DIR>
+
+Arguments:
+  <INPUT_PDX>
+    Input PDX file
+
+  <OUTPUT_DIR>
+    Directory for exported sample files
+
+Options:
+      --sample-rate <HZ>
+    Sample rate for WAV output (ignored for raw output)
+    [default: 15625]
+      --output-format <OUTPUT_FORMAT>
+    Export samples as raw ADPCM bytes or decoded WAV audio
+    [default: raw]
+    [possible values: raw, wav]
+  -v, --verbose
+    Print detailed information about exported samples
+  -h, --help
+    Print help (see a summary with '-h')
+```
+
 By default (`--output-format raw`), export each populated ADPCM sample as its
 original raw bytes in a `bank-00-note-00.raw` file. Pass
 `--output-format wav` to decode samples into mono 16-bit PCM WAV files instead.
@@ -512,6 +776,7 @@ counts.
 soundlog pdx export samples.pdx exported-samples [--verbose]
 soundlog pdx export samples.pdx exported-wavs --output-format wav --sample-rate 15625 --verbose
 ```
+
 
 WAV export contains decoded ADPCM audio, not the original WAV samples used to
 build the PDX. Rebuilding either raw ADPCM exports or WAV exports preserves the
