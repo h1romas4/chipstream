@@ -57,6 +57,12 @@ a source location. Call it only after a playback error to avoid source-map
 allocations on successful compilation or playback. The source map is never stored
 in the generated MDX document.
 
+For compilation failures, use [`locate_compile_error`](mdx::locate_compile_error)
+with the original source. It reparses and recompiles only to recover the failing
+command's one-based line/column, including nested repeats and portamento targets.
+It returns `None` if parsing fails, compilation succeeds, or the error has no
+command-level source location. The ordinary `CompileError` API is unchanged.
+
 ## Streaming Example
 
 The following example parses and compiles MML, then uses [`soundlog`] to convert

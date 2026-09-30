@@ -30,6 +30,22 @@ pub(super) fn parse_reader_with_source<R: Read>(
     Ok((document, source))
 }
 
+pub(super) fn compile_document(
+    input: &Path,
+    document: &mmlx::mdx::MmlDocument,
+    source: &str,
+) -> Result<soundlog::mdx::document::MdxDocument> {
+    mmlx::mdx::compile(document).map_err(|error| match mmlx::mdx::locate_compile_error(source) {
+        Some(position) => anyhow!(
+            "{}:{}:{}: error: compile error: {error}",
+            input.display(),
+            position.line_number,
+            position.column
+        ),
+        None => anyhow!("{}: error: compile error: {error}", input.display()),
+    })
+}
+
 pub(super) fn playback_error(
     input: &Path,
     source: &str,
@@ -95,6 +111,51 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn compile_diagnostics_locate_original_reader_source_and_preserve_fallback() {
+        let input = Path::new("songs/unsaved.mml");
+        for (source, line, column, message) in [
+            ("A a>>>>>>>>>a", 1, 13, "note value 162"),
+            ("AB r4\nA [r4 [>>>>>>>>a]2]3", 2, 16, "note value 150"),
+            ("A c193", 1, 3, "note length value 0"),
+            ("A c_>>>>>>>>>a", 1, 14, "note value 162"),
+            ("A /* \u{65e5} */ o0 c", 1, 14, "note value -3"),
+        ] {
+            let (document, original) =
+                parse_reader_with_source(input, Cursor::new(source)).unwrap();
+            let error = compile_document(input, &document, &original)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "songs/unsaved.mml:{line}:{column}: error: compile error: {message}"
+                )),
+                "{source}: {error}"
+            );
+        }
+        let source = "A r4";
+        let mut document = parse_source(input, source).unwrap();
+        document.voices.push(mmlx::mdx::MmlVoice {
+            number: 1,
+            values: vec![1],
+        });
+        let original = mmlx::mdx::compile(&document).unwrap_err();
+        assert!(matches!(
+            original,
+            mmlx::mdx::CompileError::InvalidVoice {
+                number: 1,
+                parameter_count: 1
+            }
+        ));
+        let error = compile_document(input, &document, source)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!("songs/unsaved.mml: error: compile error: {original}")
+        );
+    }
 
     #[test]
     fn playback_diagnostics_fall_back_without_guessing_source_locations() {

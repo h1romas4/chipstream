@@ -5,6 +5,7 @@
 //! constructs cannot be represented by that model; it does not serialize the
 //! resulting document to bytes.
 
+use std::cell::Cell;
 use std::fmt;
 
 use soundlog::mdx::command::{
@@ -92,7 +93,21 @@ impl std::error::Error for CompileError {}
 /// assert!(!mdx_bytes.is_empty());
 /// ```
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
-    compile_internal(document, None, None)
+    compile_internal(document, None, None, None)
+}
+
+/// Locate the MML command responsible for a compilation failure.
+///
+/// Reparses and recompiles the original source only for post-failure diagnostics.
+/// Returns `None` when parsing fails, compilation succeeds, or the failure has
+/// no command-level source position (for example a document builder error).
+/// Normal [`compile`] does not collect diagnostic positions.
+pub fn locate_compile_error(source: &str) -> Option<SourcePosition> {
+    let (document, sources) = parse_with_positions(source).ok()?;
+    let position = Cell::new(None);
+    compile_internal(&document, Some(&sources), None, Some(&position))
+        .err()
+        .and_then(|_| position.get())
 }
 
 /// Locate the MML command that generated a zero-based MDX track/command index.
@@ -111,7 +126,7 @@ pub fn locate_source_command(
     }
     let (document, sources) = parse_with_positions(source).ok()?;
     let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
-    compile_internal(&document, Some(&sources), Some(&mut positions)).ok()?;
+    compile_internal(&document, Some(&sources), Some(&mut positions), None).ok()?;
     positions[track].get(command_index).copied().flatten()
 }
 
@@ -119,6 +134,7 @@ fn compile_internal(
     document: &MmlDocument,
     sources: Option<&MmlSourceMap>,
     mut positions: Option<&mut MdxSourceMap>,
+    error_position: Option<&Cell<Option<SourcePosition>>>,
 ) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
     let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
@@ -151,6 +167,7 @@ fn compile_internal(
             sources
                 .and_then(|sources| sources.get(source_index))
                 .map(Vec::as_slice),
+            error_position,
         )?;
         tracks[track_index].extend(commands);
         if let (Some(positions), Some(command_positions)) = (&mut positions, command_positions) {
@@ -158,6 +175,9 @@ fn compile_internal(
         }
     }
 
+    if let Some(error_position) = error_position {
+        error_position.set(None);
+    }
     for (track_index, mut commands) in tracks.into_iter().take(track_count).enumerate() {
         if let Some(loop_start) = track_states[track_index].loop_start {
             let track_length = command_bytes(&commands);
@@ -285,8 +305,9 @@ fn compile_track(
     state: &mut TrackState,
     base_offset: usize,
     sources: Option<&[CommandSource]>,
+    error_position: Option<&Cell<Option<SourcePosition>>>,
 ) -> Result<CompiledCommands, CompileError> {
-    compile_commands(commands, state, base_offset, sources)
+    compile_commands(commands, state, base_offset, sources, error_position)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -295,22 +316,36 @@ fn compile_commands(
     state: &mut TrackState,
     base_offset: usize,
     sources: Option<&[CommandSource]>,
+    error_position: Option<&Cell<Option<SourcePosition>>>,
 ) -> Result<CompiledCommands, CompileError> {
     let mut output = Vec::new();
-    let mut output_positions = sources.map(|_| Vec::new());
+    let mut output_positions = sources
+        .filter(|_| error_position.is_none())
+        .map(|_| Vec::new());
     let mut index = 0;
     let mut last_note_output: Option<(usize, u16, u16)> = None;
     while index < commands.len() {
         let command = &commands[index];
         let command_source = sources.and_then(|sources| sources.get(index));
         let position = command_source.map(|source| source.position);
+        if let Some(error_position) = error_position {
+            error_position.set(position);
+        }
         let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
         let mut consumed = 1;
         if matches!(commands.get(index + 1), Some(MmlCommand::Portamento))
             && let Some(target) = commands.get(index + 2)
             && let (Some(source_note), Some(target_note)) = (
                 command_note_number(command, state.octave)?,
-                command_note_number(target, state.octave)?,
+                command_note_number(target, state.octave).inspect_err(|_| {
+                    if let Some(error_position) = error_position {
+                        error_position.set(
+                            sources
+                                .and_then(|sources| sources.get(index + 2))
+                                .map(|source| source.position),
+                        );
+                    }
+                })?,
             )
         {
             let ticks = command_note_ticks(command, state)?.ok_or(CompileError::InvalidValue {
@@ -348,7 +383,11 @@ fn compile_commands(
                     state,
                     body_base,
                     command_source.map(|source| source.body.as_slice()),
+                    error_position,
                 )?;
+                if let Some(error_position) = error_position {
+                    error_position.set(position);
+                }
                 let body_length = command_bytes(&body_commands);
                 patch_repeat_escape_offsets(&mut body_commands, body_length)?;
                 if let Some(positions) = &mut output_positions {
@@ -449,7 +488,17 @@ fn compile_commands(
                         }
                     }
                     if let Some(target) = commands.get(target_index) {
-                        if let Some(target_note) = command_note_number(target, target_octave)? {
+                        if let Some(target_note) = command_note_number(target, target_octave)
+                            .inspect_err(|_| {
+                                if let Some(error_position) = error_position {
+                                    error_position.set(
+                                        sources
+                                            .and_then(|sources| sources.get(target_index))
+                                            .map(|source| source.position),
+                                    );
+                                }
+                            })?
+                        {
                             state.octave = target_octave;
                             let offset = portamento_offset(source_note, target_note, ticks)?;
                             output.insert(
@@ -906,6 +955,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compile_error_locations_cover_notes_lengths_repeats_and_lookahead() {
+        for (source, line, column) in [
+            ("A a>>>>>>>>>a", 1, 13),
+            ("AB r4\nA [r4 [>>>>>>>>a]2]3", 2, 16),
+            ("A o0 c", 1, 6),
+            ("A c193", 1, 3),
+            ("A l193 c", 1, 8),
+            ("A o8 c_b", 1, 8),
+            ("A c_>>>>>>>>>a", 1, 14),
+        ] {
+            let document = super::super::parse(source).unwrap();
+            let original = compile(&document).unwrap_err();
+            let (located_document, sources) = parse_with_positions(source).unwrap();
+            let position = Cell::new(None);
+            assert_eq!(
+                compile_internal(&located_document, Some(&sources), None, Some(&position))
+                    .unwrap_err(),
+                original
+            );
+            assert_eq!(
+                locate_compile_error(source),
+                Some(SourcePosition {
+                    line_number: line,
+                    column
+                }),
+                "{source}"
+            );
+        }
+        assert_eq!(locate_compile_error("A a>>>>>>>>>"), None);
+        assert_eq!(locate_compile_error("A ?"), None);
+        assert_eq!(locate_compile_error("@1 = { 1 }\nA r4"), None);
+        let (mut document, mut sources) = parse_with_positions("A r4").unwrap();
+        document.tracks[0].commands = vec![MmlCommand::Rest { length: Some(4) }; 65_536];
+        let rest_source = sources[0][0].clone();
+        sources[0].resize(65_536, rest_source);
+        let position = Cell::new(None);
+        let result = compile_internal(&document, Some(&sources), None, Some(&position));
+        assert!(matches!(result, Err(CompileError::Builder(_))));
+        assert_eq!(position.get(), None);
+    }
+
+    #[test]
     fn diagnostic_mapping_preserves_compilation_and_maps_split_notes_and_repeats() {
         for source in [
             "AB @42 c%600& r%300 d4",
@@ -920,7 +1011,7 @@ mod tests {
             let (document, sources) = parse_with_positions(source).unwrap();
             let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
             let diagnosed =
-                compile_internal(&document, Some(&sources), Some(&mut positions)).unwrap();
+                compile_internal(&document, Some(&sources), Some(&mut positions), None).unwrap();
             let normal = compile(&document).unwrap();
             assert_eq!(diagnosed.to_bytes(), normal.to_bytes(), "{source}");
             for (track, commands) in diagnosed.tracks.iter().enumerate() {

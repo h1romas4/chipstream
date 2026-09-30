@@ -6,7 +6,7 @@ use soundlog::mdx::compat::normalize_mxdrv16y_tracks;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 
-use super::mml::parse_source;
+use super::mml::{compile_document, parse_source};
 
 pub(super) fn find_pdx_path(input: &Path, name: &str) -> Option<PathBuf> {
     let parent = input
@@ -57,8 +57,7 @@ fn read_mml_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read MML input: {}", input.display()))?;
     let parsed = parse_source(input, &source)?;
-    let mdx = mmlx::mdx::compile(&parsed)
-        .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
+    let mdx = compile_document(input, &parsed, &source)?;
     let mdx_bytes = mdx.to_bytes();
     let pdx_bytes = read_pdx_bytes(input, pdx, mdx.header.pdx_name.as_deref())?;
     MdxPackage::parse(&mdx_bytes, pdx_bytes.as_deref())

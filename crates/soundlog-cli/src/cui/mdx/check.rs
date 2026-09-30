@@ -9,7 +9,9 @@ use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 
-use super::mml::{parse_input_with_source, parse_reader_with_source, playback_error};
+use super::mml::{
+    compile_document, parse_input_with_source, parse_reader_with_source, playback_error,
+};
 
 /// Options for parsing and bounded lazy playback validation.
 #[derive(Debug, Clone, Copy)]
@@ -92,8 +94,7 @@ fn check_document(
             input.display()
         ));
     }
-    let mdx = mmlx::mdx::compile(document)
-        .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
+    let mdx = compile_document(input, document, source)?;
     check_compiled_document(input, mdx, source, options)
 }
 
@@ -161,6 +162,7 @@ mod tests {
         }
         for (source, message) in [
             ("A c193", "compile error"),
+            ("A a>>>>>>>>>a", "note value 162"),
             ("A @42 c4", "missing tone for voice 42"),
         ] {
             let document = super::super::mml::parse_source(input, source).unwrap();
@@ -169,6 +171,12 @@ mod tests {
                 .to_string();
             assert!(error.starts_with("songs/check.mml:"));
             assert!(error.contains(message), "{error}");
+            if source == "A a>>>>>>>>>a" {
+                assert!(
+                    error.starts_with("songs/check.mml:1:13: error: compile error:"),
+                    "{error}"
+                );
+            }
             if source.contains("@42") {
                 assert!(error.contains("track 0, MDX command 1"), "{error}");
             }

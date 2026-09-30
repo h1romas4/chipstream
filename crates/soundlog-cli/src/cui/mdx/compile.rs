@@ -8,7 +8,7 @@ use soundlog::meta::Gd3;
 
 use super::check::{CheckOptions, check_compiled_document};
 use super::find_pdx_path;
-use super::mml::{parse_input_with_source, playback_error};
+use super::mml::{compile_document, parse_input_with_source, playback_error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -37,8 +37,7 @@ pub fn compile_with_playback_check(
     playback_check: bool,
 ) -> Result<()> {
     let (source, source_text) = parse_input_with_source(input)?;
-    let mdx_document = mmlx::mdx::compile(&source)
-        .map_err(|error| anyhow!("{}: error: compile error: {error}", input.display()))?;
+    let mdx_document = compile_document(input, &source, &source_text)?;
     match output_format {
         OutputFormat::Mdx => {
             if playback_check {
@@ -120,6 +119,34 @@ mod tests {
         let input = directory.join("song.mml");
         let output = directory.join("song.mdx");
         fs::write(&output, b"existing output").unwrap();
+        fs::write(&input, "A a>>>>>>>>>a").unwrap();
+        let expected = format!(
+            "{}:1:13: error: compile error: note value 162 cannot be represented in MDX",
+            input.display()
+        );
+        for format in [OutputFormat::Mdx, OutputFormat::Vgm] {
+            for playback_check in [false, true] {
+                assert_eq!(
+                    compile_with_playback_check(
+                        &input,
+                        &output,
+                        format,
+                        AdpcmMode::Through,
+                        playback_check
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    expected
+                );
+                assert_eq!(fs::read(&output).unwrap(), b"existing output");
+            }
+        }
+        assert_eq!(
+            super::super::package::read_mdx_or_mml_package(&input, None)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
         for (source, line, column, command) in [
             ("A @42 c4", 1, 7, 1),
             ("AB @42 c4\nP r4", 1, 8, 2),

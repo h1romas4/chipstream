@@ -348,8 +348,15 @@ A missing tone is reported at the note that triggers key-on, not the earlier
 voice selection. Errors without a source position, such as tick-budget exhaustion,
 use `file: error: ...`. Parse errors retain source locations.
 
+Compilation errors tied to a command, including out-of-range notes and note
+lengths, also report `file:line:column: error: compile error: ...`. For example,
+`A a>>>>>>>>>a` points to the last `a` at line 1, column 13. Document-wide errors
+without a command location retain the file-only diagnostic. This applies to
+`check`, both `compile` output formats, and MML package loading; skipping playback
+checks does not suppress compilation errors.
+
 The original input text is retained by the CLI, including stdin buffers. Only
-after a positioned playback error occurs is that text reparsed and recompiled to
+after a compilation or positioned playback error occurs is that text reparsed and recompiled to
 recover its source location; playback is not rerun. Successful checks allocate
 no MML/MDX source map, and no source information is added to MDX packages or the
 playback engine.
