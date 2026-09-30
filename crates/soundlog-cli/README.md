@@ -438,12 +438,13 @@ Arguments:
   <OUTPUT_FILE>  Output MDX or VGM file path
 
 Options:
-      --output-format <OUTPUT_FORMAT>  Output format [default: mdx] [possible values: mdx, vgm]
+      --output-format <OUTPUT_FORMAT>  Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`) [default: mdx] [possible values: mdx, vgm]
   -h, --help                           Print help
 ```
 
 Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
-instead; MDX is the default.
+instead; MDX is the default. VGM output uses the default conversion settings,
+including native VGM looping, equivalent to `mdx convert --native-loop`.
 
 ```bash
 soundlog mdx compile <MML_FILE> <OUTPUT_FILE> [--output-format mdx|vgm]

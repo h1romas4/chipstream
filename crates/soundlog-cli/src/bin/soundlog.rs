@@ -153,7 +153,7 @@ enum MdxCommands {
         #[arg(value_name = "OUTPUT_FILE")]
         output: PathBuf,
 
-        /// Output format
+        /// Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`).
         #[arg(long, value_enum, default_value_t = MmlOutputFormat::Mdx)]
         output_format: MmlOutputFormat,
     },
