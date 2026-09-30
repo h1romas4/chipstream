@@ -15,6 +15,7 @@ Key features:
   processor that can accept either chunked binary input (via `push_chunk`),
   raw VGM bytes (via `from_vgm`), or a pre-parsed `VgmDocument` (via `from_document`),
   and yields parsed `VgmCommand` values as they become available.
+- Custom streams: `VgmStream::from_generator` accepts user-defined command generators.
 - Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
   callback registration for chip register writes with automatic state tracking
   and event detection (KeyOn, KeyOff, ToneChange).
@@ -356,6 +357,21 @@ for chunk in chunks {
 `VgmCommandGenerator` is the extension point for producing VGM commands from
 your own source or another file format. Implement `next_command()` and pass
 your boxed generator to `VgmStream::from_generator`.
+
+The trait definition is:
+
+```rust
+use soundlog::vgm::command::VgmCommand;
+use soundlog::ParseError;
+
+pub trait VgmCommandGenerator: std::fmt::Debug {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError>;
+}
+```
+
+Return `Ok(Some(command))` to yield a command, `Ok(None)` when the generator
+has permanently finished, or `Err(error)` if command generation fails.
+Implementations must also derive or implement `Debug`.
 
 MDX conversion uses the same interface: its lazy generator is one
 `VgmCommandGenerator` implementation. The example below shows how to use it;
