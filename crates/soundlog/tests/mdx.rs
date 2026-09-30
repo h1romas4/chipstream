@@ -2794,6 +2794,11 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
         command,
         VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 0x01
     )));
+
+    let eager_commands = drain_finite_stream(VgmStream::from_document(document));
+    let generator = to_vgm_stream_generator(package, options).expect("convert PCM package lazily");
+    let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
+    assert_eq!(lazy_commands, eager_commands);
 }
 
 #[test]

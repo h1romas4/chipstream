@@ -883,8 +883,10 @@ struct PcmOutputState {
     encoder: AdpcmEncoder,
     /// Persistent output-filter state for the mixed PCM8 stream.
     filter: PcmOutputFilter,
-    /// Raw PCM1 ADPCM payload used by the `Through` mode.
-    raw_bytes: Vec<u8>,
+    /// PDX reference for the raw PCM1 ADPCM payload used by `Through` mode.
+    raw_sample: Option<MdxPcmReference>,
+    /// Length of the referenced raw payload.
+    raw_length: usize,
     /// Next raw byte to emit in the `Through` mode.
     raw_position: usize,
     /// MCK-driven OKIM6258 data-register write scheduler.
@@ -901,7 +903,8 @@ impl PcmOutputState {
             sample_ranges: HashMap::new(),
             encoder: AdpcmEncoder::default(),
             filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
-            raw_bytes: Vec::new(),
+            raw_sample: None,
+            raw_length: 0,
             raw_position: 0,
             mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE, 2),
         }
@@ -910,7 +913,7 @@ impl PcmOutputState {
     /// Reports whether raw bytes or mixed channel blocks still need output.
     fn has_pending_output(&self, pcm_mode: MdxPcmMode, adpcm_mode: AdpcmMode) -> bool {
         let raw_pending =
-            matches!(pcm_mode, MdxPcmMode::LegacyAdpcm) && self.raw_position < self.raw_bytes.len();
+            matches!(pcm_mode, MdxPcmMode::LegacyAdpcm) && self.raw_position < self.raw_length;
         let mixed_pending = !(matches!(pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(adpcm_mode, AdpcmMode::Through))
             && self
@@ -971,16 +974,17 @@ impl PcmOutputState {
         state.hold = hold;
     }
 
-    /// Replaces the raw pass-through payload and rewinds its read position.
-    fn set_raw_bytes(&mut self, bytes: &[u8]) {
-        self.raw_bytes.clear();
-        self.raw_bytes.extend_from_slice(bytes);
+    /// Selects a raw pass-through payload without copying it and rewinds playback.
+    fn set_raw_sample(&mut self, reference: MdxPcmReference, length: usize) {
+        self.raw_sample = Some(reference);
+        self.raw_length = length;
         self.raw_position = 0;
     }
 
-    /// Discards the raw pass-through payload and resets its read position.
-    fn clear_raw_bytes(&mut self) {
-        self.raw_bytes.clear();
+    /// Clears the raw pass-through reference and resets its read position.
+    fn clear_raw_sample(&mut self) {
+        self.raw_sample = None;
+        self.raw_length = 0;
         self.raw_position = 0;
     }
 
@@ -1013,7 +1017,7 @@ impl PcmOutputState {
     }
 
     /// Produces the next mixed or raw ADPCM byte for the output stream.
-    fn next_adpcm_byte(&mut self, mix_pcm: bool) -> u8 {
+    fn next_adpcm_byte(&mut self, mix_pcm: bool, package: &MdxPackage) -> u8 {
         if mix_pcm {
             pcm_mixer::mix_and_encode_byte(
                 &mut self.channels,
@@ -1023,8 +1027,10 @@ impl PcmOutputState {
             )
         } else {
             let byte = self
-                .raw_bytes
-                .get(self.raw_position)
+                .raw_sample
+                .as_ref()
+                .and_then(|reference| package.pcm_sample_bytes(reference))
+                .and_then(|bytes| bytes.get(self.raw_position))
                 .copied()
                 .unwrap_or(0x80);
             self.raw_position = self.raw_position.saturating_add(1);
@@ -1378,8 +1384,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 
     /// Applies an ADPCM/PCM key-on for `track` (>= 8): resolves the note
     /// (`0x80`-based) against the track's current PDX bank and data format,
-    /// decoding and caching the sample data as needed. A held channel playing
-    /// the same sample is not triggered again.
+    /// referencing raw ADPCM or decoding and caching mixed PCM as needed.
+    /// A held channel playing the same sample is not triggered again.
     fn begin_pcm_key_on(&mut self, track: usize, note: u8) {
         let Some(note_index) = note.checked_sub(0x80) else {
             return;
@@ -1418,18 +1424,25 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     .as_ref()
                     .and_then(|pdx| pdx.entry(bank, note_index)),
             };
-            let raw_bytes = self
+            let raw_length = self
                 .package
                 .borrow()
                 .pcm_sample_bytes(&reference)
-                .unwrap_or_default();
-            self.pcm_output.set_raw_bytes(raw_bytes);
+                .map_or(0, <[u8]>::len);
+            self.pcm_output.set_raw_sample(reference, raw_length);
         }
         let pcm16_is_15khz = format == Pcm8aFormat::Pcm16 && rate_step == 0x10000;
-        let range = {
+        let range = if self.pcm_uses_mixer() {
             let package = self.package.borrow();
             self.pcm_output
                 .decode_sample(package, bank, note_index, format, pcm16_is_15khz)
+        } else {
+            self.package
+                .borrow()
+                .pdx
+                .as_ref()
+                .and_then(|pdx| pdx.sample_bytes(bank, note_index))
+                .map(|bytes| (0, bytes.len() * 2))
         };
         self.pcm_output
             .start_channel(channel, block_key, range, rate_step, gain, tie);
@@ -1484,7 +1497,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 && track == 8
                 && !matches!(&command, MdxCommand::Note(_))
             {
-                self.pcm_output.clear_raw_bytes();
+                self.pcm_output.clear_raw_sample();
             }
             match command {
                 MdxCommand::Rest(command) => {
@@ -2325,12 +2338,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         ));
     }
 
-    /// Mixes and re-encodes one ADPCM byte (2 samples) from the 8 PCM8
-    /// channels and writes it directly to the OKIM6258 data register (1).
+    /// Produces one raw or mixed ADPCM byte and writes it to OKIM6258 register 1.
     fn emit_pcm_byte(&mut self, builder: &mut VgmBuilder) {
         let mix_pcm = !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through));
-        let byte = self.pcm_output.next_adpcm_byte(mix_pcm);
+        let byte = self
+            .pcm_output
+            .next_adpcm_byte(mix_pcm, self.package.borrow());
         builder.add_vgm_command((
             Instance::Primary,
             Okim6258Spec {
@@ -2919,6 +2933,236 @@ mod tests {
 
         assert_eq!(playback.fadeout.level, 3);
         assert_eq!(playback.pcm_output.channels[0].gain, 12);
+    }
+
+    /// Checks that legacy pass-through key-on does not populate decoded PCM storage.
+    #[test]
+    fn legacy_adpcm_through_key_on_does_not_decode_samples() {
+        let mut mdx_builder = MdxBuilder::new();
+        mdx_builder.add_mdx_command(8, MdxRest { ticks: 1 });
+        let mut pdx_builder = crate::mdx::pdx::PdxBuilder::new();
+        pdx_builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56])
+            .unwrap();
+        let package = MdxPackage {
+            mdx: mdx_builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let mut playback = PlaybackState::new(
+            package,
+            MdxPcmMode::LegacyAdpcm,
+            AdpcmMode::Through,
+            Some(1),
+            false,
+        );
+
+        playback.begin_pcm_key_on(8, 0x80);
+
+        assert!(playback.pcm_output.samples.is_empty());
+        assert!(playback.pcm_output.sample_ranges.is_empty());
+        let mut builder = VgmBuilder::new();
+        for _byte in 0..4 {
+            playback.emit_pcm_byte(&mut builder);
+        }
+        let bytes = builder
+            .drain_commands()
+            .map(|command| match command {
+                VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => spec.value,
+                _ => panic!("expected an OKIM6258 data write"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bytes, [0x12, 0x34, 0x56, 0x80]);
+    }
+
+    /// Checks raw PDX references, ties, retriggers, bank changes, and missing samples.
+    #[test]
+    fn legacy_adpcm_through_preserves_raw_sample_lifecycle() {
+        let mut mdx_builder = MdxBuilder::new();
+        mdx_builder.add_mdx_command(8, MdxRest { ticks: 1 });
+        let mut pdx_builder = crate::mdx::pdx::PdxBuilder::new();
+        pdx_builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56])
+            .unwrap();
+        pdx_builder.set_sample(0, 1, vec![0xab, 0xcd]).unwrap();
+        pdx_builder.set_sample(1, 0, vec![0xef, 0x01]).unwrap();
+        let package = MdxPackage {
+            mdx: mdx_builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let mut playback = PlaybackState::new(
+            package,
+            MdxPcmMode::LegacyAdpcm,
+            AdpcmMode::Through,
+            Some(1),
+            false,
+        );
+        playback.begin_pcm_key_on(8, 0x80);
+        let source = playback
+            .package
+            .pdx
+            .as_ref()
+            .unwrap()
+            .sample_bytes(0, 0)
+            .unwrap();
+        let reference = playback.pcm_output.raw_sample.as_ref().unwrap();
+        assert_eq!(
+            playback
+                .package
+                .pcm_sample_bytes(reference)
+                .unwrap()
+                .as_ptr(),
+            source.as_ptr()
+        );
+        assert!(
+            playback
+                .pcm_output
+                .has_pending_output(playback.pcm_mode, playback.adpcm_mode)
+        );
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x12
+        );
+
+        playback.tracks[8].fm.key_off_disabled = true;
+        playback.stop_pcm_channel(8);
+        playback.begin_pcm_key_on(8, 0x80);
+        assert_eq!(playback.pcm_output.raw_position, 1);
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x34
+        );
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x56
+        );
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x80
+        );
+        playback.begin_pcm_key_on(8, 0x80);
+        assert_eq!(playback.pcm_output.raw_position, 4);
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x80
+        );
+        playback.tracks[8].fm.key_off_disabled = false;
+        playback.stop_pcm_channel(8);
+        playback.begin_pcm_key_on(8, 0x80);
+        assert_eq!(playback.pcm_output.raw_position, 0);
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x12
+        );
+
+        for (bank, note, expected) in [
+            (0, 0x81, vec![0xab, 0xcd]),
+            (1, 0x80, vec![0xef, 0x01]),
+            (0, 0x82, vec![]),
+            (2, 0x80, vec![]),
+        ] {
+            playback.tracks[8].fm.key_off_disabled = true;
+            playback.stop_pcm_channel(8);
+            playback.tracks[8].pcm.bank = bank;
+            playback.begin_pcm_key_on(8, note);
+            assert_eq!(playback.pcm_output.raw_position, 0);
+            assert_eq!(playback.pcm_output.raw_length, expected.len());
+            for byte in expected {
+                assert_eq!(
+                    playback
+                        .pcm_output
+                        .next_adpcm_byte(false, &playback.package),
+                    byte
+                );
+            }
+            assert!(
+                !playback
+                    .pcm_output
+                    .has_pending_output(playback.pcm_mode, playback.adpcm_mode)
+            );
+            assert_eq!(
+                playback
+                    .pcm_output
+                    .next_adpcm_byte(false, &playback.package),
+                0x80
+            );
+            assert!(playback.pcm_output.samples.is_empty());
+            assert!(playback.pcm_output.sample_ranges.is_empty());
+        }
+
+        playback.tracks[8].pcm.bank = 0;
+        playback.begin_pcm_key_on(8, 0x80);
+        playback
+            .process_commands(8, &mut VgmBuilder::new())
+            .unwrap();
+        assert!(playback.pcm_output.raw_sample.is_none());
+        assert_eq!(playback.pcm_output.raw_position, 0);
+        assert_eq!(playback.pcm_output.raw_length, 0);
+        assert_eq!(
+            playback
+                .pcm_output
+                .next_adpcm_byte(false, &playback.package),
+            0x80
+        );
+
+        let mut without_pdx = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+        without_pdx.begin_pcm_key_on(8, 0x80);
+        assert_eq!(without_pdx.pcm_output.raw_length, 0);
+        assert!(without_pdx.pcm_output.channels[0].block_key.is_none());
+        assert_eq!(
+            without_pdx
+                .pcm_output
+                .next_adpcm_byte(false, &without_pdx.package),
+            0x80
+        );
+    }
+
+    /// Checks that all mixed playback modes still decode and cache their PCM samples.
+    #[test]
+    fn mixed_pcm_key_on_still_decodes_and_reuses_cached_samples() {
+        let mut mdx_builder = MdxBuilder::new();
+        mdx_builder.add_mdx_command(8, MdxRest { ticks: 1 });
+        let mut pdx_builder = crate::mdx::pdx::PdxBuilder::new();
+        pdx_builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56])
+            .unwrap();
+        let package = MdxPackage {
+            mdx: mdx_builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        let expected =
+            decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Adpcm, &[0x12, 0x34, 0x56], false).unwrap();
+        for (pcm_mode, adpcm_mode) in [
+            (MdxPcmMode::LegacyAdpcm, AdpcmMode::Resample),
+            (MdxPcmMode::LegacyAdpcm, AdpcmMode::Lpf),
+            (MdxPcmMode::Pcm8a, AdpcmMode::Through),
+            (MdxPcmMode::Pcm8a, AdpcmMode::Resample),
+            (MdxPcmMode::Pcm8a, AdpcmMode::Lpf),
+        ] {
+            let mut playback =
+                PlaybackState::new(package.clone(), pcm_mode, adpcm_mode, Some(1), false);
+            for _trigger in 0..2 {
+                playback.begin_pcm_key_on(8, 0x80);
+                assert_eq!(playback.pcm_output.samples, expected);
+                assert_eq!(playback.pcm_output.sample_ranges.len(), 1);
+                assert_eq!(
+                    playback.pcm_output.channels[0].block_length,
+                    expected.len() as u32
+                );
+                assert!(playback.pcm_output.raw_sample.is_none());
+            }
+        }
     }
 
     #[test]
