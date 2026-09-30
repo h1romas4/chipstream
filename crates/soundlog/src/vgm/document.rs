@@ -27,8 +27,6 @@ use crate::vgm::detail;
 use crate::vgm::header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 use crate::vgm::parser;
 use std::convert::TryFrom;
-#[cfg(feature = "mdx")]
-use std::mem;
 use std::slice;
 use std::vec;
 
@@ -177,17 +175,17 @@ impl VgmBuilder {
         self.document.commands.len()
     }
 
-    /// Removes and returns every command appended to the builder so far,
-    /// leaving it empty (as if newly constructed).
+    /// Drains every appended command in order, retaining the buffer capacity.
     ///
     /// Crate-internal escape hatch for callers (such as lazy
     /// [`VgmCommandGenerator`](crate::vgm::stream::VgmCommandGenerator)
     /// implementations) that reuse the same builder as scratch space across
     /// many small batches of commands instead of accumulating a whole
-    /// document, so it never grows unbounded with playback time.
+    /// document. Dropping the iterator removes any remaining commands, leaving
+    /// the builder empty and ready to reuse its allocation for the next batch.
     #[cfg(feature = "mdx")]
-    pub(crate) fn take_commands(&mut self) -> Vec<VgmCommand> {
-        mem::take(&mut self.document.commands)
+    pub(crate) fn drain_commands(&mut self) -> vec::Drain<'_, VgmCommand> {
+        self.document.commands.drain(..)
     }
 
     /// Append a chip write produced by a chip-specific spec.
@@ -566,6 +564,30 @@ mod tests {
     use super::*;
     use crate::vgm::command::{EndOfData, VgmCommand};
 
+    #[cfg(feature = "mdx")]
+    #[test]
+    fn command_batches_preserve_order_and_builder_capacity() {
+        let mut builder = VgmBuilder::new();
+        builder.document.commands.reserve(64);
+        let capacity = builder.document.commands.capacity();
+        let buffer = builder.document.commands.as_ptr();
+
+        for command_count in [8, 0, 4] {
+            let expected = (1..=command_count)
+                .map(|samples| VgmCommand::WaitSamples(crate::vgm::command::WaitSamples(samples)))
+                .collect::<Vec<_>>();
+            for command in &expected {
+                builder.add_vgm_command(command.clone());
+            }
+
+            let commands = builder.drain_commands().collect::<Vec<_>>();
+            assert_eq!(commands, expected);
+            assert_eq!(builder.command_count(), 0);
+            assert_eq!(builder.document.commands.capacity(), capacity);
+            assert_eq!(builder.document.commands.as_ptr(), buffer);
+        }
+    }
+
     #[test]
     fn test_finalize_appends_end_of_data_when_missing() {
         let builder = VgmBuilder::new();
@@ -575,6 +597,33 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, VgmCommand::EndOfData(_))),
             "finalize() should append EndOfData when missing"
+        );
+    }
+
+    #[cfg(feature = "mdx")]
+    #[test]
+    fn partially_consumed_command_drain_leaves_reusable_buffer() {
+        let mut builder = VgmBuilder::new();
+        for samples in [1, 2, 3] {
+            builder.add_vgm_command(crate::vgm::command::WaitSamples(samples));
+        }
+        let capacity = builder.document.commands.capacity();
+        let buffer = builder.document.commands.as_ptr();
+        {
+            let mut commands = builder.drain_commands();
+            assert_eq!(
+                commands.next(),
+                Some(crate::vgm::command::WaitSamples(1).into())
+            );
+        }
+
+        assert_eq!(builder.command_count(), 0);
+        builder.add_vgm_command(crate::vgm::command::WaitSamples(4));
+        assert_eq!(builder.document.commands.capacity(), capacity);
+        assert_eq!(builder.document.commands.as_ptr(), buffer);
+        assert_eq!(
+            builder.drain_commands().collect::<Vec<_>>(),
+            vec![crate::vgm::command::WaitSamples(4).into()]
         );
     }
 

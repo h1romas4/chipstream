@@ -362,7 +362,7 @@ pub fn to_vgm_document(
         };
         let mut repeat = MdxVgmGenerator::new(package, repeat_options, true)?;
         while repeat.run_step()? {}
-        for command in repeat.builder.take_commands() {
+        for command in repeat.builder.drain_commands() {
             generator.builder.add_vgm_command(command);
         }
         generator.playback.song_loop.loop_index = Some(loop_index);
@@ -2379,7 +2379,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 /// [`to_vgm_stream_generator`].
 ///
 /// Does not retain previously produced commands: `builder` is reused as
-/// per-tick scratch space and drained via [`VgmBuilder::take_commands`]
+/// per-tick scratch space and drained via [`VgmBuilder::drain_commands`]
 /// into `pending` after every step, so memory use stays bounded to at most
 /// one tick's worth of commands rather than growing with the length of the
 /// song (see [`SongLoopState::mark_native_loop`], which is `false` for this
@@ -2491,7 +2491,7 @@ impl<P: Borrow<MdxPackage>> VgmCommandGenerator for MdxVgmGenerator<P> {
             }
             self.run_step()
                 .map_err(|e| ParseError::Other(e.to_string()))?;
-            self.pending.extend(self.builder.take_commands());
+            self.pending.extend(self.builder.drain_commands());
         }
     }
 }
@@ -2549,6 +2549,96 @@ mod tests {
             pdx: None,
         };
         PlaybackState::new(package, pcm_mode, adpcm_mode, None, false)
+    }
+
+    #[test]
+    fn generator_drains_each_batch_before_advancing_and_ends_once() {
+        for has_pcm in [false, true] {
+            let mut builder = MdxBuilder::new();
+            for value in [0x11, 0x22, 0x33] {
+                builder
+                    .add_mdx_command(
+                        0,
+                        crate::mdx::command::MdxOpmRegisterWrite {
+                            register: 0x1a,
+                            value,
+                        },
+                    )
+                    .add_mdx_command(0, MdxRest { ticks: 1 });
+            }
+            let pdx = if has_pcm {
+                builder
+                    .add_mdx_command(
+                        8,
+                        crate::mdx::command::MdxNote {
+                            note: 0x80,
+                            length: 1,
+                        },
+                    )
+                    .add_mdx_command(8, MdxRest { ticks: 4 });
+                let mut pdx_builder = crate::mdx::pdx::PdxBuilder::new();
+                pdx_builder
+                    .set_sample(0, 0, vec![0x11, 0x22, 0x33])
+                    .unwrap();
+                Some(pdx_builder.finalize())
+            } else {
+                None
+            };
+            let package = MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx,
+            };
+            let options = MdxToVgmOptions {
+                loop_count: Some(1),
+                ..Default::default()
+            };
+            let mut expected = to_vgm_document(&package, &options).unwrap().commands;
+            let end = expected
+                .iter()
+                .position(|command| matches!(command, VgmCommand::EndOfData(_)))
+                .unwrap();
+            expected.truncate(end + 1);
+            let mut generator = MdxVgmGenerator::new(package, options, false).unwrap();
+            let mut commands = vec![generator.next_command().unwrap().unwrap()];
+            assert!(!generator.pending.is_empty());
+            assert_eq!(generator.builder.command_count(), 0);
+            let first_cursor = generator.playback.tracks[0].command_index;
+            assert_eq!(first_cursor, 2);
+            let pending_capacity = generator.pending.capacity();
+
+            while !generator.pending.is_empty() {
+                commands.push(generator.next_command().unwrap().unwrap());
+                assert_eq!(generator.playback.tracks[0].command_index, first_cursor);
+                assert_eq!(generator.builder.command_count(), 0);
+            }
+            for _command in 0..1024 {
+                let Some(command) = generator.next_command().unwrap() else {
+                    break;
+                };
+                commands.push(command);
+                assert_eq!(generator.pending.capacity(), pending_capacity);
+                assert_eq!(generator.builder.command_count(), 0);
+            }
+
+            assert!(generator.finished);
+            assert!(generator.pending.is_empty());
+            assert_eq!(commands, expected, "PCM present: {has_pcm}");
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|command| matches!(command, VgmCommand::EndOfData(_)))
+                    .count(),
+                1
+            );
+            if has_pcm {
+                assert!(
+                    matches!(&commands[commands.len() - 2], VgmCommand::Okim6258Write(_, spec) if spec.register == 0 && spec.value == 1)
+                );
+            }
+            for _attempt in 0..3 {
+                assert_eq!(generator.next_command().unwrap(), None);
+            }
+        }
     }
 
     #[test]
