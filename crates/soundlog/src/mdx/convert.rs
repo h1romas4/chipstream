@@ -336,7 +336,33 @@ pub fn to_vgm_document(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
 ) -> Result<VgmDocument, MdxConvertError> {
+    convert_document(package, options, false).map_err(|error| match error {
+        MdxPlaybackCheckError::Conversion { error, .. } => error,
+        MdxPlaybackCheckError::LimitExceeded { .. } => unreachable!("conversion has no budgets"),
+    })
+}
+
+/// Converts playback to VGM with zero-based MDX coordinates on errors.
+///
+/// Runs the same conversion as [`to_vgm_document`], without an additional
+/// validation pass or playback-check budgets. Coordinates are not MML lines.
+/// Only [`MdxPlaybackCheckError::Conversion`] is returned on failure.
+pub fn to_vgm_document_with_diagnostics(
+    package: &MdxPackage,
+    options: &MdxToVgmOptions,
+) -> Result<VgmDocument, MdxPlaybackCheckError> {
+    convert_document(package, options, true)
+}
+
+fn convert_document(
+    package: &MdxPackage,
+    options: &MdxToVgmOptions,
+    diagnostics: bool,
+) -> Result<VgmDocument, MdxPlaybackCheckError> {
     let mut generator = MdxVgmGenerator::new(package, *options, true)?;
+    if diagnostics {
+        generator.playback.check_state = Some(PlaybackCheckState::default());
+    }
     // Header fields with no bearing on the command stream itself (and thus
     // no counterpart in the lazy generator, which never produces a
     // `VgmDocument`); only needed here, for the serialized document.
@@ -345,7 +371,10 @@ pub fn to_vgm_document(
         .set_sample_rate(VGM_SAMPLE_RATE)
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
 
-    while generator.run_step()? {}
+    while generator
+        .run_step()
+        .map_err(|error| generator.playback.diagnostic_error(error))?
+    {}
 
     // For F1 cases that could not establish a synchronized native loop point,
     // retain the finite restart-pass fallback. Ordinary eager F1 loops record
@@ -361,7 +390,13 @@ pub fn to_vgm_document(
             ..*options
         };
         let mut repeat = MdxVgmGenerator::new(package, repeat_options, true)?;
-        while repeat.run_step()? {}
+        if diagnostics {
+            repeat.playback.check_state = Some(PlaybackCheckState::default());
+        }
+        while repeat
+            .run_step()
+            .map_err(|error| repeat.playback.diagnostic_error(error))?
+        {}
         for command in repeat.builder.drain_commands() {
             generator.builder.add_vgm_command(command);
         }
@@ -1163,6 +1198,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     tracks: Vec<TrackState>,
     /// Current document ranges, cached on the first jump for this playback.
     jump_source_map: Option<Vec<Vec<(usize, usize)>>>,
+    /// Optional diagnostic tracking, with budgets only for playback checking.
+    check_state: Option<PlaybackCheckState>,
     /// PCM channel, sample, encoder, and byte-scheduler state.
     pcm_output: PcmOutputState,
     /// Tempo and fractional VGM sample timing state.
@@ -1251,6 +1288,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             adpcm_mode,
             tracks,
             jump_source_map: None,
+            check_state: None,
             pcm_output: PcmOutputState::new(has_pcm, adpcm_mode),
             timing: PlaybackTimingState::new(),
             opm_reg_0f: 0,
@@ -1286,6 +1324,18 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn step(&mut self, builder: &mut VgmBuilder) -> Result<StepOutcome, MdxConvertError> {
         if self.finished() {
             return Ok(StepOutcome::Finished);
+        }
+        if let Some(state) = &mut self.check_state
+            && let Some(limits) = state.limits
+        {
+            if state.ticks >= limits.max_ticks {
+                state.position = None;
+                state.limit_hit = Some("tick");
+                return Err(MdxConvertError::InvalidOptions(
+                    "playback check tick limit exceeded",
+                ));
+            }
+            state.ticks += 1;
         }
         let loop_restarted = self.process_tick(builder)?;
         if self.finished() {
@@ -1334,6 +1384,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             }
             if !self.tracks[track_index].active {
                 continue;
+            }
+            if let Some(state) = &mut self.check_state {
+                state.position = Some((
+                    track_index,
+                    self.tracks[track_index].command_index.saturating_sub(1),
+                ));
             }
             self.tracks[track_index].advance_wait();
             if track_index < 8 {
@@ -1492,6 +1548,18 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 self.tracks[track].active = false;
                 break;
             };
+            if let Some(state) = &mut self.check_state {
+                state.position = Some((track, self.tracks[track].command_index));
+                if let Some(limits) = state.limits {
+                    if state.commands >= limits.max_commands {
+                        state.limit_hit = Some("MDX command");
+                        return Err(MdxConvertError::InvalidOptions(
+                            "playback check command limit exceeded",
+                        ));
+                    }
+                    state.commands += 1;
+                }
+            }
             self.tracks[track].command_index += 1;
             if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
                 && track == 8
@@ -2384,6 +2452,172 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.emit_closing_commands(&mut builder);
         self.finalize(builder)
     }
+
+    fn diagnostic_error(&self, error: MdxConvertError) -> MdxPlaybackCheckError {
+        let position = self.check_state.as_ref().and_then(|state| state.position);
+        let track = position.map(|(track, _)| track);
+        let command_index = position.map(|(_, command)| command);
+        match self.check_state.as_ref().and_then(|state| state.limit_hit) {
+            Some(resource) => MdxPlaybackCheckError::LimitExceeded {
+                resource,
+                track,
+                command_index,
+            },
+            None => MdxPlaybackCheckError::Conversion {
+                error,
+                track,
+                command_index,
+            },
+        }
+    }
+}
+
+/// Execution budgets for a bounded lazy playback check.
+#[derive(Debug, Clone, Copy)]
+pub struct MdxPlaybackCheckLimits {
+    /// Maximum playback ticks, including ticks spent waiting for synchronization.
+    pub max_ticks: u64,
+    /// Maximum MDX commands executed across all tracks and repeats.
+    pub max_commands: u64,
+}
+
+impl Default for MdxPlaybackCheckLimits {
+    fn default() -> Self {
+        Self {
+            max_ticks: 100_000,
+            max_commands: 1_000_000,
+        }
+    }
+}
+
+/// A playback failure or an incomplete check, with zero-based MDX coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MdxPlaybackCheckError {
+    /// Playback returned an error.
+    Conversion {
+        /// Original conversion error.
+        error: MdxConvertError,
+        /// Track being processed, if available.
+        track: Option<usize>,
+        /// Command being processed, if available.
+        command_index: Option<usize>,
+    },
+    /// Execution stopped before completion because a budget was exhausted.
+    LimitExceeded {
+        /// Exhausted budget (ticks or MDX commands).
+        resource: &'static str,
+        /// Track being processed, if available.
+        track: Option<usize>,
+        /// Command being processed, if available.
+        command_index: Option<usize>,
+    },
+}
+
+impl fmt::Display for MdxPlaybackCheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (track, command_index) = match self {
+            Self::Conversion {
+                error,
+                track,
+                command_index,
+            } => {
+                write!(f, "{error}")?;
+                (track, command_index)
+            }
+            Self::LimitExceeded {
+                resource,
+                track,
+                command_index,
+            } => {
+                write!(f, "playback check incomplete: {resource} limit exceeded")?;
+                (track, command_index)
+            }
+        };
+        if let Some(track) = track {
+            write!(f, " (track {track}")?;
+            if let Some(command_index) = command_index {
+                write!(f, ", MDX command {command_index}")?;
+            }
+            write!(f, ")")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for MdxPlaybackCheckError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Conversion { error, .. } => Some(error),
+            Self::LimitExceeded { .. } => None,
+        }
+    }
+}
+
+impl From<MdxConvertError> for MdxPlaybackCheckError {
+    fn from(error: MdxConvertError) -> Self {
+        Self::Conversion {
+            error,
+            track: None,
+            command_index: None,
+        }
+    }
+}
+
+/// Checks finite playback using the lazy generator without retaining VGM output.
+///
+/// PDX lookup and loading remain the caller's responsibility. This checks only
+/// executed paths and errors reported by playback, not missing or malformed PCM
+/// payloads that playback treats as silence. Coordinates refer to MDX commands,
+/// not source-text lines. Limits also apply within a tick, preventing command-only
+/// repeats from blocking the caller indefinitely.
+///
+/// # Errors
+///
+/// Returns a conversion error, invalid finite-loop/budget options, or an explicit
+/// incomplete-check error when an execution limit is reached.
+pub fn check_playback(
+    package: &MdxPackage,
+    options: MdxToVgmOptions,
+    limits: MdxPlaybackCheckLimits,
+) -> Result<(), MdxPlaybackCheckError> {
+    let invalid = |error| MdxPlaybackCheckError::Conversion {
+        error,
+        track: None,
+        command_index: None,
+    };
+    if options.loop_count.is_none() || limits.max_ticks == 0 || limits.max_commands == 0 {
+        return Err(invalid(MdxConvertError::InvalidOptions(
+            "playback checking requires finite loops and nonzero execution limits",
+        )));
+    }
+    let mut generator = MdxVgmGenerator::new(package, options, false).map_err(invalid)?;
+    generator.playback.check_state = Some(PlaybackCheckState {
+        limits: Some(limits),
+        ticks: 0,
+        commands: 0,
+        position: None,
+        limit_hit: None,
+    });
+    loop {
+        let result = generator.run_step();
+        generator.builder.drain_commands().for_each(drop);
+        match result {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(error) => {
+                return Err(generator.playback.diagnostic_error(error));
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct PlaybackCheckState {
+    limits: Option<MdxPlaybackCheckLimits>,
+    ticks: u64,
+    commands: u64,
+    position: Option<(usize, usize)>,
+    limit_hit: Option<&'static str>,
 }
 
 /// Lazily drives an [`MdxPackage`] into VGM commands, one MDX tick at a
@@ -2566,6 +2800,71 @@ mod tests {
     }
 
     #[test]
+    fn conversion_diagnostics_locate_immediate_and_delayed_key_on() {
+        for delay in [0, 2] {
+            let mut builder = MdxBuilder::new();
+            builder
+                .add_mdx_command(1, crate::mdx::command::MdxVoiceOrPcmBank { value: 42 })
+                .add_mdx_command(1, crate::mdx::command::MdxKeyOnDelay { value: delay })
+                .add_mdx_command(
+                    1,
+                    crate::mdx::command::MdxNote {
+                        note: 0x80,
+                        length: 8,
+                    },
+                );
+            let package = MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx: None,
+            };
+            for loop_count in [None, Some(1), Some(3)] {
+                let options = MdxToVgmOptions {
+                    loop_count,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    to_vgm_document(&package, &options).unwrap_err(),
+                    MdxConvertError::MissingTone { voice: 42 }
+                );
+                assert_eq!(
+                    to_vgm_document_with_diagnostics(&package, &options).unwrap_err(),
+                    MdxPlaybackCheckError::Conversion {
+                        error: MdxConvertError::MissingTone { voice: 42 },
+                        track: Some(1),
+                        command_index: Some(2),
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conversion_diagnostics_preserve_output_and_do_not_apply_check_budgets() {
+        let mut builder = MdxBuilder::new();
+        for _rest in 0..2 {
+            builder.add_mdx_command(0, MdxRest { ticks: u16::MAX });
+        }
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_playback(&package, options, MdxPlaybackCheckLimits::default()),
+            Err(MdxPlaybackCheckError::LimitExceeded {
+                resource: "tick",
+                ..
+            })
+        ));
+        let original = to_vgm_document(&package, &options).unwrap();
+        let diagnosed = to_vgm_document_with_diagnostics(&package, &options).unwrap();
+        assert_eq!(original.commands, diagnosed.commands);
+    }
+
+    #[test]
     fn generator_drains_each_batch_before_advancing_and_ends_once() {
         for has_pcm in [false, true] {
             let mut builder = MdxBuilder::new();
@@ -2681,6 +2980,128 @@ mod tests {
             assert_eq!(state.resolve_jump_target(8, 0), Some(1));
             assert_eq!(cached_ptr, state.jump_source_map.as_ref().unwrap().as_ptr());
         }
+    }
+
+    /// Checks invalid options and successful completion exactly at both budgets.
+    #[test]
+    fn playback_check_validates_limits_and_exact_budget_completion() {
+        let playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        let limits = MdxPlaybackCheckLimits {
+            max_ticks: 2,
+            max_commands: 2,
+        };
+        check_playback(&playback.package, options, limits).unwrap();
+        for invalid_limits in [
+            MdxPlaybackCheckLimits {
+                max_ticks: 0,
+                ..limits
+            },
+            MdxPlaybackCheckLimits {
+                max_commands: 0,
+                ..limits
+            },
+        ] {
+            assert!(matches!(
+                check_playback(&playback.package, options, invalid_limits),
+                Err(MdxPlaybackCheckError::Conversion {
+                    error: MdxConvertError::InvalidOptions(_),
+                    ..
+                })
+            ));
+        }
+        assert!(matches!(
+            check_playback(
+                &playback.package,
+                MdxToVgmOptions {
+                    loop_count: None,
+                    ..options
+                },
+                limits
+            ),
+            Err(MdxPlaybackCheckError::Conversion {
+                error: MdxConvertError::InvalidOptions(_),
+                ..
+            })
+        ));
+    }
+
+    /// Checks that synchronization stalls exhaust ticks rather than hanging.
+    #[test]
+    fn playback_check_bounds_synchronization_wait() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(8, crate::mdx::command::MdxSyncWait);
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let error = check_playback(
+            &package,
+            MdxToVgmOptions {
+                loop_count: Some(1),
+                ..Default::default()
+            },
+            MdxPlaybackCheckLimits {
+                max_ticks: 3,
+                max_commands: 10,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MdxPlaybackCheckError::LimitExceeded {
+                resource: "tick",
+                track: None,
+                command_index: None
+            }
+        ));
+    }
+
+    /// Checks the command budget inside a tick containing a duration-free repeat.
+    #[test]
+    fn playback_check_bounds_commands_within_one_tick() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                8,
+                crate::mdx::command::MdxLoopStart {
+                    count: 255,
+                    reserved: 0,
+                },
+            )
+            .add_mdx_command(
+                8,
+                MdxCommand::LoopEnd(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf5,
+                    offset: -3,
+                }),
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let error = check_playback(
+            &package,
+            MdxToVgmOptions {
+                loop_count: Some(1),
+                ..Default::default()
+            },
+            MdxPlaybackCheckLimits {
+                max_ticks: 10,
+                max_commands: 3,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MdxPlaybackCheckError::LimitExceeded {
+                resource: "MDX command",
+                ..
+            }
+        ));
     }
 
     #[test]

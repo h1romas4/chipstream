@@ -129,7 +129,10 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum MdxCommands {
-    /// Parse and validate an MML source file
+    /// Parse, compile, and check finite lazy playback of MML without loading PDX
+    ///
+    /// Uses synthetic PCM samples, not actual PDX data. Runtime coordinates are
+    /// zero-based MDX track/command indices, not MML source lines.
     Check {
         /// MML source file to parse, or '-' to read from stdin
         #[arg(value_name = "MML_FILE")]
@@ -142,6 +145,22 @@ enum MdxCommands {
         /// Print the parsed MML syntax tree
         #[arg(short, long)]
         verbose: bool,
+
+        /// Only parse MML, skipping compilation and playback
+        #[arg(long)]
+        parse_only: bool,
+
+        /// Number of whole-song playthroughs to check
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..), conflicts_with = "parse_only")]
+        loop_count: u32,
+
+        /// Maximum playback ticks; reaching this limit reports an incomplete check
+        #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "parse_only")]
+        max_ticks: u64,
+
+        /// Maximum executed MDX commands, including commands within a single tick
+        #[arg(long, default_value_t = 1_000_000, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "parse_only")]
+        max_commands: u64,
     },
     /// Compile an MML source file into an MDX or VGM binary file
     Compile {
@@ -160,6 +179,10 @@ enum MdxCommands {
         /// ADPCM processing mode for VGM output
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+
+        /// Skip bounded playback validation for MDX output (VGM conversion still reports playback errors)
+        #[arg(long)]
+        no_playback_check: bool,
     },
     /// Parse an MDX or MML file and display its track commands
     Parse {
@@ -382,7 +405,23 @@ fn main() {
                 input,
                 stdin,
                 verbose,
-            } => match cui::mdx::check_with_stdin(&input, verbose, stdin) {
+                parse_only,
+                loop_count,
+                max_ticks,
+                max_commands,
+            } => match cui::mdx::check_with_options(
+                &input,
+                verbose,
+                stdin,
+                cui::mdx::CheckOptions {
+                    parse_only,
+                    loop_count,
+                    limits: soundlog::mdx::convert::MdxPlaybackCheckLimits {
+                        max_ticks,
+                        max_commands,
+                    },
+                },
+            ) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
                     soundlog_cli::log_error!(&*logger, "{error:#}");
@@ -394,8 +433,15 @@ fn main() {
                 output,
                 output_format,
                 adpcm_mode,
+                no_playback_check,
             } => {
-                match cui::mdx::compile(&input, &output, output_format.into(), adpcm_mode.into()) {
+                match cui::mdx::compile_with_playback_check(
+                    &input,
+                    &output,
+                    output_format.into(),
+                    adpcm_mode.into(),
+                    !no_playback_check,
+                ) {
                     Ok(()) => process::exit(0),
                     Err(error) => {
                         soundlog_cli::log_error!(&*logger, "{error:#}");
@@ -681,5 +727,124 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mdx_compile_playback_check_is_enabled_by_default_and_can_be_skipped() {
+        let args =
+            Args::try_parse_from(["soundlog", "mdx", "compile", "song.mml", "song.mdx"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Compile {
+                    no_playback_check: false,
+                    ..
+                }
+            }
+        ));
+        let args = Args::try_parse_from([
+            "soundlog",
+            "mdx",
+            "compile",
+            "song.mml",
+            "song.mdx",
+            "--no-playback-check",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Compile {
+                    no_playback_check: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    /// Checks default playback settings and parse-only compatibility.
+    #[test]
+    fn mdx_check_arguments_accept_defaults_and_parse_only() {
+        let args = Args::try_parse_from(["soundlog", "mdx", "check", "song.mml"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Check {
+                    parse_only: false,
+                    loop_count: 1,
+                    max_ticks: 100_000,
+                    max_commands: 1_000_000,
+                    ..
+                }
+            }
+        ));
+        let args = Args::try_parse_from([
+            "soundlog",
+            "mdx",
+            "check",
+            "song.mml",
+            "--stdin",
+            "--parse-only",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Check {
+                    stdin: true,
+                    parse_only: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    /// Checks positive execution limits and incompatible parse-only options.
+    #[test]
+    fn mdx_check_arguments_validate_playback_options() {
+        for option in ["--loop-count", "--max-ticks", "--max-commands"] {
+            assert!(Args::try_parse_from(["soundlog", "mdx", "check", "-", option, "0"]).is_err());
+            assert!(
+                Args::try_parse_from([
+                    "soundlog",
+                    "mdx",
+                    "check",
+                    "-",
+                    "--parse-only",
+                    option,
+                    "2"
+                ])
+                .is_err()
+            );
+        }
+        let args = Args::try_parse_from([
+            "soundlog",
+            "mdx",
+            "check",
+            "-",
+            "--loop-count",
+            "3",
+            "--max-ticks",
+            "64",
+            "--max-commands",
+            "1000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Check {
+                    loop_count: 3,
+                    max_ticks: 64,
+                    max_commands: 1000,
+                    ..
+                }
+            }
+        ));
     }
 }

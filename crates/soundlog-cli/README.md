@@ -308,7 +308,7 @@ commands. It also provides MML source validation and compilation.
 #### `mdx check`
 
 ```text
-Parse and validate an MML source file
+Parse, compile, and check finite lazy playback of MML without loading PDX
 
 Usage: soundlog mdx check [OPTIONS] <MML_FILE>
 
@@ -317,19 +317,45 @@ Arguments:
 
 Options:
       --stdin    Read source from stdin while using MML_FILE for diagnostic locations
+      --parse-only  Only parse MML, skipping compilation and playback
+      --loop-count <LOOP_COUNT>  Number of whole-song playthroughs to check [default: 1]
+      --max-ticks <MAX_TICKS>  Maximum playback ticks [default: 100000]
+      --max-commands <MAX_COMMANDS>  Maximum executed MDX commands [default: 1000000]
   -v, --verbose  Print the parsed MML syntax tree
   -h, --help     Print help
 ```
 
-Parse and validate an MML source file. Pass `-` as the file to read from stdin;
+Parse MML, compile it directly into a typed MDX document, and check finite lazy
+playback without storing the VGM output. Pass `-` as the file to read from stdin;
 use `--stdin` to read stdin while keeping the supplied filename in diagnostics
 (useful for editor integrations). Add `--verbose` to print the typed syntax
 tree.
+
+The default checks one whole-song playthrough; `--loop-count N` checks additional
+passes through song-level loops (the intro runs once). Counts and budgets must be
+positive. Tick and MDX-command budgets also stop synchronization stalls and
+duration-free repeats. Reaching either budget reports an **incomplete check** and
+exits with status 1, not a successful validation. Increase the limits for long songs.
+
+PDX files are never loaded by `check`. Short synthetic PCM payloads exercise the
+playback paths but do not validate actual PDX files, sample formats, lengths, audio,
+or behavior dependent on real sample lengths. Only reached playback paths and
+errors reported by the converter are checked; missing/malformed real samples are
+not detected. Runtime errors include zero-based MDX track/command coordinates
+when available, not MML line/column positions. Parse errors retain source locations.
+
+Use `--parse-only` for the previous lightweight parser-only behavior, particularly
+for editor linting while voice definitions are still incomplete. It cannot be
+combined with explicit playback count or budget options.
 
 ```bash
 cat song.mml | soundlog mdx check -
 # For efm-langserver and similar LSP lint integrations:
 cat unsaved.mml | soundlog mdx check songs/song.mml --stdin
+# Check three passes without reading the referenced PDX:
+soundlog mdx check song.mml --loop-count 3
+# Lightweight editor linting:
+cat unsaved.mml | soundlog mdx check songs/song.mml --stdin --parse-only
 ```
 
 
@@ -395,6 +421,7 @@ tools:
     lint-ignore-exit-code: true
     lint-formats:
       - "%f:%l:%c: %m"
+      - "%f: %m"
 
 languages:
   mml:
@@ -402,8 +429,11 @@ languages:
 ```
 
 The linter reads the current buffer from stdin while `${INPUT}` preserves its
-filename in diagnostics. In Helix, use `]d` and `[d` to move between diagnostics
-or `Space d` to open the diagnostic picker.
+filename in diagnostics. The second lint format accepts compilation and playback
+errors without MML line/column coordinates; these are shown at the start of the
+file, not at the MDX command's source location. In Helix, use `]d` and `[d` to move
+between diagnostics or `Space d` to open the diagnostic picker. After changing
+the efm configuration, run `:lsp-restart` and edit the buffer to trigger linting.
 
 #### `mdx compile`
 
@@ -419,6 +449,7 @@ Arguments:
 Options:
       --output-format <OUTPUT_FORMAT>  Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`) [default: mdx] [possible values: mdx, vgm]
       --adpcm-mode <ADPCM_MODE>        ADPCM processing mode for VGM output [default: through] [possible values: through, resample, lpf]
+        --no-playback-check              Skip bounded playback validation for MDX output (VGM conversion still reports playback errors)
   -h, --help                           Print help
 ```
 
@@ -427,6 +458,19 @@ instead; MDX is the default. VGM output uses the default conversion settings,
 including native VGM looping, equivalent to `mdx convert --native-loop`. Use
 `--adpcm-mode` to select ADPCM processing for VGM output; the default is
 `through`. The option has no effect when writing MDX.
+
+MDX output is validated before writing by default, using the same bounded lazy
+playback check as `mdx check`: one whole-song playthrough, at most 100,000 ticks
+and 1,000,000 MDX commands, with synthetic PCM samples and no PDX loading.
+Playback failures and exhausted budgets return exit code 1 without writing or
+overwriting the output. Use `--no-playback-check` to skip this validation, for
+example for songs exceeding the default budgets; parsing and compilation still
+run. Run `mdx check` separately with custom budgets or loop counts when needed.
+
+VGM output reports playback errors during the actual conversion, without a
+separate validation pass or playback-check budgets. Both output formats report
+available zero-based MDX track/command coordinates, not MML source lines.
+`--no-playback-check` does not suppress errors from VGM conversion.
 
 When producing VGM from MML that declares `#pcmfile`, the referenced PDX file
 is searched for relative to the input MML file.
@@ -461,6 +505,11 @@ Options:
 
 Convert an MDX file to a VGM file. Use `mdx compile --output-format vgm` for
 MML input.
+
+Playback errors are reported by default during conversion, with available
+zero-based MDX track/command coordinates, using the same diagnostic format as
+`mdx check`. No additional validation pass or playback-check budgets are applied.
+A playback failure does not write or overwrite the output VGM file.
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
