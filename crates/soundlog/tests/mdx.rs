@@ -1998,6 +1998,103 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 }
 
 #[test]
+fn mdx_converter_jump_paths_preserve_expected_writes_for_eager_and_lazy_output() {
+    let write = |value| {
+        MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+            register: 0x1a,
+            value,
+        })
+    };
+    let jump = |offset| {
+        MdxCommand::Jump(MdxRelativeOffset {
+            opcode: 0xf1,
+            offset,
+        })
+    };
+    let rest = MdxCommand::Rest(MdxRest { ticks: 1 });
+    let cases = [
+        (
+            "forward",
+            vec![jump(3), write(0x11), write(0x22), rest.clone()],
+            vec![0x22],
+        ),
+        (
+            "backward",
+            vec![write(0x11), rest.clone(), jump(-7)],
+            vec![0x11; 3],
+        ),
+        (
+            "operand",
+            vec![jump(1), write(0x11), rest.clone()],
+            vec![0x11],
+        ),
+        (
+            "past end",
+            vec![jump(i16::MAX), write(0x11), rest.clone()],
+            vec![0x11],
+        ),
+        (
+            "before start",
+            vec![jump(i16::MIN), write(0x11), rest.clone()],
+            vec![0x11],
+        ),
+        (
+            "repeat escape",
+            vec![
+                MdxCommand::LoopStart(MdxLoopStart {
+                    count: 2,
+                    reserved: 0,
+                }),
+                write(0x11),
+                MdxCommand::LoopEscape(MdxRelativeOffset {
+                    opcode: 0xf4,
+                    offset: 4,
+                }),
+                write(0x22),
+                MdxCommand::LoopEnd(MdxRelativeOffset {
+                    opcode: 0xf5,
+                    offset: -12,
+                }),
+                rest,
+            ],
+            vec![0x11, 0x22, 0x11],
+        ),
+    ];
+    for (name, commands, expected_writes) in cases {
+        for edited in [false, true] {
+            let mut builder = MdxBuilder::new();
+            builder
+                .add_mdx_command(0, MdxRest { ticks: 2 })
+                .set_track(1, commands.clone());
+            let mut mdx = builder.finalize().unwrap();
+            if edited {
+                mdx.header.title = "Edited before VGM conversion".to_string();
+                mdx.tracks[0].insert(0, MdxCommand::Rest(MdxRest { ticks: 3 }));
+            }
+            let package = MdxPackage { mdx, pdx: None };
+            let options = MdxToVgmOptions {
+                loop_count: Some(3),
+                ..Default::default()
+            };
+            let eager = to_vgm_document(&package, &options).expect("convert jump eagerly");
+            let eager_commands = drain_finite_stream(VgmStream::from_document(eager));
+            let writes = eager_commands
+                .iter()
+                .filter_map(|command| match command {
+                    VgmCommand::Ym2151Write(_, spec) if spec.register == 0x1a => Some(spec.value),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(writes, expected_writes, "{name}, edited={edited}");
+
+            let generator = to_vgm_stream_generator(package, options).expect("convert jump lazily");
+            let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
+            assert_eq!(lazy_commands, eager_commands, "{name}, edited={edited}");
+        }
+    }
+}
+
+#[test]
 fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
     let mut builder = MdxBuilder::new();
     builder

@@ -1155,6 +1155,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     adpcm_mode: AdpcmMode,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
+    /// Current document ranges, cached on the first jump for this playback.
+    jump_source_map: Option<Vec<Vec<(usize, usize)>>>,
     /// PCM channel, sample, encoder, and byte-scheduler state.
     pcm_output: PcmOutputState,
     /// Tempo and fractional VGM sample timing state.
@@ -1242,6 +1244,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             pcm_mode,
             adpcm_mode,
             tracks,
+            jump_source_map: None,
             pcm_output: PcmOutputState::new(has_pcm, adpcm_mode),
             timing: PlaybackTimingState::new(),
             opm_reg_0f: 0,
@@ -2024,18 +2027,21 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Resolves a relative jump offset (as encoded by `LoopEnd`,
     /// `LoopEscape` or `Jump`) to an absolute command index, if the target
     /// lands exactly on a command boundary.
-    fn resolve_jump_target(&self, track: usize, offset: i16) -> Option<usize> {
+    fn resolve_jump_target(&mut self, track: usize, offset: i16) -> Option<usize> {
         let command_index = self.tracks[track].command_index;
-        let (current_offset, current_length) = self.package.borrow().mdx.sourcemap()[track]
-            .get(command_index.saturating_sub(1))
-            .copied()?;
+        let source_map = self
+            .jump_source_map
+            .get_or_insert_with(|| self.package.borrow().mdx.sourcemap());
+        let track_ranges = &source_map[track];
+        let (current_offset, current_length) =
+            track_ranges.get(command_index.saturating_sub(1)).copied()?;
         let command_end = current_offset.checked_add(current_length)?;
         let target_offset = if offset >= 0 {
             command_end.checked_add(offset as usize)?
         } else {
             command_end.checked_sub(offset.unsigned_abs() as usize)?
         };
-        self.package.borrow().mdx.sourcemap()[track]
+        track_ranges
             .iter()
             .position(|(offset, _)| *offset == target_offset)
     }
@@ -2543,6 +2549,131 @@ mod tests {
             pdx: None,
         };
         PlaybackState::new(package, pcm_mode, adpcm_mode, None, false)
+    }
+
+    #[test]
+    fn jump_source_map_is_initialized_once_and_only_when_needed() {
+        let mut state = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+        let mut builder = VgmBuilder::new();
+        assert!(state.jump_source_map.is_none());
+
+        for _tick in 0..4 {
+            if matches!(state.step(&mut builder).unwrap(), StepOutcome::Finished) {
+                break;
+            }
+        }
+        assert!(state.finished());
+        assert!(state.jump_source_map.is_none());
+
+        state.tracks[8].command_index = 1;
+        assert_eq!(state.resolve_jump_target(8, 0), Some(1));
+        let cached = state
+            .jump_source_map
+            .as_ref()
+            .expect("first jump builds source map");
+        assert_eq!(cached, &state.package.mdx.sourcemap());
+        let cached_ptr = cached.as_ptr();
+        for _repeat in 0..100 {
+            assert_eq!(state.resolve_jump_target(8, 0), Some(1));
+            assert_eq!(cached_ptr, state.jump_source_map.as_ref().unwrap().as_ptr());
+        }
+    }
+
+    #[test]
+    fn jump_resolution_requires_exact_boundaries_on_each_track() {
+        let commands = vec![
+            MdxCommand::Rest(MdxRest { ticks: 1 }),
+            MdxCommand::OpmRegisterWrite(crate::mdx::command::MdxOpmRegisterWrite {
+                register: 0x1a,
+                value: 0x55,
+            }),
+            MdxCommand::Note(crate::mdx::command::MdxNote {
+                note: 0x80,
+                length: 1,
+            }),
+            MdxCommand::Jump(crate::mdx::command::MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -9,
+            }),
+        ];
+        let mut builder = MdxBuilder::new();
+        for track in [1, 8, 15] {
+            builder.set_track(track, commands.clone());
+        }
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let mut state = PlaybackState::new(
+            package,
+            MdxPcmMode::Pcm8a,
+            AdpcmMode::Through,
+            Some(1),
+            false,
+        );
+
+        for track in [1, 8, 15] {
+            state.tracks[track].command_index = 4;
+            for (offset, expected) in [
+                (-9, Some(0)),
+                (-8, Some(1)),
+                (-5, Some(2)),
+                (-3, Some(3)),
+                (0, Some(4)),
+                (-7, None),
+                (-6, None),
+                (-4, None),
+                (-2, None),
+                (-1, None),
+                (1, None),
+                (2, None),
+                (i16::MIN, None),
+                (i16::MAX, None),
+            ] {
+                assert_eq!(
+                    state.resolve_jump_target(track, offset),
+                    expected,
+                    "track {track}, offset {offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jump_resolution_uses_document_edits_before_playback() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(1, MdxRest { ticks: 1 });
+        let mut mdx = builder.finalize().unwrap();
+        mdx.header.title = "A longer title before playback".to_string();
+        mdx.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); 64];
+        mdx.tracks[1].insert(
+            1,
+            MdxCommand::OpmRegisterWrite(crate::mdx::command::MdxOpmRegisterWrite {
+                register: 0x1a,
+                value: 0x55,
+            }),
+        );
+        mdx.tracks[1].insert(
+            2,
+            MdxCommand::Jump(crate::mdx::command::MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -6,
+            }),
+        );
+        let package = MdxPackage { mdx, pdx: None };
+        let mut state = PlaybackState::new(
+            package,
+            MdxPcmMode::LegacyAdpcm,
+            AdpcmMode::Through,
+            Some(1),
+            false,
+        );
+        state.tracks[1].command_index = 3;
+
+        assert_eq!(state.resolve_jump_target(1, -6), Some(1));
+        assert_eq!(state.resolve_jump_target(1, -7), Some(0));
+        assert_eq!(state.resolve_jump_target(1, -5), None);
+        assert_eq!(state.resolve_jump_target(1, 0), Some(3));
     }
 
     #[test]
