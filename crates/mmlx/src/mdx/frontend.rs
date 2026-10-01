@@ -38,11 +38,9 @@
 mod location;
 mod syntax;
 
-use std::cell::Cell;
-
 use soundlog::mdx::document::MdxDocument;
 
-use super::compile::{CompileError, MdxSourceMap, compile_internal};
+use super::compile::{CompileError, CompileSourceContext, compile_internal};
 use super::mml::{MmlDocument, MmlSourceMap, parse_internal};
 use crate::diagnostic::Diagnostic;
 use crate::frontend::{Compiled, MappedAst, SourceFile, SourceMap};
@@ -90,15 +88,8 @@ pub fn parse(source: &str) -> Result<ParsedMml<'_>, Diagnostic> {
 /// represented in MDX, or the soundlog builder rejects the document. Builder
 /// failures may have no source range; command failures use the responsible span.
 pub fn compile<'source>(parsed: &ParsedMml<'source>) -> Result<CompiledMdx<'source>, Diagnostic> {
-    let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
-    let error_position = Cell::new(None);
-    let document = compile_internal(
-        parsed.ast(),
-        Some(parsed.syntax().inner()),
-        Some(&mut positions),
-        Some(&error_position),
-    )
-    .map_err(|error| {
+    let mut context = CompileSourceContext::new(parsed.syntax().inner());
+    let document = compile_internal(parsed.ast(), Some(&mut context)).map_err(|error| {
         let code = match error {
             CompileError::InvalidChannel(_) => "mmlx.mdx.invalid-channel",
             CompileError::InvalidVoice { .. } => "mmlx.mdx.invalid-voice",
@@ -106,11 +97,11 @@ pub fn compile<'source>(parsed: &ParsedMml<'source>) -> Result<CompiledMdx<'sour
             CompileError::UnsupportedCommand(_) => "mmlx.mdx.unsupported-command",
             CompileError::Builder(_) => "mmlx.mdx.builder",
         };
-        Diagnostic::error(code, error.to_string(), error_position.get())
+        Diagnostic::error(code, error.to_string(), context.error_span)
     })?;
     let syntax = parsed.syntax();
     let mut groups = Vec::with_capacity(18);
-    groups.extend(positions);
+    groups.extend(context.output_map);
     groups.push(
         syntax
             .voices()

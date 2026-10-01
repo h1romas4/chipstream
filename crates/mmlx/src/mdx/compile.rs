@@ -5,7 +5,6 @@
 //! constructs cannot be represented by that model; it does not serialize the
 //! resulting document to bytes.
 
-use std::cell::Cell;
 use std::fmt;
 
 use soundlog::mdx::command::{
@@ -23,8 +22,70 @@ use super::mml::{
     Accidental, CommandSource, MmlCommand, MmlDocument, MmlLength, MmlSourceMap, MmlVoice,
 };
 
-pub(super) type MdxSourceMap = [Vec<Option<Span>>; 16];
+/// Compile a parsed MML document into a typed soundlog MDX document.
+///
+/// The compiler preserves the MML title, PDX filename, voice definitions, and
+/// channel order. Track indices follow MXDRV's layout: `A` through `H` map to
+/// indices `0` through `7`, and `P` through `W` map to indices `8` through `15`.
+///
+/// # Errors
+///
+/// Returns [`CompileError`] when a channel, voice, value, or command cannot be
+/// represented by soundlog's MDX model.
+///
+/// # Examples
+///
+/// ```
+/// let parsed = mmlx::mdx::parse("#title \"Example\"\nA c4 d4 e4")
+///     .expect("valid MML source");
+/// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
+/// let mdx_bytes = document.to_bytes();
+///
+/// assert!(!mdx_bytes.is_empty());
+/// ```
+pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
+    compile_internal(document, None)
+}
+
+type MdxSourceMap = [Vec<Option<Span>>; 16];
 type CompiledCommands = (Vec<MdxCommand>, Option<Vec<Option<Span>>>);
+
+/// Source-location input and results for one MDX compilation.
+///
+/// Borrows the syntax map associated with the input AST without copying source
+/// text. On success, the output map addresses finalized MDX track commands;
+/// synthetic commands have no span. On failure, only the error span is intended
+/// for diagnostics, and the output map may be incomplete.
+///
+/// Ordinary compilation passes no context to [`compile_internal`] and does not
+/// allocate source maps.
+pub(super) struct CompileSourceContext<'a> {
+    /// Syntax ranges corresponding to the input AST.
+    sources: &'a MmlSourceMap,
+    /// Primary source spans indexed by finalized MDX track and command.
+    pub output_map: MdxSourceMap,
+    /// The responsible source range on failure, or `None` if unavailable.
+    pub error_span: Option<Span>,
+}
+
+impl<'a> CompileSourceContext<'a> {
+    /// Create an empty context without allocating heap storage.
+    ///
+    /// Output vectors allocate as mapped commands are emitted during compilation.
+    #[cfg(feature = "source-map")]
+    pub fn new(sources: &'a MmlSourceMap) -> Self {
+        Self {
+            sources,
+            output_map: std::array::from_fn(|_| Vec::new()),
+            error_span: None,
+        }
+    }
+}
+
+struct CommandSourceContext<'a, 'error> {
+    sources: &'a [CommandSource],
+    error_span: &'error mut Option<Span>,
+}
 
 const TICKS_PER_WHOLE: u16 = 192;
 const FIRST_NOTE: u16 = 0x80;
@@ -82,43 +143,13 @@ impl fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
-/// Compile a parsed MML document into a typed soundlog MDX document.
-///
-/// The compiler preserves the MML title, PDX filename, voice definitions, and
-/// channel order. Track indices follow MXDRV's layout: `A` through `H` map to
-/// indices `0` through `7`, and `P` through `W` map to indices `8` through `15`.
-///
-/// # Errors
-///
-/// Returns [`CompileError`] when a channel, voice, value, or command cannot be
-/// represented by soundlog's MDX model.
-///
-/// # Examples
-///
-/// ```
-/// let parsed = mmlx::mdx::parse("#title \"Example\"\nA c4 d4 e4")
-///     .expect("valid MML source");
-/// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
-/// let mdx_bytes = document.to_bytes();
-///
-/// assert!(!mdx_bytes.is_empty());
-/// ```
-pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
-    compile_internal(document, None, None, None)
-}
-
 /// Lower a parsed MML document into MDX, optionally collecting source locations.
 ///
-/// `sources` supplies positions for MML commands. `positions` records the
-/// source position for each emitted MDX track command, while `error_position`
-/// records the current command location during compilation. Passing `None` for
-/// these diagnostic arguments avoids collecting source-location data during a
-/// normal compile.
+/// The context supplies syntax ranges and records finalized output locations
+/// and the responsible error span. Passing `None` avoids allocating source maps.
 pub(super) fn compile_internal(
     document: &MmlDocument,
-    sources: Option<&MmlSourceMap>,
-    mut positions: Option<&mut MdxSourceMap>,
-    error_position: Option<&Cell<Option<Span>>>,
+    mut source_context: Option<&mut CompileSourceContext<'_>>,
 ) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
     let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
@@ -138,18 +169,22 @@ pub(super) fn compile_internal(
     builder.set_pdx_name(document.pcm_file.as_deref());
 
     #[cfg(feature = "source-map")]
-    let mut voice_sources = sources.map(|sources| sources.voices.iter());
+    let mut voice_sources = source_context
+        .as_ref()
+        .map(|context| context.sources.voices.iter());
     for voice in &document.voices {
-        if let Some(error_position) = error_position {
+        if let Some(context) = &mut source_context {
             #[cfg(feature = "source-map")]
-            error_position.set(
-                voice_sources
+            {
+                context.error_span = voice_sources
                     .as_mut()
                     .and_then(Iterator::next)
-                    .map(|voice| voice.span),
-            );
+                    .map(|voice| voice.span);
+            }
             #[cfg(not(feature = "source-map"))]
-            error_position.set(None);
+            {
+                context.error_span = None;
+            }
         }
         builder.append_tone(compile_voice(voice)?);
     }
@@ -161,20 +196,19 @@ pub(super) fn compile_internal(
             &track.commands,
             &mut track_states[track_index],
             base_offset,
-            sources
-                .and_then(|sources| sources.get(source_index))
-                .map(Vec::as_slice),
-            error_position,
-            positions.is_some(),
+            source_context.as_mut().map(|context| CommandSourceContext {
+                sources: context.sources.get(source_index).map_or(&[], Vec::as_slice),
+                error_span: &mut context.error_span,
+            }),
         )?;
         tracks[track_index].extend(commands);
-        if let (Some(positions), Some(command_positions)) = (&mut positions, command_positions) {
-            positions[track_index].extend(command_positions);
+        if let (Some(context), Some(command_positions)) = (&mut source_context, command_positions) {
+            context.output_map[track_index].extend(command_positions);
         }
     }
 
-    if let Some(error_position) = error_position {
-        error_position.set(None);
+    if let Some(context) = &mut source_context {
+        context.error_span = None;
     }
     for (track_index, mut commands) in tracks.into_iter().take(track_count).enumerate() {
         if let Some(loop_start) = track_states[track_index].loop_start {
@@ -234,12 +268,12 @@ pub(super) fn compile_internal(
     let document = builder
         .finalize()
         .map_err(|error| CompileError::Builder(error.to_string()))?;
-    if let Some(positions) = positions {
+    if let Some(context) = source_context {
         if matches!(document.tracks[0].first(), Some(MdxCommand::PcmMode(_))) {
-            positions[0].insert(0, None);
+            context.output_map[0].insert(0, None);
         }
         for (track, commands) in document.tracks.iter().enumerate() {
-            positions[track].resize(commands.len(), None);
+            context.output_map[track].resize(commands.len(), None);
         }
     }
     Ok(document)
@@ -302,18 +336,9 @@ fn compile_track(
     commands: &[MmlCommand],
     state: &mut TrackState,
     base_offset: usize,
-    sources: Option<&[CommandSource]>,
-    error_position: Option<&Cell<Option<Span>>>,
-    collect_positions: bool,
+    source_context: Option<CommandSourceContext<'_, '_>>,
 ) -> Result<CompiledCommands, CompileError> {
-    compile_commands(
-        commands,
-        state,
-        base_offset,
-        sources,
-        error_position,
-        collect_positions,
-    )
+    compile_commands(commands, state, base_offset, source_context)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -321,20 +346,19 @@ fn compile_commands(
     commands: &[MmlCommand],
     state: &mut TrackState,
     base_offset: usize,
-    sources: Option<&[CommandSource]>,
-    error_position: Option<&Cell<Option<Span>>>,
-    collect_positions: bool,
+    mut source_context: Option<CommandSourceContext<'_, '_>>,
 ) -> Result<CompiledCommands, CompileError> {
     let mut output = Vec::new();
-    let mut output_positions = sources.filter(|_| collect_positions).map(|_| Vec::new());
+    let sources = source_context.as_ref().map(|context| context.sources);
+    let mut output_positions = source_context.as_ref().map(|_| Vec::new());
     let mut index = 0;
     let mut last_note_output: Option<(usize, u16, u16)> = None;
     while index < commands.len() {
         let command = &commands[index];
         let command_source = sources.and_then(|sources| sources.get(index));
         let position = command_source.map(|source| source.position);
-        if let Some(error_position) = error_position {
-            error_position.set(position);
+        if let Some(context) = &mut source_context {
+            *context.error_span = position;
         }
         let note_is_legato = matches!(commands.get(index + 1), Some(MmlCommand::Legato));
         let mut consumed = 1;
@@ -343,12 +367,10 @@ fn compile_commands(
             && let (Some(source_note), Some(target_note)) = (
                 command_note_number(command, state.octave)?,
                 command_note_number(target, state.octave).inspect_err(|_| {
-                    if let Some(error_position) = error_position {
-                        error_position.set(
-                            sources
-                                .and_then(|sources| sources.get(index + 2))
-                                .map(|source| source.position),
-                        );
+                    if let Some(context) = &mut source_context {
+                        *context.error_span = sources
+                            .and_then(|sources| sources.get(index + 2))
+                            .map(|source| source.position);
                     }
                 })?,
             )
@@ -387,12 +409,13 @@ fn compile_commands(
                     body,
                     state,
                     body_base,
-                    command_source.map(|source| source.body.as_slice()),
-                    error_position,
-                    collect_positions,
+                    source_context.as_mut().map(|context| CommandSourceContext {
+                        sources: command_source.map_or(&[], |source| source.body.as_slice()),
+                        error_span: context.error_span,
+                    }),
                 )?;
-                if let Some(error_position) = error_position {
-                    error_position.set(position);
+                if let Some(context) = &mut source_context {
+                    *context.error_span = position;
                 }
                 let body_length = command_bytes(&body_commands);
                 patch_repeat_escape_offsets(&mut body_commands, body_length)?;
@@ -496,12 +519,10 @@ fn compile_commands(
                     if let Some(target) = commands.get(target_index) {
                         if let Some(target_note) = command_note_number(target, target_octave)
                             .inspect_err(|_| {
-                                if let Some(error_position) = error_position {
-                                    error_position.set(
-                                        sources
-                                            .and_then(|sources| sources.get(target_index))
-                                            .map(|source| source.position),
-                                    );
+                                if let Some(context) = &mut source_context {
+                                    *context.error_span = sources
+                                        .and_then(|sources| sources.get(target_index))
+                                        .map(|source| source.position);
                                 }
                             })?
                         {
@@ -964,18 +985,14 @@ mod tests {
     #[cfg(feature = "source-map")]
     use crate::frontend::SourceFile;
 
-    #[cfg(feature = "source-map")]
     #[test]
-    fn diagnostic_only_lowering_does_not_allocate_output_positions() {
-        let (document, sources) = parse_with_sources("A [c4]2").unwrap();
-        let position = Cell::new(None);
+    fn ordinary_lowering_does_not_allocate_output_positions() {
+        let document = super::super::parse("A [c4]2").unwrap();
         let (_, positions) = compile_commands(
             &document.tracks[0].commands,
             &mut TrackState::default(),
             0,
-            Some(&sources[0]),
-            Some(&position),
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(positions, None);
@@ -996,15 +1013,14 @@ mod tests {
             let document = super::super::parse(source).unwrap();
             let original = compile(&document).unwrap_err();
             let (located_document, sources) = parse_with_sources(source).unwrap();
-            let position = Cell::new(None);
+            let mut context = CompileSourceContext::new(&sources);
             assert_eq!(
-                compile_internal(&located_document, Some(&sources), None, Some(&position))
-                    .unwrap_err(),
+                compile_internal(&located_document, Some(&mut context)).unwrap_err(),
                 original
             );
             assert_eq!(
-                position
-                    .get()
+                context
+                    .error_span
                     .and_then(|span| SourceFile::new(source).unwrap().position(span.start()))
                     .map(|position| (position.line_number, position.column)),
                 Some((line, column)),
@@ -1015,10 +1031,10 @@ mod tests {
         document.tracks[0].commands = vec![MmlCommand::Rest { length: Some(4) }; 65_536];
         let rest_source = sources[0][0].clone();
         sources[0].resize(65_536, rest_source);
-        let position = Cell::new(None);
-        let result = compile_internal(&document, Some(&sources), None, Some(&position));
+        let mut context = CompileSourceContext::new(&sources);
+        let result = compile_internal(&document, Some(&mut context));
         assert!(matches!(result, Err(CompileError::Builder(_))));
-        assert_eq!(position.get(), None);
+        assert_eq!(context.error_span, None);
     }
 
     #[cfg(feature = "source-map")]
@@ -1035,9 +1051,8 @@ mod tests {
             "A r4 ! c4",
         ] {
             let (document, sources) = parse_with_sources(source).unwrap();
-            let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
-            let diagnosed =
-                compile_internal(&document, Some(&sources), Some(&mut positions), None).unwrap();
+            let mut context = CompileSourceContext::new(&sources);
+            let diagnosed = compile_internal(&document, Some(&mut context)).unwrap();
             let normal = compile(&document).unwrap();
             assert_eq!(diagnosed.to_bytes(), normal.to_bytes(), "{source}");
             for (track, commands) in diagnosed.tracks.iter().enumerate() {
@@ -1045,7 +1060,7 @@ mod tests {
                     if matches!(command, MdxCommand::Note(_)) {
                         let position = SourceFile::new(source)
                             .unwrap()
-                            .position(positions[track][index].unwrap().start())
+                            .position(context.output_map[track][index].unwrap().start())
                             .unwrap();
                         let character = source
                             .lines()
