@@ -36,7 +36,7 @@ C t120 @1 l8 [[gab>c<]2]2
 let parsed = mmlx::mdx::parse(source).expect("valid MML source");
 println!("{}", mmlx::mdx::format_tree(&parsed));
 let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
-let mdx_bytes = document.to_bytes();
+let mdx_bytes = document.to_bytes().expect("valid MDX layout");
 println!("Generated {} MDX bytes", mdx_bytes.len());
 ```
 

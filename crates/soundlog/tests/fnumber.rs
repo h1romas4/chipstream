@@ -3,6 +3,73 @@ use soundlog::chip::fnumber::{
     OplSpec, OpnSpec, find_and_tune_fnumber, find_closest_fnumber, generate_12edo_fnum_table,
 };
 
+struct ConfigurableSpec<const FNUM_BITS: u8, const BLOCK_BITS: u8, const A4_BLOCK: u8>;
+
+impl<const FNUM_BITS: u8, const BLOCK_BITS: u8, const A4_BLOCK: u8> ChipTypeSpec
+    for ConfigurableSpec<FNUM_BITS, BLOCK_BITS, A4_BLOCK>
+{
+    fn config() -> soundlog::chip::fnumber::ChipTypeConfig {
+        soundlog::chip::fnumber::ChipTypeConfig {
+            fnum_bits: FNUM_BITS,
+            block_bits: BLOCK_BITS,
+            a4_block: A4_BLOCK,
+            prescaler: 2.0,
+        }
+    }
+
+    fn fnum_block_to_freq(
+        f_num: u32,
+        block: u8,
+        master_clock_hz: f32,
+    ) -> Result<f32, soundlog::chip::fnumber::FNumberError> {
+        OpnSpec::fnum_block_to_freq(f_num, block, master_clock_hz)
+    }
+
+    fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
+        OpnSpec::ideal_fnum_for_freq(target_freq, block, master_clock_hz)
+    }
+}
+
+fn assert_invalid_configuration<C: ChipTypeSpec>() {
+    let clock = OpnSpec::default_master_clock();
+    assert!(generate_12edo_fnum_table::<C>(clock).is_err());
+    let table = generate_12edo_fnum_table::<OpnSpec>(clock).unwrap();
+    assert!(find_and_tune_fnumber::<C>(&table, 440.0, clock).is_err());
+}
+
+#[test]
+fn fnumber_errors_implement_standard_error() {
+    let error: Box<dyn std::error::Error> =
+        soundlog::chip::fnumber::FNumberError::InvalidInput.into();
+    assert_eq!(
+        error.to_string(),
+        "invalid F-number input or chip configuration"
+    );
+    let error: Box<dyn std::error::Error> = soundlog::chip::fnumber::FNumberError::ExcessiveBits {
+        param: "fnum_bits",
+        bits: 33,
+    }
+    .into();
+    assert_eq!(error.to_string(), "excessive fnum_bits width: 33 bits");
+}
+
+#[test]
+fn invalid_configuration_returns_errors() {
+    assert_invalid_configuration::<ConfigurableSpec<0, 3, 6>>();
+    assert_invalid_configuration::<ConfigurableSpec<33, 3, 6>>();
+    assert_invalid_configuration::<ConfigurableSpec<11, 255, 6>>();
+    assert_invalid_configuration::<ConfigurableSpec<11, 3, 8>>();
+    assert_invalid_configuration::<ConfigurableSpec<11, 0, 6>>();
+}
+
+#[test]
+fn full_width_configuration_does_not_shift_by_32() {
+    let table = generate_12edo_fnum_table::<ConfigurableSpec<32, 3, 6>>(4_000_000.0).unwrap();
+    assert!(
+        find_and_tune_fnumber::<ConfigurableSpec<32, 3, 6>>(&table, 440.0, 4_000_000.0).is_ok()
+    );
+}
+
 #[test]
 fn test_fnote_block_to_freq_ymf262() {
     let expected = [

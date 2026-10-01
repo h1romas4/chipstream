@@ -58,7 +58,7 @@ fn read_mml_package(input: &Path, pdx: Option<&Path>) -> Result<MdxPackage> {
         .with_context(|| format!("failed to read MML input: {}", input.display()))?;
     let parsed = parse_source(input, &source)?;
     let mdx = compile_document(input, &parsed)?.into_document();
-    let mdx_bytes = mdx.to_bytes();
+    let mdx_bytes = mdx.to_bytes().context("failed to serialize compiled MML")?;
     let pdx_bytes = read_pdx_bytes(input, pdx, mdx.header.pdx_name.as_deref())?;
     MdxPackage::parse(&mdx_bytes, pdx_bytes.as_deref())
         .map_err(|error| anyhow!("failed to parse compiled MML package: {error}"))

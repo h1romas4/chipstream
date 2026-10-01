@@ -76,10 +76,11 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
         }
 
         let (cmd, cons) = parse_vgm_command(bytes, off)?;
-        commands.push(cmd.clone());
+        let is_end = matches!(cmd, VgmCommand::EndOfData(_));
+        commands.push(cmd);
         off = off.wrapping_add(cons);
 
-        if let VgmCommand::EndOfData(_) = commands.last().unwrap() {
+        if is_end {
             break;
         }
     }

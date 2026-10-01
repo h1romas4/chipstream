@@ -6,7 +6,7 @@ use std::convert::TryInto;
 #[test]
 fn add_chip_accepts_tag_only_chip() {
     let mut b = VgmBuilder::new();
-    b.register_chip(Chip::Ym2612, 0, 8000000);
+    b.register_chip(Chip::Ym2612, soundlog::Instance::Primary, 8000000);
     let doc = b.finalize();
     assert_eq!(doc.header.ym2612_clock, 8000000);
 }

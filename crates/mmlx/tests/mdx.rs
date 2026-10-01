@@ -76,7 +76,10 @@ mod allocation {
                 let parsed = mdx::frontend::parse(source).unwrap();
                 mdx::frontend::compile(&parsed).unwrap()
             });
-            assert_eq!(mapped.document().to_bytes(), document.to_bytes());
+            assert_eq!(
+                mapped.document().to_bytes().unwrap(),
+                document.to_bytes().unwrap()
+            );
             assert!(mapped_usage.0 > ordinary.0);
             assert!(mapped_usage.1 > ordinary.1);
         }
@@ -110,8 +113,8 @@ mod frontend {
             let compiled = frontend::compile(&parsed).unwrap();
             drop(parsed);
             assert_eq!(
-                compiled.document().to_bytes(),
-                compile_source(source).to_bytes()
+                compiled.document().to_bytes().unwrap(),
+                compile_source(source).to_bytes().unwrap()
             );
             for (track, commands) in compiled.document().tracks.iter().enumerate() {
                 for (index, command) in commands.iter().enumerate() {
@@ -301,7 +304,10 @@ mod frontend {
             None
         );
         let document = compiled.into_document();
-        assert_eq!(document.to_bytes(), compile_source("A L c4").to_bytes());
+        assert_eq!(
+            document.to_bytes().unwrap(),
+            compile_source("A L c4").to_bytes().unwrap()
+        );
     }
 
     #[test]

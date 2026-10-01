@@ -68,7 +68,7 @@ fn test_total_samples_computed_correctly() {
 #[test]
 fn add_chip_write_psg() {
     let mut b = VgmBuilder::new();
-    b.add_chip_write(0usize, PsgSpec { value: 0xAB });
+    b.add_chip_write(soundlog::Instance::Primary, PsgSpec { value: 0xAB });
     let doc = b.finalize();
     // builder appends EndOfData, so we expect the command + terminator
     assert_eq!(doc.iter().count(), 2);
@@ -85,7 +85,7 @@ fn add_chip_write_psg() {
 fn add_chip_write_ym2413() {
     let mut b = VgmBuilder::new();
     b.add_chip_write(
-        1usize,
+        soundlog::Instance::Secondary,
         Ym2413Spec {
             register: 0x10,
             value: 0x22,
@@ -452,7 +452,7 @@ fn add_command_ym2612_port0_address2a() {
 fn add_chip_registers_and_sets_header_clock() {
     let mut b = VgmBuilder::new();
     // register a YM2413 instance at id 0
-    b.register_chip(Chip::Ym2413, 0, 3579545);
+    b.register_chip(Chip::Ym2413, soundlog::Instance::Primary, 3579545);
     let doc = b.finalize();
     assert_eq!(doc.header.ym2413_clock, 3579545);
 }
@@ -461,7 +461,7 @@ fn add_chip_registers_and_sets_header_clock() {
 fn add_chip_sets_msb_for_instance1() {
     let mut b = VgmBuilder::new();
     // chip_id 1 should set MSB of the clock field
-    b.register_chip(Chip::Ym2413, 1, 3579545);
+    b.register_chip(Chip::Ym2413, soundlog::Instance::Secondary, 3579545);
     let doc = b.finalize();
     assert_eq!(doc.header.ym2413_clock, 3579545u32 | 0x8000_0000u32);
 }
@@ -469,9 +469,9 @@ fn add_chip_sets_msb_for_instance1() {
 #[test]
 fn add_chip_write_uses_registered_instance() {
     let mut b = VgmBuilder::new();
-    b.register_chip(Chip::Ym2612, 0, 7987200);
+    b.register_chip(Chip::Ym2612, soundlog::Instance::Primary, 7987200);
     b.add_chip_write(
-        0,
+        soundlog::Instance::Primary,
         Ym2612Spec {
             port: 0,
             register: 0x2A,
@@ -501,9 +501,9 @@ fn add_chip_write_uses_registered_instance() {
 fn header_chip_instances_enumeration() {
     let mut b = VgmBuilder::new();
     // primary Ym2413 at id 0
-    b.register_chip(Chip::Ym2413, 0, 3579545);
+    b.register_chip(Chip::Ym2413, soundlog::Instance::Primary, 3579545);
     // secondary Ym2612 at id 1
-    b.register_chip(Chip::Ym2612, 1, 7987200);
+    b.register_chip(Chip::Ym2612, soundlog::Instance::Secondary, 7987200);
     let doc = b.finalize();
 
     let instances = doc.header.chip_instances();
@@ -563,9 +563,9 @@ fn add_chip_write_scc1() {
 fn roundtrip_vgmdocument_into_vec_and_parse() {
     // Build a small document with a registered chip and a couple commands.
     let mut b = VgmBuilder::new();
-    b.register_chip(Chip::Ym2612, 0, 7987200);
+    b.register_chip(Chip::Ym2612, soundlog::Instance::Primary, 7987200);
     b.add_chip_write(
-        0usize,
+        soundlog::Instance::Primary,
         Ym2612Spec {
             port: 0,
             register: 0x2A,
@@ -637,21 +637,21 @@ fn test_create_and_parse_vgm_document() {
     let mut builder = VgmBuilder::new();
 
     builder.add_chip_write(
-        0,
+        soundlog::Instance::Primary,
         Ym2203Spec {
             register: 0x22,
             value: 0x33,
         },
     );
     builder.add_chip_write(
-        1,
+        soundlog::Instance::Secondary,
         Ym2203Spec {
             register: 0x22,
             value: 0x33,
         },
     );
     builder.add_chip_write(
-        1,
+        soundlog::Instance::Secondary,
         Ymf262Spec {
             port: 0,
             register: 0x22,

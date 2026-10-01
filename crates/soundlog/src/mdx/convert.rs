@@ -97,18 +97,18 @@ struct MckScheduler {
 }
 
 impl MckScheduler {
-    /// Creates a scheduler for a rational PCM-byte event rate in Hz.
-    fn new(byte_rate_numerator_hz: u32, byte_rate_denominator: u32) -> Self {
+    /// Creates a scheduler with a rate scaled by [`MCK_RATE_DENOMINATOR`].
+    fn new(byte_rate_units: u32) -> Self {
         Self {
-            byte_rate_units: Self::rate_units(byte_rate_numerator_hz, byte_rate_denominator),
+            byte_rate_units,
             time_remainder: 0,
             started: false,
         }
     }
 
     /// Changes the event rate while preserving the accumulated fractional phase.
-    fn set_byte_rate(&mut self, byte_rate_numerator_hz: u32, byte_rate_denominator: u32) {
-        self.byte_rate_units = Self::rate_units(byte_rate_numerator_hz, byte_rate_denominator);
+    fn set_byte_rate(&mut self, byte_rate_units: u32) {
+        self.byte_rate_units = byte_rate_units;
     }
 
     /// Advances elapsed time and returns the number of PCM-byte events due.
@@ -135,24 +135,6 @@ impl MckScheduler {
             true
         }
     }
-
-    /// Converts a rational byte rate into units of the shared denominator.
-    fn rate_units(byte_rate_numerator_hz: u32, byte_rate_denominator: u32) -> u32 {
-        assert!(byte_rate_denominator != 0);
-        let common_divisor = gcd(byte_rate_numerator_hz, byte_rate_denominator);
-        let numerator = byte_rate_numerator_hz / common_divisor;
-        let denominator = byte_rate_denominator / common_divisor;
-        assert_eq!(MCK_RATE_DENOMINATOR % denominator, 0);
-        numerator * (MCK_RATE_DENOMINATOR / denominator)
-    }
-}
-
-/// Returns the greatest common divisor of two non-negative integers.
-fn gcd(mut left: u32, mut right: u32) -> u32 {
-    while right != 0 {
-        (left, right) = (right, left % right);
-    }
-    left
 }
 
 impl MdxPcmMode {
@@ -247,6 +229,8 @@ impl Default for MdxToVgmOptions {
 pub enum MdxConvertError {
     /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
+    /// The current MDX document has an unrepresentable layout.
+    InvalidDocument(String),
     /// A track contains a command that the converter cannot process.
     UnsupportedCommand {
         /// Zero-based index of the track containing the command.
@@ -265,6 +249,7 @@ impl fmt::Display for MdxConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MdxConvertError::InvalidOptions(reason) => write!(f, "invalid options: {reason}"),
+            MdxConvertError::InvalidDocument(reason) => write!(f, "invalid MDX document: {reason}"),
             MdxConvertError::UnsupportedCommand { track, command } => {
                 write!(f, "unsupported command `{command}` on track {track}")
             }
@@ -336,10 +321,7 @@ pub fn to_vgm_document(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
 ) -> Result<VgmDocument, MdxConvertError> {
-    convert_document(package, options, false).map_err(|error| match error {
-        MdxPlaybackCheckError::Conversion { error, .. } => error,
-        MdxPlaybackCheckError::LimitExceeded { .. } => unreachable!("conversion has no budgets"),
-    })
+    convert_document(package, options, false).map_err(|failure| failure.error)
 }
 
 /// Converts playback to VGM with zero-based MDX coordinates on errors.
@@ -351,14 +333,32 @@ pub fn to_vgm_document_with_diagnostics(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
 ) -> Result<VgmDocument, MdxPlaybackCheckError> {
-    convert_document(package, options, true)
+    convert_document(package, options, true).map_err(|failure| MdxPlaybackCheckError::Conversion {
+        error: failure.error,
+        track: failure.position.map(|(track, _)| track),
+        command_index: failure.position.map(|(_, command)| command),
+    })
+}
+
+struct ConversionFailure {
+    error: MdxConvertError,
+    position: Option<(usize, usize)>,
+}
+
+impl From<MdxConvertError> for ConversionFailure {
+    fn from(error: MdxConvertError) -> Self {
+        Self {
+            error,
+            position: None,
+        }
+    }
 }
 
 fn convert_document(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
     diagnostics: bool,
-) -> Result<VgmDocument, MdxPlaybackCheckError> {
+) -> Result<VgmDocument, ConversionFailure> {
     let mut generator = MdxVgmGenerator::new(package, *options, true)?;
     if diagnostics {
         generator.playback.check_state = Some(PlaybackCheckState::default());
@@ -373,7 +373,7 @@ fn convert_document(
 
     while generator
         .run_step()
-        .map_err(|error| generator.playback.diagnostic_error(error))?
+        .map_err(|error| generator.playback.conversion_failure(error))?
     {}
 
     // For F1 cases that could not establish a synchronized native loop point,
@@ -395,7 +395,7 @@ fn convert_document(
         }
         while repeat
             .run_step()
-            .map_err(|error| repeat.playback.diagnostic_error(error))?
+            .map_err(|error| repeat.playback.conversion_failure(error))?
         {}
         for command in repeat.builder.drain_commands() {
             generator.builder.add_vgm_command(command);
@@ -941,7 +941,9 @@ impl PcmOutputState {
             raw_sample: None,
             raw_length: 0,
             raw_position: 0,
-            mck_scheduler: MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE, 2),
+            mck_scheduler: MckScheduler::new(
+                pcm_mixer::PCM8_MASTER_SAMPLE_RATE * (MCK_RATE_DENOMINATOR / 2),
+            ),
         }
     }
 
@@ -1821,30 +1823,30 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         // The offset targets the corresponding 0xF5 opcode;
                         // add 2 to land past its operand and break out of the
                         // loop.
-                        self.jump_relative(track, command.offset.saturating_add(2));
+                        self.jump_relative(track, command.offset.saturating_add(2))?;
                     }
                 }
                 MdxCommand::Jump(command) => {
-                    self.take_repeating_jump(track, command.offset, builder)
+                    self.take_repeating_jump(track, command.offset, builder)?
                 }
                 MdxCommand::EndOfTrackLoop(command) => {
                     self.song_loop.track_end_loop_seen = true;
                     if self.song_loop.synchronized_f1_tracks.contains(&track) {
-                        self.park_at_synchronized_f1(track, command.offset);
+                        self.park_at_synchronized_f1(track, command.offset)?;
                         if self.synchronized_f1_barrier_ready() {
                             break;
                         }
                     } else if self.song_loop.loop_count.is_some() {
-                        self.take_finite_track_end_loop(track, command.offset);
+                        self.take_finite_track_end_loop(track, command.offset)?;
                     } else if self.song_loop.mark_native_loop && !self.fadeout.has_command {
                         // F1 is a per-track terminator in MDX. A short PCM
                         // track can loop long before the rest of the song, so
                         // it must not become the global VGM loop point.
                         self.tracks[track].active = false;
                     } else if self.song_loop.mark_native_loop {
-                        self.jump_relative(track, command.offset);
+                        self.jump_relative(track, command.offset)?;
                     } else {
-                        self.take_repeating_jump(track, command.offset, builder);
+                        self.take_repeating_jump(track, command.offset, builder)?;
                     }
                 }
                 MdxCommand::Raw(_) => {}
@@ -2108,32 +2110,53 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Resolves a relative jump offset (as encoded by `LoopEnd`,
     /// `LoopEscape` or `Jump`) to an absolute command index, if the target
     /// lands exactly on a command boundary.
-    fn resolve_jump_target(&mut self, track: usize, offset: i16) -> Option<usize> {
+    fn resolve_jump_target(
+        &mut self,
+        track: usize,
+        offset: i16,
+    ) -> Result<Option<usize>, MdxConvertError> {
         let command_index = self.tracks[track].command_index;
-        let source_map = self
-            .jump_source_map
-            .get_or_insert_with(|| self.package.borrow().mdx.sourcemap());
-        let track_ranges = &source_map[track];
-        let (current_offset, current_length) =
-            track_ranges.get(command_index.saturating_sub(1)).copied()?;
-        let command_end = current_offset.checked_add(current_length)?;
-        let target_offset = if offset >= 0 {
-            command_end.checked_add(offset as usize)?
-        } else {
-            command_end.checked_sub(offset.unsigned_abs() as usize)?
+        if self.jump_source_map.is_none() {
+            self.jump_source_map = Some(
+                self.package
+                    .borrow()
+                    .mdx
+                    .sourcemap()
+                    .map_err(|error| MdxConvertError::InvalidDocument(error.to_string()))?,
+            );
+        }
+        let Some(track_ranges) = self.jump_source_map.as_ref().and_then(|map| map.get(track))
+        else {
+            return Ok(None);
         };
-        track_ranges
-            .iter()
-            .position(|(offset, _)| *offset == target_offset)
+        let Some((current_offset, current_length)) =
+            track_ranges.get(command_index.saturating_sub(1)).copied()
+        else {
+            return Ok(None);
+        };
+        let Some(command_end) = current_offset.checked_add(current_length) else {
+            return Ok(None);
+        };
+        let target_offset = if offset >= 0 {
+            command_end.checked_add(offset as usize)
+        } else {
+            command_end.checked_sub(offset.unsigned_abs() as usize)
+        };
+        Ok(target_offset.and_then(|target_offset| {
+            track_ranges
+                .iter()
+                .position(|(offset, _)| *offset == target_offset)
+        }))
     }
 
     /// Performs a relative jump for the specified track by the given offset.
     /// If the target offset corresponds to a valid command boundary, updates the
     /// track's command index accordingly.
-    fn jump_relative(&mut self, track: usize, offset: i16) {
-        if let Some(target_index) = self.resolve_jump_target(track, offset) {
+    fn jump_relative(&mut self, track: usize, offset: i16) -> Result<(), MdxConvertError> {
+        if let Some(target_index) = self.resolve_jump_target(track, offset)? {
             self.tracks[track].command_index = target_index;
         }
+        Ok(())
     }
 
     /// Takes an unconditional repeat back to `target_index` (infinite
@@ -2192,27 +2215,37 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 
     /// Resolves `offset` relative to the just-executed command (`Jump`) and
     /// hands it to `take_repeating_jump_to`.
-    fn take_repeating_jump(&mut self, track: usize, offset: i16, builder: &mut VgmBuilder) {
+    fn take_repeating_jump(
+        &mut self,
+        track: usize,
+        offset: i16,
+        builder: &mut VgmBuilder,
+    ) -> Result<(), MdxConvertError> {
         let jump_command_index = self.tracks[track].command_index - 1;
-        let Some(target_index) = self.resolve_jump_target(track, offset) else {
-            return;
+        let Some(target_index) = self.resolve_jump_target(track, offset)? else {
+            return Ok(());
         };
         self.take_repeating_jump_to(track, jump_command_index, target_index, builder);
+        Ok(())
     }
 
     /// Keeps independent F1 tracks looping until every active song track has
     /// reached the requested loop count or ended.
-    fn take_finite_track_end_loop(&mut self, track: usize, offset: i16) {
+    fn take_finite_track_end_loop(
+        &mut self,
+        track: usize,
+        offset: i16,
+    ) -> Result<(), MdxConvertError> {
         let Some(limit) = self.song_loop.loop_count else {
-            return;
+            return Ok(());
         };
         let command_index = self.tracks[track].command_index - 1;
-        let Some(target_index) = self.resolve_jump_target(track, offset) else {
-            return;
+        let Some(target_index) = self.resolve_jump_target(track, offset)? else {
+            return Ok(());
         };
         if offset >= 0 {
             self.tracks[track].command_index = target_index;
-            return;
+            return Ok(());
         }
         let count = self.song_loop.track_loop_counts.entry(track).or_insert(0);
         *count = count.saturating_add(1);
@@ -2233,16 +2266,21 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         } else {
             self.tracks[track].command_index = target_index;
         }
+        Ok(())
     }
 
     /// Marks a loop track as arrived, then lets it continue from its target
     /// while the other participating tracks reach the shared boundary.
-    fn park_at_synchronized_f1(&mut self, track: usize, offset: i16) {
+    fn park_at_synchronized_f1(
+        &mut self,
+        track: usize,
+        offset: i16,
+    ) -> Result<(), MdxConvertError> {
         let command_index = self.tracks[track].command_index - 1;
-        let Some(target_index) = self.resolve_jump_target(track, offset) else {
+        let Some(target_index) = self.resolve_jump_target(track, offset)? else {
             self.song_loop.synchronized_f1_tracks.remove(&track);
             self.tracks[track].active = false;
-            return;
+            return Ok(());
         };
         self.song_loop
             .synchronized_f1_targets
@@ -2251,6 +2289,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.song_loop.synchronized_f1_arrivals.insert(track);
         self.tracks[track].command_index = target_index;
         self.tracks[track].active = target_index != command_index;
+        Ok(())
     }
 
     /// Returns whether every synchronized F1 track has arrived and all other
@@ -2379,21 +2418,37 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// libvgm commits the new clock when register `0x0b` is written. The
     /// following `0x0c` write selects the divider.
     fn set_legacy_pcm_rate(&mut self, mode: u8, builder: &mut VgmBuilder) {
-        let Some((byte_rate_numerator_hz, byte_rate_denominator, clock_bytes, divider_value)) =
-            (match mode {
-                0 => Some((4_000_000, 2_048, [0x00, 0x09, 0x3d, 0x00], 0)), // 4 MHz / 1024
-                1 => Some((4_000_000, 1_536, [0x00, 0x09, 0x3d, 0x00], 1)), // 4 MHz / 768
-                2 => Some((8_000_000, 2_048, [0x00, 0x12, 0x7a, 0x00], 0)), // 8 MHz / 1024
-                3 => Some((8_000_000, 1_536, [0x00, 0x12, 0x7a, 0x00], 1)), // 8 MHz / 768
-                4 => Some((8_000_000, 1_024, [0x00, 0x12, 0x7a, 0x00], 2)), // 8 MHz / 512
-                _ => None,
-            })
-        else {
+        let Some((byte_rate_units, clock_bytes, divider_value)) = (match mode {
+            0 => Some((
+                4_000_000 * MCK_RATE_DENOMINATOR / 2_048,
+                [0x00, 0x09, 0x3d, 0x00],
+                0,
+            )), // 4 MHz / 1024
+            1 => Some((
+                4_000_000 * MCK_RATE_DENOMINATOR / 1_536,
+                [0x00, 0x09, 0x3d, 0x00],
+                1,
+            )), // 4 MHz / 768
+            2 => Some((
+                8_000_000 * MCK_RATE_DENOMINATOR / 2_048,
+                [0x00, 0x12, 0x7a, 0x00],
+                0,
+            )), // 8 MHz / 1024
+            3 => Some((
+                8_000_000 * MCK_RATE_DENOMINATOR / 1_536,
+                [0x00, 0x12, 0x7a, 0x00],
+                1,
+            )), // 8 MHz / 768
+            4 => Some((
+                8_000_000 * MCK_RATE_DENOMINATOR / 1_024,
+                [0x00, 0x12, 0x7a, 0x00],
+                2,
+            )), // 8 MHz / 512
+            _ => None,
+        }) else {
             return;
         };
-        self.pcm_output
-            .mck_scheduler
-            .set_byte_rate(byte_rate_numerator_hz, byte_rate_denominator);
+        self.pcm_output.mck_scheduler.set_byte_rate(byte_rate_units);
         for (register, value) in (0x08..=0x0b).zip(clock_bytes) {
             builder.add_vgm_command((Instance::Primary, Okim6258Spec { register, value }));
         }
@@ -2451,6 +2506,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn finalize_with_pcm(&mut self, mut builder: VgmBuilder) -> VgmDocument {
         self.emit_closing_commands(&mut builder);
         self.finalize(builder)
+    }
+
+    fn conversion_failure(&self, error: MdxConvertError) -> ConversionFailure {
+        ConversionFailure {
+            error,
+            position: self.check_state.as_ref().and_then(|state| state.position),
+        }
     }
 
     fn diagnostic_error(&self, error: MdxConvertError) -> MdxPlaybackCheckError {
@@ -2969,15 +3031,15 @@ mod tests {
         assert!(state.jump_source_map.is_none());
 
         state.tracks[8].command_index = 1;
-        assert_eq!(state.resolve_jump_target(8, 0), Some(1));
+        assert_eq!(state.resolve_jump_target(8, 0).unwrap(), Some(1));
         let cached = state
             .jump_source_map
             .as_ref()
             .expect("first jump builds source map");
-        assert_eq!(cached, &state.package.mdx.sourcemap());
+        assert_eq!(cached, &state.package.mdx.sourcemap().unwrap());
         let cached_ptr = cached.as_ptr();
         for _repeat in 0..100 {
-            assert_eq!(state.resolve_jump_target(8, 0), Some(1));
+            assert_eq!(state.resolve_jump_target(8, 0).unwrap(), Some(1));
             assert_eq!(cached_ptr, state.jump_source_map.as_ref().unwrap().as_ptr());
         }
     }
@@ -3156,7 +3218,7 @@ mod tests {
                 (i16::MAX, None),
             ] {
                 assert_eq!(
-                    state.resolve_jump_target(track, offset),
+                    state.resolve_jump_target(track, offset).unwrap(),
                     expected,
                     "track {track}, offset {offset}"
                 );
@@ -3195,15 +3257,16 @@ mod tests {
         );
         state.tracks[1].command_index = 3;
 
-        assert_eq!(state.resolve_jump_target(1, -6), Some(1));
-        assert_eq!(state.resolve_jump_target(1, -7), Some(0));
-        assert_eq!(state.resolve_jump_target(1, -5), None);
-        assert_eq!(state.resolve_jump_target(1, 0), Some(3));
+        assert_eq!(state.resolve_jump_target(1, -6).unwrap(), Some(1));
+        assert_eq!(state.resolve_jump_target(1, -7).unwrap(), Some(0));
+        assert_eq!(state.resolve_jump_target(1, -5).unwrap(), None);
+        assert_eq!(state.resolve_jump_target(1, 0).unwrap(), Some(3));
     }
 
     #[test]
     fn mck_scheduler_preserves_fractional_pcm_byte_rate() {
-        let mut scheduler = MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE, 2);
+        let mut scheduler =
+            MckScheduler::new(pcm_mixer::PCM8_MASTER_SAMPLE_RATE * (MCK_RATE_DENOMINATOR / 2));
         let bytes_due = (0..768).map(|_| scheduler.advance(22_272)).sum::<u32>();
 
         assert_eq!(bytes_due, 133_632);
@@ -3218,7 +3281,7 @@ mod tests {
             ((8_000_000, 1_536), 340),
             ((8_000_000, 1_024), 510),
         ] {
-            let mut scheduler = MckScheduler::new(numerator, denominator);
+            let mut scheduler = MckScheduler::new(numerator * MCK_RATE_DENOMINATOR / denominator);
             assert_eq!(scheduler.advance(65_280), expected);
         }
     }
@@ -3252,7 +3315,7 @@ mod tests {
             );
         let mut mdx = builder.finalize().unwrap();
         for (track, loop_index) in [(0, 1), (8, 2)] {
-            let source_map = mdx.sourcemap();
+            let source_map = mdx.sourcemap().unwrap();
             let target = source_map[track][0].0;
             let (loop_offset, loop_length) = source_map[track][loop_index];
             let relative =
@@ -3296,7 +3359,7 @@ mod tests {
         }
         let mut mdx = builder.finalize().unwrap();
         for track in 0..2 {
-            let source_map = mdx.sourcemap();
+            let source_map = mdx.sourcemap().unwrap();
             let target = source_map[track][0].0;
             let (loop_offset, loop_length) = source_map[track][1];
             let relative =
@@ -3637,7 +3700,7 @@ mod tests {
             );
         let mut mdx = builder.finalize().unwrap();
         for track in 0..3 {
-            let source_map = mdx.sourcemap();
+            let source_map = mdx.sourcemap().unwrap();
             let target_command = if track == 2 { 1 } else { 0 };
             let target = source_map[track][target_command].0;
             let (loop_offset, loop_length) = source_map[track][2];

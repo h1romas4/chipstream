@@ -1,3 +1,30 @@
+#[test]
+fn invalid_compression_width_propagates_through_stream() {
+    use soundlog::vgm::detail::{
+        BitPackingCompression, BitPackingSubType, CompressedStream, CompressedStreamData,
+        CompressionType,
+    };
+
+    let mut builder = soundlog::VgmBuilder::new();
+    builder.attach_data_block(CompressedStream {
+        chip_type: soundlog::vgm::detail::StreamChipType::Ym2612Pcm,
+        compression_type: CompressionType::BitPacking,
+        uncompressed_size: 1,
+        compression: CompressedStreamData::BitPacking(BitPackingCompression {
+            bits_decompressed: 8,
+            bits_compressed: 0,
+            sub_type: BitPackingSubType::Copy,
+            add_value: 0,
+            data: vec![0xff],
+        }),
+    });
+    let mut stream = soundlog::VgmStream::from_document(builder.finalize());
+    assert!(matches!(
+        stream.find_map(Result::err),
+        Some(soundlog::ParseError::DataInconsistency(_))
+    ));
+}
+
 use soundlog::VgmBuilder;
 use soundlog::VgmDocument;
 use soundlog::meta::Gd3;
@@ -3127,7 +3154,11 @@ fn test_push_data_chunked_512_bytes() {
     let mut builder = VgmBuilder::new();
 
     // Register a chip to ensure header is non-trivial
-    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+    builder.register_chip(
+        soundlog::chip::Chip::Ym2612,
+        soundlog::Instance::Primary,
+        7670454,
+    );
 
     // Add various commands
     builder.add_vgm_command(Wait735Samples);
@@ -3202,8 +3233,16 @@ fn test_push_data_header_availability() {
     let mut builder = VgmBuilder::new();
 
     // Register chips and set metadata
-    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
-    builder.register_chip(soundlog::chip::Chip::Sn76489, 0, 3579545);
+    builder.register_chip(
+        soundlog::chip::Chip::Ym2612,
+        soundlog::Instance::Primary,
+        7670454,
+    );
+    builder.register_chip(
+        soundlog::chip::Chip::Sn76489,
+        soundlog::Instance::Primary,
+        3579545,
+    );
 
     // Add commands
     builder.add_vgm_command(WaitSamples(100));
@@ -3248,7 +3287,11 @@ fn test_push_data_very_small_chunks() {
     // Test with extremely small chunks (16 bytes) to verify robustness
     let mut builder = VgmBuilder::new();
 
-    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+    builder.register_chip(
+        soundlog::chip::Chip::Ym2612,
+        soundlog::Instance::Primary,
+        7670454,
+    );
     builder.add_vgm_command(Wait735Samples);
     builder.add_vgm_command(WaitSamples(2000));
     builder.add_vgm_command(EndOfData);
@@ -3305,7 +3348,11 @@ fn test_push_data_with_loop() {
     // This test verifies loop functionality works with chunked-built VGM
     let mut builder = VgmBuilder::new();
 
-    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7670454);
+    builder.register_chip(
+        soundlog::chip::Chip::Ym2612,
+        soundlog::Instance::Primary,
+        7670454,
+    );
 
     // Commands before loop
     builder.add_vgm_command(WaitSamples(100));
@@ -4042,12 +4089,16 @@ fn test_vgm_callback_stream_push_chunk_large_doc() {
     let mut builder = VgmBuilder::new();
 
     // Register a YM2612 instance at id 0 so writes map to a tracked instance
-    builder.register_chip(soundlog::chip::Chip::Ym2612, 0, 7987200);
+    builder.register_chip(
+        soundlog::chip::Chip::Ym2612,
+        soundlog::Instance::Primary,
+        7987200,
+    );
 
     // Add 200 writes interleaved with small waits to make the document reasonably large
     for i in 0u16..200u16 {
         builder.add_chip_write(
-            0usize,
+            soundlog::Instance::Primary,
             chip::Ym2612Spec {
                 port: 0,
                 register: 0x22,

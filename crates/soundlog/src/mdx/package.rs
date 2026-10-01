@@ -101,7 +101,11 @@ impl MdxPackage {
     /// The result is the current canonical MDX representation. It is not
     /// guaranteed to be byte-for-byte identical to the input used by
     /// [`Self::parse`], especially after typed fields have been changed.
-    pub fn to_mdx_bytes(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns the MDX layout error when the current document cannot be serialized.
+    pub fn to_mdx_bytes(&self) -> Result<Vec<u8>, ParseError> {
         self.mdx.to_bytes()
     }
 

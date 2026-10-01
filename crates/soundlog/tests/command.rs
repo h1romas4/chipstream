@@ -15,6 +15,18 @@ use soundlog::vgm::command::{
 use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 
+#[test]
+fn instance_conversion_rejects_invalid_indices() {
+    assert_eq!(Instance::try_from(0).unwrap(), Instance::Primary);
+    assert_eq!(Instance::try_from(1).unwrap(), Instance::Secondary);
+    for index in [2, 255, usize::MAX] {
+        assert!(matches!(
+            Instance::try_from(index),
+            Err(soundlog::ParseError::DataInconsistency(_))
+        ));
+    }
+}
+
 /// Construct a VGM document that routes a data bank to YM2612 Secondary
 /// instance and ensure the generated writes are tagged as Secondary.
 #[test]

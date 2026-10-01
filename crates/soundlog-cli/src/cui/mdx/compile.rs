@@ -42,7 +42,10 @@ pub fn compile_with_playback_check(
     let compiled = compile_document(input, &source)?;
     match output_format {
         OutputFormat::Mdx => {
-            let bytes = compiled.document().to_bytes();
+            let bytes = compiled
+                .document()
+                .to_bytes()
+                .context("failed to serialize MDX")?;
             if playback_check {
                 check_compiled_document(input, compiled, CheckOptions::default())?;
             }
@@ -74,7 +77,7 @@ fn write_vgm(
             fs::read(&path).with_context(|| format!("failed to read PDX input: {}", path.display()))
         })
         .transpose()?;
-    let package = MdxPackage::parse_owned(mdx.to_bytes(), pdx_bytes)
+    let package = MdxPackage::parse_owned(mdx.to_bytes()?, pdx_bytes)
         .context("failed to prepare VGM conversion")?;
     let options = MdxToVgmOptions {
         adpcm_mode,

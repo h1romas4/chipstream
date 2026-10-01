@@ -14,7 +14,7 @@ impl SourceAdapter for MdxAdapter {
         Self::parse(bytes)
     }
 
-    fn canonical_bytes(document: &Self::Document) -> Vec<u8> {
+    fn canonical_bytes(document: &Self::Document) -> Result<Vec<u8>> {
         Self::canonical_bytes(document)
     }
 }
@@ -35,8 +35,8 @@ impl MdxAdapter {
         MdxDocument::parse(bytes).map_err(|error| anyhow!("failed to parse MDX: {error}"))
     }
 
-    pub fn canonical_bytes(document: &MdxDocument) -> Vec<u8> {
-        document.to_bytes()
+    pub fn canonical_bytes(document: &MdxDocument) -> Result<Vec<u8>> {
+        Ok(document.to_bytes()?)
     }
 
     pub fn header_node(document: &MdxDocument, space: ByteCoordinateSpace) -> SourceNode {
@@ -156,7 +156,7 @@ impl MdxAdapter {
         lines.join("\n")
     }
 
-    pub fn track_nodes(document: &MdxDocument, track: usize) -> Vec<SourceNode> {
+    pub fn track_nodes(document: &MdxDocument, track: usize) -> Result<Vec<SourceNode>> {
         Self::track_nodes_in_space(document, track, ByteCoordinateSpace::Logical)
     }
 
@@ -164,17 +164,17 @@ impl MdxAdapter {
         document: &MdxDocument,
         track: usize,
         space: ByteCoordinateSpace,
-    ) -> Vec<SourceNode> {
+    ) -> Result<Vec<SourceNode>> {
         let Some(commands) = document.tracks.get(track) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let ranges = document
-            .sourcemap()
+            .sourcemap()?
             .into_iter()
             .nth(track)
             .unwrap_or_default();
 
-        commands
+        Ok(commands
             .iter()
             .enumerate()
             .map(|(index, command)| {
@@ -192,10 +192,10 @@ impl MdxAdapter {
                 }
                 node
             })
-            .collect()
+            .collect())
     }
 
-    pub fn track_node(document: &MdxDocument, track: usize) -> Option<SourceNode> {
+    pub fn track_node(document: &MdxDocument, track: usize) -> Result<Option<SourceNode>> {
         Self::track_node_in_space(document, track, ByteCoordinateSpace::Logical)
     }
 
@@ -203,9 +203,11 @@ impl MdxAdapter {
         document: &MdxDocument,
         track: usize,
         space: ByteCoordinateSpace,
-    ) -> Option<SourceNode> {
-        let commands = document.tracks.get(track)?;
-        let children = Self::track_nodes_in_space(document, track, space);
+    ) -> Result<Option<SourceNode>> {
+        let Some(commands) = document.tracks.get(track) else {
+            return Ok(None);
+        };
+        let children = Self::track_nodes_in_space(document, track, space)?;
         let mut node = SourceNode::new(
             0x1000_0000 | track as u64,
             format!("Track {track}"),
@@ -229,20 +231,24 @@ impl MdxAdapter {
                 range: ByteRange::new(start, len),
             });
         }
-        Some(node)
+        Ok(Some(node))
     }
 
-    pub fn root_nodes(document: &MdxDocument) -> Vec<SourceNode> {
+    pub fn root_nodes(document: &MdxDocument) -> Result<Vec<SourceNode>> {
         Self::root_nodes_in_space(document, ByteCoordinateSpace::Logical)
     }
 
     pub fn root_nodes_in_space(
         document: &MdxDocument,
         space: ByteCoordinateSpace,
-    ) -> Vec<SourceNode> {
-        (0..document.tracks.len())
-            .filter_map(|track| Self::track_node_in_space(document, track, space))
-            .collect()
+    ) -> Result<Vec<SourceNode>> {
+        let mut nodes = Vec::new();
+        for track in 0..document.tracks.len() {
+            if let Some(node) = Self::track_node_in_space(document, track, space)? {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
     }
 }
 
@@ -257,10 +263,10 @@ mod tests {
     fn adapter_parses_and_maps_track_commands() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let bytes = builder.finalize().unwrap().to_bytes();
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
         let document = MdxAdapter::parse(&bytes).unwrap();
 
-        let nodes = MdxAdapter::track_nodes(&document, 0);
+        let nodes = MdxAdapter::track_nodes(&document, 0).unwrap();
 
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].label, "0: Rest(MdxRest { ticks: 12 })");
@@ -272,18 +278,28 @@ mod tests {
     }
 
     #[test]
+    fn adapter_propagates_invalid_document_layout() {
+        let mut document = MdxBuilder::new().finalize().unwrap();
+        document.tracks[0] = vec![MdxRest::new(1).unwrap().into(); 65_536];
+        document.tracks[1] = vec![MdxRest::new(1).unwrap().into()];
+        assert!(MdxAdapter::canonical_bytes(&document).is_err());
+        assert!(MdxAdapter::track_nodes(&document, 0).is_err());
+        assert!(MdxAdapter::root_nodes(&document).is_err());
+    }
+
+    #[test]
     fn adapter_returns_empty_nodes_for_unknown_track() {
         let document = MdxBuilder::new().finalize().unwrap();
 
-        assert!(MdxAdapter::track_nodes(&document, 99).is_empty());
-        assert!(MdxAdapter::track_node(&document, 99).is_none());
+        assert!(MdxAdapter::track_nodes(&document, 99).unwrap().is_empty());
+        assert!(MdxAdapter::track_node(&document, 99).unwrap().is_none());
     }
 
     #[test]
     fn header_node_maps_offset_and_track_table_fields() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes()).unwrap();
+        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
         let header = MdxAdapter::header_node(&document, super::ByteCoordinateSpace::Original);
 
         assert_eq!(
@@ -316,7 +332,7 @@ mod tests {
             op: 8,
             operators: [MdxOperator::default(); 4],
         });
-        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes()).unwrap();
+        let document = MdxAdapter::parse(&builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
 
         let node = MdxAdapter::tone_node(&document, super::ByteCoordinateSpace::Original).unwrap();
 
@@ -369,12 +385,12 @@ mod tests {
     fn adapter_distinguishes_original_and_logical_input_spaces() {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        let original = builder.finalize().unwrap().to_bytes();
+        let original = builder.finalize().unwrap().to_bytes().unwrap();
 
         let mut compressed_builder = MdxBuilder::new();
         compressed_builder.add_mdx_command(0, MdxRest::new(12).unwrap());
         compressed_builder.set_lz_compressed(true);
-        let compressed = compressed_builder.finalize().unwrap().to_bytes();
+        let compressed = compressed_builder.finalize().unwrap().to_bytes().unwrap();
 
         assert_eq!(
             MdxAdapter::coordinate_space(&original),

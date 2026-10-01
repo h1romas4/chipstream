@@ -31,7 +31,7 @@
 //! let position = compiled.source().position(span.start()).unwrap();
 //! assert_eq!((position.line_number, position.column), (1, 3));
 //!
-//! assert!(!compiled.document().to_bytes().is_empty());
+//! assert!(!compiled.document().to_bytes().unwrap().is_empty());
 //! # Ok::<(), mmlx::diagnostic::Diagnostic>(())
 //! ```
 

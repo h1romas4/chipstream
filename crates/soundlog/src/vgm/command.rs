@@ -87,18 +87,22 @@ pub enum Instance {
     Secondary = 0x1,
 }
 
-/// Conversion between `usize` and `ChipId`.
-impl From<usize> for Instance {
-    fn from(v: usize) -> Self {
-        match v {
-            0 => Instance::Primary,
-            1 => Instance::Secondary,
-            _ => panic!("Invalid ChipId from usize: {}", v),
+/// Checked conversion from an index: only `0` and `1` are valid instances.
+impl TryFrom<usize> for Instance {
+    type Error = ParseError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Instance::Primary),
+            1 => Ok(Instance::Secondary),
+            _ => Err(ParseError::DataInconsistency(format!(
+                "Invalid chip instance index {value}: expected 0 or 1",
+            ))),
         }
     }
 }
 
-/// Conversion between `ChipId` and `usize`.
+/// Conversion from a chip instance to its index.
 impl From<Instance> for usize {
     fn from(id: Instance) -> Self {
         id as usize
@@ -212,7 +216,11 @@ pub struct Ay8910StereoMask {
 impl Ay8910StereoMask {
     pub fn from_mask(mask: u8) -> Self {
         Self {
-            chip_instance: Instance::from(((mask >> 7) & 1) as usize),
+            chip_instance: if mask & 0x80 == 0 {
+                Instance::Primary
+            } else {
+                Instance::Secondary
+            },
             is_ym2203: (mask >> 6) & 1 == 1,
             right_ch3: (mask >> 5) & 1 == 1,
             left_ch3: (mask >> 4) & 1 == 1,

@@ -20,5 +20,5 @@ pub trait SourceAdapter {
     type Document;
 
     fn parse(bytes: &[u8]) -> Result<Self::Document>;
-    fn canonical_bytes(document: &Self::Document) -> Vec<u8>;
+    fn canonical_bytes(document: &Self::Document) -> Result<Vec<u8>>;
 }

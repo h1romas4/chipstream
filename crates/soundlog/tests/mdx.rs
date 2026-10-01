@@ -53,8 +53,9 @@ fn mdx_document_sourcemap_matches_encoded_commands_across_variants_and_edits() {
             );
             document.tone_bank = soundlog::mdx::tone::MdxToneBank::from_bytes(&[0x55; 28]);
         }
-        let bytes = document.try_to_bytes().unwrap();
-        let source_map = document.sourcemap();
+        let bytes = document.to_bytes().unwrap();
+        let source_map = document.sourcemap().unwrap();
+        assert_eq!(document.sourcemap().unwrap(), source_map);
         for (track, ranges) in document.tracks.iter().zip(&source_map) {
             assert_eq!(track.len(), ranges.len());
             for (command, &(offset, length)) in track.iter().zip(ranges) {
@@ -335,7 +336,7 @@ fn mdx_document_parses_tracks_and_builds_absolute_sourcemap() {
     assert_eq!(document.tracks.len(), 9);
     assert_eq!(document.tracks[0].len(), 2);
     assert!(document.tracks[1].is_empty());
-    assert_eq!(document.sourcemap()[0], vec![(29, 1), (30, 2)]);
+    assert_eq!(document.sourcemap().unwrap()[0], vec![(29, 1), (30, 2)]);
 }
 
 #[test]
@@ -349,10 +350,11 @@ fn mdx_document_sourcemap_matches_serialized_layout_after_edits() {
     document.header.title = "A longer title".to_string();
     document.tracks[0].insert(1, MdxCommand::Rest(MdxRest { ticks: 2 }));
 
-    let source_map = document.sourcemap();
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized edits");
+    let source_map = document.sourcemap().unwrap();
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse serialized edits");
 
-    assert_eq!(reparsed.sourcemap(), source_map);
+    assert_eq!(reparsed.sourcemap().unwrap(), source_map);
 }
 
 #[test]
@@ -374,7 +376,7 @@ fn mdx_track_ends_at_next_track_offset_without_end_command() {
         document.tracks[1],
         vec![MdxCommand::EndOfTrack(MdxEndOfTrack)]
     );
-    assert_eq!(document.to_bytes(), bytes);
+    assert_eq!(document.to_bytes().unwrap(), bytes);
 }
 
 #[test]
@@ -396,7 +398,7 @@ fn mdx_builder_finalizes_tracks_and_serializes_them() {
         Some(MdxCommand::EndOfTrack(_))
     ));
 
-    let bytes = document.to_bytes();
+    let bytes = document.to_bytes().unwrap();
     let reparsed = MdxDocument::parse(&bytes).expect("parse serialized MDX document");
     assert_eq!(reparsed.tracks, document.tracks);
     assert_eq!(reparsed.header.title, "BUILT");
@@ -456,7 +458,8 @@ fn mdx_builder_accepts_last_representable_track_offset() {
 
     let document = builder.finalize().expect("offset 0xfffe is representable");
     assert_eq!(document.header.track_offsets[1], Some(0xfffe));
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse boundary offset");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse boundary offset");
     assert_eq!(reparsed.tracks, document.tracks);
 }
 
@@ -491,7 +494,7 @@ fn mdx_builder_checks_tone_offset_limit() {
         if rest_count == 65_486 {
             let document = result.expect("tone offset 0xffff is representable");
             assert_eq!(document.header.tone_data_offset, 0xffff);
-            let bytes = document.try_to_bytes().expect("serialize boundary offset");
+            let bytes = document.to_bytes().expect("serialize boundary offset");
             assert!(bytes.len() > usize::from(u16::MAX));
             let reparsed = MdxDocument::parse(&bytes).expect("parse boundary tone offset");
             assert_eq!(reparsed.tracks, document.tracks);
@@ -506,6 +509,40 @@ fn mdx_builder_checks_tone_offset_limit() {
 }
 
 #[test]
+fn mdx_conversion_propagates_jump_layout_errors() {
+    let mut mdx = MdxBuilder::new().finalize().unwrap();
+    mdx.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); 65_536];
+    mdx.tracks[8] = vec![
+        MdxCommand::Jump(MdxRelativeOffset {
+            opcode: 0xf1,
+            offset: 0,
+        }),
+        MdxCommand::EndOfTrack(MdxEndOfTrack),
+    ];
+    let package = MdxPackage { mdx, pdx: None };
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..Default::default()
+    };
+    assert!(matches!(
+        to_vgm_document(&package, &options),
+        Err(MdxConvertError::InvalidDocument(_))
+    ));
+    let diagnostic = soundlog::mdx::convert::to_vgm_document_with_diagnostics(&package, &options);
+    assert!(matches!(
+        diagnostic,
+        Err(soundlog::mdx::convert::MdxPlaybackCheckError::Conversion {
+            error: MdxConvertError::InvalidDocument(_),
+            track: Some(8),
+            command_index: Some(0),
+        })
+    ));
+    let generator = to_vgm_stream_generator(package, options).unwrap();
+    let mut stream = VgmStream::from_generator(generator);
+    assert!(stream.any(|command| command.is_err()));
+}
+
+#[test]
 fn mdx_document_rejects_unrepresentable_track_offsets_after_edits() {
     for compressed in [false, true] {
         for rest_count in [65_513, 65_514] {
@@ -517,7 +554,11 @@ fn mdx_document_rejects_unrepresentable_track_offsets_after_edits() {
             document.tracks[1] = vec![MdxCommand::EndOfTrack(MdxEndOfTrack)];
 
             assert!(matches!(
-                document.try_to_bytes(),
+                document.to_bytes(),
+                Err(soundlog::ParseError::DataInconsistency(_))
+            ));
+            assert!(matches!(
+                document.sourcemap(),
                 Err(soundlog::ParseError::DataInconsistency(_))
             ));
         }
@@ -536,7 +577,7 @@ fn mdx_document_checks_tone_offset_limit_after_track_edits() {
         document.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); rest_count];
         document.tracks[0].push(MdxCommand::EndOfTrack(MdxEndOfTrack));
 
-        let result = document.try_to_bytes();
+        let result = document.to_bytes();
         if rest_count == 65_513 {
             let bytes = result.expect("tone offset 0xffff is representable after edits");
             let reparsed = MdxDocument::parse(&bytes).expect("parse edited boundary layout");
@@ -558,13 +599,14 @@ fn mdx_document_serializes_direct_header_field_edits() {
     builder
         .set_title("ORIGINAL")
         .set_pdx_name(Some("original.pdx"));
-    let mut document = MdxDocument::parse(&builder.finalize().unwrap().to_bytes())
+    let mut document = MdxDocument::parse(&builder.finalize().unwrap().to_bytes().unwrap())
         .expect("parse built MDX document");
 
     document.header.title = "EDITED".to_string();
     document.header.pdx_name = Some("edited.pdx".to_string());
 
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse edited MDX document");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse edited MDX document");
     assert_eq!(reparsed.header.title, "EDITED");
     assert_eq!(reparsed.header.pdx_name.as_deref(), Some("edited.pdx"));
 }
@@ -581,7 +623,8 @@ fn mdx_builder_round_trips_extended_tracks() {
         Some(MdxCommand::PcmMode(_))
     ));
 
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse extended MDX document");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse extended MDX document");
     assert_eq!(reparsed.tracks.len(), 16);
     assert_eq!(reparsed.tracks[9], document.tracks[9]);
 }
@@ -596,7 +639,8 @@ fn mdx_builder_keeps_empty_tracks_absent() {
     assert!(document.header.track_offsets[1].is_none());
     assert!(document.header.track_offsets[9].is_none());
 
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse extended MDX document");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse extended MDX document");
     assert!(reparsed.tracks[1].is_empty());
     assert!(reparsed.tracks[9].is_empty());
 }
@@ -638,7 +682,8 @@ fn mdx_builder_serializes_lfo_waveform_enums() {
         ]
     );
 
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized LFO commands");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse serialized LFO commands");
     assert_eq!(reparsed.tracks, document.tracks);
 }
 
@@ -648,7 +693,8 @@ fn mdx_builder_encodes_string_metadata_as_shift_jis() {
     builder.set_title("テスト").set_pdx_name(Some("音色.pdx"));
 
     let document = builder.finalize().unwrap();
-    let reparsed = MdxDocument::parse(&document.to_bytes()).expect("parse serialized metadata");
+    let reparsed =
+        MdxDocument::parse(&document.to_bytes().unwrap()).expect("parse serialized metadata");
 
     assert_eq!(reparsed.header.title, "テスト");
     assert_eq!(reparsed.header.pdx_name.as_deref(), Some("音色.pdx"));
@@ -681,7 +727,7 @@ fn mdx_builder_serializes_tone_bank_after_tracks() {
         .add_mdx_command(0, MdxVolumeUp);
 
     let document = builder.finalize().unwrap();
-    let bytes = document.to_bytes();
+    let bytes = document.to_bytes().unwrap();
     let tone_position = document.header.tone_data_position().unwrap();
     let track_position = document.header.track_position(0).unwrap();
     let track_length = document.tracks[0]
@@ -778,7 +824,7 @@ fn mdx_document_parses_lz_compressed_body() {
     builder
         .set_title_bytes(b"COMPRESSED".to_vec())
         .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp));
-    let original = builder.finalize().unwrap().to_bytes();
+    let original = builder.finalize().unwrap().to_bytes().unwrap();
     let (_, body_start) = parse_mdx_header(&original).expect("parse original header");
 
     let mut compressed = original[..body_start].to_vec();
@@ -787,7 +833,7 @@ fn mdx_document_parses_lz_compressed_body() {
 
     let document = MdxDocument::parse(&compressed).expect("parse compressed MDX");
     assert_eq!(document.header.title, "COMPRESSED");
-    assert_eq!(document.to_bytes(), original);
+    assert_eq!(document.to_bytes().unwrap(), original);
 }
 
 #[test]
@@ -798,7 +844,7 @@ fn mdx_builder_can_enable_lz_compression() {
         .set_lz_compressed(true)
         .add_mdx_command(0, MdxCommand::VolumeUp(MdxVolumeUp));
     let document = builder.finalize().unwrap();
-    let compressed = document.to_bytes();
+    let compressed = document.to_bytes().unwrap();
 
     assert!(
         compressed
@@ -811,6 +857,7 @@ fn mdx_builder_can_enable_lz_compression() {
     assert!(
         !reparsed
             .to_bytes()
+            .unwrap()
             .windows(4)
             .any(|window| window == [0x7f, 0xff, 0xff, 0x4c])
     );
@@ -923,7 +970,7 @@ fn regenerate_mdx_fixtures() {
         let rebuilt = builder
             .finalize()
             .unwrap_or_else(|error| panic!("finalize {filename}: {error:?}"));
-        fs::write(&path, rebuilt.to_bytes())
+        fs::write(&path, rebuilt.to_bytes().unwrap())
             .unwrap_or_else(|error| panic!("write {filename}: {error}"));
     }
 }
@@ -1043,12 +1090,12 @@ fn mdx_package_keeps_mdx_and_optional_pdx_separate() {
     let package = MdxPackage::parse(&complete_mdx, Some(&pdx_bytes)).expect("parse package");
 
     assert_eq!(package.pdx_name(), Some("example.pdx"));
-    assert_eq!(package.to_mdx_bytes(), complete_mdx);
+    assert_eq!(package.to_mdx_bytes().unwrap(), complete_mdx);
     assert_eq!(package.to_pdx_bytes(), Some(pdx_bytes));
 
     let without_pdx = MdxPackage::parse(&complete_mdx, None).expect("parse package without PDX");
     assert!(without_pdx.pdx.is_none());
-    assert_eq!(without_pdx.to_mdx_bytes(), complete_mdx);
+    assert_eq!(without_pdx.to_mdx_bytes().unwrap(), complete_mdx);
 }
 
 #[test]
@@ -1064,7 +1111,7 @@ fn mdx_package_resolves_pcm_notes_to_pdx_entries() {
                 length: 1,
             },
         );
-    let mdx_bytes = builder.finalize().unwrap().to_bytes();
+    let mdx_bytes = builder.finalize().unwrap().to_bytes().unwrap();
 
     let mut pdx_bytes = vec![0u8; 0x608];
     pdx_bytes[0x318..0x31c].copy_from_slice(&0x604u32.to_be_bytes());
@@ -1103,7 +1150,7 @@ fn mdx_package_decodes_a_resolved_pcm_reference() {
             length: 1,
         },
     );
-    let mdx_bytes = builder.finalize().unwrap().to_bytes();
+    let mdx_bytes = builder.finalize().unwrap().to_bytes().unwrap();
 
     let mut pdx_builder = PdxBuilder::new();
     pdx_builder.set_sample(0, 0, vec![0x80, 0x7f]).unwrap();
@@ -2176,7 +2223,7 @@ fn mdx_converter_keeps_short_pcm_f1_track_playing_until_barrier() {
 
     let mut mdx = builder.finalize().unwrap();
     for (track, loop_command_index) in [(0, 3), (8, 2)] {
-        let source_map = mdx.sourcemap();
+        let source_map = mdx.sourcemap().unwrap();
         let loop_start = source_map[track][0].0;
         let (command_offset, command_length) = source_map[track][loop_command_index];
         let command_end = command_offset + command_length;
@@ -3403,7 +3450,7 @@ fn parses_mdx_fixtures_and_round_trips_them() {
         let bytes = fs::read(path).expect("read MDX fixture");
         let document = MdxDocument::parse(&bytes)
             .unwrap_or_else(|error| panic!("parse {}: {error:?}", path.display()));
-        let serialized = document.to_bytes();
+        let serialized = document.to_bytes().unwrap();
         assert_eq!(
             serialized,
             bytes,
@@ -3413,7 +3460,7 @@ fn parses_mdx_fixtures_and_round_trips_them() {
         let reparsed = MdxDocument::parse(&serialized)
             .unwrap_or_else(|error| panic!("reparse {}: {error:?}", path.display()));
         assert_eq!(
-            reparsed.to_bytes(),
+            reparsed.to_bytes().unwrap(),
             serialized,
             "round-trip failed for {}",
             path.display()

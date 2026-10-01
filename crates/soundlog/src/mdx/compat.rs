@@ -30,7 +30,7 @@ use super::parser::parse_mdx_command;
 ///     0,
 ///     soundlog::mdx::command::MdxRest::new(1).expect("valid rest length"),
 /// );
-/// let standard_mdx_bytes = builder.finalize().expect("valid MDX").to_bytes();
+/// let standard_mdx_bytes = builder.finalize().expect("valid MDX").to_bytes().unwrap();
 /// let normalized = soundlog::mdx::compat::normalize_mxdrv16y_tracks(&standard_mdx_bytes)
 ///     .expect("valid MDX");
 ///
@@ -188,7 +188,7 @@ mod tests {
     fn borrows_standard_mdx_bytes_without_rebuilding() {
         let mut builder = super::super::document::MdxBuilder::new();
         builder.add_mdx_command(0, super::super::command::MdxRest::new(1).unwrap());
-        let bytes = builder.finalize().unwrap().to_bytes();
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
         let normalized = normalize_mxdrv16y_tracks(&bytes).unwrap();
 
         assert!(matches!(normalized, Cow::Borrowed(_)));

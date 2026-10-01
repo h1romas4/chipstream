@@ -123,7 +123,7 @@ impl Error for ParseError {}
 /// were successfully interpreted as a little-endian `u32`. Returns
 /// `Err(ParseError::OffsetOutOfRange)` when the buffer is too short.
 pub fn read_u32_le_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
-    if bytes.len() < off + 4 {
+    if off > bytes.len() || bytes.len() - off < 4 {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
             needed: 4,
@@ -142,7 +142,7 @@ pub fn read_u32_le_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
 /// were successfully interpreted as a little-endian `u16`. Returns
 /// `Err(ParseError::OffsetOutOfRange)` when the buffer is too short.
 pub fn read_u16_le_at(bytes: &[u8], off: usize) -> Result<u16, ParseError> {
-    if bytes.len() < off + 2 {
+    if off > bytes.len() || bytes.len() - off < 2 {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
             needed: 2,
@@ -177,7 +177,7 @@ pub fn read_u8_at(bytes: &[u8], off: usize) -> Result<u8, ParseError> {
 /// range is within bounds. Returns `Err(ParseError::OffsetOutOfRange)` when the
 /// requested range exceeds the available buffer.
 pub fn read_slice(bytes: &[u8], off: usize, len: usize) -> Result<&[u8], ParseError> {
-    if bytes.len() < off + len {
+    if off > bytes.len() || bytes.len() - off < len {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
             needed: len,
@@ -195,7 +195,7 @@ pub fn read_slice(bytes: &[u8], off: usize, len: usize) -> Result<&[u8], ParseEr
 /// `off+1` and `off+2` in big-endian order; if they are not available the
 /// function returns `Err(ParseError::OffsetOutOfRange)`.
 pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
-    if bytes.len() < off + 3 {
+    if off > bytes.len() || bytes.len() - off < 3 {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
             needed: 3,
@@ -216,7 +216,7 @@ pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
 /// `Err(ParseError::OffsetOutOfRange)` when the buffer is too short.
 #[cfg(feature = "mdx")]
 pub fn read_u16_be_at(bytes: &[u8], off: usize) -> Result<u16, ParseError> {
-    if bytes.len() < off + 2 {
+    if off > bytes.len() || bytes.len() - off < 2 {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
             needed: 2,
@@ -246,6 +246,13 @@ pub fn read_i16_be_at(bytes: &[u8], off: usize) -> Result<i16, ParseError> {
 pub fn read_i32_le_at(bytes: &[u8], off: usize) -> Result<i32, ParseError> {
     let v = read_u32_le_at(bytes, off)?;
     Ok(i32::from_le_bytes(v.to_le_bytes()))
+}
+
+/// Read a 32-bit big-endian unsigned integer, rejecting out-of-range offsets.
+#[cfg(feature = "mdx")]
+pub fn read_u32_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
+    let value = read_u32_le_at(bytes, off)?;
+    Ok(u32::from_be_bytes(value.to_le_bytes()))
 }
 
 /// Write a 32-bit little-endian unsigned integer `v` into `buf` at `off`.
@@ -415,6 +422,57 @@ mod tests {
         // read_i32_le_at success
         let buf3: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x7F]; // 0x7FFFFFFF -> i32::MAX
         assert_eq!(read_i32_le_at(&buf3, 0).unwrap(), 2_147_483_647);
+    }
+
+    #[test]
+    fn reads_reject_overflowing_ranges() {
+        let bytes = [1, 2, 3, 4];
+        for offset in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
+            assert!(matches!(
+                read_u32_le_at(&bytes, offset),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+            assert!(matches!(
+                read_u16_le_at(&bytes, offset),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+            assert!(matches!(
+                read_u24_be_at(&bytes, offset),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+            assert!(matches!(
+                read_i32_le_at(&bytes, offset),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+            assert!(matches!(
+                read_u8_at(&bytes, offset),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+            #[cfg(feature = "mdx")]
+            {
+                assert!(matches!(
+                    read_u32_be_at(&bytes, offset),
+                    Err(ParseError::OffsetOutOfRange { .. })
+                ));
+                assert!(matches!(
+                    read_u16_be_at(&bytes, offset),
+                    Err(ParseError::OffsetOutOfRange { .. })
+                ));
+                assert!(matches!(
+                    read_i16_be_at(&bytes, offset),
+                    Err(ParseError::OffsetOutOfRange { .. })
+                ));
+            }
+        }
+        for (offset, length) in [(1, usize::MAX), (usize::MAX, 1), (usize::MAX, 0)] {
+            assert!(matches!(
+                read_slice(&bytes, offset, length),
+                Err(ParseError::OffsetOutOfRange { .. })
+            ));
+        }
+        assert_eq!(read_slice(&bytes, bytes.len(), 0).unwrap(), &[]);
+        #[cfg(feature = "mdx")]
+        assert_eq!(read_u32_be_at(&bytes, 0).unwrap(), 0x0102_0304);
     }
 
     #[test]

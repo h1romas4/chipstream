@@ -357,6 +357,8 @@ impl BitPackingCompression {
     ///
     /// # Errors
     /// Returns error if:
+    /// - Bit widths are zero or exceed 32, or a left shift would use a negative width
+    /// - Adding `add_value` overflows a 32-bit value
     /// - `sub_type` is `UseTable` but `table` is `None`
     /// - Table is provided but doesn't match compression parameters
     /// - Decompressed output size would exceed `max_size`
@@ -365,6 +367,14 @@ impl BitPackingCompression {
         table: Option<&DecompressionTable>,
         max_size: usize,
     ) -> Result<(), ParseError> {
+        validate_compression_bits(self.bits_decompressed, self.bits_compressed)?;
+        if matches!(self.sub_type, BitPackingSubType::ShiftLeft)
+            && self.bits_compressed > self.bits_decompressed
+        {
+            return Err(ParseError::DataInconsistency(
+                "Compressed bit width exceeds decompressed bit width for ShiftLeft".into(),
+            ));
+        }
         if matches!(self.sub_type, BitPackingSubType::UseTable) && table.is_none() {
             return Err(ParseError::DataInconsistency(
                 "Decompression table required for UseTable sub-type".to_string(),
@@ -377,7 +387,7 @@ impl BitPackingCompression {
 
         while bitstream.bits_remaining() >= self.bits_compressed as usize {
             // Check if adding another value would exceed max_size
-            if result.len() + bytes_per_value > max_size {
+            if bytes_per_value > max_size.saturating_sub(result.len()) {
                 return Err(ParseError::DataBlockSizeExceeded {
                     current_size: result.len(),
                     limit: max_size,
@@ -389,16 +399,28 @@ impl BitPackingCompression {
             let decompressed_value = match self.sub_type {
                 BitPackingSubType::Copy => {
                     // Just use the value as-is (high bits aren't used)
-                    compressed_value + (self.add_value as u32)
+                    compressed_value
+                        .checked_add(u32::from(self.add_value))
+                        .ok_or_else(|| {
+                            ParseError::DataInconsistency("Bit-packing value overflow".into())
+                        })?
                 }
                 BitPackingSubType::ShiftLeft => {
                     // Shift left (low bits aren't used)
                     let shift = self.bits_decompressed - self.bits_compressed;
-                    (compressed_value << shift) + (self.add_value as u32)
+                    (compressed_value << shift)
+                        .checked_add(u32::from(self.add_value))
+                        .ok_or_else(|| {
+                            ParseError::DataInconsistency("Bit-packing value overflow".into())
+                        })?
                 }
                 BitPackingSubType::UseTable => {
                     // Use table lookup
-                    let table = table.unwrap(); // Already checked above
+                    let table = table.ok_or_else(|| {
+                        ParseError::DataInconsistency(
+                            "Decompression table required for UseTable sub-type".into(),
+                        )
+                    })?;
                     let index = compressed_value as usize;
                     read_table_value(table, index, bytes_per_value)?
                 }
@@ -441,6 +463,7 @@ impl DpcmCompression {
     ///
     /// # Errors
     /// Returns error if:
+    /// - Bit widths are zero or exceed 32
     /// - Table doesn't match compression parameters
     /// - Decompressed output size would exceed `max_size`
     pub fn decompress(
@@ -448,6 +471,7 @@ impl DpcmCompression {
         table: &DecompressionTable,
         max_size: usize,
     ) -> Result<(), ParseError> {
+        validate_compression_bits(self.bits_decompressed, self.bits_compressed)?;
         let bytes_per_value = self.bits_decompressed.div_ceil(8) as usize;
         let mut result = Vec::new();
         let mut bitstream = BitStreamReader::new(&self.data);
@@ -455,7 +479,7 @@ impl DpcmCompression {
 
         while bitstream.bits_remaining() >= self.bits_compressed as usize {
             // Check if adding another value would exceed max_size
-            if result.len() + bytes_per_value > max_size {
+            if bytes_per_value > max_size.saturating_sub(result.len()) {
                 return Err(ParseError::DataBlockSizeExceeded {
                     current_size: result.len(),
                     limit: max_size,
@@ -1066,14 +1090,30 @@ impl<'a> BitStreamReader<'a> {
     }
 }
 
+fn validate_compression_bits(bits_decompressed: u8, bits_compressed: u8) -> Result<(), ParseError> {
+    if bits_compressed > 32 {
+        return Err(ParseError::Other("Cannot read more than 32 bits".into()));
+    }
+    if !(1..=32).contains(&bits_decompressed) || !(1..=32).contains(&bits_compressed) {
+        return Err(ParseError::DataInconsistency(format!(
+            "Invalid compression bit widths: decompressed {bits_decompressed}, compressed {bits_compressed}",
+        )));
+    }
+    Ok(())
+}
+
 /// Read a value from a decompression table.
 fn read_table_value(
     table: &DecompressionTable,
     index: usize,
     bytes_per_value: usize,
 ) -> Result<u32, ParseError> {
-    let start = index * bytes_per_value;
-    let end = start + bytes_per_value;
+    let start = index.checked_mul(bytes_per_value).ok_or_else(|| {
+        ParseError::DataInconsistency("Decompression table offset overflow".into())
+    })?;
+    let end = start.checked_add(bytes_per_value).ok_or_else(|| {
+        ParseError::DataInconsistency("Decompression table offset overflow".into())
+    })?;
 
     if end > table.table_data.len() {
         return Err(ParseError::DataInconsistency(format!(

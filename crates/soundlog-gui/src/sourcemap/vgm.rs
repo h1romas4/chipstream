@@ -16,8 +16,8 @@ impl SourceAdapter for VgmAdapter {
         Self::parse(bytes)
     }
 
-    fn canonical_bytes(document: &Self::Document) -> Vec<u8> {
-        Self::canonical_bytes(document)
+    fn canonical_bytes(document: &Self::Document) -> Result<Vec<u8>> {
+        Ok(Self::canonical_bytes(document))
     }
 }
 

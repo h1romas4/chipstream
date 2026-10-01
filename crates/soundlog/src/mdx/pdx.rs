@@ -9,6 +9,7 @@
 //! round trip or construct a canonical uncompressed document.
 
 use crate::ParseError;
+use crate::binutil::read_u32_be_at;
 use crate::mdx::lz;
 use std::array;
 
@@ -394,8 +395,8 @@ fn parse_banks(bytes: &[u8]) -> Result<Vec<PdxBank>, ParseError> {
         let mut entries = [None; ENTRIES_PER_BANK];
         for (note, entry) in entries.iter_mut().enumerate() {
             let offset = bank_start + note * ENTRY_SIZE;
-            let start = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            let size = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
+            let start = read_u32_be_at(bytes, offset)?;
+            let size = read_u32_be_at(bytes, offset + 4)?;
             if size == 0 {
                 continue;
             }

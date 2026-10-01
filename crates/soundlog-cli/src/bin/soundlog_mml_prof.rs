@@ -41,8 +41,9 @@ fn main() {
     let mml = mmlx::mdx::parse(MML_SOURCE).expect("embedded MML must parse");
     let mdx = mmlx::mdx::compile(&mml).expect("embedded MML must compile");
     drop(mml);
-    let package = MdxPackage::parse_owned(mdx.to_bytes(), None)
-        .expect("compiled MDX must be a valid package");
+    let package =
+        MdxPackage::parse_owned(mdx.to_bytes().expect("compiled MDX must serialize"), None)
+            .expect("compiled MDX must be a valid package");
     let options = MdxToVgmOptions {
         loop_count: Some(1),
         ..MdxToVgmOptions::default()

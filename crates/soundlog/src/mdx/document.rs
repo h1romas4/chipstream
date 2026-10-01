@@ -52,7 +52,7 @@ const MAX_DECODED_MDX_SIZE: usize = 64 * 1024 * 1024;
 ///
 /// let mut builder = MdxBuilder::new();
 /// builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-/// let bytes = builder.finalize().unwrap().to_bytes();
+/// let bytes = builder.finalize().unwrap().to_bytes().unwrap();
 /// let document = MdxDocument::parse(&bytes).unwrap();
 ///
 /// assert_eq!(document.tracks.len(), 9);
@@ -444,18 +444,19 @@ impl MdxDocument {
     /// direct field edits and may differ from the original input after a
     /// document has been modified.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if direct edits make a track or tone data offset unrepresentable.
-    pub fn sourcemap(&self) -> Vec<Vec<(usize, usize)>> {
+    /// Returns [`ParseError::DataInconsistency`] when the current document layout
+    /// cannot be represented in MDX, including after direct field edits.
+    pub fn sourcemap(&self) -> Result<Vec<Vec<(usize, usize)>>, ParseError> {
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
         let track_lengths = serialized_track_lengths(&self.tracks);
         let tone_length = self.tone_bank.encoded_len();
-        let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length)
-            .expect("MDX source map requires representable offsets");
+        let layout = MdxLayout::calculate(&mut header, &self.tracks, &track_lengths, tone_length)?;
 
-        self.tracks
+        Ok(self
+            .tracks
             .iter()
             .enumerate()
             .map(|(track, commands)| {
@@ -470,7 +471,7 @@ impl MdxDocument {
                     })
                     .collect()
             })
-            .collect()
+            .collect())
     }
 
     /// Serializes the current document to a complete MDX byte stream.
@@ -488,26 +489,12 @@ impl MdxDocument {
     /// encoded using the NanoDrive8-compatible format. Documents parsed from
     /// compressed input are not automatically marked for compressed output.
     ///
-    /// # Panics
-    ///
-    /// Panics if direct edits make a track or tone data offset unrepresentable.
-    /// Use [`try_to_bytes`][Self::try_to_bytes] to handle these errors.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.try_to_bytes()
-            .expect("MDX serialization requires representable offsets")
-    }
-
-    /// Serializes the current document, rejecting unrepresentable offsets.
-    ///
-    /// This is the fallible counterpart of [`to_bytes`][Self::to_bytes],
-    /// including for documents whose public fields were edited directly.
-    ///
     /// # Errors
     ///
     /// Returns [`ParseError::DataInconsistency`] if a track offset exceeds
     /// `0xfffe` or a tone data offset exceeds `0xffff`. Tone data following
     /// the tracks is moved forward when track edits would overlap it.
-    pub fn try_to_bytes(&self) -> Result<Vec<u8>, ParseError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
         let tone_bytes = self.tone_bank.to_bytes();

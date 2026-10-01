@@ -15,7 +15,7 @@ pub fn parse_mdx(input: &Path, pdx: Option<&Path>, logger: Arc<Logger>) -> Resul
         "{:<8} {:<8} {:<8} {:<8} {}",
         "Track", "Index", "Offset", "Length", "Command"
     ));
-    let source_map = mdx.sourcemap();
+    let source_map = mdx.sourcemap()?;
     for (track, commands) in mdx.tracks.iter().enumerate() {
         for (command_index, command) in commands.iter().enumerate() {
             let (offset, length) = source_map

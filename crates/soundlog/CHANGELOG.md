@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- [x] Change: Make MDX document serialization, source-map construction, and package MDX serialization fallible; replace `try_to_bytes` with `to_bytes` returning `Result`.
+- [x] Change: Replace integer-to-`Instance` `From` with `TryFrom`; VGM builder methods now require a typed `Instance`.
+- [x] Fix: Return errors for overflowing byte-reader ranges, invalid decompression bit widths and arithmetic, and invalid F-number configurations.
+- [x] Fix: Propagate MDX jump layout errors through conversion, diagnostics, and streaming instead of panicking.
+- [x] Add: Implement `Display` and `Error` for `FNumberError`.
 - [x] Add: Expose decoded PDX bank-table and sample-data source ranges.
 - [x] Change: Use `u32` instead of `u64` when calculating MDX PCM sample positions.
 - [ ] Add: Initial XGM format support (`xgm` feature).

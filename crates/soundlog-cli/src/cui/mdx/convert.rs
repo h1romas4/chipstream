@@ -57,7 +57,7 @@ mod tests {
                     length: 8,
                 },
             );
-        fs::write(&input, builder.finalize().unwrap().try_to_bytes().unwrap()).unwrap();
+        fs::write(&input, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
         fs::write(&output, b"existing output").unwrap();
         for loop_count in [None, Some(1), Some(3)] {
             let options = MdxToVgmOptions {

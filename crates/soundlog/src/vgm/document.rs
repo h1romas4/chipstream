@@ -80,13 +80,11 @@ impl VgmBuilder {
     /// (primary/secondary) the clock applies to. `master_clock` is the chip's
     /// base clock frequency in Hz. For secondary instances the high bit is set
     /// on the stored clock field as per the VGM header convention.
-    pub fn register_chip<C, I>(&mut self, c: C, instance: I, master_clock: u32)
+    pub fn register_chip<C>(&mut self, c: C, instance: Instance, master_clock: u32)
     where
         C: Into<chip::Chip>,
-        I: Into<Instance>,
     {
         let ch: chip::Chip = c.into();
-        let instance: Instance = instance.into();
 
         self.document
             .header
@@ -190,15 +188,14 @@ impl VgmBuilder {
 
     /// Append a chip write produced by a chip-specific spec.
     ///
-    /// `instance` selects the chip instance (`ChipId::Primary` or `ChipId::Secondary`).
+    /// `instance` selects the chip instance (`Instance::Primary` or `Instance::Secondary`).
     /// `c` must implement `ChipWriteSpec`; the spec will push the appropriate
     /// `VgmCommand` into the builder's command stream. Returns `&mut Self`.
-    pub fn add_chip_write<C, I>(&mut self, instance: I, spec: C) -> &mut Self
+    pub fn add_chip_write<C>(&mut self, instance: Instance, spec: C) -> &mut Self
     where
-        I: Into<Instance>,
         (Instance, C): Into<VgmCommand>,
     {
-        self.document.commands.push((instance.into(), spec).into());
+        self.document.commands.push((instance, spec).into());
         self
     }
 

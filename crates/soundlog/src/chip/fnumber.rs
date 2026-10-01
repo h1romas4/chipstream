@@ -77,6 +77,21 @@ pub enum FNumberError {
     ExcessiveBits { param: &'static str, bits: u32 },
 }
 
+impl std::fmt::Display for FNumberError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput => {
+                formatter.write_str("invalid F-number input or chip configuration")
+            }
+            Self::ExcessiveBits { param, bits } => {
+                write!(formatter, "excessive {param} width: {bits} bits")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FNumberError {}
+
 /// Chip-specific metadata.
 ///
 /// Holds parameters used by `generate_12edo_fnum_table` and tuning utilities.
@@ -90,6 +105,31 @@ pub struct ChipTypeConfig {
     pub a4_block: u8,
     /// Prescaler applied to the master clock for this chip (1.0 for OPL3, 4.0 for OPL2-like)
     pub prescaler: f32,
+}
+
+impl ChipTypeConfig {
+    fn validate(&self) -> Result<(), FNumberError> {
+        if self.fnum_bits == 0 {
+            return Err(FNumberError::InvalidInput);
+        }
+        if self.fnum_bits > 32 {
+            return Err(FNumberError::ExcessiveBits {
+                param: "fnum_bits",
+                bits: u32::from(self.fnum_bits),
+            });
+        }
+        if self.block_bits > 8 {
+            return Err(FNumberError::ExcessiveBits {
+                param: "block_bits",
+                bits: u32::from(self.block_bits),
+            });
+        }
+        let max_block = ((1_u16 << self.block_bits) - 1).min(7);
+        if u16::from(self.a4_block) > max_block {
+            return Err(FNumberError::InvalidInput);
+        }
+        Ok(())
+    }
 }
 
 /// Trait that exposes chip-specific conversion logic and metadata.
@@ -571,6 +611,10 @@ pub type FNumberEntry = (f32, FNumber);
 ///
 /// - Returns a fixed-size 2D array `[block][semitone]` (no heap allocation).
 /// - `master_clock_hz` is the chip's master clock frequency used in chip formulas.
+///
+/// # Errors
+/// Returns [`FNumberError`] for an invalid clock or chip configuration, or when
+/// the chip's frequency conversion fails.
 pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
     master_clock_hz: f32,
 ) -> Result<[[Option<FNumberEntry>; 12]; 8], FNumberError> {
@@ -580,18 +624,8 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
         return Err(FNumberError::InvalidInput);
     }
 
-    assert!(
-        spec.fnum_bits > 0 && spec.fnum_bits <= 32,
-        "invalid fnum_bits {}",
-        spec.fnum_bits
-    );
+    spec.validate()?;
     let max_block = ((1 << spec.block_bits as usize) - 1).min(7);
-    assert!(
-        (spec.a4_block as usize) <= max_block,
-        "a4_block {} out of range for block_bits {}",
-        spec.a4_block,
-        spec.block_bits
-    );
 
     let mut fnum_table: [[Option<FNumberEntry>; 12]; 8] =
         array::from_fn(|_| array::from_fn(|_| None::<FNumberEntry>));
@@ -617,13 +651,12 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
                 (1_u32 << spec.fnum_bits as usize) - 1
             };
 
-            for delta in [-1i8, 0, 1] {
-                let Some(cand) = (match delta {
-                    -1 => fnum_floor.checked_sub(1),
-                    0 => Some(fnum_floor),
-                    1 => fnum_floor.checked_add(1),
-                    _ => unreachable!(),
-                }) else {
+            for candidate in [
+                fnum_floor.checked_sub(1),
+                Some(fnum_floor),
+                fnum_floor.checked_add(1),
+            ] {
+                let Some(cand) = candidate else {
                     continue;
                 };
                 if cand == 0 || cand > fnum_max {
@@ -639,7 +672,7 @@ pub fn generate_12edo_fnum_table<C: ChipTypeSpec>(
                     error_hz: err_hz,
                     error_cents: err_cents.abs(),
                 };
-                if best.is_none() || entry.error_hz < best.unwrap().error_hz {
+                if best.is_none_or(|previous| entry.error_hz < previous.error_hz) {
                     best = Some(entry);
                 }
             }
@@ -701,6 +734,10 @@ pub fn find_closest_fnumber<C: ChipTypeSpec>(
 /// minimize absolute Hz error. The function reconstructs an estimated
 /// master clock from the starting table entry so candidate frequencies
 /// can be computed with `C::fnum_block_to_freq`.
+///
+/// # Errors
+/// Returns [`FNumberError`] for an invalid frequency, clock, or chip configuration,
+/// an unusable table, or a failed chip frequency conversion.
 pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
     fnum_table: &[[Option<FNumberEntry>; 12]; 8],
     freq: f32,
@@ -712,6 +749,7 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
 
     let start = find_closest_fnumber::<C>(fnum_table, freq)?;
     let spec = C::config();
+    spec.validate()?;
     if !master_clock_hz.is_finite() || master_clock_hz <= 0.0f32 {
         return Err(FNumberError::InvalidInput);
     }
@@ -727,11 +765,6 @@ pub fn find_and_tune_fnumber<C: ChipTypeSpec>(
         0.0f32
     };
 
-    assert!(
-        spec.fnum_bits > 0 && spec.fnum_bits <= 32,
-        "invalid fnum_bits {}",
-        spec.fnum_bits
-    );
     let fnum_max = if spec.fnum_bits == 32 {
         u32::MAX
     } else {

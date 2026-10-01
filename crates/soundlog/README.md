@@ -27,6 +27,25 @@ Key features:
 - Format conversion: Other supported formats can use the same VGM
   stream-processing interface for playback; MDX is currently supported.
 
+## Error Handling
+
+Parsing, stream iteration, decompression, and F-number utilities return errors
+for invalid input. Convert integer chip-instance indices with
+`Instance::try_from(index)`; only `0` and `1` are accepted. Builder methods take
+an `Instance` directly.
+
+With the `mdx` feature, `MdxDocument::to_bytes`, `MdxDocument::sourcemap`, and
+`MdxPackage::to_mdx_bytes` return `Result`, including after document edits.
+MDX conversion reports layout failures as `MdxConvertError::InvalidDocument`;
+the diagnostic API also identifies the executing track and command when known.
+
+Callbacks return `()`, so hardware or application errors must be handled by the
+callback or its caller rather than through the stream's error result. MDX playback
+treats missing or undecodable PCM payloads as silence; inspect PCM references and
+use the package's decoding API when strict validation is required. Allocation
+failures and panics in user callbacks or custom trait implementations are not
+converted into library errors.
+
 ## Quick Start — building a VGM player
 
 ```rust

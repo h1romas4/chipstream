@@ -39,7 +39,7 @@ use super::mml::{
 /// let parsed = mmlx::mdx::parse("#title \"Example\"\nA c4 d4 e4")
 ///     .expect("valid MML source");
 /// let document = mmlx::mdx::compile(&parsed).expect("supported MML commands");
-/// let mdx_bytes = document.to_bytes();
+/// let mdx_bytes = document.to_bytes().expect("valid MDX layout");
 ///
 /// assert!(!mdx_bytes.is_empty());
 /// ```
@@ -1054,7 +1054,11 @@ mod tests {
             let mut context = CompileSourceContext::new(&sources);
             let diagnosed = compile_internal(&document, Some(&mut context)).unwrap();
             let normal = compile(&document).unwrap();
-            assert_eq!(diagnosed.to_bytes(), normal.to_bytes(), "{source}");
+            assert_eq!(
+                diagnosed.to_bytes().unwrap(),
+                normal.to_bytes().unwrap(),
+                "{source}"
+            );
             for (track, commands) in diagnosed.tracks.iter().enumerate() {
                 for (index, command) in commands.iter().enumerate() {
                     if matches!(command, MdxCommand::Note(_)) {

@@ -71,7 +71,16 @@ pub(crate) fn spawn_initial_parse(
                 if let Some(gd3_node) = VgmAdapter::gd3_node(&document).map(source_node_to_ast) {
                     nodes.push(gd3_node);
                 }
-                let rebuilt_bytes = canonical_bytes_with_adapter::<VgmAdapter>(&document);
+                let rebuilt_bytes = match canonical_bytes_with_adapter::<VgmAdapter>(&document) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        let _ = tx.send(AstBuildMessage::Error {
+                            generation,
+                            message: format!("{error:?}"),
+                        });
+                        return;
+                    }
+                };
                 let diffs = compute_diff_ranges(&data, &rebuilt_bytes);
                 let _ = tx.send(AstBuildMessage::Full { generation, nodes });
                 let _ = tx.send(AstBuildMessage::Diff {
@@ -170,11 +179,21 @@ pub(crate) fn spawn_children_parse(request: ChildParseRequest) {
                         Vec::new()
                     } else {
                         let end = cmp::min(absolute_start + count, total);
-                        MdxAdapter::track_nodes_in_space(
+                        let track_nodes = match MdxAdapter::track_nodes_in_space(
                             &document,
                             track,
                             MdxAdapter::coordinate_space(&data),
-                        )[absolute_start..end]
+                        ) {
+                            Ok(nodes) => nodes,
+                            Err(error) => {
+                                let _ = tx.send(AstBuildMessage::Error {
+                                    generation,
+                                    message: format!("{error:?}"),
+                                });
+                                return;
+                            }
+                        };
+                        track_nodes[absolute_start..end]
                             .iter()
                             .cloned()
                             .map(source_node_to_ast)
@@ -236,7 +255,9 @@ fn parse_with_adapter<A: SourceAdapter>(bytes: &[u8]) -> anyhow::Result<A::Docum
     A::parse(bytes)
 }
 
-fn canonical_bytes_with_adapter<A: SourceAdapter>(document: &A::Document) -> Vec<u8> {
+fn canonical_bytes_with_adapter<A: SourceAdapter>(
+    document: &A::Document,
+) -> anyhow::Result<Vec<u8>> {
     A::canonical_bytes(document)
 }
 
@@ -263,7 +284,7 @@ mod tests {
     fn sample_mdx_bytes() -> Vec<u8> {
         let mut builder = MdxBuilder::new();
         builder.add_mdx_command(0, MdxRest::new(12).unwrap());
-        builder.finalize().unwrap().to_bytes()
+        builder.finalize().unwrap().to_bytes().unwrap()
     }
 
     fn sample_pdx_bytes() -> Vec<u8> {

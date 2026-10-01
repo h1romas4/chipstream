@@ -532,6 +532,68 @@ fn test_stream_chip_type_masking() {
 }
 
 #[test]
+fn test_decompress_rejects_invalid_bit_widths_without_changing_input() {
+    let table = DecompressionTable {
+        compression_type: CompressionType::Dpcm,
+        sub_type: 0,
+        bits_decompressed: 8,
+        bits_compressed: 4,
+        value_count: 1,
+        table_data: vec![0],
+    };
+    for (bits_decompressed, bits_compressed) in
+        [(0, 0), (8, 0), (0, 4), (33, 4), (8, 33), (255, 255)]
+    {
+        let mut bit_packing = BitPackingCompression {
+            bits_decompressed,
+            bits_compressed,
+            sub_type: BitPackingSubType::Copy,
+            add_value: 0,
+            data: vec![0xff],
+        };
+        assert!(matches!(
+            bit_packing.decompress(None, usize::MAX),
+            Err(soundlog::ParseError::DataInconsistency(_) | soundlog::ParseError::Other(_))
+        ));
+        assert_eq!(bit_packing.data, [0xff]);
+        let mut dpcm = DpcmCompression {
+            bits_decompressed,
+            bits_compressed,
+            reserved: 0,
+            start_value: 0,
+            data: vec![0xff],
+        };
+        assert!(matches!(
+            dpcm.decompress(&table, usize::MAX),
+            Err(soundlog::ParseError::DataInconsistency(_) | soundlog::ParseError::Other(_))
+        ));
+        assert_eq!(dpcm.data, [0xff]);
+    }
+}
+
+#[test]
+fn test_bit_packing_rejects_invalid_shift_and_value_overflow() {
+    for (bits_decompressed, bits_compressed, sub_type, add_value, data) in [
+        (4, 8, BitPackingSubType::ShiftLeft, 0, vec![0xff]),
+        (32, 32, BitPackingSubType::Copy, 1, vec![0xff; 4]),
+        (32, 32, BitPackingSubType::ShiftLeft, 1, vec![0xff; 4]),
+    ] {
+        let mut compression = BitPackingCompression {
+            bits_decompressed,
+            bits_compressed,
+            sub_type,
+            add_value,
+            data: data.clone(),
+        };
+        assert!(matches!(
+            compression.decompress(None, usize::MAX),
+            Err(soundlog::ParseError::DataInconsistency(_))
+        ));
+        assert_eq!(compression.data, data);
+    }
+}
+
+#[test]
 fn test_bit_packing_decompress_copy() {
     let mut compression = BitPackingCompression {
         bits_decompressed: 8,
