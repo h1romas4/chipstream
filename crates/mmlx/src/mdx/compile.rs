@@ -130,6 +130,13 @@ pub fn locate_source_command(
     positions[track].get(command_index).copied().flatten()
 }
 
+/// Lower a parsed MML document into MDX, optionally collecting source locations.
+///
+/// `sources` supplies positions for MML commands. `positions` records the
+/// source position for each emitted MDX track command, while `error_position`
+/// records the current command location during compilation. Passing `None` for
+/// these diagnostic arguments avoids collecting source-location data during a
+/// normal compile.
 fn compile_internal(
     document: &MmlDocument,
     sources: Option<&MmlSourceMap>,
