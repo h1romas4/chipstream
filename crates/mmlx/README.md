@@ -131,7 +131,25 @@ Enable `source-map` for position-aware parsing and compilation:
 mmlx = { version = "0.2.0-dev", features = ["source-map"] }
 ```
 
-The `mdx::frontend` and `frontend` rustdoc modules describe the APIs, ownership,
-and memory costs. Ordinary `parse` / `compile` do not collect maps, even with
-this feature enabled. Position-aware APIs require `source-map` and use retained
-maps rather than reparsing or recompiling for diagnostics.
+Locate MML commands, metadata, and voice definitions in the source, report
+parse and compile errors with source ranges when available, and trace generated
+MDX commands back to their originating MML. Source positions can be expressed
+as line and column numbers or UTF-16 coordinates for editor integration.
+
+```rust
+# #[cfg(feature = "source-map")]
+# {
+use mmlx::mdx::frontend::{self, MdxLocation};
+
+let source = "A c4 d4";
+let parsed = frontend::parse(source).expect("valid MML source");
+let compiled = frontend::compile(&parsed).expect("supported MML commands");
+
+let location = MdxLocation::TrackCommand { track: 0, index: 0 };
+let span = compiled.source_map().get(&location).expect("source range");
+assert_eq!(compiled.source().slice(span), Some("c4"));
+
+let position = compiled.source().position(span.start()).unwrap();
+assert_eq!((position.line_number, position.column), (1, 3));
+# }
+```
