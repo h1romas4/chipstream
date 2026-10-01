@@ -11,44 +11,119 @@ use pest::Parser;
 use pest::error::{ErrorVariant, LineColLocation};
 use pest_derive::Parser;
 
+#[cfg(feature = "source-map")]
+use crate::diagnostic::Diagnostic;
+use crate::source::Span;
+
 #[derive(Parser)]
 #[grammar = "mdx/mml.pest"]
 struct MmlParser;
 
+/// Parsed MXDRV MML metadata, voice definitions, and channel commands.
+///
+/// This AST owns its values without retaining source text or locations. Parsing
+/// and compilation are separate; see [`parse`] and [`super::compile::compile`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MmlDocument {
+    /// The last `#title` value, or `None` when not specified.
     pub title: Option<String>,
+    /// The last `#pcmfile` PDX filename, or `None` when not specified.
     pub pcm_file: Option<String>,
+    /// Voice definitions in source order.
     pub voices: Vec<MmlVoice>,
+    /// Tracks in first-seen channel order, with repeated channel lines merged.
     pub tracks: Vec<MmlTrack>,
 }
 
+/// A channel's typed command sequence, including nested repeats.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MmlTrack {
+    /// The MXDRV channel name: `A` through `H`, or `P` through `W`.
     pub channel: char,
+    /// Commands in source order after merging lines for this channel.
     pub commands: Vec<MmlCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// One-based MML source coordinates, with columns counted in characters.
 pub struct SourcePosition {
+    /// One-based source line number.
     pub line_number: usize,
+    /// One-based Unicode scalar-value column, not a byte or UTF-16 offset.
     pub column: usize,
 }
 
+impl SourcePosition {
+    pub(crate) fn from_span(source: &str, span: Span) -> Self {
+        let (line_number, column) = pest::Position::new(source, span.start())
+            .expect("source span must start at a UTF-8 boundary")
+            .line_col();
+        Self {
+            line_number,
+            column,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CommandSource {
-    pub position: SourcePosition,
-    pub end_position: Option<SourcePosition>,
+/// A command's source range and the locations of its nested repeat body.
+pub struct CommandSource {
+    /// The command range, or the opening bracket for a repeat.
+    pub position: Span,
+    /// The closing bracket and optional repeat count.
+    pub end_position: Option<Span>,
+    /// Nested command ranges for repeats; empty for non-repeat commands.
     pub body: Vec<CommandSource>,
 }
 
-pub(super) type MmlSourceMap = Vec<Vec<CommandSource>>;
+#[derive(Debug, Default)]
+pub(super) struct MmlSourceMap {
+    tracks: Vec<Vec<CommandSource>>,
+    #[cfg(feature = "source-map")]
+    pub title: Option<Span>,
+    #[cfg(feature = "source-map")]
+    pub pcm_file: Option<Span>,
+    #[cfg(feature = "source-map")]
+    pub voices: Vec<super::frontend::VoiceSource>,
+    #[cfg(feature = "source-map")]
+    pub arguments: Vec<super::frontend::ArgumentSource>,
+}
 
-type RepeatFrame = (Vec<MmlCommand>, SourcePosition, Vec<CommandSource>);
+impl std::ops::Deref for MmlSourceMap {
+    type Target = Vec<Vec<CommandSource>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tracks
+    }
+}
+
+impl std::ops::DerefMut for MmlSourceMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tracks
+    }
+}
+
+type RepeatFrame = (Vec<MmlCommand>, Span, Vec<CommandSource>);
 
 impl CommandSource {
-    fn new(position: SourcePosition) -> Self {
+    /// Bounding range of a command, including both delimiters for repeats.
+    ///
+    /// A multiline repeat's bounding range may include interleaved lines for
+    /// other channels; [`Self::body`] identifies its actual nested commands.
+    ///
+    /// # Panics
+    ///
+    /// Panics if manually supplied delimiter ranges have an end before the start.
+    #[cfg(feature = "source-map")]
+    pub fn full_span(&self) -> Span {
+        Span::new(
+            self.position.start(),
+            self.end_position.unwrap_or(self.position).end(),
+        )
+        .expect("command ranges are ordered")
+    }
+
+    fn new(position: Span) -> Self {
         Self {
             position,
             end_position: None,
@@ -59,12 +134,9 @@ impl CommandSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedCommand {
-    Command(MmlCommand, Option<SourcePosition>),
-    RepeatStart(SourcePosition),
-    RepeatEnd {
-        count: u16,
-        position: SourcePosition,
-    },
+    Command(MmlCommand, Option<Span>),
+    RepeatStart(Span),
+    RepeatEnd { count: u16, position: Span },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,9 +145,12 @@ struct ParsedTrack {
     commands: Vec<ParsedCommand>,
 }
 
+/// A numbered MXDRV FM voice definition with raw OPM parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MmlVoice {
+    /// The voice number following `@`.
     pub number: u8,
+    /// Parameters in source order: four groups of 11 operator values and 3 globals.
     pub values: Vec<u8>,
 }
 
@@ -317,6 +392,126 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+pub(super) enum ParseFailure {
+    Syntax(Box<pest::error::Error<Rule>>),
+    Repeat {
+        span: Span,
+        message: &'static str,
+        expected: &'static str,
+    },
+    Value {
+        span: Span,
+        command: &'static str,
+        value: i32,
+        min: i32,
+        max: i32,
+    },
+    Overflow {
+        span: Span,
+        command: &'static str,
+    },
+    SourceTooLarge,
+}
+
+impl ParseFailure {
+    fn into_legacy(self, source: &str) -> ParseError {
+        match self {
+            Self::Syntax(error) => ParseError::Syntax(format_syntax_error(&error, source)),
+            Self::Repeat {
+                span,
+                message,
+                expected,
+            } => ParseError::Syntax(format_repeat_error(source, span, message, expected)),
+            Self::Value {
+                span,
+                command,
+                value,
+                min,
+                max,
+            } => {
+                let position = SourcePosition::from_span(source, span);
+                ParseError::InvalidValue {
+                    command,
+                    value,
+                    min,
+                    max,
+                    line_number: position.line_number,
+                    column: position.column,
+                    end_column: position.column + span.text(source).unwrap_or("").chars().count(),
+                    line_text: source
+                        .lines()
+                        .nth(position.line_number - 1)
+                        .unwrap_or("")
+                        .to_owned(),
+                }
+            }
+            Self::Overflow { span, command } => {
+                let position = SourcePosition::from_span(source, span);
+                let end_column = position.column + span.text(source).unwrap_or("").chars().count();
+                let line_text = source.lines().nth(position.line_number - 1).unwrap_or("");
+                ParseError::Syntax(format!(
+                    "MML value error at line {}, columns {}-{end_column}\n  {line_text}\n  {}{}\n  reason: {command} integer is too large to represent",
+                    position.line_number,
+                    position.column,
+                    " ".repeat(position.column - 1),
+                    "^".repeat(end_column.saturating_sub(position.column).max(1)),
+                ))
+            }
+            Self::SourceTooLarge => {
+                ParseError::Syntax("MML source exceeds the 32-bit byte range".to_owned())
+            }
+        }
+    }
+
+    #[cfg(feature = "source-map")]
+    pub(super) fn into_diagnostic(self) -> Diagnostic {
+        match self {
+            Self::Syntax(error) => {
+                let span = match error.location {
+                    pest::error::InputLocation::Pos(offset) => Span::new(offset, offset),
+                    pest::error::InputLocation::Span((start, end)) => Span::new(start, end),
+                };
+                let message = match error.variant {
+                    ErrorVariant::ParsingError { positives, .. } => format!(
+                        "unexpected input; expected {}",
+                        positives
+                            .iter()
+                            .map(describe_rule)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    ErrorVariant::CustomError { message } => message,
+                };
+                Diagnostic::error("mmlx.syntax", message, span)
+            }
+            Self::Repeat { span, message, .. } => {
+                Diagnostic::error("mmlx.repeat", message, Some(span))
+            }
+            Self::Value {
+                span,
+                command,
+                value,
+                min,
+                max,
+            } => Diagnostic::error(
+                "mmlx.invalid-value",
+                format!("{command} value {value} is outside the range {min}..={max}"),
+                Some(span),
+            ),
+            Self::Overflow { span, command } => Diagnostic::error(
+                "mmlx.integer-overflow",
+                format!("{command} integer is too large to represent"),
+                Some(span),
+            ),
+            Self::SourceTooLarge => Diagnostic::error(
+                "mmlx.source-too-large",
+                "MML source exceeds the 32-bit byte range",
+                None,
+            ),
+        }
+    }
+}
+
 /// Parse an MXDRV MML source string.
 ///
 /// Whitespace and comments accepted by the grammar are ignored. The returned
@@ -338,21 +533,25 @@ impl std::error::Error for ParseError {}
 /// assert_eq!(document.tracks[0].channel, 'A');
 /// ```
 pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
-    parse_internal(source, None)
+    parse_internal(source, None).map_err(|error| error.into_legacy(source))
 }
 
 pub(super) fn parse_with_positions(
     source: &str,
 ) -> Result<(MmlDocument, MmlSourceMap), ParseError> {
-    let mut positions = Vec::new();
-    let document = parse_internal(source, Some(&mut positions))?;
+    let mut positions = MmlSourceMap::default();
+    let document =
+        parse_internal(source, Some(&mut positions)).map_err(|error| error.into_legacy(source))?;
     Ok((document, positions))
 }
 
-fn parse_internal(
+pub(super) fn parse_internal(
     source: &str,
     mut positions: Option<&mut MmlSourceMap>,
-) -> Result<MmlDocument, ParseError> {
+) -> Result<MmlDocument, ParseFailure> {
+    if source.len() > u32::MAX as usize {
+        return Err(ParseFailure::SourceTooLarge);
+    }
     let mut document = MmlDocument {
         title: None,
         pcm_file: None,
@@ -362,13 +561,17 @@ fn parse_internal(
     let mut parsed_tracks = Vec::new();
 
     let document_pair = MmlParser::parse(Rule::document, source)
-        .map_err(|error| ParseError::Syntax(format_syntax_error(&error, source)))?
+        .map_err(|error| ParseFailure::Syntax(Box::new(error)))?
         .next()
         .expect("document rule must produce a pair");
     for pair in document_pair.into_inner() {
         let Some(line) = pair.into_inner().next() else {
             continue;
         };
+        #[cfg(feature = "source-map")]
+        if let Some(positions) = &mut positions {
+            capture_syntax(&line, positions);
+        }
         match line.as_rule() {
             Rule::title => document.title = Some(parse_string(line)),
             Rule::pcmfile => document.pcm_file = Some(parse_string(line)),
@@ -415,9 +618,9 @@ fn append_parsed_tracks(tracks: &mut Vec<ParsedTrack>, incoming: Vec<ParsedTrack
 /// Assemble flat loop events into nested repeat commands within one channel.
 fn assemble_repeats(
     commands: Vec<ParsedCommand>,
-    source: &str,
+    _source: &str,
     mut positions: Option<&mut Vec<CommandSource>>,
-) -> Result<Vec<MmlCommand>, ParseError> {
+) -> Result<Vec<MmlCommand>, ParseFailure> {
     let mut output = Vec::new();
     let mut stack: Vec<RepeatFrame> = Vec::new();
 
@@ -426,12 +629,11 @@ fn assemble_repeats(
             ParsedCommand::RepeatStart(position) => stack.push((Vec::new(), position, Vec::new())),
             ParsedCommand::RepeatEnd { count, position } => {
                 let Some((body, start_position, body_positions)) = stack.pop() else {
-                    return Err(ParseError::Syntax(format_repeat_error(
-                        source,
-                        position,
-                        "unexpected ']'",
-                        "repeat start '['",
-                    )));
+                    return Err(ParseFailure::Repeat {
+                        span: position,
+                        message: "unexpected ']'",
+                        expected: "repeat start '['",
+                    });
                 };
                 let repeat_source = positions.as_ref().map(|_| CommandSource {
                     position: start_position,
@@ -457,23 +659,18 @@ fn assemble_repeats(
     }
 
     if let Some((_, position, _)) = stack.last() {
-        return Err(ParseError::Syntax(format_repeat_error(
-            source,
-            *position,
-            "repeat is not terminated",
-            "repeat end ']'",
-        )));
+        return Err(ParseFailure::Repeat {
+            span: *position,
+            message: "repeat is not terminated",
+            expected: "repeat end ']'",
+        });
     }
     Ok(output)
 }
 
 /// Format a repeat-structure error with its source line, marker, and expectation.
-fn format_repeat_error(
-    source: &str,
-    position: SourcePosition,
-    message: &str,
-    expected: &str,
-) -> String {
+fn format_repeat_error(source: &str, span: Span, message: &str, expected: &str) -> String {
+    let position = SourcePosition::from_span(source, span);
     let end_column = position.column + 1;
     let line_text = source
         .lines()
@@ -580,41 +777,25 @@ fn describe_rule(rule: &Rule) -> String {
     }
 }
 
-/// Return a structured error when a value is outside an inclusive range.
-fn source_location(
-    pair: &pest::iterators::Pair<'_, Rule>,
-    character_offset: usize,
-) -> (usize, usize, usize, String) {
-    let span = pair.as_span();
-    let (line_number, start_column) = span.start_pos().line_col();
-    let column = start_column + pair.as_str().chars().take(character_offset).count();
-    let width = pair
-        .as_str()
-        .chars()
-        .skip(character_offset)
-        .take_while(char::is_ascii_digit)
+fn numeric_span(pair: &pest::iterators::Pair<'_, Rule>, byte_offset: usize) -> Span {
+    let width = pair.as_str()[byte_offset..]
+        .bytes()
+        .enumerate()
+        .take_while(|(index, byte)| byte.is_ascii_digit() || (*index == 0 && *byte == b'-'))
         .count();
-    let line_text = span
-        .get_input()
-        .lines()
-        .nth(line_number.saturating_sub(1))
-        .unwrap_or("")
-        .to_owned();
-    (line_number, column, column + width, line_text)
+    let start = pair.as_span().start() + byte_offset;
+    Span::new(start, start + width).expect("source length was checked before parsing")
 }
 
-/// Format an integer overflow with the same source marker as a value error.
 fn format_numeric_overflow(
     pair: &pest::iterators::Pair<'_, Rule>,
     character_offset: usize,
-    command: &str,
-) -> String {
-    let (line_number, column, end_column, line_text) = source_location(pair, character_offset);
-    format!(
-        "MML value error at line {line_number}, columns {column}-{end_column}\n  {line_text}\n  {}{}\n  reason: {command} integer is too large to represent",
-        " ".repeat(column.saturating_sub(1)),
-        "^".repeat(end_column.saturating_sub(column).max(1)),
-    )
+    command: &'static str,
+) -> ParseFailure {
+    ParseFailure::Overflow {
+        span: numeric_span(pair, character_offset),
+        command,
+    }
 }
 
 /// Return a structured error when a value is outside an inclusive range.
@@ -625,18 +806,13 @@ fn invalid_value_at(
     value: i32,
     min: i32,
     max: i32,
-) -> ParseError {
-    let (line_number, column, end_column, line_text) = source_location(pair, character_offset);
-
-    ParseError::InvalidValue {
+) -> ParseFailure {
+    ParseFailure::Value {
+        span: numeric_span(pair, character_offset),
         command,
         value,
         min,
         max,
-        line_number,
-        column,
-        end_column,
-        line_text,
     }
 }
 
@@ -648,7 +824,7 @@ fn validate_range(
     value: i32,
     min: i32,
     max: i32,
-) -> Result<(), ParseError> {
+) -> Result<(), ParseFailure> {
     if (min..=max).contains(&value) {
         Ok(())
     } else {
@@ -669,17 +845,17 @@ fn validate_pair_range(
     command: &'static str,
     min: i32,
     max: i32,
-) -> Result<i32, ParseError> {
+) -> Result<i32, ParseFailure> {
     let value = pair
         .as_str()
         .parse::<i32>()
-        .map_err(|_| ParseError::Syntax(format_numeric_overflow(pair, 0, command)))?;
+        .map_err(|_| format_numeric_overflow(pair, 0, command))?;
     validate_range(pair, 0, command, value, min, max)?;
     Ok(value)
 }
 
 /// Convert a `voice` grammar pair into a voice definition.
-fn parse_voice(voice: pest::iterators::Pair<'_, Rule>) -> Result<MmlVoice, ParseError> {
+fn parse_voice(voice: pest::iterators::Pair<'_, Rule>) -> Result<MmlVoice, ParseFailure> {
     let mut numbers = voice
         .clone()
         .into_inner()
@@ -706,7 +882,7 @@ fn parse_string(line: pest::iterators::Pair<'_, Rule>) -> String {
 fn parse_track(
     line: pest::iterators::Pair<'_, Rule>,
     capture_positions: bool,
-) -> Result<Vec<ParsedTrack>, ParseError> {
+) -> Result<Vec<ParsedTrack>, ParseFailure> {
     let mut children = line.into_inner();
     let channels = children
         .next()
@@ -731,11 +907,11 @@ fn parse_track(
 fn parse_parsed_command(
     pair: pest::iterators::Pair<'_, Rule>,
     capture_positions: bool,
-) -> Result<ParsedCommand, ParseError> {
+) -> Result<ParsedCommand, ParseFailure> {
     Ok(match pair.as_rule() {
-        Rule::repeat_start => ParsedCommand::RepeatStart(source_position(&pair)),
+        Rule::repeat_start => ParsedCommand::RepeatStart(source_span(&pair)),
         Rule::repeat_end => {
-            let position = source_position(&pair);
+            let position = source_span(&pair);
             let count = pair
                 .into_inner()
                 .next()
@@ -746,23 +922,73 @@ fn parse_parsed_command(
         }
         _ => {
             validate_command_pair(&pair)?;
-            let position = capture_positions.then(|| source_position(&pair));
+            let position = capture_positions.then(|| source_span(&pair));
             ParsedCommand::Command(parse_command(pair), position)
         }
     })
 }
 
-/// Return the one-based source line and column where a grammar pair begins.
-fn source_position(pair: &pest::iterators::Pair<'_, Rule>) -> SourcePosition {
-    let (line_number, column) = pair.as_span().start_pos().line_col();
-    SourcePosition {
-        line_number,
-        column,
+fn source_span(pair: &pest::iterators::Pair<'_, Rule>) -> Span {
+    let span = pair.as_span();
+    let end = if matches!(pair.as_rule(), Rule::title | Rule::pcmfile | Rule::voice) {
+        span.end()
+    } else if let Some(child) = pair.clone().into_inner().next_back() {
+        source_span(&child).end()
+    } else if matches!(
+        pair.as_rule(),
+        Rule::repeat_end | Rule::rest | Rule::default_length
+    ) {
+        span.start() + 1
+    } else {
+        span.end()
+    };
+    Span::new(span.start(), end).expect("source length was checked before parsing")
+}
+
+#[cfg(feature = "source-map")]
+fn capture_syntax(pair: &pest::iterators::Pair<'_, Rule>, sources: &mut MmlSourceMap) {
+    use super::frontend::{ArgumentSource, VoiceSource};
+
+    fn numeric_ranges(pair: pest::iterators::Pair<'_, Rule>, output: &mut Vec<Span>) {
+        if matches!(pair.as_rule(), Rule::number | Rule::signed_number) {
+            output.push(source_span(&pair));
+        } else {
+            for child in pair.into_inner() {
+                numeric_ranges(child, output);
+            }
+        }
+    }
+
+    match pair.as_rule() {
+        Rule::title => sources.title = Some(source_span(pair)),
+        Rule::pcmfile => sources.pcm_file = Some(source_span(pair)),
+        Rule::voice => {
+            let mut ranges = Vec::new();
+            numeric_ranges(pair.clone(), &mut ranges);
+            sources.voices.push(VoiceSource {
+                span: source_span(pair),
+                number: ranges.remove(0),
+                parameters: ranges,
+            });
+        }
+        Rule::track => {
+            for command in pair.clone().into_inner().skip(1) {
+                let mut ranges = Vec::new();
+                numeric_ranges(command.clone(), &mut ranges);
+                sources
+                    .arguments
+                    .extend(ranges.into_iter().map(|span| ArgumentSource {
+                        command: source_span(&command),
+                        span,
+                    }));
+            }
+        }
+        _ => {}
     }
 }
 
 /// Validate numeric arguments before converting them into the AST's narrow integer types.
-fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
+fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseFailure> {
     let children = pair.clone().into_inner().collect::<Vec<_>>();
     let check = |index, command, min, max| {
         validate_pair_range(&children[index], command, min, max).map(|_| ())
@@ -832,7 +1058,7 @@ fn validate_command_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), P
 }
 
 /// Validate every scalar in a length expression before parsing it as `u16`.
-fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseError> {
+fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), ParseFailure> {
     let expression = if pair.as_rule() == Rule::duration {
         pair.clone()
             .into_inner()
@@ -873,9 +1099,10 @@ fn validate_length_pair(pair: &pest::iterators::Pair<'_, Rule>) -> Result<(), Pa
             "note length"
         };
         let max = if ticks { i32::from(u16::MAX) } else { 256 };
-        let mut value = digits.as_str().parse::<i32>().map_err(|_| {
-            ParseError::Syntax(format_numeric_overflow(&expression, value_offset, command))
-        })?;
+        let mut value = digits
+            .as_str()
+            .parse::<i32>()
+            .map_err(|_| format_numeric_overflow(&expression, value_offset, command))?;
         validate_range(&expression, value_offset, command, value, 1, max)?;
         let mut term_total = value;
         for _ in 0..dots {
@@ -1233,35 +1460,37 @@ mod tests {
         assert_eq!(document, parse(source).unwrap());
         assert_eq!(positions.len(), 2);
         assert_eq!(
-            positions[0][0].position,
+            SourcePosition::from_span(source, positions[0][0].position),
             SourcePosition {
                 line_number: 1,
                 column: 4
             }
         );
         assert_eq!(
-            positions[0][1].position,
+            SourcePosition::from_span(source, positions[0][1].position),
             SourcePosition {
                 line_number: 1,
                 column: 8
             }
         );
         assert_eq!(
-            positions[0][1].end_position,
+            positions[0][1]
+                .end_position
+                .map(|span| SourcePosition::from_span(source, span)),
             Some(SourcePosition {
                 line_number: 3,
                 column: 6
             })
         );
         assert_eq!(
-            positions[0][1].body[1].body[0].position,
+            SourcePosition::from_span(source, positions[0][1].body[1].body[0].position),
             SourcePosition {
                 line_number: 2,
                 column: 4
             }
         );
         assert_eq!(
-            positions[1][1].body[1].position,
+            SourcePosition::from_span(source, positions[1][1].body[1].position),
             SourcePosition {
                 line_number: 3,
                 column: 4

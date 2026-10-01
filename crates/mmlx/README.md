@@ -50,19 +50,6 @@ The accepted syntax and command coverage follow the MXDRV MML dialect
 implemented by this crate. Parsing successfully does not guarantee that every
 command can be compiled to MDX.
 
-`locate_source_command` reparses and recompiles the supplied original source,
-without running playback. It returns one-based line/character-column coordinates,
-or `None` for invalid input, out-of-range indices, and synthetic commands without
-a source location. Call it only after a playback error to avoid source-map
-allocations on successful compilation or playback. The source map is never stored
-in the generated MDX document.
-
-For compilation failures, use [`locate_compile_error`](mdx::locate_compile_error)
-with the original source. It reparses and recompiles only to recover the failing
-command's one-based line/column, including nested repeats and portamento targets.
-It returns `None` if parsing fails, compilation succeeds, or the error has no
-command-level source location. The ordinary `CompileError` API is unchanged.
-
 ## Streaming Example
 
 The following example parses and compiles MML, then uses [`soundlog`] to convert
@@ -135,3 +122,17 @@ C t120 @1 l8 [[gab>c<]2]2
     Ok(())
 }
 ```
+
+## Source Maps
+
+Enable `source-map` for position-aware parsing and compilation:
+
+```toml
+mmlx = { version = "0.2.0-dev", features = ["source-map"] }
+```
+
+The `mdx::frontend` and `frontend` rustdoc modules describe the APIs, ownership,
+and memory costs. Ordinary `parse` / `compile` do not collect maps, even with
+this feature enabled. Without the feature, [`locate_source_command`](mdx::locate_source_command)
+and [`locate_compile_error`](mdx::locate_compile_error) remain available for
+post-failure diagnostics.

@@ -2,6 +2,314 @@ use mmlx::mdx::{self, MmlCommand, MmlLength};
 use soundlog::mdx::command::{MdxCommand, MdxLfoWaveform};
 use soundlog::mdx::document::MdxDocument;
 
+mod allocation {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    use super::*;
+
+    struct CountingAllocator;
+
+    thread_local! {
+        static USAGE: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    }
+
+    fn record(size: usize) {
+        let _ = USAGE.try_with(|usage| {
+            if let Some((count, bytes)) = usage.get() {
+                usage.set(Some((count + 1, bytes + size)));
+            }
+        });
+    }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) }
+        }
+
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            record(size);
+            unsafe { System.realloc(pointer, layout, size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    fn measure<ResultValue>(
+        operation: impl FnOnce() -> ResultValue,
+    ) -> (ResultValue, (usize, usize)) {
+        USAGE.with(|usage| usage.set(Some((0, 0))));
+        let result = operation();
+        let usage = USAGE.with(|usage| usage.take().unwrap());
+        (result, usage)
+    }
+
+    #[test]
+    fn ordinary_api_allocation_profile() {
+        let source = "AB @42 [c%600& r%300]2\nP c4_>d4";
+        let (document, ordinary) = measure(|| compile_source(source));
+        assert!(ordinary.0 > 0);
+        println!(
+            "ordinary parse+compile: {} allocations/reallocations, {} requested bytes",
+            ordinary.0, ordinary.1
+        );
+        println!(
+            "AST sizes: document={}, track={}, command={}",
+            std::mem::size_of::<mdx::MmlDocument>(),
+            std::mem::size_of::<mdx::MmlTrack>(),
+            std::mem::size_of::<MmlCommand>()
+        );
+        #[cfg(feature = "source-map")]
+        {
+            let (mapped, mapped_usage) = measure(|| {
+                let parsed = mdx::frontend::parse(source).unwrap();
+                mdx::frontend::compile(&parsed).unwrap()
+            });
+            assert_eq!(mapped.document().to_bytes(), document.to_bytes());
+            assert!(mapped_usage.0 > ordinary.0);
+            assert!(mapped_usage.1 > ordinary.1);
+        }
+        #[cfg(not(feature = "source-map"))]
+        drop(document);
+    }
+}
+
+#[cfg(feature = "source-map")]
+mod frontend {
+    use super::*;
+    use mmlx::diagnostic::Severity;
+    use mmlx::mdx::frontend::{self, MdxLocation};
+
+    #[test]
+    fn mapped_compilation_preserves_bytes_and_final_command_coordinates() {
+        for source in [
+            "AB @42 c%600& r%300 d4",
+            "AB @42 [r4\nA [c4]2\nAB d4]3\n",
+            "A @42 c4_d4 e4",
+            "A @42 c4_>d4 e4",
+            "A L r4 c4\nA d4",
+            "AP @42 c%600& d4",
+            "P [c4 [d4]2]3\nA @42 e4",
+            "A r4 ! c4",
+            "A /* \u{65e5} */ c+4 d8.",
+        ] {
+            let parsed = frontend::parse(source).unwrap();
+            assert_eq!(parsed.source().text().as_ptr(), source.as_ptr());
+            assert_eq!(parsed.ast(), &mdx::parse(source).unwrap());
+            let compiled = frontend::compile(&parsed).unwrap();
+            drop(parsed);
+            assert_eq!(
+                compiled.document().to_bytes(),
+                compile_source(source).to_bytes()
+            );
+            for (track, commands) in compiled.document().tracks.iter().enumerate() {
+                for (index, command) in commands.iter().enumerate() {
+                    let span = compiled
+                        .source_map()
+                        .get(&MdxLocation::TrackCommand { track, index });
+                    let position =
+                        span.map(|span| compiled.source().position(span.start()).unwrap());
+                    assert_eq!(
+                        position.map(|position| (position.line_number, position.column)),
+                        mdx::locate_source_command(source, track, index)
+                            .map(|position| (position.line_number, position.column)),
+                        "{source}: track {track}, index {index}"
+                    );
+                    if matches!(command, MdxCommand::Note(_)) {
+                        let text = span.unwrap().text(source).unwrap();
+                        assert!(text.starts_with(['a', 'b', 'c', 'd', 'e', 'f', 'g']));
+                    }
+                }
+            }
+            assert_eq!(
+                compiled.source_map().get(&MdxLocation::TrackCommand {
+                    track: 16,
+                    index: 0
+                }),
+                None
+            );
+            assert_eq!(
+                compiled.source_map().get(&MdxLocation::TrackCommand {
+                    track: 0,
+                    index: usize::MAX
+                }),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn syntax_map_captures_metadata_voice_parameters_and_nested_commands() {
+        let source = "#title \"\u{65e5}\"\n#pcmfile \"test.pdx\"\n@1={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}\nAB [c+4\nA [d8]2\nAB r4]3\n";
+        let parsed = frontend::parse(source).unwrap();
+        let syntax = parsed.syntax();
+        assert!(
+            syntax
+                .title()
+                .unwrap()
+                .text(source)
+                .unwrap()
+                .starts_with("#title")
+        );
+        assert!(
+            syntax
+                .pcm_file()
+                .unwrap()
+                .text(source)
+                .unwrap()
+                .starts_with("#pcmfile")
+        );
+        assert_eq!(syntax.voices()[0].number.text(source), Some("1"));
+        assert_eq!(syntax.voices()[0].parameters.len(), 47);
+        assert_eq!(syntax.voices()[0].parameters[46].text(source), Some("47"));
+        let repeat = &syntax.commands(0).unwrap()[0];
+        assert_eq!(repeat.position.text(source), Some("["));
+        assert_eq!(repeat.end_position.unwrap().text(source), Some("]3"));
+        assert!(repeat.full_span().text(source).unwrap().starts_with("[c+4"));
+        assert!(repeat.full_span().text(source).unwrap().ends_with("]3"));
+        assert_eq!(repeat.body[0].position.text(source), Some("c+4"));
+        assert_eq!(repeat.body[1].body[0].position.text(source), Some("d8"));
+        assert_eq!(syntax.commands(1).unwrap()[0].body.len(), 2);
+        assert!(syntax.arguments().iter().any(|argument| {
+            argument.command.text(source) == Some("c+4") && argument.span.text(source) == Some("4")
+        }));
+        let compiled = frontend::compile(&parsed).unwrap();
+        assert_eq!(
+            compiled.source_map().get(&MdxLocation::Title),
+            syntax.title()
+        );
+        assert_eq!(
+            compiled.source_map().get(&MdxLocation::PcmFile),
+            syntax.pcm_file()
+        );
+        assert_eq!(
+            compiled.source_map().get(&MdxLocation::Tone { index: 0 }),
+            Some(syntax.voices()[0].span)
+        );
+        assert_eq!(
+            compiled.source_map().get(&MdxLocation::Tone { index: 1 }),
+            None
+        );
+    }
+
+    #[test]
+    fn diagnostics_are_structured_and_do_not_copy_source_lines() {
+        for (source, code, token) in [
+            ("A /* \u{65e5} */ o9", "mmlx.invalid-value", "9"),
+            ("A c4^/* \u{65e5} */999", "mmlx.invalid-value", "999"),
+            (
+                "A t999999999999999999999",
+                "mmlx.integer-overflow",
+                "999999999999999999999",
+            ),
+            ("A [c4", "mmlx.repeat", "["),
+            ("A c4]2", "mmlx.repeat", "]2"),
+        ] {
+            let error = frontend::parse(source).unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(error.severity, Severity::Error);
+            assert_eq!(error.span.unwrap().text(source), Some(token));
+            assert!(!error.message.contains("/*"));
+            assert_eq!(error.to_string(), error.message);
+        }
+        let syntax = frontend::parse("A ?").unwrap_err();
+        assert_eq!(syntax.code, "mmlx.syntax");
+        assert_eq!(syntax.span.unwrap().start(), 2);
+        let eof = frontend::parse("#title \"unfinished").unwrap_err();
+        assert!(eof.span.unwrap().end() <= "#title \"unfinished".len());
+        for (source, token) in [
+            ("A /* \u{65e5} */ o0 c", "c"),
+            ("A l193 c", "c"),
+            ("A c_>>>>>>>>>a", "a"),
+            ("A [r4 [>>>>>>>>a]2]3", "a"),
+        ] {
+            let parsed = frontend::parse(source).unwrap();
+            let error = frontend::compile(&parsed).unwrap_err();
+            assert_eq!(error.code, "mmlx.mdx.invalid-value");
+            assert_eq!(error.span.unwrap().text(source), Some(token));
+        }
+    }
+
+    #[test]
+    fn synthetic_commands_and_missing_metadata_have_no_source() {
+        let parsed = frontend::parse("AP c4").unwrap();
+        let compiled = frontend::compile(&parsed).unwrap();
+        assert!(matches!(
+            compiled.document().tracks[0][0],
+            MdxCommand::PcmMode(_)
+        ));
+        assert_eq!(
+            compiled
+                .source_map()
+                .get(&MdxLocation::TrackCommand { track: 0, index: 0 }),
+            None
+        );
+        assert_eq!(
+            compiled
+                .source_map()
+                .get(&MdxLocation::TrackCommand { track: 1, index: 0 }),
+            None
+        );
+        assert_eq!(compiled.source_map().get(&MdxLocation::Title), None);
+        assert_eq!(compiled.source_map().get(&MdxLocation::PcmFile), None);
+        let mapped = compiled
+            .source_map()
+            .get(&MdxLocation::TrackCommand { track: 0, index: 1 })
+            .unwrap();
+        assert_eq!(mapped.text("AP c4"), Some("c4"));
+        let parsed = frontend::parse("A L c4").unwrap();
+        let compiled = frontend::compile(&parsed).unwrap();
+        let index = compiled.document().tracks[0].len() - 1;
+        assert_eq!(
+            compiled
+                .source_map()
+                .get(&MdxLocation::TrackCommand { track: 0, index }),
+            None
+        );
+        let document = compiled.into_document();
+        assert_eq!(document.to_bytes(), compile_source("A L c4").to_bytes());
+    }
+
+    #[test]
+    fn command_ranges_exclude_implicitly_consumed_trailing_trivia() {
+        let source = "A c4 /* \u{65e5} */ d8. r [e4] /* end */ f4";
+        let parsed = frontend::parse(source).unwrap();
+        let commands = parsed.syntax().commands(0).unwrap();
+        assert_eq!(commands[0].position.text(source), Some("c4"));
+        assert_eq!(commands[1].position.text(source), Some("d8."));
+        assert_eq!(commands[2].position.text(source), Some("r"));
+        assert_eq!(commands[3].end_position.unwrap().text(source), Some("]"));
+        let compiled = frontend::compile(&parsed).unwrap();
+        let span = compiled
+            .source_map()
+            .get(&MdxLocation::TrackCommand { track: 0, index: 0 })
+            .unwrap();
+        assert_eq!(span.text(source), Some("c4"));
+    }
+
+    #[test]
+    fn builder_errors_do_not_report_the_last_successful_command() {
+        let source = format!("A {}", "r4 ".repeat(65_536));
+        let parsed = frontend::parse(&source).unwrap();
+        let Err(error) = frontend::compile(&parsed) else {
+            panic!("track offsets exceed the MDX limit");
+        };
+        assert_eq!(error.code, "mmlx.mdx.builder");
+        assert_eq!(error.span, None);
+    }
+}
+
 fn compile_source(source: &str) -> MdxDocument {
     mdx::compile(&mdx::parse(source).unwrap()).unwrap()
 }

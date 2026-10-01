@@ -7,6 +7,8 @@
 //! commands before generating output.
 
 pub mod compile;
+#[cfg(feature = "source-map")]
+pub mod frontend;
 
 mod mml;
 

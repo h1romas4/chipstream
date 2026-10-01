@@ -17,13 +17,15 @@ use soundlog::mdx::command::{
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
+use crate::source::Span;
+
 use super::mml::{
     Accidental, CommandSource, MmlCommand, MmlDocument, MmlLength, MmlSourceMap, MmlVoice,
     SourcePosition, parse_with_positions,
 };
 
-type MdxSourceMap = [Vec<Option<SourcePosition>>; 16];
-type CompiledCommands = (Vec<MdxCommand>, Option<Vec<Option<SourcePosition>>>);
+pub(super) type MdxSourceMap = [Vec<Option<Span>>; 16];
+type CompiledCommands = (Vec<MdxCommand>, Option<Vec<Option<Span>>>);
 
 const TICKS_PER_WHOLE: u16 = 192;
 const FIRST_NOTE: u16 = 0x80;
@@ -35,9 +37,19 @@ pub enum CompileError {
     /// A track uses a channel that cannot be represented in MDX.
     InvalidChannel(char),
     /// A voice does not contain the required 47 parameters.
-    InvalidVoice { number: u8, parameter_count: usize },
+    InvalidVoice {
+        /// The MML voice number following `@`.
+        number: u8,
+        /// The supplied parameter count, rather than the required 47.
+        parameter_count: usize,
+    },
     /// A parsed value cannot be represented by the target MDX type.
-    InvalidValue { command: &'static str, value: i32 },
+    InvalidValue {
+        /// The command or generated field whose value is invalid.
+        command: &'static str,
+        /// The source or computed value that could not be represented.
+        value: i32,
+    },
     /// The source command has no soundlog MDX equivalent.
     UnsupportedCommand(&'static str),
     /// The soundlog builder rejected the generated document.
@@ -108,6 +120,7 @@ pub fn locate_compile_error(source: &str) -> Option<SourcePosition> {
     compile_internal(&document, Some(&sources), None, Some(&position))
         .err()
         .and_then(|_| position.get())
+        .map(|span| SourcePosition::from_span(source, span))
 }
 
 /// Locate the MML command that generated a zero-based MDX track/command index.
@@ -127,7 +140,11 @@ pub fn locate_source_command(
     let (document, sources) = parse_with_positions(source).ok()?;
     let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
     compile_internal(&document, Some(&sources), Some(&mut positions), None).ok()?;
-    positions[track].get(command_index).copied().flatten()
+    positions[track]
+        .get(command_index)
+        .copied()
+        .flatten()
+        .map(|span| SourcePosition::from_span(source, span))
 }
 
 /// Lower a parsed MML document into MDX, optionally collecting source locations.
@@ -137,11 +154,11 @@ pub fn locate_source_command(
 /// records the current command location during compilation. Passing `None` for
 /// these diagnostic arguments avoids collecting source-location data during a
 /// normal compile.
-fn compile_internal(
+pub(super) fn compile_internal(
     document: &MmlDocument,
     sources: Option<&MmlSourceMap>,
     mut positions: Option<&mut MdxSourceMap>,
-    error_position: Option<&Cell<Option<SourcePosition>>>,
+    error_position: Option<&Cell<Option<Span>>>,
 ) -> Result<MdxDocument, CompileError> {
     let mut builder = MdxBuilder::new();
     let mut tracks: [Vec<MdxCommand>; 16] = std::array::from_fn(|_| Vec::new());
@@ -160,7 +177,20 @@ fn compile_internal(
     }
     builder.set_pdx_name(document.pcm_file.as_deref());
 
+    #[cfg(feature = "source-map")]
+    let mut voice_sources = sources.map(|sources| sources.voices.iter());
     for voice in &document.voices {
+        if let Some(error_position) = error_position {
+            #[cfg(feature = "source-map")]
+            error_position.set(
+                voice_sources
+                    .as_mut()
+                    .and_then(Iterator::next)
+                    .map(|voice| voice.span),
+            );
+            #[cfg(not(feature = "source-map"))]
+            error_position.set(None);
+        }
         builder.append_tone(compile_voice(voice)?);
     }
 
@@ -175,6 +205,7 @@ fn compile_internal(
                 .and_then(|sources| sources.get(source_index))
                 .map(Vec::as_slice),
             error_position,
+            positions.is_some(),
         )?;
         tracks[track_index].extend(commands);
         if let (Some(positions), Some(command_positions)) = (&mut positions, command_positions) {
@@ -312,9 +343,17 @@ fn compile_track(
     state: &mut TrackState,
     base_offset: usize,
     sources: Option<&[CommandSource]>,
-    error_position: Option<&Cell<Option<SourcePosition>>>,
+    error_position: Option<&Cell<Option<Span>>>,
+    collect_positions: bool,
 ) -> Result<CompiledCommands, CompileError> {
-    compile_commands(commands, state, base_offset, sources, error_position)
+    compile_commands(
+        commands,
+        state,
+        base_offset,
+        sources,
+        error_position,
+        collect_positions,
+    )
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -323,12 +362,11 @@ fn compile_commands(
     state: &mut TrackState,
     base_offset: usize,
     sources: Option<&[CommandSource]>,
-    error_position: Option<&Cell<Option<SourcePosition>>>,
+    error_position: Option<&Cell<Option<Span>>>,
+    collect_positions: bool,
 ) -> Result<CompiledCommands, CompileError> {
     let mut output = Vec::new();
-    let mut output_positions = sources
-        .filter(|_| error_position.is_none())
-        .map(|_| Vec::new());
+    let mut output_positions = sources.filter(|_| collect_positions).map(|_| Vec::new());
     let mut index = 0;
     let mut last_note_output: Option<(usize, u16, u16)> = None;
     while index < commands.len() {
@@ -391,6 +429,7 @@ fn compile_commands(
                     body_base,
                     command_source.map(|source| source.body.as_slice()),
                     error_position,
+                    collect_positions,
                 )?;
                 if let Some(error_position) = error_position {
                     error_position.set(position);
@@ -962,6 +1001,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diagnostic_only_lowering_does_not_allocate_output_positions() {
+        let (document, sources) = parse_with_positions("A [c4]2").unwrap();
+        let position = Cell::new(None);
+        let (_, positions) = compile_commands(
+            &document.tracks[0].commands,
+            &mut TrackState::default(),
+            0,
+            Some(&sources[0]),
+            Some(&position),
+            false,
+        )
+        .unwrap();
+        assert_eq!(positions, None);
+    }
+
+    #[test]
     fn compile_error_locations_cover_notes_lengths_repeats_and_lookahead() {
         for (source, line, column) in [
             ("A a>>>>>>>>>a", 1, 13),
@@ -1024,7 +1079,8 @@ mod tests {
             for (track, commands) in diagnosed.tracks.iter().enumerate() {
                 for (index, command) in commands.iter().enumerate() {
                     if matches!(command, MdxCommand::Note(_)) {
-                        let position = positions[track][index].unwrap();
+                        let position =
+                            SourcePosition::from_span(source, positions[track][index].unwrap());
                         let character = source
                             .lines()
                             .nth(position.line_number - 1)
