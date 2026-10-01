@@ -2,13 +2,14 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
+use mmlx::mdx::frontend::CompiledMdx;
 use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions, to_vgm_document_with_diagnostics};
 use soundlog::mdx::package::MdxPackage;
 use soundlog::meta::Gd3;
 
 use super::check::{CheckOptions, check_compiled_document};
 use super::find_pdx_path;
-use super::mml::{compile_document, parse_input_with_source, playback_error};
+use super::mml::{compile_document, parse_source, playback_error, read_input_source};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -36,40 +37,30 @@ pub fn compile_with_playback_check(
     adpcm_mode: AdpcmMode,
     playback_check: bool,
 ) -> Result<()> {
-    let (source, source_text) = parse_input_with_source(input)?;
-    let mdx_document = compile_document(input, &source, &source_text)?;
+    let source_text = read_input_source(input)?;
+    let source = parse_source(input, &source_text)?;
+    let compiled = compile_document(input, &source)?;
     match output_format {
         OutputFormat::Mdx => {
+            let bytes = compiled.document().to_bytes();
             if playback_check {
-                check_compiled_document(
-                    input,
-                    mdx_document.clone(),
-                    &source_text,
-                    CheckOptions::default(),
-                )?;
+                check_compiled_document(input, compiled, CheckOptions::default())?;
             }
-            fs::write(output, mdx_document.to_bytes())
+            fs::write(output, bytes)
                 .with_context(|| format!("failed to write MDX output: {}", output.display()))
         }
-        OutputFormat::Vgm => write_vgm(
-            &source,
-            &mdx_document,
-            input,
-            output,
-            adpcm_mode,
-            &source_text,
-        ),
+        OutputFormat::Vgm => write_vgm(source.ast(), &compiled, input, output, adpcm_mode),
     }
 }
 
 fn write_vgm(
     source: &mmlx::mdx::MmlDocument,
-    mdx: &soundlog::mdx::document::MdxDocument,
+    compiled: &CompiledMdx<'_>,
     input: &Path,
     output: &Path,
     adpcm_mode: AdpcmMode,
-    source_text: &str,
 ) -> Result<()> {
+    let mdx = compiled.document();
     let pdx_bytes = source
         .pcm_file
         .as_deref()
@@ -90,7 +81,7 @@ fn write_vgm(
         ..MdxToVgmOptions::default()
     };
     let mut document = to_vgm_document_with_diagnostics(&package, &options)
-        .map_err(|error| playback_error(input, source_text, error))?;
+        .map_err(|error| playback_error(input, compiled.source(), compiled.source_map(), error))?;
     if let Some(title) = source.title.as_deref() {
         document.gd3 = Some(Gd3 {
             track_name_origin: Some(title.to_owned()),

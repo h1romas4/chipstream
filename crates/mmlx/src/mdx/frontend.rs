@@ -4,8 +4,7 @@
 //! [`compile`] returns a soundlog document with a map of finalized output
 //! coordinates. Neither operation reparses the source to locate diagnostics.
 //! Ordinary [`super::parse`] and [`super::compile()`] remain map-free with this
-//! feature enabled. The legacy [`super::locate_source_command`] and
-//! [`super::locate_compile_error`] APIs remain available without the feature.
+//! feature enabled. Source lookup uses retained maps rather than recompilation.
 //!
 //! # Source Maps
 //!

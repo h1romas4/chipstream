@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
+use mmlx::mdx::frontend::{CompiledMdx, ParsedMml};
 use soundlog::mdx::command::MdxCommand;
 use soundlog::mdx::convert::{MdxPlaybackCheckLimits, MdxToVgmOptions, check_playback};
 use soundlog::mdx::document::MdxDocument;
@@ -10,7 +11,7 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 
 use super::mml::{
-    compile_document, parse_input_with_source, parse_reader_with_source, playback_error,
+    compile_document, parse_source, playback_error, read_input_source, read_reader_source,
 };
 
 /// Options for parsing and bounded lazy playback validation.
@@ -56,14 +57,15 @@ pub fn check_with_options(
     stdin: bool,
     options: CheckOptions,
 ) -> Result<()> {
-    let (document, source) = if stdin || input == Path::new("-") {
-        parse_reader_with_source(input, io::stdin().lock())?
+    let source = if stdin || input == Path::new("-") {
+        read_reader_source(input, io::stdin().lock())?
     } else {
-        parse_input_with_source(input)?
+        read_input_source(input)?
     };
-    check_document(input, &document, &source, options)?;
+    let document = parse_source(input, &source)?;
+    check_document(input, &document, options)?;
     if verbose {
-        let tree = mmlx::mdx::format_tree(&document);
+        let tree = mmlx::mdx::format_tree(document.ast());
         let mut stdout = io::BufWriter::new(io::stdout().lock());
         match stdout
             .write_all(tree.as_bytes())
@@ -79,12 +81,7 @@ pub fn check_with_options(
 }
 
 /// Validate a parsed document using the same diagnostics for files and stdin.
-fn check_document(
-    input: &Path,
-    document: &mmlx::mdx::MmlDocument,
-    source: &str,
-    options: CheckOptions,
-) -> Result<()> {
+fn check_document(input: &Path, document: &ParsedMml<'_>, options: CheckOptions) -> Result<()> {
     if options.parse_only {
         return Ok(());
     }
@@ -94,18 +91,19 @@ fn check_document(
             input.display()
         ));
     }
-    let mdx = compile_document(input, document, source)?;
-    check_compiled_document(input, mdx, source, options)
+    let mdx = compile_document(input, document)?;
+    check_compiled_document(input, mdx, options)
 }
 
 pub(super) fn check_compiled_document(
     input: &Path,
-    mdx: MdxDocument,
-    source: &str,
+    compiled: CompiledMdx<'_>,
     options: CheckOptions,
 ) -> Result<()> {
-    let pdx = dummy_pdx(&mdx)
+    let pdx = dummy_pdx(compiled.document())
         .with_context(|| format!("{}: error: failed to prepare dummy PDX", input.display()))?;
+    let source = compiled.source();
+    let (mdx, source_map) = compiled.into_parts();
     let package = MdxPackage { mdx, pdx };
     check_playback(
         &package,
@@ -115,7 +113,7 @@ pub(super) fn check_compiled_document(
         },
         options.limits,
     )
-    .map_err(|error| playback_error(input, source, error))
+    .map_err(|error| playback_error(input, source, &source_map, error))
 }
 
 /// Populate possible PCM bank/note combinations with short, even-length silence.
@@ -158,7 +156,7 @@ mod tests {
         let input = Path::new("songs/check.mml");
         for source in ["A r4", "#pcmfile \"does-not-exist.pdx\"\nP c4"] {
             let document = super::super::mml::parse_source(input, source).unwrap();
-            check_document(input, &document, source, CheckOptions::default()).unwrap();
+            check_document(input, &document, CheckOptions::default()).unwrap();
         }
         for (source, message) in [
             ("A c193", "compile error"),
@@ -166,7 +164,7 @@ mod tests {
             ("A @42 c4", "missing tone for voice 42"),
         ] {
             let document = super::super::mml::parse_source(input, source).unwrap();
-            let error = check_document(input, &document, source, CheckOptions::default())
+            let error = check_document(input, &document, CheckOptions::default())
                 .unwrap_err()
                 .to_string();
             assert!(error.starts_with("songs/check.mml:"));
@@ -183,7 +181,6 @@ mod tests {
             check_document(
                 input,
                 &document,
-                source,
                 CheckOptions {
                     parse_only: true,
                     ..Default::default()
@@ -197,7 +194,8 @@ mod tests {
     #[test]
     fn checks_requested_loop_count_and_reader_input() {
         let input = Path::new("songs/unsaved.mml");
-        let (document, source) = parse_reader_with_source(input, Cursor::new("P L c4")).unwrap();
+        let source = read_reader_source(input, Cursor::new("P L c4")).unwrap();
+        let document = parse_source(input, &source).unwrap();
         let options = CheckOptions {
             limits: MdxPlaybackCheckLimits {
                 max_ticks: 64,
@@ -205,11 +203,10 @@ mod tests {
             },
             ..Default::default()
         };
-        check_document(input, &document, &source, options).unwrap();
+        check_document(input, &document, options).unwrap();
         let error = check_document(
             input,
             &document,
-            &source,
             CheckOptions {
                 loop_count: 3,
                 ..options
@@ -227,7 +224,6 @@ mod tests {
             check_document(
                 input,
                 &document,
-                &source,
                 CheckOptions {
                     loop_count: 0,
                     ..options
@@ -235,8 +231,9 @@ mod tests {
             )
             .is_err()
         );
-        let (document, source) = parse_reader_with_source(input, Cursor::new("A @42 c4")).unwrap();
-        let error = check_document(input, &document, &source, CheckOptions::default())
+        let source = read_reader_source(input, Cursor::new("A @42 c4")).unwrap();
+        let document = parse_source(input, &source).unwrap();
+        let error = check_document(input, &document, CheckOptions::default())
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -257,10 +254,10 @@ mod tests {
             ("#title \"\u{66f2}\"\nA /* \u{65e5} */ @42 c4", 2, 15),
             ("A @42 c4_>d4 e4", 1, 7),
         ] {
-            let (document, original) =
-                parse_reader_with_source(input, Cursor::new(source)).unwrap();
+            let original = read_reader_source(input, Cursor::new(source)).unwrap();
+            let document = parse_source(input, &original).unwrap();
             assert_eq!(original, source);
-            let error = check_document(input, &document, &original, CheckOptions::default())
+            let error = check_document(input, &document, CheckOptions::default())
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -275,7 +272,6 @@ mod tests {
         let error = check_document(
             input,
             &document,
-            source,
             CheckOptions {
                 limits: MdxPlaybackCheckLimits {
                     max_ticks: 1000,
@@ -297,7 +293,9 @@ mod tests {
     fn dummy_pdx_covers_possible_banks_and_notes() {
         let document =
             super::super::mml::parse_source(Path::new("test.mml"), "P @2 c4\nQ @4 d4").unwrap();
-        let mdx = mmlx::mdx::compile(&document).unwrap();
+        let mdx = compile_document(Path::new("test.mml"), &document)
+            .unwrap()
+            .into_document();
         let pdx = dummy_pdx(&mdx).unwrap().unwrap();
         let package = MdxPackage { mdx, pdx: None };
         for reference in package.pcm_references() {

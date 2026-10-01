@@ -13,7 +13,7 @@ or format the parsed document before generating MDX data.
 - Inspect the typed syntax tree through [`MmlDocument`](mdx::MmlDocument) and
   [`MmlCommand`](mdx::MmlCommand), or render it with [`format_tree`](mdx::format_tree).
 - Compile supported commands into [`MdxDocument`](soundlog::mdx::document::MdxDocument).
-- Recover an MML source position from an MDX track/command index with [`locate_source_command`](mdx::locate_source_command), for post-failure diagnostics.
+- Retain syntax ranges and output source maps with the optional `source-map` feature.
 
 ## Example
 
@@ -133,6 +133,5 @@ mmlx = { version = "0.2.0-dev", features = ["source-map"] }
 
 The `mdx::frontend` and `frontend` rustdoc modules describe the APIs, ownership,
 and memory costs. Ordinary `parse` / `compile` do not collect maps, even with
-this feature enabled. Without the feature, [`locate_source_command`](mdx::locate_source_command)
-and [`locate_compile_error`](mdx::locate_compile_error) remain available for
-post-failure diagnostics.
+this feature enabled. Position-aware APIs require `source-map` and use retained
+maps rather than reparsing or recompiling for diagnostics.

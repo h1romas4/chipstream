@@ -16,7 +16,7 @@ anyhow = "1.0"
 comfy-table = "8"
 unicode-width = "0.2"
 hound = "3"
-mmlx = { workspace = true }
+mmlx = { workspace = true, features = ["source-map"] }
 soundlog = { workspace = true, features = ["mdx"] }
 
 [[bin]]

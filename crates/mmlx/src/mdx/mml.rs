@@ -45,16 +45,13 @@ pub struct MmlTrack {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// One-based MML source coordinates, with columns counted in characters.
-pub struct SourcePosition {
-    /// One-based source line number.
-    pub line_number: usize,
-    /// One-based Unicode scalar-value column, not a byte or UTF-16 offset.
-    pub column: usize,
+struct ParsePosition {
+    line_number: usize,
+    column: usize,
 }
 
-impl SourcePosition {
-    pub(crate) fn from_span(source: &str, span: Span) -> Self {
+impl ParsePosition {
+    fn from_span(source: &str, span: Span) -> Self {
         let (line_number, column) = pest::Position::new(source, span.start())
             .expect("source span must start at a UTF-8 boundary")
             .line_col();
@@ -429,7 +426,7 @@ impl ParseFailure {
                 min,
                 max,
             } => {
-                let position = SourcePosition::from_span(source, span);
+                let position = ParsePosition::from_span(source, span);
                 ParseError::InvalidValue {
                     command,
                     value,
@@ -446,7 +443,7 @@ impl ParseFailure {
                 }
             }
             Self::Overflow { span, command } => {
-                let position = SourcePosition::from_span(source, span);
+                let position = ParsePosition::from_span(source, span);
                 let end_column = position.column + span.text(source).unwrap_or("").chars().count();
                 let line_text = source.lines().nth(position.line_number - 1).unwrap_or("");
                 ParseError::Syntax(format!(
@@ -536,9 +533,8 @@ pub fn parse(source: &str) -> Result<MmlDocument, ParseError> {
     parse_internal(source, None).map_err(|error| error.into_legacy(source))
 }
 
-pub(super) fn parse_with_positions(
-    source: &str,
-) -> Result<(MmlDocument, MmlSourceMap), ParseError> {
+#[cfg(test)]
+pub(super) fn parse_with_sources(source: &str) -> Result<(MmlDocument, MmlSourceMap), ParseError> {
     let mut positions = MmlSourceMap::default();
     let document =
         parse_internal(source, Some(&mut positions)).map_err(|error| error.into_legacy(source))?;
@@ -670,7 +666,7 @@ fn assemble_repeats(
 
 /// Format a repeat-structure error with its source line, marker, and expectation.
 fn format_repeat_error(source: &str, span: Span, message: &str, expected: &str) -> String {
-    let position = SourcePosition::from_span(source, span);
+    let position = ParsePosition::from_span(source, span);
     let end_column = position.column + 1;
     let line_text = source
         .lines()
@@ -1456,19 +1452,19 @@ mod tests {
     #[test]
     fn diagnostic_positions_preserve_ast_and_nested_multiline_channel_mapping() {
         let source = "AB @42 [r4\nA [c4]2\nAB d4]3\n";
-        let (document, positions) = parse_with_positions(source).unwrap();
+        let (document, positions) = parse_with_sources(source).unwrap();
         assert_eq!(document, parse(source).unwrap());
         assert_eq!(positions.len(), 2);
         assert_eq!(
-            SourcePosition::from_span(source, positions[0][0].position),
-            SourcePosition {
+            ParsePosition::from_span(source, positions[0][0].position),
+            ParsePosition {
                 line_number: 1,
                 column: 4
             }
         );
         assert_eq!(
-            SourcePosition::from_span(source, positions[0][1].position),
-            SourcePosition {
+            ParsePosition::from_span(source, positions[0][1].position),
+            ParsePosition {
                 line_number: 1,
                 column: 8
             }
@@ -1476,22 +1472,22 @@ mod tests {
         assert_eq!(
             positions[0][1]
                 .end_position
-                .map(|span| SourcePosition::from_span(source, span)),
-            Some(SourcePosition {
+                .map(|span| ParsePosition::from_span(source, span)),
+            Some(ParsePosition {
                 line_number: 3,
                 column: 6
             })
         );
         assert_eq!(
-            SourcePosition::from_span(source, positions[0][1].body[1].body[0].position),
-            SourcePosition {
+            ParsePosition::from_span(source, positions[0][1].body[1].body[0].position),
+            ParsePosition {
                 line_number: 2,
                 column: 4
             }
         );
         assert_eq!(
-            SourcePosition::from_span(source, positions[1][1].body[1].position),
-            SourcePosition {
+            ParsePosition::from_span(source, positions[1][1].body[1].position),
+            ParsePosition {
                 line_number: 3,
                 column: 4
             }

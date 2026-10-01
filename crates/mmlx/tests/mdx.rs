@@ -118,14 +118,10 @@ mod frontend {
                     let span = compiled
                         .source_map()
                         .get(&MdxLocation::TrackCommand { track, index });
-                    let position =
-                        span.map(|span| compiled.source().position(span.start()).unwrap());
-                    assert_eq!(
-                        position.map(|position| (position.line_number, position.column)),
-                        mdx::locate_source_command(source, track, index)
-                            .map(|position| (position.line_number, position.column)),
-                        "{source}: track {track}, index {index}"
-                    );
+                    if let Some(span) = span {
+                        assert!(compiled.source().position(span.start()).is_some());
+                        assert!(span.text(source).is_some());
+                    }
                     if matches!(command, MdxCommand::Note(_)) {
                         let text = span.unwrap().text(source).unwrap();
                         assert!(text.starts_with(['a', 'b', 'c', 'd', 'e', 'f', 'g']));
@@ -145,6 +141,33 @@ mod frontend {
                     index: usize::MAX
                 }),
                 None
+            );
+        }
+    }
+
+    #[test]
+    fn finalized_command_positions_cover_multiline_tracks_and_synthetic_commands() {
+        for (source, track, index, expected) in [
+            ("AB @42 [r4\nA [c4]2\nAB d4]3\n", 0, 4, Some((2, 4))),
+            ("AB @42 [r4\nA [c4]2\nAB d4]3\n", 1, 3, Some((3, 4))),
+            ("A r4", 0, 1, None),
+            ("A r4", 16, 0, None),
+            ("A r4", 0, usize::MAX, None),
+            ("AP @42 c4", 0, 0, None),
+            ("AP @42 c4", 0, 2, Some((1, 8))),
+            ("AP @42 c4", 8, 1, Some((1, 8))),
+            ("A L r4 c4", 0, 2, None),
+        ] {
+            let parsed = frontend::parse(source).unwrap();
+            let compiled = frontend::compile(&parsed).unwrap();
+            let position = compiled
+                .source_map()
+                .get(&MdxLocation::TrackCommand { track, index })
+                .and_then(|span| compiled.source().position(span.start()));
+            assert_eq!(
+                position.map(|position| (position.line_number, position.column)),
+                expected,
+                "{source}: track {track}, index {index}"
             );
         }
     }

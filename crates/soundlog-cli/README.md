@@ -355,13 +355,14 @@ without a command location retain the file-only diagnostic. This applies to
 `check`, both `compile` output formats, and MML package loading; skipping playback
 checks does not suppress compilation errors.
 
-The original input text is retained by the CLI, including stdin buffers. Only
-after a compilation or positioned playback error occurs is that text reparsed and recompiled to
-recover its source location; playback is not rerun. Successful checks allocate
-no MML/MDX source map, and no source information is added to MDX packages or the
-playback engine.
+The CLI enables mmlx's `source-map` feature and retains the original input text,
+including stdin buffers. Parsing collects syntax ranges once; compilation builds
+a map addressing the finalized MDX commands. Compilation and playback diagnostics
+use these retained ranges without reparsing or recompiling the input. Maps allocate
+memory separately from the document and are kept through playback validation or
+VGM conversion; no source information is added to MDX packages or the playback engine.
 
-Use `--parse-only` for the previous lightweight parser-only behavior, particularly
+Use `--parse-only` for parser-only validation, particularly
 for editor linting while voice definitions are still incomplete. It cannot be
 combined with explicit playback count or budget options.
 

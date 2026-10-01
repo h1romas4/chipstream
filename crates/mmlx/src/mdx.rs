@@ -12,8 +12,8 @@ pub mod frontend;
 
 mod mml;
 
-pub use compile::{CompileError, compile, locate_compile_error, locate_source_command};
+pub use compile::{CompileError, compile};
 pub use mml::{
-    Accidental, MmlCommand, MmlDocument, MmlLength, MmlTrack, MmlVoice, ParseError, SourcePosition,
-    format_tree, parse,
+    Accidental, MmlCommand, MmlDocument, MmlLength, MmlTrack, MmlVoice, ParseError, format_tree,
+    parse,
 };

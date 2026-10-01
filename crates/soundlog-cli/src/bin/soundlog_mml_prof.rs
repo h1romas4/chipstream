@@ -3,6 +3,7 @@
 //! The MML fixture is embedded at compile time. The profiler parses the MML,
 //! compiles it to MDX, creates a lazy VGM command generator, and consumes every
 //! generated command up to a fixed budget without writing MDX or VGM files.
+//! Parsing and compilation use the ordinary APIs without collecting source maps.
 //! The fixture intentionally contains an `L` infinite-loop command, so the
 //! budget keeps this reference profiler finite.
 //!
@@ -39,6 +40,7 @@ const MAX_COMMANDS: usize = 100_000;
 fn main() {
     let mml = mmlx::mdx::parse(MML_SOURCE).expect("embedded MML must parse");
     let mdx = mmlx::mdx::compile(&mml).expect("embedded MML must compile");
+    drop(mml);
     let package = MdxPackage::parse_owned(mdx.to_bytes(), None)
         .expect("compiled MDX must be a valid package");
     let options = MdxToVgmOptions {

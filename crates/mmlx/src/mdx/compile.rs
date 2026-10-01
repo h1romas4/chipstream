@@ -21,7 +21,6 @@ use crate::source::Span;
 
 use super::mml::{
     Accidental, CommandSource, MmlCommand, MmlDocument, MmlLength, MmlSourceMap, MmlVoice,
-    SourcePosition, parse_with_positions,
 };
 
 pub(super) type MdxSourceMap = [Vec<Option<Span>>; 16];
@@ -106,45 +105,6 @@ impl std::error::Error for CompileError {}
 /// ```
 pub fn compile(document: &MmlDocument) -> Result<MdxDocument, CompileError> {
     compile_internal(document, None, None, None)
-}
-
-/// Locate the MML command responsible for a compilation failure.
-///
-/// Reparses and recompiles the original source only for post-failure diagnostics.
-/// Returns `None` when parsing fails, compilation succeeds, or the failure has
-/// no command-level source position (for example a document builder error).
-/// Normal [`compile`] does not collect diagnostic positions.
-pub fn locate_compile_error(source: &str) -> Option<SourcePosition> {
-    let (document, sources) = parse_with_positions(source).ok()?;
-    let position = Cell::new(None);
-    compile_internal(&document, Some(&sources), None, Some(&position))
-        .err()
-        .and_then(|_| position.get())
-        .map(|span| SourcePosition::from_span(source, span))
-}
-
-/// Locate the MML command that generated a zero-based MDX track/command index.
-///
-/// Intended for diagnostics after playback fails: reparses and recompiles the
-/// original source without running playback or modifying its data. Returns
-/// `None` for invalid source, absent coordinates, or synthetic track terminators.
-/// Normal [`compile`] does not allocate source maps.
-pub fn locate_source_command(
-    source: &str,
-    track: usize,
-    command_index: usize,
-) -> Option<SourcePosition> {
-    if track >= 16 {
-        return None;
-    }
-    let (document, sources) = parse_with_positions(source).ok()?;
-    let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
-    compile_internal(&document, Some(&sources), Some(&mut positions), None).ok()?;
-    positions[track]
-        .get(command_index)
-        .copied()
-        .flatten()
-        .map(|span| SourcePosition::from_span(source, span))
 }
 
 /// Lower a parsed MML document into MDX, optionally collecting source locations.
@@ -998,11 +958,16 @@ fn patch_repeat_escape_offsets(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "source-map")]
+    use super::super::mml::parse_with_sources;
     use super::*;
+    #[cfg(feature = "source-map")]
+    use crate::frontend::SourceFile;
 
+    #[cfg(feature = "source-map")]
     #[test]
     fn diagnostic_only_lowering_does_not_allocate_output_positions() {
-        let (document, sources) = parse_with_positions("A [c4]2").unwrap();
+        let (document, sources) = parse_with_sources("A [c4]2").unwrap();
         let position = Cell::new(None);
         let (_, positions) = compile_commands(
             &document.tracks[0].commands,
@@ -1016,6 +981,7 @@ mod tests {
         assert_eq!(positions, None);
     }
 
+    #[cfg(feature = "source-map")]
     #[test]
     fn compile_error_locations_cover_notes_lengths_repeats_and_lookahead() {
         for (source, line, column) in [
@@ -1029,7 +995,7 @@ mod tests {
         ] {
             let document = super::super::parse(source).unwrap();
             let original = compile(&document).unwrap_err();
-            let (located_document, sources) = parse_with_positions(source).unwrap();
+            let (located_document, sources) = parse_with_sources(source).unwrap();
             let position = Cell::new(None);
             assert_eq!(
                 compile_internal(&located_document, Some(&sources), None, Some(&position))
@@ -1037,18 +1003,15 @@ mod tests {
                 original
             );
             assert_eq!(
-                locate_compile_error(source),
-                Some(SourcePosition {
-                    line_number: line,
-                    column
-                }),
+                position
+                    .get()
+                    .and_then(|span| SourceFile::new(source).unwrap().position(span.start()))
+                    .map(|position| (position.line_number, position.column)),
+                Some((line, column)),
                 "{source}"
             );
         }
-        assert_eq!(locate_compile_error("A a>>>>>>>>>"), None);
-        assert_eq!(locate_compile_error("A ?"), None);
-        assert_eq!(locate_compile_error("@1 = { 1 }\nA r4"), None);
-        let (mut document, mut sources) = parse_with_positions("A r4").unwrap();
+        let (mut document, mut sources) = parse_with_sources("A r4").unwrap();
         document.tracks[0].commands = vec![MmlCommand::Rest { length: Some(4) }; 65_536];
         let rest_source = sources[0][0].clone();
         sources[0].resize(65_536, rest_source);
@@ -1058,6 +1021,7 @@ mod tests {
         assert_eq!(position.get(), None);
     }
 
+    #[cfg(feature = "source-map")]
     #[test]
     fn diagnostic_mapping_preserves_compilation_and_maps_split_notes_and_repeats() {
         for source in [
@@ -1070,7 +1034,7 @@ mod tests {
             "P [c4 [d4]2]3\nA @42 e4",
             "A r4 ! c4",
         ] {
-            let (document, sources) = parse_with_positions(source).unwrap();
+            let (document, sources) = parse_with_sources(source).unwrap();
             let mut positions: MdxSourceMap = std::array::from_fn(|_| Vec::new());
             let diagnosed =
                 compile_internal(&document, Some(&sources), Some(&mut positions), None).unwrap();
@@ -1079,8 +1043,10 @@ mod tests {
             for (track, commands) in diagnosed.tracks.iter().enumerate() {
                 for (index, command) in commands.iter().enumerate() {
                     if matches!(command, MdxCommand::Note(_)) {
-                        let position =
-                            SourcePosition::from_span(source, positions[track][index].unwrap());
+                        let position = SourceFile::new(source)
+                            .unwrap()
+                            .position(positions[track][index].unwrap().start())
+                            .unwrap();
                         let character = source
                             .lines()
                             .nth(position.line_number - 1)
@@ -1089,46 +1055,10 @@ mod tests {
                             .nth(position.column - 1)
                             .unwrap();
                         assert!(matches!(character, 'a'..='g'), "{source}: {position:?}");
-                        assert_eq!(locate_source_command(source, track, index), Some(position));
                     }
                 }
             }
         }
-        let source = "AB @42 [r4\nA [c4]2\nAB d4]3\n";
-        assert_eq!(
-            locate_source_command(source, 0, 4),
-            Some(SourcePosition {
-                line_number: 2,
-                column: 4
-            })
-        );
-        assert_eq!(
-            locate_source_command(source, 1, 3),
-            Some(SourcePosition {
-                line_number: 3,
-                column: 4
-            })
-        );
-        assert_eq!(locate_source_command("A r4", 0, 1), None);
-        assert_eq!(locate_source_command("A r4", 16, 0), None);
-        assert_eq!(locate_source_command("A r4", 0, usize::MAX), None);
-        assert_eq!(locate_source_command("A ?", 0, 0), None);
-        assert_eq!(locate_source_command("AP @42 c4", 0, 0), None);
-        assert_eq!(
-            locate_source_command("AP @42 c4", 0, 2),
-            Some(SourcePosition {
-                line_number: 1,
-                column: 8
-            })
-        );
-        assert_eq!(
-            locate_source_command("AP @42 c4", 8, 1),
-            Some(SourcePosition {
-                line_number: 1,
-                column: 8
-            })
-        );
-        assert_eq!(locate_source_command("A L r4 c4", 0, 2), None);
     }
     use crate::mdx::parse;
     use soundlog::mdx::command::{MdxEndOfTrack, MdxTempo};
