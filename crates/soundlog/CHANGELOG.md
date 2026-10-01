@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [x] Change: Store UTF-16 errors directly instead of using `Arc`; remove `Clone` from `ParseError` while preserving `Error::source`.
+- [x] Change: Use dedicated `ParseError` variants instead of `Other` for library errors, retaining typed UTF-16 and MDX generator causes through `Error::source`.
 - [x] Change: Make MDX document serialization, source-map construction, and package MDX serialization fallible; replace `try_to_bytes` with `to_bytes` returning `Result`.
 - [x] Change: Replace integer-to-`Instance` `From` with `TryFrom`; VGM builder methods now require a typed `Instance`.
 - [x] Fix: Return errors for overflowing byte-reader ranges, invalid decompression bit widths and arithmetic, and invalid F-number configurations.

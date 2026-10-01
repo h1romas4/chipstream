@@ -29,7 +29,8 @@
 //! - GD3 metadata, when present, is parsed via `crate::meta::parse_gd3`.
 //!   GD3 parsing errors are propagated to the caller when parsing the
 //!   full document.
-use crate::binutil::{ParseError, read_slice, read_u8_at, read_u16_le_at, read_u32_le_at};
+use crate::ParseError;
+use crate::binutil::{read_slice, read_u8_at, read_u16_le_at, read_u32_le_at};
 use crate::chip;
 use crate::meta::parse_gd3;
 use crate::vgm::command::{
@@ -878,7 +879,7 @@ pub(crate) fn parse_vgm_command(
                 let primary_opcode = 0x50u8;
                 match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                    Err(ParseError::Other(_)) => {}
+                    Err(ParseError::UnknownOpcode { .. }) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -886,7 +887,7 @@ pub(crate) fn parse_vgm_command(
                 let primary_opcode = 0x4Fu8;
                 match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                    Err(ParseError::Other(_)) => {}
+                    Err(ParseError::UnknownOpcode { .. }) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -898,7 +899,7 @@ pub(crate) fn parse_vgm_command(
                 let primary_opcode = other.wrapping_sub(0x50);
                 match parse_chip_write(primary_opcode, Instance::Secondary, bytes, cur) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                    Err(ParseError::Other(_)) => {}
+                    Err(ParseError::UnknownOpcode { .. }) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -962,7 +963,7 @@ pub(crate) fn parse_vgm_command(
 
                 match parse_chip_write(other, instance, param_slice, 0) {
                     Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                    Err(ParseError::Other(_)) => {}
+                    Err(ParseError::UnknownOpcode { .. }) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -973,14 +974,14 @@ pub(crate) fn parse_vgm_command(
             // Secondary-specific branches above.
             match parse_chip_write(other, Instance::Primary, bytes, cur) {
                 Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                Err(ParseError::Other(_)) => {}
+                Err(ParseError::UnknownOpcode { .. }) => {}
                 Err(e) => return Err(e),
             }
 
             // If no chip write matched, try reserved opcode ranges as a fallback.
             match parse_reserved_write(other, bytes, cur) {
                 Ok((cmd, cons)) => return Ok((cmd, 1 + cons)),
-                Err(ParseError::Other(_)) => {}
+                Err(ParseError::UnknownOpcode { .. }) => {}
                 Err(e) => return Err(e),
             }
 
@@ -1215,10 +1216,10 @@ pub(crate) fn parse_chip_write(
             let (spec, n) = <chip::C352Spec as CommandSpec>::parse(bytes, offset, opcode)?;
             Ok((VgmCommand::C352Write(instance, spec), n))
         }
-        _ => Err(ParseError::Other(format!(
-            "unknown chip base opcode {:#X}",
-            opcode
-        ))),
+        _ => Err(ParseError::UnknownOpcode {
+            opcode,
+            offset: offset.saturating_sub(1),
+        }),
     }
 }
 
@@ -1260,10 +1261,10 @@ pub(crate) fn parse_reserved_write(
             Ok((VgmCommand::ReservedU32Write(spec), n))
         }
 
-        _ => Err(ParseError::Other(format!(
-            "unknown reserved opcode {:#X}",
-            opcode
-        ))),
+        _ => Err(ParseError::UnknownOpcode {
+            opcode,
+            offset: offset.saturating_sub(1),
+        }),
     }
 }
 

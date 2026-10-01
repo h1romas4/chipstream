@@ -11,8 +11,8 @@
 //!
 //! See the `VgmStream` type below for usage examples and more detailed docs.
 //!
+use crate::ParseError;
 use crate::VgmDocument;
-use crate::binutil::ParseError;
 use crate::chip;
 use crate::vgm::command::{
     DataBlock, Instance, LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl,
@@ -519,7 +519,7 @@ pub enum StreamResult {
 ///    `total_data_block_size()`.
 ///
 /// When either limit is exceeded, the parser returns `ParseError::DataBlockSizeExceeded`
-/// or `ParseError::Other` respectively.
+/// or `ParseError::BufferSizeExceeded` respectively.
 ///
 /// # Examples
 ///
@@ -1012,34 +1012,37 @@ impl VgmStream {
     /// * `chunk` - Raw VGM command/data bytes to add to the parsing buffer
     ///
     /// # Errors
-    /// Returns `ParseError::Other` if adding the chunk would exceed the maximum
-    /// buffer size (64 MiB) or if this method is called on a stream created from
-    /// a document.
+    /// Returns [`ParseError::BufferSizeExceeded`] if adding the chunk would exceed
+    /// the configured buffer size limit (64 MiB by default), or
+    /// [`ParseError::UnsupportedStreamOperation`] if the stream is not buffer-backed.
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         match &mut self.source {
             VgmStreamSource::Buffer { buffer } => {
-                if buffer.len() + chunk.len() > self.max_buffer_size {
-                    return Err(ParseError::Other(format!(
-                        "Buffer size limit exceeded: current {} bytes, chunk {} bytes, limit {} bytes",
-                        buffer.len(),
-                        chunk.len(),
-                        self.max_buffer_size
-                    )));
+                if buffer.len() > self.max_buffer_size
+                    || chunk.len() > self.max_buffer_size - buffer.len()
+                {
+                    return Err(ParseError::BufferSizeExceeded {
+                        current_size: buffer.len(),
+                        limit: self.max_buffer_size,
+                        attempted_size: chunk.len(),
+                    });
                 }
 
                 buffer.extend_from_slice(chunk);
                 Ok(())
             }
-            VgmStreamSource::Document { .. } => Err(ParseError::Other(
-                "push_chunk() cannot be called on a VgmStream created from a document".into(),
-            )),
-            VgmStreamSource::Generator { .. } => Err(ParseError::Other(
-                "push_chunk() cannot be called on a VgmStream created from a generator".into(),
-            )),
-            VgmStreamSource::File { .. } => Err(ParseError::Other(
-                "push_chunk() cannot be called on a VgmStream created from VgmStream::from_vgm"
-                    .into(),
-            )),
+            VgmStreamSource::Document { .. } => Err(ParseError::UnsupportedStreamOperation {
+                operation: "push_chunk",
+                source: "document",
+            }),
+            VgmStreamSource::Generator { .. } => Err(ParseError::UnsupportedStreamOperation {
+                operation: "push_chunk",
+                source: "generator",
+            }),
+            VgmStreamSource::File { .. } => Err(ParseError::UnsupportedStreamOperation {
+                operation: "push_chunk",
+                source: "file",
+            }),
         }
     }
 
@@ -1525,14 +1528,15 @@ impl VgmStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::Other`] if called on a stream created with
+    /// Returns [`ParseError::UnsupportedStreamOperation`] if called on a stream created with
     /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed
     /// stream), since those streams have no random-accessible loop position.
     pub(crate) fn reset_to_loop_point(&mut self) -> Result<(), ParseError> {
         if let VgmStreamSource::Buffer { .. } = &self.source {
-            return Err(ParseError::Other(
-                "seek_to_sample() is not supported for streams created with push_chunk()".into(),
-            ));
+            return Err(ParseError::UnsupportedStreamOperation {
+                operation: "seek_to_sample",
+                source: "buffer",
+            });
         }
         self.jump_to_loop_point();
         self.reset_loop_state();
@@ -1560,7 +1564,7 @@ impl VgmStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::Other`] if called on a stream created with
+    /// Returns [`ParseError::UnsupportedStreamOperation`] if called on a stream created with
     /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk).
     ///
     /// # Notes
@@ -1881,11 +1885,10 @@ impl VgmStream {
                 dpcm.decompress(table, remaining_space)?;
                 dpcm.data.clone()
             }
-            CompressedStreamData::Unknown { .. } => {
-                return Err(ParseError::Other(format!(
-                    "Unknown compression type for data_type {}",
-                    data_type
-                )));
+            CompressedStreamData::Unknown {
+                compression_type, ..
+            } => {
+                return Err(ParseError::UnsupportedCompressionType(*compression_type));
             }
         };
 

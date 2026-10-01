@@ -13,7 +13,7 @@
 //! - Expose conversion options and errors without leaking playback state into
 //!   the public format model.
 
-use crate::binutil::ParseError;
+use crate::ParseError;
 use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
 use crate::mdx::command::{
     MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPan,
@@ -2799,8 +2799,7 @@ impl<P: Borrow<MdxPackage>> VgmCommandGenerator for MdxVgmGenerator<P> {
             if self.finished {
                 return Ok(None);
             }
-            self.run_step()
-                .map_err(|e| ParseError::Other(e.to_string()))?;
+            self.run_step()?;
             self.pending.extend(self.builder.drain_commands());
         }
     }

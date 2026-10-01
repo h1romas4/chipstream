@@ -101,7 +101,7 @@
 //!     _ => panic!("Expected compressed stream"),
 //! }
 //! ```
-use crate::binutil::ParseError;
+use crate::ParseError;
 use crate::vgm::command::DataBlock;
 use crate::vgm::command::Instance;
 
@@ -424,11 +424,8 @@ impl BitPackingCompression {
                     let index = compressed_value as usize;
                     read_table_value(table, index, bytes_per_value)?
                 }
-                BitPackingSubType::Unknown(_) => {
-                    return Err(ParseError::Other(format!(
-                        "Unknown bit packing sub-type: {:?}",
-                        self.sub_type
-                    )));
+                BitPackingSubType::Unknown(sub_type) => {
+                    return Err(ParseError::UnsupportedBitPackingSubType(sub_type));
                 }
             };
             write_value_bytes(&mut result, decompressed_value, bytes_per_value);
@@ -1051,9 +1048,12 @@ impl<'a> BitStreamReader<'a> {
 
     fn read_bits(&mut self, num_bits: usize) -> Result<u32, ParseError> {
         if num_bits > 32 {
-            return Err(ParseError::Other(
-                "Cannot read more than 32 bits".to_string(),
-            ));
+            return Err(ParseError::InvalidBitWidth {
+                field: "bitstream read",
+                bits: num_bits,
+                min: 0,
+                max: 32,
+            });
         }
 
         if self.bits_remaining() < num_bits {
@@ -1091,13 +1091,18 @@ impl<'a> BitStreamReader<'a> {
 }
 
 fn validate_compression_bits(bits_decompressed: u8, bits_compressed: u8) -> Result<(), ParseError> {
-    if bits_compressed > 32 {
-        return Err(ParseError::Other("Cannot read more than 32 bits".into()));
-    }
-    if !(1..=32).contains(&bits_decompressed) || !(1..=32).contains(&bits_compressed) {
-        return Err(ParseError::DataInconsistency(format!(
-            "Invalid compression bit widths: decompressed {bits_decompressed}, compressed {bits_compressed}",
-        )));
+    for (field, bits) in [
+        ("bits_compressed", bits_compressed),
+        ("bits_decompressed", bits_decompressed),
+    ] {
+        if !(1..=32).contains(&bits) {
+            return Err(ParseError::InvalidBitWidth {
+                field,
+                bits: usize::from(bits),
+                min: 1,
+                max: 32,
+            });
+        }
     }
     Ok(())
 }

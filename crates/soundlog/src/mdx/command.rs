@@ -215,7 +215,9 @@ impl MdxCommandSpec for MdxEndOfTrack {
     }
     fn parse(bytes: &[u8], offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         if read_u8_at(bytes, offset)? != 0 {
-            return Err(ParseError::Other("invalid MDX end-of-track command".into()));
+            return Err(ParseError::DataInconsistency(
+                "MDX end-of-track command requires a zero parameter".into(),
+            ));
         }
         Ok((Self, 2))
     }
@@ -295,10 +297,13 @@ impl MdxCommandSpec for MdxRest {
     fn to_mdx_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
     }
-    fn parse(_bytes: &[u8], _offset: usize, opcode: u8) -> Result<(Self, usize), ParseError> {
+    fn parse(_bytes: &[u8], offset: usize, opcode: u8) -> Result<(Self, usize), ParseError> {
         MdxRest::new(u16::from(opcode) + 1)
             .map(|command| (command, 1))
-            .ok_or_else(|| ParseError::Other("invalid MDX rest opcode".into()))
+            .ok_or(ParseError::UnknownOpcode {
+                opcode,
+                offset: offset.saturating_sub(1),
+            })
     }
 }
 
@@ -355,7 +360,10 @@ impl MdxCommandSpec for MdxNote {
         let length = u16::from(read_u8_at(bytes, offset)?) + 1;
         MdxNote::new(opcode, length)
             .map(|command| (command, 2))
-            .ok_or_else(|| ParseError::Other("invalid MDX note opcode".into()))
+            .ok_or(ParseError::UnknownOpcode {
+                opcode,
+                offset: offset.saturating_sub(1),
+            })
     }
 }
 
@@ -1207,7 +1215,7 @@ impl MdxCommandSpec for MdxRawCommand {
         dest.push(self.opcode());
     }
     fn parse(_bytes: &[u8], _offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
-        Err(ParseError::Other(
+        Err(ParseError::DataInconsistency(
             "MDX raw command length is not self-describing".into(),
         ))
     }
@@ -1367,6 +1375,32 @@ impl From<MdxRawCommand> for MdxCommand {
 mod tests {
     use super::*;
     use crate::mdx::parser::parse_mdx_command;
+
+    #[test]
+    fn invalid_command_specs_return_specific_errors() {
+        assert!(matches!(
+            MdxRest::parse(&[], 4, 0x80),
+            Err(ParseError::UnknownOpcode {
+                opcode: 0x80,
+                offset: 3
+            })
+        ));
+        assert!(matches!(
+            MdxNote::parse(&[0], 0, 0),
+            Err(ParseError::UnknownOpcode {
+                opcode: 0,
+                offset: 0
+            })
+        ));
+        assert!(matches!(
+            MdxEndOfTrack::parse(&[1], 0, 0xF1),
+            Err(ParseError::DataInconsistency(_))
+        ));
+        assert!(matches!(
+            MdxRawCommand::parse(&[], 0, 0xE0),
+            Err(ParseError::DataInconsistency(_))
+        ));
+    }
 
     /// Checks encoded lengths against serialization for every parseable opcode and first operand.
     #[test]

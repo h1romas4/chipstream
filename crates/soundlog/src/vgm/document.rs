@@ -453,12 +453,12 @@ impl Default for VgmBuilder {
 /// Attempt to convert a raw VGM byte slice into a `VgmDocument`.
 ///
 /// This is a fallible conversion that delegates to `parser::parse_vgm` and
-/// returns a `crate::binutil::ParseError` on failure.
+/// returns a `crate::ParseError` on failure.
 ///
 /// Use `VgmDocument::try_from(bytes)` or `parser::parse_vgm(bytes)` when
 /// you need to handle parse errors explicitly.
 impl TryFrom<&[u8]> for VgmDocument {
-    type Error = crate::binutil::ParseError;
+    type Error = crate::ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         parser::parse_vgm(bytes)

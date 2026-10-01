@@ -54,8 +54,8 @@
 //! ```
 #![allow(private_interfaces)]
 
+use crate::ParseError;
 use crate::VgmDocument;
-use crate::binutil::ParseError;
 use crate::chip;
 use crate::chip::event::StateEvent;
 use crate::chip::state::{
@@ -761,7 +761,7 @@ impl<'a> VgmCallbackStream<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::Other`] if the underlying stream was created with
+    /// Returns [`ParseError::UnsupportedStreamOperation`] if the underlying stream was created with
     /// [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed stream that has no
     /// random-accessible position).
     pub fn seek_to_sample(&mut self, target: usize) -> Result<(), ParseError> {

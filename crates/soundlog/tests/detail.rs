@@ -553,7 +553,11 @@ fn test_decompress_rejects_invalid_bit_widths_without_changing_input() {
         };
         assert!(matches!(
             bit_packing.decompress(None, usize::MAX),
-            Err(soundlog::ParseError::DataInconsistency(_) | soundlog::ParseError::Other(_))
+            Err(soundlog::ParseError::InvalidBitWidth {
+                min: 1,
+                max: 32,
+                ..
+            })
         ));
         assert_eq!(bit_packing.data, [0xff]);
         let mut dpcm = DpcmCompression {
@@ -565,7 +569,11 @@ fn test_decompress_rejects_invalid_bit_widths_without_changing_input() {
         };
         assert!(matches!(
             dpcm.decompress(&table, usize::MAX),
-            Err(soundlog::ParseError::DataInconsistency(_) | soundlog::ParseError::Other(_))
+            Err(soundlog::ParseError::InvalidBitWidth {
+                min: 1,
+                max: 32,
+                ..
+            })
         ));
         assert_eq!(dpcm.data, [0xff]);
     }
@@ -758,8 +766,6 @@ fn test_bit_packing_decompress_size_limit() {
 
 #[test]
 fn test_bit_packing_read_too_many_bits() {
-    // If a compression asks to read more than 32 bits in a single read,
-    // BitStreamReader::read_bits should return an Other error propagated here.
     let mut compression = BitPackingCompression {
         bits_decompressed: 64,
         bits_compressed: 33, // > 32 -> should trigger error from read_bits
@@ -768,25 +774,19 @@ fn test_bit_packing_read_too_many_bits() {
         data: vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF], // sufficient bits available
     };
 
-    let res = compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE);
-    match res {
-        Err(ParseError::Other(ref s)) => {
-            assert!(
-                s.contains("Cannot read more than 32 bits"),
-                "unexpected message: {}",
-                s
-            );
-        }
-        other => panic!(
-            "expected Other(Cannot read more than 32 bits), got {:?}",
-            other
-        ),
-    }
+    assert!(matches!(
+        compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE),
+        Err(ParseError::InvalidBitWidth {
+            field: "bits_compressed",
+            bits: 33,
+            min: 1,
+            max: 32,
+        })
+    ));
 }
 
 #[test]
 fn test_bit_packing_unknown_subtype_error() {
-    // Unknown sub-type should produce an Other error indicating unknown sub-type.
     let mut compression = BitPackingCompression {
         bits_decompressed: 8,
         bits_compressed: 4,
@@ -795,20 +795,10 @@ fn test_bit_packing_unknown_subtype_error() {
         data: vec![0x12, 0x34], // some data to ensure read_bits would be attempted
     };
 
-    let res = compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE);
-    match res {
-        Err(ParseError::Other(ref s)) => {
-            assert!(
-                s.contains("Unknown bit packing sub-type"),
-                "unexpected message: {}",
-                s
-            );
-        }
-        other => panic!(
-            "expected Other(Unknown bit packing sub-type), got {:?}",
-            other
-        ),
-    }
+    assert!(matches!(
+        compression.decompress(None, TEST_MAX_DECOMPRESS_SIZE),
+        Err(ParseError::UnsupportedBitPackingSubType(0xFF))
+    ));
 }
 
 #[test]

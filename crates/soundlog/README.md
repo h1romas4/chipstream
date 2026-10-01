@@ -27,25 +27,6 @@ Key features:
 - Format conversion: Other supported formats can use the same VGM
   stream-processing interface for playback; MDX is currently supported.
 
-## Error Handling
-
-Parsing, stream iteration, decompression, and F-number utilities return errors
-for invalid input. Convert integer chip-instance indices with
-`Instance::try_from(index)`; only `0` and `1` are accepted. Builder methods take
-an `Instance` directly.
-
-With the `mdx` feature, `MdxDocument::to_bytes`, `MdxDocument::sourcemap`, and
-`MdxPackage::to_mdx_bytes` return `Result`, including after document edits.
-MDX conversion reports layout failures as `MdxConvertError::InvalidDocument`;
-the diagnostic API also identifies the executing track and command when known.
-
-Callbacks return `()`, so hardware or application errors must be handled by the
-callback or its caller rather than through the stream's error result. MDX playback
-treats missing or undecodable PCM payloads as silence; inspect PCM references and
-use the package's decoding API when strict validation is required. Allocation
-failures and panics in user callbacks or custom trait implementations are not
-converted into library errors.
-
 ## Quick Start — building a VGM player
 
 ```rust
@@ -540,6 +521,33 @@ for result in callback_stream {
 - `VgmCallbackStream` wraps `VgmStream` and invokes callbacks for register writes and other commands as they are emitted. Note that `VgmStream` consumes the `EndOfData` command internally while implementing loop behavior; as a result the `on_end_of_data` callback registered on `VgmCallbackStream` will not be invoked in normal operation. To detect playback termination observe the iterator reaching `EndOfStream` (or the iterator returning `None` in the callback wrapper).
 - Fadeout support: configure `set_fadeout_samples(Some(n))` on the stream to allow the stream to continue emitting commands for `n` samples after the final loop end, which can be used to implement graceful fadeouts. When fadeout is active the stream records the loop end sample and will keep yielding commands (or generated waits) until the fadeout period elapses, after which `EndOfStream` is returned.
   - Writing to the sound chip's registers may cause the key-on state to persist. Therefore, either gradually reduce the external output level to zero within the fade-out sample time, or write to the sound chip's registers to lower the total level.
+
+## Error Handling
+
+Parsing, stream iteration, decompression, and F-number utilities return errors
+for invalid input. Convert integer chip-instance indices with
+`Instance::try_from(index)`; only `0` and `1` are accepted. Builder methods take
+an `Instance` directly.
+
+`ParseError` distinguishes invalid bit widths, unsupported compression types
+and sub-types, invalid UTF-16, missing terminators, parsing-buffer limits, and
+unsupported stream operations. UTF-16 errors preserve their original cause
+through `std::error::Error::source`. `Other` remains available for caller-defined
+errors; library operations do not generate it.
+
+With the `mdx` feature, `MdxDocument::to_bytes`, `MdxDocument::sourcemap`, and
+`MdxPackage::to_mdx_bytes` return `Result`, including after document edits.
+MDX conversion reports layout failures as `MdxConvertError::InvalidDocument`;
+the diagnostic API also identifies the executing track and command when known.
+Command generators preserve conversion failures as `ParseError::MdxConversion`,
+including the original `MdxConvertError` through `std::error::Error::source`.
+
+Callbacks return `()`, so hardware or application errors must be handled by the
+callback or its caller rather than through the stream's error result. MDX playback
+treats missing or undecodable PCM payloads as silence; inspect PCM references and
+use the package's decoding API when strict validation is required. Allocation
+failures and panics in user callbacks or custom trait implementations are not
+converted into library errors.
 
 ## Chip State Tracking (WIP)
 

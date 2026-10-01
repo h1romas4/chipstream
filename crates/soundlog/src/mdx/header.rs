@@ -168,7 +168,9 @@ pub fn parse_mdx_header(bytes: &[u8]) -> Result<(MdxHeader, usize), ParseError> 
         .iter()
         .position(|&byte| byte == 0)
         .map(|offset| pdx_start + offset)
-        .ok_or_else(|| ParseError::Other("MDX PDX filename is not NUL-terminated".into()))?;
+        .ok_or(ParseError::MissingTerminator {
+            field: "MDX PDX filename",
+        })?;
     let pdx_name_raw_bytes = if pdx_end == pdx_start {
         None
     } else {
@@ -220,5 +222,5 @@ fn find_title_terminator(bytes: &[u8]) -> Result<usize, ParseError> {
     bytes
         .windows(3)
         .position(|window| window == [0x0d, 0x0a, 0x1a])
-        .ok_or_else(|| ParseError::Other("MDX title is not CR LF 1A-terminated".into()))
+        .ok_or(ParseError::MissingTerminator { field: "MDX title" })
 }

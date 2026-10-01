@@ -8,11 +8,12 @@
 //! metadata fields (track name, game name, author, etc.).
 //!
 //! Use `parse_gd3(bytes)` to parse a full Gd3 chunk starting at offset 0.
-//! The parser returns a `Gd3` on success or a `crate::binutil::ParseError`
+//! The parser returns a `Gd3` on success or a `crate::ParseError`
 //! on failure. `Gd3::to_bytes()` serializes the struct back into the raw
 //! Gd3 chunk bytes, preserving the raw `version` value stored in the
 //! parsed chunk.
-use crate::binutil::{ParseError, read_slice, read_u16_le_at, read_u32_le_at};
+use crate::ParseError;
+use crate::binutil::{read_slice, read_u16_le_at, read_u32_le_at};
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,7 +164,12 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
         } else {
             match String::from_utf16(&codes) {
                 Ok(s) => fields.push(Some(s)),
-                Err(e) => return Err(ParseError::Other(format!("invalid utf16 in gd3: {}", e))),
+                Err(source) => {
+                    return Err(ParseError::InvalidUtf16 {
+                        field: "GD3",
+                        source,
+                    });
+                }
             }
         }
     }
@@ -188,7 +194,7 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
 /// Attempt to convert a raw Gd3 byte slice into a `Gd3` value.
 ///
 /// This is a fallible conversion that delegates to `parse_gd3` and returns
-/// a `crate::binutil::ParseError` on failure. Use `Gd3::try_from(bytes)` or
+/// a `crate::ParseError` on failure. Use `Gd3::try_from(bytes)` or
 /// call `parse_gd3(bytes)` directly to handle parse errors explicitly.
 impl TryFrom<&[u8]> for Gd3 {
     type Error = ParseError;

@@ -21,7 +21,12 @@ fn invalid_compression_width_propagates_through_stream() {
     let mut stream = soundlog::VgmStream::from_document(builder.finalize());
     assert!(matches!(
         stream.find_map(Result::err),
-        Some(soundlog::ParseError::DataInconsistency(_))
+        Some(soundlog::ParseError::InvalidBitWidth {
+            field: "bits_compressed",
+            bits: 0,
+            min: 1,
+            max: 32,
+        })
     ));
 }
 
@@ -41,6 +46,82 @@ use std::cmp;
 use std::collections::HashSet;
 use std::mem;
 use std::rc::Rc;
+
+#[test]
+fn buffer_limit_error_preserves_buffer() {
+    let mut stream = VgmStream::new();
+    stream.set_max_buffer_size(4);
+    stream.push_chunk(&[0x61]).unwrap();
+    assert!(matches!(
+        stream.push_chunk(&[0; 4]),
+        Err(soundlog::ParseError::BufferSizeExceeded {
+            current_size: 1,
+            limit: 4,
+            attempted_size: 4,
+        })
+    ));
+    assert_eq!(stream.buffer_size(), 1);
+    stream.push_chunk(&[0; 3]).unwrap();
+    stream.push_chunk(&[]).unwrap();
+    stream.set_max_buffer_size(3);
+    assert!(matches!(
+        stream.push_chunk(&[]),
+        Err(soundlog::ParseError::BufferSizeExceeded {
+            current_size: 4,
+            limit: 3,
+            attempted_size: 0,
+        })
+    ));
+    assert_eq!(stream.buffer_size(), 4);
+}
+
+#[test]
+fn stream_source_reports_unsupported_operations() {
+    let document = VgmBuilder::new().finalize();
+    let mut stream = VgmStream::from_document(document.clone());
+    assert!(matches!(
+        stream.push_chunk(&[]),
+        Err(soundlog::ParseError::UnsupportedStreamOperation {
+            operation: "push_chunk",
+            source: "document",
+        })
+    ));
+    let mut stream = VgmStream::from_vgm(document).unwrap();
+    assert!(matches!(
+        stream.push_chunk(&[]),
+        Err(soundlog::ParseError::UnsupportedStreamOperation {
+            operation: "push_chunk",
+            source: "file",
+        })
+    ));
+    assert!(matches!(
+        VgmStream::new().seek_to_sample(0),
+        Err(soundlog::ParseError::UnsupportedStreamOperation {
+            operation: "seek_to_sample",
+            source: "buffer",
+        })
+    ));
+}
+
+#[test]
+fn unknown_compression_type_propagates_through_stream() {
+    use soundlog::vgm::detail::{CompressedStream, CompressedStreamData, CompressionType};
+
+    let mut builder = VgmBuilder::new();
+    builder.attach_data_block(CompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        compression_type: CompressionType::Unknown(0xFE),
+        uncompressed_size: 1,
+        compression: CompressedStreamData::Unknown {
+            compression_type: 0xFE,
+            data: vec![0],
+        },
+    });
+    assert!(matches!(
+        VgmStream::from_document(builder.finalize()).find_map(Result::err),
+        Some(soundlog::ParseError::UnsupportedCompressionType(0xFE))
+    ));
+}
 
 /// Push only the command region of a serialized VGM file into a [`VgmStream`].
 ///
@@ -2357,7 +2438,7 @@ fn test_from_commands() {
 }
 
 #[test]
-fn test_push_data_panics_on_document_stream() {
+fn test_push_data_returns_error_on_document_stream() {
     // Verify that push_chunk returns error when called on a stream from document
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(100));
@@ -2369,10 +2450,13 @@ fn test_push_data_panics_on_document_stream() {
     let result = stream.push_chunk(&[0x62]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("push_chunk() cannot be called on a VgmStream created from a document")
-    );
+    assert!(matches!(
+        err,
+        soundlog::ParseError::UnsupportedStreamOperation {
+            operation: "push_chunk",
+            source: "document",
+        }
+    ));
 }
 
 #[test]
@@ -3078,7 +3162,14 @@ fn test_buffer_size_limit_exceeded() {
     assert!(result.is_err());
 
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("Buffer size limit exceeded"));
+    assert!(matches!(
+        err,
+        soundlog::ParseError::BufferSizeExceeded {
+            current_size: 0,
+            limit,
+            attempted_size,
+        } if limit == 64 * 1024 * 1024 && attempted_size == large_chunk.len()
+    ));
 }
 
 #[test]
@@ -3097,7 +3188,14 @@ fn test_buffer_size_cumulative_limit() {
     assert!(result.is_err());
 
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("Buffer size limit exceeded"));
+    assert!(matches!(
+        err,
+        soundlog::ParseError::BufferSizeExceeded {
+            current_size,
+            limit,
+            attempted_size,
+        } if current_size == chunk_size && limit == 64 * 1024 * 1024 && attempted_size == chunk_size
+    ));
 }
 
 #[test]
@@ -3139,12 +3237,16 @@ fn test_set_max_buffer_size_smaller_limit() {
     // Another 6 MB should fail (total 11 MB > 10 MB limit)
     let result = stream.push_chunk(&vec![0x62; 6 * 1024 * 1024]);
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Buffer size limit exceeded")
-    );
+    assert!(matches!(
+        result.unwrap_err(),
+        soundlog::ParseError::BufferSizeExceeded {
+            current_size,
+            limit,
+            attempted_size,
+        } if current_size == 5 * 1024 * 1024
+            && limit == 10 * 1024 * 1024
+            && attempted_size == 6 * 1024 * 1024
+    ));
 }
 
 #[test]

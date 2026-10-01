@@ -509,6 +509,20 @@ fn mdx_builder_checks_tone_offset_limit() {
 }
 
 #[test]
+fn mdx_header_reports_missing_terminators() {
+    assert!(matches!(
+        soundlog::mdx::header::parse_mdx_header(b"title"),
+        Err(soundlog::ParseError::MissingTerminator { field: "MDX title" })
+    ));
+    assert!(matches!(
+        soundlog::mdx::header::parse_mdx_header(b"title\r\n\x1apdx"),
+        Err(soundlog::ParseError::MissingTerminator {
+            field: "MDX PDX filename"
+        })
+    ));
+}
+
+#[test]
 fn mdx_conversion_propagates_jump_layout_errors() {
     let mut mdx = MdxBuilder::new().finalize().unwrap();
     mdx.tracks[0] = vec![MdxCommand::Rest(MdxRest { ticks: 1 }); 65_536];
@@ -539,7 +553,14 @@ fn mdx_conversion_propagates_jump_layout_errors() {
     ));
     let generator = to_vgm_stream_generator(package, options).unwrap();
     let mut stream = VgmStream::from_generator(generator);
-    assert!(stream.any(|command| command.is_err()));
+    let error = stream.find_map(Result::err).expect("MDX conversion error");
+    assert!(matches!(
+        &error,
+        soundlog::ParseError::MdxConversion(source)
+            if matches!(source.as_ref(), MdxConvertError::InvalidDocument(_))
+    ));
+    let source = std::error::Error::source(&error).expect("MDX source error");
+    assert!(source.downcast_ref::<MdxConvertError>().is_some());
 }
 
 #[test]

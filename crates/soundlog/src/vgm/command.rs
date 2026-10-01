@@ -11,9 +11,8 @@
 //!   stream and serialize back to VGM bytes.
 //! - Helpers to convert single commands to bytes (`command_to_vgm_bytes`)
 //!   and compute per-command offsets/lengths used by `VgmDocument`.
-use crate::binutil::{
-    ParseError, read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at,
-};
+use crate::ParseError;
+use crate::binutil::{read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at};
 use crate::chip;
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::{VgmHeader, VgmHeaderField};

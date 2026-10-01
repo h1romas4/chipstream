@@ -354,7 +354,7 @@ fn test_gd3_truncated_utf16_fields_yields_none() {
 }
 
 #[test]
-fn test_gd3_invalid_utf16_yields_other_error() {
+fn test_gd3_invalid_utf16_preserves_source_error() {
     // Provide a field with an unpaired surrogate (0xD800) followed by terminator.
     let mut bytes: Vec<u8> = Vec::new();
     bytes.extend_from_slice(b"Gd3 ");
@@ -365,17 +365,18 @@ fn test_gd3_invalid_utf16_yields_other_error() {
     bytes.extend_from_slice(&0xD800u16.to_le_bytes());
     bytes.extend_from_slice(&0u16.to_le_bytes());
 
-    let res = soundlog::meta::Gd3::try_from(bytes.as_slice());
-    match res {
-        Err(soundlog::ParseError::Other(ref s)) => {
-            assert!(
-                s.contains("invalid utf16 in gd3"),
-                "unexpected message: {}",
-                s
-            );
-        }
-        other => panic!("expected Other(invalid utf16), got {:?}", other),
-    }
+    let error = soundlog::meta::Gd3::try_from(bytes.as_slice()).unwrap_err();
+    assert!(matches!(
+        error,
+        soundlog::ParseError::InvalidUtf16 { field: "GD3", .. }
+    ));
+    let source = std::error::Error::source(&error).expect("UTF-16 source error");
+    assert!(
+        source
+            .downcast_ref::<std::string::FromUtf16Error>()
+            .is_some()
+    );
+    assert_eq!(error.to_string(), format!("invalid UTF-16 in GD3: {source}"));
 }
 
 //

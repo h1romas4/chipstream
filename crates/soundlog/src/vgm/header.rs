@@ -15,7 +15,8 @@
 //! - The module exposes `VGM_MAX_HEADER_SIZE` constant and preserves the
 //!   writer/reader convention where `data_offset == 0` falls back to the
 //!   legacy header size.
-use crate::binutil::{ParseError, write_slice, write_u8, write_u16, write_u32};
+use crate::ParseError;
+use crate::binutil::{write_slice, write_u8, write_u16, write_u32};
 use crate::chip;
 use crate::vgm::command::Instance;
 use crate::vgm::parser::parse_vgm_header;
