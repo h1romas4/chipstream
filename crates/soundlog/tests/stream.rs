@@ -48,6 +48,51 @@ use std::mem;
 use std::rc::Rc;
 
 #[test]
+fn generator_error_preserves_custom_error_and_source_chain() {
+    use std::error::Error;
+    use std::fmt;
+    use std::io;
+
+    #[derive(Debug)]
+    struct GeneratorFailure(io::Error);
+
+    impl fmt::Display for GeneratorFailure {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "command generation failed: {}", self.0)
+        }
+    }
+
+    impl Error for GeneratorFailure {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingGenerator;
+
+    impl soundlog::VgmCommandGenerator for FailingGenerator {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Err(soundlog::ParseError::GeneratorError(Box::new(
+                GeneratorFailure(io::Error::new(io::ErrorKind::InvalidData, "bad frame")),
+            )))
+        }
+    }
+
+    let mut stream = VgmStream::from_generator(Box::new(FailingGenerator));
+    let error = stream.find_map(Result::err).expect("generator error");
+    assert!(matches!(&error, soundlog::ParseError::GeneratorError(_)));
+    assert_eq!(error.to_string(), "command generation failed: bad frame");
+    let source = error.source().expect("custom source error");
+    assert!(source.downcast_ref::<GeneratorFailure>().is_some());
+    let cause = source.source().expect("I/O source error");
+    assert_eq!(
+        cause.downcast_ref::<io::Error>().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
 fn buffer_limit_error_preserves_buffer() {
     let mut stream = VgmStream::new();
     stream.set_max_buffer_size(4);

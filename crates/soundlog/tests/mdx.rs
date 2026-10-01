@@ -556,8 +556,8 @@ fn mdx_conversion_propagates_jump_layout_errors() {
     let error = stream.find_map(Result::err).expect("MDX conversion error");
     assert!(matches!(
         &error,
-        soundlog::ParseError::MdxConversion(source)
-            if matches!(source.as_ref(), MdxConvertError::InvalidDocument(_))
+        soundlog::ParseError::GeneratorError(source)
+            if matches!(source.downcast_ref::<MdxConvertError>(), Some(MdxConvertError::InvalidDocument(_)))
     ));
     let source = std::error::Error::source(&error).expect("MDX source error");
     assert!(source.downcast_ref::<MdxConvertError>().is_some());

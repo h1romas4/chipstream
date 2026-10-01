@@ -260,6 +260,12 @@ impl fmt::Display for MdxConvertError {
 
 impl Error for MdxConvertError {}
 
+impl From<MdxConvertError> for ParseError {
+    fn from(error: MdxConvertError) -> Self {
+        Self::GeneratorError(Box::new(error))
+    }
+}
+
 impl MdxToVgmOptions {
     /// Normalizes values shared by both the eager [`to_vgm_document`] path
     /// and the lazy [`MdxVgmGenerator`].

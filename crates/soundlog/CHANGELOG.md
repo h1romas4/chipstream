@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Change: Replace `ParseError::MdxConversion` with `GeneratorError`, preserving boxed user-defined and MDX generator errors and their source chains.
 - [x] Change: Store UTF-16 errors directly instead of using `Arc`; remove `Clone` from `ParseError` while preserving `Error::source`.
 - [x] Change: Use dedicated `ParseError` variants instead of `Other` for library errors, retaining typed UTF-16 and MDX generator causes through `Error::source`.
 - [x] Change: Make MDX document serialization, source-map construction, and package MDX serialization fallible; replace `try_to_bytes` with `to_bytes` returning `Result`.

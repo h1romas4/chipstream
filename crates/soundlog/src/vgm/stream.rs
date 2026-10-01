@@ -52,6 +52,11 @@ const MIN_CAP_TO_SHRINK: usize = 64 * 1024; // 64 KiB
 pub trait VgmCommandGenerator: fmt::Debug {
     /// Produces the next command, or `Ok(None)` once the generator has
     /// permanently finished (no further calls will ever produce a command).
+    ///
+    /// # Errors
+    ///
+    /// Return a [`ParseError`] when command generation fails. Wrap format-specific
+    /// errors in [`ParseError::GeneratorError`] to retain their type and source chain.
     fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError>;
 }
 

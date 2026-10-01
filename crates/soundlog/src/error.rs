@@ -51,9 +51,24 @@ pub enum ParseError {
     /// A variable-length field is missing its required terminator.
     MissingTerminator { field: &'static str },
 
-    /// An MDX command generator failed during playback conversion.
-    #[cfg(feature = "mdx")]
-    MdxConversion(Box<crate::mdx::convert::MdxConvertError>),
+    /// A command generator failed, retaining its original error and source chain.
+    ///
+    /// Use this for errors from [`crate::VgmCommandGenerator`] implementations.
+    /// The bounds preserve compatibility with error-reporting APIs such as `anyhow`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soundlog::{ParseError, VgmCommand};
+    ///
+    /// let generated: Result<Option<VgmCommand>, std::io::Error> =
+    ///     Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid frame"));
+    /// let result = generated.map_err(|error| ParseError::GeneratorError(Box::new(error)));
+    /// let error = result.unwrap_err();
+    /// let source = std::error::Error::source(&error).unwrap();
+    /// assert!(source.downcast_ref::<std::io::Error>().is_some());
+    /// ```
+    GeneratorError(Box<dyn Error + Send + Sync + 'static>),
 
     /// A bit width is outside the inclusive range supported by an operation.
     /// `field` identifies the parameter; `bits`, `min`, and `max` are bit counts.
@@ -144,8 +159,7 @@ impl fmt::Display for ParseError {
             ParseError::MissingTerminator { field } => {
                 write!(f, "missing terminator for {field}")
             }
-            #[cfg(feature = "mdx")]
-            ParseError::MdxConversion(error) => error.fmt(f),
+            ParseError::GeneratorError(error) => error.fmt(f),
             ParseError::InvalidBitWidth {
                 field,
                 bits,
@@ -200,17 +214,9 @@ impl Error for ParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             ParseError::InvalidUtf16 { source, .. } => Some(source),
-            #[cfg(feature = "mdx")]
-            ParseError::MdxConversion(error) => Some(error.as_ref()),
+            ParseError::GeneratorError(error) => Some(error.as_ref()),
             _ => None,
         }
-    }
-}
-
-#[cfg(feature = "mdx")]
-impl From<crate::mdx::convert::MdxConvertError> for ParseError {
-    fn from(error: crate::mdx::convert::MdxConvertError) -> Self {
-        Self::MdxConversion(Box::new(error))
     }
 }
 

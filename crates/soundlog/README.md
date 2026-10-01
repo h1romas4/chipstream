@@ -524,29 +524,17 @@ for result in callback_stream {
 
 ## Error Handling
 
-Parsing, stream iteration, decompression, and F-number utilities return errors
-for invalid input. Convert integer chip-instance indices with
-`Instance::try_from(index)`; only `0` and `1` are accepted. Builder methods take
-an `Instance` directly.
+Parsing, streaming, decompression, F-number utilities, and MDX serialization
+return `Result` with structured errors. See the API rustdoc for error variants
+and examples.
 
-`ParseError` distinguishes invalid bit widths, unsupported compression types
-and sub-types, invalid UTF-16, missing terminators, parsing-buffer limits, and
-unsupported stream operations. UTF-16 errors preserve their original cause
-through `std::error::Error::source`. `Other` remains available for caller-defined
-errors; library operations do not generate it.
+User-defined and MDX generators use `ParseError::GeneratorError` to preserve
+format-specific error types and their `Error::source()` chains. `Other` is
+reserved for caller-defined message-only errors.
 
-With the `mdx` feature, `MdxDocument::to_bytes`, `MdxDocument::sourcemap`, and
-`MdxPackage::to_mdx_bytes` return `Result`, including after document edits.
-MDX conversion reports layout failures as `MdxConvertError::InvalidDocument`;
-the diagnostic API also identifies the executing track and command when known.
-Command generators preserve conversion failures as `ParseError::MdxConversion`,
-including the original `MdxConvertError` through `std::error::Error::source`.
-
-Callbacks return `()`, so hardware or application errors must be handled by the
-callback or its caller rather than through the stream's error result. MDX playback
-treats missing or undecodable PCM payloads as silence; inspect PCM references and
-use the package's decoding API when strict validation is required. Allocation
-failures and panics in user callbacks or custom trait implementations are not
+Callbacks return `()`, so application errors cannot propagate through the stream.
+Missing or undecodable MDX PCM is treated as silence; use the package's decoding
+API for strict validation. Allocation failures and panics in user code are not
 converted into library errors.
 
 ## Chip State Tracking (WIP)
