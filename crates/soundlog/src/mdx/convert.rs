@@ -37,7 +37,7 @@ const MICROSECONDS_PER_SECOND: u32 = 1_000_000;
 /// MXDRV tempo used when an MDX stream has not issued a tempo command yet.
 const DEFAULT_TEMPO: u8 = 200;
 /// Fadeout attenuation level at which MXDRV ends playback.
-const FADEOUT_FINAL_LEVEL: u8 = 0x3e;
+pub(super) const FADEOUT_FINAL_LEVEL: u8 = 0x3e;
 /// YM2151 key-code values indexed by the 7-bit pitch key-code field.
 const YM2151_KEYCODE_TABLE: [u8; 96] = [
     0x00, 0x01, 0x02, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0c, 0x0d, 0x0e, 0x10, 0x11, 0x12, 0x14,
@@ -157,7 +157,8 @@ impl MdxPcmMode {
 /// `Resample` and `Lpf` use the decoded mixer path.
 ///
 /// Embedded MDX fadeout attenuation is applied to FM output and to PCM
-/// channels that pass through the software mixer. Legacy ADPCM `Through`
+/// channels that pass through the software mixer. Mixed PCM uses a power-4.0
+/// gain fade over the full playback fadeout duration. Legacy ADPCM `Through`
 /// output is passed as encoded source bytes and is not attenuated; PCM8A
 /// `Through` still uses the mixer and is attenuated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3924,12 +3925,12 @@ mod tests {
 
         playback.begin_pcm_key_on(8, 0x80).unwrap();
 
-        assert_eq!(playback.pcm_output.channels[0].gain, 12);
+        assert_eq!(playback.pcm_output.channels[0].gain, 14);
 
         playback.tracks[8].fm.volume = 0x80;
         playback.apply_live_pcm_gain(8);
 
-        assert_eq!(playback.pcm_output.channels[0].gain, 64);
+        assert_eq!(playback.pcm_output.channels[0].gain, 66);
     }
 
     #[test]
@@ -3944,7 +3945,7 @@ mod tests {
         playback.advance_fadeout(&mut VgmBuilder::new());
 
         assert_eq!(playback.fadeout.level, 3);
-        assert_eq!(playback.pcm_output.channels[0].gain, 12);
+        assert_eq!(playback.pcm_output.channels[0].gain, 14);
     }
 
     /// Checks that legacy pass-through key-on does not populate decoded PCM storage.

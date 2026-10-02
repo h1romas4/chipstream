@@ -102,40 +102,31 @@ impl PcmOutputFilter {
 /// `0x80..=0xFF` fine-grained form) into a PCM8 channel gain multiplier,
 /// mirroring `getPcm8Gain()`. A gain of 16 is unity.
 pub(crate) fn pcm8_gain(volume: u8) -> u8 {
-    pcm8_gain_with_fadeout(volume, 0)
-}
-
-/// Converts an MDX PCM volume and global fadeout attenuation level into the
-/// PCM8 mixer gain, following MXDRV's volume, fade-offset, and `PCMVolume`
-/// lookup order. During an active fadeout, the table's zero-volume entries map
-/// to digital silence so the mixer does not leave a quiet residual signal.
-/// With no fadeout, PCM8 volume index 0 retains its normal minimum gain of 2.
-pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
-    const VOLUME_TABLE: [u8; 16] = [
-        0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05,
-        0x02,
-    ];
     const PCM8_VOLUME_TABLE: [u8; 16] = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80];
     const PCM8_VOLUME_BY_ATTENUATION: [u8; 43] = [
         15, 15, 15, 14, 14, 14, 13, 13, 13, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7,
         6, 6, 5, 5, 5, 4, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0,
     ];
 
-    let attenuation = if volume & 0x80 != 0 {
-        volume & 0x7f
+    let pcm8_volume = if volume & 0x80 != 0 {
+        PCM8_VOLUME_BY_ATTENUATION
+            .get(usize::from(volume & 0x7f))
+            .copied()
+            .unwrap_or(0)
     } else {
-        VOLUME_TABLE[usize::from(volume & 0x0f)]
+        volume & 0x0f
     };
-    let attenuation = attenuation.saturating_add(fadeout_level);
-    let pcm8_volume = PCM8_VOLUME_BY_ATTENUATION
-        .get(usize::from(attenuation))
-        .copied()
-        .unwrap_or(0);
-    if fadeout_level != 0 && pcm8_volume == 0 {
-        0
-    } else {
-        PCM8_VOLUME_TABLE[usize::from(pcm8_volume)]
-    }
+    PCM8_VOLUME_TABLE[usize::from(pcm8_volume)]
+}
+
+/// Scales PCM8 gain by the fourth power of the remaining playback fadeout fraction.
+/// Attenuation in decibels is twice as strong as the squared-fraction curve.
+/// Gain falls faster at the start and more gently toward the end.
+/// Rounds up to retain a positive gain until the final level, which is silent.
+pub(crate) fn pcm8_gain_with_fadeout(volume: u8, fadeout_level: u8) -> u8 {
+    let final_level = crate::mdx::convert::FADEOUT_FINAL_LEVEL;
+    let remaining = f64::from(final_level.saturating_sub(fadeout_level)) / f64::from(final_level);
+    (f64::from(pcm8_gain(volume)) * remaining.powi(4)).ceil() as u8
 }
 
 /// One ADPCM channel's mixer state: a range in the shared decoded PCM arena
@@ -265,19 +256,43 @@ mod tests {
     }
 
     #[test]
-    fn pcm8_fadeout_adds_to_attenuation_before_volume_lookup() {
+    fn pcm8_fadeout_scales_gain_with_stronger_power_curve_over_the_full_duration() {
         assert_eq!(pcm8_gain_with_fadeout(8, 0), 16);
-        assert_eq!(pcm8_gain_with_fadeout(8, 3), 12);
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 3), 64);
+        assert_eq!(pcm8_gain_with_fadeout(8, 3), 14);
+        assert_eq!(pcm8_gain_with_fadeout(8, 16), 5);
+        assert_eq!(pcm8_gain_with_fadeout(8, 20), 4);
+        assert_eq!(pcm8_gain_with_fadeout(8, 31), 1);
+        assert_eq!(pcm8_gain_with_fadeout(8, 47), 1);
+        assert_eq!(pcm8_gain_with_fadeout(8, 61), 1);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 3), 66);
+        assert_eq!(pcm8_gain_with_fadeout(0x80, 31), 5);
     }
 
     #[test]
-    fn pcm8_fadeout_reaches_silence_at_zero_volume_table_entries() {
-        assert_eq!(pcm8_gain_with_fadeout(8, 19), 3);
-        assert_eq!(pcm8_gain_with_fadeout(8, 20), 0);
-        assert_eq!(pcm8_gain_with_fadeout(8, 21), 0);
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 42), 0);
-        assert_eq!(pcm8_gain_with_fadeout(0x80, 62), 0);
+    fn pcm8_fadeout_is_monotonic_and_silent_only_at_the_end() {
+        let final_level = crate::mdx::convert::FADEOUT_FINAL_LEVEL;
+        for volume in 0..=u8::MAX {
+            let mut previous = pcm8_gain(volume);
+            assert_eq!(pcm8_gain_with_fadeout(volume, 0), previous);
+            for level in 0..final_level {
+                let gain = pcm8_gain_with_fadeout(volume, level);
+                assert!(
+                    gain > 0 && gain <= previous,
+                    "volume {volume}, level {level}"
+                );
+                let remaining = f64::from(final_level - level) / f64::from(final_level);
+                let previous_curve_gain =
+                    (f64::from(pcm8_gain(volume)) * remaining.powf(2.88)).ceil() as u8;
+                assert!(
+                    gain <= previous_curve_gain,
+                    "volume {volume}, level {level}"
+                );
+                previous = gain;
+            }
+            for level in final_level..=u8::MAX {
+                assert_eq!(pcm8_gain_with_fadeout(volume, level), 0);
+            }
+        }
     }
 
     #[test]

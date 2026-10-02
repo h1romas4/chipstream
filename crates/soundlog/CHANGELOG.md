@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Fade mixed MDX PCM gain to silence over the full playback fadeout duration using a power-4.0 curve (twice the attenuation in decibels of a quadratic curve), with faster initial decay and a gentler tail, without changing FM attenuation or song end timing.
 - [x] Add: Bound decoded PCM caches in MDX conversion, streaming, and playback checking with `MdxToVgmOptions::max_decoded_pcm_samples` (default 32,000,000 samples), returning `MdxConvertError::DecodedPcmSampleLimitExceeded` before decoding on exhaustion.
 - [x] Fix: Share decoded PCM cache entries for PDX samples with identical source ranges and decode conditions, preventing duplicate decoding for aliased bank/note entries.
 - [x] Add: Limit retained VGM output in eager MDX conversion with `MdxToVgmOptions::max_output_commands` (default 14,000,000), returning `MdxConvertError::OutputCommandLimitExceeded` on exhaustion; lazy streaming is unaffected.
