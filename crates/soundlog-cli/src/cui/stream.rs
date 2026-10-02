@@ -875,12 +875,52 @@ pub fn run_callback_stream(
                 let _ = logger.error(format_args!("{source}: Unexpected NeedsMoreData in stream"));
                 break;
             }
-            Err(e) => {
-                let _ = logger.error(format_args!("{source}: Stream error: {:?}", e));
-                break;
+            Err(error) => {
+                return Err(error).with_context(|| format!("{source}: Stream error"));
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundlog::mdx::command::MdxRest;
+    use soundlog::mdx::convert::{MdxConvertError, MdxToVgmOptions};
+    use soundlog::mdx::document::MdxBuilder;
+    use soundlog::mdx::package::MdxPackage;
+
+    #[test]
+    fn generator_errors_are_returned_even_with_noop_logging() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 3 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            max_ticks: Some(2),
+            ..Default::default()
+        };
+        let stream = VgmStream::from_generator((package, options).into());
+        let error = run_callback_stream(stream, Arc::new(Logger::new_noop()), "song.mdx", |_| {})
+            .unwrap_err();
+        assert_eq!(error.to_string(), "song.mdx: Stream error");
+        let parse_error = error.downcast_ref::<soundlog::ParseError>().unwrap();
+        assert_eq!(
+            std::error::Error::source(parse_error)
+                .unwrap()
+                .downcast_ref::<MdxConvertError>(),
+            Some(&MdxConvertError::TickLimitExceeded { max_ticks: 2 }),
+        );
+    }
+
+    #[test]
+    fn completed_stream_returns_success() {
+        let stream = VgmStream::from_document(soundlog::VgmBuilder::new().finalize());
+        run_callback_stream(stream, Arc::new(Logger::new_noop()), "song.vgm", |_| {})
+            .expect("normal completion remains successful");
+    }
 }

@@ -32,9 +32,47 @@ pub fn convert_mdx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundlog::mdx::command::{MdxNote, MdxVoiceOrPcmBank};
+    use soundlog::mdx::command::{MdxNote, MdxRest, MdxVoiceOrPcmBank};
     use soundlog::mdx::document::MdxBuilder;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn conversion_tick_limit_does_not_overwrite_output() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "soundlog-convert-limit-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let input = directory.join("song.mdx");
+        let output = directory.join("song.vgm");
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(8, MdxRest { ticks: 3 });
+        fs::write(&input, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+        fs::write(&output, b"existing output").unwrap();
+        for loop_count in [None, Some(1)] {
+            let options = MdxToVgmOptions {
+                loop_count,
+                max_ticks: Some(2),
+                ..Default::default()
+            };
+            let error = convert_mdx(&input, &output, None, &options).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("MDX conversion tick limit exceeded (maximum 2 ticks)")
+            );
+            assert_eq!(fs::read(&output).unwrap(), b"existing output");
+            fs::remove_file(&output).unwrap();
+            assert!(convert_mdx(&input, &output, None, &options).is_err());
+            assert!(!output.exists());
+            fs::write(&output, b"existing output").unwrap();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn conversion_reports_playback_coordinates_without_overwriting_output() {

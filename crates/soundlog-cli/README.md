@@ -462,6 +462,7 @@ use `mdx check` separately for custom limits or loop counts.
 VGM conversion has no playback-check budgets and still reports playback errors
 with `--no-playback-check`. Both formats report available MML source positions
 and MDX track/command indices.
+VGM output uses the converter's default 100,000-tick runtime limit.
 
 ### `mdx convert`: Convert MDX to VGM
 
@@ -487,6 +488,8 @@ Options:
       Use a native VGM loop point instead of a finite loop count. Sets VGM header loop_offset and loop_samples when a loop is detected. The estimated loop point may be inaccurate for per-track MDX F1 loops
     --adpcm-mode <ADPCM_MODE>
       ADPCM mode: through, resample, or lpf [default: through] [possible values: through, resample, lpf]
+    --max-ticks <TICKS>
+      Maximum elapsed playback ticks across all loops (0 disables the limit) [default: 100000]
   -h, --help
       Print help
 ```
@@ -496,12 +499,22 @@ MML input.
 
 Playback errors are reported by default during conversion, with available
 zero-based MDX track/command coordinates, using the same diagnostic format as
-`mdx check`. Unlike `mdx check`, conversion has no tick or command limits.
+`mdx check`. Conversion stops with an error when its elapsed-tick limit is
+exceeded; it has no command-count limit.
 A playback failure does not write or overwrite the output VGM file.
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
 `--adpcm-mode <through|resample|lpf>`.
+
+`--max-ticks <TICKS>` limits the actual conversion, without a separate playback
+validation pass. The default is 100,000 elapsed ticks, approximately 17 minutes
+4 seconds at MML `t120` (MDX tempo byte 216). It applies to both finite and
+native-loop conversion, counts all traversals and synchronization waits, and
+does not reset at loop boundaries. On exhaustion the command exits with status
+1 without creating or overwriting output. Use `--max-ticks 0` to disable the
+limit. This is a playback-time budget, not a wall-clock timeout or a bound on
+command-only repeats. `mdx parse` does not execute playback and is unchanged.
 
 By default, conversion writes one loop iteration as a finite VGM with no loop
 point. `--loop-count <COUNT>` uses the same count convention as VGM playback:
@@ -572,6 +585,8 @@ Options:
       Number of whole-song playthroughs; COUNT follows VGM semantics (0 means 1)
     --adpcm-mode <ADPCM_MODE>
       ADPCM mode: through, resample, or lpf (default: through) [default: through] [possible values: through, resample, lpf]
+    --max-ticks <TICKS>
+      Maximum elapsed playback ticks across all loops (0 disables the limit) [default: 100000]
   -h, --help
       Print help
 ```
@@ -584,6 +599,8 @@ The test options include `--pdx <PDX_FILE>`, `--dry-run`, `--ym2151-clock <HZ>`,
 An explicit `--loop-count` uses the same iteration count as VGM playback: with
 L markers, `--loop-count 2` plays the intro once and traverses the loop region
 twice. If omitted, the test uses native loop handling.
+`--max-ticks` uses the same runtime limit as `mdx convert` (default: 100,000;
+0 disables the limit).
 
 Examples:
 
@@ -615,6 +632,8 @@ Options:
       Number of whole-song playthroughs (default: 1; COUNT follows VGM semantics, 0 means 1)
     --adpcm-mode <ADPCM_MODE>
       ADPCM mode: through, resample, or lpf (default: through) [default: through] [possible values: through, resample, lpf]
+    --max-ticks <TICKS>
+      Maximum elapsed playback ticks across all loops (0 disables the limit) [default: 100000]
   -h, --help
       Print help
 ```
@@ -630,6 +649,9 @@ The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
 The default loop count is 1. Explicit counts follow VGM playback semantics;
 for L markers, `--loop-count 2` plays the intro once and traverses the loop
 region twice.
+`--max-ticks` limits the actual lazy playback in the same way as `mdx convert`
+(default: 100,000; 0 disables the limit). Register writes already printed before
+the error are not rolled back.
 
 Examples:
 

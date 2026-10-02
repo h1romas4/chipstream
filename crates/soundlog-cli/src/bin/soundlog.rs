@@ -223,6 +223,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// Maximum elapsed playback ticks across all loops (0 disables the limit)
+        #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
+        max_ticks: u32,
     },
     /// Convert an MDX file to a VGM file
     Convert {
@@ -259,6 +262,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// Maximum elapsed playback ticks across all loops (0 disables the limit)
+        #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
+        max_ticks: u32,
     },
     /// Convert an MDX or MML file lazily to a command stream and print register writes
     /// and events in the same format as `soundlog stream`
@@ -291,6 +297,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// Maximum elapsed playback ticks across all loops (0 disables the limit)
+        #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
+        max_ticks: u32,
     },
 }
 
@@ -466,6 +475,7 @@ fn main() {
                 okim6258_clock,
                 loop_count,
                 adpcm_mode,
+                max_ticks,
             } => {
                 logger = Arc::new(Logger::new_stdout(dry_run));
                 let options = MdxToVgmOptions {
@@ -473,6 +483,7 @@ fn main() {
                     okim6258_clock,
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
+                    max_ticks: (max_ticks != 0).then_some(max_ticks),
                 };
                 match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
@@ -491,6 +502,7 @@ fn main() {
                 loop_count,
                 native_loop,
                 adpcm_mode,
+                max_ticks,
             } => {
                 let options = MdxToVgmOptions {
                     ym2151_clock,
@@ -501,6 +513,7 @@ fn main() {
                         Some(loop_count.unwrap_or(1))
                     },
                     adpcm_mode: adpcm_mode.into(),
+                    max_ticks: (max_ticks != 0).then_some(max_ticks),
                 };
                 match cui::mdx::convert_mdx(&input, &output, pdx.as_deref(), &options) {
                     Ok(()) => process::exit(0),
@@ -518,6 +531,7 @@ fn main() {
                 okim6258_clock,
                 loop_count,
                 adpcm_mode,
+                max_ticks,
             } => {
                 // Configure logger according to dry_run so main's messages respect it.
                 logger = Arc::new(Logger::new_stdout(dry_run));
@@ -527,6 +541,7 @@ fn main() {
                     okim6258_clock,
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
+                    max_ticks: (max_ticks != 0).then_some(max_ticks),
                 };
                 match cui::mdx::stream_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
@@ -733,6 +748,62 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mdx_conversion_arguments_accept_tick_limits() {
+        for command in ["convert", "stream", "test"] {
+            for value in [None, Some("0"), Some("2"), Some("4294967295")] {
+                let mut arguments = vec!["soundlog", "mdx", command, "song.mdx"];
+                if command == "convert" {
+                    arguments.push("song.vgm");
+                }
+                if let Some(value) = value {
+                    arguments.extend(["--max-ticks", value]);
+                }
+                let args = Args::try_parse_from(arguments).unwrap();
+                let max_ticks = match args.command {
+                    Commands::Mdx {
+                        command:
+                            MdxCommands::Convert { max_ticks, .. }
+                            | MdxCommands::Stream { max_ticks, .. }
+                            | MdxCommands::Test { max_ticks, .. },
+                    } => max_ticks,
+                    _ => panic!("expected MDX conversion arguments"),
+                };
+                assert_eq!(
+                    max_ticks,
+                    value.map_or(100_000, |value| value.parse().unwrap())
+                );
+            }
+            let mut arguments = vec!["soundlog", "mdx", command, "song.mdx"];
+            if command == "convert" {
+                arguments.push("song.vgm");
+            }
+            arguments.extend(["--max-ticks", "4294967296"]);
+            assert!(Args::try_parse_from(arguments).is_err());
+        }
+        let args = Args::try_parse_from([
+            "soundlog",
+            "mdx",
+            "convert",
+            "song.mdx",
+            "song.vgm",
+            "--native-loop",
+            "--max-ticks",
+            "2",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::Mdx {
+                command: MdxCommands::Convert {
+                    native_loop: true,
+                    max_ticks: 2,
+                    ..
+                }
+            }
+        ));
+    }
 
     #[test]
     fn mdx_compile_playback_check_is_enabled_by_default_and_can_be_skipped() {

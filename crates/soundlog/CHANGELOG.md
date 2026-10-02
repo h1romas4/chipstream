@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Add: Limit MDX eager conversion and lazy streaming to 100,000 elapsed ticks by default; configure or disable the limit with `MdxToVgmOptions::max_ticks`, with `MdxConvertError::TickLimitExceeded` on exhaustion.
 - [x] Add: Support tuple conversions from MDX packages and options into VGM documents, streams, and command generators.
 - [x] Change: Replace `ParseError::MdxConversion` with `GeneratorError`, preserving boxed user-defined and MDX generator errors and their source chains.
 - [x] Change: Store UTF-16 errors directly instead of using `Arc`; remove `Clone` from `ParseError` while preserving `Error::source`.
