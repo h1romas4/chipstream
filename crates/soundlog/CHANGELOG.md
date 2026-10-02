@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Add: Limit retained VGM output in eager MDX conversion with `MdxToVgmOptions::max_output_commands` (default 14,000,000), returning `MdxConvertError::OutputCommandLimitExceeded` on exhaustion; lazy streaming is unaffected.
 - [x] Add: Bound MDX commands executed without advancing playback time in eager conversion and lazy streaming; configure with `MdxToVgmOptions::max_commands_per_tick` (default 100,000), with `MdxConvertError::CommandLimitExceeded` on exhaustion.
 - [x] Fix: Return `MdxConvertError::PitchOutOfRange` for unsupported FM key-on pitches instead of panicking or wrapping the YM2151 key-code lookup.
 - [x] Add: Limit MDX eager conversion and lazy streaming to 100,000 elapsed ticks by default; configure or disable the limit with `MdxToVgmOptions::max_ticks`, with `MdxConvertError::TickLimitExceeded` on exhaustion.

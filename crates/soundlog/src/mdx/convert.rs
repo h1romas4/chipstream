@@ -207,6 +207,13 @@ pub struct MdxToVgmOptions {
     /// not at generator calls or loop boundaries. Applies to eager conversion
     /// and lazy streaming. The default is 100,000; `None` disables the limit.
     pub max_commands_per_tick: Option<u32>,
+    /// Maximum VGM commands retained by eager conversion, including
+    /// initialization, closing commands, and all song traversals.
+    /// Checked after each step and finalization, so temporary storage can
+    /// exceed the limit by one step and include unused vector capacity.
+    /// The default is 14,000,000; `None` disables the limit.
+    /// Lazy streaming and playback checking do not use this limit.
+    pub max_output_commands: Option<u32>,
 }
 
 impl Default for MdxToVgmOptions {
@@ -218,6 +225,7 @@ impl Default for MdxToVgmOptions {
             loop_count: None,
             max_ticks: Some(100_000),
             max_commands_per_tick: Some(100_000),
+            max_output_commands: Some(14_000_000),
         }
     }
 }
@@ -234,6 +242,11 @@ pub enum MdxConvertError {
     CommandLimitExceeded {
         /// Configured maximum number of commands between elapsed ticks.
         max_commands_per_tick: u32,
+    },
+    /// Eager conversion would retain too many generated VGM commands.
+    OutputCommandLimitExceeded {
+        /// Configured maximum number of retained VGM commands.
+        max_output_commands: u32,
     },
     /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
@@ -275,6 +288,12 @@ impl fmt::Display for MdxConvertError {
             } => write!(
                 f,
                 "MDX conversion command limit exceeded (maximum {max_commands_per_tick} commands without advancing playback time)"
+            ),
+            MdxConvertError::OutputCommandLimitExceeded {
+                max_output_commands,
+            } => write!(
+                f,
+                "MDX conversion output command limit exceeded (maximum {max_output_commands} VGM commands)"
             ),
             MdxConvertError::InvalidDocument(reason) => write!(f, "invalid MDX document: {reason}"),
             MdxConvertError::UnsupportedCommand { track, command } => {
@@ -408,10 +427,9 @@ fn convert_document(
         .set_sample_rate(VGM_SAMPLE_RATE)
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
 
-    while generator
-        .run_step()
-        .map_err(|error| generator.playback.conversion_failure(error))?
-    {}
+    generator
+        .run_eager_steps(0)
+        .map_err(|error| generator.playback.conversion_failure(error))?;
 
     // For F1 cases that could not establish a synchronized native loop point,
     // retain the finite restart-pass fallback. Ordinary eager F1 loops record
@@ -432,10 +450,9 @@ fn convert_document(
         if diagnostics {
             repeat.playback.check_state = Some(PlaybackCheckState::default());
         }
-        while repeat
-            .run_step()
-            .map_err(|error| repeat.playback.conversion_failure(error))?
-        {}
+        repeat
+            .run_eager_steps(loop_index)
+            .map_err(|error| repeat.playback.conversion_failure(error))?;
         for command in repeat.builder.drain_commands() {
             generator.builder.add_vgm_command(command);
         }
@@ -443,10 +460,30 @@ fn convert_document(
     }
 
     let mut document = generator.playback.finalize_with_pcm(generator.builder);
+    check_output_command_limit(options.max_output_commands, document.commands.len(), 0)
+        .map_err(|error| generator.playback.conversion_failure(error))?;
     if package.pdx.is_some() {
         document.header.okim6258_flags.clock_divider = pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
     }
     Ok(document)
+}
+
+/// Checks eager output against the limit, including commands retained from earlier passes.
+/// `None` disables the limit; exceeding it returns `OutputCommandLimitExceeded`.
+fn check_output_command_limit(
+    max_output_commands: Option<u32>,
+    commands: usize,
+    retained_commands: usize,
+) -> Result<(), MdxConvertError> {
+    if let Some(max_output_commands) = max_output_commands
+        && (retained_commands > max_output_commands as usize
+            || commands > (max_output_commands as usize).saturating_sub(retained_commands))
+    {
+        return Err(MdxConvertError::OutputCommandLimitExceeded {
+            max_output_commands,
+        });
+    }
+    Ok(())
 }
 
 /// Outcome of one [`PlaybackState::step`] call.
@@ -2828,6 +2865,21 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
         }
     }
 
+    /// Accumulates eager output with any earlier pass charged to the same limit.
+    fn run_eager_steps(&mut self, retained_commands: usize) -> Result<(), MdxConvertError> {
+        loop {
+            let playing = self.run_step()?;
+            check_output_command_limit(
+                self.options.max_output_commands,
+                self.builder.command_count(),
+                retained_commands,
+            )?;
+            if !playing {
+                return Ok(());
+            }
+        }
+    }
+
     /// Runs one more step (the one-time initialization, or one MDX tick),
     /// appending its commands to `self.builder`. Returns `false` once the
     /// song (and its closing commands) have been fully emitted.
@@ -2967,6 +3019,219 @@ mod tests {
     use crate::mdx::command::MdxRest;
     use crate::mdx::document::MdxBuilder;
     use crate::vgm::stream::StreamResult;
+
+    #[test]
+    fn conversion_output_limit_boundaries_and_disable() {
+        assert_eq!(
+            MdxToVgmOptions::default().max_output_commands,
+            Some(14_000_000)
+        );
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 3 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            max_output_commands: None,
+            ..Default::default()
+        };
+        let expected = to_vgm_document(&package, &options).unwrap();
+        let count = u32::try_from(expected.commands.len()).unwrap();
+        for max_output_commands in [count, count + 1] {
+            let document = to_vgm_document(
+                &package,
+                &MdxToVgmOptions {
+                    max_output_commands: Some(max_output_commands),
+                    ..options
+                },
+            )
+            .unwrap();
+            assert_eq!(document.commands, expected.commands);
+        }
+        for max_output_commands in [0, count - 1] {
+            assert_eq!(
+                to_vgm_document(
+                    &package,
+                    &MdxToVgmOptions {
+                        max_output_commands: Some(max_output_commands),
+                        ..options
+                    },
+                )
+                .unwrap_err(),
+                MdxConvertError::OutputCommandLimitExceeded {
+                    max_output_commands,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn conversion_output_limit_stops_pcm_before_tick_limit() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(0, crate::mdx::command::MdxTempo { value: 1 })
+            .add_mdx_command(0, MdxRest { ticks: 100 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(crate::mdx::pdx::PdxBuilder::new().finalize()),
+        };
+        let options = MdxToVgmOptions {
+            max_output_commands: Some(100),
+            max_ticks: Some(100),
+            ..Default::default()
+        };
+        let expected = MdxConvertError::OutputCommandLimitExceeded {
+            max_output_commands: 100,
+        };
+        let mut generator = MdxVgmGenerator::new(&package, options, true);
+        assert_eq!(generator.run_eager_steps(0).unwrap_err(), expected);
+        assert_eq!(generator.playback.timing.elapsed_ticks, 1);
+        assert!(generator.builder.command_count() > 100);
+        assert!(generator.builder.command_count() < 2_000);
+        assert_eq!(
+            to_vgm_document_with_diagnostics(&package, &options).unwrap_err(),
+            MdxPlaybackCheckError::Conversion {
+                error: expected,
+                track: Some(0),
+                command_index: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn conversion_output_limit_counts_finalization() {
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(crate::mdx::pdx::PdxBuilder::new().finalize()),
+        };
+        let options = MdxToVgmOptions {
+            max_output_commands: None,
+            ..Default::default()
+        };
+        let mut generator = MdxVgmGenerator::new(&package, options, true);
+        generator.run_eager_steps(0).unwrap();
+        let step_count = u32::try_from(generator.builder.command_count()).unwrap();
+        let document = to_vgm_document(&package, &options).unwrap();
+        assert_eq!(document.commands.len(), step_count as usize + 1);
+        assert_eq!(
+            to_vgm_document(
+                &package,
+                &MdxToVgmOptions {
+                    max_output_commands: Some(step_count),
+                    ..options
+                }
+            )
+            .unwrap_err(),
+            MdxConvertError::OutputCommandLimitExceeded {
+                max_output_commands: step_count,
+            }
+        );
+        assert!(
+            to_vgm_document(
+                &package,
+                &MdxToVgmOptions {
+                    max_output_commands: Some(step_count + 1),
+                    ..options
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn conversion_output_limit_counts_eager_f1_fallback() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(0, MdxRest { ticks: 2 })
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: 0,
+                }),
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            max_output_commands: None,
+            ..Default::default()
+        };
+        let mut generator = MdxVgmGenerator::new(&package, options, true);
+        generator.run_eager_steps(0).unwrap();
+        assert!(generator.playback.song_loop.track_end_loop_seen);
+        assert!(generator.playback.song_loop.loop_index.is_none());
+        let first_pass_count = u32::try_from(generator.builder.command_count()).unwrap();
+        let document = to_vgm_document(&package, &options).unwrap();
+        let count = u32::try_from(document.commands.len()).unwrap();
+        assert!(count > first_pass_count);
+        assert!(document.header.loop_offset > 0);
+        for max_output_commands in [first_pass_count, count - 1] {
+            assert_eq!(
+                to_vgm_document(
+                    &package,
+                    &MdxToVgmOptions {
+                        max_output_commands: Some(max_output_commands),
+                        ..options
+                    }
+                )
+                .unwrap_err(),
+                MdxConvertError::OutputCommandLimitExceeded {
+                    max_output_commands,
+                }
+            );
+        }
+        assert!(
+            to_vgm_document(
+                &package,
+                &MdxToVgmOptions {
+                    max_output_commands: Some(count),
+                    ..options
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn conversion_output_limit_handles_large_retained_counts() {
+        let expected = MdxConvertError::OutputCommandLimitExceeded {
+            max_output_commands: u32::MAX,
+        };
+        assert_eq!(
+            check_output_command_limit(Some(u32::MAX), 1, u32::MAX as usize).unwrap_err(),
+            expected
+        );
+        assert_eq!(
+            check_output_command_limit(Some(u32::MAX), 1, usize::MAX).unwrap_err(),
+            expected
+        );
+        assert!(check_output_command_limit(None, usize::MAX, usize::MAX).is_ok());
+    }
+
+    #[test]
+    fn conversion_output_limit_does_not_apply_to_lazy_playback() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 3 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            max_output_commands: Some(0),
+            ..Default::default()
+        };
+        let mut generator = MdxVgmGenerator::new(package.clone(), options, false);
+        let mut count = 0;
+        while generator.next_command().unwrap().is_some() {
+            count += 1;
+        }
+        assert!(count > 0);
+        assert!(check_playback(&package, options, MdxPlaybackCheckLimits::default()).is_ok());
+    }
 
     #[test]
     fn conversion_command_limit_stops_finite_nested_repeats() {
