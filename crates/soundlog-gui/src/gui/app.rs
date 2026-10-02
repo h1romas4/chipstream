@@ -1,8 +1,4 @@
-/*! Application wrapper moved out of `main.rs`.
-
-This module provides the `Debuger` type which implements `eframe::App`.
-It is intended to be used as `ui::Debuger` (see `src/ui.rs`).
-*/
+/*! Native GUI application wrapper. */
 
 use std::cell::RefCell;
 
@@ -17,8 +13,7 @@ use soundlog::vgm::command::WaitSamples;
 
 /// Launch the GUI with the provided initial bytes.
 ///
-/// This used to live in `main.rs`. It configures the native window options and
-/// starts the `eframe` event loop with `ui::Debuger` as the application.
+/// Configures the native window and starts the `eframe` event loop.
 pub fn run_gui(initial_bytes: Vec<u8>, initial_file_name: Option<String>) {
     // Configure native options: fix horizontal width to 1024 and allow vertical resizing.
     let native_options = NativeOptions {

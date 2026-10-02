@@ -107,8 +107,8 @@ mod common {
 
     /// Returns a raw mutable pointer to the [`MicroState`] storage.
     ///
-    /// Using a raw pointer instead of `&mut STATE` avoids the `static_mut_refs`
-    /// lint introduced in Rust 2024 edition.
+    /// The storage exists for the process lifetime. Callers must ensure it has
+    /// been initialized before dereferencing the pointer.
     #[inline]
     pub fn state_ptr() -> *mut MicroState {
         // SAFETY: STATE is a valid MaybeUninit<MicroState>; callers are
