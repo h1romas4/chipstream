@@ -376,7 +376,10 @@ fn test_gd3_invalid_utf16_preserves_source_error() {
             .downcast_ref::<std::string::FromUtf16Error>()
             .is_some()
     );
-    assert_eq!(error.to_string(), format!("invalid UTF-16 in GD3: {source}"));
+    assert_eq!(
+        error.to_string(),
+        format!("invalid UTF-16 in GD3: {source}")
+    );
 }
 
 //

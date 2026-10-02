@@ -185,31 +185,17 @@ pub struct MdxToVgmOptions {
     pub okim6258_clock: u32,
     /// ADPCM processing mode for PCM8/PCM8A output.
     pub adpcm_mode: AdpcmMode,
-    /// Target number of traversals for song-level repeats.
+    /// Number of traversals for song-level repeats: backward `Jump`s,
+    /// count-zero `LoopEnd`s, and per-track `F1` markers. Finite nested
+    /// `LoopStart`/`LoopEnd` counts are unaffected.
     ///
-    /// This affects backward `Jump`s, `LoopEnd`s whose count is encoded as
-    /// `0` (the file's "loop forever" marker), and per-track `F1`
-    /// (`EndOfTrackLoop`) markers. It does not override ordinary nested
-    /// repeat blocks (`LoopStart`/`LoopEnd` with a nonzero count), since those
-    /// are authored per track.
+    /// `None` (default) uses a native VGM loop point for eager conversion when
+    /// possible; lazy streaming repeats internally. Eager F1 loops synchronize
+    /// at a shared boundary, and embedded fadeouts run to completion.
     ///
-    /// `None` (the default) uses a native VGM loop point for eager conversion
-    /// when possible, while lazy streaming repeats internally. In eager
-    /// conversion, tracks with `F1` markers synchronize at a shared boundary:
-    /// the loop point is placed after every loop track reaches its marker and
-    /// every non-loop track finishes. Each loop track continues from its own
-    /// phase at that boundary, preserving independently phased track loops.
-    /// For files with an embedded fadeout, track loops continue
-    /// internally until fadeout ends; FM carrier total-level writes and PCM
-    /// channels routed through the mixer reflect the global attenuation, but
-    /// legacy ADPCM `Through` bytes remain raw.
-    ///
-    /// `Some(n)` plays `n` whole-song playthroughs without a native VGM loop
-    /// point. With `F1` markers, the first playthrough includes the intro and
-    /// one traversal of each loop body; each additional playthrough traverses
-    /// the loop bodies once more. A shorter track continues looping from its
-    /// F1 target while the others reach the shared boundary. `Some(0)` is
-    /// normalized to `Some(1)`, matching `VgmStream`.
+    /// `Some(n)` emits finite playback without a native loop point. For F1
+    /// loops, playback includes the intro and first loop traversal, then makes
+    /// `n - 1` further traversals. `Some(0)` is treated as `Some(1)`.
     pub loop_count: Option<u32>,
 }
 

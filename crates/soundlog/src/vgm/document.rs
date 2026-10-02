@@ -367,17 +367,17 @@ impl VgmBuilder {
         self.document
     }
 
-    // Relocate DataBlock in `VgmDocument`.
-    //
-    // Behavior:
-    // - If a valid `loop_index` exists, remove (move out of `document.commands`)
-    //   every `VgmCommand::DataBlock(_)` whose original index is >= loop_index.
-    // - Adjust `loop_index` by adding the number of removed DataBlocks so that
-    //   after a future prepend/aggregation the loop index will point to the same
-    //   logical command.
-    // - Do not specify the positions of DataBlock entries via `loop_index`.
-    //
-    // Returns the number of DataBlocks that were removed.
+    /// Relocate DataBlock in `VgmDocument`.
+    ///
+    /// Behavior:
+    /// - If a valid `loop_index` exists, remove (move out of `document.commands`)
+    ///   every `VgmCommand::DataBlock(_)` whose original index is >= loop_index.
+    /// - Adjust `loop_index` by adding the number of removed DataBlocks so that
+    ///   after a future prepend/aggregation the loop index will point to the same
+    ///   logical command.
+    /// - Do not specify the positions of DataBlock entries via `loop_index`.
+    ///
+    /// Returns the number of DataBlocks that were removed.
     fn relocate_data_block(&mut self) {
         // Count DataBlocks after loop_index
         let move_count = if let Some(loop_index) = self.loop_index {
