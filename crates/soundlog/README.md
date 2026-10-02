@@ -380,7 +380,7 @@ the `mdx` feature is only required when using the MDX implementation.
 Commands are converted as they are consumed, so the complete VGM command list
 does not need to be kept in memory.
 `MdxToVgmOptions` provides configurable playback-tick and per-tick command
-limits for conversion and streaming, plus a retained-output limit for eager
+limits and a decoded-PCM cache limit, plus a retained-output limit for eager
 conversion; see the API rustdoc.
 MDX support is disabled by default; enable it in your dependency declaration
 with `soundlog = { version = "0.14", features = ["mdx"] }`.

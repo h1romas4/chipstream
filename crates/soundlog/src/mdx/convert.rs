@@ -214,6 +214,12 @@ pub struct MdxToVgmOptions {
     /// The default is 14,000,000; `None` disables the limit.
     /// Lazy streaming and playback checking do not use this limit.
     pub max_output_commands: Option<u32>,
+    /// Maximum decoded `i16` PCM samples cached during playback. Applies to
+    /// eager conversion, lazy streaming, and playback checking. Shared ranges
+    /// count once; new ranges are checked before decoding or allocation.
+    /// The default is 32,000,000 samples (64 MB of sample data); `None` disables
+    /// the limit. Vector capacity and temporary decoder storage are additional.
+    pub max_decoded_pcm_samples: Option<u32>,
 }
 
 impl Default for MdxToVgmOptions {
@@ -226,6 +232,7 @@ impl Default for MdxToVgmOptions {
             max_ticks: Some(100_000),
             max_commands_per_tick: Some(100_000),
             max_output_commands: Some(14_000_000),
+            max_decoded_pcm_samples: Some(32_000_000),
         }
     }
 }
@@ -247,6 +254,11 @@ pub enum MdxConvertError {
     OutputCommandLimitExceeded {
         /// Configured maximum number of retained VGM commands.
         max_output_commands: u32,
+    },
+    /// Playback would cache too many decoded PCM samples.
+    DecodedPcmSampleLimitExceeded {
+        /// Configured maximum number of cached decoded `i16` samples.
+        max_decoded_pcm_samples: u32,
     },
     /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
@@ -283,6 +295,12 @@ impl fmt::Display for MdxConvertError {
                 )
             }
             MdxConvertError::InvalidOptions(reason) => write!(f, "invalid options: {reason}"),
+            MdxConvertError::DecodedPcmSampleLimitExceeded {
+                max_decoded_pcm_samples,
+            } => write!(
+                f,
+                "MDX conversion decoded PCM sample limit exceeded (maximum {max_decoded_pcm_samples} samples)"
+            ),
             MdxConvertError::CommandLimitExceeded {
                 max_commands_per_tick,
             } => write!(
@@ -445,6 +463,10 @@ fn convert_document(
             ..*options
         };
         let mut repeat = MdxVgmGenerator::new(package, repeat_options, true);
+        repeat.playback.pcm_output.samples =
+            std::mem::take(&mut generator.playback.pcm_output.samples);
+        repeat.playback.pcm_output.sample_ranges =
+            std::mem::take(&mut generator.playback.pcm_output.sample_ranges);
         repeat.playback.timing.elapsed_ticks = generator.playback.timing.elapsed_ticks;
         repeat.playback.timing.commands_since_tick = generator.playback.timing.commands_since_tick;
         if diagnostics {
@@ -988,8 +1010,10 @@ struct PcmOutputState {
     channels: [PcmChannelState; 8],
     /// Single decoded PCM arena shared by all PCM channels.
     samples: Vec<i16>,
-    /// Ranges in `samples` indexed by `(bank, note, format)`.
-    sample_ranges: HashMap<(usize, usize, u8, bool), (usize, usize)>,
+    /// Maximum cached decoded samples; `None` disables the limit.
+    max_decoded_pcm_samples: Option<u32>,
+    /// Ranges in `samples` indexed by PDX source start, size, format, and scaling.
+    sample_ranges: HashMap<(u32, u32, u8, bool), (usize, usize)>,
     /// Persistent re-encoder state for the whole song's mixed PCM8 output.
     encoder: AdpcmEncoder,
     /// Persistent output-filter state for the mixed PCM8 stream.
@@ -1011,6 +1035,7 @@ impl PcmOutputState {
             has_pcm,
             channels: Default::default(),
             samples: Vec::new(),
+            max_decoded_pcm_samples: MdxToVgmOptions::default().max_decoded_pcm_samples,
             sample_ranges: HashMap::new(),
             encoder: AdpcmEncoder::default(),
             filter: PcmOutputFilter::new(matches!(adpcm_mode, AdpcmMode::Lpf)),
@@ -1101,7 +1126,8 @@ impl PcmOutputState {
         self.raw_position = 0;
     }
 
-    /// Returns a cached decoded sample range, decoding and caching it if needed.
+    /// Returns a decoded range shared by identical PDX source ranges and decode conditions.
+    /// Returns an error before decoding if the cache sample limit would be exceeded.
     fn decode_sample(
         &mut self,
         package: &MdxPackage,
@@ -1109,24 +1135,55 @@ impl PcmOutputState {
         note: usize,
         format: Pcm8aFormat,
         pcm16_is_15khz: bool,
-    ) -> Option<(usize, usize)> {
+    ) -> Result<Option<(usize, usize)>, MdxConvertError> {
+        let Some(pdx) = package.pdx.as_ref() else {
+            return Ok(None);
+        };
+        let Some(sample) = pdx.entry(bank, note) else {
+            return Ok(None);
+        };
         let format_key = match format {
             Pcm8aFormat::Adpcm => 0u8,
             Pcm8aFormat::Pcm16 => 1u8,
             Pcm8aFormat::Pcm8 => 2u8,
         };
-        let key = (bank, note, format_key, pcm16_is_15khz);
+        let pcm16_is_15khz = format == Pcm8aFormat::Pcm16 && pcm16_is_15khz;
+        let key = (sample.start, sample.size, format_key, pcm16_is_15khz);
         if let Some(&range) = self.sample_ranges.get(&key) {
-            return Some(range);
+            return Ok(Some(range));
         }
-        let bytes = package.pdx.as_ref()?.sample_bytes(bank, note)?;
-        let decoded = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz).ok()?;
+        let Some(bytes) = pdx.sample_bytes(bank, note) else {
+            return Ok(None);
+        };
+        let length = match format {
+            Pcm8aFormat::Adpcm => bytes.len().checked_mul(2),
+            Pcm8aFormat::Pcm8 => Some(bytes.len()),
+            Pcm8aFormat::Pcm16 if bytes.len().is_multiple_of(2) => Some(bytes.len() / 2),
+            Pcm8aFormat::Pcm16 => return Ok(None),
+        };
+        if let Some(max_decoded_pcm_samples) = self.max_decoded_pcm_samples
+            && (self.samples.len() > max_decoded_pcm_samples as usize
+                || length.is_none_or(|length| {
+                    length > (max_decoded_pcm_samples as usize).saturating_sub(self.samples.len())
+                }))
+        {
+            return Err(MdxConvertError::DecodedPcmSampleLimitExceeded {
+                max_decoded_pcm_samples,
+            });
+        }
+        let Some(length) = length else {
+            return Err(MdxConvertError::InvalidDocument(
+                "decoded PCM sample length exceeds addressable storage".to_owned(),
+            ));
+        };
+        let Ok(decoded) = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz) else {
+            return Ok(None);
+        };
         let start = self.samples.len();
-        let length = decoded.len();
         self.samples.extend_from_slice(&decoded);
         let range = (start, length);
         self.sample_ranges.insert(key, range);
-        Some(range)
+        Ok(Some(range))
     }
 
     /// Produces the next mixed or raw ADPCM byte for the output stream.
@@ -1539,9 +1596,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// (`0x80`-based) against the track's current PDX bank and data format,
     /// referencing raw ADPCM or decoding and caching mixed PCM as needed.
     /// A held channel playing the same sample is not triggered again.
-    fn begin_pcm_key_on(&mut self, track: usize, note: u8) {
+    fn begin_pcm_key_on(&mut self, track: usize, note: u8) -> Result<(), MdxConvertError> {
         let Some(note_index) = note.checked_sub(0x80) else {
-            return;
+            return Ok(());
         };
         let bank = usize::from(self.tracks[track].pcm.bank);
         let note_index = usize::from(note_index);
@@ -1560,7 +1617,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         if self.pcm_output.is_holding_block(channel, block_key) {
             // F7 followed by the same PCM note is a held note, not a second
             // trigger.
-            return;
+            return Ok(());
         }
         if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through)
@@ -1588,7 +1645,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let range = if self.pcm_uses_mixer() {
             let package = self.package.borrow();
             self.pcm_output
-                .decode_sample(package, bank, note_index, format, pcm16_is_15khz)
+                .decode_sample(package, bank, note_index, format, pcm16_is_15khz)?
         } else {
             self.package
                 .borrow()
@@ -1599,6 +1656,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         };
         self.pcm_output
             .start_channel(channel, block_key, range, rate_step, gain, tie);
+        Ok(())
     }
 
     /// Applies a volume change immediately to a currently playing ADPCM/PCM
@@ -1703,7 +1761,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 MdxCommand::Note(command) => {
                     // PCM key-on: `note` is an 0x80-based index into the
                     // track's current PDX bank rather than a pitch.
-                    self.begin_pcm_key_on(track, command.note);
+                    self.begin_pcm_key_on(track, command.note)?;
                     self.tracks[track].start_note(command.length);
                 }
                 MdxCommand::Tempo(command) => {
@@ -2855,6 +2913,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
             mark_native_loop,
         );
         playback.max_commands_per_tick = options.max_commands_per_tick;
+        playback.pcm_output.max_decoded_pcm_samples = options.max_decoded_pcm_samples;
         Self {
             playback,
             options,
@@ -3019,6 +3078,373 @@ mod tests {
     use crate::mdx::command::MdxRest;
     use crate::mdx::document::MdxBuilder;
     use crate::vgm::stream::StreamResult;
+
+    #[test]
+    fn decoded_pcm_cache_shares_aliased_pdx_ranges() {
+        let payload = [0x12, 0x34, 0x56, 0x78];
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 0, payload.to_vec()).unwrap();
+        builder.set_sample(1, 0, vec![0x80]).unwrap();
+        let mut bytes = builder.finalize().to_bytes();
+        let entry: [u8; 8] = bytes[..8].try_into().unwrap();
+        for bank in 0..2 {
+            for note in 0..96 {
+                let offset = (bank * 96 + note) * 8;
+                bytes[offset..offset + 8].copy_from_slice(&entry);
+            }
+        }
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(crate::mdx::pdx::PdxDocument::parse(&bytes).unwrap()),
+        };
+        assert_eq!(package.pdx.as_ref().unwrap().banks.len(), 2);
+        let expected = decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Adpcm, &payload, false).unwrap();
+        let mut output = PcmOutputState::new(true, AdpcmMode::Resample);
+        for bank in 0..2 {
+            for note in 0..96 {
+                assert_eq!(
+                    output
+                        .decode_sample(&package, bank, note, Pcm8aFormat::Adpcm, false)
+                        .unwrap(),
+                    Some((0, expected.len()))
+                );
+            }
+        }
+        assert_eq!(output.samples, expected);
+        assert_eq!(output.sample_ranges.len(), 1);
+    }
+
+    #[test]
+    fn decoded_pcm_cache_preserves_format_and_scaling() {
+        let payload = [0x12, 0x34, 0x56, 0x78];
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 0, payload.to_vec()).unwrap();
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(builder.finalize()),
+        };
+        let mut output = PcmOutputState::new(true, AdpcmMode::Through);
+        for (format, pcm16_is_15khz) in [
+            (Pcm8aFormat::Adpcm, false),
+            (Pcm8aFormat::Pcm8, false),
+            (Pcm8aFormat::Pcm16, false),
+            (Pcm8aFormat::Pcm16, true),
+        ] {
+            let expected = decode_pcm8a_with_pcm16_15khz(format, &payload, pcm16_is_15khz).unwrap();
+            let start = output.samples.len();
+            let range = output
+                .decode_sample(&package, 0, 0, format, pcm16_is_15khz)
+                .unwrap();
+            assert_eq!(range, Some((start, expected.len())));
+            assert_eq!(&output.samples[start..], expected);
+        }
+        let count = output.samples.len();
+        for format in [Pcm8aFormat::Adpcm, Pcm8aFormat::Pcm8] {
+            let range = output.decode_sample(&package, 0, 0, format, false).unwrap();
+            assert_eq!(
+                output.decode_sample(&package, 0, 0, format, true).unwrap(),
+                range
+            );
+        }
+        assert_eq!(output.samples.len(), count);
+        assert_eq!(output.sample_ranges.len(), 4);
+    }
+
+    #[test]
+    fn decoded_pcm_cache_distinguishes_source_start_and_length() {
+        let payload = [0x12, 0x34, 0x56, 0x78];
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 0, payload.to_vec()).unwrap();
+        builder.set_sample(0, 1, payload.to_vec()).unwrap();
+        let mut pdx = builder.finalize();
+        let source = pdx.entry(0, 0).unwrap();
+        pdx.banks[0].entries[2] = Some(crate::mdx::pdx::PdxSample { size: 2, ..source });
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(pdx),
+        };
+        let mut output = PcmOutputState::new(true, AdpcmMode::Lpf);
+        for (note, bytes) in [(0, &payload[..]), (1, &payload[..]), (2, &payload[..2])] {
+            let expected = decode_pcm8a_with_pcm16_15khz(Pcm8aFormat::Adpcm, bytes, false).unwrap();
+            let start = output.samples.len();
+            assert_eq!(
+                output
+                    .decode_sample(&package, 0, note, Pcm8aFormat::Adpcm, false)
+                    .unwrap(),
+                Some((start, expected.len()))
+            );
+            assert_eq!(&output.samples[start..], expected);
+        }
+        assert_eq!(output.sample_ranges.len(), 3);
+    }
+
+    #[test]
+    fn decoded_pcm_cache_does_not_cache_invalid_samples() {
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78])
+            .unwrap();
+        let mut pdx = builder.finalize();
+        let source = pdx.entry(0, 0).unwrap();
+        pdx.banks[0].entries[1] = Some(crate::mdx::pdx::PdxSample {
+            start: u32::MAX,
+            ..source
+        });
+        pdx.banks[0].entries[2] = Some(crate::mdx::pdx::PdxSample { size: 3, ..source });
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(pdx),
+        };
+        let mut output = PcmOutputState::new(true, AdpcmMode::Resample);
+        output.max_decoded_pcm_samples = Some(0);
+        for (bank, note) in [(0, 1), (0, 2), (0, 3), (0, 96), (1, 0)] {
+            assert_eq!(
+                output
+                    .decode_sample(&package, bank, note, Pcm8aFormat::Pcm16, false)
+                    .unwrap(),
+                None
+            );
+        }
+        assert!(output.samples.is_empty());
+        assert!(output.sample_ranges.is_empty());
+        output.max_decoded_pcm_samples = Some(2);
+        assert_eq!(
+            output
+                .decode_sample(&package, 0, 0, Pcm8aFormat::Pcm16, false)
+                .unwrap(),
+            Some((0, 2))
+        );
+        assert_eq!(output.sample_ranges.len(), 1);
+    }
+
+    #[test]
+    fn decoded_pcm_cache_limit_boundaries_and_disable() {
+        assert_eq!(
+            MdxToVgmOptions::default().max_decoded_pcm_samples,
+            Some(32_000_000)
+        );
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78])
+            .unwrap();
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(builder.finalize()),
+        };
+        for (format, scaling, length) in [
+            (Pcm8aFormat::Adpcm, false, 8),
+            (Pcm8aFormat::Pcm8, false, 4),
+            (Pcm8aFormat::Pcm16, false, 2),
+            (Pcm8aFormat::Pcm16, true, 2),
+        ] {
+            for limit in [0, length - 1] {
+                let mut output = PcmOutputState::new(true, AdpcmMode::Resample);
+                output.max_decoded_pcm_samples = Some(limit);
+                assert_eq!(
+                    output.decode_sample(&package, 0, 0, format, scaling),
+                    Err(MdxConvertError::DecodedPcmSampleLimitExceeded {
+                        max_decoded_pcm_samples: limit,
+                    })
+                );
+                assert!(output.samples.is_empty());
+                assert!(output.sample_ranges.is_empty());
+            }
+            for limit in [Some(length), Some(length + 1), None] {
+                let mut output = PcmOutputState::new(true, AdpcmMode::Resample);
+                output.max_decoded_pcm_samples = limit;
+                assert_eq!(
+                    output
+                        .decode_sample(&package, 0, 0, format, scaling)
+                        .unwrap(),
+                    Some((0, length as usize))
+                );
+                assert_eq!(output.samples.len(), length as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn decoded_pcm_cache_limit_counts_overlaps_but_not_shared_ranges() {
+        let mut builder = crate::mdx::pdx::PdxBuilder::new();
+        builder
+            .set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78])
+            .unwrap();
+        let mut pdx = builder.finalize();
+        let source = pdx.entry(0, 0).unwrap();
+        pdx.banks[0].entries[1] = Some(crate::mdx::pdx::PdxSample {
+            start: source.start + 1,
+            size: 3,
+        });
+        pdx.banks[0].entries[2] = Some(source);
+        let package = MdxPackage {
+            mdx: MdxBuilder::new().finalize().unwrap(),
+            pdx: Some(pdx),
+        };
+        let mut output = PcmOutputState::new(true, AdpcmMode::Resample);
+        output.max_decoded_pcm_samples = Some(8);
+        assert_eq!(
+            output
+                .decode_sample(&package, 0, 0, Pcm8aFormat::Adpcm, false)
+                .unwrap(),
+            Some((0, 8))
+        );
+        assert_eq!(
+            output
+                .decode_sample(&package, 0, 2, Pcm8aFormat::Adpcm, false)
+                .unwrap(),
+            Some((0, 8))
+        );
+        assert!(
+            output
+                .decode_sample(&package, 0, 0, Pcm8aFormat::Pcm8, false)
+                .is_err()
+        );
+        output.max_decoded_pcm_samples = Some(13);
+        let samples = output.samples.clone();
+        assert_eq!(
+            output.decode_sample(&package, 0, 1, Pcm8aFormat::Adpcm, false),
+            Err(MdxConvertError::DecodedPcmSampleLimitExceeded {
+                max_decoded_pcm_samples: 13
+            })
+        );
+        assert_eq!(output.samples, samples);
+        assert_eq!(output.sample_ranges.len(), 1);
+        output.max_decoded_pcm_samples = Some(14);
+        assert_eq!(
+            output
+                .decode_sample(&package, 0, 1, Pcm8aFormat::Adpcm, false)
+                .unwrap(),
+            Some((8, 6))
+        );
+        assert_eq!(output.samples.len(), 14);
+        assert_eq!(output.sample_ranges.len(), 2);
+    }
+
+    #[test]
+    fn conversion_decoded_pcm_limit_reaches_all_paths() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                8,
+                crate::mdx::command::MdxNote {
+                    note: 0x80,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(
+                8,
+                crate::mdx::command::MdxNote {
+                    note: 0x81,
+                    length: 1,
+                },
+            );
+        let mut pdx = crate::mdx::pdx::PdxBuilder::new();
+        pdx.set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78]).unwrap();
+        pdx.set_sample(0, 1, vec![0x12, 0x34, 0x56, 0x78]).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx.finalize()),
+        };
+        let expected = MdxConvertError::DecodedPcmSampleLimitExceeded {
+            max_decoded_pcm_samples: 8,
+        };
+        let diagnostic = MdxPlaybackCheckError::Conversion {
+            error: expected.clone(),
+            track: Some(8),
+            command_index: Some(1),
+        };
+        for adpcm_mode in [AdpcmMode::Resample, AdpcmMode::Lpf] {
+            let options = MdxToVgmOptions {
+                loop_count: Some(1),
+                adpcm_mode,
+                max_decoded_pcm_samples: Some(8),
+                ..Default::default()
+            };
+            assert_eq!(to_vgm_document(&package, &options).unwrap_err(), expected);
+            assert_eq!(
+                to_vgm_document_with_diagnostics(&package, &options).unwrap_err(),
+                diagnostic
+            );
+            assert_eq!(
+                check_playback(&package, options, MdxPlaybackCheckLimits::default()).unwrap_err(),
+                diagnostic
+            );
+            let mut generator = to_vgm_stream_generator(package.clone(), options).unwrap();
+            let error = loop {
+                match generator.next_command() {
+                    Err(error) => break error,
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("decoded PCM limit must stop lazy playback"),
+                }
+            };
+            let ParseError::GeneratorError(source) = error else {
+                panic!("expected a typed generator error");
+            };
+            assert_eq!(source.downcast_ref::<MdxConvertError>(), Some(&expected));
+            let unlimited = MdxToVgmOptions {
+                max_decoded_pcm_samples: None,
+                ..options
+            };
+            let bounded = MdxToVgmOptions {
+                max_decoded_pcm_samples: Some(16),
+                ..options
+            };
+            assert_eq!(
+                to_vgm_document(&package, &unlimited).unwrap().commands,
+                to_vgm_document(&package, &bounded).unwrap().commands
+            );
+        }
+        let raw = MdxToVgmOptions {
+            loop_count: Some(1),
+            adpcm_mode: AdpcmMode::Through,
+            max_decoded_pcm_samples: Some(0),
+            ..Default::default()
+        };
+        assert!(to_vgm_document(&package, &raw).is_ok());
+    }
+
+    #[test]
+    fn conversion_decoded_pcm_limit_applies_to_all_pcm8a_modes() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                8,
+                crate::mdx::command::MdxNote {
+                    note: 0x80,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(
+                8,
+                crate::mdx::command::MdxNote {
+                    note: 0x81,
+                    length: 1,
+                },
+            )
+            .add_mdx_command(15, MdxRest { ticks: 2 });
+        let mut pdx = crate::mdx::pdx::PdxBuilder::new();
+        pdx.set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78]).unwrap();
+        pdx.set_sample(0, 1, vec![0x12, 0x34, 0x56, 0x78]).unwrap();
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx.finalize()),
+        };
+        assert_eq!(package.mdx.header.track_count(), 16);
+        for adpcm_mode in [AdpcmMode::Through, AdpcmMode::Resample, AdpcmMode::Lpf] {
+            let options = MdxToVgmOptions {
+                loop_count: Some(1),
+                adpcm_mode,
+                max_decoded_pcm_samples: Some(8),
+                ..Default::default()
+            };
+            assert_eq!(
+                to_vgm_document(&package, &options).unwrap_err(),
+                MdxConvertError::DecodedPcmSampleLimitExceeded {
+                    max_decoded_pcm_samples: 8
+                }
+            );
+        }
+    }
 
     #[test]
     fn conversion_output_limit_boundaries_and_disable() {
@@ -4352,7 +4778,7 @@ mod tests {
         playback.fadeout.level = 3;
         playback.tracks[8].fm.volume = 8;
 
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
 
         assert_eq!(playback.pcm_output.channels[0].gain, 12);
 
@@ -4398,7 +4824,7 @@ mod tests {
             false,
         );
 
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
 
         assert!(playback.pcm_output.samples.is_empty());
         assert!(playback.pcm_output.sample_ranges.is_empty());
@@ -4438,7 +4864,7 @@ mod tests {
             Some(1),
             false,
         );
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         let source = playback
             .package
             .pdx
@@ -4469,7 +4895,7 @@ mod tests {
 
         playback.tracks[8].fm.key_off_disabled = true;
         playback.stop_pcm_channel(8);
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         assert_eq!(playback.pcm_output.raw_position, 1);
         assert_eq!(
             playback
@@ -4489,7 +4915,7 @@ mod tests {
                 .next_adpcm_byte(false, &playback.package),
             0x80
         );
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         assert_eq!(playback.pcm_output.raw_position, 4);
         assert_eq!(
             playback
@@ -4499,7 +4925,7 @@ mod tests {
         );
         playback.tracks[8].fm.key_off_disabled = false;
         playback.stop_pcm_channel(8);
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         assert_eq!(playback.pcm_output.raw_position, 0);
         assert_eq!(
             playback
@@ -4517,7 +4943,7 @@ mod tests {
             playback.tracks[8].fm.key_off_disabled = true;
             playback.stop_pcm_channel(8);
             playback.tracks[8].pcm.bank = bank;
-            playback.begin_pcm_key_on(8, note);
+            playback.begin_pcm_key_on(8, note).unwrap();
             assert_eq!(playback.pcm_output.raw_position, 0);
             assert_eq!(playback.pcm_output.raw_length, expected.len());
             for byte in expected {
@@ -4544,7 +4970,7 @@ mod tests {
         }
 
         playback.tracks[8].pcm.bank = 0;
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         playback
             .process_commands(8, &mut VgmBuilder::new())
             .unwrap();
@@ -4559,7 +4985,7 @@ mod tests {
         );
 
         let mut without_pdx = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
-        without_pdx.begin_pcm_key_on(8, 0x80);
+        without_pdx.begin_pcm_key_on(8, 0x80).unwrap();
         assert_eq!(without_pdx.pcm_output.raw_length, 0);
         assert!(without_pdx.pcm_output.channels[0].block_key.is_none());
         assert_eq!(
@@ -4595,7 +5021,7 @@ mod tests {
             let mut playback =
                 PlaybackState::new(package.clone(), pcm_mode, adpcm_mode, Some(1), false);
             for _trigger in 0..2 {
-                playback.begin_pcm_key_on(8, 0x80);
+                playback.begin_pcm_key_on(8, 0x80).unwrap();
                 assert_eq!(playback.pcm_output.samples, expected);
                 assert_eq!(playback.pcm_output.sample_ranges.len(), 1);
                 assert_eq!(
@@ -4615,7 +5041,7 @@ mod tests {
         playback.fadeout.counter = -1;
         playback.tracks[8].fm.volume = 8;
 
-        playback.begin_pcm_key_on(8, 0x80);
+        playback.begin_pcm_key_on(8, 0x80).unwrap();
         playback.advance_fadeout(&mut VgmBuilder::new());
 
         assert_eq!(playback.fadeout.level, 3);

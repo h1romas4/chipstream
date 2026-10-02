@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [x] Add: Bound decoded PCM caches in MDX conversion, streaming, and playback checking with `MdxToVgmOptions::max_decoded_pcm_samples` (default 32,000,000 samples), returning `MdxConvertError::DecodedPcmSampleLimitExceeded` before decoding on exhaustion.
+- [x] Fix: Share decoded PCM cache entries for PDX samples with identical source ranges and decode conditions, preventing duplicate decoding for aliased bank/note entries.
 - [x] Add: Limit retained VGM output in eager MDX conversion with `MdxToVgmOptions::max_output_commands` (default 14,000,000), returning `MdxConvertError::OutputCommandLimitExceeded` on exhaustion; lazy streaming is unaffected.
 - [x] Add: Bound MDX commands executed without advancing playback time in eager conversion and lazy streaming; configure with `MdxToVgmOptions::max_commands_per_tick` (default 100,000), with `MdxConvertError::CommandLimitExceeded` on exhaustion.
 - [x] Fix: Return `MdxConvertError::PitchOutOfRange` for unsupported FM key-on pitches instead of panicking or wrapping the YM2151 key-code lookup.
