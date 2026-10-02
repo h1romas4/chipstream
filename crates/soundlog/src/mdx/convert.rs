@@ -25,7 +25,7 @@ use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::stream::VgmCommandGenerator;
-use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
+use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument, VgmStream};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
@@ -292,7 +292,7 @@ pub fn to_vgm_stream_generator(
     package: MdxPackage,
     options: MdxToVgmOptions,
 ) -> Result<Box<dyn VgmCommandGenerator>, MdxConvertError> {
-    Ok(Box::new(MdxVgmGenerator::new(package, options, false)?))
+    Ok((package, options).into())
 }
 
 /// Convert the basic FM portion of an MDX package into a VGM document.
@@ -351,7 +351,7 @@ fn convert_document(
     options: &MdxToVgmOptions,
     diagnostics: bool,
 ) -> Result<VgmDocument, ConversionFailure> {
-    let mut generator = MdxVgmGenerator::new(package, *options, true)?;
+    let mut generator = MdxVgmGenerator::new(package, *options, true);
     if diagnostics {
         generator.playback.check_state = Some(PlaybackCheckState::default());
     }
@@ -381,7 +381,7 @@ fn convert_document(
             loop_count: Some(1),
             ..*options
         };
-        let mut repeat = MdxVgmGenerator::new(package, repeat_options, true)?;
+        let mut repeat = MdxVgmGenerator::new(package, repeat_options, true);
         if diagnostics {
             repeat.playback.check_state = Some(PlaybackCheckState::default());
         }
@@ -2644,7 +2644,7 @@ pub fn check_playback(
             "playback checking requires finite loops and nonzero execution limits",
         )));
     }
-    let mut generator = MdxVgmGenerator::new(package, options, false).map_err(invalid)?;
+    let mut generator = MdxVgmGenerator::new(package, options, false);
     generator.playback.check_state = Some(PlaybackCheckState {
         limits: Some(limits),
         ticks: 0,
@@ -2705,11 +2705,7 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
     /// (which needs a fixed native VGM loop point) and `false` for the
     /// streaming [`to_vgm_stream_generator`] path (which just keeps
     /// repeating indefinitely); see [`SongLoopState::mark_native_loop`].
-    fn new(
-        package: P,
-        mut options: MdxToVgmOptions,
-        mark_native_loop: bool,
-    ) -> Result<Self, MdxConvertError> {
+    fn new(package: P, mut options: MdxToVgmOptions, mark_native_loop: bool) -> Self {
         options.normalize();
         let pcm_mode = MdxPcmMode::from_track_count(package.borrow().mdx.header.track_count());
         let playback = PlaybackState::new(
@@ -2719,14 +2715,14 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
             options.loop_count,
             mark_native_loop,
         );
-        Ok(Self {
+        Self {
             playback,
             options,
             builder: VgmBuilder::new(),
             pending: VecDeque::new(),
             initialized: false,
             finished: false,
-        })
+        }
     }
 
     /// Runs one more step (the one-time initialization, or one MDX tick),
@@ -2836,11 +2832,145 @@ fn write_ym2151(builder: &mut VgmBuilder, register: u8, value: u8) {
     builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
 }
 
+/// Builds a lazy generator; playback errors are returned by `next_command`.
+impl From<(MdxPackage, MdxToVgmOptions)> for Box<dyn VgmCommandGenerator> {
+    fn from((package, options): (MdxPackage, MdxToVgmOptions)) -> Self {
+        Box::new(MdxVgmGenerator::new(package, options, false))
+    }
+}
+
+/// Builds a lazy stream; playback errors are returned during iteration.
+impl From<(MdxPackage, MdxToVgmOptions)> for VgmStream {
+    fn from(input: (MdxPackage, MdxToVgmOptions)) -> Self {
+        Self::from_generator(input.into())
+    }
+}
+
+/// Converts the whole song, returning any playback error.
+impl TryFrom<(&MdxPackage, &MdxToVgmOptions)> for VgmDocument {
+    type Error = MdxConvertError;
+
+    fn try_from((package, options): (&MdxPackage, &MdxToVgmOptions)) -> Result<Self, Self::Error> {
+        to_vgm_document(package, options)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mdx::command::MdxRest;
     use crate::mdx::document::MdxBuilder;
+    use crate::vgm::stream::StreamResult;
+
+    #[test]
+    fn tuple_document_conversion_matches_named_conversion() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 2 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        let expected = to_vgm_document(&package, &options).unwrap();
+        let document: VgmDocument = (&package, &options).try_into().unwrap();
+        assert_eq!(document.commands, expected.commands);
+    }
+
+    #[test]
+    fn tuple_generator_conversion_matches_named_conversion() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 2 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        let expected = to_vgm_document(&package, &options).unwrap();
+        let mut generator: Box<dyn VgmCommandGenerator> = (package, options).into();
+        let mut commands = Vec::new();
+        while let Some(command) = generator.next_command().unwrap() {
+            commands.push(command);
+        }
+        assert_eq!(commands, expected.commands);
+    }
+
+    #[test]
+    fn tuple_stream_conversion_matches_named_conversion() {
+        let mut builder = MdxBuilder::new();
+        builder.add_mdx_command(0, MdxRest { ticks: 2 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        let expected = to_vgm_document(&package, &options).unwrap();
+        let stream: VgmStream = (package, options).into();
+        let named = VgmStream::from_document(expected);
+        assert_eq!(
+            stream
+                .take_while(|result| !matches!(result, Ok(StreamResult::EndOfStream)))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            named
+                .take_while(|result| !matches!(result, Ok(StreamResult::EndOfStream)))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn tuple_conversion_preserves_playback_errors() {
+        let package = || {
+            let mut builder = MdxBuilder::new();
+            builder
+                .add_mdx_command(0, crate::mdx::command::MdxVoiceOrPcmBank { value: 42 })
+                .add_mdx_command(
+                    0,
+                    crate::mdx::command::MdxNote {
+                        note: 0x80,
+                        length: 1,
+                    },
+                );
+            MdxPackage {
+                mdx: builder.finalize().unwrap(),
+                pdx: None,
+            }
+        };
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            VgmDocument::try_from((&package(), &options)).unwrap_err(),
+            MdxConvertError::MissingTone { voice: 42 },
+        );
+        let mut generator: Box<dyn VgmCommandGenerator> = (package(), options).into();
+        let generator_error = loop {
+            match generator.next_command() {
+                Err(error) => break error,
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("expected a missing tone error"),
+            }
+        };
+        let mut stream: VgmStream = (package(), options).into();
+        let stream_error = stream.find_map(Result::err).unwrap();
+        for error in [generator_error, stream_error] {
+            let source = std::error::Error::source(&error).unwrap();
+            assert_eq!(
+                source.downcast_ref::<MdxConvertError>(),
+                Some(&MdxConvertError::MissingTone { voice: 42 }),
+            );
+        }
+    }
 
     fn playback_state(pcm_mode: MdxPcmMode, adpcm_mode: AdpcmMode) -> PlaybackState<MdxPackage> {
         let mut builder = MdxBuilder::new();
@@ -2964,7 +3094,7 @@ mod tests {
                 .position(|command| matches!(command, VgmCommand::EndOfData(_)))
                 .unwrap();
             expected.truncate(end + 1);
-            let mut generator = MdxVgmGenerator::new(package, options, false).unwrap();
+            let mut generator = MdxVgmGenerator::new(package, options, false);
             let mut commands = vec![generator.next_command().unwrap().unwrap()];
             assert!(!generator.pending.is_empty());
             assert_eq!(generator.builder.command_count(), 0);

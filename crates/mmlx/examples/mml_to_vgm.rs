@@ -6,8 +6,9 @@
 
 use std::error::Error;
 
+use soundlog::VgmCommandGenerator;
 use soundlog::chip::state::Ym2151State;
-use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
+use soundlog::mdx::convert::MdxToVgmOptions;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmCallbackStream;
 use soundlog::vgm::command::Instance;
@@ -37,7 +38,7 @@ C t120 @1 l8 [[gab>c<]2]2
         ..MdxToVgmOptions::default()
     };
     let ym2151_clock = options.ym2151_clock as f32;
-    let generator = to_vgm_stream_generator(package, options)?;
+    let generator: Box<dyn VgmCommandGenerator> = (package, options).into();
 
     let mut stream = VgmCallbackStream::from_generator(generator);
     stream.track_state::<Ym2151State>(Instance::Primary, ym2151_clock);
