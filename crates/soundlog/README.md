@@ -379,13 +379,8 @@ the `mdx` feature is only required when using the MDX implementation.
 
 Commands are converted as they are consumed, so the complete VGM command list
 does not need to be kept in memory.
-Both eager MDX conversion and lazy streaming stop with
-`MdxConvertError::TickLimitExceeded` if playback exceeds
-`MdxToVgmOptions::max_ticks`. The default is `Some(100_000)`, approximately
-17 minutes 4 seconds at MML `t120` (MDX tempo byte 216). Ticks accumulate
-across all loops and synchronization waits; they are not a wall-clock limit.
-Set `max_ticks: None` to disable the limit. Command-only repeats that do not
-advance playback time are not bounded by this setting.
+`MdxToVgmOptions` provides configurable playback-tick and per-tick command
+limits for both eager conversion and lazy streaming; see the API rustdoc.
 MDX support is disabled by default; enable it in your dependency declaration
 with `soundlog = { version = "0.14", features = ["mdx"] }`.
 

@@ -202,6 +202,11 @@ pub struct MdxToVgmOptions {
     /// `None` disables the limit. The default is 100,000 ticks, approximately
     /// 17 minutes 4 seconds at MML tempo `t120` (MDX tempo byte 216).
     pub max_ticks: Option<u32>,
+    /// Maximum MDX commands executed across all tracks without advancing
+    /// playback time. The count resets only when a tick of time elapses,
+    /// not at generator calls or loop boundaries. Applies to eager conversion
+    /// and lazy streaming. The default is 100,000; `None` disables the limit.
+    pub max_commands_per_tick: Option<u32>,
 }
 
 impl Default for MdxToVgmOptions {
@@ -212,6 +217,7 @@ impl Default for MdxToVgmOptions {
             adpcm_mode: AdpcmMode::default(),
             loop_count: None,
             max_ticks: Some(100_000),
+            max_commands_per_tick: Some(100_000),
         }
     }
 }
@@ -223,6 +229,11 @@ pub enum MdxConvertError {
     TickLimitExceeded {
         /// Configured maximum number of elapsed playback ticks.
         max_ticks: u32,
+    },
+    /// Playback would execute too many MDX commands without advancing time.
+    CommandLimitExceeded {
+        /// Configured maximum number of commands between elapsed ticks.
+        max_commands_per_tick: u32,
     },
     /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
@@ -259,6 +270,12 @@ impl fmt::Display for MdxConvertError {
                 )
             }
             MdxConvertError::InvalidOptions(reason) => write!(f, "invalid options: {reason}"),
+            MdxConvertError::CommandLimitExceeded {
+                max_commands_per_tick,
+            } => write!(
+                f,
+                "MDX conversion command limit exceeded (maximum {max_commands_per_tick} commands without advancing playback time)"
+            ),
             MdxConvertError::InvalidDocument(reason) => write!(f, "invalid MDX document: {reason}"),
             MdxConvertError::UnsupportedCommand { track, command } => {
                 write!(f, "unsupported command `{command}` on track {track}")
@@ -411,6 +428,7 @@ fn convert_document(
         };
         let mut repeat = MdxVgmGenerator::new(package, repeat_options, true);
         repeat.playback.timing.elapsed_ticks = generator.playback.timing.elapsed_ticks;
+        repeat.playback.timing.commands_since_tick = generator.playback.timing.commands_since_tick;
         if diagnostics {
             repeat.playback.check_state = Some(PlaybackCheckState::default());
         }
@@ -1105,6 +1123,7 @@ struct PlaybackTimingState {
     /// configured output sample rate.
     sample_remainder: u32,
     elapsed_ticks: u32,
+    commands_since_tick: u32,
 }
 
 impl PlaybackTimingState {
@@ -1114,12 +1133,14 @@ impl PlaybackTimingState {
             tempo: DEFAULT_TEMPO,
             sample_remainder: 0,
             elapsed_ticks: 0,
+            commands_since_tick: 0,
         }
     }
 
     /// Advances one MDX tick and returns its duration and VGM sample count.
     fn advance_tick(&mut self) -> (u32, u32) {
         self.elapsed_ticks = self.elapsed_ticks.saturating_add(1);
+        self.commands_since_tick = 0;
         let tick_microseconds = 256 * u32::from(256u16 - u16::from(self.tempo));
         let sample_accumulator = self.sample_remainder + tick_microseconds * VGM_SAMPLE_RATE;
         let samples = sample_accumulator / MICROSECONDS_PER_SECOND;
@@ -1220,6 +1241,9 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     pcm_mode: MdxPcmMode,
     /// ADPCM processing mode selected by the caller.
     adpcm_mode: AdpcmMode,
+    /// Maximum MDX commands executed across all tracks between elapsed ticks.
+    /// `None` disables the limit.
+    max_commands_per_tick: Option<u32>,
     /// Per-track command cursors and playback state for the MDX tracks.
     tracks: Vec<TrackState>,
     /// Current document ranges, cached on the first jump for this playback.
@@ -1312,6 +1336,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             package,
             pcm_mode,
             adpcm_mode,
+            max_commands_per_tick: None,
             tracks,
             jump_source_map: None,
             check_state: None,
@@ -1595,6 +1620,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     state.commands += 1;
                 }
             }
+            if let Some(max_commands_per_tick) = self.max_commands_per_tick
+                && self.timing.commands_since_tick >= max_commands_per_tick
+            {
+                return Err(MdxConvertError::CommandLimitExceeded {
+                    max_commands_per_tick,
+                });
+            }
+            self.timing.commands_since_tick = self.timing.commands_since_tick.saturating_add(1);
             self.tracks[track].command_index += 1;
             if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
                 && track == 8
@@ -2683,7 +2716,8 @@ impl From<MdxConvertError> for MdxPlaybackCheckError {
 /// payloads that playback treats as silence. Coordinates refer to MDX commands,
 /// not source-text lines. Limits also apply within a tick, preventing command-only
 /// repeats from blocking the caller indefinitely.
-/// This check uses `limits` rather than [`MdxToVgmOptions::max_ticks`].
+/// This check uses `limits` rather than [`MdxToVgmOptions::max_ticks`] or
+/// [`MdxToVgmOptions::max_commands_per_tick`].
 ///
 /// # Errors
 ///
@@ -2708,6 +2742,7 @@ pub fn check_playback(
         package,
         MdxToVgmOptions {
             max_ticks: None,
+            max_commands_per_tick: None,
             ..options
         },
         false,
@@ -2775,13 +2810,14 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
     fn new(package: P, mut options: MdxToVgmOptions, mark_native_loop: bool) -> Self {
         options.normalize();
         let pcm_mode = MdxPcmMode::from_track_count(package.borrow().mdx.header.track_count());
-        let playback = PlaybackState::new(
+        let mut playback = PlaybackState::new(
             package,
             pcm_mode,
             options.adpcm_mode,
             options.loop_count,
             mark_native_loop,
         );
+        playback.max_commands_per_tick = options.max_commands_per_tick;
         Self {
             playback,
             options,
@@ -2931,6 +2967,233 @@ mod tests {
     use crate::mdx::command::MdxRest;
     use crate::mdx::document::MdxBuilder;
     use crate::vgm::stream::StreamResult;
+
+    #[test]
+    fn conversion_command_limit_stops_finite_nested_repeats() {
+        let mut builder = MdxBuilder::new();
+        for _level in 0..6 {
+            builder.add_mdx_command(
+                0,
+                crate::mdx::command::MdxLoopStart {
+                    count: 255,
+                    reserved: 0,
+                },
+            );
+        }
+        for _level in 0..6 {
+            builder.add_mdx_command(
+                0,
+                MdxCommand::LoopEnd(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf5,
+                    offset: -3,
+                }),
+            );
+        }
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let package = MdxPackage::parse(&bytes, None).unwrap();
+        let expected = MdxConvertError::CommandLimitExceeded {
+            max_commands_per_tick: 10,
+        };
+        for loop_count in [None, Some(1)] {
+            let options = MdxToVgmOptions {
+                loop_count,
+                max_ticks: Some(1),
+                max_commands_per_tick: Some(10),
+                ..Default::default()
+            };
+            assert_eq!(to_vgm_document(&package, &options).unwrap_err(), expected);
+            assert_eq!(
+                to_vgm_document_with_diagnostics(&package, &options).unwrap_err(),
+                MdxPlaybackCheckError::Conversion {
+                    error: expected.clone(),
+                    track: Some(0),
+                    command_index: Some(6),
+                }
+            );
+            let mut generator: Box<dyn VgmCommandGenerator> = (package.clone(), options).into();
+            let error = generator.next_command().unwrap_err();
+            assert_eq!(
+                error.source().unwrap().downcast_ref::<MdxConvertError>(),
+                Some(&expected)
+            );
+        }
+    }
+
+    #[test]
+    fn conversion_command_limit_stops_lazy_empty_infinite_repeat() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                0,
+                crate::mdx::command::MdxLoopStart {
+                    count: 0,
+                    reserved: 0,
+                },
+            )
+            .add_mdx_command(
+                0,
+                MdxCommand::LoopEnd(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf5,
+                    offset: -3,
+                }),
+            );
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let package = MdxPackage::parse(&bytes, None).unwrap();
+        let options = MdxToVgmOptions {
+            max_ticks: Some(1),
+            max_commands_per_tick: Some(10),
+            ..Default::default()
+        };
+        let mut generator: Box<dyn VgmCommandGenerator> = (package, options).into();
+        let error = generator.next_command().unwrap_err();
+        assert_eq!(
+            error.source().unwrap().downcast_ref::<MdxConvertError>(),
+            Some(&MdxConvertError::CommandLimitExceeded {
+                max_commands_per_tick: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn conversion_command_limit_boundaries_reset_and_disable() {
+        let mut builder = MdxBuilder::new();
+        for _tick in 0..3 {
+            for value in [1, 2] {
+                builder.add_mdx_command(
+                    0,
+                    crate::mdx::command::MdxOpmRegisterWrite {
+                        register: 0x1a,
+                        value,
+                    },
+                );
+            }
+            builder.add_mdx_command(0, MdxRest { ticks: 1 });
+        }
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        for max_commands_per_tick in [Some(3), None] {
+            let options = MdxToVgmOptions {
+                max_commands_per_tick,
+                ..Default::default()
+            };
+            assert!(to_vgm_document(&package, &options).is_ok());
+        }
+        for max_commands_per_tick in [0, 2] {
+            let options = MdxToVgmOptions {
+                max_commands_per_tick: Some(max_commands_per_tick),
+                ..Default::default()
+            };
+            assert_eq!(
+                to_vgm_document(&package, &options).unwrap_err(),
+                MdxConvertError::CommandLimitExceeded {
+                    max_commands_per_tick,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn conversion_command_limit_counts_all_tracks() {
+        let mut builder = MdxBuilder::new();
+        for track in 0..2 {
+            builder
+                .add_mdx_command(
+                    track,
+                    crate::mdx::command::MdxOpmRegisterWrite {
+                        register: 0x1a,
+                        value: 1,
+                    },
+                )
+                .add_mdx_command(track, MdxRest { ticks: 1 });
+        }
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxToVgmOptions {
+            max_commands_per_tick: Some(4),
+            ..Default::default()
+        };
+        assert!(to_vgm_document(&package, &options).is_ok());
+        assert_eq!(
+            to_vgm_document_with_diagnostics(
+                &package,
+                &MdxToVgmOptions {
+                    max_commands_per_tick: Some(3),
+                    ..options
+                }
+            )
+            .unwrap_err(),
+            MdxPlaybackCheckError::Conversion {
+                error: MdxConvertError::CommandLimitExceeded {
+                    max_commands_per_tick: 3,
+                },
+                track: Some(1),
+                command_index: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn conversion_command_limit_survives_f1_boundaries_and_generator_calls() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                0,
+                crate::mdx::command::MdxOpmRegisterWrite {
+                    register: 0x1a,
+                    value: 1,
+                },
+            )
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(crate::mdx::command::MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: -6,
+                }),
+            );
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let package = MdxPackage::parse(&bytes, None).unwrap();
+        let options = MdxToVgmOptions {
+            loop_count: Some(4),
+            max_ticks: Some(1),
+            max_commands_per_tick: Some(5),
+            ..Default::default()
+        };
+        let expected = MdxConvertError::CommandLimitExceeded {
+            max_commands_per_tick: 5,
+        };
+        assert_eq!(to_vgm_document(&package, &options).unwrap_err(), expected);
+        let mut generator = MdxVgmGenerator::new(package, options, false);
+        assert!(generator.next_command().unwrap().is_some());
+        let error = (0..64)
+            .find_map(|_| generator.next_command().err())
+            .expect("F1 passes retain the command count between generator calls");
+        assert_eq!(
+            error.source().unwrap().downcast_ref::<MdxConvertError>(),
+            Some(&expected)
+        );
+        assert_eq!(generator.playback.timing.elapsed_ticks, 0);
+        assert_eq!(generator.playback.timing.commands_since_tick, 5);
+    }
+
+    #[test]
+    fn conversion_command_limit_default_and_unlimited_counter() {
+        assert_eq!(
+            MdxToVgmOptions::default().max_commands_per_tick,
+            Some(100_000)
+        );
+        let mut playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+        playback.timing.commands_since_tick = u32::MAX;
+        playback
+            .process_commands(8, &mut VgmBuilder::new())
+            .unwrap();
+        assert_eq!(playback.timing.commands_since_tick, u32::MAX);
+        playback.timing.advance_tick();
+        assert_eq!(playback.timing.commands_since_tick, 0);
+    }
 
     #[test]
     fn conversion_tick_limit_allows_exact_duration() {
@@ -3578,6 +3841,7 @@ mod tests {
             &package,
             MdxToVgmOptions {
                 loop_count: Some(1),
+                max_commands_per_tick: Some(0),
                 ..Default::default()
             },
             MdxPlaybackCheckLimits {

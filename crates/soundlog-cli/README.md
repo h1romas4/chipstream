@@ -499,22 +499,17 @@ MML input.
 
 Playback errors are reported by default during conversion, with available
 zero-based MDX track/command coordinates, using the same diagnostic format as
-`mdx check`. Conversion stops with an error when its elapsed-tick limit is
-exceeded; it has no command-count limit.
+`mdx check`. Conversion stops with an error when its elapsed-tick or per-tick
+command limit is exceeded.
 A playback failure does not write or overwrite the output VGM file.
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
 `--adpcm-mode <through|resample|lpf>`.
 
-`--max-ticks <TICKS>` limits the actual conversion, without a separate playback
-validation pass. The default is 100,000 elapsed ticks, approximately 17 minutes
-4 seconds at MML `t120` (MDX tempo byte 216). It applies to both finite and
-native-loop conversion, counts all traversals and synchronization waits, and
-does not reset at loop boundaries. On exhaustion the command exits with status
-1 without creating or overwriting output. Use `--max-ticks 0` to disable the
-limit. This is a playback-time budget, not a wall-clock timeout or a bound on
-command-only repeats. `mdx parse` does not execute playback and is unchanged.
+`--max-ticks <TICKS>` limits elapsed playback ticks (default: 100,000; `0`
+disables this limit). A separate fixed limit of 100,000 MDX commands without
+advancing playback time remains enabled even with `--max-ticks 0`.
 
 By default, conversion writes one loop iteration as a finite VGM with no loop
 point. `--loop-count <COUNT>` uses the same count convention as VGM playback:

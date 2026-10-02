@@ -484,6 +484,7 @@ fn main() {
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
+                    ..Default::default()
                 };
                 match cui::mdx::test_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
@@ -514,6 +515,7 @@ fn main() {
                     },
                     adpcm_mode: adpcm_mode.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
+                    ..Default::default()
                 };
                 match cui::mdx::convert_mdx(&input, &output, pdx.as_deref(), &options) {
                     Ok(()) => process::exit(0),
@@ -542,6 +544,7 @@ fn main() {
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
+                    ..Default::default()
                 };
                 match cui::mdx::stream_mdx(&input, pdx.as_deref(), logger.clone(), &options) {
                     Ok(()) => process::exit(0),
