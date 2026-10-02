@@ -1,9 +1,9 @@
 # soundlog-cli
 
-`soundlog-cli` provides the `soundlog` CLI for inspecting, testing, and re-dumping VGM and MDX files processed by the `soundlog` library. The independent `soundlog-gui` crate provides a reusable GUI frontend.
+`soundlog` is a command-line tool for inspecting and validating VGM, MDX, and PDX files, compiling MML, and converting MDX to VGM. For a graphical interface, use `soundlog-gui`.
 
 > [!IMPORTANT]
-> `soundlog-cli` is a development / debugging frontend for the `soundlog` library and is not a stable public API. Command-line flags, output formats, and internal behavior may change between releases. If you depend on this crate in scripts or CI, verify compatibility when upgrading. Also, please note that since this is primarily intended for debugging the soundlog crate, it may allocate more memory than necessary.
+> This CLI is intended for debugging and validation. Commands, options, and output formats may change between releases; check compatibility when upgrading scripts or CI. Memory usage may be higher than necessary.
 
 Contents:
 
@@ -22,7 +22,7 @@ Contents:
 
 ## Building and running
 
-From the repository root you can build and run the debug frontend with Cargo. The crate installs a binary named `soundlog`.
+Build with Cargo from the repository root, then run the `soundlog` binary:
 
 ```bash
 cargo build --release
@@ -70,7 +70,7 @@ Options:
   -h, --help  Print help
 ```
 
-Generate a completion script from the current CLI definition with `clap_complete`:
+Generate a completion script for your shell:
 
 ```bash
 soundlog completions bash
@@ -112,7 +112,7 @@ Options:
   -h, --help     Print help
 ```
 
-Run a headless test / round-trip check on a VGM or VGZ file. Useful for automated verification and CI.
+Check that a VGM or VGZ file can be parsed and rebuilt. Useful for automated verification and CI.
 
 Examples:
 
@@ -130,7 +130,7 @@ cat samples/example.vgz | soundlog test - --dry-run
 
 Behavior:
 
-- The `test` subcommand re-parses the input using `soundlog`'s parser and performs round-trip checks. 
+- `test` parses the input, rebuilds it, and checks the result.
 - Input detection supports `.vgz`/`.gz` extensions and will attempt gzip decompression when appropriate.
 
 ### `redump`
@@ -176,8 +176,8 @@ soundlog redump samples/input.vgz rebuilt.vgm --loop-count 2 --fadeout-samples 4
 
 Notes:
 
-- The `redump` implementation copies header chip registration and some chip-specific configuration fields from the original header into the rebuilt document so the expanded output preserves timing and chip configuration where possible.
-- If `--diag` is specified the rebuilt bytes are re-parsed with the same parser used for input, and a comparison table or diagnostics are printed. This is helpful to validate that expansion and serialization did not change the command semantics.
+- The output retains the original chip clocks and configuration where possible.
+- Use `--diag` to compare the original and rebuilt files and check for changes in command behavior.
 
 
 ### `parse`
@@ -197,16 +197,11 @@ Options:
 Parse a VGM or VGZ file and display its command stream with offsets and lengths.
 
 - `<VGM_FILE>`: path to input VGM or VGZ. Use `-` to read from stdin (gzipped input is detected automatically).
-- No additional options are required for basic parsing; use this command to inspect the serialized command stream, command offsets, and lengths within the VGM's data region.
+- Use this command to locate commands and data blocks in the file.
 
 Behavior:
 
-- The `parse` subcommand reads a VGM or VGZ file (or stdin), parses the command/data region into `VgmCommand` values, and prints a human-readable listing.
-- For each parsed command the tool prints:
-  - The absolute file offset (or offset relative to the data region),
-  - The command kind (e.g. `WaitSamples`, `Ym2612Write`, `DataBlock`),
-  - Any compact details (register, value, instance) and the command's serialized length in bytes.
-- `parse` is helpful for debugging file layout, verifying serialization round-trips, and locating specific commands or data blocks inside the file.
+- Each command is listed with its offset, kind, details (such as register, value, and chip instance), and length in bytes.
 
 Examples:
 
@@ -224,8 +219,7 @@ cat samples/example.vgz | soundlog parse -
 
 Notes:
 
-- The output is intended as an inspection aid — it does not expand DAC streams (use `redump` for expansion) and does not perform state tracking (use `stream` for event detection and state tracking).
-- When comparing parse output with `redump` or `stream`, note that `redump` may reserialize the document with expanded stream writes and `stream` will expand stream-generated writes on the timeline; use those commands accordingly for deeper inspection.
+- `parse` shows stored commands without expanding DAC streams or detecting chip events. Use `redump` to save expanded register writes, or `stream` to inspect them with events and timing.
 
 
 ### `stream`
@@ -253,12 +247,9 @@ Process a VGM or VGZ file as a command stream and display register writes with s
 
 Behavior:
 
-- The `stream` subcommand uses `VgmCallbackStream` to process the VGM document, expand DAC streams where applicable, and perform per-chip state tracking.
-- For each register write emitted by the stream, `stream` prints a concise one-line log containing:
-  - The sample offset (timeline position),
-  - A brief description of the register write (chip, port/register, value),
-  - Any detected events such as `KeyOn`, `KeyOff`, or `ToneChange`, including frequency information when available.
-- Output is oriented toward debugging and inspection; no audio is produced. It is intended to help verify timing, register sequences, and event detection when developing or validating VGM streams and chip state trackers.
+- DAC streams are expanded into register writes where supported.
+- Each log line shows the sample position, chip, port/register, value, and detected events such as `KeyOn`, `KeyOff`, or `ToneChange`. Frequencies are included when available.
+- No audio is produced; use the log to inspect timing, register writes, and chip events.
 
 Examples:
 
@@ -277,7 +268,7 @@ soundlog stream samples/example.vgz --dry-run
 Notes:
 
 - `stream` will automatically enable state tracking for chip instances recorded in the VGM header. If the VGM lacks master-clock information for a chip, some frequency calculations or event heuristics may be unavailable or reported as `None`.
-- The frequency values shown in `stream` reflect the crate's current calculation logic (register-derived values and any crate-specific adjustments). See the library documentation for details about nominal vs. audible frequency semantics.
+- Frequencies are calculated from chip registers and may differ from audible pitch. See the library documentation for details.
 
 
 ### `mdx`
@@ -300,12 +291,11 @@ Options:
   -h, --help  Print help
 ```
 
-The `mdx` command group provides MDX parsing, conversion, and command streaming through
-the same VGM command and register-write processing used by the other CLI
-commands. It also provides MML source validation and compilation.
+Use `mdx` to inspect MDX files, validate or compile MML, convert MDX to VGM,
+and inspect register writes and events.
 
 
-#### `mdx check`
+### `mdx check`
 
 ```text
 Parse, compile, and check finite lazy playback of MML without loading PDX
@@ -325,46 +315,32 @@ Options:
   -h, --help     Print help
 ```
 
-Parse MML, compile it directly into a typed MDX document, and check finite lazy
-playback without storing the VGM output. Pass `-` as the file to read from stdin;
+Check MML syntax, compilation, and playback without producing a VGM file.
+Pass `-` as the file to read from stdin;
 use `--stdin` to read stdin while keeping the supplied filename in diagnostics
-(useful for editor integrations). Add `--verbose` to print the typed syntax
+(useful for editor integrations). Add `--verbose` to print the parsed syntax
 tree.
 
 The default checks one whole-song playthrough; `--loop-count N` checks additional
-passes through song-level loops (the intro runs once). Counts and budgets must be
-positive. Tick and MDX-command budgets also stop synchronization stalls and
-duration-free repeats. Reaching either budget reports an **incomplete check** and
-exits with status 1, not a successful validation. Increase the limits for long songs.
+passes through song-level loops (the intro runs once). Counts and limits must be
+positive. Playback limits prevent stalled synchronization or zero-duration
+repeats from running indefinitely. Reaching either limit reports an **incomplete
+check** and exits with status 1, not a successful validation. Increase the limits
+for long songs.
 
-PDX files are never loaded by `check`. Short synthetic PCM payloads exercise the
-playback paths but do not validate actual PDX files, sample formats, lengths, audio,
-or behavior dependent on real sample lengths. Only reached playback paths and
-errors reported by the converter are checked; missing/malformed real samples are
-not detected. Runtime errors use `file:line:column: error: ...` when the executed
-command can be mapped to MML. Lines and columns are one-based, with columns counted
-in characters; zero-based MDX track/command coordinates remain in the message.
-A missing tone is reported at the note that triggers key-on, not the earlier
-voice selection. Errors without a source position, such as tick-budget exhaustion,
-use `file: error: ...`. Parse errors retain source locations.
+`check` uses synthetic PCM samples and never loads PDX files. It checks only
+reached playback paths, not real sample validity, audio, or sample-length-dependent
+behavior.
 
-Compilation errors tied to a command, including out-of-range notes and note
-lengths, also report `file:line:column: error: compile error: ...`. For example,
-`A a>>>>>>>>>a` points to the last `a` at line 1, column 13. Document-wide errors
-without a command location retain the file-only diagnostic. This applies to
-`check`, both `compile` output formats, and MML package loading; skipping playback
-checks does not suppress compilation errors.
+Diagnostics use `file:line:column: error: ...` when a source position is available,
+or `file: error: ...` otherwise. Lines and character columns are one-based; MDX
+track/command indices in messages are zero-based. Missing tones point to the note
+that triggers key-on. Compilation errors are reported even when playback checks
+are skipped.
 
-The CLI enables mmlx's `source-map` feature and retains the original input text,
-including stdin buffers. Parsing collects syntax ranges once; compilation builds
-a map addressing the finalized MDX commands. Compilation and playback diagnostics
-use these retained ranges without reparsing or recompiling the input. Maps allocate
-memory separately from the document and are kept through playback validation or
-VGM conversion; no source information is added to MDX packages or the playback engine.
-
-Use `--parse-only` for parser-only validation, particularly
-for editor linting while voice definitions are still incomplete. It cannot be
-combined with explicit playback count or budget options.
+Use `--parse-only` for syntax-only editor linting, for example while voice
+definitions are incomplete. It cannot be combined with explicit loop-count or
+playback-budget options.
 
 ```bash
 cat song.mml | soundlog mdx check -
@@ -411,7 +387,7 @@ Run **MML: check current file** with **Tasks: Run Task**. Parser diagnostics
 include an end column, which the matcher uses to mark the full source range;
 positioned playback diagnostics mark the originating command's start position.
 
-##### Helix with `efm-langserver`
+#### Helix with `efm-langserver`
 
 Install `efm-langserver` and make both `efm-langserver` and `soundlog`
 available on `PATH`. Add the following to
@@ -455,7 +431,7 @@ MML command. In Helix, use `]d` and `[d` to move
 between diagnostics or `Space d` to open the diagnostic picker. After changing
 the efm configuration, run `:lsp-restart` and edit the buffer to trigger linting.
 
-#### `mdx compile`
+### `mdx compile`
 
 ```text
 Compile an MML source file into an MDX or VGM binary file
@@ -473,30 +449,21 @@ Options:
   -h, --help                           Print help
 ```
 
-Compile an MML source file to MDX. Pass `--output-format vgm` to produce VGM
-instead; MDX is the default. VGM output uses the default conversion settings,
-including native VGM looping, equivalent to `mdx convert --native-loop`. Use
-`--adpcm-mode` to select ADPCM processing for VGM output; the default is
-`through`. The option has no effect when writing MDX.
+Compile MML to MDX by default, or use `--output-format vgm` for VGM with native
+looping. For VGM output, `--adpcm-mode` defaults to `through`, and PDX files
+referenced by `#pcmfile` are searched for relative to the input MML.
 
-MDX output is validated before writing by default, using the same bounded lazy
-playback check as `mdx check`: one whole-song playthrough, at most 100,000 ticks
-and 1,000,000 MDX commands, with synthetic PCM samples and no PDX loading.
-Playback failures and exhausted budgets return exit code 1 without writing or
-overwriting the output. Use `--no-playback-check` to skip this validation, for
-example for songs exceeding the default budgets; parsing and compilation still
-run. Run `mdx check` separately with custom budgets or loop counts when needed.
+MDX output runs the same playback check as `mdx check` before writing: one
+playthrough, up to 100,000 ticks and 1,000,000 commands, using synthetic PCM and
+no PDX loading. Failures or exhausted limits exit with status 1 without writing
+or overwriting output. `--no-playback-check` skips playback validation only;
+use `mdx check` separately for custom limits or loop counts.
 
-VGM output reports playback errors during the actual conversion, without a
-separate validation pass or playback-check budgets. Both output formats report
-available MML line/column positions, recovered only on failure from the retained
-original source, with zero-based MDX track/command coordinates in the message.
-`--no-playback-check` does not suppress errors from VGM conversion.
+VGM conversion has no playback-check budgets and still reports playback errors
+with `--no-playback-check`. Both formats report available MML source positions
+and MDX track/command indices.
 
-When producing VGM from MML that declares `#pcmfile`, the referenced PDX file
-is searched for relative to the input MML file.
-
-#### `mdx convert`
+### `mdx convert`
 
 ```text
 Convert an MDX file to a VGM file
@@ -529,7 +496,7 @@ MML input.
 
 Playback errors are reported by default during conversion, with available
 zero-based MDX track/command coordinates, using the same diagnostic format as
-`mdx check`. No additional validation pass or playback-check budgets are applied.
+`mdx check`. Unlike `mdx check`, conversion has no tick or command limits.
 A playback failure does not write or overwrite the output VGM file.
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
@@ -549,7 +516,7 @@ iteration count in `mdx test` and `mdx stream`. For example, `--loop-count 2`
 plays the intro once and emits two passes through the L region; `--loop-count 0`
 is equivalent to `--loop-count 1`.
 
-#### `mdx parse`
+### `mdx parse`
 
 ```text
 Parse an MDX or MML file and display its track commands
@@ -582,7 +549,7 @@ used to search the input file's directory. The exact name, `.PDX`, and `.pdx`
 variants are checked, followed by a case-insensitive filename search. If no
 matching file is found, processing continues without PDX data.
 
-#### `mdx test`
+### `mdx test`
 
 ```text
 Convert an MDX file and verify that the generated VGM parses
@@ -625,7 +592,7 @@ soundlog mdx test samples/example.mdx
 soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
-#### `mdx stream`
+### `mdx stream`
 
 ```text
 Convert an MDX or MML file lazily to a command stream and print register writes and events in the same format as `soundlog stream`
@@ -652,9 +619,9 @@ Options:
       Print help
 ```
 
-Convert an MDX or MML file lazily and print the same register-write and event
-log format as `soundlog stream`. MML input is compiled to MDX first; the
-complete VGM command list is not built up front.
+Inspect register writes and events from an MDX or MML file without writing a
+VGM file. The log format matches `soundlog stream`. MML input is compiled
+before playback processing.
 
 The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
 `--ym2151-clock <HZ>`, `--okim6258-clock <HZ>`, `--sample-rate <HZ>`,
@@ -662,7 +629,7 @@ The stream options include `--pdx <PDX_FILE>`, `--dry-run`,
 `--adpcm-mode <through|resample|lpf>` (default: `through`).
 The default loop count is 1. Explicit counts follow VGM playback semantics;
 for L markers, `--loop-count 2` plays the intro once and traverses the loop
-region twice, synchronizing tracks at their F1 markers.
+region twice.
 
 Examples:
 
@@ -689,7 +656,7 @@ Options:
   -h, --help  Print help
 ```
 
-#### `pdx test`
+### `pdx test`
 
 ```text
 Validate a PDX file and display its banks and sample allocation
@@ -709,7 +676,7 @@ bank/sample counts, per-bank allocation totals, and each populated note slot.
 
 `--dry-run` performs validation while suppressing the summary output.
 
-#### `pdx build`
+### `pdx build`
 
 ```text
 Convert WAV/raw samples to ADPCM as needed and write a PDX file
@@ -734,8 +701,8 @@ compress the PDX payload; it is uncompressed by default.
 
 Verbose output reports WAV bit depth and PCM conversion to 12-bit samples; raw
 ADPCM is copied without PCM conversion. For 16-bit WAV input,
-`--disable-12bit-conversion` skips the default `>> 4` scaling. The ADPCM encoder
-still clamps values to its signed 12-bit range.
+`--disable-12bit-conversion` skips the default 16-to-12-bit scaling. Values
+outside the signed 12-bit range are still clipped during ADPCM encoding.
 
 Samples exported by `pdx export` retain their bank/note positions when passed
 back to `pdx build`; ordinary input names continue to use sequential positions.
@@ -752,11 +719,9 @@ WAV input is ADPCM-encoded during build; `.raw` input is copied as-is. Do not
 mix slot-named inputs with ordinary names in one build command.
 
 Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
-supported. Signed 16-bit samples are converted to signed 12-bit values by
-shifting right by four bits before ADPCM encoding. Stereo WAV files are
-rejected.
+supported. Stereo WAV files are rejected.
 
-#### `pdx export`
+### `pdx export`
 
 ```text
 Export PDX samples as raw ADPCM bytes or mono WAV files
@@ -809,17 +774,17 @@ PDX's encoded sample data and populated bank/note slots.
 
 ## MML profiler
 
-`soundlog-mml-prof` profiles the complete MML-to-VGM streaming path using the
-bundled fixture.
+Use `soundlog-mml-prof` with a profiler to measure MML-to-VGM processing of
+the bundled MML sample.
 
 ```bash
 RUSTFLAGS="-C debuginfo=2" cargo build --release -p soundlog-cli --bin soundlog-mml-prof
 heaptrack target/release/soundlog-mml-prof
 ```
 
-## Test Heaptrack
+## Memory profiling
 
-Ubuntu:
+To inspect memory usage on Ubuntu, install Heaptrack and run:
 
 ```
 sudo apt install heaptrack heaptrack-gui
