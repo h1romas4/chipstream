@@ -2687,6 +2687,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         self.finalize(builder)
     }
 
+    /// Wraps a conversion error with the current MDX position, if available.
     fn conversion_failure(&self, error: MdxConvertError) -> ConversionFailure {
         ConversionFailure {
             error,
@@ -2694,6 +2695,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
+    /// Adds available MDX coordinates, reporting a playback-check limit hit when recorded.
     fn diagnostic_error(&self, error: MdxConvertError) -> MdxPlaybackCheckError {
         let position = self.check_state.as_ref().and_then(|state| state.position);
         let track = position.map(|(track, _)| track);
