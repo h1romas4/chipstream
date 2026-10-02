@@ -1666,8 +1666,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     // 0=center, 1=left, 2=right, 3=mute.
                     let pan = match command {
                         MdxPan::Mute => 3,
-                        MdxPan::Right => 2,
-                        MdxPan::Left => 1,
+                        MdxPan::Right => 1,
+                        MdxPan::Left => 2,
                         MdxPan::Center => 0,
                         MdxPan::Unknown(value) => value & 0x03,
                     };

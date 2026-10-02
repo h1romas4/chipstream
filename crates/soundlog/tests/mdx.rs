@@ -1869,7 +1869,7 @@ fn mdx_converter_pcm_notes_do_not_emit_fm_register_writes() {
             _ => None,
         })
         .collect();
-    assert_eq!(pcm_pan_writes, vec![2]);
+    assert_eq!(pcm_pan_writes, vec![1]);
 }
 
 #[test]
@@ -1992,12 +1992,15 @@ fn mdx_converter_does_not_retrigger_a_naturally_ended_held_pcm8a_block() {
 }
 
 #[test]
-fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
+fn mdx_converter_pcm_pan_raw_values_map_to_vgm() {
     let mut builder = MdxBuilder::new();
     builder
         .add_mdx_command(8, MdxVoiceOrPcmBank { value: 0 })
         .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 4 })
-        .add_mdx_command(8, MdxPan::Mute)
+        .add_mdx_command(8, MdxPan::from_raw(0))
+        .add_mdx_command(8, MdxPan::from_raw(1))
+        .add_mdx_command(8, MdxPan::from_raw(2))
+        .add_mdx_command(8, MdxPan::from_raw(3))
         .add_mdx_command(
             8,
             MdxNote {
@@ -2014,7 +2017,7 @@ fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
     };
 
     let document = to_vgm_document(&package, &MdxToVgmOptions::default())
-        .expect("a muted PCM track should still convert");
+        .expect("a PCM track with pan changes should convert");
     let pcm_pan_writes: Vec<_> = document
         .commands
         .iter()
@@ -2023,7 +2026,7 @@ fn mdx_converter_pcm_pan_zero_emits_vgm_mute() {
             _ => None,
         })
         .collect();
-    assert_eq!(pcm_pan_writes, vec![3]);
+    assert_eq!(pcm_pan_writes, vec![3, 1, 2, 0]);
 }
 
 #[test]
