@@ -97,7 +97,7 @@ soundlog completions powershell | Out-String | Invoke-Expression
 
 ## Subcommands and usage
 
-### `test`
+### `test`: Validate VGM/VGZ round trips
 
 ```text
 Test a VGM or VGZ file with a parse/build round trip and display its header
@@ -133,7 +133,7 @@ Behavior:
 - `test` parses the input, rebuilds it, and checks the result.
 - Input detection supports `.vgz`/`.gz` extensions and will attempt gzip decompression when appropriate.
 
-### `redump`
+### `redump`: Expand VGM DAC streams
 
 ```text
 Re-dump a VGM or VGZ file, expanding DAC streams to chip writes
@@ -180,7 +180,7 @@ Notes:
 - Use `--diag` to compare the original and rebuilt files and check for changes in command behavior.
 
 
-### `parse`
+### `parse`: Inspect VGM commands
 
 ```text
 Parse a VGM or VGZ file and display its commands, offsets, and lengths
@@ -222,7 +222,7 @@ Notes:
 - `parse` shows stored commands without expanding DAC streams or detecting chip events. Use `redump` to save expanded register writes, or `stream` to inspect them with events and timing.
 
 
-### `stream`
+### `stream`: Inspect VGM register writes and events
 
 ```text
 Stream a VGM or VGZ file and display its register writes and detected events
@@ -271,7 +271,7 @@ Notes:
 - Frequencies are calculated from chip registers and may differ from audible pitch. See the library documentation for details.
 
 
-### `mdx`
+### `mdx`: MDX and MML tools
 
 ```text
 MDX file operations
@@ -295,7 +295,7 @@ Use `mdx` to inspect MDX files, validate or compile MML, convert MDX to VGM,
 and inspect register writes and events.
 
 
-### `mdx check`
+### `mdx check`: Validate MML syntax and playback
 
 ```text
 Parse, compile, and check finite lazy playback of MML without loading PDX
@@ -431,7 +431,7 @@ MML command. In Helix, use `]d` and `[d` to move
 between diagnostics or `Space d` to open the diagnostic picker. After changing
 the efm configuration, run `:lsp-restart` and edit the buffer to trigger linting.
 
-### `mdx compile`
+### `mdx compile`: Compile MML to MDX or VGM
 
 ```text
 Compile an MML source file into an MDX or VGM binary file
@@ -463,7 +463,7 @@ VGM conversion has no playback-check budgets and still reports playback errors
 with `--no-playback-check`. Both formats report available MML source positions
 and MDX track/command indices.
 
-### `mdx convert`
+### `mdx convert`: Convert MDX to VGM
 
 ```text
 Convert an MDX file to a VGM file
@@ -516,7 +516,7 @@ iteration count in `mdx test` and `mdx stream`. For example, `--loop-count 2`
 plays the intro once and emits two passes through the L region; `--loop-count 0`
 is equivalent to `--loop-count 1`.
 
-### `mdx parse`
+### `mdx parse`: Inspect MDX/MML track commands
 
 ```text
 Parse an MDX or MML file and display its track commands
@@ -549,7 +549,7 @@ used to search the input file's directory. The exact name, `.PDX`, and `.pdx`
 variants are checked, followed by a case-insensitive filename search. If no
 matching file is found, processing continues without PDX data.
 
-### `mdx test`
+### `mdx test`: Verify MDX-to-VGM conversion
 
 ```text
 Convert an MDX file and verify that the generated VGM parses
@@ -592,7 +592,7 @@ soundlog mdx test samples/example.mdx
 soundlog mdx test samples/example.mdx --pdx samples/example.pdx --dry-run
 ```
 
-### `mdx stream`
+### `mdx stream`: Inspect MDX/MML register writes and events
 
 ```text
 Convert an MDX or MML file lazily to a command stream and print register writes and events in the same format as `soundlog stream`
@@ -639,7 +639,7 @@ soundlog mdx stream samples/example.mdx --pdx samples/example.pdx --dry-run
 soundlog mdx stream samples/example.mml
 ```
 
-### `pdx`
+### `pdx`: PDX sample bank tools
 
 ```text
 PDX file operations
@@ -656,7 +656,7 @@ Options:
   -h, --help  Print help
 ```
 
-### `pdx test`
+### `pdx test`: Validate PDX sample banks
 
 ```text
 Validate a PDX file and display its banks and sample allocation
@@ -676,7 +676,7 @@ bank/sample counts, per-bank allocation totals, and each populated note slot.
 
 `--dry-run` performs validation while suppressing the summary output.
 
-### `pdx build`
+### `pdx build`: Build PDX from WAV or raw ADPCM
 
 ```text
 Convert WAV/raw samples to ADPCM as needed and write a PDX file
@@ -721,7 +721,7 @@ mix slot-named inputs with ordinary names in one build command.
 Integer 8-, 16-, 24-, and 32-bit samples and floating-point samples are
 supported. Stereo WAV files are rejected.
 
-### `pdx export`
+### `pdx export`: Export PDX samples as raw ADPCM or WAV
 
 ```text
 Export PDX samples as raw ADPCM bytes or mono WAV files
