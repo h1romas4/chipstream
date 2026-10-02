@@ -240,6 +240,13 @@ pub enum MdxConvertError {
         /// Voice number whose tone definition is missing.
         voice: u8,
     },
+    /// An FM key-on pitch is outside the supported YM2151 key-code range.
+    PitchOutOfRange {
+        /// Zero-based index of the track containing the note.
+        track: usize,
+        /// Computed pitch in units of 1/64 semitone; valid values are 0..=6143.
+        pitch: u16,
+    },
 }
 
 impl fmt::Display for MdxConvertError {
@@ -257,6 +264,10 @@ impl fmt::Display for MdxConvertError {
                 write!(f, "unsupported command `{command}` on track {track}")
             }
             MdxConvertError::MissingTone { voice } => write!(f, "missing tone for voice {voice}"),
+            MdxConvertError::PitchOutOfRange { track, pitch } => write!(
+                f,
+                "FM pitch {pitch} is outside the supported range 0..=6143 (track {track})"
+            ),
         }
     }
 }
@@ -1417,7 +1428,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             }
             self.tracks[track_index].advance_wait();
             if track_index < 8 {
-                self.update_fm_tick(track_index, builder);
+                self.update_fm_tick(track_index, builder)?;
             }
             self.process_key_off(track_index, builder);
             self.process_key_on_delay(track_index, builder)?;
@@ -1609,7 +1620,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                         .saturating_add(5)
                         .saturating_add_signed(self.tracks[track].fm.detune);
                     self.tracks[track].fm.note_pitch = Some(pitch);
-                    self.write_pitch(track, builder, pitch);
+                    self.write_pitch(track, builder, pitch)?;
                     if self.tracks[track].fm.key_on_delay == 0 {
                         self.begin_key_on(track, builder)?;
                     } else {
@@ -1972,7 +1983,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 
     /// Per-tick FM modulation: pitch bend accumulation, pitch/volume LFO
     /// updates (gated by LFO delay), and the resulting register writes.
-    fn update_fm_tick(&mut self, track: usize, builder: &mut VgmBuilder) {
+    fn update_fm_tick(
+        &mut self,
+        track: usize,
+        builder: &mut VgmBuilder,
+    ) -> Result<(), MdxConvertError> {
         let prev_volume_lfo_offset = self.tracks[track].lfo.volume_offset;
         // Updates the FM state for the current tick, including pitch bend
         // accumulation, LFO updates (if the LFO delay has elapsed), and
@@ -1999,18 +2014,23 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
         // Updates the pitch and volume for the current tick based on the LFO and pitch bend.
         if self.tracks[track].fm.note_pitch.is_some() {
-            self.update_pitch(track, builder);
+            self.update_pitch(track, builder)?;
         }
         // Emits the volume register write if the volume LFO offset has changed.
         if self.tracks[track].lfo.volume_offset != prev_volume_lfo_offset {
             self.emit_volume(track, builder);
         }
+        Ok(())
     }
 
     /// Writes the pitch registers only if the computed pitch changed.
-    fn update_pitch(&mut self, track: usize, builder: &mut VgmBuilder) {
+    fn update_pitch(
+        &mut self,
+        track: usize,
+        builder: &mut VgmBuilder,
+    ) -> Result<(), MdxConvertError> {
         let Some(note_pitch) = self.tracks[track].fm.note_pitch else {
-            return;
+            return Ok(());
         };
         let bend = self.tracks[track].fm.bend_offset >> 16;
         let lfo = self.tracks[track].lfo.pitch_offset >> 16;
@@ -2019,21 +2039,30 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             .saturating_add(lfo)
             .clamp(0, 0x17ff) as u16;
         if self.tracks[track].fm.last_written_pitch == Some(pitch) {
-            return;
+            return Ok(());
         }
-        self.write_pitch(track, builder, pitch);
+        self.write_pitch(track, builder, pitch)
     }
 
     /// Writes the computed pitch to the YM2151 registers for the specified track.
     /// Updates the last written pitch to avoid redundant writes.
-    fn write_pitch(&mut self, track: usize, builder: &mut VgmBuilder, pitch: u16) {
+    fn write_pitch(
+        &mut self,
+        track: usize,
+        builder: &mut VgmBuilder,
+        pitch: u16,
+    ) -> Result<(), MdxConvertError> {
+        let key_code = YM2151_KEYCODE_TABLE
+            .get(usize::from(pitch >> 6))
+            .copied()
+            .ok_or(MdxConvertError::PitchOutOfRange { track, pitch })?;
         let fm_channel = self.tracks[track].fm.fm_channel;
         let pitch_register = pitch << 2;
         let key_fraction = pitch_register as u8;
-        let key_code = YM2151_KEYCODE_TABLE[((pitch_register >> 8) & 0x7f) as usize];
         write_ym2151(builder, 0x30 + fm_channel, key_fraction);
         write_ym2151(builder, 0x28 + fm_channel, key_code);
         self.tracks[track].fm.last_written_pitch = Some(pitch);
+        Ok(())
     }
 
     /// Emits the current volume settings for the specified track to the YM2151 registers.
@@ -3163,6 +3192,91 @@ mod tests {
             pdx: None,
         };
         PlaybackState::new(package, pcm_mode, adpcm_mode, None, false)
+    }
+
+    #[test]
+    fn pitch_register_writes_validate_supported_range() {
+        for pitch in [0, 0x17ff] {
+            let mut playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+            let mut builder = VgmBuilder::new();
+            playback.write_pitch(0, &mut builder, pitch).unwrap();
+            assert_eq!(builder.command_count(), 2);
+            assert_eq!(playback.tracks[0].fm.last_written_pitch, Some(pitch));
+        }
+        for pitch in [0x1800, 0x1fff, 0x2000, u16::MAX] {
+            let mut playback = playback_state(MdxPcmMode::LegacyAdpcm, AdpcmMode::Through);
+            let mut builder = VgmBuilder::new();
+            assert_eq!(
+                playback.write_pitch(0, &mut builder, pitch),
+                Err(MdxConvertError::PitchOutOfRange { track: 0, pitch })
+            );
+            assert_eq!(builder.command_count(), 0);
+            assert_eq!(playback.tracks[0].fm.last_written_pitch, None);
+        }
+    }
+
+    #[test]
+    fn conversion_out_of_range_pitch_returns_error() {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                0,
+                MdxCommand::Detune(crate::mdx::command::MdxSignedWord {
+                    opcode: 0xf3,
+                    offset: 6144,
+                }),
+            )
+            .add_mdx_command(
+                0,
+                crate::mdx::command::MdxNote {
+                    note: 0x80,
+                    length: 1,
+                },
+            );
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let package = MdxPackage::parse(&bytes, None).unwrap();
+        let expected = MdxConvertError::PitchOutOfRange {
+            track: 0,
+            pitch: 6149,
+        };
+        let diagnostic = MdxPlaybackCheckError::Conversion {
+            error: expected.clone(),
+            track: Some(0),
+            command_index: Some(1),
+        };
+        for loop_count in [None, Some(1)] {
+            let options = MdxToVgmOptions {
+                loop_count,
+                ..Default::default()
+            };
+            assert_eq!(to_vgm_document(&package, &options).unwrap_err(), expected);
+            assert_eq!(
+                to_vgm_document_with_diagnostics(&package, &options).unwrap_err(),
+                diagnostic
+            );
+            let mut generator: Box<dyn VgmCommandGenerator> = (package.clone(), options).into();
+            let generator_error = generator.next_command().unwrap_err();
+            let mut stream: VgmStream = (package.clone(), options).into();
+            let stream_error = stream.next().unwrap().unwrap_err();
+            for error in [generator_error, stream_error] {
+                assert_eq!(
+                    error.source().unwrap().downcast_ref::<MdxConvertError>(),
+                    Some(&expected)
+                );
+            }
+        }
+        assert_eq!(
+            check_playback(
+                &package,
+                MdxToVgmOptions {
+                    loop_count: Some(1),
+                    ..Default::default()
+                },
+                MdxPlaybackCheckLimits::default(),
+            )
+            .unwrap_err(),
+            diagnostic
+        );
     }
 
     #[test]
