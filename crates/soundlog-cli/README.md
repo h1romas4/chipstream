@@ -445,7 +445,7 @@ Arguments:
 Options:
       --output-format <OUTPUT_FORMAT>  Output format. VGM output uses default settings with native looping (same as `mdx convert --native-loop`) [default: mdx] [possible values: mdx, vgm]
       --adpcm-mode <ADPCM_MODE>        ADPCM processing mode for VGM output [default: through] [possible values: through, resample, lpf]
-        --no-playback-check              Skip bounded playback validation for MDX output (VGM conversion still reports playback errors)
+      --no-playback-check              Skip bounded playback validation for MDX output (VGM conversion still reports playback errors)
   -h, --help                           Print help
 ```
 
