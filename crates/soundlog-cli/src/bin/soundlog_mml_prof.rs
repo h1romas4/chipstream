@@ -1,11 +1,10 @@
 //! Reference profiler for the complete MML-to-VGM streaming path.
 //!
-//! The MML fixture is embedded at compile time. The profiler parses the MML,
-//! compiles it to MDX, creates a lazy VGM command generator, and consumes every
-//! generated command up to a fixed budget without writing MDX or VGM files.
+//! The MML input and optional PDX input are embedded at compile time. The profiler
+//! parses the MML, compiles it to MDX, loads any PDX, and creates a lazy VGM generator.
+//! It consumes generated commands up to a fixed budget without writing output files.
 //! Parsing and compilation use the ordinary APIs without collecting source maps.
-//! The fixture intentionally contains an `L` infinite-loop command, so the
-//! budget keeps this reference profiler finite.
+//! The budget keeps this reference profiler finite even when the input loops.
 //!
 //! Build the profiler in release mode with debug symbols:
 //!
@@ -34,16 +33,20 @@ use std::hint::black_box;
 use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
 use soundlog::mdx::package::MdxPackage;
 
-const MML_SOURCE: &str = include_str!("../../../mmlx/assets/mdx/readable.mml");
+const MML_BYTES: &[u8] = include_bytes!("../../../mmlx/assets/mdx/readable.mml");
+const PDX_BYTES: Option<&[u8]> = None;
 const MAX_COMMANDS: usize = 100_000;
 
 fn main() {
-    let mml = mmlx::mdx::parse(MML_SOURCE).expect("embedded MML must parse");
+    let source = std::str::from_utf8(MML_BYTES).expect("embedded MML must be UTF-8");
+    let mml = mmlx::mdx::parse(source).expect("embedded MML must parse");
     let mdx = mmlx::mdx::compile(&mml).expect("embedded MML must compile");
     drop(mml);
-    let package =
-        MdxPackage::parse_owned(mdx.to_bytes().expect("compiled MDX must serialize"), None)
-            .expect("compiled MDX must be a valid package");
+    let package = MdxPackage::parse_owned(
+        mdx.to_bytes().expect("compiled MDX must serialize"),
+        PDX_BYTES.map(<[u8]>::to_vec),
+    )
+    .expect("embedded MDX and PDX must be a valid package");
     let options = MdxToVgmOptions {
         loop_count: Some(1),
         ..MdxToVgmOptions::default()
