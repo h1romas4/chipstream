@@ -494,6 +494,134 @@ pub enum StreamResult {
     EndOfStream,
 }
 
+/// Resource limits and usage counters for a VGM stream.
+#[derive(Debug)]
+struct StreamBudget {
+    /// Maximum allowed total size for accumulated data blocks.
+    max_data_block_size: usize,
+    /// Current total size of accumulated data blocks.
+    total_data_block_size: usize,
+    /// Maximum number of data blocks processed before a full reset.
+    max_data_block_count: Option<usize>,
+    /// Successfully processed data blocks, including tables and returned blocks.
+    data_block_count: usize,
+    /// Maximum allowed size for unread parsing input.
+    max_buffer_size: usize,
+    /// Maximum raw commands processed without advancing sample time.
+    max_commands_without_wait: Option<u32>,
+    /// Commands processed since the last forward sample-time advance.
+    commands_without_wait: u32,
+    /// Maximum DAC stream steps processed during one positive input wait.
+    max_stream_steps_per_wait: Option<u32>,
+    /// DAC stream steps since the latest positive input wait.
+    stream_steps_since_wait: u32,
+}
+
+impl Default for StreamBudget {
+    fn default() -> Self {
+        Self {
+            max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
+            total_data_block_size: 0,
+            max_data_block_count: Some(DEFAULT_MAX_DATA_BLOCK_COUNT),
+            data_block_count: 0,
+            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
+            max_commands_without_wait: Some(DEFAULT_MAX_COMMANDS_WITHOUT_WAIT),
+            commands_without_wait: 0,
+            max_stream_steps_per_wait: Some(DEFAULT_MAX_STREAM_STEPS_PER_WAIT),
+            stream_steps_since_wait: 0,
+        }
+    }
+}
+
+impl StreamBudget {
+    /// Checks an append against the unread input limit without changing usage.
+    fn check_buffer_append(&self, unread_len: usize, chunk_len: usize) -> Result<(), ParseError> {
+        if unread_len > self.max_buffer_size || chunk_len > self.max_buffer_size - unread_len {
+            return Err(ParseError::BufferSizeExceeded {
+                current_size: unread_len,
+                limit: self.max_buffer_size,
+                attempted_size: chunk_len,
+            });
+        }
+        Ok(())
+    }
+
+    /// Counts a raw command unless the no-wait budget is exhausted.
+    fn count_command_without_wait(&mut self) -> Result<(), ParseError> {
+        if let Some(limit) = self.max_commands_without_wait
+            && self.commands_without_wait >= limit
+        {
+            return Err(ParseError::CommandLimitExceeded { limit });
+        }
+        self.commands_without_wait = self.commands_without_wait.saturating_add(1);
+        Ok(())
+    }
+
+    /// Counts a due DAC step unless the input-wait budget is exhausted.
+    fn count_stream_step(&mut self) -> Result<(), ParseError> {
+        if let Some(limit) = self.max_stream_steps_per_wait
+            && self.stream_steps_since_wait >= limit
+        {
+            return Err(ParseError::StreamStepLimitExceeded { limit });
+        }
+        self.stream_steps_since_wait = self.stream_steps_since_wait.saturating_add(1);
+        Ok(())
+    }
+
+    /// Checks block count and raw payload size without committing usage.
+    fn check_data_block(&self, raw_size: usize) -> Result<(), ParseError> {
+        if let Some(limit) = self.max_data_block_count
+            && self.data_block_count >= limit
+        {
+            return Err(ParseError::DataBlockCountExceeded {
+                current_count: self.data_block_count,
+                limit,
+            });
+        }
+        if self.total_data_block_size > self.max_data_block_size
+            || raw_size > self.max_data_block_size - self.total_data_block_size
+        {
+            return Err(ParseError::DataBlockSizeExceeded {
+                current_size: self.total_data_block_size,
+                limit: self.max_data_block_size,
+                attempted_size: raw_size,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns decoder space after reserving the checked raw payload.
+    fn remaining_data_block_bytes(&self, raw_size: usize) -> usize {
+        self.max_data_block_size
+            .saturating_sub(self.total_data_block_size)
+            .saturating_sub(raw_size)
+    }
+
+    /// Commits a successful block after its raw and decoded sizes were bounded.
+    fn commit_data_block(&mut self, raw_size: usize, decoded_size: usize) {
+        self.total_data_block_size += raw_size + decoded_size;
+        self.data_block_count = self.data_block_count.saturating_add(1);
+    }
+
+    /// Clears raw-command usage after forward sample-time progress.
+    fn reset_commands_without_wait(&mut self) {
+        self.commands_without_wait = 0;
+    }
+
+    /// Clears DAC usage when a new positive input wait starts.
+    fn reset_stream_steps_since_wait(&mut self) {
+        self.stream_steps_since_wait = 0;
+    }
+
+    /// Clears all usage counters while preserving configured limits.
+    fn reset_usage(&mut self) {
+        self.total_data_block_size = 0;
+        self.data_block_count = 0;
+        self.reset_commands_without_wait();
+        self.reset_stream_steps_since_wait();
+    }
+}
+
 /// Memory-efficient streaming VGM parser.
 ///
 /// `VgmStream` is the primary entry point for incremental processing of VGM data.
@@ -731,24 +859,8 @@ pub struct VgmStream {
     fadeout_remaining_samples: Option<usize>,
     /// Current read offset in PCM data bank (StreamChipType::Ym2612Pcm) for 0x8n commands
     pcm_data_offset: usize,
-    /// Maximum allowed total size for accumulated data blocks
-    max_data_block_size: usize,
-    /// Current total size of accumulated data blocks
-    total_data_block_size: usize,
-    /// Maximum number of data blocks processed before a full reset.
-    max_data_block_count: Option<usize>,
-    /// Successfully processed data blocks, including tables and returned blocks.
-    data_block_count: usize,
-    /// Maximum allowed size for the internal parsing buffer
-    max_buffer_size: usize,
-    /// Maximum raw commands processed without advancing sample time.
-    max_commands_without_wait: Option<u32>,
-    /// Commands processed since the last forward sample-time advance.
-    commands_without_wait: u32,
-    /// Maximum DAC stream steps processed during one positive input wait.
-    max_stream_steps_per_wait: Option<u32>,
-    /// DAC stream steps since the latest positive input wait.
-    stream_steps_since_wait: u32,
+    /// Resource limits and usage counters.
+    budget: StreamBudget,
     /// VGM header loop_base field (signed: 0x80..0xFF = -128..-1)
     /// Subtracts from the effective loop count:
     ///  NumLoops = (ProgramNumLoops * modifier / 0x10) - loop_base
@@ -836,15 +948,7 @@ impl VgmStream {
             fadeout_samples: None,
             fadeout_remaining_samples: None,
             pcm_data_offset: 0,
-            max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
-            total_data_block_size: 0,
-            max_data_block_count: Some(DEFAULT_MAX_DATA_BLOCK_COUNT),
-            data_block_count: 0,
-            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
-            max_commands_without_wait: Some(DEFAULT_MAX_COMMANDS_WITHOUT_WAIT),
-            commands_without_wait: 0,
-            max_stream_steps_per_wait: Some(DEFAULT_MAX_STREAM_STEPS_PER_WAIT),
-            stream_steps_since_wait: 0,
+            budget: StreamBudget::default(),
             loop_base: 0,
             loop_modifier: 0,
             stream_id_scratch: Vec::new(),
@@ -1069,15 +1173,7 @@ impl VgmStream {
         match &mut self.source {
             VgmStreamSource::Buffer { buffer, read_pos } => {
                 let unread_len = buffer.len() - *read_pos;
-                if unread_len > self.max_buffer_size
-                    || chunk.len() > self.max_buffer_size - unread_len
-                {
-                    return Err(ParseError::BufferSizeExceeded {
-                        current_size: unread_len,
-                        limit: self.max_buffer_size,
-                        attempted_size: chunk.len(),
-                    });
-                }
+                self.budget.check_buffer_append(unread_len, chunk.len())?;
 
                 buffer.extend_from_slice(chunk);
                 Ok(())
@@ -1128,7 +1224,7 @@ impl VgmStream {
                 }
                 match self.get_next_raw_command()? {
                     Some(command) => {
-                        self.count_command_without_wait()?;
+                        self.budget.count_command_without_wait()?;
                         if matches!(command, VgmCommand::EndOfData(_)) {
                             self.jump_to_loop_point();
                             self.reset_loop_state();
@@ -1147,7 +1243,7 @@ impl VgmStream {
             } else {
                 match self.get_next_raw_command()? {
                     Some(command) => {
-                        self.count_command_without_wait()?;
+                        self.budget.count_command_without_wait()?;
                         command
                     }
                     None => return Ok(StreamResult::NeedsMoreData),
@@ -1158,17 +1254,6 @@ impl VgmStream {
                 return Ok(result);
             }
         }
-    }
-
-    /// Counts a raw command, returning an error if the no-wait budget is exhausted.
-    fn count_command_without_wait(&mut self) -> Result<(), ParseError> {
-        if let Some(limit) = self.max_commands_without_wait
-            && self.commands_without_wait >= limit
-        {
-            return Err(ParseError::CommandLimitExceeded { limit });
-        }
-        self.commands_without_wait = self.commands_without_wait.saturating_add(1);
-        Ok(())
     }
 
     /// Gets the next raw command from the internal source.
@@ -1244,7 +1329,7 @@ impl VgmStream {
     /// Starts an input wait with a fresh budget only when the wait is positive.
     fn process_input_wait(&mut self, samples: usize) -> Result<StreamResult, ParseError> {
         if samples > 0 {
-            self.stream_steps_since_wait = 0;
+            self.budget.reset_stream_steps_since_wait();
         }
         self.process_wait_with_streams(samples)
     }
@@ -1299,7 +1384,7 @@ impl VgmStream {
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
                 if cmd.0 > 0 {
-                    self.stream_steps_since_wait = 0;
+                    self.budget.reset_stream_steps_since_wait();
                 }
                 return self.handle_ym2612_port0_address_2a_write_and_wait_n(cmd);
             }
@@ -1483,12 +1568,12 @@ impl VgmStream {
     /// writes are not counted. Exceeding it returns
     /// [`ParseError::CommandLimitExceeded`]; stop processing on this error.
     pub fn set_max_commands_without_wait(&mut self, limit: Option<u32>) {
-        self.max_commands_without_wait = limit;
+        self.budget.max_commands_without_wait = limit;
     }
 
     /// Returns the raw-command budget between forward sample-time advances.
     pub fn max_commands_without_wait(&self) -> Option<u32> {
-        self.max_commands_without_wait
+        self.budget.max_commands_without_wait
     }
 
     /// Sets the DAC stream step budget per positive input wait.
@@ -1500,12 +1585,12 @@ impl VgmStream {
     /// positive input wait or full reset does. Exceeding the budget returns
     /// [`ParseError::StreamStepLimitExceeded`]; stop processing on this error.
     pub fn set_max_stream_steps_per_wait(&mut self, limit: Option<u32>) {
-        self.max_stream_steps_per_wait = limit;
+        self.budget.max_stream_steps_per_wait = limit;
     }
 
     /// Returns the DAC stream step budget per positive input wait.
     pub fn max_stream_steps_per_wait(&self) -> Option<u32> {
-        self.max_stream_steps_per_wait
+        self.budget.max_stream_steps_per_wait
     }
 
     /// Sets the maximum allowed size for accumulated data blocks.
@@ -1521,17 +1606,17 @@ impl VgmStream {
     ///
     /// * `max_size` - Maximum size in bytes (default is 32 MiB)
     pub fn set_max_data_block_size(&mut self, max_size: usize) {
-        self.max_data_block_size = max_size;
+        self.budget.max_data_block_size = max_size;
     }
 
     /// Gets the maximum allowed size for accumulated data blocks.
     pub fn max_data_block_size(&self) -> usize {
-        self.max_data_block_size
+        self.budget.max_data_block_size
     }
 
     /// Returns accumulated raw payload bytes plus decoded bytes for compressed blocks.
     pub fn total_data_block_size(&self) -> usize {
-        self.total_data_block_size
+        self.budget.total_data_block_size
     }
 
     /// Sets the data-block count limit (256 by default).
@@ -1542,17 +1627,17 @@ impl VgmStream {
     /// `None` disables the limit; `Some(0)` rejects every DataBlock. Exceeding it
     /// returns [`ParseError::DataBlockCountExceeded`]; stop processing on this error.
     pub fn set_max_data_block_count(&mut self, limit: Option<usize>) {
-        self.max_data_block_count = limit;
+        self.budget.max_data_block_count = limit;
     }
 
     /// Returns the data-block count limit.
     pub fn max_data_block_count(&self) -> Option<usize> {
-        self.max_data_block_count
+        self.budget.max_data_block_count
     }
 
     /// Returns the number of successfully processed DataBlocks since the last full reset.
     pub fn data_block_count(&self) -> usize {
-        self.data_block_count
+        self.budget.data_block_count
     }
 
     /// Sets the maximum allowed size for the internal parsing buffer.
@@ -1574,12 +1659,12 @@ impl VgmStream {
     /// stream.set_max_buffer_size(128 * 1024 * 1024); // 128 MiB
     /// ```
     pub fn set_max_buffer_size(&mut self, max_size: usize) {
-        self.max_buffer_size = max_size;
+        self.budget.max_buffer_size = max_size;
     }
 
     /// Gets the maximum allowed size for the internal parsing buffer.
     pub fn max_buffer_size(&self) -> usize {
-        self.max_buffer_size
+        self.budget.max_buffer_size
     }
 
     /// Moves unread bytes to the front and discards the consumed prefix.
@@ -1669,10 +1754,7 @@ impl VgmStream {
         self.pending_wait = None;
         self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
-        self.total_data_block_size = 0;
-        self.data_block_count = 0;
-        self.commands_without_wait = 0;
-        self.stream_steps_since_wait = 0;
+        self.budget.reset_usage();
         // loop_base and loop_modifier are header-derived configuration and are
         // intentionally preserved across reset() calls.
     }
@@ -1872,14 +1954,7 @@ impl VgmStream {
 
     /// Handles a data block command by parsing it and storing or returning it.
     fn handle_data_block(&mut self, block: DataBlock) -> Result<Option<StreamResult>, ParseError> {
-        if let Some(limit) = self.max_data_block_count
-            && self.data_block_count >= limit
-        {
-            return Err(ParseError::DataBlockCountExceeded {
-                current_count: self.data_block_count,
-                limit,
-            });
-        }
+        self.budget.check_data_block(block.data.len())?;
         // block is passed by value (unboxed at call site)
         let block_size = block.size as usize;
         let block_data_type = block.data_type;
@@ -1888,17 +1963,7 @@ impl VgmStream {
         let marker = block.marker;
         let chip_instance = block.chip_instance;
 
-        // Check if adding this block would exceed the size limit
-        if self.total_data_block_size > self.max_data_block_size
-            || data_len > self.max_data_block_size - self.total_data_block_size
-        {
-            return Err(ParseError::DataBlockSizeExceeded {
-                current_size: self.total_data_block_size,
-                limit: self.max_data_block_size,
-                attempted_size: data_len,
-            });
-        }
-
+        let mut decoded_size = 0;
         let result = match parse_data_block(block) {
             Ok(parsed) => {
                 match parsed {
@@ -1910,7 +1975,6 @@ impl VgmStream {
                             .unwrap_or(0);
                         self.block_id_map
                             .push((data_type, current_offset, stream.data.len()));
-                        self.total_data_block_size += data_len;
                         self.uncompressed_streams
                             .entry(data_type)
                             .and_modify(|existing| {
@@ -1920,11 +1984,11 @@ impl VgmStream {
                         Ok(None)
                     }
                     DataBlockType::CompressedStream(stream) => {
-                        self.process_compressed_stream(data_type, stream, data_len)?;
+                        decoded_size =
+                            self.process_compressed_stream(data_type, stream, data_len)?;
                         Ok(None)
                     }
                     DataBlockType::DecompressionTable(table) => {
-                        self.total_data_block_size += data_len;
                         self.decompression_tables.insert(data_type, table);
                         Ok(None)
                     }
@@ -1934,7 +1998,6 @@ impl VgmStream {
                         self.block_id_map
                             .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
-                        self.total_data_block_size += data_len;
 
                         // Reconstruct the full data including rom_size and start_address header
                         let mut full_data = Vec::with_capacity(8 + dump.data.len());
@@ -1959,7 +2022,6 @@ impl VgmStream {
                         self.block_id_map
                             .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
-                        self.total_data_block_size += data_len;
 
                         // Reconstruct the full data including start_address header
                         let mut full_data = Vec::with_capacity(2 + write.data.len());
@@ -1983,7 +2045,6 @@ impl VgmStream {
                         self.block_id_map
                             .push((data_type, current_offset, data_len));
                         *self.block_sizes.entry(data_type).or_insert(0) += data_len;
-                        self.total_data_block_size += data_len;
 
                         // Reconstruct the full data including start_address header
                         let mut full_data = Vec::with_capacity(4 + write.data.len());
@@ -2009,14 +2070,13 @@ impl VgmStream {
                 self.block_id_map
                     .push((block_data_type, current_offset, block_size));
                 *self.block_sizes.entry(data_type).or_insert(0) += data_len;
-                self.total_data_block_size += data_len;
                 Ok(Some(StreamResult::Command(VgmCommand::DataBlock(
                     Box::new(original_block),
                 ))))
             }
         };
         if result.is_ok() {
-            self.data_block_count = self.data_block_count.saturating_add(1);
+            self.budget.commit_data_block(data_len, decoded_size);
         }
         result
     }
@@ -2028,12 +2088,9 @@ impl VgmStream {
         data_type: u8,
         mut stream: CompressedStream,
         data_len: usize,
-    ) -> Result<(), ParseError> {
+    ) -> Result<usize, ParseError> {
         // Calculate remaining space in data block limit
-        let remaining_space = self
-            .max_data_block_size
-            .saturating_sub(self.total_data_block_size)
-            .saturating_sub(data_len);
+        let remaining_space = self.budget.remaining_data_block_bytes(data_len);
 
         let decompressed_data = match &mut stream.compression {
             CompressedStreamData::BitPacking(bp) => {
@@ -2075,7 +2132,7 @@ impl VgmStream {
             .unwrap_or(0);
         self.block_id_map
             .push((data_type, current_offset, decompressed_data.len()));
-        self.total_data_block_size += data_len + decompressed_data.len();
+        let decoded_size = decompressed_data.len();
 
         // Append decompressed data to existing stream or create new one
         self.uncompressed_streams
@@ -2087,7 +2144,7 @@ impl VgmStream {
                 chip_type: stream.chip_type,
                 data: decompressed_data,
             });
-        Ok(())
+        Ok(decoded_size)
     }
 
     /// Removes data blocks that are no longer referenced externally.
@@ -2336,12 +2393,7 @@ impl VgmStream {
             let due_w = snapshot.due_write(self.current_sample);
 
             if due_s.is_some() {
-                if let Some(limit) = self.max_stream_steps_per_wait
-                    && self.stream_steps_since_wait >= limit
-                {
-                    return Err(ParseError::StreamStepLimitExceeded { limit });
-                }
-                self.stream_steps_since_wait = self.stream_steps_since_wait.saturating_add(1);
+                self.budget.count_stream_step()?;
             }
 
             match (due_s, due_w) {
@@ -2451,7 +2503,7 @@ impl VgmStream {
     /// Sets the sample position, resetting the no-wait counter only on forward progress.
     fn advance_to_sample(&mut self, sample: usize) {
         if sample > self.current_sample {
-            self.commands_without_wait = 0;
+            self.budget.reset_commands_without_wait();
         }
         self.current_sample = sample;
     }
