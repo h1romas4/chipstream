@@ -2,30 +2,6 @@
 
 ## Unreleased
 
-- [x] Fix: Charge VGM fadeout time only for elapsed samples when DAC stream writes split waits, preserving the configured duration.
-- [x] Add: Limit DAC stream expansion to 1,000,000 steps per input wait by default via `VgmStream::set_max_stream_steps_per_wait`, including non-emitting steps; internal wait splits and sample advances do not reset the budget, and exhaustion returns `ParseError::StreamStepLimitExceeded`.
-- [x] Fix: Parse chunked VGM input with a read cursor and amortized buffer compaction instead of moving remaining bytes after every command; preserve unread-byte limits and partial commands.
-- [x] Fix: Include decoded compressed VGM data in the cumulative data block size limit, committing totals only after successful decompression.
-- [x] Add: Limit all processed VGM DataBlocks to 256 by default, including zero-size blocks and decompression tables; configure or disable via `VgmStream::set_max_data_block_count`, with `ParseError::DataBlockCountExceeded` on exhaustion.
-- [x] Fix: Process VGM stream controls and data blocks iteratively to avoid stack overflow; bound raw commands without sample-time progress to 100,000 by default via `VgmStream::set_max_commands_without_wait`, returning `ParseError::CommandLimitExceeded` for no-time loops and excessive command runs, including during fadeout.
-- [x] Fix: Fade mixed MDX PCM gain to silence over the full playback fadeout duration using a power-4.0 curve (twice the attenuation in decibels of a quadratic curve), with faster initial decay and a gentler tail, without changing FM attenuation or song end timing.
-- [x] Add: Bound decoded PCM caches in MDX conversion, streaming, and playback checking with `MdxToVgmOptions::max_decoded_pcm_samples` (default 32,000,000 samples), returning `MdxConvertError::DecodedPcmSampleLimitExceeded` before decoding on exhaustion.
-- [x] Fix: Share decoded PCM cache entries for PDX samples with identical source ranges and decode conditions, preventing duplicate decoding for aliased bank/note entries.
-- [x] Add: Limit retained VGM output in eager MDX conversion with `MdxToVgmOptions::max_output_commands` (default 14,000,000), returning `MdxConvertError::OutputCommandLimitExceeded` on exhaustion; lazy streaming is unaffected.
-- [x] Add: Bound MDX commands executed without advancing playback time in eager conversion and lazy streaming; configure with `MdxToVgmOptions::max_commands_per_tick` (default 100,000), with `MdxConvertError::CommandLimitExceeded` on exhaustion.
-- [x] Fix: Return `MdxConvertError::PitchOutOfRange` for unsupported FM key-on pitches instead of panicking or wrapping the YM2151 key-code lookup.
-- [x] Add: Limit MDX eager conversion and lazy streaming to 100,000 elapsed ticks by default; configure or disable the limit with `MdxToVgmOptions::max_ticks`, with `MdxConvertError::TickLimitExceeded` on exhaustion.
-- [x] Add: Support tuple conversions from MDX packages and options into VGM documents, streams, and command generators.
-- [x] Change: Replace `ParseError::MdxConversion` with `GeneratorError`, preserving boxed user-defined and MDX generator errors and their source chains.
-- [x] Change: Store UTF-16 errors directly instead of using `Arc`; remove `Clone` from `ParseError` while preserving `Error::source`.
-- [x] Change: Use dedicated `ParseError` variants instead of `Other` for library errors, retaining typed UTF-16 and MDX generator causes through `Error::source`.
-- [x] Change: Make MDX document serialization, source-map construction, and package MDX serialization fallible; replace `try_to_bytes` with `to_bytes` returning `Result`.
-- [x] Change: Replace integer-to-`Instance` `From` with `TryFrom`; VGM builder methods now require a typed `Instance`.
-- [x] Fix: Return errors for overflowing byte-reader ranges, invalid decompression bit widths and arithmetic, and invalid F-number configurations.
-- [x] Fix: Propagate MDX jump layout errors through conversion, diagnostics, and streaming instead of panicking.
-- [x] Add: Implement `Display` and `Error` for `FNumberError`.
-- [x] Add: Expose decoded PDX bank-table and sample-data source ranges.
-- [x] Change: Use `u32` instead of `u64` when calculating MDX PCM sample positions.
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
@@ -33,6 +9,31 @@
   - [ ] Doc: NES APU Mapping
   - [ ] Doc: GBDMG Mapping
 - [ ] Semantic versioning and API Stabilization.
+
+## v0.15.0
+
+### Breaking API Changes
+
+- [x] Change: Replace integer-to-`Instance` `From` with `TryFrom`; VGM builder methods now require a typed `Instance`.
+- [x] Change: MDX serialization and source-map APIs now return `Result`; replace `try_to_bytes` with `to_bytes`.
+- [x] Change: `ParseError` no longer implements `Clone`; UTF-16 errors are stored directly, and `ParseError::MdxConversion` is replaced by `GeneratorError`. Library errors use specific variants instead of `Other`, preserving `Error::source` chains.
+- [x] Change: Add `max_ticks`, `max_commands_per_tick`, `max_output_commands`, and `max_decoded_pcm_samples` to `MdxToVgmOptions`. Update struct literals or use `..Default::default()`.
+
+### Added
+
+- [x] Add: Configurable, default-enabled limits for VGM data blocks, command runs and DAC expansion, and for MDX playback duration, command execution, output size and PCM caches.
+- [x] Add: Tuple conversions from MDX packages and options into VGM documents, streams and command generators.
+- [x] Add: Decoded PDX bank-table and sample-data source ranges.
+- [x] Add: `Display` and `Error` implementations for `FNumberError`.
+
+### Fixed
+
+- [x] Fix: Prevent stack overflows during VGM stream processing and improve chunked-input performance.
+- [x] Fix: Include decompressed VGM data in cumulative data block size limits.
+- [x] Fix: Preserve the configured VGM fadeout duration with active DAC streams.
+- [x] Fix: Improve mixed MDX PCM fadeout and avoid duplicate decoding of shared PDX samples.
+- [x] Fix: Return errors for invalid byte ranges, compression parameters, F-number configurations, MDX pitches and jump layouts instead of panicking or producing invalid results.
+- [x] Doc: Clarify that VGM playback defaults to one playthrough (`Some(1)`); use `set_loop_count(None)` for infinite looping.
 
 ## v0.14.0
 
