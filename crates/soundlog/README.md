@@ -50,7 +50,7 @@ let instances = header.chip_instances();
 
 // Create a callback stream directly from the raw bytes
 let mut callback_stream = VgmCallbackStream::from_vgm(vgm_bytes).expect("valid VGM");
-// play twice; omit for infinite loop
+// play twice; omit for one playthrough, or pass None for infinite looping
 callback_stream.set_loop_count(Some(2));
 // 2-second fadeout at 44.1 kHz after final loop
 callback_stream.set_fadeout_samples(Some(44100 * 2));
@@ -518,7 +518,7 @@ for result in callback_stream {
 ## Looping and EndOfData overview
 
 - VgmDocument is a data representation only: When you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.
-- VgmStream is intended to act as a player-like iterator. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. Its `set_loop_count()` API controls how many playthroughs are performed:
+- VgmStream is intended to act as a player-like iterator. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. The default is one playthrough (`Some(1)`). Its `set_loop_count()` API controls how many playthroughs are performed:
   - `set_loop_count(Some(n))` — limit playback to `n` playthroughs (for example, `Some(1)` means play once and stop; `Some(2)` means play one full run and then one loop iteration). Passing `Some(0)` is treated the same as `Some(1)` (It's a bit strange, but both mean "play once and stop").
   - `set_loop_count(None)` — infinite looping (the stream will jump back to the loop point on EndOfData and continue indefinitely).
 - `VgmStream` prioritizes writing to the sound chip registers and performs loop processing based on `EndOfData` without checking the `loop_samples` field in the `VgmHeader`. It is generally considered to perform the same operation, but depending on the data, it may behave differently.

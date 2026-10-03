@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Charge VGM fadeout time only for elapsed samples when DAC stream writes split waits, preserving the configured duration.
 - [x] Add: Limit DAC stream expansion to 1,000,000 steps per input wait by default via `VgmStream::set_max_stream_steps_per_wait`, including non-emitting steps; internal wait splits and sample advances do not reset the budget, and exhaustion returns `ParseError::StreamStepLimitExceeded`.
 - [x] Fix: Parse chunked VGM input with a read cursor and amortized buffer compaction instead of moving remaining bytes after every command; preserve unread-byte limits and partial commands.
 - [x] Fix: Include decoded compressed VGM data in the cumulative data block size limit, committing totals only after successful decompression.

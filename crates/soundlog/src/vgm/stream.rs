@@ -637,16 +637,21 @@ impl StreamBudget {
 ///
 /// # Loop Handling
 ///
-/// **Important**: When processing VGM files with loop points, the default behavior
-/// is to loop infinitely (`loop_count: None`). For untrusted input or non-interactive
-/// use cases, always call `set_loop_count(Some(n))` to limit the number of loop
-/// iterations and prevent infinite loops. For example:
+/// The default is `Some(1)`: play once, even if the VGM file has a loop point.
+/// Call `set_loop_count(Some(n))` for finite playback or `set_loop_count(None)`
+/// to enable infinite looping. For untrusted input or non-interactive playback,
+/// keep a finite loop count.
 ///
 /// ```
-/// use soundlog::vgm::VgmStream;
+/// use soundlog::{VgmBuilder, vgm::stream::{StreamResult, VgmStream}};
+/// use soundlog::vgm::command::WaitSamples;
 ///
-/// let mut stream = VgmStream::new();
-/// stream.set_loop_count(Some(2)); // Play through twice, then stop
+/// let mut builder = VgmBuilder::new();
+/// builder.set_loop_index(0);
+/// builder.add_vgm_command(WaitSamples(100));
+/// let mut stream = VgmStream::from_document(builder.finalize());
+/// assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+/// assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
 /// ```
 ///
 /// ## Memory limits
@@ -962,9 +967,10 @@ impl VgmStream {
     ///
     /// # Loop Handling
     ///
-    /// **Warning**: By default, the stream will loop infinitely if the VGM document
-    /// contains a loop point. For untrusted input or non-interactive playback,
-    /// always call `set_loop_count(Some(n))` to prevent infinite loops:
+    /// By default, the stream plays once (`Some(1)`), even if the document contains
+    /// a loop point. Call `set_loop_count(Some(n))` for finite playback or
+    /// `set_loop_count(None)` to enable infinite looping. For untrusted input or
+    /// non-interactive playback, keep a finite loop count.
     ///
     /// ```
     /// use soundlog::{VgmBuilder, vgm::stream::VgmStream};
@@ -1068,9 +1074,10 @@ impl VgmStream {
     ///
     /// # Loop Handling
     ///
-    /// **Warning**: By default, the stream will loop infinitely if the VGM file
-    /// contains a loop point. Always call `set_loop_count(Some(n))` for untrusted
-    /// input or non-interactive playback.
+    /// By default, the stream plays once (`Some(1)`), even if the file contains
+    /// a loop point. Call `set_loop_count(Some(n))` for finite playback or
+    /// `set_loop_count(None)` to enable infinite looping. For untrusted input or
+    /// non-interactive playback, keep a finite loop count.
     ///
     /// # Examples
     /// ```
@@ -1434,10 +1441,10 @@ impl VgmStream {
     /// Sets the loop count limit.
     ///
     /// Controls how many times the stream will loop when it encounters a loop point.
-    /// Set to `None` for infinite looping (default, not recommended for untrusted input),
-    /// or `Some(n)` to limit loop iterations.
+    /// The default is `Some(1)` (one playthrough). Set to `Some(n)` for finite
+    /// playback or `None` for infinite looping (not recommended for untrusted input).
     ///
-    /// **Important**: For untrusted input or automated processing, always set a finite
+    /// **Important**: For untrusted input or automated processing, keep a finite
     /// loop count to prevent infinite loops and potential DoS conditions.
     ///
     /// # Arguments
@@ -2462,9 +2469,6 @@ impl VgmStream {
         let wait_samples = self
             .fadeout_remaining_samples
             .map_or(wait_samples, |remaining| wait_samples.min(remaining));
-        if let Some(remaining) = &mut self.fadeout_remaining_samples {
-            *remaining = remaining.saturating_sub(wait_samples);
-        }
 
         let target_sample = self.current_sample.saturating_add(wait_samples);
 
@@ -2500,9 +2504,12 @@ impl VgmStream {
         ))))
     }
 
-    /// Sets the sample position, resetting the no-wait counter only on forward progress.
+    /// Sets the sample position, charging fadeout time and resetting the no-wait counter on forward progress.
     fn advance_to_sample(&mut self, sample: usize) {
         if sample > self.current_sample {
+            if let Some(remaining) = &mut self.fadeout_remaining_samples {
+                *remaining = remaining.saturating_sub(sample - self.current_sample);
+            }
             self.budget.reset_commands_without_wait();
         }
         self.current_sample = sample;

@@ -3519,6 +3519,55 @@ fn test_fadeout_samples_exact_timing() {
 }
 
 #[test]
+fn test_fadeout_samples_with_looped_stream_control_exact_timing() {
+    for frequency in [0, 22_050, 44_100, 88_200] {
+        let mut document = dac_budget_document(frequency, &[WaitSamples(10).into()]);
+        document.header.loop_offset = (document.sourcemap()[1].0 - 0x1c) as u32;
+        let raw: Vec<u8> = (&document).into();
+
+        for fade_samples in [0, 1, 5, 10, 15, 25] {
+            for (source, mut stream) in [
+                ("document", VgmStream::from_document(document.clone())),
+                ("file", VgmStream::from_vgm(raw.clone()).unwrap()),
+            ] {
+                stream.set_loop_count(Some(1));
+                stream.set_fadeout_samples(Some(fade_samples));
+                let mut total_wait = 0;
+                let mut fade_wait = 0;
+                let mut ended = false;
+
+                for _ in 0..256 {
+                    match stream.next().unwrap().unwrap() {
+                        StreamResult::Command(VgmCommand::WaitSamples(wait)) => {
+                            total_wait += usize::from(wait.0);
+                            if stream.current_loop_count() >= 1 {
+                                fade_wait += usize::from(wait.0);
+                            }
+                        }
+                        StreamResult::Command(_) => {}
+                        StreamResult::EndOfStream => {
+                            ended = true;
+                            break;
+                        }
+                        result => panic!("unexpected result: {result:?}"),
+                    }
+                }
+
+                assert!(
+                    ended,
+                    "{source}, frequency={frequency}, fade={fade_samples}"
+                );
+                assert_eq!(
+                    fade_wait, fade_samples,
+                    "{source}, frequency={frequency}, fade={fade_samples}"
+                );
+                assert_eq!(total_wait, 10 + fade_samples);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_fadeout_samples_with_stream_control() {
     // Test that fadeout works with DAC stream control
     let mut builder = VgmBuilder::new();
