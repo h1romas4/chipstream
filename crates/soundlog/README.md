@@ -538,10 +538,13 @@ User-defined and MDX generators use `ParseError::GeneratorError` to preserve
 format-specific error types and their `Error::source()` chains. `Other` is
 reserved for caller-defined message-only errors.
 
-Callbacks return `()`, so application errors cannot propagate through the stream.
+Stream iterators yield library and generator errors as `Err`.
+Callbacks return `()`, so errors inside callbacks are not automatically
+propagated through the iterator.
+
 Missing or undecodable MDX PCM is treated as silence; use the package's decoding
-API for strict validation. Allocation failures and panics in user code are not
-converted into library errors.
+API for strict validation. PCM cache limit violations still return errors.
+Allocation failures and panics in user code are not converted into library errors.
 
 ## Chip State Tracking (WIP)
 
