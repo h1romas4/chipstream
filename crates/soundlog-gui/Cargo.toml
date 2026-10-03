@@ -1,6 +1,6 @@
 [package]
 name = "soundlog-gui"
-version = "0.15.0-dev"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.97.1"
 description = "GUI frontend for inspecting soundlog-supported audio files."

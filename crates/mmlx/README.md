@@ -129,7 +129,7 @@ C t120 @1 l8 [[gab>c<]2]2
 Enable `source-map` for position-aware parsing and compilation:
 
 ```toml
-mmlx = { version = "0.2.0-dev", features = ["source-map"] }
+mmlx = { version = "0.3.0", features = ["source-map"] }
 ```
 
 Locate MML commands, metadata, and voice definitions in the source, report
