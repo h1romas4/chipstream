@@ -8,5 +8,5 @@ members = [
 ]
 
 [workspace.dependencies]
-mmlx = { path = "crates/mmlx", version = "0.2.0" }
-soundlog = { path = "crates/soundlog", version = "0.15.0" }
+mmlx = { path = "crates/mmlx", version = "0.3.0-dev" }
+soundlog = { path = "crates/soundlog", version = "0.16.0-dev" }
