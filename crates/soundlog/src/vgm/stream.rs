@@ -473,6 +473,9 @@ const DEFAULT_MAX_DATA_BLOCK_SIZE: usize = 32 * 1024 * 1024;
 /// Default maximum size for the internal parsing buffer (64 MiB).
 const DEFAULT_MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024;
 
+/// Default maximum number of raw commands processed without advancing sample time.
+const DEFAULT_MAX_COMMANDS_WITHOUT_WAIT: u32 = 100_000;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamResult {
     /// A complete command was parsed successfully.
@@ -711,6 +714,10 @@ pub struct VgmStream {
     total_data_block_size: usize,
     /// Maximum allowed size for the internal parsing buffer
     max_buffer_size: usize,
+    /// Maximum raw commands processed without advancing sample time.
+    max_commands_without_wait: Option<u32>,
+    /// Commands processed since the last forward sample-time advance.
+    commands_without_wait: u32,
     /// VGM header loop_base field (signed: 0x80..0xFF = -128..-1)
     /// Subtracts from the effective loop count:
     ///  NumLoops = (ProgramNumLoops * modifier / 0x10) - loop_base
@@ -800,6 +807,8 @@ impl VgmStream {
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
+            max_commands_without_wait: Some(DEFAULT_MAX_COMMANDS_WITHOUT_WAIT),
+            commands_without_wait: 0,
             loop_base: 0,
             loop_modifier: 0,
             stream_id_scratch: Vec::new(),
@@ -1057,33 +1066,39 @@ impl VgmStream {
     /// `StreamResult::NeedsMoreData` if more bytes are required, or
     /// `StreamResult::EndOfStream` if the stream has ended.
     fn next_command(&mut self) -> Result<StreamResult, ParseError> {
-        if !self.pending_stream_writes.is_empty() {
-            let cmd = self.pending_stream_writes.remove(0);
-            return Ok(StreamResult::Command(cmd));
-        }
+        loop {
+            if !self.pending_stream_writes.is_empty() {
+                let cmd = self.pending_stream_writes.remove(0);
+                return Ok(StreamResult::Command(cmd));
+            }
 
-        if let Some(wait_samples) = self.pending_wait.take() {
-            return self.process_wait_with_streams(wait_samples as usize);
-        }
+            if let Some(wait_samples) = self.pending_wait.take() {
+                return self.process_wait_with_streams(wait_samples as usize);
+            }
 
-        if let Some(block) = self.pending_data_block.take() {
-            return Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
-                block,
-            ))));
-        }
+            if let Some(block) = self.pending_data_block.take() {
+                return Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
+                    block,
+                ))));
+            }
 
-        if self.encountered_end {
-            if let Some(remaining) = self.fadeout_remaining_samples {
+            let command = if self.encountered_end {
+                let Some(remaining) = self.fadeout_remaining_samples else {
+                    return Ok(StreamResult::EndOfStream);
+                };
                 if remaining == 0 {
                     return Ok(StreamResult::EndOfStream);
                 }
-                let command = match self.get_next_raw_command()? {
-                    Some(VgmCommand::EndOfData(_)) => {
-                        self.jump_to_loop_point();
-                        self.reset_loop_state();
-                        return self.next_command();
+                match self.get_next_raw_command()? {
+                    Some(command) => {
+                        self.count_command_without_wait()?;
+                        if matches!(command, VgmCommand::EndOfData(_)) {
+                            self.jump_to_loop_point();
+                            self.reset_loop_state();
+                            continue;
+                        }
+                        command
                     }
-                    Some(cmd) => cmd,
                     None => {
                         // Buffer sources cannot be rewound to their loop point;
                         // finish their fadeout without parsing trailing bytes.
@@ -1091,19 +1106,32 @@ impl VgmStream {
                             WaitSamples(remaining.min(u16::MAX as usize) as u16),
                         )
                     }
-                };
-                return self.process_command(command);
+                }
             } else {
-                return Ok(StreamResult::EndOfStream);
+                match self.get_next_raw_command()? {
+                    Some(command) => {
+                        self.count_command_without_wait()?;
+                        command
+                    }
+                    None => return Ok(StreamResult::NeedsMoreData),
+                }
+            };
+
+            if let Some(result) = self.process_command(command)? {
+                return Ok(result);
             }
         }
+    }
 
-        let command = match self.get_next_raw_command()? {
-            Some(cmd) => cmd,
-            None => return Ok(StreamResult::NeedsMoreData),
-        };
-
-        self.process_command(command)
+    /// Counts a raw command, returning an error if the no-wait budget is exhausted.
+    fn count_command_without_wait(&mut self) -> Result<(), ParseError> {
+        if let Some(limit) = self.max_commands_without_wait
+            && self.commands_without_wait >= limit
+        {
+            return Err(ParseError::CommandLimitExceeded { limit });
+        }
+        self.commands_without_wait = self.commands_without_wait.saturating_add(1);
+        Ok(())
     }
 
     /// Gets the next raw command from the internal source.
@@ -1177,70 +1205,70 @@ impl VgmStream {
     }
 
     /// Processes a single VGM command, handling special cases and generating stream writes.
-    fn process_command(&mut self, command: VgmCommand) -> Result<StreamResult, ParseError> {
+    fn process_command(&mut self, command: VgmCommand) -> Result<Option<StreamResult>, ParseError> {
         match &command {
             VgmCommand::EndOfData(_) => {
                 self.handle_end_of_data();
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::DataBlock(block) => {
                 return self.handle_data_block(*block.clone());
             }
             VgmCommand::SetupStreamControl(setup) => {
                 self.handle_setup_stream_control(setup);
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::SetStreamData(data) => {
                 self.handle_set_stream_data(data);
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::SetStreamFrequency(freq) => {
                 self.handle_set_stream_frequency(freq);
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::StartStream(start) => {
                 self.handle_start_stream(start)?;
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::StopStream(stop) => {
                 self.handle_stop_stream(stop);
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::StartStreamFastCall(fast) => {
                 self.handle_start_stream_fast_call(fast)?;
-                return self.next_command();
+                return Ok(None);
             }
             VgmCommand::WaitSamples(w) => {
-                return self.process_wait_with_streams(w.0 as usize);
+                return self.process_wait_with_streams(w.0 as usize).map(Some);
             }
             VgmCommand::Wait735Samples(_) => {
-                return self.process_wait_with_streams(735);
+                return self.process_wait_with_streams(735).map(Some);
             }
             VgmCommand::Wait882Samples(_) => {
-                return self.process_wait_with_streams(882);
+                return self.process_wait_with_streams(882).map(Some);
             }
             VgmCommand::WaitNSample(w) => {
                 // w.0 is the raw n (0..=15); actual wait is n+1 samples.
                 let samples = w.0 as usize + 1;
-                return self.process_wait_with_streams(samples);
+                return self.process_wait_with_streams(samples).map(Some);
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
                 return self.handle_ym2612_port0_address_2a_write_and_wait_n(cmd);
             }
             VgmCommand::SeekOffset(seek_offset) => {
                 self.pcm_data_offset = seek_offset.0 as usize;
-                return self.next_command();
+                return Ok(None);
             }
             _ => {}
         }
 
-        Ok(StreamResult::Command(command))
+        Ok(Some(StreamResult::Command(command)))
     }
 
     fn handle_ym2612_port0_address_2a_write_and_wait_n(
         &mut self,
         cmd: &Ym2612Port0Address2AWriteAndWaitN,
-    ) -> Result<StreamResult, ParseError> {
+    ) -> Result<Option<StreamResult>, ParseError> {
         let wait_samples = cmd.0 as usize;
 
         if let Some(data_byte) = self.read_pcm_data_bank_byte()? {
@@ -1259,14 +1287,14 @@ impl VgmStream {
                 // Emit the DAC write immediately; schedule the wait so the
                 // next call to next_command() processes it after the write.
                 self.pending_wait = Some(wait_samples.min(u16::MAX as usize) as u16);
-                Ok(StreamResult::Command(dac_write))
+                Ok(Some(StreamResult::Command(dac_write)))
             } else {
-                Ok(StreamResult::Command(dac_write))
+                Ok(Some(StreamResult::Command(dac_write)))
             }
         } else if wait_samples > 0 {
-            self.process_wait_with_streams(wait_samples)
+            self.process_wait_with_streams(wait_samples).map(Some)
         } else {
-            self.next_command()
+            Ok(None)
         }
     }
 
@@ -1398,6 +1426,23 @@ impl VgmStream {
         self.current_sample
     }
 
+    /// Sets the raw-command budget between forward sample-time advances.
+    ///
+    /// The default is `Some(100_000)`. `None` disables the budget; `Some(0)`
+    /// rejects every raw command. All raw commands, including waits and
+    /// `EndOfData`, count toward the budget. Zero waits, iterator yields,
+    /// chunk boundaries, and loop rewinds do not reset it. Generated DAC
+    /// writes are not counted. Exceeding it returns
+    /// [`ParseError::CommandLimitExceeded`]; stop processing on this error.
+    pub fn set_max_commands_without_wait(&mut self, limit: Option<u32>) {
+        self.max_commands_without_wait = limit;
+    }
+
+    /// Returns the raw-command budget between forward sample-time advances.
+    pub fn max_commands_without_wait(&self) -> Option<u32> {
+        self.max_commands_without_wait
+    }
+
     /// Sets the maximum allowed size for accumulated data blocks.
     ///
     /// When data blocks are added that would exceed this limit, a
@@ -1518,6 +1563,7 @@ impl VgmStream {
         self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
         self.total_data_block_size = 0;
+        self.commands_without_wait = 0;
         // loop_base and loop_modifier are header-derived configuration and are
         // intentionally preserved across reset() calls.
     }
@@ -1715,7 +1761,7 @@ impl VgmStream {
     }
 
     /// Handles a data block command by parsing it and storing or returning it.
-    fn handle_data_block(&mut self, block: DataBlock) -> Result<StreamResult, ParseError> {
+    fn handle_data_block(&mut self, block: DataBlock) -> Result<Option<StreamResult>, ParseError> {
         // block is passed by value (unboxed at call site)
         let block_size = block.size as usize;
         let block_data_type = block.data_type;
@@ -1752,17 +1798,17 @@ impl VgmStream {
                                 existing.data.extend_from_slice(&stream.data);
                             })
                             .or_insert(stream);
-                        self.next_command()
+                        Ok(None)
                     }
                     DataBlockType::CompressedStream(stream) => {
                         self.total_data_block_size += data_len;
                         self.process_compressed_stream(data_type, stream)?;
-                        self.next_command()
+                        Ok(None)
                     }
                     DataBlockType::DecompressionTable(table) => {
                         self.total_data_block_size += data_len;
                         self.decompression_tables.insert(data_type, table);
-                        self.next_command()
+                        Ok(None)
                     }
                     DataBlockType::RomRamDump(dump) => {
                         // For RomRamDump, reconstruct DataBlock and return
@@ -1785,8 +1831,8 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
-                            block,
+                        Ok(Some(StreamResult::Command(VgmCommand::DataBlock(
+                            Box::new(block),
                         ))))
                     }
                     DataBlockType::RamWrite16(write) => {
@@ -1809,8 +1855,8 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
-                            block,
+                        Ok(Some(StreamResult::Command(VgmCommand::DataBlock(
+                            Box::new(block),
                         ))))
                     }
                     DataBlockType::RamWrite32(write) => {
@@ -1833,8 +1879,8 @@ impl VgmStream {
                             size: full_data.len() as u32,
                             data: full_data,
                         };
-                        Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
-                            block,
+                        Ok(Some(StreamResult::Command(VgmCommand::DataBlock(
+                            Box::new(block),
                         ))))
                     }
                 }
@@ -1846,8 +1892,8 @@ impl VgmStream {
                     .push((block_data_type, current_offset, block_size));
                 *self.block_sizes.entry(data_type).or_insert(0) += data_len;
                 self.total_data_block_size += data_len;
-                Ok(StreamResult::Command(VgmCommand::DataBlock(Box::new(
-                    original_block,
+                Ok(Some(StreamResult::Command(VgmCommand::DataBlock(
+                    Box::new(original_block),
                 ))))
             }
         }
@@ -2243,7 +2289,7 @@ impl VgmStream {
             && next_write_sample >= self.current_sample
         {
             let wait_until_write = next_write_sample.saturating_sub(self.current_sample);
-            self.current_sample = next_write_sample;
+            self.advance_to_sample(next_write_sample);
             self.generate_stream_writes()?;
 
             let remaining_wait = target_sample.saturating_sub(next_write_sample);
@@ -2260,12 +2306,20 @@ impl VgmStream {
                 return Ok(StreamResult::Command(cmd));
             }
         }
-        self.current_sample = target_sample;
+        self.advance_to_sample(target_sample);
         self.pending_wait = None;
 
         Ok(StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(
             wait_samples.min(u16::MAX as usize) as u16,
         ))))
+    }
+
+    /// Sets the sample position, resetting the no-wait counter only on forward progress.
+    fn advance_to_sample(&mut self, sample: usize) {
+        if sample > self.current_sample {
+            self.commands_without_wait = 0;
+        }
+        self.current_sample = sample;
     }
 
     /// Finds the next stream write sample position that is after current_sample and at or before target_sample.

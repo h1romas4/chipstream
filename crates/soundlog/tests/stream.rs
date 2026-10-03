@@ -48,6 +48,297 @@ use std::mem;
 use std::rc::Rc;
 
 #[test]
+fn no_time_control_chain_is_iterative_for_every_source() {
+    #[derive(Debug)]
+    struct Commands(std::vec::IntoIter<VgmCommand>);
+    impl soundlog::VgmCommandGenerator for Commands {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Ok(self.0.next())
+        }
+    }
+
+    let mut builder = VgmBuilder::new();
+    for _ in 0..20_000 {
+        builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+        builder.add_vgm_command(soundlog::vgm::command::SeekOffset(0));
+        builder.add_vgm_command(soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN(0));
+    }
+    let document = builder.finalize();
+    let raw: Vec<u8> = (&document).into();
+    let mut buffer_stream = VgmStream::new();
+    push_vgm_bytes(&mut buffer_stream, &raw);
+    let generator = Commands(document.commands.clone().into_iter());
+    for mut stream in [
+        VgmStream::from_document(document),
+        VgmStream::from_vgm(raw).unwrap(),
+        buffer_stream,
+        VgmStream::from_generator(Box::new(generator)),
+    ] {
+        assert_eq!(stream.max_commands_without_wait(), Some(100_000));
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+    }
+}
+
+#[test]
+fn no_time_budget_exact_boundary_zero_and_disable() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+    builder.add_vgm_command(WaitSamples(0));
+    let document = builder.finalize();
+    let mut stream = VgmStream::from_document(document.clone());
+    stream.set_max_commands_without_wait(Some(3));
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+
+    let mut stream = VgmStream::from_document(document.clone());
+    stream.set_max_commands_without_wait(Some(2));
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 2 }))
+    ));
+
+    let mut stream = VgmStream::from_document(document.clone());
+    stream.set_max_commands_without_wait(Some(0));
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 0 }))
+    ));
+
+    let mut stream = VgmStream::from_document(document);
+    stream.set_max_commands_without_wait(None);
+    assert_eq!(stream.max_commands_without_wait(), None);
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+}
+
+#[test]
+fn no_time_budget_persists_across_chunks_and_reset_preserves_limit() {
+    let mut stream = VgmStream::new();
+    stream.set_max_commands_without_wait(Some(2));
+    for _ in 0..2 {
+        stream.push_chunk(&[0x94, 0]).unwrap();
+        assert!(matches!(
+            stream.next(),
+            Some(Ok(StreamResult::NeedsMoreData))
+        ));
+    }
+    stream.push_chunk(&[0x94, 0]).unwrap();
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 2 }))
+    ));
+    stream.reset();
+    assert_eq!(stream.max_commands_without_wait(), Some(2));
+    stream.push_chunk(&[0x94, 0, 0x66]).unwrap();
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+}
+
+#[test]
+fn no_time_fadeout_loop_returns_limit_error() {
+    let mut builder = VgmBuilder::new();
+    builder.set_loop_index(0);
+    let document = builder.finalize();
+    for mut stream in [
+        VgmStream::from_document(document.clone()),
+        VgmStream::from_vgm(document).unwrap(),
+    ] {
+        stream.set_loop_count(Some(1));
+        stream.set_fadeout_samples(Some(1));
+        stream.set_max_commands_without_wait(Some(16));
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::CommandLimitExceeded {
+                limit: 16
+            }))
+        ));
+        assert_eq!(stream.current_sample(), 0);
+    }
+}
+
+#[test]
+fn no_time_budget_resets_only_when_samples_advance() {
+    for wait in [
+        VgmCommand::from(WaitSamples(1)),
+        VgmCommand::from(WaitNSample(0)),
+        VgmCommand::from(Wait735Samples),
+        VgmCommand::from(Wait882Samples),
+        VgmCommand::from(soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN(1)),
+    ] {
+        for with_pcm in [false, true] {
+            let mut builder = VgmBuilder::new();
+            if with_pcm {
+                builder.attach_data_block(UncompressedStream {
+                    chip_type: StreamChipType::Ym2612Pcm,
+                    data: vec![0; 2],
+                });
+                builder.add_vgm_command(WaitSamples(1));
+            }
+            for _ in 0..2 {
+                builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+                builder.add_vgm_command(wait.clone());
+            }
+            let mut stream = VgmStream::from_document(builder.finalize());
+            stream.set_max_commands_without_wait(Some(2));
+            let mut ended = false;
+            for _ in 0..16 {
+                match stream.next().unwrap().unwrap() {
+                    StreamResult::EndOfStream => {
+                        ended = true;
+                        break;
+                    }
+                    StreamResult::Command(_) => {}
+                    StreamResult::NeedsMoreData => panic!("complete document needs more data"),
+                }
+            }
+            assert!(ended, "wait {wait:?}, PCM {with_pcm}");
+            assert!(stream.current_sample() > 0);
+        }
+    }
+}
+
+#[test]
+fn no_time_budget_persists_across_zero_waits_output_yields_and_loop_rewinds() {
+    let write = chip::Ym2151Spec {
+        register: 0x20,
+        value: 0,
+    };
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(0));
+    builder.add_chip_write(Instance::Primary, write.clone());
+    let mut stream = VgmStream::from_document(builder.finalize());
+    stream.set_max_commands_without_wait(Some(2));
+    for _ in 0..2 {
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    }
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 2 }))
+    ));
+
+    let mut builder = VgmBuilder::new();
+    builder.add_chip_write(Instance::Primary, write);
+    builder.set_loop_index(0);
+    let document = builder.finalize();
+    for mut stream in [
+        VgmStream::from_document(document.clone()),
+        VgmStream::from_vgm(document).unwrap(),
+    ] {
+        stream.set_loop_count(None);
+        stream.set_max_commands_without_wait(Some(4));
+        for _ in 0..2 {
+            assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+        }
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 4 }))
+        ));
+        assert_eq!(stream.current_sample(), 0);
+    }
+}
+
+#[test]
+fn no_time_data_block_chain_is_iterative_and_counted() {
+    use soundlog::vgm::detail::{
+        BitPackingCompression, BitPackingSubType, CompressedStream, CompressedStreamData,
+        CompressionType, DecompressionTable,
+    };
+
+    let mut builder = VgmBuilder::new();
+    for _ in 0..10_000 {
+        builder.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![1],
+        });
+        builder.attach_data_block(DecompressionTable {
+            compression_type: CompressionType::BitPacking,
+            sub_type: 0,
+            bits_decompressed: 8,
+            bits_compressed: 8,
+            value_count: 0,
+            table_data: Vec::new(),
+        });
+        builder.attach_data_block(CompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            compression_type: CompressionType::BitPacking,
+            uncompressed_size: 1,
+            compression: CompressedStreamData::BitPacking(BitPackingCompression {
+                bits_decompressed: 8,
+                bits_compressed: 8,
+                sub_type: BitPackingSubType::Copy,
+                add_value: 0,
+                data: vec![1],
+            }),
+        });
+    }
+    let document = builder.finalize();
+    let mut limited = VgmStream::from_document(document.clone());
+    limited.set_max_commands_without_wait(Some(2));
+    assert!(matches!(
+        limited.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 2 }))
+    ));
+    assert!(limited.get_uncompressed_stream(0x40).is_none());
+
+    let mut stream = VgmStream::from_document(document);
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+    assert_eq!(
+        stream.get_uncompressed_stream(0).unwrap().data.len(),
+        10_000
+    );
+    assert_eq!(
+        stream.get_uncompressed_stream(0x40).unwrap().data.len(),
+        10_000
+    );
+}
+
+#[test]
+fn no_time_loop_and_seek_errors_propagate_to_callbacks() {
+    let mut builder = VgmBuilder::new();
+    builder.set_loop_index(0);
+    let document = builder.finalize();
+    let mut finite = VgmStream::from_document(document.clone());
+    finite.set_max_commands_without_wait(Some(3));
+    finite.set_loop_count(Some(3));
+    assert!(matches!(finite.next(), Some(Ok(StreamResult::EndOfStream))));
+    assert_eq!(finite.current_loop_count(), 3);
+
+    let mut stream = VgmStream::from_document(document.clone());
+    stream.set_max_commands_without_wait(Some(16));
+    stream.set_loop_count(None);
+    assert!(matches!(
+        stream.seek_to_sample(1),
+        Err(soundlog::ParseError::CommandLimitExceeded { limit: 16 })
+    ));
+
+    let mut stream = VgmStream::from_document(document);
+    stream.set_max_commands_without_wait(Some(16));
+    stream.set_fadeout_samples(Some(1));
+    let mut callback = VgmCallbackStream::new(stream);
+    assert!(matches!(
+        callback.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded {
+            limit: 16
+        }))
+    ));
+}
+
+#[test]
+fn no_time_default_budget_stops_excessive_commands() {
+    let mut builder = VgmBuilder::new();
+    for _ in 0..100_001 {
+        builder.add_vgm_command(soundlog::vgm::command::StopStream { stream_id: 0 });
+    }
+    let mut stream = VgmStream::from_document(builder.finalize());
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::CommandLimitExceeded {
+            limit: 100_000
+        }))
+    ));
+}
+
+#[test]
 fn generator_error_preserves_custom_error_and_source_chain() {
     use std::error::Error;
     use std::fmt;

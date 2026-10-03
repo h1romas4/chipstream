@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Process VGM stream controls and data blocks iteratively to avoid stack overflow; bound raw commands without sample-time progress to 100,000 by default via `VgmStream::set_max_commands_without_wait`, returning `ParseError::CommandLimitExceeded` for no-time loops and excessive command runs, including during fadeout.
 - [x] Fix: Fade mixed MDX PCM gain to silence over the full playback fadeout duration using a power-4.0 curve (twice the attenuation in decibels of a quadratic curve), with faster initial decay and a gentler tail, without changing FM attenuation or song end timing.
 - [x] Add: Bound decoded PCM caches in MDX conversion, streaming, and playback checking with `MdxToVgmOptions::max_decoded_pcm_samples` (default 32,000,000 samples), returning `MdxConvertError::DecodedPcmSampleLimitExceeded` before decoding on exhaustion.
 - [x] Fix: Share decoded PCM cache entries for PDX samples with identical source ranges and decode conditions, preventing duplicate decoding for aliased bank/note entries.

@@ -101,6 +101,9 @@ pub enum ParseError {
         attempted_size: usize,
     },
 
+    /// Too many VGM commands were processed without advancing sample time.
+    CommandLimitExceeded { limit: u32 },
+
     /// An opcode byte was not recognized by the parser.
     ///
     /// - `opcode` is the raw opcode byte that was invalid.
@@ -189,6 +192,10 @@ impl fmt::Display for ParseError {
                 f,
                 "buffer size limit exceeded: current {current_size} bytes, limit {limit} bytes, attempted to add {attempted_size} bytes"
             ),
+            ParseError::CommandLimitExceeded { limit } => write!(
+                f,
+                "VGM command limit exceeded: {limit} commands without advancing sample time"
+            ),
             ParseError::UnknownOpcode { opcode, offset } => {
                 write!(
                     f,
@@ -262,6 +269,10 @@ mod tests {
             (
                 ParseError::MissingTerminator { field: "MDX title" },
                 "missing terminator for MDX title",
+            ),
+            (
+                ParseError::CommandLimitExceeded { limit: 100_000 },
+                "VGM command limit exceeded: 100000 commands without advancing sample time",
             ),
         ] {
             assert_eq!(error.to_string(), message);

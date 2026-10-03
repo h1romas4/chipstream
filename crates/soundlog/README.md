@@ -113,6 +113,7 @@ for result in &mut callback_stream {
 - Memory limits are enforced to protect against malicious or malformed files:
   - Data block size limit (default 32 MiB, configurable via `set_max_data_block_size()`)
   - Parsing buffer size limit (for chunked parsing via `push_chunk()`) (default 64 MiB, configurable via `set_max_buffer_size()`)
+- Raw commands without sample-time progress are limited to 100,000 by default; configure with `VgmStream::set_max_commands_without_wait()`, or pass `None` to disable.
 
 ## Examples
 
