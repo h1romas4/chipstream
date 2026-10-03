@@ -22,6 +22,7 @@ Key features:
 - Memory limits: Configurable limits for data block accumulation including decoded data (default 32 MiB), block count (default 256),
   and parsing buffer size (default 64 MiB) prevent unbounded memory growth from
   untrusted input.
+- Processing limits: Configurable budgets for raw commands without time progress and DAC stream expansion per input wait.
 - Chip state tracking: Monitor register writes to track key on/off events and
   extract tone information (frequency, pitch) from sound chip registers in real-time.
 - Format conversion: Other supported formats can use the same VGM

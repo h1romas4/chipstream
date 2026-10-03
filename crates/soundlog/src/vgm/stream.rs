@@ -478,6 +478,9 @@ const DEFAULT_MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024;
 /// Default maximum number of raw commands processed without advancing sample time.
 const DEFAULT_MAX_COMMANDS_WITHOUT_WAIT: u32 = 100_000;
 
+/// Default maximum number of DAC stream steps processed per positive input wait.
+const DEFAULT_MAX_STREAM_STEPS_PER_WAIT: u32 = 1_000_000;
+
 /// Default maximum number of data blocks processed before a full reset.
 const DEFAULT_MAX_DATA_BLOCK_COUNT: usize = 256;
 
@@ -539,6 +542,15 @@ pub enum StreamResult {
 /// Exceeding these limits returns [`ParseError::BufferSizeExceeded`],
 /// [`ParseError::DataBlockSizeExceeded`], or [`ParseError::DataBlockCountExceeded`].
 /// Stop processing the stream after an error.
+///
+/// ## Processing limits
+///
+/// Raw commands without sample-time progress are limited to 100,000 by default
+/// via [`Self::set_max_commands_without_wait`]. DAC stream expansion is limited
+/// to 1,000,000 steps per positive input wait via
+/// [`Self::set_max_stream_steps_per_wait`]. Internal wait splits do not reset the
+/// DAC budget; new positive input waits do. Either limit can be disabled with
+/// `None`. Stop processing after a budget error.
 ///
 /// # Examples
 ///
@@ -733,6 +745,10 @@ pub struct VgmStream {
     max_commands_without_wait: Option<u32>,
     /// Commands processed since the last forward sample-time advance.
     commands_without_wait: u32,
+    /// Maximum DAC stream steps processed during one positive input wait.
+    max_stream_steps_per_wait: Option<u32>,
+    /// DAC stream steps since the latest positive input wait.
+    stream_steps_since_wait: u32,
     /// VGM header loop_base field (signed: 0x80..0xFF = -128..-1)
     /// Subtracts from the effective loop count:
     ///  NumLoops = (ProgramNumLoops * modifier / 0x10) - loop_base
@@ -827,6 +843,8 @@ impl VgmStream {
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
             max_commands_without_wait: Some(DEFAULT_MAX_COMMANDS_WITHOUT_WAIT),
             commands_without_wait: 0,
+            max_stream_steps_per_wait: Some(DEFAULT_MAX_STREAM_STEPS_PER_WAIT),
+            stream_steps_since_wait: 0,
             loop_base: 0,
             loop_modifier: 0,
             stream_id_scratch: Vec::new(),
@@ -1223,6 +1241,14 @@ impl VgmStream {
         }
     }
 
+    /// Starts an input wait with a fresh budget only when the wait is positive.
+    fn process_input_wait(&mut self, samples: usize) -> Result<StreamResult, ParseError> {
+        if samples > 0 {
+            self.stream_steps_since_wait = 0;
+        }
+        self.process_wait_with_streams(samples)
+    }
+
     /// Processes a single VGM command, handling special cases and generating stream writes.
     fn process_command(&mut self, command: VgmCommand) -> Result<Option<StreamResult>, ParseError> {
         match &command {
@@ -1258,20 +1284,23 @@ impl VgmStream {
                 return Ok(None);
             }
             VgmCommand::WaitSamples(w) => {
-                return self.process_wait_with_streams(w.0 as usize).map(Some);
+                return self.process_input_wait(w.0 as usize).map(Some);
             }
             VgmCommand::Wait735Samples(_) => {
-                return self.process_wait_with_streams(735).map(Some);
+                return self.process_input_wait(735).map(Some);
             }
             VgmCommand::Wait882Samples(_) => {
-                return self.process_wait_with_streams(882).map(Some);
+                return self.process_input_wait(882).map(Some);
             }
             VgmCommand::WaitNSample(w) => {
                 // w.0 is the raw n (0..=15); actual wait is n+1 samples.
                 let samples = w.0 as usize + 1;
-                return self.process_wait_with_streams(samples).map(Some);
+                return self.process_input_wait(samples).map(Some);
             }
             VgmCommand::YM2612Port0Address2AWriteAndWaitN(cmd) => {
+                if cmd.0 > 0 {
+                    self.stream_steps_since_wait = 0;
+                }
                 return self.handle_ym2612_port0_address_2a_write_and_wait_n(cmd);
             }
             VgmCommand::SeekOffset(seek_offset) => {
@@ -1462,6 +1491,23 @@ impl VgmStream {
         self.max_commands_without_wait
     }
 
+    /// Sets the DAC stream step budget per positive input wait.
+    ///
+    /// The default is `Some(1_000_000)`; `None` disables the limit. Every due
+    /// step counts, including out-of-bank steps and unmapped chip types.
+    /// Internal wait splits, sample advances, iterator yields, zero waits,
+    /// chunk boundaries, and loop rewinds do not reset the counter. A new
+    /// positive input wait or full reset does. Exceeding the budget returns
+    /// [`ParseError::StreamStepLimitExceeded`]; stop processing on this error.
+    pub fn set_max_stream_steps_per_wait(&mut self, limit: Option<u32>) {
+        self.max_stream_steps_per_wait = limit;
+    }
+
+    /// Returns the DAC stream step budget per positive input wait.
+    pub fn max_stream_steps_per_wait(&self) -> Option<u32> {
+        self.max_stream_steps_per_wait
+    }
+
     /// Sets the maximum allowed size for accumulated data blocks.
     ///
     /// Counts raw payload bytes for all processed DataBlocks, including returned
@@ -1626,6 +1672,7 @@ impl VgmStream {
         self.total_data_block_size = 0;
         self.data_block_count = 0;
         self.commands_without_wait = 0;
+        self.stream_steps_since_wait = 0;
         // loop_base and loop_modifier are header-derived configuration and are
         // intentionally preserved across reset() calls.
     }
@@ -2287,6 +2334,15 @@ impl VgmStream {
             //  - due_step = Some, due_write = Some          → normal emit
             let due_s = snapshot.due_step(self.current_sample);
             let due_w = snapshot.due_write(self.current_sample);
+
+            if due_s.is_some() {
+                if let Some(limit) = self.max_stream_steps_per_wait
+                    && self.stream_steps_since_wait >= limit
+                {
+                    return Err(ParseError::StreamStepLimitExceeded { limit });
+                }
+                self.stream_steps_since_wait = self.stream_steps_since_wait.saturating_add(1);
+            }
 
             match (due_s, due_w) {
                 (None, _) => {

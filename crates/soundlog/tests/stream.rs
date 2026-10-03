@@ -49,6 +49,249 @@ use std::collections::HashSet;
 use std::mem;
 use std::rc::Rc;
 
+fn dac_budget_document(frequency: u32, waits: &[VgmCommand]) -> VgmDocument {
+    use soundlog::vgm::command::{
+        LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl, StartStream,
+    };
+    let mut builder = VgmBuilder::new();
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x80],
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2a,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency,
+    });
+    builder.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 1,
+    });
+    for command in waits {
+        builder.add_vgm_command(command.clone());
+    }
+    builder.finalize()
+}
+
+#[test]
+fn dac_budget_stops_expansion_despite_sample_progress_for_every_source() {
+    #[derive(Debug)]
+    struct Commands(std::vec::IntoIter<VgmCommand>);
+    impl soundlog::VgmCommandGenerator for Commands {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Ok(self.0.next())
+        }
+    }
+    let document = dac_budget_document(88_200, &[WaitSamples(u16::MAX).into()]);
+    let raw: Vec<u8> = (&document).into();
+    let mut buffer = VgmStream::new();
+    push_vgm_bytes(&mut buffer, &raw);
+    let generator = Commands(document.commands.clone().into_iter());
+    for mut stream in [
+        VgmStream::from_document(document),
+        VgmStream::from_vgm(raw).unwrap(),
+        buffer,
+        VgmStream::from_generator(Box::new(generator)),
+    ] {
+        assert_eq!(stream.max_stream_steps_per_wait(), Some(1_000_000));
+        stream.set_max_stream_steps_per_wait(Some(4));
+        let mut writes = 0;
+        let mut stopped = false;
+        for _ in 0..16 {
+            match stream.next().unwrap() {
+                Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, _))) => writes += 1,
+                Ok(StreamResult::Command(_)) => {}
+                Err(soundlog::ParseError::StreamStepLimitExceeded { limit: 4 }) => {
+                    stopped = true;
+                    break;
+                }
+                result => panic!("unexpected result: {result:?}"),
+            }
+        }
+        assert!(stopped);
+        assert_eq!(writes, 4);
+        assert!(stream.current_sample() > 0);
+    }
+}
+
+#[test]
+fn dac_budget_exact_boundary_zero_disable_and_reset() {
+    let document = dac_budget_document(88_200, &[WaitSamples(2).into()]);
+    for limit in [Some(5), None] {
+        let mut stream = VgmStream::from_document(document.clone());
+        stream.set_max_stream_steps_per_wait(limit);
+        assert_eq!(stream.max_stream_steps_per_wait(), limit);
+        let mut writes = 0;
+        let mut ended = false;
+        for _ in 0..32 {
+            match stream.next().unwrap().unwrap() {
+                StreamResult::Command(VgmCommand::Ym2612Write(_, _)) => writes += 1,
+                StreamResult::Command(_) => {}
+                StreamResult::EndOfStream => {
+                    ended = true;
+                    break;
+                }
+                result => panic!("unexpected result: {result:?}"),
+            }
+        }
+        assert!(ended);
+        assert_eq!(writes, 5);
+    }
+    let mut stream = VgmStream::from_document(document);
+    stream.set_max_stream_steps_per_wait(Some(0));
+    for _ in 0..2 {
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::StreamStepLimitExceeded {
+                limit: 0
+            }))
+        ));
+        stream.reset();
+        assert_eq!(stream.max_stream_steps_per_wait(), Some(0));
+    }
+}
+
+#[test]
+fn dac_budget_new_positive_waits_allow_longer_playback() {
+    let document = dac_budget_document(44_100, &vec![WaitSamples(1).into(); 12]);
+    let mut stream = VgmStream::from_document(document);
+    stream.set_max_stream_steps_per_wait(Some(2));
+    let mut writes = 0;
+    let mut ended = false;
+    for _ in 0..64 {
+        match stream.next().unwrap().unwrap() {
+            StreamResult::Command(VgmCommand::Ym2612Write(_, _)) => writes += 1,
+            StreamResult::Command(_) => {}
+            StreamResult::EndOfStream => {
+                ended = true;
+                break;
+            }
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
+    assert!(ended);
+    assert_eq!(writes, 13);
+    assert_eq!(stream.current_sample(), 12);
+}
+
+#[test]
+fn dac_budget_zero_wait_loops_and_reset() {
+    let mut document = dac_budget_document(44_100, &[WaitSamples(0).into()]);
+    document.header.loop_offset = document.sourcemap()[0].0 as u32 - 0x1c;
+    let mut stream = VgmStream::from_document(document);
+    stream.set_loop_count(Some(2));
+    stream.set_max_stream_steps_per_wait(Some(1));
+    for _ in 0..2 {
+        assert!(matches!(
+            stream.next(),
+            Some(Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, _))))
+        ));
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::StreamStepLimitExceeded {
+                limit: 1
+            }))
+        ));
+        stream.reset();
+        assert_eq!(stream.max_stream_steps_per_wait(), Some(1));
+    }
+}
+
+#[test]
+fn dac_budget_all_positive_wait_forms_reset_the_counter() {
+    use soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN;
+    for wait in [
+        WaitSamples(1).into(),
+        Wait735Samples.into(),
+        Wait882Samples.into(),
+        WaitNSample(0).into(),
+        Ym2612Port0Address2AWriteAndWaitN(1).into(),
+    ] {
+        let mut document = dac_budget_document(1, &[WaitSamples(1).into()]);
+        let start = document
+            .commands
+            .iter()
+            .find(|cmd| matches!(cmd, VgmCommand::StartStream(_)))
+            .unwrap()
+            .clone();
+        document.commands.pop();
+        document.commands.extend([start, wait, EndOfData.into()]);
+        let mut stream = VgmStream::from_document(document);
+        stream.set_max_stream_steps_per_wait(Some(1));
+        let mut ended = false;
+        for _ in 0..16 {
+            match stream.next().unwrap().unwrap() {
+                StreamResult::Command(_) => {}
+                StreamResult::EndOfStream => {
+                    ended = true;
+                    break;
+                }
+                result => panic!("unexpected result: {result:?}"),
+            }
+        }
+        assert!(ended);
+    }
+}
+
+#[test]
+fn dac_budget_counts_out_of_bank_steps() {
+    let mut document = dac_budget_document(44_100, &[WaitSamples(1).into()]);
+    for command in &mut document.commands {
+        if let VgmCommand::StartStream(start) = command {
+            start.data_start_offset = 2;
+        }
+    }
+    let mut stream = VgmStream::from_document(document);
+    stream.set_max_stream_steps_per_wait(Some(0));
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::StreamStepLimitExceeded {
+            limit: 0
+        }))
+    ));
+}
+
+#[test]
+fn dac_budget_default_stops_extreme_frequency() {
+    let document = dac_budget_document(u32::MAX, &[WaitSamples(u16::MAX).into()]);
+    let mut stream = VgmStream::from_document(document);
+    let mut writes = 0;
+    let mut stopped = false;
+    for _ in 0..1_000_064 {
+        match stream.next().unwrap() {
+            Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, _))) => writes += 1,
+            Ok(StreamResult::Command(_)) => {}
+            Err(soundlog::ParseError::StreamStepLimitExceeded { limit: 1_000_000 }) => {
+                stopped = true;
+                break;
+            }
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
+    assert!(stopped);
+    assert_eq!(writes, 1_000_000);
+    assert!(stream.current_sample() <= 11);
+}
+
 #[test]
 fn no_time_control_chain_is_iterative_for_every_source() {
     #[derive(Debug)]

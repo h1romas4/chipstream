@@ -59,6 +59,9 @@ Options:
 VGM/VGZ input files and gzip output are each limited to 64 MiB for `test`,
 `redump`, `parse`, and `stream`.
 
+`redump` output is limited to 10,000,000 commands and 64 MiB, including headers
+and metadata. Intro expansion is also budgeted.
+
 ## Shell completions
 
 ```text

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Add: Limit DAC stream expansion to 1,000,000 steps per input wait by default via `VgmStream::set_max_stream_steps_per_wait`, including non-emitting steps; internal wait splits and sample advances do not reset the budget, and exhaustion returns `ParseError::StreamStepLimitExceeded`.
 - [x] Fix: Parse chunked VGM input with a read cursor and amortized buffer compaction instead of moving remaining bytes after every command; preserve unread-byte limits and partial commands.
 - [x] Fix: Include decoded compressed VGM data in the cumulative data block size limit, committing totals only after successful decompression.
 - [x] Add: Limit all processed VGM DataBlocks to 256 by default, including zero-size blocks and decompression tables; configure or disable via `VgmStream::set_max_data_block_count`, with `ParseError::DataBlockCountExceeded` on exhaustion.

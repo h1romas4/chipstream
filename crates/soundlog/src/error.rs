@@ -104,6 +104,9 @@ pub enum ParseError {
     /// Too many VGM commands were processed without advancing sample time.
     CommandLimitExceeded { limit: u32 },
 
+    /// Too many DAC stream steps were processed during one input wait.
+    StreamStepLimitExceeded { limit: u32 },
+
     /// Processing another data block would exceed the configured count limit.
     DataBlockCountExceeded { current_count: usize, limit: usize },
 
@@ -199,6 +202,10 @@ impl fmt::Display for ParseError {
                 f,
                 "VGM command limit exceeded: {limit} commands without advancing sample time"
             ),
+            ParseError::StreamStepLimitExceeded { limit } => write!(
+                f,
+                "DAC stream step limit exceeded: {limit} steps during one input wait"
+            ),
             ParseError::DataBlockCountExceeded {
                 current_count,
                 limit,
@@ -283,6 +290,10 @@ mod tests {
             (
                 ParseError::CommandLimitExceeded { limit: 100_000 },
                 "VGM command limit exceeded: 100000 commands without advancing sample time",
+            ),
+            (
+                ParseError::StreamStepLimitExceeded { limit: 1_000_000 },
+                "DAC stream step limit exceeded: 1000000 steps during one input wait",
             ),
             (
                 ParseError::DataBlockCountExceeded {
