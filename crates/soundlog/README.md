@@ -19,7 +19,7 @@ Key features:
 - Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
   callback registration for chip register writes with automatic state tracking
   and event detection (KeyOn, KeyOff, ToneChange).
-- Memory limits: Configurable limits for data block accumulation (default 32 MiB)
+- Memory limits: Configurable limits for data block accumulation including decoded data (default 32 MiB), block count (default 256),
   and parsing buffer size (default 64 MiB) prevent unbounded memory growth from
   untrusted input.
 - Chip state tracking: Monitor register writes to track key on/off events and
@@ -111,7 +111,8 @@ for result in &mut callback_stream {
   and expanded by the crate so compressed streams and their associated
   decompression tables are applied transparently.
 - Memory limits are enforced to protect against malicious or malformed files:
-  - Data block size limit (default 32 MiB, configurable via `set_max_data_block_size()`)
+    - Data block size limit, including decoded data (default 32 MiB, configurable via `set_max_data_block_size()`)
+    - Data block count limit (default 256, configurable or disabled via `set_max_data_block_count()`)
   - Parsing buffer size limit (for chunked parsing via `push_chunk()`) (default 64 MiB, configurable via `set_max_buffer_size()`)
 - Raw commands without sample-time progress are limited to 100,000 by default; configure with `VgmStream::set_max_commands_without_wait()`, or pass `None` to disable.
 

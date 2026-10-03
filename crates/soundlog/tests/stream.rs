@@ -28,6 +28,8 @@ fn invalid_compression_width_propagates_through_stream() {
             max: 32,
         })
     ));
+    assert_eq!(stream.total_data_block_size(), 0);
+    assert_eq!(stream.data_block_count(), 0);
 }
 
 use soundlog::VgmBuilder;
@@ -238,6 +240,233 @@ fn no_time_budget_persists_across_zero_waits_output_yields_and_loop_rewinds() {
 }
 
 #[test]
+fn compressed_data_block_limit_includes_aggregate_decoded_size() {
+    for prefix_size in [0, 64] {
+        let mut builder = VgmBuilder::new();
+        builder.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Ym2612Pcm,
+            data: vec![0; prefix_size],
+        });
+        for _ in 0..2 {
+            builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+                marker: 0x66,
+                chip_instance: 0,
+                data_type: 0x40,
+                size: 14,
+                data: vec![0, 128, 0, 0, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0],
+            });
+        }
+        let document = builder.finalize();
+        for mut limited in [
+            VgmStream::from_document(document.clone()),
+            VgmStream::from_vgm(&document).unwrap(),
+        ] {
+            limited.set_max_data_block_size(prefix_size + 200);
+            assert!(matches!(
+                limited.next(),
+                Some(Err(soundlog::ParseError::DataBlockSizeExceeded { .. }))
+            ));
+            assert_eq!(limited.total_data_block_size(), prefix_size + 142);
+            assert_eq!(limited.data_block_count(), 2);
+            assert_eq!(
+                limited.get_uncompressed_stream(0x40).unwrap().data.len(),
+                128
+            );
+        }
+
+        let mut stream = VgmStream::from_document(document);
+        stream.set_max_data_block_size(prefix_size + 284);
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+        assert_eq!(stream.total_data_block_size(), prefix_size + 284);
+        assert_eq!(stream.data_block_count(), 3);
+        assert_eq!(
+            stream.get_uncompressed_stream(0x40).unwrap().data.len(),
+            256
+        );
+        stream.reset();
+        assert_eq!(stream.total_data_block_size(), 0);
+        assert_eq!(stream.data_block_count(), 0);
+        assert_eq!(stream.max_data_block_size(), prefix_size + 284);
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
+        assert_eq!(stream.total_data_block_size(), prefix_size + 284);
+    }
+}
+
+#[test]
+fn data_block_count_limit_for_every_source_and_block_kind() {
+    #[derive(Debug)]
+    struct Commands(std::vec::IntoIter<VgmCommand>);
+    impl soundlog::VgmCommandGenerator for Commands {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Ok(self.0.next())
+        }
+    }
+
+    let mut commands = Vec::new();
+    for (data_type, data) in [
+        (0x00, Vec::new()),
+        (0x40, vec![0, 128, 0, 0, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0]),
+        (0x80, vec![0; 8]),
+        (0xc0, vec![0; 2]),
+        (0xe0, vec![0; 4]),
+        (0xff, Vec::new()),
+    ] {
+        commands.push(VgmCommand::from(soundlog::vgm::command::DataBlock {
+            marker: 0x66,
+            chip_instance: 0,
+            data_type,
+            size: data.len() as u32,
+            data,
+        }));
+        commands.push(VgmCommand::from(WaitSamples(1)));
+    }
+    commands.push(VgmCommand::from(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x7f,
+        size: 6,
+        data: vec![0, 0, 8, 8, 0, 0],
+    }));
+    commands.push(VgmCommand::from(EndOfData));
+    let mut document = VgmBuilder::new().finalize();
+    document.commands = commands;
+    let raw: Vec<u8> = (&document).into();
+    for limit in [Some(0), Some(6), Some(7), None] {
+        let mut buffer = VgmStream::new();
+        push_vgm_bytes(&mut buffer, &raw);
+        for mut stream in [
+            VgmStream::from_document(document.clone()),
+            VgmStream::from_vgm(raw.clone()).unwrap(),
+            buffer,
+            VgmStream::from_generator(Box::new(Commands(document.commands.clone().into_iter()))),
+        ] {
+            assert_eq!(stream.max_data_block_count(), Some(256));
+            stream.set_max_data_block_count(limit);
+            stream.set_max_commands_without_wait(Some(2));
+            assert_eq!(stream.max_data_block_count(), limit);
+            let mut finished = false;
+            for _ in 0..20 {
+                match stream.next().unwrap() {
+                    Err(soundlog::ParseError::DataBlockCountExceeded {
+                        current_count,
+                        limit,
+                    }) => {
+                        assert!(limit < 7);
+                        assert_eq!(current_count, limit);
+                        assert_eq!(stream.data_block_count(), limit);
+                        assert!(stream.get_decompression_table(0x7f).is_none());
+                        finished = true;
+                        break;
+                    }
+                    Ok(StreamResult::EndOfStream) => {
+                        assert!(limit.is_none_or(|limit| limit >= 7));
+                        assert_eq!(stream.data_block_count(), 7);
+                        assert!(stream.get_decompression_table(0x7f).is_some());
+                        finished = true;
+                        break;
+                    }
+                    Ok(StreamResult::Command(_)) => {}
+                    result => panic!("unexpected result: {result:?}"),
+                }
+            }
+            assert!(finished);
+        }
+    }
+}
+
+#[test]
+fn data_block_count_limit_persists_across_chunks_and_reset_preserves_limit() {
+    let block = [0x67, 0x66, 0xff, 0, 0, 0, 0];
+    let mut stream = VgmStream::new();
+    stream.set_max_data_block_count(Some(1));
+    stream.set_max_data_block_size(0);
+    for _ in 0..2 {
+        stream.push_chunk(&block).unwrap();
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+        assert_eq!(stream.data_block_count(), 1);
+        assert_eq!(stream.total_data_block_size(), 0);
+        assert!(matches!(
+            stream.next(),
+            Some(Ok(StreamResult::NeedsMoreData))
+        ));
+        stream.push_chunk(&block).unwrap();
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::DataBlockCountExceeded {
+                current_count: 1,
+                limit: 1,
+            }))
+        ));
+        assert_eq!(stream.data_block_count(), 1);
+        stream.reset();
+        assert_eq!(stream.data_block_count(), 0);
+        assert_eq!(stream.max_data_block_count(), Some(1));
+        assert_eq!(stream.max_data_block_size(), 0);
+    }
+}
+
+#[test]
+fn data_block_count_limit_persists_across_loop_rewinds() {
+    let mut builder = VgmBuilder::new();
+    builder.set_loop_index(0);
+    builder.add_vgm_command(soundlog::vgm::command::DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0,
+        size: 0,
+        data: Vec::new(),
+    });
+    builder.add_vgm_command(WaitSamples(1));
+    let mut document = builder.finalize();
+    document.header.loop_offset = document.sourcemap()[0].0 as u32 - 0x1c;
+    for mut stream in [
+        VgmStream::from_document(document.clone()),
+        VgmStream::from_vgm(document).unwrap(),
+    ] {
+        stream.set_loop_count(Some(3));
+        stream.set_max_data_block_count(Some(2));
+        stream.set_max_data_block_size(0);
+        for _ in 0..2 {
+            assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+        }
+        assert!(matches!(
+            stream.next(),
+            Some(Err(soundlog::ParseError::DataBlockCountExceeded {
+                current_count: 2,
+                limit: 2,
+            }))
+        ));
+        assert_eq!(stream.data_block_count(), 2);
+        assert_eq!(stream.total_data_block_size(), 0);
+    }
+}
+
+#[test]
+fn data_block_count_default_limit_stops_zero_size_blocks_with_waits() {
+    let mut stream = VgmStream::new();
+    stream.set_max_data_block_size(0);
+    for _ in 0..256 {
+        stream
+            .push_chunk(&[0x67, 0x66, 0xff, 0, 0, 0, 0, 0x61, 1, 0])
+            .unwrap();
+        for _ in 0..2 {
+            assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+        }
+    }
+    stream.push_chunk(&[0x67, 0x66, 0xff, 0, 0, 0, 0]).unwrap();
+    assert!(matches!(
+        stream.next(),
+        Some(Err(soundlog::ParseError::DataBlockCountExceeded {
+            current_count: 256,
+            limit: 256,
+        }))
+    ));
+    assert_eq!(stream.data_block_count(), 256);
+    assert_eq!(stream.current_sample(), 256);
+    assert_eq!(stream.total_data_block_size(), 0);
+}
+
+#[test]
 fn no_time_data_block_chain_is_iterative_and_counted() {
     use soundlog::vgm::detail::{
         BitPackingCompression, BitPackingSubType, CompressedStream, CompressedStreamData,
@@ -281,6 +510,7 @@ fn no_time_data_block_chain_is_iterative_and_counted() {
     assert!(limited.get_uncompressed_stream(0x40).is_none());
 
     let mut stream = VgmStream::from_document(document);
+    stream.set_max_data_block_count(None);
     assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
     assert_eq!(
         stream.get_uncompressed_stream(0).unwrap().data.len(),

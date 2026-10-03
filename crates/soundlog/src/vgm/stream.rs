@@ -476,6 +476,9 @@ const DEFAULT_MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024;
 /// Default maximum number of raw commands processed without advancing sample time.
 const DEFAULT_MAX_COMMANDS_WITHOUT_WAIT: u32 = 100_000;
 
+/// Default maximum number of data blocks processed before a full reset.
+const DEFAULT_MAX_DATA_BLOCK_COUNT: usize = 256;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamResult {
     /// A complete command was parsed successfully.
@@ -515,19 +518,25 @@ pub enum StreamResult {
 ///
 /// ## Memory limits
 ///
-/// The stream parser has two configurable memory limits to prevent unbounded growth:
+/// The stream parser has three configurable memory limits to prevent unbounded growth:
 ///
 /// 1. **Buffer size limit** (for raw byte parsing): Controls the maximum size of the
 ///    internal buffer when using `push_chunk()`. Default is 64 MiB. Configure via
 ///    `set_max_buffer_size()` and query via `max_buffer_size()`.
 ///
-/// 2. **Data block size limit**: Controls the total size of accumulated data blocks
-///    (PCM, DAC stream data, etc.). Default is 32 MiB. Configure via
+/// 2. **Data block size limit**: Counts accumulated raw payload bytes plus decoded
+///    bytes for compressed blocks. Default is 32 MiB. Configure via
 ///    `set_max_data_block_size()` and query via `max_data_block_size()` /
 ///    `total_data_block_size()`.
 ///
-/// When either limit is exceeded, the parser returns `ParseError::DataBlockSizeExceeded`
-/// or `ParseError::BufferSizeExceeded` respectively.
+/// 3. **Data block count limit**: Counts every processed DataBlock, including tables
+///    and zero-size blocks. Default is 256. Configure or disable via
+///    `set_max_data_block_count()` and query via `max_data_block_count()` /
+///    `data_block_count()`.
+///
+/// Exceeding these limits returns [`ParseError::BufferSizeExceeded`],
+/// [`ParseError::DataBlockSizeExceeded`], or [`ParseError::DataBlockCountExceeded`].
+/// Stop processing the stream after an error.
 ///
 /// # Examples
 ///
@@ -712,6 +721,10 @@ pub struct VgmStream {
     max_data_block_size: usize,
     /// Current total size of accumulated data blocks
     total_data_block_size: usize,
+    /// Maximum number of data blocks processed before a full reset.
+    max_data_block_count: Option<usize>,
+    /// Successfully processed data blocks, including tables and returned blocks.
+    data_block_count: usize,
     /// Maximum allowed size for the internal parsing buffer
     max_buffer_size: usize,
     /// Maximum raw commands processed without advancing sample time.
@@ -806,6 +819,8 @@ impl VgmStream {
             pcm_data_offset: 0,
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
             total_data_block_size: 0,
+            max_data_block_count: Some(DEFAULT_MAX_DATA_BLOCK_COUNT),
+            data_block_count: 0,
             max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
             max_commands_without_wait: Some(DEFAULT_MAX_COMMANDS_WITHOUT_WAIT),
             commands_without_wait: 0,
@@ -1445,8 +1460,12 @@ impl VgmStream {
 
     /// Sets the maximum allowed size for accumulated data blocks.
     ///
+    /// Counts raw payload bytes for all processed DataBlocks, including returned
+    /// blocks and replaced tables, plus decoded bytes for compressed blocks.
+    /// Waits and loop rewinds do not reset the total; a full reset does.
+    ///
     /// When data blocks are added that would exceed this limit, a
-    /// `ParseError::DataBlockSizeExceeded` error will be returned.
+    /// [`ParseError::DataBlockSizeExceeded`] error will be returned.
     ///
     /// # Arguments
     ///
@@ -1460,9 +1479,30 @@ impl VgmStream {
         self.max_data_block_size
     }
 
-    /// Gets the current total size of accumulated data blocks.
+    /// Returns accumulated raw payload bytes plus decoded bytes for compressed blocks.
     pub fn total_data_block_size(&self) -> usize {
         self.total_data_block_size
+    }
+
+    /// Sets the data-block count limit (256 by default).
+    ///
+    /// All successfully processed DataBlocks count, including zero-size blocks,
+    /// decompression tables, and blocks returned to the caller. Waits, chunk
+    /// boundaries, and loop rewinds do not reset the count; a full reset does.
+    /// `None` disables the limit; `Some(0)` rejects every DataBlock. Exceeding it
+    /// returns [`ParseError::DataBlockCountExceeded`]; stop processing on this error.
+    pub fn set_max_data_block_count(&mut self, limit: Option<usize>) {
+        self.max_data_block_count = limit;
+    }
+
+    /// Returns the data-block count limit.
+    pub fn max_data_block_count(&self) -> Option<usize> {
+        self.max_data_block_count
+    }
+
+    /// Returns the number of successfully processed DataBlocks since the last full reset.
+    pub fn data_block_count(&self) -> usize {
+        self.data_block_count
     }
 
     /// Sets the maximum allowed size for the internal parsing buffer.
@@ -1563,6 +1603,7 @@ impl VgmStream {
         self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
         self.total_data_block_size = 0;
+        self.data_block_count = 0;
         self.commands_without_wait = 0;
         // loop_base and loop_modifier are header-derived configuration and are
         // intentionally preserved across reset() calls.
@@ -1762,6 +1803,14 @@ impl VgmStream {
 
     /// Handles a data block command by parsing it and storing or returning it.
     fn handle_data_block(&mut self, block: DataBlock) -> Result<Option<StreamResult>, ParseError> {
+        if let Some(limit) = self.max_data_block_count
+            && self.data_block_count >= limit
+        {
+            return Err(ParseError::DataBlockCountExceeded {
+                current_count: self.data_block_count,
+                limit,
+            });
+        }
         // block is passed by value (unboxed at call site)
         let block_size = block.size as usize;
         let block_data_type = block.data_type;
@@ -1771,8 +1820,9 @@ impl VgmStream {
         let chip_instance = block.chip_instance;
 
         // Check if adding this block would exceed the size limit
-        let new_total = self.total_data_block_size.saturating_add(data_len);
-        if new_total > self.max_data_block_size {
+        if self.total_data_block_size > self.max_data_block_size
+            || data_len > self.max_data_block_size - self.total_data_block_size
+        {
             return Err(ParseError::DataBlockSizeExceeded {
                 current_size: self.total_data_block_size,
                 limit: self.max_data_block_size,
@@ -1780,7 +1830,7 @@ impl VgmStream {
             });
         }
 
-        match parse_data_block(block) {
+        let result = match parse_data_block(block) {
             Ok(parsed) => {
                 match parsed {
                     DataBlockType::UncompressedStream(stream) => {
@@ -1801,8 +1851,7 @@ impl VgmStream {
                         Ok(None)
                     }
                     DataBlockType::CompressedStream(stream) => {
-                        self.total_data_block_size += data_len;
-                        self.process_compressed_stream(data_type, stream)?;
+                        self.process_compressed_stream(data_type, stream, data_len)?;
                         Ok(None)
                     }
                     DataBlockType::DecompressionTable(table) => {
@@ -1896,7 +1945,11 @@ impl VgmStream {
                     Box::new(original_block),
                 ))))
             }
+        };
+        if result.is_ok() {
+            self.data_block_count = self.data_block_count.saturating_add(1);
         }
+        result
     }
 
     /// Process a compressed stream: perform decompression using available
@@ -1905,11 +1958,13 @@ impl VgmStream {
         &mut self,
         data_type: u8,
         mut stream: CompressedStream,
+        data_len: usize,
     ) -> Result<(), ParseError> {
         // Calculate remaining space in data block limit
         let remaining_space = self
             .max_data_block_size
-            .saturating_sub(self.total_data_block_size);
+            .saturating_sub(self.total_data_block_size)
+            .saturating_sub(data_len);
 
         let decompressed_data = match &mut stream.compression {
             CompressedStreamData::BitPacking(bp) => {
@@ -1924,7 +1979,7 @@ impl VgmStream {
                     None
                 };
                 bp.decompress(table, remaining_space)?;
-                bp.data.clone()
+                std::mem::take(&mut bp.data)
             }
             CompressedStreamData::Dpcm(dpcm) => {
                 let table = self.decompression_tables.get(&data_type).ok_or_else(|| {
@@ -1934,7 +1989,7 @@ impl VgmStream {
                     ))
                 })?;
                 dpcm.decompress(table, remaining_space)?;
-                dpcm.data.clone()
+                std::mem::take(&mut dpcm.data)
             }
             CompressedStreamData::Unknown {
                 compression_type, ..
@@ -1951,6 +2006,7 @@ impl VgmStream {
             .unwrap_or(0);
         self.block_id_map
             .push((data_type, current_offset, decompressed_data.len()));
+        self.total_data_block_size += data_len + decompressed_data.len();
 
         // Append decompressed data to existing stream or create new one
         self.uncompressed_streams
@@ -2717,6 +2773,81 @@ impl Iterator for VgmStream {
         match self.next_command() {
             Ok(stream_result) => Some(Ok(stream_result)),
             Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vgm::detail::CompressionType;
+
+    #[test]
+    fn table_based_compression_counts_decoded_output_atomically() {
+        for compression_type in [0, 1] {
+            for limit in [200, 284] {
+                let sub_type = if compression_type == 0 { 2 } else { 0 };
+                let mut stream = VgmStream::new();
+                stream.set_max_data_block_size(limit);
+                stream.decompression_tables.insert(
+                    0x40,
+                    DecompressionTable {
+                        compression_type: if compression_type == 0 {
+                            CompressionType::BitPacking
+                        } else {
+                            CompressionType::Dpcm
+                        },
+                        sub_type,
+                        bits_decompressed: 32,
+                        bits_compressed: 1,
+                        value_count: 2,
+                        table_data: vec![0; 8],
+                    },
+                );
+                let block = DataBlock {
+                    marker: 0x66,
+                    chip_instance: 0,
+                    data_type: 0x40,
+                    size: 14,
+                    data: vec![
+                        compression_type,
+                        128,
+                        0,
+                        0,
+                        0,
+                        32,
+                        1,
+                        sub_type,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                };
+                assert_eq!(stream.handle_data_block(block.clone()).unwrap(), None);
+                assert_eq!(stream.total_data_block_size(), 142);
+                assert_eq!(stream.data_block_count(), 1);
+                let result = stream.handle_data_block(block);
+                let accepted = if limit == 200 {
+                    assert!(matches!(
+                        result,
+                        Err(ParseError::DataBlockSizeExceeded { .. })
+                    ));
+                    1
+                } else {
+                    assert_eq!(result.unwrap(), None);
+                    2
+                };
+                assert_eq!(stream.total_data_block_size(), 142 * accepted);
+                assert_eq!(stream.data_block_count(), accepted);
+                assert_eq!(
+                    stream.get_uncompressed_stream(0x40).unwrap().data.len(),
+                    128 * accepted
+                );
+                assert_eq!(stream.block_id_map.len(), accepted);
+            }
         }
     }
 }
