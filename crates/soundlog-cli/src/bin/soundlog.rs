@@ -373,11 +373,48 @@ struct Args {
     command: Commands,
 }
 
-/// Read bytes from a path, automatically handling `.vgz`/`.gz` or gzip headers.
+/// Maximum input file size before gzip decompression (64 MiB).
+const MAX_INPUT_FILE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum gzip output size (64 MiB).
+const MAX_GZIP_OUTPUT_SIZE: usize = 64 * 1024 * 1024;
+
+/// Reads at most one byte beyond the limit to distinguish exact-size input from overflow.
+fn read_bytes_with_limit(
+    reader: impl Read,
+    limit: usize,
+    description: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let read_limit = u64::try_from(limit)
+        .ok()
+        .and_then(|limit| limit.checked_add(1))
+        .context("byte limit is too large")?;
+    let mut data = Vec::new();
+    reader
+        .take(read_limit)
+        .read_to_end(&mut data)
+        .with_context(|| format!("failed to read {description}"))?;
+    anyhow::ensure!(
+        data.len() <= limit,
+        "{description} size limit exceeded: limit {limit} bytes"
+    );
+    Ok(data)
+}
+
+/// Reads VGM/VGZ input with bounded file and gzip output sizes.
 fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
-    // Read file contents
-    let data =
-        fs::read(path).with_context(|| format!("failed to read file: {}", path.display()))?;
+    load_bytes_from_path_with_limits(path, MAX_INPUT_FILE_SIZE, MAX_GZIP_OUTPUT_SIZE)
+}
+
+/// Reads a path with independent input and gzip output limits.
+fn load_bytes_from_path_with_limits(
+    path: &PathBuf,
+    input_limit: usize,
+    gzip_output_limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open file: {}", path.display()))?;
+    let data = read_bytes_with_limit(file, input_limit, &format!("input file {}", path.display()))?;
 
     // Detect gzip by extension or by header (0x1f 0x8b)
     let is_gzip = path
@@ -388,12 +425,11 @@ fn load_bytes_from_path(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
         || (data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b);
 
     if is_gzip {
-        let mut decoder = GzDecoder::new(Cursor::new(data));
-        let mut out = Vec::new();
-        decoder
-            .read_to_end(&mut out)
-            .context("gzip decompression failed")?;
-        Ok(out)
+        read_bytes_with_limit(
+            GzDecoder::new(Cursor::new(data)),
+            gzip_output_limit,
+            &format!("gzip output for {}", path.display()),
+        )
     } else {
         Ok(data)
     }
@@ -751,6 +787,176 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct InputFile(PathBuf);
+
+    impl InputFile {
+        fn new(name: &str, data: &[u8]) -> Self {
+            static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+            let input = Self(std::env::temp_dir().join(format!(
+                "soundlog-input-{}-{}-{name}",
+                process::id(),
+                NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+            )));
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&input.0)
+                .unwrap()
+                .write_all(data)
+                .unwrap();
+            input
+        }
+    }
+
+    impl Drop for InputFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn gzip_input(data: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn input_read_limit_accepts_exact_size_and_stops_after_one_extra_byte() {
+        for (data, limit, accepted) in [
+            (&b""[..], 0, true),
+            (&b"x"[..], 0, false),
+            (&b"abc"[..], 4, true),
+            (&b"abcd"[..], 4, true),
+            (&b"abcde"[..], 4, false),
+            (&b"abcdefgh"[..], 4, false),
+        ] {
+            let mut reader = Cursor::new(data);
+            let result = read_bytes_with_limit(&mut reader, limit, "input");
+            assert_eq!(reader.position() as usize, data.len().min(limit + 1));
+            if accepted {
+                assert_eq!(result.unwrap(), data);
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("input size limit exceeded: limit {limit} bytes")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn input_load_plain_file_limits() {
+        for size in [0, 3, 4, 5] {
+            let data = vec![0; size];
+            let input = InputFile::new("plain.vgm", &data);
+            assert_eq!(load_bytes_from_path(&input.0).unwrap(), data);
+            let result = load_bytes_from_path_with_limits(&input.0, 4, 0);
+            if size <= 4 {
+                assert_eq!(result.unwrap(), data);
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!(
+                        "input file {} size limit exceeded: limit 4 bytes",
+                        input.0.display()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn input_load_gzip_limits_are_independent_and_detection_is_preserved() {
+        for data in [&b""[..], &b"Vgm "[..]] {
+            let compressed = gzip_input(data);
+            for name in [
+                "song.vgz", "song.VGZ", "song.gz", "song.GZ", "song.vgm", "song",
+            ] {
+                let input = InputFile::new(name, &compressed);
+                assert_eq!(load_bytes_from_path(&input.0).unwrap(), data);
+                assert_eq!(
+                    load_bytes_from_path_with_limits(&input.0, compressed.len(), data.len())
+                        .unwrap(),
+                    data
+                );
+                let error =
+                    load_bytes_from_path_with_limits(&input.0, compressed.len() - 1, data.len())
+                        .unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!(
+                        "input file {} size limit exceeded: limit {} bytes",
+                        input.0.display(),
+                        compressed.len() - 1
+                    )
+                );
+                if !data.is_empty() {
+                    let error = load_bytes_from_path_with_limits(
+                        &input.0,
+                        compressed.len(),
+                        data.len() - 1,
+                    )
+                    .unwrap_err();
+                    assert_eq!(
+                        error.to_string(),
+                        format!(
+                            "gzip output for {} size limit exceeded: limit {} bytes",
+                            input.0.display(),
+                            data.len() - 1
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn input_load_highly_compressed_gzip_is_bounded() {
+        let data = vec![0; 64 * 1024];
+        let compressed = gzip_input(&data);
+        assert!(compressed.len() < 1024);
+        let input = InputFile::new("compressed.vgz", &compressed);
+        let error = load_bytes_from_path_with_limits(&input.0, 1024, 128).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "gzip output for {} size limit exceeded: limit 128 bytes",
+                input.0.display()
+            )
+        );
+    }
+
+    #[test]
+    fn input_load_corrupt_gzip_preserves_io_errors() {
+        let compressed = gzip_input(b"Vgm ");
+        let mut bad_crc = compressed.clone();
+        let crc_offset = bad_crc.len() - 8;
+        bad_crc[crc_offset] ^= 1;
+        for (name, data) in [
+            ("empty.vgz", Vec::new()),
+            ("plain.gz", b"not gzip".to_vec()),
+            ("header", vec![0x1f, 0x8b]),
+            ("truncated.vgz", compressed[..compressed.len() - 4].to_vec()),
+            ("crc.vgz", bad_crc),
+        ] {
+            let input = InputFile::new(name, &data);
+            let error = load_bytes_from_path_with_limits(&input.0, 1024, 4).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("failed to read gzip output for {}", input.0.display())
+            );
+            assert!(
+                error
+                    .root_cause()
+                    .downcast_ref::<std::io::Error>()
+                    .is_some()
+            );
+        }
+    }
 
     #[test]
     fn mdx_conversion_arguments_accept_tick_limits() {

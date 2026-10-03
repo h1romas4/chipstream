@@ -56,6 +56,9 @@ Options:
 
 - Use `--help` after any subcommand to get subcommand-specific usage.
 
+VGM/VGZ input files and gzip output are each limited to 64 MiB for `test`,
+`redump`, `parse`, and `stream`.
+
 ## Shell completions
 
 ```text
