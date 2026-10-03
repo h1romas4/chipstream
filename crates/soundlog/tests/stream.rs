@@ -642,6 +642,156 @@ fn buffer_limit_error_preserves_buffer() {
 }
 
 #[test]
+fn buffer_cursor_limits_only_unread_bytes_and_preserves_rejected_append() {
+    let mut stream = VgmStream::new();
+    stream.set_max_buffer_size(8);
+    stream.push_chunk(&[0x70; 8]).unwrap();
+    assert_eq!(
+        stream.next().unwrap().unwrap(),
+        StreamResult::Command(VgmCommand::from(WaitSamples(1)))
+    );
+    assert_eq!(stream.buffer_size(), 7);
+    stream.push_chunk(&[0x70]).unwrap();
+    assert_eq!(stream.buffer_size(), 8);
+    assert!(matches!(
+        stream.push_chunk(&[0x70]),
+        Err(soundlog::ParseError::BufferSizeExceeded {
+            current_size: 8,
+            limit: 8,
+            attempted_size: 1,
+        })
+    ));
+    for remaining in (0..8).rev() {
+        assert_eq!(
+            stream.next().unwrap().unwrap(),
+            StreamResult::Command(VgmCommand::from(WaitSamples(1)))
+        );
+        assert_eq!(stream.buffer_size(), remaining);
+    }
+    assert_eq!(stream.current_sample(), 9);
+    assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+    stream.set_max_buffer_size(0);
+    stream.push_chunk(&[]).unwrap();
+}
+
+#[test]
+fn buffer_cursor_preserves_split_commands_across_compaction_and_optimization() {
+    for optimize in [false, true] {
+        let mut stream = VgmStream::new();
+        stream
+            .push_chunk(&[0x70, 0x70, 0x70, 0x70, 0x61, 2])
+            .unwrap();
+        for _ in 0..4 {
+            assert_eq!(
+                stream.next().unwrap().unwrap(),
+                StreamResult::Command(VgmCommand::from(WaitSamples(1)))
+            );
+        }
+        assert_eq!(stream.buffer_size(), 2);
+        assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+        if optimize {
+            stream.optimize_memory();
+        }
+        assert_eq!(stream.buffer_size(), 2);
+        stream.push_chunk(&[0]).unwrap();
+        assert_eq!(
+            stream.next().unwrap().unwrap(),
+            StreamResult::Command(VgmCommand::from(WaitSamples(2)))
+        );
+        assert_eq!(stream.buffer_size(), 0);
+        stream.push_chunk(&[0x61, 3, 0, 0x70]).unwrap();
+        for wait in [3, 1] {
+            assert_eq!(
+                stream.next().unwrap().unwrap(),
+                StreamResult::Command(VgmCommand::from(WaitSamples(wait)))
+            );
+        }
+        assert_eq!(stream.current_sample(), 10);
+        assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+    }
+}
+
+#[test]
+fn buffer_cursor_preserves_data_blocks_split_at_every_byte() {
+    let block = [0x67, 0x66, 0, 4, 0, 0, 0, 1, 2, 3, 4];
+    for split in 0..block.len() {
+        let mut stream = VgmStream::new();
+        stream.push_chunk(&[0x70; 16]).unwrap();
+        stream.push_chunk(&block[..split]).unwrap();
+        for _ in 0..16 {
+            assert_eq!(
+                stream.next().unwrap().unwrap(),
+                StreamResult::Command(VgmCommand::from(WaitSamples(1)))
+            );
+        }
+        assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+        assert_eq!(stream.buffer_size(), split);
+        assert_eq!(stream.data_block_count(), 0);
+        stream.push_chunk(&block[split..]).unwrap();
+        stream.push_chunk(&[0x70]).unwrap();
+        assert_eq!(
+            stream.next().unwrap().unwrap(),
+            StreamResult::Command(VgmCommand::from(WaitSamples(1)))
+        );
+        assert_eq!(stream.data_block_count(), 1);
+        assert_eq!(
+            stream.get_uncompressed_stream(0).unwrap().data,
+            [1, 2, 3, 4]
+        );
+        assert_eq!(stream.buffer_size(), 0);
+        assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+    }
+}
+
+#[test]
+fn buffer_cursor_reset_and_loop_clear_discard_consumed_prefix() {
+    let mut stream = VgmStream::new();
+    stream.set_max_buffer_size(32);
+    stream.push_chunk(&[0x70; 12]).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    }
+    assert_eq!(stream.buffer_size(), 10);
+    stream.reset();
+    assert_eq!(stream.buffer_size(), 0);
+    assert_eq!(stream.max_buffer_size(), 32);
+    stream.push_chunk(&[0x70]).unwrap();
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert_eq!(stream.current_sample(), 1);
+
+    stream.reset();
+    stream.set_loop_count(Some(2));
+    stream.push_chunk(&[0x70; 4]).unwrap();
+    stream.push_chunk(&[0x66]).unwrap();
+    stream.push_chunk(&[0xff; 16]).unwrap();
+    for _ in 0..4 {
+        assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    }
+    assert_eq!(stream.next().unwrap().unwrap(), StreamResult::NeedsMoreData);
+    assert_eq!(stream.buffer_size(), 0);
+    assert_eq!(stream.current_loop_count(), 1);
+    assert_eq!(stream.current_sample(), 0);
+    stream.push_chunk(&[0x70, 0x66]).unwrap();
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
+    assert_eq!(stream.buffer_size(), 0);
+}
+
+#[test]
+fn buffer_cursor_keeps_unknown_command_offsets_relative_to_unread_input() {
+    let mut stream = VgmStream::new();
+    stream.push_chunk(&[0x70, 0x01, 0x70, 0x70, 0x70]).unwrap();
+    assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
+    assert_eq!(stream.buffer_size(), 4);
+    assert!(matches!(
+        stream.next(),
+        Some(Ok(StreamResult::Command(VgmCommand::UnknownCommand(spec))))
+            if spec.opcode == 0x01 && spec.offset == 1
+    ));
+    assert_eq!(stream.buffer_size(), 3);
+}
+
+#[test]
 fn stream_source_reports_unsupported_operations() {
     let document = VgmBuilder::new().finalize();
     let mut stream = VgmStream::from_document(document.clone());

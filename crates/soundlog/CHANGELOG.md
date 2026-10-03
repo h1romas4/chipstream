@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Parse chunked VGM input with a read cursor and amortized buffer compaction instead of moving remaining bytes after every command; preserve unread-byte limits and partial commands.
 - [x] Fix: Include decoded compressed VGM data in the cumulative data block size limit, committing totals only after successful decompression.
 - [x] Add: Limit all processed VGM DataBlocks to 256 by default, including zero-size blocks and decompression tables; configure or disable via `VgmStream::set_max_data_block_count`, with `ParseError::DataBlockCountExceeded` on exhaustion.
 - [x] Fix: Process VGM stream controls and data blocks iteratively to avoid stack overflow; bound raw commands without sample-time progress to 100,000 by default via `VgmStream::set_max_commands_without_wait`, returning `ParseError::CommandLimitExceeded` for no-time loops and excessive command runs, including during fadeout.

@@ -68,8 +68,10 @@ pub trait VgmCommandGenerator: fmt::Debug {
 enum VgmStreamSource {
     /// Raw byte stream that needs to be parsed into commands.
     Buffer {
-        /// Buffer containing incomplete or unparsed VGM data.
+        /// Consumed prefix followed by incomplete or unparsed VGM data.
         buffer: Vec<u8>,
+        /// Byte offset of the first unread command.
+        read_pos: usize,
     },
     /// Pre-parsed commands from a VgmDocument.
     Document {
@@ -521,7 +523,7 @@ pub enum StreamResult {
 /// The stream parser has three configurable memory limits to prevent unbounded growth:
 ///
 /// 1. **Buffer size limit** (for raw byte parsing): Controls the maximum size of the
-///    internal buffer when using `push_chunk()`. Default is 64 MiB. Configure via
+///    unread input when using `push_chunk()`. Default is 64 MiB. Configure via
 ///    `set_max_buffer_size()` and query via `max_buffer_size()`.
 ///
 /// 2. **Data block size limit**: Counts accumulated raw payload bytes plus decoded
@@ -800,6 +802,7 @@ impl VgmStream {
         Self {
             source: VgmStreamSource::Buffer {
                 buffer: Vec::with_capacity(MIN_CAP_TO_SHRINK),
+                read_pos: 0,
             },
             uncompressed_streams: HashMap::new(),
             block_id_map: Vec::new(),
@@ -1046,12 +1049,13 @@ impl VgmStream {
     /// [`ParseError::UnsupportedStreamOperation`] if the stream is not buffer-backed.
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
         match &mut self.source {
-            VgmStreamSource::Buffer { buffer } => {
-                if buffer.len() > self.max_buffer_size
-                    || chunk.len() > self.max_buffer_size - buffer.len()
+            VgmStreamSource::Buffer { buffer, read_pos } => {
+                let unread_len = buffer.len() - *read_pos;
+                if unread_len > self.max_buffer_size
+                    || chunk.len() > self.max_buffer_size - unread_len
                 {
                     return Err(ParseError::BufferSizeExceeded {
-                        current_size: buffer.len(),
+                        current_size: unread_len,
                         limit: self.max_buffer_size,
                         attempted_size: chunk.len(),
                     });
@@ -1152,31 +1156,31 @@ impl VgmStream {
     /// Gets the next raw command from the internal source.
     fn get_next_raw_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
         match &mut self.source {
-            VgmStreamSource::Buffer { buffer, .. } => {
+            VgmStreamSource::Buffer { buffer, read_pos } => {
                 // If buffer is empty, we need more data
-                if buffer.is_empty() {
+                let unread = &buffer[*read_pos..];
+                if unread.is_empty() {
                     return Ok(None);
                 }
 
-                let parse_result = parse_vgm_command(buffer, 0);
+                let parse_result = parse_vgm_command(unread, 0);
 
                 match parse_result {
                     Ok((command, consumed)) => {
                         // Defensive check: parse_vgm_command must never claim to
                         // have consumed more bytes than were present in the buffer.
                         // Return an OffsetOutOfRange so the caller treats it as NeedsMoreData.
-                        if consumed > buffer.len() {
+                        if consumed > unread.len() {
                             return Err(ParseError::OffsetOutOfRange {
                                 offset: 0,
                                 needed: consumed,
-                                available: buffer.len(),
+                                available: unread.len(),
                                 context: Some(
                                     "get_next_raw_command: consumed > buffer.len()".into(),
                                 ),
                             });
                         }
-                        // Remove consumed bytes from buffer
-                        buffer.drain(..consumed);
+                        *read_pos += consumed;
                         self.shrink_buffer_if_needed();
                         Ok(Some(command))
                     }
@@ -1507,9 +1511,10 @@ impl VgmStream {
 
     /// Sets the maximum allowed size for the internal parsing buffer.
     ///
-    /// This limit applies to the raw byte buffer used when feeding data via
-    /// `push_chunk()`. When the buffer size would exceed this limit, `push_chunk()`
+    /// This limit applies to unread bytes when feeding data via
+    /// `push_chunk()`. When unread bytes plus the chunk would exceed this limit, `push_chunk()`
     /// returns an error.
+    /// Consumed prefixes may remain until compaction; this is not an allocation-capacity limit.
     ///
     /// # Arguments
     ///
@@ -1531,21 +1536,35 @@ impl VgmStream {
         self.max_buffer_size
     }
 
-    /// Shrinks the buffer if it has grown too large relative to its usage.
-    fn shrink_buffer_if_needed(&mut self) {
-        if let VgmStreamSource::Buffer { buffer, .. } = &mut self.source
-            && buffer.capacity() > MIN_CAP_TO_SHRINK
-            && buffer.len() < buffer.capacity() / 4
-        {
-            buffer.shrink_to_fit();
+    /// Moves unread bytes to the front and discards the consumed prefix.
+    fn compact_buffer(buffer: &mut Vec<u8>, read_pos: &mut usize) {
+        if *read_pos != 0 {
+            buffer.copy_within(*read_pos.., 0);
+            buffer.truncate(buffer.len() - *read_pos);
+            *read_pos = 0;
         }
     }
 
-    /// Returns the current size of the internal buffer.
+    /// Compacts consumed bytes geometrically and shrinks excessive buffer capacity.
+    fn shrink_buffer_if_needed(&mut self) {
+        if let VgmStreamSource::Buffer { buffer, read_pos } = &mut self.source {
+            let unread_len = buffer.len() - *read_pos;
+            let should_shrink =
+                buffer.capacity() > MIN_CAP_TO_SHRINK && unread_len < buffer.capacity() / 4;
+            if *read_pos >= unread_len || should_shrink {
+                Self::compact_buffer(buffer, read_pos);
+            }
+            if should_shrink {
+                buffer.shrink_to_fit();
+            }
+        }
+    }
+
+    /// Returns the number of unread bytes in the input buffer.
     #[doc(hidden)]
     pub fn buffer_size(&self) -> usize {
         match &self.source {
-            VgmStreamSource::Buffer { buffer, .. } => buffer.len(),
+            VgmStreamSource::Buffer { buffer, read_pos } => buffer.len() - *read_pos,
             VgmStreamSource::Document { .. } => 0,
             VgmStreamSource::Generator { .. } => 0,
             VgmStreamSource::File {
@@ -1558,7 +1577,8 @@ impl VgmStream {
     #[doc(hidden)]
     pub fn optimize_memory(&mut self) {
         self.cleanup_unused_data_blocks();
-        if let VgmStreamSource::Buffer { buffer, .. } = &mut self.source {
+        if let VgmStreamSource::Buffer { buffer, read_pos } = &mut self.source {
+            Self::compact_buffer(buffer, read_pos);
             buffer.shrink_to_fit();
         }
     }
@@ -1567,8 +1587,9 @@ impl VgmStream {
     /// Resets the stream parser to its initial state.
     pub fn reset(&mut self) {
         match &mut self.source {
-            VgmStreamSource::Buffer { buffer } => {
+            VgmStreamSource::Buffer { buffer, read_pos } => {
                 buffer.clear();
+                *read_pos = 0;
             }
             VgmStreamSource::Document {
                 current_index,
@@ -1765,13 +1786,14 @@ impl VgmStream {
             // Never reached: `has_loop_point()` is always `false` for
             // generator sources, so `handle_end_of_data` never calls this.
             VgmStreamSource::Generator { .. } => {}
-            VgmStreamSource::Buffer { buffer } => {
+            VgmStreamSource::Buffer { buffer, read_pos } => {
                 // For byte stream, the caller is responsible for re-pushing data
                 // from the loop point after each loop iteration.
                 // Clear any residual bytes so the next push_chunk starts from a
                 // clean state and the stale tail bytes are not re-parsed as
                 // valid commands.
                 buffer.clear();
+                *read_pos = 0;
             }
             VgmStreamSource::File {
                 current_pos,
@@ -2781,6 +2803,34 @@ impl Iterator for VgmStream {
 mod tests {
     use super::*;
     use crate::vgm::detail::CompressionType;
+
+    #[test]
+    fn buffer_compaction_waits_until_half_is_consumed() {
+        let mut stream = VgmStream::new();
+        stream.push_chunk(&[0x70; 16]).unwrap();
+        for consumed in 1..8 {
+            assert!(stream.get_next_raw_command().unwrap().is_some());
+            let VgmStreamSource::Buffer { buffer, read_pos } = &stream.source else {
+                panic!("expected a buffer source");
+            };
+            assert_eq!(buffer.len(), 16);
+            assert_eq!(*read_pos, consumed);
+            assert_eq!(stream.buffer_size(), 16 - consumed);
+        }
+        assert!(stream.get_next_raw_command().unwrap().is_some());
+        let VgmStreamSource::Buffer { buffer, read_pos } = &stream.source else {
+            panic!("expected a buffer source");
+        };
+        assert_eq!(buffer, &[0x70; 8]);
+        assert_eq!(*read_pos, 0);
+        assert!(stream.get_next_raw_command().unwrap().is_some());
+        stream.optimize_memory();
+        let VgmStreamSource::Buffer { buffer, read_pos } = &stream.source else {
+            panic!("expected a buffer source");
+        };
+        assert_eq!(buffer, &[0x70; 7]);
+        assert_eq!(*read_pos, 0);
+    }
 
     #[test]
     fn table_based_compression_counts_decoded_output_atomically() {
