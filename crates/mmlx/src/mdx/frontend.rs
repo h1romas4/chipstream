@@ -61,7 +61,8 @@ pub type CompiledMdx<'source> = Compiled<'source, MdxDocument, MdxLocation>;
 /// # Errors
 ///
 /// Returns a [`Diagnostic`] for invalid syntax, repeat structure, numeric values,
-/// or an input larger than `u32::MAX` bytes. A diagnostic range, when available,
+/// nesting beyond [`super::MAX_REPEAT_DEPTH`], or input larger than `u32::MAX` bytes.
+/// A diagnostic range, when available,
 /// addresses the original UTF-8 source; source lines are not copied into errors.
 pub fn parse(source: &str) -> Result<ParsedMml<'_>, Diagnostic> {
     let source_file = SourceFile::new(source).ok_or_else(|| {
@@ -91,6 +92,7 @@ pub fn compile<'source>(parsed: &ParsedMml<'source>) -> Result<CompiledMdx<'sour
     let mut context = CompileSourceContext::new(parsed.syntax().inner());
     let document = compile_internal(parsed.ast(), Some(&mut context)).map_err(|error| {
         let code = match error {
+            CompileError::RepeatDepthExceeded { .. } => "mmlx.mdx.repeat-depth-exceeded",
             CompileError::InvalidChannel(_) => "mmlx.mdx.invalid-channel",
             CompileError::InvalidVoice { .. } => "mmlx.mdx.invalid-voice",
             CompileError::InvalidValue { .. } => "mmlx.mdx.invalid-value",

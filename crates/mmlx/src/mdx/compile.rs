@@ -32,6 +32,7 @@ use super::mml::{
 ///
 /// Returns [`CompileError`] when a channel, voice, value, or command cannot be
 /// represented by soundlog's MDX model.
+/// Repeat nesting is limited to [`super::MAX_REPEAT_DEPTH`], including edited ASTs.
 ///
 /// # Examples
 ///
@@ -94,6 +95,11 @@ const LAST_NOTE: u16 = 0xdf;
 /// An error raised while lowering MML AST nodes into MDX commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
+    /// Repeat nesting exceeds [`super::MAX_REPEAT_DEPTH`].
+    RepeatDepthExceeded {
+        /// Maximum number of nested repeats.
+        limit: usize,
+    },
     /// A track uses a channel that cannot be represented in MDX.
     InvalidChannel(char),
     /// A voice does not contain the required 47 parameters.
@@ -119,6 +125,9 @@ pub enum CompileError {
 impl fmt::Display for CompileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RepeatDepthExceeded { limit } => {
+                write!(formatter, "MML repeat nesting exceeds {limit}")
+            }
             Self::InvalidChannel(channel) => write!(formatter, "invalid MDX channel {channel:?}"),
             Self::InvalidVoice {
                 number,
@@ -338,7 +347,7 @@ fn compile_track(
     base_offset: usize,
     source_context: Option<CommandSourceContext<'_, '_>>,
 ) -> Result<CompiledCommands, CompileError> {
-    compile_commands(commands, state, base_offset, source_context)
+    compile_commands(commands, state, base_offset, source_context, 0)
 }
 
 /// Lower MML commands recursively into their soundlog MDX representations.
@@ -347,6 +356,7 @@ fn compile_commands(
     state: &mut TrackState,
     base_offset: usize,
     mut source_context: Option<CommandSourceContext<'_, '_>>,
+    repeat_depth: usize,
 ) -> Result<CompiledCommands, CompileError> {
     let mut output = Vec::new();
     let sources = source_context.as_ref().map(|context| context.sources);
@@ -404,6 +414,11 @@ fn compile_commands(
             MmlCommand::Directive(_) => {}
             MmlCommand::Ignore => break,
             MmlCommand::Repeat { body, count } => {
+                if repeat_depth >= super::MAX_REPEAT_DEPTH {
+                    return Err(CompileError::RepeatDepthExceeded {
+                        limit: super::MAX_REPEAT_DEPTH,
+                    });
+                }
                 let body_base = base_offset + command_bytes(&output);
                 let (mut body_commands, body_positions) = compile_commands(
                     body,
@@ -413,6 +428,7 @@ fn compile_commands(
                         sources: command_source.map_or(&[], |source| source.body.as_slice()),
                         error_span: context.error_span,
                     }),
+                    repeat_depth + 1,
                 )?;
                 if let Some(context) = &mut source_context {
                     *context.error_span = position;
@@ -993,6 +1009,7 @@ mod tests {
             &mut TrackState::default(),
             0,
             None,
+            0,
         )
         .unwrap();
         assert_eq!(positions, None);

@@ -2,11 +2,107 @@ use mmlx::mdx::{self, MmlCommand, MmlLength};
 use soundlog::mdx::command::{MdxCommand, MdxLfoWaveform};
 use soundlog::mdx::document::MdxDocument;
 
+fn nested_repeat_source(depth: usize) -> String {
+    format!("A {}c4{}", "[".repeat(depth), "]2".repeat(depth))
+}
+
+#[test]
+fn repeat_depth_limits_parsed_sources() {
+    for depth in [0, 1, mdx::MAX_REPEAT_DEPTH - 1, mdx::MAX_REPEAT_DEPTH] {
+        let source = nested_repeat_source(depth);
+        let parsed = mdx::parse(&source).unwrap();
+        assert!(
+            !mdx::compile(&parsed)
+                .unwrap()
+                .to_bytes()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    for depth in [mdx::MAX_REPEAT_DEPTH + 1, 2048, 32_768] {
+        for source in [
+            nested_repeat_source(depth),
+            format!("A {}c4", "[".repeat(depth)),
+        ] {
+            let error = mdx::parse(&source).unwrap_err();
+            assert_eq!(
+                error,
+                mdx::ParseError::RepeatDepthExceeded {
+                    limit: mdx::MAX_REPEAT_DEPTH,
+                    line_number: 1,
+                    column: mdx::MAX_REPEAT_DEPTH + 3,
+                }
+            );
+            assert!(error.to_string().contains("repeat nesting exceeds"));
+        }
+    }
+}
+
+#[test]
+fn repeat_depth_limits_edited_asts() {
+    for depth in [mdx::MAX_REPEAT_DEPTH, mdx::MAX_REPEAT_DEPTH + 1, 2048] {
+        let mut document = mdx::parse("A c4").unwrap();
+        for _ in 0..depth {
+            let body = std::mem::take(&mut document.tracks[0].commands);
+            document.tracks[0].commands = vec![MmlCommand::Repeat { body, count: 2 }];
+        }
+        let result = mdx::compile(&document);
+        let mut pending = std::mem::take(&mut document.tracks[0].commands);
+        while let Some(command) = pending.pop() {
+            if let MmlCommand::Repeat { body, .. } = command {
+                pending.extend(body);
+            }
+        }
+        if depth <= mdx::MAX_REPEAT_DEPTH {
+            assert!(!result.unwrap().to_bytes().unwrap().is_empty());
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error,
+                mdx::CompileError::RepeatDepthExceeded {
+                    limit: mdx::MAX_REPEAT_DEPTH,
+                }
+            );
+            assert!(error.to_string().contains("repeat nesting exceeds"));
+        }
+    }
+}
+
 #[cfg(feature = "source-map")]
 mod frontend {
     use super::*;
     use mmlx::diagnostic::Severity;
     use mmlx::mdx::frontend::{self, MdxLocation};
+
+    #[test]
+    fn repeat_depth_limits_mapped_sources_and_preserves_positions() {
+        let source = nested_repeat_source(mdx::MAX_REPEAT_DEPTH);
+        let parsed = frontend::parse(&source).unwrap();
+        let compiled = frontend::compile(&parsed).unwrap();
+        assert_eq!(
+            compiled.document().to_bytes().unwrap(),
+            compile_source(&source).to_bytes().unwrap()
+        );
+        let span = compiled
+            .source_map()
+            .get(&MdxLocation::TrackCommand {
+                track: 0,
+                index: mdx::MAX_REPEAT_DEPTH,
+            })
+            .unwrap();
+        assert_eq!(span.text(&source), Some("c4"));
+
+        let prefix = "/* \u{65e5} */\r\n";
+        for depth in [mdx::MAX_REPEAT_DEPTH + 1, 2048, 32_768] {
+            let source = format!("{prefix}{}", nested_repeat_source(depth));
+            let error = frontend::parse(&source).unwrap_err();
+            assert_eq!(error.code, "mmlx.repeat-depth-exceeded");
+            assert_eq!(error.severity, Severity::Error);
+            let span = error.span.unwrap();
+            assert_eq!(span.text(&source), Some("["));
+            assert_eq!(span.start(), prefix.len() + mdx::MAX_REPEAT_DEPTH + 2);
+        }
+    }
 
     #[test]
     fn mapped_compilation_preserves_bytes_and_final_command_coordinates() {

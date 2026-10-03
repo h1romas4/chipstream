@@ -337,6 +337,15 @@ pub enum Accidental {
 pub enum ParseError {
     /// The input does not match the MML grammar.
     Syntax(String),
+    /// Repeat nesting exceeds [`super::MAX_REPEAT_DEPTH`].
+    RepeatDepthExceeded {
+        /// Maximum number of nested repeats.
+        limit: usize,
+        /// One-based source line containing the rejected opening bracket.
+        line_number: usize,
+        /// One-based source column containing the rejected opening bracket.
+        column: usize,
+    },
     /// A numeric argument is outside the command's supported range.
     InvalidValue {
         /// Command associated with the invalid value.
@@ -368,6 +377,14 @@ impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syntax(error) => formatter.write_str(error),
+            Self::RepeatDepthExceeded {
+                limit,
+                line_number,
+                column,
+            } => write!(
+                formatter,
+                "MML repeat nesting exceeds {limit} at line {line_number}, column {column}"
+            ),
             Self::InvalidValue {
                 command,
                 value,
@@ -391,6 +408,9 @@ impl std::error::Error for ParseError {}
 
 pub(super) enum ParseFailure {
     Syntax(Box<pest::error::Error<Rule>>),
+    RepeatDepthExceeded {
+        span: Span,
+    },
     Repeat {
         span: Span,
         message: &'static str,
@@ -414,6 +434,14 @@ impl ParseFailure {
     fn into_legacy(self, source: &str) -> ParseError {
         match self {
             Self::Syntax(error) => ParseError::Syntax(format_syntax_error(&error, source)),
+            Self::RepeatDepthExceeded { span } => {
+                let position = ParsePosition::from_span(source, span);
+                ParseError::RepeatDepthExceeded {
+                    limit: super::MAX_REPEAT_DEPTH,
+                    line_number: position.line_number,
+                    column: position.column,
+                }
+            }
             Self::Repeat {
                 span,
                 message,
@@ -484,6 +512,11 @@ impl ParseFailure {
             Self::Repeat { span, message, .. } => {
                 Diagnostic::error("mmlx.repeat", message, Some(span))
             }
+            Self::RepeatDepthExceeded { span } => Diagnostic::error(
+                "mmlx.repeat-depth-exceeded",
+                format!("MML repeat nesting exceeds {}", super::MAX_REPEAT_DEPTH),
+                Some(span),
+            ),
             Self::Value {
                 span,
                 command,
@@ -519,6 +552,8 @@ impl ParseFailure {
 ///
 /// Returns [`ParseError::Syntax`] when the source does not match the grammar or
 /// [`ParseError::InvalidValue`] when a parsed value violates a command range.
+/// Returns [`ParseError::RepeatDepthExceeded`] when nesting exceeds
+/// [`super::MAX_REPEAT_DEPTH`].
 ///
 /// # Examples
 ///
@@ -622,7 +657,12 @@ fn assemble_repeats(
 
     for command in commands {
         match command {
-            ParsedCommand::RepeatStart(position) => stack.push((Vec::new(), position, Vec::new())),
+            ParsedCommand::RepeatStart(position) => {
+                if stack.len() >= super::MAX_REPEAT_DEPTH {
+                    return Err(ParseFailure::RepeatDepthExceeded { span: position });
+                }
+                stack.push((Vec::new(), position, Vec::new()));
+            }
             ParsedCommand::RepeatEnd { count, position } => {
                 let Some((body, start_position, body_positions)) = stack.pop() else {
                     return Err(ParseFailure::Repeat {

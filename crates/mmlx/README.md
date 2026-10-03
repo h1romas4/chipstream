@@ -46,6 +46,9 @@ document and reports unsupported commands or values that cannot be represented
 as `CompileError`. The compiler returns a typed MDX document; call its
 `to_bytes` method to serialize it to MDX bytes.
 
+Repeat nesting is limited to 64 levels by [`MAX_REPEAT_DEPTH`](mdx::MAX_REPEAT_DEPTH)
+in both parsing and compilation. Deeper sources and edited ASTs return errors.
+
 The accepted syntax and command coverage follow the MXDRV MML dialect
 implemented by this crate. Parsing successfully does not guarantee that every
 command can be compiled to MDX.
