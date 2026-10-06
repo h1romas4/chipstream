@@ -2241,7 +2241,7 @@ fn mdx_converter_writes_ym2151_keycode_and_key_fraction() {
 }
 
 #[test]
-fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
+fn mdx_converter_writes_raw_noise_control_operand() {
     let mut builder = MdxBuilder::new();
     builder
         .append_tone(MdxTone {
@@ -2260,6 +2260,9 @@ fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
             }),
         )
         .add_mdx_command(0, MdxAdpcmOrNoiseFrequency { value: 3 })
+        .add_mdx_command(0, MdxAdpcmOrNoiseFrequency { value: 0x83 })
+        .add_mdx_command(0, MdxAdpcmOrNoiseFrequency { value: 0xe5 })
+        .add_mdx_command(0, MdxAdpcmOrNoiseFrequency { value: 0 })
         .add_mdx_command(
             0,
             MdxNote {
@@ -2285,8 +2288,8 @@ fn mdx_converter_preserves_noise_enable_when_updating_noise_frequency() {
 
     assert!(
         noise_register_values
-            .windows(2)
-            .any(|values| values == [0x80, 0x83])
+            .windows(5)
+            .any(|values| values == [0x80, 0x03, 0x83, 0xe5, 0x00])
     );
 }
 

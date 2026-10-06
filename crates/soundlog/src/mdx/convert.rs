@@ -1349,9 +1349,6 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     pcm_output: PcmOutputState,
     /// Tempo and fractional VGM sample timing state.
     timing: PlaybackTimingState,
-    /// Shadow of OPM register `0x0f` (noise enable + frequency), needed to
-    /// preserve the noise-enable bit when only the frequency is updated.
-    opm_reg_0f: u8,
     /// Shadow of OPM register `0x1b` (CT1/CT2 + LFO waveform), needed to
     /// preserve the CT bits when only the LFO waveform is updated.
     opm_reg_1b: u8,
@@ -1437,7 +1434,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             check_state: None,
             pcm_output: PcmOutputState::new(has_pcm, adpcm_mode),
             timing: PlaybackTimingState::new(),
-            opm_reg_0f: 0,
             opm_reg_1b: 0,
             lfo_rand_seed: 0x1234,
             song_loop: SongLoopState::new(loop_count, mark_native_loop, synchronized_f1_tracks),
@@ -1521,7 +1517,6 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         write_ym2151(builder, 0x0f, 0);
         write_ym2151(builder, 0x19, 0);
         write_ym2151(builder, 0x19, 0x80);
-        self.opm_reg_0f = 0;
         self.opm_reg_1b = 0;
     }
 
@@ -1769,9 +1764,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.timing.tempo = command.value.max(1);
                 }
                 MdxCommand::OpmRegisterWrite(command) => {
-                    if command.register == 0x0f {
-                        self.opm_reg_0f = command.value;
-                    } else if command.register == 0x1b {
+                    if command.register == 0x1b {
                         self.opm_reg_1b = command.value;
                     }
                     write_ym2151(builder, command.register, command.value);
@@ -1868,11 +1861,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     }
                 }
                 MdxCommand::AdpcmOrNoiseFrequency(command) if track < 8 => {
-                    // Preserve the noise-enable bit (0x80); only the
-                    // frequency bits are updated by this command.
-                    let combined = (self.opm_reg_0f & 0x80) | (command.value & 0x1f);
-                    self.opm_reg_0f = combined;
-                    write_ym2151(builder, 0x0f, combined);
+                    write_ym2151(builder, 0x0f, command.value);
                 }
                 MdxCommand::AdpcmOrNoiseFrequency(command) => {
                     // Standard nine-track MDX uses the legacy ADPCM rate

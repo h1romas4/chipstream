@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Write the raw MDX noise-control operand (`0xed`) to YM2151 register `0x0f`, including the noise-enable bit.
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
