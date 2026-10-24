@@ -10,6 +10,7 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::PdxBuilder;
 use soundlog::vgm::VgmDocument;
 use soundlog::vgm::command::VgmCommand;
+use soundlog::vgm::header::{ChipId, ChipVolume};
 
 fn options() -> MdxToVgmOptions {
     MdxToVgmOptions {
@@ -117,6 +118,22 @@ fn eight_mdx_tracks_use_independent_slots_and_one_shared_rom_wave() {
     let document = to_vgm_document(&package, &options()).unwrap();
     assert_eq!(document.header.ymf278b_clock, 33_868_800);
     assert_eq!(document.header.okim6258_clock, 0);
+    assert_eq!(document.header.volume_modifier, 0x50);
+    let volume = ChipVolume::new_relative(
+        ChipId::Ymf278b,
+        soundlog::vgm::command::Instance::Primary,
+        soundlog::mdx::opl4::VGM_VOLUME,
+    );
+    assert_eq!(
+        document
+            .extra_header
+            .as_ref()
+            .unwrap()
+            .chip_volumes
+            .as_slice(),
+        std::slice::from_ref(&volume)
+    );
+    assert_eq!(volume.volume_multiplier(), Some(20.0));
     assert!(
         !document
             .commands
@@ -134,6 +151,22 @@ fn eight_mdx_tracks_use_independent_slots_and_one_shared_rom_wave() {
         )));
     }
     let bytes: Vec<u8> = (&document).into();
+    assert_eq!(bytes[0x7c], 0x50);
+    assert_eq!(
+        VgmDocument::try_from(bytes.as_slice())
+            .unwrap()
+            .header
+            .volume_modifier,
+        0x50
+    );
+    assert_eq!(
+        VgmDocument::try_from(bytes.as_slice())
+            .unwrap()
+            .extra_header
+            .unwrap()
+            .chip_volumes,
+        [volume]
+    );
     assert_eq!(
         VgmDocument::try_from(bytes.as_slice()).unwrap().commands,
         document.commands
@@ -313,6 +346,8 @@ fn no_pdx_is_fm_only_and_invalid_options_or_resource_limits_are_errors() {
     };
     let document = to_vgm_document(&no_pdx, &options()).unwrap();
     assert_eq!(document.header.ymf278b_clock, 0);
+    assert_eq!(document.header.volume_modifier, 0);
+    assert!(document.extra_header.is_none());
     assert!(
         !document
             .commands
@@ -488,6 +523,8 @@ fn repeated_notes_reuse_pcm_and_produce_a_measurably_smaller_vgm() {
         },
     )
     .unwrap();
+    assert!(oki.extra_header.is_none());
+    assert_eq!(oki.header.volume_modifier, 0);
     assert_eq!(wave_count(&opl4.commands), 1);
     assert_eq!(
         transitions(&opl4.commands, 0)

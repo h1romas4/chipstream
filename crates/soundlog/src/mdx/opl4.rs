@@ -16,7 +16,9 @@
 //! Eager conversion moves ROM blocks to the front; lazy conversion emits them
 //! before their first use. Register timestamps and ROM contents agree. Lazy
 //! streams do not provide a VGM header; register [`CLOCK_HZ`] (33,868,800 Hz)
-//! with the playback device. A finite conversion ends with a 256-sample release
+//! with the playback device and apply [`VGM_VOLUME`] / 256 as the PCM output
+//! gain, since lazy streams cannot carry the extra-header volume setting.
+//! A finite conversion ends with a 256-sample release
 //! wait; native loops do not stop the PCM chip at the loop boundary.
 //!
 //! # Processing and limits
@@ -28,7 +30,19 @@
 //! It bypasses the mono software mixer, ADPCM re-encoding, and analog-output
 //! filter. Per-track stereo is retained. PCM8 gains are mapped to OPL4's
 //! 0.375 dB total-level steps relative to the PCM8 maximum gain (80); this
-//! provides headroom but changes PCM/FM balance compared with the OKIM6258 mixer.
+//! preserves headroom and relative channel gains. MDX documents also specify
+//! a relative OPL4 chip volume of 20 in the VGM extra header: a factor of five
+//! compensates for normalization against 80 instead of PCM8's unity gain of 16,
+//! and a factor of four compensates for the lower OPL4 output level relative
+//! to OKIM6258 in libvgm. This approximates the original PCM/FM balance without
+//! modifying sample values or saturating louder channel gains. Players must
+//! honor extra-header chip volumes; exact balance remains renderer-dependent.
+//! The main header also sets [`VGM_VOLUME_MODIFIER`] to compensate for libvgm's
+//! overall attenuation when the larger PCM chip volume is included in its
+//! normalization budget. This brings overall loudness close to default
+//! OKIM6258 output while retaining the corrected PCM/FM ratio. This is a fixed
+//! playback calibration, not per-song loudness normalization or a limiter;
+//! other renderers and unusually loud mixes may need playback-level adjustment.
 //!
 //! MDX output is limited to 65,532 decoded samples per wave, 512 decoded sample
 //! variants, and 4 MiB of ROM (including the reserved wave-header region).
@@ -55,6 +69,19 @@ use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 
 /// Standard OPL4 master clock used by MDX conversion and the experiments.
 pub const CLOCK_HZ: u32 = 33_868_800;
+/// Relative PCM chip volume for MDX playback in VGM Q8.8 units (20 times).
+///
+/// Eager MDX conversion stores this in the VGM extra header. Headerless playback
+/// should multiply the OPL4 PCM output by `f32::from(VGM_VOLUME) / 256.0`.
+/// Standalone PDX generators use native OPL4 levels and do not apply this gain.
+pub const VGM_VOLUME: u16 = 20 * 0x100;
+/// Global VGM volume modifier for MDX OPL4 documents (+15.05 dB).
+///
+/// VGM encodes the gain as `2^(modifier / 32)`, so `0x50` multiplies the whole
+/// mix by approximately 5.657. This compensates for libvgm's overall volume
+/// normalization after applying [`VGM_VOLUME`], without changing PCM/FM balance.
+/// It is a document-level setting, not an additional OPL4 channel gain.
+pub const VGM_VOLUME_MODIFIER: u8 = 0x50;
 const HEADER_SIZE: usize = 12;
 pub(super) const MAX_SAMPLE_COUNT: usize = 65_532;
 const LOAD_WAIT: u16 = 14;

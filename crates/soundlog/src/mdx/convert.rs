@@ -25,6 +25,7 @@ use crate::mdx::pcm::{AdpcmEncoder, PCM8A_MODE_TABLE, Pcm8aFormat, decode_pcm8a_
 use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
+use crate::vgm::header::{ChipId, ChipVolume, VgmExtraHeader};
 use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument, VgmStream};
 use std::borrow::Borrow;
@@ -170,6 +171,8 @@ pub enum PcmOutput {
     /// maximum of 65,532 samples per wave. Longer samples return an error.
     /// PCM8 gain is normalized against its maximum (80) and rounded to OPL4
     /// total-level steps; pan is per channel instead of a shared mono mixer.
+    /// Eager output compensates PCM/FM balance with [`opl4::VGM_VOLUME`] in the
+    /// VGM extra header; headerless playback must apply this output gain itself.
     /// This output intentionally does not reproduce the OKIM6258 analog filter
     /// or ADPCM re-encoding. Source PDX bank/note metadata is not embedded.
     Opl4,
@@ -361,6 +364,10 @@ impl MdxToVgmOptions {
 /// straight to a chip driver (e.g. on a microcontroller) rather than
 /// building a `VgmDocument`.
 ///
+/// With [`PcmOutput::Opl4`], configure the playback device with [`opl4::CLOCK_HZ`]
+/// and apply [`opl4::VGM_VOLUME`] / 256 as the PCM output gain. These header
+/// settings are not part of the command stream.
+///
 /// # Examples
 /// ```
 /// use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
@@ -451,6 +458,16 @@ fn convert_document(
         .builder
         .set_sample_rate(VGM_SAMPLE_RATE)
         .register_chip(Chip::Ym2151, Instance::Primary, options.ym2151_clock);
+    if generator.playback.pcm_output.opl4.is_some() {
+        generator.builder.set_extra_header(VgmExtraHeader {
+            chip_volumes: vec![ChipVolume::new_relative(
+                ChipId::Ymf278b,
+                Instance::Primary,
+                opl4::VGM_VOLUME,
+            )],
+            ..Default::default()
+        });
+    }
 
     generator
         .run_eager_steps(0)
@@ -494,6 +511,9 @@ fn convert_document(
         .map_err(|error| generator.playback.conversion_failure(error))?;
     if package.pdx.is_some() && options.pcm_output == PcmOutput::Okim6258 {
         document.header.okim6258_flags.clock_divider = pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
+    }
+    if document.header.ymf278b_clock != 0 {
+        document.header.volume_modifier = opl4::VGM_VOLUME_MODIFIER;
     }
     Ok(document)
 }

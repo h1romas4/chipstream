@@ -531,8 +531,14 @@ compiling MDX output is rejected; it is a VGM conversion choice.
 PCM8A formats/rates, gates, ties, live volume/rate/pan changes, fadeout and
 loops use the MDX sequencer. OPL4 has independent stereo pan and no mono
 mix/re-encoding/filter stage. Gains are normalized against PCM8's maximum
-gain (80) and rounded to OPL4 total-level steps, so PCM/FM balance differs
-from OKIM6258. Finite output adds a 256-sample release wait.
+gain (80) and rounded to OPL4 total-level steps. A relative OPL4 volume of
+20 in the VGM extra header compensates for that normalization and the lower
+chip output level in libvgm, approximating the OKIM6258 PCM/FM balance without
+altering sample data. The main header adds +15.05 dB of global gain to offset
+libvgm's overall normalization, bringing loudness close to default OKIM6258
+output without changing that balance. This fixed calibration is not a limiter;
+exact loudness is renderer- and song-dependent. Players must honor both header
+volume settings. Finite output adds a 256-sample release wait.
 
 Each decoded wave is limited to 65,532 samples; at most 512 decoded variants
 and 4 MiB of ROM are supported. Limit violations fail before output is
