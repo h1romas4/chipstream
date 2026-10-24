@@ -317,15 +317,14 @@ fn invalid(message: impl std::fmt::Display) -> ParseError {
 }
 
 fn pitch(rate: u32) -> (u8, u16, u32) {
-    let target_step =
-        f64::from(rate) * f64::from(PCM8_MASTER_SAMPLE_RATE) / f64::from(VGM_SAMPLE_RATE);
+    let target_step = rate as f32 * PCM8_MASTER_SAMPLE_RATE as f32 / VGM_SAMPLE_RATE as f32;
     let mut best = (0, 0, 0);
-    let mut error = f64::INFINITY;
+    let mut error = f32::INFINITY;
     for octave in -7i8..=7 {
-        let scale = 2f64.powi(i32::from(octave) + 5);
+        let scale = 2f32.powi(i32::from(octave) + 5);
         let fnumber = (target_step / scale - 1024.0).round().clamp(0.0, 1023.0) as u16;
         let step = ((1024 + u32::from(fnumber)) << (octave + 7)) >> 2;
-        let candidate_error = (f64::from(step) - target_step).abs();
+        let candidate_error = (step as f32 - target_step).abs();
         if candidate_error < error {
             best = (octave as u8 & 0x0f, fnumber, step);
             error = candidate_error;
@@ -525,7 +524,7 @@ impl Opl4Output {
         let level = if gain == 0 {
             127
         } else {
-            (-20.0 * (f64::from(gain) / 80.0).log10() / 0.375)
+            (-20.0 * (f32::from(gain) / 80.0).log10() / 0.375)
                 .round()
                 .clamp(0.0, 127.0) as u8
         };
@@ -571,9 +570,9 @@ impl Opl4Output {
                 if self.continuation[index].is_none() || state.block_length == 0 {
                     return None;
                 }
-                let remaining = ((MAX_SAMPLE_COUNT as u64 - u64::from(state.pos_in_block)) << 16)
-                    - u64::from(state.rate_counter);
-                Some(remaining.div_ceil(u64::from(self.steps[index])) as u32)
+                let remaining =
+                    ((MAX_SAMPLE_COUNT as u32 - state.pos_in_block) << 16) - state.rate_counter;
+                Some(remaining.div_ceil(self.steps[index]))
             })
             .min()
     }
@@ -584,19 +583,21 @@ impl Opl4Output {
             if state.block_length == 0 {
                 continue;
             }
-            let advance =
-                u64::from(state.rate_counter) + u64::from(samples) * u64::from(self.steps[index]);
-            let position = u64::from(state.pos_in_block) + (advance >> 16);
-            state.rate_counter = (advance & 0xffff) as u32;
-            state.pos_in_block = position.min(u64::from(state.block_length)) as u32;
-            if position >= MAX_SAMPLE_COUNT as u64
+            // Split the product before multiplying: all PCM8A steps are below 65536.
+            // This retains the exact Q16 phase even for waits up to u32::MAX.
+            let fraction = (samples & 0xffff) * self.steps[index] + state.rate_counter;
+            let advance = (samples >> 16) * self.steps[index] + (fraction >> 16);
+            let position = state.pos_in_block + advance;
+            state.rate_counter = fraction & 0xffff;
+            state.pos_in_block = position.min(state.block_length);
+            if position >= MAX_SAMPLE_COUNT as u32
                 && let Some(wave) = self.continuation[index].take()
             {
                 // A wave load resets the chip's fractional source position.
                 state.pos_in_block = MAX_SAMPLE_COUNT as u32;
                 state.rate_counter = 0;
                 self.play_wave(index, wave, self.rates[index], self.gain[index]);
-            } else if position >= u64::from(state.block_length) {
+            } else if position >= state.block_length {
                 state.block_length = 0;
                 if !state.hold {
                     state.block_key = None;
@@ -656,6 +657,71 @@ impl Opl4Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_precision_preserves_pcm8a_pitch_and_gain_registers() {
+        for (rate, expected) in [
+            (0x4000, (13, 427, 5804)),
+            (0x5555, (13, 911, 7740)),
+            (0x8000, (14, 427, 11608)),
+            (0xaaaa, (14, 911, 15480)),
+            (0x10000, (15, 427, 23216)),
+            (0x15555, (15, 911, 30960)),
+            (0x20000, (0, 427, 46432)),
+        ] {
+            assert_eq!(pitch(rate), expected);
+        }
+        let levels = [
+            127, 101, 85, 76, 69, 64, 60, 56, 53, 51, 48, 46, 44, 42, 40, 39, 37, 36, 35, 33, 32,
+            31, 30, 29, 28, 27, 26, 25, 24, 24, 23, 22, 21, 21, 20, 19, 18, 18, 17, 17, 16, 15, 15,
+            14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 10, 9, 9, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 4, 4,
+            4, 3, 3, 3, 2, 2, 2, 1, 1, 1, 1, 0, 0,
+        ];
+        let mut output = Opl4Output::new();
+        for (gain, level) in levels.into_iter().enumerate() {
+            output.set_gain(0, gain as u8);
+            assert!(matches!(output.pending.pop().unwrap(),
+                crate::vgm::command::VgmCommand::Ymf278bWrite(_, spec)
+                if spec.register == 0x50 && spec.value == (level << 1) | 1
+            ));
+        }
+    }
+
+    #[test]
+    fn position_advance_matches_samplewise_phase_with_32_bit_products() {
+        for (rate, _) in PCM8A_MODE_TABLE {
+            let mut output = Opl4Output::new();
+            output.steps[0] = pitch(rate).2;
+            for wait in [0, 1, 2891, 65_535, 65_536, 184_990] {
+                for phase in [0, 65_535] {
+                    let mut channels: [PcmChannelState; 8] = Default::default();
+                    channels[0].block_length = MAX_SOURCE_SAMPLE_COUNT as u32;
+                    channels[0].rate_counter = phase;
+                    let mut expected_position = 0;
+                    let mut expected_phase = phase;
+                    for _ in 0..wait {
+                        expected_phase += output.steps[0];
+                        expected_position += expected_phase >> 16;
+                        expected_phase &= 0xffff;
+                    }
+                    output.advance(&mut channels, wait);
+                    assert_eq!(
+                        channels[0].pos_in_block,
+                        expected_position.min(MAX_SOURCE_SAMPLE_COUNT as u32)
+                    );
+                    assert_eq!(channels[0].rate_counter, expected_phase);
+                }
+            }
+            let mut channels: [PcmChannelState; 8] = Default::default();
+            channels[0].block_length = MAX_SOURCE_SAMPLE_COUNT as u32;
+            channels[0].pos_in_block = MAX_SAMPLE_COUNT as u32;
+            channels[0].rate_counter = 65_535;
+            output.advance(&mut channels, u32::MAX);
+            assert_eq!(channels[0].block_length, 0);
+            assert_eq!(channels[0].pos_in_block, MAX_SOURCE_SAMPLE_COUNT as u32);
+            assert_eq!(channels[0].rate_counter, 65_535 - output.steps[0]);
+        }
+    }
 
     #[test]
     fn packed_pcm_preserves_every_signed_12_bit_value() {
@@ -739,8 +805,8 @@ mod tests {
             channels[0].hold = true;
             let wait = output.samples_until_continuation(&channels).unwrap();
             assert_eq!(
-                u64::from(wait),
-                ((MAX_SAMPLE_COUNT as u64) << 16).div_ceil(u64::from(output.steps[0]))
+                wait,
+                ((MAX_SAMPLE_COUNT as u32) << 16).div_ceil(output.steps[0])
             );
             output.advance(&mut channels, wait - 1);
             assert_eq!(output.samples_until_continuation(&channels), Some(1));
