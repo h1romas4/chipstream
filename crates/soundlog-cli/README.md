@@ -511,7 +511,33 @@ A playback failure does not write or overwrite the output VGM file.
 
 The conversion options include `--pdx <PDX_FILE>`, `--ym2151-clock <HZ>`,
 `--okim6258-clock <HZ>`, `--loop-count <COUNT>`, `--native-loop`, and
-`--adpcm-mode <through|resample|lpf>`.
+`--adpcm-mode <through|resample|lpf>` and `--pcm-output <okim6258|opl4>`.
+
+The default PCM chip remains OKIM6258. To retain individual PCM samples
+as packed 12-bit OPL4 ROM data and play up to eight independent slots:
+
+```sh
+soundlog mdx convert song.mdx song.vgm --pcm-output opl4
+soundlog mdx compile song.mml song.vgm --output-format vgm --pcm-output opl4
+soundlog mdx test song.mdx --pcm-output opl4
+soundlog mdx stream song.mdx --pcm-output opl4
+```
+
+OPL4 uses the standard 33,868,800 Hz clock and requires the default
+`--adpcm-mode through`; `resample`/`lpf` are rejected. The
+`--okim6258-clock` option only affects OKIM6258 output. Selecting OPL4 when
+compiling MDX output is rejected; it is a VGM conversion choice.
+
+PCM8A formats/rates, gates, ties, live volume/rate/pan changes, fadeout and
+loops use the MDX sequencer. OPL4 has independent stereo pan and no mono
+mix/re-encoding/filter stage. Gains are normalized against PCM8's maximum
+gain (80) and rounded to OPL4 total-level steps, so PCM/FM balance differs
+from OKIM6258. Finite output adds a 256-sample release wait.
+
+Each decoded wave is limited to 65,532 samples; at most 512 decoded variants
+and 4 MiB of ROM are supported. Limit violations fail before output is
+written. Long-sample segmentation and original PDX bank/note reconstruction
+metadata are not implemented; converted wave boundaries remain in ROM.
 
 `--max-ticks <TICKS>` limits elapsed playback ticks (default: 100,000; `0`
 disables this limit). A separate fixed limit of 100,000 MDX commands without

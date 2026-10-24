@@ -8,7 +8,7 @@ mod stream;
 mod test;
 
 pub use check::{CheckOptions, check, check_with_options, check_with_stdin};
-pub use compile::{OutputFormat, compile, compile_with_playback_check};
+pub use compile::{OutputFormat, compile, compile_with_playback_check, compile_with_vgm_options};
 pub use convert::convert_mdx;
 pub use parse::parse_mdx;
 pub use stream::stream_mdx;

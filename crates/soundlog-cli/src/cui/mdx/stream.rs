@@ -2,8 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use soundlog::chip::state::{Okim6258State, Ym2151State};
-use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator};
+use soundlog::chip::state::{Okim6258State, Ym2151State, Ymf278bState};
+use soundlog::mdx::convert::{MdxToVgmOptions, PcmOutput, to_vgm_stream_generator};
 use soundlog::vgm::VgmStream;
 use soundlog::vgm::command::Instance;
 
@@ -33,8 +33,20 @@ pub fn stream_mdx(
             callback_stream
                 .track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
             if has_pcm {
-                callback_stream
-                    .track_state::<Okim6258State>(Instance::Primary, options.okim6258_clock as f32);
+                match options.pcm_output {
+                    PcmOutput::Okim6258 => {
+                        callback_stream.track_state::<Okim6258State>(
+                            Instance::Primary,
+                            options.okim6258_clock as f32,
+                        );
+                    }
+                    PcmOutput::Opl4 => {
+                        callback_stream.track_state::<Ymf278bState>(
+                            Instance::Primary,
+                            soundlog::mdx::opl4::CLOCK_HZ as f32,
+                        );
+                    }
+                }
             }
         },
     )

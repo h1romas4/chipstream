@@ -7,6 +7,7 @@ pub mod document;
 pub mod encoding;
 pub mod header;
 pub mod lz;
+pub mod opl4;
 pub mod package;
 pub mod parser;
 pub mod pcm;

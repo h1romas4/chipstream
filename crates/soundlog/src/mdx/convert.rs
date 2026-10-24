@@ -9,7 +9,7 @@
 //! Responsibilities:
 //! - Translate OPM register writes, waits, loops, LFOs, and track control into
 //!   VGM commands while preserving MDX playback timing.
-//! - Decode and mix optional PCM8/PCM8A data through the OKIM6258 path.
+//! - Decode PCM8/PCM8A for the mixed OKIM6258 or independent OPL4 slot paths.
 //! - Expose conversion options and errors without leaking playback state into
 //!   the public format model.
 
@@ -19,8 +19,9 @@ use crate::mdx::command::{
     MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPan,
     MdxPitchLfo, MdxVolumeLfo,
 };
+use crate::mdx::opl4::{self, Opl4Output};
 use crate::mdx::package::{MdxPackage, MdxPcmReference};
-use crate::mdx::pcm::{AdpcmEncoder, Pcm8aFormat, decode_pcm8a_with_pcm16_15khz};
+use crate::mdx::pcm::{AdpcmEncoder, PCM8A_MODE_TABLE, Pcm8aFormat, decode_pcm8a_with_pcm16_15khz};
 use crate::mdx::pcm_mixer::{self, PcmChannelState, PcmOutputFilter};
 use crate::mdx::tone::MdxTone;
 use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
@@ -47,25 +48,6 @@ const YM2151_KEYCODE_TABLE: [u8; 96] = [
     0x55, 0x56, 0x58, 0x59, 0x5a, 0x5c, 0x5d, 0x5e, 0x60, 0x61, 0x62, 0x64, 0x65, 0x66, 0x68, 0x69,
     0x6a, 0x6c, 0x6d, 0x6e, 0x70, 0x71, 0x72, 0x74, 0x75, 0x76, 0x78, 0x79, 0x7a, 0x7c, 0x7d, 0x7e,
 ];
-/// Per-track PCM8A ADPCM/PCM rate-select table (`0xed` on tracks >= 8),
-/// mapping the command's value to a Q16.16 resampler rate step and the
-/// sample data format it selects.
-const PCM8A_MODE_TABLE: [(u32, Pcm8aFormat); 13] = [
-    (0x04000, Pcm8aFormat::Adpcm), // F0:  ADPCM,  3.906kHz
-    (0x05555, Pcm8aFormat::Adpcm), // F1:  ADPCM,  5.208kHz
-    (0x08000, Pcm8aFormat::Adpcm), // F2:  ADPCM,  7.812kHz
-    (0x0aaaa, Pcm8aFormat::Adpcm), // F3:  ADPCM, 10.416kHz
-    (0x10000, Pcm8aFormat::Adpcm), // F4:  ADPCM, 15.625kHz
-    (0x10000, Pcm8aFormat::Pcm16), // F5:  16bit PCM, 15.625kHz
-    (0x10000, Pcm8aFormat::Pcm8),  // F6:   8bit PCM, 15.625kHz
-    (0x15555, Pcm8aFormat::Adpcm), // F7:  ADPCM, 20.833kHz
-    (0x15555, Pcm8aFormat::Pcm16), // F8:  16bit PCM, 20.833kHz
-    (0x15555, Pcm8aFormat::Pcm8),  // F9:   8bit PCM, 20.833kHz
-    (0x20000, Pcm8aFormat::Adpcm), // F10: ADPCM, 31.250kHz
-    (0x20000, Pcm8aFormat::Pcm16), // F11: 16bit PCM, 31.250kHz
-    (0x20000, Pcm8aFormat::Pcm8),  // F12:  8bit PCM, 31.250kHz
-];
-
 /// TL(0x60+) register offsets by algorithm (CON) that carry the note volume.
 const CARRIER_TL_SLOTS: [u8; 8] = [0x08, 0x08, 0x08, 0x08, 0x0c, 0x0e, 0x0e, 0x0f];
 
@@ -148,7 +130,10 @@ impl MdxPcmMode {
     }
 }
 
-/// ADPCM processing mode for MDX PCM output.
+/// ADPCM processing mode for MDX OKIM6258 output.
+///
+/// OPL4 only accepts `Through`, but decodes samples to independent PCM slots
+/// rather than passing through encoded ADPCM or using this software mixer.
 ///
 /// PCM8A playback is mixed and re-encoded into the single OKIM6258 stream
 /// required by VGM. `Through` and `Resample` share the unfiltered path for
@@ -174,6 +159,22 @@ pub enum AdpcmMode {
     Lpf,
 }
 
+/// PCM sound chip used by MDX conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PcmOutput {
+    /// Existing raw or software-mixed OKIM6258 output.
+    #[default]
+    Okim6258,
+    /// Independent OPL4 slots backed by packed 12-bit PCM ROM.
+    /// Supports up to 512 decoded sample variants and 4 MiB of ROM, with a
+    /// maximum of 65,532 samples per wave. Longer samples return an error.
+    /// PCM8 gain is normalized against its maximum (80) and rounded to OPL4
+    /// total-level steps; pan is per channel instead of a shared mono mixer.
+    /// This output intentionally does not reproduce the OKIM6258 analog filter
+    /// or ADPCM re-encoding. Source PDX bank/note metadata is not embedded.
+    Opl4,
+}
+
 /// Options controlling MDX to VGM conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdxToVgmOptions {
@@ -186,6 +187,9 @@ pub struct MdxToVgmOptions {
     pub okim6258_clock: u32,
     /// ADPCM processing mode for PCM8/PCM8A output.
     pub adpcm_mode: AdpcmMode,
+    /// PCM output chip. OPL4 decodes all PCM input and requires `Through`;
+    /// the OKIM6258-only resampling/filter modes are rejected for OPL4.
+    pub pcm_output: PcmOutput,
     /// Number of traversals for song-level repeats: backward `Jump`s,
     /// count-zero `LoopEnd`s, and per-track `F1` markers. Finite nested
     /// `LoopStart`/`LoopEnd` counts are unaffected.
@@ -229,6 +233,7 @@ impl Default for MdxToVgmOptions {
             ym2151_clock: 4_000_000,
             okim6258_clock: pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ,
             adpcm_mode: AdpcmMode::default(),
+            pcm_output: PcmOutput::default(),
             loop_count: None,
             max_ticks: Some(100_000),
             max_commands_per_tick: Some(100_000),
@@ -378,7 +383,7 @@ pub fn to_vgm_stream_generator(
     Ok((package, options).into())
 }
 
-/// Convert the basic FM portion of an MDX package into a VGM document.
+/// Convert an MDX package into a VGM document using the selected PCM chip.
 ///
 /// Thin eager wrapper around `MdxVgmGenerator` (the same tick-by-tick
 /// driver used by the lazy `VgmStream`/`VgmCallbackStream` path), run to
@@ -387,11 +392,12 @@ pub fn to_vgm_stream_generator(
 /// # Note
 ///
 /// The returned document retains every generated command. If the package has
-/// ADPCM/PCM playback, this includes the individual OKIM6258 data writes, so
+/// OKIM6258 ADPCM/PCM playback, this includes individual data writes, so
 /// the resulting [`VgmDocument`] can become substantially larger than the
 /// source MDX/PDX files. Use [`to_vgm_stream_generator`] with
 /// [`VgmCallbackStream`](crate::vgm::VgmCallbackStream) when commands should
 /// be generated and consumed incrementally instead.
+/// OPL4 output instead retains shared decoded samples in ROM blocks.
 pub fn to_vgm_document(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
@@ -468,6 +474,7 @@ fn convert_document(
             std::mem::take(&mut generator.playback.pcm_output.samples);
         repeat.playback.pcm_output.sample_ranges =
             std::mem::take(&mut generator.playback.pcm_output.sample_ranges);
+        repeat.playback.pcm_output.opl4 = generator.playback.pcm_output.opl4.clone();
         repeat.playback.timing.elapsed_ticks = generator.playback.timing.elapsed_ticks;
         repeat.playback.timing.commands_since_tick = generator.playback.timing.commands_since_tick;
         if diagnostics {
@@ -485,7 +492,7 @@ fn convert_document(
     let mut document = generator.playback.finalize_with_pcm(generator.builder);
     check_output_command_limit(options.max_output_commands, document.commands.len(), 0)
         .map_err(|error| generator.playback.conversion_failure(error))?;
-    if package.pdx.is_some() {
+    if package.pdx.is_some() && options.pcm_output == PcmOutput::Okim6258 {
         document.header.okim6258_flags.clock_divider = pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
     }
     Ok(document)
@@ -1005,8 +1012,12 @@ impl TrackState {
 }
 
 struct PcmOutputState {
-    /// Whether the package contains PCM playback for the OKIM6258 path.
+    /// Whether the package contains PDX data for the selected PCM path.
     has_pcm: bool,
+    /// Selected PCM chip, retained even when missing PDX data disables playback.
+    output: PcmOutput,
+    /// OPL4 ROM cache and slot controls, present only for OPL4 output with PDX data.
+    opl4: Option<Opl4Output>,
     /// Per-channel ADPCM/PCM playback state for tracks 8-15.
     channels: [PcmChannelState; 8],
     /// Single decoded PCM arena shared by all PCM channels.
@@ -1034,6 +1045,8 @@ impl PcmOutputState {
     fn new(has_pcm: bool, adpcm_mode: AdpcmMode) -> Self {
         Self {
             has_pcm,
+            output: PcmOutput::Okim6258,
+            opl4: None,
             channels: Default::default(),
             samples: Vec::new(),
             max_decoded_pcm_samples: MdxToVgmOptions::default().max_decoded_pcm_samples,
@@ -1051,6 +1064,12 @@ impl PcmOutputState {
 
     /// Reports whether raw bytes or mixed channel blocks still need output.
     fn has_pending_output(&self, pcm_mode: MdxPcmMode, adpcm_mode: AdpcmMode) -> bool {
+        if self.opl4.is_some() {
+            return self
+                .channels
+                .iter()
+                .any(|channel| channel.block_length != 0);
+        }
         let raw_pending =
             matches!(pcm_mode, MdxPcmMode::LegacyAdpcm) && self.raw_position < self.raw_length;
         let mixed_pending = !(matches!(pcm_mode, MdxPcmMode::LegacyAdpcm)
@@ -1073,6 +1092,9 @@ impl PcmOutputState {
             state.pos_in_block = 0;
             state.rate_counter = 0;
             state.hold = false;
+            if let Some(opl4) = &mut self.opl4 {
+                opl4.stop(channel);
+            }
         }
     }
 
@@ -1084,6 +1106,9 @@ impl PcmOutputState {
     /// Sets the output gain for a PCM channel.
     fn set_channel_gain(&mut self, channel: usize, gain: u8) {
         self.channels[channel].gain = gain;
+        if let Some(opl4) = &mut self.opl4 {
+            opl4.set_gain(channel, gain);
+        }
     }
 
     /// Checks whether a channel is holding the requested sample block.
@@ -1177,6 +1202,12 @@ impl PcmOutputState {
                 "decoded PCM sample length exceeds addressable storage".to_owned(),
             ));
         };
+        if self.opl4.is_some() && length > opl4::MAX_SAMPLE_COUNT {
+            return Err(MdxConvertError::InvalidDocument(format!(
+                "OPL4 sample at bank {bank}, note {note} has {length} decoded samples; maximum is {}; segmentation is not supported",
+                opl4::MAX_SAMPLE_COUNT
+            )));
+        }
         let Ok(decoded) = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz) else {
             return Ok(None);
         };
@@ -1484,6 +1515,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             state.ticks += 1;
         }
         let loop_restarted = self.process_tick(builder)?;
+        self.flush_opl4(builder);
         if self.finished() {
             return Ok(StepOutcome::Finished);
         }
@@ -1518,6 +1550,16 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         write_ym2151(builder, 0x19, 0);
         write_ym2151(builder, 0x19, 0x80);
         self.opm_reg_1b = 0;
+        if let Some(opl4) = &mut self.pcm_output.opl4 {
+            opl4.initialize();
+            opl4.flush(builder);
+        }
+    }
+
+    fn flush_opl4(&mut self, builder: &mut VgmBuilder) {
+        if let Some(opl4) = &mut self.pcm_output.opl4 {
+            opl4.flush(builder);
+        }
     }
 
     /// Processes one tick for all active tracks, handling key-off, key-on,
@@ -1559,6 +1601,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.tracks[track_index].fm.portamento_active = false;
             self.process_commands(track_index, builder)?;
         }
+        self.flush_opl4(builder);
         Ok(self.complete_synchronized_f1_barrier(builder))
     }
 
@@ -1615,7 +1658,8 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             // trigger.
             return Ok(());
         }
-        if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+        if self.pcm_output.output == PcmOutput::Okim6258
+            && matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
             && matches!(self.adpcm_mode, AdpcmMode::Through)
             && track == 8
         {
@@ -1638,7 +1682,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.pcm_output.set_raw_sample(reference, raw_length);
         }
         let pcm16_is_15khz = format == Pcm8aFormat::Pcm16 && rate_step == 0x10000;
-        let range = if self.pcm_uses_mixer() {
+        let range = if self.pcm_uses_decoded_output() {
             let package = self.package.borrow();
             self.pcm_output
                 .decode_sample(package, bank, note_index, format, pcm16_is_15khz)?
@@ -1652,6 +1696,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         };
         self.pcm_output
             .start_channel(channel, block_key, range, rate_step, gain, tie);
+        if let Some(opl4) = &mut self.pcm_output.opl4 {
+            if let Some(range) = range {
+                opl4.start(channel, range, &self.pcm_output.samples, rate_step, gain)?;
+            } else {
+                opl4.stop(channel);
+            }
+        }
         Ok(())
     }
 
@@ -1664,7 +1715,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 
     /// Calculates a PCM track's output gain, including fadeout when it is mixed.
     fn pcm_channel_gain(&self, track: usize) -> u8 {
-        let fadeout_level = if self.pcm_uses_mixer() {
+        let fadeout_level = if self.pcm_uses_decoded_output() {
             self.fadeout.level
         } else {
             0
@@ -1676,10 +1727,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         }
     }
 
-    /// Returns whether PCM is decoded and mixed instead of passed through raw.
-    fn pcm_uses_mixer(&self) -> bool {
-        !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
-            && matches!(self.adpcm_mode, AdpcmMode::Through))
+    /// Returns whether PCM is decoded for mixing or ROM playback instead of passed through raw.
+    fn pcm_uses_decoded_output(&self) -> bool {
+        self.pcm_output.output == PcmOutput::Opl4
+            || !(matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
+                && matches!(self.adpcm_mode, AdpcmMode::Through))
     }
 
     /// Processes all pending commands for the specified track, updating the
@@ -1692,6 +1744,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         builder: &mut VgmBuilder,
     ) -> Result<(), MdxConvertError> {
         while self.tracks[track].active && self.tracks[track].wait_ticks == 0 {
+            self.flush_opl4(builder);
             let Some(command) = self.package.borrow().mdx.tracks[track]
                 .get(self.tracks[track].command_index)
                 .cloned()
@@ -1794,6 +1847,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     self.tracks[track].fm.pan_pending = true;
                 }
                 MdxCommand::Pan(command) => {
+                    if self.pcm_output.output == PcmOutput::Opl4 {
+                        if let Some(opl4) = &mut self.pcm_output.opl4 {
+                            opl4.set_pan(track - 8, command.raw());
+                        }
+                        continue;
+                    }
                     // MDX ADPCM pan values are 0=mute, 1=left, 2=right,
                     // 3=center. The VGM OKIM6258 pan extension uses
                     // 0=center, 1=left, 2=right, 3=mute.
@@ -1876,7 +1935,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     if let Some((rate_step, data_kind)) = mode {
                         self.tracks[track].pcm.rate_step = rate_step;
                         self.tracks[track].pcm.data_kind = data_kind;
-                        if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
+                        if self.pcm_output.output == PcmOutput::Opl4 {
+                            if let Some(opl4) = &mut self.pcm_output.opl4 {
+                                opl4.set_rate(track - 8, rate_step);
+                            }
+                        } else if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm) && track == 8 {
                             self.set_legacy_pcm_rate(command.value, builder);
                         }
                     }
@@ -2511,6 +2574,26 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn emit_wait(&mut self, builder: &mut VgmBuilder) {
         let (tick_microseconds, samples) = self.timing.advance_tick();
 
+        if let Some(opl4) = &self.pcm_output.opl4 {
+            for (channel, &step) in self.pcm_output.channels.iter_mut().zip(&opl4.steps) {
+                if channel.block_length == 0 {
+                    continue;
+                }
+                let advance =
+                    u64::from(channel.rate_counter) + u64::from(samples) * u64::from(step);
+                let position = u64::from(channel.pos_in_block) + (advance >> 16);
+                channel.rate_counter = (advance & 0xffff) as u32;
+                channel.pos_in_block = position.min(u64::from(channel.block_length)) as u32;
+                if position >= u64::from(channel.block_length) {
+                    channel.block_length = 0;
+                    if !channel.hold {
+                        channel.block_key = None;
+                    }
+                }
+            }
+            Self::emit_wait_chunks(builder, samples);
+            return;
+        }
         if !self.pcm_output.has_pcm {
             Self::emit_wait_chunks(builder, samples);
             return;
@@ -2574,7 +2657,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 self.emit_volume(track, builder);
             }
         }
-        if self.pcm_uses_mixer() {
+        if self.pcm_uses_decoded_output() {
             for track in 8..self.tracks.len().min(16) {
                 let gain = self.pcm_channel_gain(track);
                 self.pcm_output.set_channel_gain(track - 8, gain);
@@ -2659,6 +2742,17 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// [`MdxVgmGenerator`], which has no use for a complete `VgmDocument`
     /// and therefore never calls `VgmBuilder::finalize()`.
     fn emit_closing_commands(&self, builder: &mut VgmBuilder) {
+        if let Some(opl4) = &self.pcm_output.opl4 {
+            if self.song_loop.loop_index.is_none() {
+                let mut closing = opl4.clone();
+                for channel in 0..8 {
+                    closing.stop(channel);
+                }
+                closing.flush(builder);
+                Self::emit_wait_chunks(builder, 256);
+            }
+            return;
+        }
         if self.pcm_output.has_pcm && self.song_loop.loop_index.is_none() {
             builder.add_vgm_command((
                 Instance::Primary,
@@ -2673,7 +2767,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// Finalizes the document, stopping ADPCM playback first (if it was
     /// ever started); see [`emit_closing_commands`](Self::emit_closing_commands).
     fn finalize_with_pcm(&mut self, mut builder: VgmBuilder) -> VgmDocument {
-        self.emit_closing_commands(&mut builder);
+        if self.pcm_output.opl4.is_none() {
+            self.emit_closing_commands(&mut builder);
+        }
         self.finalize(builder)
     }
 
@@ -2906,6 +3002,10 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
         );
         playback.max_commands_per_tick = options.max_commands_per_tick;
         playback.pcm_output.max_decoded_pcm_samples = options.max_decoded_pcm_samples;
+        playback.pcm_output.output = options.pcm_output;
+        if options.pcm_output == PcmOutput::Opl4 && playback.pcm_output.has_pcm {
+            playback.pcm_output.opl4 = Some(Opl4Output::new());
+        }
         Self {
             playback,
             options,
@@ -2939,16 +3039,31 @@ impl<P: Borrow<MdxPackage>> MdxVgmGenerator<P> {
             return Ok(false);
         }
         if !self.initialized {
+            if self.options.pcm_output == PcmOutput::Opl4
+                && self.options.adpcm_mode != AdpcmMode::Through
+            {
+                return Err(MdxConvertError::InvalidOptions(
+                    "OPL4 output requires adpcm_mode=through; resample/lpf apply only to OKIM6258",
+                ));
+            }
             self.initialized = true;
             if self.playback.pcm_output.has_pcm {
                 self.builder.register_chip(
-                    Chip::Okim6258,
+                    if self.options.pcm_output == PcmOutput::Opl4 {
+                        Chip::Ymf278b
+                    } else {
+                        Chip::Okim6258
+                    },
                     Instance::Primary,
-                    self.options.okim6258_clock,
+                    if self.options.pcm_output == PcmOutput::Opl4 {
+                        opl4::CLOCK_HZ
+                    } else {
+                        self.options.okim6258_clock
+                    },
                 );
             }
             self.playback.emit_initialization(&mut self.builder);
-            if self.playback.pcm_output.has_pcm {
+            if self.playback.pcm_output.has_pcm && self.options.pcm_output == PcmOutput::Okim6258 {
                 self.builder.add_vgm_command((
                     Instance::Primary,
                     Okim6258Spec {

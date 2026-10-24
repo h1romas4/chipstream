@@ -27,6 +27,23 @@ pub enum Pcm8aFormat {
     Pcm8,
 }
 
+/// PCM8A F0-F12 selectors: Q16.16 rate relative to 15,625 Hz and storage format.
+pub(crate) const PCM8A_MODE_TABLE: [(u32, Pcm8aFormat); 13] = [
+    (0x04000, Pcm8aFormat::Adpcm),
+    (0x05555, Pcm8aFormat::Adpcm),
+    (0x08000, Pcm8aFormat::Adpcm),
+    (0x0aaaa, Pcm8aFormat::Adpcm),
+    (0x10000, Pcm8aFormat::Adpcm),
+    (0x10000, Pcm8aFormat::Pcm16),
+    (0x10000, Pcm8aFormat::Pcm8),
+    (0x15555, Pcm8aFormat::Adpcm),
+    (0x15555, Pcm8aFormat::Pcm16),
+    (0x15555, Pcm8aFormat::Pcm8),
+    (0x20000, Pcm8aFormat::Adpcm),
+    (0x20000, Pcm8aFormat::Pcm16),
+    (0x20000, Pcm8aFormat::Pcm8),
+];
+
 /// Decode an OKIM6258 ADPCM byte stream into signed playback samples.
 ///
 /// Each input byte produces two output samples: its low nibble is decoded

@@ -3,7 +3,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use mmlx::mdx::frontend::CompiledMdx;
-use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions, to_vgm_document_with_diagnostics};
+use soundlog::mdx::convert::{
+    AdpcmMode, MdxToVgmOptions, PcmOutput, to_vgm_document_with_diagnostics,
+};
 use soundlog::mdx::package::MdxPackage;
 use soundlog::meta::Gd3;
 
@@ -37,6 +39,29 @@ pub fn compile_with_playback_check(
     adpcm_mode: AdpcmMode,
     playback_check: bool,
 ) -> Result<()> {
+    compile_with_vgm_options(
+        input,
+        output,
+        output_format,
+        &MdxToVgmOptions {
+            adpcm_mode,
+            ..Default::default()
+        },
+        playback_check,
+    )
+}
+
+/// Compile with custom VGM conversion options, preserving MDX playback checks.
+pub fn compile_with_vgm_options(
+    input: &Path,
+    output: &Path,
+    output_format: OutputFormat,
+    options: &MdxToVgmOptions,
+    playback_check: bool,
+) -> Result<()> {
+    if output_format == OutputFormat::Mdx && options.pcm_output != PcmOutput::Okim6258 {
+        return Err(anyhow!("OPL4 PCM output requires --output-format vgm"));
+    }
     let source_text = read_input_source(input)?;
     let source = parse_source(input, &source_text)?;
     let compiled = compile_document(input, &source)?;
@@ -52,7 +77,7 @@ pub fn compile_with_playback_check(
             fs::write(output, bytes)
                 .with_context(|| format!("failed to write MDX output: {}", output.display()))
         }
-        OutputFormat::Vgm => write_vgm(source.ast(), &compiled, input, output, adpcm_mode),
+        OutputFormat::Vgm => write_vgm(source.ast(), &compiled, input, output, options),
     }
 }
 
@@ -61,7 +86,7 @@ fn write_vgm(
     compiled: &CompiledMdx<'_>,
     input: &Path,
     output: &Path,
-    adpcm_mode: AdpcmMode,
+    options: &MdxToVgmOptions,
 ) -> Result<()> {
     let mdx = compiled.document();
     let pdx_bytes = source
@@ -79,11 +104,7 @@ fn write_vgm(
         .transpose()?;
     let package = MdxPackage::parse_owned(mdx.to_bytes()?, pdx_bytes)
         .context("failed to prepare VGM conversion")?;
-    let options = MdxToVgmOptions {
-        adpcm_mode,
-        ..MdxToVgmOptions::default()
-    };
-    let mut document = to_vgm_document_with_diagnostics(&package, &options)
+    let mut document = to_vgm_document_with_diagnostics(&package, options)
         .map_err(|error| playback_error(input, compiled.source(), compiled.source_map(), error))?;
     if let Some(title) = source.title.as_deref() {
         document.gd3 = Some(Gd3 {
@@ -203,6 +224,53 @@ mod tests {
             fs::write(&input, source).unwrap();
             compile(&input, &output, OutputFormat::Mdx, AdpcmMode::Through).unwrap();
             assert_ne!(fs::read(&output).unwrap(), b"existing output");
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mml_vgm_compilation_selects_opl4_and_preserves_output_on_invalid_options() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "soundlog-opl4-compile-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let input = directory.join("song.mml");
+        let output = directory.join("song.vgm");
+        let mut pdx = soundlog::mdx::pdx::PdxBuilder::new();
+        for note in 0..96 {
+            pdx.set_sample(0, note, vec![0x12; 256]).unwrap();
+        }
+        fs::write(directory.join("samples.pdx"), pdx.finalize().to_bytes()).unwrap();
+        fs::write(&input, "#pcmfile \"samples.pdx\"\nP c4").unwrap();
+        let options = MdxToVgmOptions {
+            pcm_output: PcmOutput::Opl4,
+            ..Default::default()
+        };
+        compile_with_vgm_options(&input, &output, OutputFormat::Vgm, &options, true).unwrap();
+        let bytes = fs::read(&output).unwrap();
+        let document = soundlog::vgm::VgmDocument::try_from(bytes.as_slice()).unwrap();
+        assert_eq!(document.header.ymf278b_clock, soundlog::mdx::opl4::CLOCK_HZ);
+        assert_eq!(document.header.okim6258_clock, 0);
+        assert!(document.commands.iter().any(|command| matches!(command,
+            soundlog::vgm::command::VgmCommand::DataBlock(block) if block.data_type == 0x84
+        )));
+        for (format, options) in [
+            (OutputFormat::Mdx, options),
+            (
+                OutputFormat::Vgm,
+                MdxToVgmOptions {
+                    adpcm_mode: AdpcmMode::Lpf,
+                    ..options
+                },
+            ),
+        ] {
+            assert!(compile_with_vgm_options(&input, &output, format, &options, true).is_err());
+            assert_eq!(fs::read(&output).unwrap(), bytes);
         }
         fs::remove_dir_all(directory).unwrap();
     }

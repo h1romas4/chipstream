@@ -11,7 +11,7 @@ use std::process;
 use std::sync::Arc;
 
 // Use the library crate's CUI and logger.
-use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions};
+use soundlog::mdx::convert::{AdpcmMode, MdxToVgmOptions, PcmOutput};
 use soundlog_cli::cui;
 use soundlog_cli::logger::Logger;
 
@@ -20,6 +20,21 @@ enum AdpcmModeArg {
     Through,
     Resample,
     Lpf,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PcmOutputArg {
+    Okim6258,
+    Opl4,
+}
+
+impl From<PcmOutputArg> for PcmOutput {
+    fn from(output: PcmOutputArg) -> Self {
+        match output {
+            PcmOutputArg::Okim6258 => Self::Okim6258,
+            PcmOutputArg::Opl4 => Self::Opl4,
+        }
+    }
 }
 
 impl From<AdpcmModeArg> for AdpcmMode {
@@ -180,6 +195,10 @@ enum MdxCommands {
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
 
+        /// PCM output chip for VGM output
+        #[arg(long, value_enum, default_value_t = PcmOutputArg::Okim6258)]
+        pcm_output: PcmOutputArg,
+
         /// Skip bounded playback validation for MDX output (VGM conversion still reports playback errors)
         #[arg(long)]
         no_playback_check: bool,
@@ -223,6 +242,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// PCM output chip (OPL4 requires --adpcm-mode through)
+        #[arg(long, value_enum, default_value_t = PcmOutputArg::Okim6258)]
+        pcm_output: PcmOutputArg,
         /// Maximum elapsed playback ticks across all loops (0 disables the limit)
         #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
         max_ticks: u32,
@@ -262,6 +284,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// PCM output chip (OPL4 requires --adpcm-mode through)
+        #[arg(long, value_enum, default_value_t = PcmOutputArg::Okim6258)]
+        pcm_output: PcmOutputArg,
         /// Maximum elapsed playback ticks across all loops (0 disables the limit)
         #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
         max_ticks: u32,
@@ -297,6 +322,9 @@ enum MdxCommands {
         /// ADPCM mode: through, resample, or lpf (default: through)
         #[arg(long, value_enum, default_value_t = AdpcmModeArg::Through)]
         adpcm_mode: AdpcmModeArg,
+        /// PCM output chip (OPL4 requires --adpcm-mode through)
+        #[arg(long, value_enum, default_value_t = PcmOutputArg::Okim6258)]
+        pcm_output: PcmOutputArg,
         /// Maximum elapsed playback ticks across all loops (0 disables the limit)
         #[arg(long, value_name = "TICKS", default_value_t = MdxToVgmOptions::default().max_ticks.unwrap_or(0))]
         max_ticks: u32,
@@ -478,13 +506,18 @@ fn main() {
                 output,
                 output_format,
                 adpcm_mode,
+                pcm_output,
                 no_playback_check,
             } => {
-                match cui::mdx::compile_with_playback_check(
+                match cui::mdx::compile_with_vgm_options(
                     &input,
                     &output,
                     output_format.into(),
-                    adpcm_mode.into(),
+                    &MdxToVgmOptions {
+                        adpcm_mode: adpcm_mode.into(),
+                        pcm_output: pcm_output.into(),
+                        ..Default::default()
+                    },
                     !no_playback_check,
                 ) {
                     Ok(()) => process::exit(0),
@@ -511,6 +544,7 @@ fn main() {
                 okim6258_clock,
                 loop_count,
                 adpcm_mode,
+                pcm_output,
                 max_ticks,
             } => {
                 logger = Arc::new(Logger::new_stdout(dry_run));
@@ -519,6 +553,7 @@ fn main() {
                     okim6258_clock,
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
+                    pcm_output: pcm_output.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
                     ..Default::default()
                 };
@@ -539,6 +574,7 @@ fn main() {
                 loop_count,
                 native_loop,
                 adpcm_mode,
+                pcm_output,
                 max_ticks,
             } => {
                 let options = MdxToVgmOptions {
@@ -550,6 +586,7 @@ fn main() {
                         Some(loop_count.unwrap_or(1))
                     },
                     adpcm_mode: adpcm_mode.into(),
+                    pcm_output: pcm_output.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
                     ..Default::default()
                 };
@@ -569,6 +606,7 @@ fn main() {
                 okim6258_clock,
                 loop_count,
                 adpcm_mode,
+                pcm_output,
                 max_ticks,
             } => {
                 // Configure logger according to dry_run so main's messages respect it.
@@ -579,6 +617,7 @@ fn main() {
                     okim6258_clock,
                     loop_count,
                     adpcm_mode: adpcm_mode.into(),
+                    pcm_output: pcm_output.into(),
                     max_ticks: (max_ticks != 0).then_some(max_ticks),
                     ..Default::default()
                 };
