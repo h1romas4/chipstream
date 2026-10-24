@@ -167,8 +167,8 @@ pub enum PcmOutput {
     #[default]
     Okim6258,
     /// Independent OPL4 slots backed by packed 12-bit PCM ROM.
-    /// Supports up to 512 decoded sample variants and 4 MiB of ROM, with a
-    /// maximum of 65,532 samples per wave. Longer samples return an error.
+    /// Supports up to 512 wave headers and 4 MiB of ROM. Sources up to 131,064
+    /// samples are split into at most two waves of 65,532 samples each.
     /// PCM8 gain is normalized against its maximum (80) and rounded to OPL4
     /// total-level steps; pan is per channel instead of a shared mono mixer.
     /// Eager output compensates PCM/FM balance with [`opl4::VGM_VOLUME`] in the
@@ -1222,10 +1222,10 @@ impl PcmOutputState {
                 "decoded PCM sample length exceeds addressable storage".to_owned(),
             ));
         };
-        if self.opl4.is_some() && length > opl4::MAX_SAMPLE_COUNT {
+        if self.opl4.is_some() && length > opl4::MAX_SOURCE_SAMPLE_COUNT {
             return Err(MdxConvertError::InvalidDocument(format!(
-                "OPL4 sample at bank {bank}, note {note} has {length} decoded samples; maximum is {}; segmentation is not supported",
-                opl4::MAX_SAMPLE_COUNT
+                "OPL4 sample at bank {bank}, note {note} has {length} decoded samples; maximum is {} across two waves",
+                opl4::MAX_SOURCE_SAMPLE_COUNT
             )));
         }
         let Ok(decoded) = decode_pcm8a_with_pcm16_15khz(format, bytes, pcm16_is_15khz) else {
@@ -2594,24 +2594,18 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     fn emit_wait(&mut self, builder: &mut VgmBuilder) {
         let (tick_microseconds, samples) = self.timing.advance_tick();
 
-        if let Some(opl4) = &self.pcm_output.opl4 {
-            for (channel, &step) in self.pcm_output.channels.iter_mut().zip(&opl4.steps) {
-                if channel.block_length == 0 {
-                    continue;
-                }
-                let advance =
-                    u64::from(channel.rate_counter) + u64::from(samples) * u64::from(step);
-                let position = u64::from(channel.pos_in_block) + (advance >> 16);
-                channel.rate_counter = (advance & 0xffff) as u32;
-                channel.pos_in_block = position.min(u64::from(channel.block_length)) as u32;
-                if position >= u64::from(channel.block_length) {
-                    channel.block_length = 0;
-                    if !channel.hold {
-                        channel.block_key = None;
-                    }
-                }
+        if let Some(opl4) = &mut self.pcm_output.opl4 {
+            let mut remaining = samples;
+            while remaining != 0 {
+                let wait = opl4
+                    .samples_until_continuation(&self.pcm_output.channels)
+                    .unwrap_or(remaining)
+                    .min(remaining);
+                Self::emit_wait_chunks(builder, wait);
+                opl4.advance(&mut self.pcm_output.channels, wait);
+                opl4.flush(builder);
+                remaining -= wait;
             }
-            Self::emit_wait_chunks(builder, samples);
             return;
         }
         if !self.pcm_output.has_pcm {

@@ -378,12 +378,12 @@ fn no_pdx_is_fm_only_and_invalid_options_or_resource_limits_are_errors() {
             length: 4,
         },
     );
-    let large = package(builder, vec![0x12; 32767]);
+    let large = package(builder, vec![0x12; 65533]);
     assert!(
         to_vgm_document(&large, &options())
             .unwrap_err()
             .to_string()
-            .contains("segmentation")
+            .contains("131064")
     );
     let limited = MdxToVgmOptions {
         max_decoded_pcm_samples: Some(4),
@@ -401,6 +401,128 @@ fn no_pdx_is_fm_only_and_invalid_options_or_resource_limits_are_errors() {
         to_vgm_document(&no_pdx, &limited),
         Err(MdxConvertError::OutputCommandLimitExceeded { .. })
     ));
+}
+
+#[test]
+fn long_samples_share_two_waves_across_eight_rates_and_repeated_notes() {
+    let mut builder = MdxBuilder::new();
+    for (slot, mode) in [0, 1, 2, 3, 4, 7, 10, 4].into_iter().enumerate() {
+        builder
+            .add_mdx_command(8 + slot, MdxAdpcmOrNoiseFrequency { value: mode })
+            .add_mdx_command(
+                8 + slot,
+                MdxNote {
+                    note: 0x80,
+                    length: 4000,
+                },
+            );
+    }
+    let package = package(builder, vec![0x12; 50_638]);
+    let document = to_vgm_document(&package, &options()).unwrap();
+    assert_eq!(wave_count(&document.commands), 2);
+    for slot in 0..8 {
+        assert_eq!(
+            transitions(&document.commands, slot)
+                .iter()
+                .filter(|(_, on)| *on)
+                .count(),
+            2
+        );
+    }
+    assert_same_output(document.commands, lazy(package, options()));
+
+    let mut builder = MdxBuilder::new();
+    for _ in 0..2 {
+        builder.add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 1000,
+            },
+        );
+    }
+    let package = self::package(builder, vec![0x12; 65_532]);
+    let document = to_vgm_document(&package, &options()).unwrap();
+    assert_eq!(wave_count(&document.commands), 2);
+    assert_eq!(
+        transitions(&document.commands, 0)
+            .iter()
+            .filter(|(_, on)| *on)
+            .count(),
+        4
+    );
+    assert_same_output(document.commands, lazy(package, options()));
+}
+
+#[test]
+fn segmented_playback_preserves_tied_controls_and_cancels_on_gate() {
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxKeyOffDisable)
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 128,
+            },
+        )
+        .add_mdx_command(8, MdxVolume { value: 15 })
+        .add_mdx_command(8, MdxPan::Right)
+        .add_mdx_command(8, MdxAdpcmOrNoiseFrequency { value: 2 })
+        .add_mdx_command(8, MdxKeyOffDisable)
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 1000,
+            },
+        );
+    let package = package(builder, vec![0x12; 50_638]);
+    let document = to_vgm_document(&package, &options()).unwrap();
+    assert_eq!(wave_count(&document.commands), 2);
+    assert_eq!(
+        transitions(&document.commands, 0)
+            .iter()
+            .filter(|(_, on)| *on)
+            .count(),
+        2
+    );
+    let second_wave = document.commands.iter().position(|command| matches!(command,
+        VgmCommand::Ymf278bWrite(_, spec) if spec.port == 2 && spec.register == 8 && spec.value == 1
+    )).unwrap();
+    assert!(document.commands[second_wave..].iter().any(|command| matches!(command,
+        VgmCommand::Ymf278bWrite(_, spec) if spec.port == 2 && spec.register == 0x68 && spec.value == 0x89
+    )));
+    assert!(document.commands[second_wave..].iter().any(|command| matches!(command,
+        VgmCommand::Ymf278bWrite(_, spec) if spec.port == 2 && spec.register == 0x50 && spec.value == 1
+    )));
+    assert!(document.commands[second_wave..].iter().any(|command| matches!(command,
+        VgmCommand::Ymf278bWrite(_, spec) if spec.port == 2 && spec.register == 0x38 && spec.value >> 4 == 0xe
+    )));
+    assert_same_output(document.commands, lazy(package, options()));
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(8, MdxGate { value: 4 })
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 128,
+            },
+        )
+        .add_mdx_command(15, MdxRest { ticks: 2000 });
+    let package = self::package(builder, vec![0x12; 50_638]);
+    let document = to_vgm_document(&package, &options()).unwrap();
+    assert_eq!(wave_count(&document.commands), 2);
+    assert_eq!(
+        transitions(&document.commands, 0)
+            .iter()
+            .filter(|(_, on)| *on)
+            .count(),
+        1
+    );
+    assert_same_output(document.commands, lazy(package, options()));
 }
 
 #[test]

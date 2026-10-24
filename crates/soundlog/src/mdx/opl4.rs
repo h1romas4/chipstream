@@ -44,10 +44,18 @@
 //! playback calibration, not per-song loudness normalization or a limiter;
 //! other renderers and unusually loud mixes may need playback-level adjustment.
 //!
-//! MDX output is limited to 65,532 decoded samples per wave, 512 decoded sample
-//! variants, and 4 MiB of ROM (including the reserved wave-header region).
-//! Exceeding these limits reports an error; long-sample segmentation is not
-//! implemented. The existing decoded-PCM, tick, per-tick command and
+//! MDX accepts up to 131,064 decoded samples per source, splitting samples
+//! longer than 65,532 into two waves. Each source is decoded continuously
+//! before splitting, preserving ADPCM decoder state. The second wave reuses
+//! the slot's current rate, volume and pan; key-off cancels a pending switch.
+//! Switches occur at VGM output-sample boundaries and reset the chip's
+//! fractional source phase, introducing less than one output sample of delay
+//! per split, rather than rounding to an MDX tick. The first wave includes
+//! source lookahead for interpolation; only the final wave loops in silence.
+//!
+//! Up to 512 wave headers (including segments) and 4 MiB of ROM (including
+//! the reserved wave-header region) are supported. Exceeding these limits
+//! reports an error. The existing decoded-PCM, tick, per-tick command and
 //! eager-output limits also apply. Missing/malformed PCM follows the existing
 //! MDX silence policy. Original ADPCM bytes and PDX bank/note reconstruction
 //! metadata are not embedded; wave headers retain converted sample boundaries.
@@ -62,6 +70,7 @@ use crate::chip::{Chip, Ymf278bSpec};
 use crate::mdx::convert::MdxConvertError;
 use crate::mdx::pcm::{PCM8A_MODE_TABLE, Pcm8aFormat, decode_pcm8a_with_pcm16_15khz};
 use crate::mdx::pcm_mixer::PCM8_MASTER_SAMPLE_RATE;
+use crate::mdx::pcm_mixer::PcmChannelState;
 use crate::mdx::pdx::PdxDocument;
 use crate::vgm::command::{Instance, WaitSamples};
 use crate::vgm::detail::{RomRamChipType, RomRamDump};
@@ -84,6 +93,7 @@ pub const VGM_VOLUME: u16 = 20 * 0x100;
 pub const VGM_VOLUME_MODIFIER: u8 = 0x50;
 const HEADER_SIZE: usize = 12;
 pub(super) const MAX_SAMPLE_COUNT: usize = 65_532;
+pub(super) const MAX_SOURCE_SAMPLE_COUNT: usize = 2 * MAX_SAMPLE_COUNT;
 const LOAD_WAIT: u16 = 14;
 const RELEASE_WAIT: u16 = 256;
 
@@ -370,9 +380,12 @@ fn wave_header(start: u32, sample_count: usize) -> [u8; HEADER_SIZE] {
 /// ROM is populated incrementally, before the first use of each decoded range.
 #[derive(Clone)]
 pub(super) struct Opl4Output {
-    waves: std::collections::HashMap<(usize, usize), u16>,
+    waves: std::collections::HashMap<(usize, usize), WaveSequence>,
+    wave_count: u16,
     next_address: u32,
     pub(super) steps: [u32; 8],
+    rates: [u32; 8],
+    continuation: [Option<u16>; 8],
     wave_high: [u8; 8],
     pan: [u8; 8],
     gain: [u8; 8],
@@ -380,12 +393,21 @@ pub(super) struct Opl4Output {
     pending: Vec<crate::vgm::command::VgmCommand>,
 }
 
+#[derive(Clone, Copy)]
+struct WaveSequence {
+    first: u16,
+    second: Option<u16>,
+}
+
 impl Opl4Output {
     pub(super) fn new() -> Self {
         Self {
             waves: Default::default(),
+            wave_count: 0,
             next_address: 0x2000,
             steps: [0; 8],
+            rates: [0; 8],
+            continuation: [None; 8],
             wave_high: [0; 8],
             pan: [0; 8],
             gain: [16; 8],
@@ -412,38 +434,65 @@ impl Opl4Output {
         rate: u32,
         gain: u8,
     ) -> Result<(), MdxConvertError> {
-        let wave = if let Some(&wave) = self.waves.get(&range) {
-            wave
+        let sequence = if let Some(&sequence) = self.waves.get(&range) {
+            sequence
         } else {
-            if range.1 == 0 || range.1 > MAX_SAMPLE_COUNT {
+            if range.1 == 0 || range.1 > MAX_SOURCE_SAMPLE_COUNT {
                 return Err(MdxConvertError::InvalidDocument(format!(
-                    "OPL4 sample has {} decoded values; maximum is {MAX_SAMPLE_COUNT}; segmentation is not supported",
+                    "OPL4 sample has {} decoded values; maximum is {MAX_SOURCE_SAMPLE_COUNT} across two waves",
                     range.1
                 )));
             }
-            if self.waves.len() >= 512 {
+            let segment_count = range.1.div_ceil(MAX_SAMPLE_COUNT);
+            if usize::from(self.wave_count) + segment_count > 512 {
                 return Err(MdxConvertError::InvalidDocument(
-                    "OPL4 wave table exceeds 512 decoded sample variants".into(),
+                    "OPL4 wave table exceeds 512 waves (including sample segments)".into(),
                 ));
             }
-            let mut data = Vec::with_capacity(range.1.div_ceil(2) * 3 + 3);
-            pack_pcm12(&samples[range.0..range.0 + range.1], &mut data);
-            data.extend_from_slice(&[0; 3]);
-            let end_address = self.next_address + data.len() as u32;
+            let data_size = range.1.div_ceil(2) * 3 + segment_count * 3;
+            let end_address = self.next_address + data_size as u32;
             if end_address > 0x40_0000 {
                 return Err(MdxConvertError::InvalidDocument(
                     "OPL4 decoded PCM ROM exceeds 4 MiB".into(),
                 ));
             }
-            let wave = self.waves.len() as u16;
-            let start = self.next_address;
-            self.rom(u32::from(wave) * 12, wave_header(start, range.1).to_vec());
-            self.rom(start, data);
-            self.next_address = end_address;
-            self.waves.insert(range, wave);
-            wave
+            let sequence = WaveSequence {
+                first: self.wave_count,
+                second: (segment_count == 2).then_some(self.wave_count + 1),
+            };
+            let source = &samples[range.0..range.0 + range.1];
+            for (index, segment) in source.chunks(MAX_SAMPLE_COUNT).enumerate() {
+                let mut data = Vec::with_capacity(segment.len().div_ceil(2) * 3 + 3);
+                pack_pcm12(segment, &mut data);
+                if segment_count == 2 && index == 0 {
+                    // Keep interpolation at the seam on source data until the wave switch.
+                    pack_pcm12(
+                        &source[MAX_SAMPLE_COUNT..source.len().min(MAX_SAMPLE_COUNT + 2)],
+                        &mut data,
+                    );
+                } else {
+                    data.extend_from_slice(&[0; 3]);
+                }
+                let start = self.next_address;
+                self.rom(
+                    u32::from(self.wave_count) * 12,
+                    wave_header(start, segment.len()).to_vec(),
+                );
+                self.next_address += data.len() as u32;
+                self.rom(start, data);
+                self.wave_count += 1;
+            }
+            self.waves.insert(range, sequence);
+            sequence
         };
+        self.play_wave(channel, sequence.first, rate, gain);
+        self.continuation[channel] = sequence.second;
+        Ok(())
+    }
+
+    fn play_wave(&mut self, channel: usize, wave: u16, rate: u32, gain: u8) {
         self.stop(channel);
+        self.rates[channel] = rate;
         let (octave, fnumber, step) = pitch(rate);
         self.steps[channel] = step;
         self.wave_high[channel] = (wave >> 8) as u8;
@@ -461,10 +510,10 @@ impl Opl4Output {
         self.set_gain(channel, gain);
         self.active[channel] = true;
         self.emit_key(channel);
-        Ok(())
     }
 
     pub(super) fn stop(&mut self, channel: usize) {
+        self.continuation[channel] = None;
         self.active[channel] = false;
         self.write(2, 0x50 + channel as u8, 0xff);
         self.emit_key(channel);
@@ -497,6 +546,7 @@ impl Opl4Output {
     }
 
     pub(super) fn set_rate(&mut self, channel: usize, rate: u32) {
+        self.rates[channel] = rate;
         let (octave, fnumber, step) = pitch(rate);
         self.steps[channel] = step;
         // Preserve the currently selected wave's ninth index bit.
@@ -507,6 +557,52 @@ impl Opl4Output {
             0x38 + channel as u8,
             (octave << 4) | (fnumber >> 7) as u8,
         );
+    }
+
+    /// Time to the earliest second-wave switch, in VGM output samples.
+    pub(super) fn samples_until_continuation(
+        &self,
+        channels: &[PcmChannelState; 8],
+    ) -> Option<u32> {
+        channels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| {
+                if self.continuation[index].is_none() || state.block_length == 0 {
+                    return None;
+                }
+                let remaining = ((MAX_SAMPLE_COUNT as u64 - u64::from(state.pos_in_block)) << 16)
+                    - u64::from(state.rate_counter);
+                Some(remaining.div_ceil(u64::from(self.steps[index])) as u32)
+            })
+            .min()
+    }
+
+    /// Advance channel positions and restart a second wave at the wait boundary.
+    pub(super) fn advance(&mut self, channels: &mut [PcmChannelState; 8], samples: u32) {
+        for (index, state) in channels.iter_mut().enumerate() {
+            if state.block_length == 0 {
+                continue;
+            }
+            let advance =
+                u64::from(state.rate_counter) + u64::from(samples) * u64::from(self.steps[index]);
+            let position = u64::from(state.pos_in_block) + (advance >> 16);
+            state.rate_counter = (advance & 0xffff) as u32;
+            state.pos_in_block = position.min(u64::from(state.block_length)) as u32;
+            if position >= MAX_SAMPLE_COUNT as u64
+                && let Some(wave) = self.continuation[index].take()
+            {
+                // A wave load resets the chip's fractional source position.
+                state.pos_in_block = MAX_SAMPLE_COUNT as u32;
+                state.rate_counter = 0;
+                self.play_wave(index, wave, self.rates[index], self.gain[index]);
+            } else if position >= u64::from(state.block_length) {
+                state.block_length = 0;
+                if !state.hold {
+                    state.block_key = None;
+                }
+            }
+        }
     }
 
     fn emit_key(&mut self, channel: usize) {
@@ -577,5 +673,125 @@ mod tests {
             })
             .collect();
         assert_eq!(decoded, samples);
+    }
+
+    #[test]
+    fn segmented_rom_preserves_source_values_and_valid_wave_headers() {
+        for count in [65_532, 65_533, 101_276, 131_063, 131_064] {
+            let samples: Vec<i16> = (0..count).map(|i| (i % 4096) as i16 - 2048).collect();
+            let mut output = Opl4Output::new();
+            output.start(0, (0, count), &samples, 0x10000, 16).unwrap();
+            let blocks: Vec<_> = output
+                .pending
+                .iter()
+                .filter_map(|command| match command {
+                    crate::vgm::command::VgmCommand::DataBlock(block) => Some(&block.data[8..]),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(blocks.len(), count.div_ceil(MAX_SAMPLE_COUNT) * 2);
+            for (index, source) in samples.chunks(MAX_SAMPLE_COUNT).enumerate() {
+                let header = blocks[index * 2];
+                let data = blocks[index * 2 + 1];
+                let padded = source.len().next_multiple_of(2);
+                assert_eq!(u16::from_be_bytes([header[3], header[4]]) as usize, padded);
+                assert_eq!(
+                    0u16.wrapping_sub(u16::from_be_bytes([header[5], header[6]])) as usize,
+                    padded + 2
+                );
+                let decoded: Vec<i16> = data[..padded * 3 / 2]
+                    .chunks_exact(3)
+                    .flat_map(|bytes| {
+                        [
+                            i16::from_be_bytes([bytes[0], bytes[1] << 4]) >> 4,
+                            i16::from_be_bytes([bytes[2], bytes[1] & 0xf0]) >> 4,
+                        ]
+                    })
+                    .collect();
+                assert!(decoded[..source.len()] == *source);
+                if padded != source.len() {
+                    assert_eq!(decoded[source.len()], 0);
+                }
+            }
+            let mut expected_tail = Vec::new();
+            if count > MAX_SAMPLE_COUNT {
+                pack_pcm12(
+                    &samples[MAX_SAMPLE_COUNT..count.min(MAX_SAMPLE_COUNT + 2)],
+                    &mut expected_tail,
+                );
+            } else {
+                expected_tail.extend_from_slice(&[0; 3]);
+            }
+            assert_eq!(&blocks[1][blocks[1].len() - 3..], expected_tail);
+        }
+    }
+
+    #[test]
+    fn continuation_uses_current_rate_and_controls_then_clears_on_stop() {
+        let samples = vec![1024; MAX_SOURCE_SAMPLE_COUNT];
+        for (rate, _) in PCM8A_MODE_TABLE {
+            let mut output = Opl4Output::new();
+            output
+                .start(0, (0, samples.len()), &samples, rate, 16)
+                .unwrap();
+            let mut channels: [PcmChannelState; 8] = Default::default();
+            channels[0].block_length = samples.len() as u32;
+            channels[0].hold = true;
+            let wait = output.samples_until_continuation(&channels).unwrap();
+            assert_eq!(
+                u64::from(wait),
+                ((MAX_SAMPLE_COUNT as u64) << 16).div_ceil(u64::from(output.steps[0]))
+            );
+            output.advance(&mut channels, wait - 1);
+            assert_eq!(output.samples_until_continuation(&channels), Some(1));
+            output.set_rate(0, 0x8000);
+            output.set_gain(0, 80);
+            output.set_pan(0, 1);
+            let wait = output.samples_until_continuation(&channels).unwrap();
+            output.pending.clear();
+            output.advance(&mut channels, wait);
+            assert_eq!(channels[0].pos_in_block, MAX_SAMPLE_COUNT as u32);
+            assert_eq!(channels[0].rate_counter, 0);
+            assert!(channels[0].hold);
+            assert_eq!(output.samples_until_continuation(&channels), None);
+            let mut builder = VgmBuilder::new();
+            output.flush(&mut builder);
+            assert!(builder.drain_commands().any(|command| matches!(command,
+                crate::vgm::command::VgmCommand::Ymf278bWrite(_, spec)
+                if spec.register == 0x68 && spec.value == 0x89
+            )));
+            output
+                .start(0, (0, samples.len()), &samples, rate, 16)
+                .unwrap();
+            output.stop(0);
+            assert_eq!(output.samples_until_continuation(&channels), None);
+        }
+    }
+
+    #[test]
+    fn two_wave_samples_consume_two_entries_and_preserve_high_wave_bit() {
+        let samples = vec![0; MAX_SOURCE_SAMPLE_COUNT];
+        let mut output = Opl4Output::new();
+        for index in 0..510 {
+            output.start(0, (index, 1), &samples, 0x10000, 16).unwrap();
+        }
+        output
+            .start(0, (0, samples.len()), &samples, 0x10000, 16)
+            .unwrap();
+        assert_eq!(output.wave_count, 512);
+        let mut channels: [PcmChannelState; 8] = Default::default();
+        channels[0].block_length = samples.len() as u32;
+        let wait = output.samples_until_continuation(&channels).unwrap();
+        output.advance(&mut channels, wait);
+        assert_eq!(output.wave_high[0], 1);
+        output.set_rate(0, 0x8000);
+        assert_eq!(output.wave_high[0], 1);
+        assert!(
+            output
+                .start(0, (511, 1), &samples, 0x10000, 16)
+                .unwrap_err()
+                .to_string()
+                .contains("512")
+        );
     }
 }

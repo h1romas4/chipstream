@@ -540,10 +540,13 @@ output without changing that balance. This fixed calibration is not a limiter;
 exact loudness is renderer- and song-dependent. Players must honor both header
 volume settings. Finite output adds a 256-sample release wait.
 
-Each decoded wave is limited to 65,532 samples; at most 512 decoded variants
-and 4 MiB of ROM are supported. Limit violations fail before output is
-written. Long-sample segmentation and original PDX bank/note reconstruction
-metadata are not implemented; converted wave boundaries remain in ROM.
+Each source supports up to 131,064 decoded samples, automatically split into
+at most two waves of 65,532 samples each. Switching uses the current channel
+controls and VGM sample timing, with less than one output sample of delay at
+the split. At most 512 wave headers (including segments) and 4 MiB of ROM are
+supported. Limit violations fail before output is written. Original PDX
+bank/note reconstruction metadata is not embedded; converted wave boundaries
+remain in ROM.
 
 `--max-ticks <TICKS>` limits elapsed playback ticks (default: 100,000; `0`
 disables this limit). A separate fixed limit of 100,000 MDX commands without
