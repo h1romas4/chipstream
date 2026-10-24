@@ -76,7 +76,7 @@ use crate::vgm::command::{Instance, WaitSamples};
 use crate::vgm::detail::{RomRamChipType, RomRamDump};
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument};
 
-/// Standard OPL4 master clock used by MDX conversion and the experiments.
+/// Standard OPL4 master clock used by MDX conversion and standalone PDX playback.
 pub const CLOCK_HZ: u32 = 33_868_800;
 /// Relative PCM chip volume for MDX playback in VGM Q8.8 units (20 times).
 ///
@@ -97,7 +97,7 @@ pub(super) const MAX_SOURCE_SAMPLE_COUNT: usize = 2 * MAX_SAMPLE_COUNT;
 const LOAD_WAIT: u16 = 14;
 const RELEASE_WAIT: u16 = 256;
 
-/// One independently controlled voice in the experimental OPL4 chord generator.
+/// One independently controlled voice in standalone OPL4 playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Opl4Voice {
     /// Zero-based PDX bank.
@@ -130,7 +130,7 @@ impl Default for Opl4Voice {
 ///
 /// `bank` and `note` are zero-based PDX table coordinates, not MDX note bytes.
 /// The entry is always interpreted as OKIM6258 ADPCM; PCM8A PCM8/PCM16 input is
-/// not supported by this PoC. No source sample values are lost during packing.
+/// not supported by this function. No source sample values are lost during packing.
 ///
 /// Playback uses slot/wave 0, centered pan, constant volume, and the standard
 /// 33.8688 MHz clock. Octave -1 and F-number 427 approximate the MDX F4 rate
@@ -148,7 +148,7 @@ impl Default for Opl4Voice {
 ///
 /// Returns [`ParseError::DataInconsistency`] for missing/empty/invalid entries
 /// or entries exceeding 32,766 ADPCM bytes (65,532 decoded samples). Longer
-/// samples require segmentation, which is outside this PoC.
+/// samples require segmentation, which is only supported by MDX conversion.
 pub fn pdx_sample_to_vgm(
     pdx: &PdxDocument,
     bank: usize,
@@ -186,7 +186,7 @@ pub fn pdx_sample_to_vgm(
 /// normalization or clipping prevention is applied.
 ///
 /// This is not an MDX sequencer: gates, ties, live controls, repeats and
-/// reconstruction metadata are outside this experiment.
+/// reconstruction metadata are not supported by this function.
 ///
 /// # Errors
 ///
@@ -312,10 +312,12 @@ struct Wave {
     samples: Vec<i16>,
 }
 
+/// Creates a validation error with OPL4 context.
 fn invalid(message: impl std::fmt::Display) -> ParseError {
-    ParseError::DataInconsistency(format!("OPL4 PoC: {message}"))
+    ParseError::DataInconsistency(format!("OPL4: {message}"))
 }
 
+/// Maps a PCM8A rate to octave bits, F-number and the actual Q16 playback step.
 fn pitch(rate: u32) -> (u8, u16, u32) {
     let target_step = rate as f32 * PCM8_MASTER_SAMPLE_RATE as f32 / VGM_SAMPLE_RATE as f32;
     let mut best = (0, 0, 0);
@@ -333,6 +335,7 @@ fn pitch(rate: u32) -> (u8, u16, u32) {
     best
 }
 
+/// Emits a standalone playback register write followed by a one-sample wait.
 fn write(builder: &mut VgmBuilder, port: u8, register: u8, value: u8) {
     builder.add_chip_write(
         Instance::Primary,
@@ -345,6 +348,7 @@ fn write(builder: &mut VgmBuilder, port: u8, register: u8, value: u8) {
     builder.add_vgm_command(WaitSamples(1));
 }
 
+/// Appends packed signed 12-bit sample pairs, zero-padding an odd final sample.
 fn pack_pcm12(samples: &[i16], output: &mut Vec<u8>) {
     for pair in samples.chunks(2) {
         let first = pair[0] as u16 & 0x0fff;
@@ -357,6 +361,7 @@ fn pack_pcm12(samples: &[i16], output: &mut Vec<u8>) {
     }
 }
 
+/// Builds a PCM12 header with an instant attack and a two-sample tail loop.
 fn wave_header(start: u32, sample_count: usize) -> [u8; HEADER_SIZE] {
     let count = (sample_count as u16 + 1) & !1;
     let end = 0u16.wrapping_sub(count + 2).to_be_bytes();
@@ -399,6 +404,7 @@ struct WaveSequence {
 }
 
 impl Opl4Output {
+    /// Creates an empty ROM cache and eight inactive PCM slots.
     pub(super) fn new() -> Self {
         Self {
             waves: Default::default(),
@@ -415,6 +421,7 @@ impl Opl4Output {
         }
     }
 
+    /// Enables PCM access, configures the output mixer and mutes all used slots.
     pub(super) fn initialize(&mut self) {
         self.write(1, 0x05, 0x03);
         self.write(2, 0x02, 0);
@@ -425,6 +432,7 @@ impl Opl4Output {
         }
     }
 
+    /// Caches a decoded source as one or two waves and starts its first wave.
     pub(super) fn start(
         &mut self,
         channel: usize,
@@ -489,6 +497,7 @@ impl Opl4Output {
         Ok(())
     }
 
+    /// Restarts a slot on a cached wave, retaining its current pan.
     fn play_wave(&mut self, channel: usize, wave: u16, rate: u32, gain: u8) {
         self.stop(channel);
         self.rates[channel] = rate;
@@ -511,6 +520,7 @@ impl Opl4Output {
         self.emit_key(channel);
     }
 
+    /// Mutes and releases a slot, cancelling any pending second-wave switch.
     pub(super) fn stop(&mut self, channel: usize) {
         self.continuation[channel] = None;
         self.active[channel] = false;
@@ -518,6 +528,7 @@ impl Opl4Output {
         self.emit_key(channel);
     }
 
+    /// Converts PCM8 gain to total-level attenuation and applies zero-gain mute.
     pub(super) fn set_gain(&mut self, channel: usize, gain: u8) {
         self.gain[channel] = gain;
         // Normalize PCM8's maximum gain (80) to the OPL4's maximum level.
@@ -534,6 +545,7 @@ impl Opl4Output {
         }
     }
 
+    /// Maps an MDX PCM pan value to the slot's native pan or mute setting.
     pub(super) fn set_pan(&mut self, channel: usize, raw: u8) {
         self.pan[channel] = match raw & 3 {
             0 => 8,
@@ -544,6 +556,7 @@ impl Opl4Output {
         self.emit_key(channel);
     }
 
+    /// Updates pitch without retriggering or changing the selected wave.
     pub(super) fn set_rate(&mut self, channel: usize, rate: u32) {
         self.rates[channel] = rate;
         let (octave, fnumber, step) = pitch(rate);
@@ -606,6 +619,7 @@ impl Opl4Output {
         }
     }
 
+    /// Queues the slot's key state and pan, muting inactive or zero-gain slots.
     fn emit_key(&mut self, channel: usize) {
         let pan = if !self.active[channel] || self.gain[channel] == 0 {
             8
@@ -619,6 +633,7 @@ impl Opl4Output {
         );
     }
 
+    /// Queues a register write at the current MDX playback timestamp.
     fn write(&mut self, port: u8, register: u8, value: u8) {
         self.pending.push(
             (
@@ -633,6 +648,7 @@ impl Opl4Output {
         );
     }
 
+    /// Queues a ROM data block at the given address within the 4 MiB image.
     fn rom(&mut self, start_address: u32, data: Vec<u8>) {
         let block = crate::vgm::detail::build_data_block(
             &RomRamDump {
@@ -647,6 +663,7 @@ impl Opl4Output {
             .push(crate::vgm::command::VgmCommand::DataBlock(Box::new(block)));
     }
 
+    /// Transfers queued ROM blocks and register writes to the VGM builder.
     pub(super) fn flush(&mut self, builder: &mut VgmBuilder) {
         for command in self.pending.drain(..) {
             builder.add_vgm_command(command);
