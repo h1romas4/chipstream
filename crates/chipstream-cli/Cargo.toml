@@ -1,0 +1,25 @@
+[package]
+name = "chipstream-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Command-line player for chipstream."
+license = "BSD-3-Clause"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+repository = "https://github.com/h1romas4/chipstream"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0"
+chipstream = { path = "../chipstream", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+cpal = { version = "0.18.2", features = ["audioworklet"] }
+flate2 = "1.0"
+hound = "3.5"
+mmlx = { workspace = true, features = ["source-map"] }
+soundlog = { workspace = true }
+tempfile = "3"
+
+[[bin]]
+name = "chipstream"
+path = "src/bin/chipstream.rs"

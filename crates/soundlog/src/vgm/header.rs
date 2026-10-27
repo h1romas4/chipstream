@@ -19,7 +19,7 @@ use crate::ParseError;
 use crate::binutil::{write_slice, write_u8, write_u16, write_u32};
 use crate::chip;
 use crate::vgm::command::Instance;
-use crate::vgm::parser::parse_vgm_header;
+use crate::vgm::parser::{parse_extra_header_for_header, parse_vgm_header};
 use std::convert::TryFrom;
 use std::slice;
 use std::vec;
@@ -1418,8 +1418,8 @@ impl VgmHeader {
 
     /// Get the raw stored clock field for a chip `ch`.
     ///
-    /// Returns the raw clock value from the header, including the high bit
-    /// (0x8000_0000) for secondary instances. Returns 0 if the chip is not present.
+    /// Returns the raw clock value, including the dual-chip flag (bit 30)
+    /// and any chip-specific variant flag (bit 31). Returns 0 if absent.
     pub fn get_chip_clock(&self, ch: &chip::Chip) -> u32 {
         match ch {
             chip::Chip::Sn76489 => self.sn76489_clock,
@@ -1468,13 +1468,21 @@ impl VgmHeader {
     }
 
     /// Set the stored clock field for a chip `ch` at the given `instance`.
-    /// For secondary instances the high bit is set on the stored value
+    /// For secondary instances bit 30 is set on the stored value
     /// following VGM header convention.
     pub fn set_chip_clock(&mut self, ch: chip::Chip, instance: Instance, master_clock: u32) {
-        let clock = match instance {
-            Instance::Primary => master_clock,
-            Instance::Secondary => master_clock | 0x8000_0000_u32,
+        let variant = if ch == chip::Chip::Ym2610b {
+            0x8000_0000
+        } else {
+            0
         };
+        let clock = variant
+            | match instance {
+                Instance::Primary => master_clock | (self.get_chip_clock(&ch) & 0xC000_0000),
+                Instance::Secondary => {
+                    master_clock | (self.get_chip_clock(&ch) & 0x8000_0000) | 0x4000_0000
+                }
+            };
 
         match &ch {
             chip::Chip::Sn76489 => self.sn76489_clock = clock,
@@ -1527,17 +1535,15 @@ impl VgmHeader {
     ///
     /// Scans the header clock fields and returns a `ChipInstances` containing tuples
     /// `(Instance, chip::Chip, clock_hz)` for each clock that is non-zero. The
-    /// high bit (0x8000_0000) on stored clock values indicates a
+    /// bit 30 (0x4000_0000) on stored clock values indicates a
     /// secondary instance per VGM convention.
     pub fn chip_instances(&self) -> ChipInstances {
         let mut out: Vec<(Instance, chip::Chip, f32)> = Vec::new();
 
         let mut push = |raw_clock: u32, ch: chip::Chip| {
-            if raw_clock != 0 {
-                // If the stored clock has the high bit set it indicates a
-                // secondary instance per VGM convention.
-                let is_secondary = (raw_clock & 0x8000_0000_u32) != 0;
-                let clock_hz = (raw_clock & 0x7FFF_FFFF) as f32;
+            if raw_clock & 0x3FFF_FFFF != 0 {
+                let is_secondary = (raw_clock & 0x4000_0000_u32) != 0;
+                let clock_hz = (raw_clock & 0x3FFF_FFFF) as f32;
                 if is_secondary {
                     out.push((Instance::Primary, ch.clone(), clock_hz));
                     out.push((Instance::Secondary, ch.clone(), clock_hz));
@@ -1802,6 +1808,16 @@ impl VgmHeader {
     /// ```
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
         parse_vgm_header(bytes).map(|(h, _)| h)
+    }
+
+    /// Parse the optional extra header from the same complete VGM file.
+    ///
+    /// This does not parse commands or GD3 metadata.
+    pub fn extra_header_from_bytes(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<VgmExtraHeader>, ParseError> {
+        parse_extra_header_for_header(bytes, self)
     }
 }
 

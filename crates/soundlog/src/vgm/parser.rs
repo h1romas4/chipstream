@@ -105,29 +105,7 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
     };
 
     // Attach extra header if present (extra_header_offset stored at 0xBC in main header).
-    let extra_header = if header.extra_header_offset != 0 {
-        let start = header.extra_header_offset.wrapping_add(0xBC) as usize;
-        // If the computed start is outside the buffer, treat it as an out-of-range offset.
-        if start >= bytes.len() {
-            return Err(ParseError::OffsetOutOfRange {
-                offset: start,
-                needed: 1,
-                available: bytes.len(),
-                context: Some("extra_header_start".into()),
-            });
-        }
-        // Parse the extra header and propagate any parse error to the caller.
-        match parse_vgm_extra_header(bytes, start) {
-            Ok((eh, _hsz)) => {
-                // Parse extra-header normally; do not preserve raw bytes.
-                // No need to compute the clamped end here.
-                Some(eh)
-            }
-            Err(e) => return Err(e),
-        }
-    } else {
-        None
-    };
+    let extra_header = parse_extra_header_for_header(bytes, &header)?;
 
     Ok(VgmDocument {
         header,
@@ -135,6 +113,57 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
         gd3,
         extra_header,
     })
+}
+
+pub(crate) fn parse_extra_header_for_header(
+    bytes: &[u8],
+    header: &VgmHeader,
+) -> Result<Option<VgmExtraHeader>, ParseError> {
+    if header.extra_header_offset == 0 {
+        return Ok(None);
+    }
+    let start = header.extra_header_offset.wrapping_add(0xBC) as usize;
+    if start >= bytes.len() {
+        return Err(ParseError::OffsetOutOfRange {
+            offset: start,
+            needed: 1,
+            available: bytes.len(),
+            context: Some("extra_header_start".into()),
+        });
+    }
+    parse_vgm_extra_header(bytes, start).map(|(extra, _)| Some(extra))
+}
+
+/// Visit the commands in a complete VGM file without copying data-block payloads.
+///
+/// Data blocks are bounds-checked but not passed to `visit`. Other commands
+/// are parsed in file order, up to end-of-data, GD3, or the end of the file.
+/// This does not expand DAC streams or follow loops.
+pub fn visit_non_data_block_commands(
+    bytes: &[u8],
+    header: &VgmHeader,
+    mut visit: impl FnMut(&VgmCommand),
+) -> Result<(), ParseError> {
+    let mut offset = VgmHeader::command_start(header.version, header.data_offset);
+    let gd3_start = (header.gd3_offset != 0).then(|| header.gd3_offset.wrapping_add(0x14) as usize);
+    while offset < bytes.len() && gd3_start.is_none_or(|start| offset < start) {
+        let opcode = read_u8_at(bytes, offset)?;
+        if opcode == 0x67 {
+            read_slice(bytes, offset, 7)?;
+            let size = read_u32_le_at(bytes, offset + 3)? & 0x7fff_ffff;
+            read_slice(bytes, offset + 7, size as usize)?;
+            offset += 7 + size as usize;
+        } else {
+            let (command, size) = parse_vgm_command(bytes, offset)?;
+            offset += size;
+            let end = matches!(command, VgmCommand::EndOfData(_));
+            visit(&command);
+            if end {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Parse a VGM header located at the start of `bytes`.
@@ -390,7 +419,13 @@ pub(crate) fn parse_vgm_header(bytes: &[u8]) -> Result<(VgmHeader, usize), Parse
     } else {
         Ym2608AyFlags::from(0)
     };
-    h.volume_modifier = if should_read(VgmHeaderField::VolumeModifier) {
+    // The specification explicitly applies this field to 1.50+ files whenever
+    // header space is available, even if the version predates the field.
+    h.volume_modifier = if (version >= 0x00000150
+        && actual_data_start
+            >= VgmHeaderField::VolumeModifier.offset() + VgmHeaderField::VolumeModifier.len())
+        || should_read(VgmHeaderField::VolumeModifier)
+    {
         read_u8_at(bytes, VgmHeaderField::VolumeModifier.offset())?
     } else {
         0
@@ -931,12 +966,9 @@ pub(crate) fn parse_vgm_command(
                 other,
                 0xB3..=0xBF | 0xC0 | 0xC3 | 0xC5..=0xC8 | 0xD0..=0xD6 | 0xE1
             ) {
-                // Read the first parameter byte to determine the chip instance.
-                // For all covered opcodes (including SegaPCM 0xC0) the instance-select
-                // bit is in the first parameter byte at `cur`.
-                // This read also tells us whether we need to strip the bit.
-                let first_param = read_u8_at(bytes, cur)?;
-                let instance = if first_param & 0x80 != 0 {
+                let selector = if other == 0xC0 { 1 } else { 0 };
+                let selector_byte = read_u8_at(bytes, cur + selector)?;
+                let instance = if selector_byte & 0x80 != 0 {
                     Instance::Secondary
                 } else {
                     Instance::Primary
@@ -944,19 +976,14 @@ pub(crate) fn parse_vgm_command(
 
                 // Pass the parameter bytes to the chip-specific parser.
                 //
-                // Secondary instance: the instance-select bit (bit 7 of the first
-                // parameter byte) must be stripped before the chip parser sees the
-                // value.  We already have `first_param` from the read above, so we
-                // only need a small stack buffer: place the masked byte at [0] and
-                // copy the remaining payload bytes (at most MAX_PAYLOAD-1) after it.
+                // Strip the instance-select bit before parsing the payload.
                 const MAX_PAYLOAD: usize = 8;
                 let mut patched_buf = [0u8; MAX_PAYLOAD];
                 let param_slice: &[u8] = if instance == Instance::Secondary {
-                    patched_buf[0] = first_param & 0x7F; // strip instance-select bit
-                    let rest_avail = bytes.len().saturating_sub(cur + 1).min(MAX_PAYLOAD - 1);
-                    patched_buf[1..1 + rest_avail]
-                        .copy_from_slice(&bytes[cur + 1..cur + 1 + rest_avail]);
-                    &patched_buf[..1 + rest_avail]
+                    let avail = bytes.len().saturating_sub(cur).min(MAX_PAYLOAD);
+                    patched_buf[..avail].copy_from_slice(&bytes[cur..cur + avail]);
+                    patched_buf[selector] &= 0x7f;
+                    &patched_buf[..avail]
                 } else {
                     &bytes[cur..]
                 };

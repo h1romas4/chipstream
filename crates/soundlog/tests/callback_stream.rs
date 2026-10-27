@@ -1586,7 +1586,7 @@ fn test_track_chips_enables_state_tracking_for_all_chips() {
     // -----------------------------------------------------------------------
     // 1. Build a VgmHeader with every supported chip registered.
     //    Each chip gets a non-zero representative clock so chip_instances()
-    //    includes it.  The secondary-instance bit (0x8000_0000) is NOT set
+    //    includes it.  The secondary-instance bit (0x4000_0000) is NOT set
     //    here; we want Primary instances only to keep the list predictable.
     // -----------------------------------------------------------------------
     let mut builder = VgmBuilder::new();

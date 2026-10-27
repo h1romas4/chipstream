@@ -9,8 +9,24 @@
 use std::borrow::Cow;
 
 use super::command::MdxCommand;
+use super::document::decode_mdx_body;
 use super::header::MdxHeader;
 use super::parser::parse_mdx_command;
+
+/// Decode an optional LZ body and normalize MXDRV16y track stubs for playback.
+///
+/// Uncompressed files without stubs are returned unchanged. Compressed input
+/// is returned in decoded form so its track table can be normalized before
+/// parsing. Decode errors and invalid track stubs are reported to the caller.
+pub fn normalize_mdx_for_playback(bytes: &[u8]) -> Result<Cow<'_, [u8]>, String> {
+    let Some(decoded) = decode_mdx_body(bytes).map_err(|error| error.to_string())? else {
+        return normalize_mxdrv16y_tracks(bytes);
+    };
+    match normalize_mxdrv16y_tracks(&decoded)? {
+        Cow::Borrowed(_) => Ok(Cow::Owned(decoded)),
+        Cow::Owned(normalized) => Ok(Cow::Owned(normalized)),
+    }
+}
 
 /// Normalize an MXDRV16y track table before normal MDX parsing.
 ///
@@ -136,7 +152,7 @@ pub fn normalize_mxdrv16y_tracks(bytes: &[u8]) -> Result<Cow<'_, [u8]>, String> 
 mod tests {
     use std::borrow::Cow;
 
-    use super::normalize_mxdrv16y_tracks;
+    use super::{normalize_mdx_for_playback, normalize_mxdrv16y_tracks};
 
     #[test]
     fn rejects_non_mdx_bytes() {
@@ -163,6 +179,12 @@ mod tests {
 
         assert!(matches!(normalized, Cow::Owned(_)));
         assert_eq!(&normalized[7..9], &279_u16.to_be_bytes());
+
+        let mut compressed = bytes[..5].to_vec();
+        compressed.extend_from_slice(&[0x7f, 0xff, 0xff, 0x4c]);
+        compressed.extend_from_slice(&super::super::lz::encode(&bytes[5..]));
+        let normalized_compressed = normalize_mdx_for_playback(&compressed).unwrap();
+        assert_eq!(normalized_compressed, normalized);
     }
 
     #[test]
@@ -192,5 +214,9 @@ mod tests {
         let normalized = normalize_mxdrv16y_tracks(&bytes).unwrap();
 
         assert!(matches!(normalized, Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_mdx_for_playback(&bytes).unwrap(),
+            Cow::Borrowed(_)
+        ));
     }
 }

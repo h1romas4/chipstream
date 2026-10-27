@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- [x] Add: Expose VGM fadeout state and an MDX streaming loop-boundary marker for audio players.
+- [x] Fix: Honor forward MDX jumps when a finite loop count is configured.
+- [x] Add: `mdx::compat::normalize_mdx_for_playback` decodes optional LZ-compressed MDX bodies before normalizing MXDRV16y track stubs.
+- [x] Add: Parse VGM extra headers independently and scan commands without copying data blocks.
+- [x] Fix: Resolve VGM document loop positions correctly when an extra header is present.
 - [x] Fix: Write the raw MDX noise-control operand (`0xed`) to YM2151 register `0x0f`, including the noise-enable bit.
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State

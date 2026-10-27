@@ -458,12 +458,12 @@ fn add_chip_registers_and_sets_header_clock() {
 }
 
 #[test]
-fn add_chip_sets_msb_for_instance1() {
+fn add_chip_sets_dual_flag_for_instance1() {
     let mut b = VgmBuilder::new();
-    // chip_id 1 should set MSB of the clock field
+    // A secondary instance sets bit 30 of the clock field.
     b.register_chip(Chip::Ym2413, soundlog::Instance::Secondary, 3579545);
     let doc = b.finalize();
-    assert_eq!(doc.header.ym2413_clock, 3579545u32 | 0x8000_0000u32);
+    assert_eq!(doc.header.ym2413_clock, 3579545u32 | 0x4000_0000u32);
 }
 
 #[test]

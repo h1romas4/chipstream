@@ -7,6 +7,25 @@ use soundlog::vgm::header::{
 };
 
 #[test]
+fn clock_variant_and_dual_chip_flags_are_independent() {
+    let mut header = soundlog::vgm::VgmHeader::default();
+    header.set_chip_clock(Chip::Ym2610b, Instance::Primary, 8_000_000);
+    assert_eq!(header.ym2610b_clock, 0x8000_0000 | 8_000_000);
+    assert_eq!(header.chip_instances().len(), 1);
+    header.set_chip_clock(Chip::Ym2610b, Instance::Secondary, 8_000_000);
+    assert_eq!(header.ym2610b_clock, 0xc000_0000 | 8_000_000);
+    let instances = header.chip_instances();
+    assert_eq!(instances.len(), 2);
+    assert!(
+        instances
+            .iter()
+            .all(|(_, chip, rate)| *chip == Chip::Ym2610b && *rate == 8_000_000.0)
+    );
+    header.set_chip_clock(Chip::Ym2610b, Instance::Primary, 8_000_000);
+    assert_eq!(header.chip_instances().len(), 2);
+}
+
+#[test]
 fn test_chipid_masks_paired_bit() {
     // Known chip id 0x02 => Ym2612. If bit 7 is set in the on-disk byte,
     // ChipId::from_u8 should still return the canonical variant.

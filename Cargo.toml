@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
+	"crates/chipstream",
+	"crates/chipstream-cli",
 	"crates/mmlx",
 	"crates/soundlog",
 	"crates/soundlog-cli",

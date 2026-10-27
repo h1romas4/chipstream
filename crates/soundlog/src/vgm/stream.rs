@@ -1143,19 +1143,15 @@ impl VgmStream {
             return None;
         }
 
-        let data_offset = VgmHeader::data_offset(doc.header.version, doc.header.data_offset);
-
-        let mut header_len = doc.header.to_bytes(0, data_offset).len() as u32;
-        if let Some(ref extra) = doc.extra_header {
-            header_len += extra.to_bytes().len() as u32;
-        }
-        let loop_abs_offset =
-            (VgmHeaderField::LoopOffset.offset() as u32).wrapping_add(doc.header.loop_offset);
-        let loop_command_offset = loop_abs_offset.wrapping_sub(header_len);
+        let header_len = VgmHeader::command_start(doc.header.version, doc.header.data_offset);
+        let loop_abs_offset = VgmHeaderField::LoopOffset
+            .offset()
+            .wrapping_add(doc.header.loop_offset as usize);
+        let loop_command_offset = loop_abs_offset.checked_sub(header_len)?;
 
         let offsets = doc.command_offsets_and_lengths();
         for (index, (cmd_offset, _len)) in offsets.iter().enumerate() {
-            if *cmd_offset as u32 == loop_command_offset {
+            if *cmd_offset == loop_command_offset {
                 return Some(index);
             }
         }
@@ -1547,6 +1543,12 @@ impl VgmStream {
     /// Gets the current fadeout grace period.
     pub fn fadeout_samples(&self) -> Option<usize> {
         self.fadeout_samples
+    }
+
+    /// Returns whether the stream has reached its final loop and entered the
+    /// configured fadeout grace period.
+    pub fn is_fading_out(&self) -> bool {
+        self.fadeout_remaining_samples.is_some()
     }
 
     /// Gets the current sample position (at 44.1 kHz).

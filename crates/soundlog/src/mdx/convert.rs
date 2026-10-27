@@ -27,9 +27,11 @@ use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::stream::VgmCommandGenerator;
 use crate::vgm::{VGM_SAMPLE_RATE, VgmBuilder, VgmDocument, VgmStream};
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::rc::Rc;
 
 /// Number of microseconds in one second, used as the fixed-point time scale
 /// for sample and PCM-byte remainder calculations.
@@ -376,6 +378,40 @@ pub fn to_vgm_stream_generator(
     options: MdxToVgmOptions,
 ) -> Result<Box<dyn VgmCommandGenerator>, MdxConvertError> {
     Ok((package, options).into())
+}
+
+/// A notification that the requested MDX loop boundary has been reached.
+///
+/// The marker is set while generating the commands at that boundary. It is
+/// intended for a stream consumer that observes it after each command.
+#[derive(Debug, Clone, Default)]
+pub struct MdxLoopMarker(Rc<Cell<bool>>);
+
+impl MdxLoopMarker {
+    /// Returns whether the configured loop boundary has been reached.
+    pub fn reached(&self) -> bool {
+        self.0.get()
+    }
+}
+
+/// Create a streaming generator that continues looping after notifying the
+/// caller at the configured finite loop boundary.
+///
+/// A finite `loop_count` is required. Embedded MDX fadeouts and natural song
+/// endings can still end the generator before the marker is reached.
+pub fn to_vgm_stream_generator_with_loop_marker(
+    package: MdxPackage,
+    options: MdxToVgmOptions,
+) -> Result<(Box<dyn VgmCommandGenerator>, MdxLoopMarker), MdxConvertError> {
+    if options.loop_count.is_none() {
+        return Err(MdxConvertError::InvalidOptions(
+            "loop marker requires a finite loop count",
+        ));
+    }
+    let marker = MdxLoopMarker::default();
+    let mut generator = MdxVgmGenerator::new(package, options, false);
+    generator.playback.song_loop.continue_at_limit = Some(marker.clone());
+    Ok((Box::new(generator), marker))
 }
 
 /// Convert the basic FM portion of an MDX package into a VGM document.
@@ -1273,6 +1309,8 @@ struct SongLoopState {
     /// Eager conversion records a fixed loop point and stops at its second
     /// visit; lazy streaming keeps repeating because it cannot rewind output.
     mark_native_loop: bool,
+    /// If set, signal the finite loop limit and continue repeating for fadeout.
+    continue_at_limit: Option<MdxLoopMarker>,
 }
 
 impl SongLoopState {
@@ -2359,9 +2397,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 .jump_repeat_counts
                 .entry((track, jump_command_index))
                 .or_insert(0);
-            *count += 1;
+            *count = count.saturating_add(1);
             if *count >= limit {
-                return;
+                if let Some(marker) = &self.song_loop.continue_at_limit {
+                    marker.0.set(true);
+                } else {
+                    return;
+                }
             }
             self.tracks[track].command_index = target_index;
             return;
@@ -2394,6 +2436,10 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let Some(target_index) = self.resolve_jump_target(track, offset)? else {
             return Ok(());
         };
+        if offset >= 0 {
+            self.tracks[track].command_index = target_index;
+            return Ok(());
+        }
         self.take_repeating_jump_to(track, jump_command_index, target_index, builder);
         Ok(())
     }
@@ -2429,7 +2475,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                     .is_some_and(|count| *count >= limit)
         });
         if all_tracks_reached_limit {
-            self.song_loop.loop_complete = true;
+            if let Some(marker) = &self.song_loop.continue_at_limit {
+                marker.0.set(true);
+                self.tracks[track].command_index = target_index;
+            } else {
+                self.song_loop.loop_complete = true;
+            }
         } else if target_index == command_index {
             self.tracks[track].active = false;
         } else {
@@ -2487,8 +2538,12 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.song_loop.f1_loop_passes_completed =
                 self.song_loop.f1_loop_passes_completed.saturating_add(1);
             if self.song_loop.f1_loop_passes_completed >= limit {
-                self.song_loop.loop_complete = true;
-                return false;
+                if let Some(marker) = &self.song_loop.continue_at_limit {
+                    marker.0.set(true);
+                } else {
+                    self.song_loop.loop_complete = true;
+                    return false;
+                }
             }
         } else if self.song_loop.loop_index.is_some() {
             self.song_loop.loop_complete = true;

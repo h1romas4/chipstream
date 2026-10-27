@@ -1653,13 +1653,13 @@ impl CommandSpec for chip::SegaPcmSpec {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push((self.offset >> 8) as u8);
         dest.push(self.offset as u8);
+        dest.push((self.offset >> 8) as u8);
         dest.push(self.value);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
-        let off_hi = read_u8_at(bytes, off)?;
-        let off_lo = read_u8_at(bytes, off + 1)?;
+        let off_lo = read_u8_at(bytes, off)?;
+        let off_hi = read_u8_at(bytes, off + 1)?;
         let offv = ((off_hi as u16) << 8) | (off_lo as u16);
         let val = read_u8_at(bytes, off + 2)?;
         Ok((
@@ -2866,10 +2866,9 @@ fn spec_to_vgm_bytes<C: CommandSpec + ?Sized>(chip_id: Instance, spec: &C, cmd_b
                 }
                 // Dual Chip Support #2: SegaPCM (0xC0) is a special case — the
                 // second-chip bit lives in the *high* byte of the address parameter.
-                // The wire format is `0xC0 bb aa dd` where `bb` is the address high
-                // byte and is stored at cmd_buf[start + 1] (the first param byte).
+                // The wire format is `0xC0 low high dd`.
                 0xC0 => {
-                    cmd_buf[start + 1] |= 0x80;
+                    cmd_buf[start + 2] |= 0x80;
                 }
                 // Dual Chip Support #2: all other chips (0x40-0x4F, 0xB0-0xFF
                 // excluding 0xA0 and 0xC0 above) keep their opcode unchanged and

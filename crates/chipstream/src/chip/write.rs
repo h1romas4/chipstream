@@ -1,0 +1,141 @@
+use soundlog::chip::{
+    C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec, SegaPcmSpec,
+    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
+    Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+};
+
+use super::{C140, ChipError, Okim6258, Okim6295, Pwm, SegaPcm, Sn76496, SoundChip, YmfmChip};
+
+/// Applies a chip-specific write to a compatible sound chip.
+///
+/// Concrete chip types implement this only for compatible specifications.
+/// `YmfmChip` and dynamically dispatched chips check the chip type at runtime.
+/// External chip implementations may implement this trait for their own
+/// write types.
+pub trait ChipWrite<S>: SoundChip {
+    /// Apply a typed write immediately.
+    fn apply_typed_write(&mut self, spec: S) -> Result<(), ChipError>;
+}
+
+impl<S, C: ChipWrite<S> + ?Sized> ChipWrite<S> for Box<C> {
+    fn apply_typed_write(&mut self, spec: S) -> Result<(), ChipError> {
+        (**self).apply_typed_write(spec)
+    }
+}
+
+macro_rules! define_writes {
+    ($( $variant:ident($spec:ty, $chip:ident, |$s:ident| $parts:expr) ),+ $(,)?) => {
+        /// A typed register write for a dynamically dispatched sound chip.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum ChipRegisterWrite {
+            $(
+                #[doc = concat!("Write for ", stringify!($chip), ".")]
+                $variant($spec),
+            )+
+        }
+
+        impl ChipRegisterWrite {
+            /// Chip type addressed by this write.
+            pub fn chip(&self) -> Chip {
+                match self { $(Self::$variant(_) => Chip::$chip,)+ }
+            }
+
+            pub(crate) fn parts(&self) -> (u8, u8, u32) {
+                match self { $(Self::$variant($s) => $parts,)+ }
+            }
+
+            pub(crate) fn parts_for(&self, actual: &Chip) -> Result<(u8, u8, u32), ChipError> {
+                let expected = self.chip();
+                if &expected != actual {
+                    return Err(ChipError::ChipMismatch {
+                        expected,
+                        actual: actual.clone(),
+                    });
+                }
+                Ok(self.parts())
+            }
+
+            pub(crate) fn byte_parts_for(&self, actual: &Chip) -> Result<(u8, u8, u8), ChipError> {
+                let (bank, register, value) = self.parts_for(actual)?;
+                let value = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                    chip: actual.clone(),
+                    register,
+                    value,
+                })?;
+                Ok((bank, register, value))
+            }
+        }
+
+        $(
+            impl ChipWrite<$spec> for dyn SoundChip + '_ {
+                fn apply_typed_write(&mut self, spec: $spec) -> Result<(), ChipError> {
+                    let write = ChipRegisterWrite::$variant(spec);
+                    let expected = write.chip();
+                    if self.chip_type() != &expected {
+                        return Err(ChipError::ChipMismatch {
+                            expected,
+                            actual: self.chip_type().clone(),
+                        });
+                    }
+                    self.apply_register_write(write)
+                }
+            }
+        )+
+    };
+}
+
+define_writes! {
+    Psg(PsgSpec, Sn76489, |s| (0, 0, u32::from(s.value))),
+    GameGearPsg(GameGearPsgSpec, Sn76489, |s| (0, 1, u32::from(s.value))),
+    SegaPcm(SegaPcmSpec, SegaPcm, |s| {
+        let [bank, register] = s.offset.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
+    C140(C140Spec, C140, |s| {
+        let [bank, register] = s.register.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
+    Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
+    Okim6258(Okim6258Spec, Okim6258, |s| (0, s.register, u32::from(s.value))),
+    Okim6295(Okim6295Spec, Okim6295, |s| (0, s.register, u32::from(s.value))),
+    Ym2413(Ym2413Spec, Ym2413, |s| (0, s.register, u32::from(s.value))),
+    Ym2151(Ym2151Spec, Ym2151, |s| (0, s.register, u32::from(s.value))),
+    Ym2203(Ym2203Spec, Ym2203, |s| (0, s.register, u32::from(s.value))),
+    Ym3812(Ym3812Spec, Ym3812, |s| (0, s.register, u32::from(s.value))),
+    Ym3526(Ym3526Spec, Ym3526, |s| (0, s.register, u32::from(s.value))),
+    Y8950(Y8950Spec, Y8950, |s| (0, s.register, u32::from(s.value))),
+    Ym2612(Ym2612Spec, Ym2612, |s| (s.port, s.register, u32::from(s.value))),
+    Ym2608(Ym2608Spec, Ym2608, |s| (s.port, s.register, u32::from(s.value))),
+    Ym2610(Ym2610Spec, Ym2610b, |s| (s.port, s.register, u32::from(s.value))),
+    Ymf262(Ymf262Spec, Ymf262, |s| (s.port, s.register, u32::from(s.value))),
+    Ymf278b(Ymf278bSpec, Ymf278b, |s| (s.port, s.register, u32::from(s.value))),
+}
+
+macro_rules! typed_write {
+    ($backend:ty, $spec:ty, $variant:ident) => {
+        impl ChipWrite<$spec> for $backend {
+            fn apply_typed_write(&mut self, spec: $spec) -> Result<(), ChipError> {
+                self.apply_register_write(ChipRegisterWrite::$variant(spec))
+            }
+        }
+    };
+}
+
+typed_write!(Sn76496, PsgSpec, Psg);
+typed_write!(Sn76496, GameGearPsgSpec, GameGearPsg);
+typed_write!(SegaPcm, SegaPcmSpec, SegaPcm);
+typed_write!(C140, C140Spec, C140);
+typed_write!(Pwm, PwmSpec, Pwm);
+typed_write!(Okim6258, Okim6258Spec, Okim6258);
+typed_write!(Okim6295, Okim6295Spec, Okim6295);
+typed_write!(YmfmChip, Ym2413Spec, Ym2413);
+typed_write!(YmfmChip, Ym2151Spec, Ym2151);
+typed_write!(YmfmChip, Ym2203Spec, Ym2203);
+typed_write!(YmfmChip, Ym3812Spec, Ym3812);
+typed_write!(YmfmChip, Ym3526Spec, Ym3526);
+typed_write!(YmfmChip, Y8950Spec, Y8950);
+typed_write!(YmfmChip, Ym2612Spec, Ym2612);
+typed_write!(YmfmChip, Ym2608Spec, Ym2608);
+typed_write!(YmfmChip, Ym2610Spec, Ym2610);
+typed_write!(YmfmChip, Ymf262Spec, Ymf262);
+typed_write!(YmfmChip, Ymf278bSpec, Ymf278b);

@@ -603,7 +603,7 @@ impl TryFrom<&[u8]> for MdxDocument {
 ///
 /// Returns `Ok(Some(decoded_bytes))` if the body was successfully decoded,
 /// `Ok(None)` if no LZ stream marker was found, or an error if decoding failed.
-fn decode_mdx_body(bytes: &[u8]) -> Result<Option<Vec<u8>>, ParseError> {
+pub(super) fn decode_mdx_body(bytes: &[u8]) -> Result<Option<Vec<u8>>, ParseError> {
     let (_, body_start) = MdxHeader::parse(bytes)?;
     let Some(marker_offset) = bytes[body_start..]
         .windows(LZ_STREAM_MARKER.len())

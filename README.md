@@ -11,6 +11,8 @@ utilities for building and parsing register-write logs such as the VGM
 
 | Crate | Type | Description | Documentation |
 | --- | --- | --- | --- |
+| `chipstream` | `lib` | Sound engine for games; currently in early development. | [README](crates/chipstream/README.md) |
+| `chipstream-cli` | `bin` | VGM/VGZ, MDX, and MML player using chipstream. | [README](crates/chipstream-cli/README.md) |
 | `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) |
 | `soundlog` | `lib` | Builds and parses VGM data and supports sound-chip log processing. | [README](crates/soundlog/README.md) |
 | `soundlog-cli` | `bin` | Command-line tools for working with soundlog-supported formats. | [README](crates/soundlog-cli/README.md) |
@@ -23,6 +25,15 @@ utilities for building and parsing register-write logs such as the VGM
 Install the `soundlog` binary from this repository with Cargo:
 
 Rust 1.97.1 or later is required.
+
+To build the VGM player and play a file:
+
+```bash
+cargo run --release -p chipstream-cli -- play example.vgm
+```
+
+Linux builds require ALSA development headers; see the
+[chipstream-cli README](crates/chipstream-cli/README.md).
 
 ```bash
 cargo install --git https://github.com/h1romas4/chipstream --bin soundlog --locked --force soundlog-cli

@@ -88,7 +88,17 @@ fn api_spec_encode_vgm_bytes_all() {
                 value: 0x77,
             },
         );
-        assert_eq!(cmds[..4], [0xC0, 0x12, 0x34, 0x77]);
+        assert_eq!(cmds[..4], [0xC0, 0x34, 0x12, 0x77]);
+    }
+    {
+        let cmds = cmd_bytes_for_chip_spec(
+            Instance::Secondary,
+            SegaPcmSpec {
+                offset: 0x0184,
+                value: 0x77,
+            },
+        );
+        assert_eq!(cmds[..4], [0xC0, 0x84, 0x81, 0x77]);
     }
     {
         let cmds = cmd_bytes_for_chip_spec(

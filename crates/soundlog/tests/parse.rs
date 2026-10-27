@@ -1,6 +1,35 @@
 use soundlog::VgmDocument;
 use std::convert::TryInto;
 
+#[test]
+fn legacy_volume_modifier_requires_space_before_command_data() {
+    use soundlog::VgmBuilder;
+    use soundlog::vgm::command::WaitSamples;
+
+    let mut builder = VgmBuilder::new();
+    for _ in 0..50 {
+        builder.add_vgm_command(WaitSamples(123));
+    }
+    let original = builder.finalize();
+    for version in [0x150, 0x151] {
+        let mut document = original.clone();
+        document.header.version = version;
+        document.header.volume_modifier = 0x20;
+        document.header.data_offset = 0x100 - 0x34;
+        let bytes: Vec<u8> = document.into();
+        let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
+        assert_eq!(parsed.header.volume_modifier, 0x20);
+
+        let mut short = original.clone();
+        short.header.version = version;
+        short.header.data_offset = 0x0c;
+        let bytes: Vec<u8> = short.into();
+        assert_ne!(bytes[0x7c], 0);
+        let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
+        assert_eq!(parsed.header.volume_modifier, 0);
+    }
+}
+
 /// Build a minimal VGM that includes an `extra_header`, serialize it,
 /// and assert that the serialization produced some bytes. This keeps the
 /// test focused on builder->serialize behavior for extra headers for now.

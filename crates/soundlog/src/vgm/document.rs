@@ -78,7 +78,7 @@ impl VgmBuilder {
     ///
     /// `c` is convertible to `chip::Chip`. `instance` selects which instance
     /// (primary/secondary) the clock applies to. `master_clock` is the chip's
-    /// base clock frequency in Hz. For secondary instances the high bit is set
+    /// base clock frequency in Hz. For secondary instances bit 30 is set
     /// on the stored clock field as per the VGM header convention.
     pub fn register_chip<C>(&mut self, c: C, instance: Instance, master_clock: u32)
     where

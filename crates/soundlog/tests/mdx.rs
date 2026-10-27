@@ -3056,6 +3056,178 @@ fn mdx_converter_restarts_after_independent_track_end_loop() {
 }
 
 #[test]
+fn mdx_loop_marker_ignores_forward_jumps_and_continues_backward_repeats() {
+    use soundlog::mdx::convert::to_vgm_stream_generator_with_loop_marker;
+
+    let jump = |offset| {
+        MdxCommand::Jump(MdxRelativeOffset {
+            opcode: 0xf1,
+            offset,
+        })
+    };
+    let write = |value| {
+        MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
+            register: 0x1a,
+            value,
+        })
+    };
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        max_ticks: None,
+        ..Default::default()
+    };
+    let mut builder = MdxBuilder::new();
+    builder.set_track(
+        0,
+        vec![
+            jump(3),
+            write(0x11),
+            write(0x22),
+            MdxCommand::Rest(MdxRest { ticks: 2 }),
+        ],
+    );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let (mut generator, marker) =
+        to_vgm_stream_generator_with_loop_marker(package, options).unwrap();
+    let mut values = Vec::new();
+    while let Some(command) = generator.next_command().unwrap() {
+        if let VgmCommand::Ym2151Write(_, spec) = command
+            && spec.register == 0x1a
+        {
+            values.push(spec.value);
+        }
+    }
+    assert_eq!(values, [0x22]);
+    assert!(!marker.reached());
+
+    let mut builder = MdxBuilder::new();
+    builder.set_track(
+        0,
+        vec![
+            write(0x33),
+            MdxCommand::Rest(MdxRest { ticks: 2 }),
+            jump(-7),
+        ],
+    );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let (mut generator, marker) =
+        to_vgm_stream_generator_with_loop_marker(package, options).unwrap();
+    let mut repeated_after_marker = false;
+    for _ in 0..1000 {
+        let command = generator.next_command().unwrap().expect("repeat continues");
+        if marker.reached()
+            && matches!(command, VgmCommand::Ym2151Write(_, spec) if spec.register == 0x1a && spec.value == 0x33)
+        {
+            repeated_after_marker = true;
+            break;
+        }
+    }
+    assert!(repeated_after_marker);
+}
+
+#[test]
+fn mdx_loop_marker_uses_synchronized_f1_boundary_and_continues() {
+    use soundlog::mdx::convert::to_vgm_stream_generator_with_loop_marker;
+    let mut builder = MdxBuilder::new();
+    for (track, ticks) in [(0, 2), (1, 3)] {
+        builder
+            .add_mdx_command(track, MdxRest { ticks })
+            .add_mdx_command(
+                track,
+                MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: -4,
+                }),
+            );
+    }
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let options = MdxToVgmOptions {
+        loop_count: Some(2),
+        max_ticks: None,
+        ..Default::default()
+    };
+    let finite = to_vgm_stream_generator(package.clone(), options).unwrap();
+    let finite_samples: u32 = drain_finite_stream(VgmStream::from_generator(finite))
+        .iter()
+        .map(|command| match command {
+            VgmCommand::WaitSamples(wait) => u32::from(wait.0),
+            _ => 0,
+        })
+        .sum();
+    let (mut generator, marker) =
+        to_vgm_stream_generator_with_loop_marker(package, options).unwrap();
+    let mut samples_before_marker = 0;
+    for _ in 0..10_000 {
+        let command = generator.next_command().unwrap().expect("loop continues");
+        if marker.reached() {
+            break;
+        }
+        if let VgmCommand::WaitSamples(wait) = command {
+            samples_before_marker += u32::from(wait.0);
+        }
+    }
+    assert!(marker.reached());
+    assert_eq!(samples_before_marker, finite_samples);
+    assert!((0..10_000).any(|_| matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::WaitSamples(wait)) if wait.0 > 0
+    )));
+}
+
+#[test]
+fn mdx_loop_marker_handles_count_zero_repeat() {
+    use soundlog::mdx::convert::to_vgm_stream_generator_with_loop_marker;
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(
+            0,
+            MdxLoopStart {
+                count: 0,
+                reserved: 0,
+            },
+        )
+        .add_mdx_command(0, MdxRest { ticks: 2 })
+        .add_mdx_command(
+            0,
+            MdxCommand::LoopEnd(MdxRelativeOffset {
+                opcode: 0xf5,
+                offset: -2,
+            }),
+        );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let options = MdxToVgmOptions {
+        loop_count: Some(2),
+        max_ticks: None,
+        ..Default::default()
+    };
+    let (mut generator, marker) =
+        to_vgm_stream_generator_with_loop_marker(package, options).unwrap();
+    for _ in 0..10_000 {
+        generator.next_command().unwrap().expect("loop continues");
+        if marker.reached() {
+            break;
+        }
+    }
+    assert!(marker.reached());
+    assert!((0..10_000).any(|_| matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::WaitSamples(wait)) if wait.0 > 0
+    )));
+}
+
+#[test]
 fn mdx_converter_jump_paths_preserve_expected_writes_for_eager_and_lazy_output() {
     let write = |value| {
         MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
