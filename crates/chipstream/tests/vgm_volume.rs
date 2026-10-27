@@ -104,27 +104,27 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
 fn absolute_and_relative_chip_volumes_follow_their_own_baselines() {
     let cases: &[(&[u8], ChipId, u16)] = &[
         (
-            include_bytes!("fixtures/sn76489_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm"),
             ChipId::Sn76489,
             0x80,
         ),
         (
-            include_bytes!("fixtures/ym2413_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm"),
             ChipId::Ym2413,
             0x200,
         ),
         (
-            include_bytes!("fixtures/ym2203_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
             ChipId::Ym2203,
             0x100,
         ),
         (
-            include_bytes!("fixtures/ym2608_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
             ChipId::Ym2608,
             0x80,
         ),
         (
-            include_bytes!("fixtures/ym2610b_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
             ChipId::Ym2610,
             0x80,
         ),
@@ -175,20 +175,20 @@ fn dual_chip_absolute_volumes_are_independent() {
 fn paired_ssg_and_fm_volumes_are_independent_and_survive_stereo_mask() {
     let cases: &[(&[u8], &[u8], ChipId, u16)] = &[
         (
-            include_bytes!("fixtures/ym2203_fm_a4.vgm"),
-            include_bytes!("fixtures/ym2203_psg_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
             ChipId::Ym2203,
             0x80,
         ),
         (
-            include_bytes!("fixtures/ym2608_fm_a4.vgm"),
-            include_bytes!("fixtures/ym2608_psg_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
             ChipId::Ym2608,
             0x80,
         ),
         (
-            include_bytes!("fixtures/ym2610b_fm_a4.vgm"),
-            include_bytes!("fixtures/ym2610b_psg_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
             ChipId::Ym2610,
             0x80,
         ),
@@ -222,7 +222,9 @@ fn paired_ssg_and_fm_volumes_are_independent_and_survive_stereo_mask() {
 
 #[test]
 fn modifier_in_extended_header_space_is_read_for_vgm_150_and_151() {
-    let document = VgmDocument::try_from(&include_bytes!("fixtures/ym2413_fm_a4.vgm")[..]).unwrap();
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm")[..])
+            .unwrap();
     let baseline = render(document.clone());
     let mut bytes: Vec<u8> = document.into();
     assert!(bytes.len() > 0x7c);

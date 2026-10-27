@@ -333,7 +333,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("input.vgm");
     let output = dir.path().join("output.wav");
-    let bytes = include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm");
+    let bytes = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm");
     fs::write(&source, bytes).unwrap();
     fs::write(&output, b"old output").unwrap();
     let result = cli()
@@ -404,7 +404,7 @@ fn cli_wav_default_rate_needs_no_audio_device() {
     let output = dir.path().join("output.wav");
     fs::write(
         &source,
-        include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm"),
+        include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
     )
     .unwrap();
     let result = cli()
@@ -502,9 +502,7 @@ fn cli_renders_mdx_with_pdx_and_compressed_vgm() {
     let vgz = dir.path().join("music.vgz");
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
-        .write_all(include_bytes!(
-            "../../chipstream/tests/fixtures/ym2151_a4.vgm"
-        ))
+        .write_all(include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"))
         .unwrap();
     fs::write(&vgz, encoder.finish().unwrap()).unwrap();
     for (index, input) in [&mdx, &vgz].into_iter().enumerate() {
@@ -596,7 +594,7 @@ fn cli_protects_pdx_and_rhythm_rom_from_output() {
     let vgm = dir.path().join("song.vgm");
     fs::write(
         &vgm,
-        include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm"),
+        include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
     )
     .unwrap();
     fs::write(&rom, [0x77; 8192]).unwrap();
@@ -623,7 +621,7 @@ fn cli_does_not_replace_symlink_outputs() {
     let output = dir.path().join("link.wav");
     fs::write(
         &vgm,
-        include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm"),
+        include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
     )
     .unwrap();
     fs::write(&target, b"keep").unwrap();

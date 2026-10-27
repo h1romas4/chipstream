@@ -701,7 +701,7 @@ mod playback_tests {
 
     #[test]
     fn producer_preserves_sequencer_pcm_and_reports_parse_errors() {
-        let data = include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm").to_vec();
+        let data = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
         let mut reference = VgmSequencer::from_bytes(&data, 48_000, CHUNK_FRAMES).unwrap();
         let mut expected = Vec::new();
         while let Some(block) = reference.render().unwrap() {
@@ -880,7 +880,7 @@ mod playback_tests {
         #[test]
         fn vgm_and_mdx_wav_samples_match_sequencer_at_requested_rates() {
             let dir = tempfile::tempdir().unwrap();
-            let vgm = include_bytes!("../../chipstream/tests/fixtures/ym2151_a4.vgm").to_vec();
+            let vgm = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
             let mdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
             let pdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
             let package = MdxPackage::parse(mdx, Some(pdx)).unwrap();
