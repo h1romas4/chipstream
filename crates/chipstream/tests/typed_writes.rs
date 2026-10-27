@@ -2,10 +2,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use chipstream::audio::ChipRoute;
-use chipstream::chip::{
-    C140, C140Type, ChipError, ChipRegisterWrite, ChipWrite, Okim6258, Okim6295, Pwm, SegaPcm,
-    Sn76496, Sn76496Config, SoundChip, YmfmChip,
-};
+#[cfg(feature = "okim6258")]
+use chipstream::chip::Okim6258;
+#[cfg(feature = "okim6295")]
+use chipstream::chip::Okim6295;
+#[cfg(feature = "pwm")]
+use chipstream::chip::Pwm;
+#[cfg(feature = "segapcm")]
+use chipstream::chip::SegaPcm;
+#[cfg(feature = "c140")]
+use chipstream::chip::{C140, C140Type};
+use chipstream::chip::{ChipError, ChipRegisterWrite, ChipWrite, SoundChip, YmfmChip};
+#[cfg(feature = "sn76496")]
+use chipstream::chip::{Sn76496, Sn76496Config};
 use soundlog::chip::*;
 
 type Writes = Rc<RefCell<Vec<(u8, u8, u32)>>>;
@@ -197,89 +206,114 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
 }
 
 #[test]
+#[cfg(any(
+    feature = "c140",
+    feature = "okim6258",
+    feature = "okim6295",
+    feature = "segapcm"
+))]
 fn concrete_pcm_chips_apply_typed_addresses_and_values() {
-    let mut sega = ChipRoute::new(SegaPcm::new(4_000_000).unwrap());
-    sega.chip_mut()
-        .write(SegaPcmSpec {
-            offset: 0x185,
-            value: 0xa5,
-        })
-        .unwrap();
-    assert_eq!(sega.chip().read_register(0x185), 0xa5);
+    #[cfg(feature = "segapcm")]
+    {
+        let mut sega = ChipRoute::new(SegaPcm::new(4_000_000).unwrap());
+        sega.chip_mut()
+            .write(SegaPcmSpec {
+                offset: 0x185,
+                value: 0xa5,
+            })
+            .unwrap();
+        assert_eq!(sega.chip().read_register(0x185), 0xa5);
+    }
 
-    let mut c140 = ChipRoute::new(C140::new(12_288_000, C140Type::System2).unwrap());
-    c140.chip_mut()
-        .write(C140Spec {
-            register: 0x103,
-            value: 0x7a,
-        })
-        .unwrap();
-    assert_eq!(c140.chip().read_register(0x103), 0x7a);
+    #[cfg(feature = "c140")]
+    {
+        let mut c140 = ChipRoute::new(C140::new(12_288_000, C140Type::System2).unwrap());
+        c140.chip_mut()
+            .write(C140Spec {
+                register: 0x103,
+                value: 0x7a,
+            })
+            .unwrap();
+        assert_eq!(c140.chip().read_register(0x103), 0x7a);
+    }
 
-    let mut oki = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
-    oki.chip_mut()
-        .write(Okim6258Spec {
-            register: 2,
-            value: 1,
-        })
-        .unwrap();
-    assert_eq!(oki.chip().pan_mask(), 1);
-    assert!(matches!(
-        oki.chip_mut().write(Okim6258Spec {
-            register: 3,
-            value: 1
-        }),
-        Err(ChipError::InvalidRegister { .. })
-    ));
+    #[cfg(feature = "okim6258")]
+    {
+        let mut oki = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
+        oki.chip_mut()
+            .write(Okim6258Spec {
+                register: 2,
+                value: 1,
+            })
+            .unwrap();
+        assert_eq!(oki.chip().pan_mask(), 1);
+        assert!(matches!(
+            oki.chip_mut().write(Okim6258Spec {
+                register: 3,
+                value: 1
+            }),
+            Err(ChipError::InvalidRegister { .. })
+        ));
+    }
 
-    let mut oki6295 = ChipRoute::new(Okim6295::new(1_000_000).unwrap());
-    oki6295
-        .chip_mut()
-        .write(Okim6295Spec {
-            register: 0x0c,
-            value: 1,
-        })
-        .unwrap();
-    assert_eq!(oki6295.chip().sample_rate_ratio().denominator().get(), 132);
+    #[cfg(feature = "okim6295")]
+    {
+        let mut oki6295 = ChipRoute::new(Okim6295::new(1_000_000).unwrap());
+        oki6295
+            .chip_mut()
+            .write(Okim6295Spec {
+                register: 0x0c,
+                value: 1,
+            })
+            .unwrap();
+        assert_eq!(oki6295.chip().sample_rate_ratio().denominator().get(), 132);
+    }
 }
 
 #[test]
+#[cfg(any(feature = "sn76496", feature = "pwm"))]
 fn typed_psg_and_wide_pwm_preserve_output() {
-    let config = Sn76496Config {
-        stereo: true,
-        ..Default::default()
-    };
-    let mut psg = ChipRoute::new(Sn76496::with_config(3_579_545, config).unwrap());
-    for value in [0x82, 0x00, 0x90] {
-        psg.chip_mut().write(PsgSpec { value }).unwrap();
+    #[cfg(feature = "sn76496")]
+    {
+        let config = Sn76496Config {
+            stereo: true,
+            ..Default::default()
+        };
+        let mut psg = ChipRoute::new(Sn76496::with_config(3_579_545, config).unwrap());
+        for value in [0x82, 0x00, 0x90] {
+            psg.chip_mut().write(PsgSpec { value }).unwrap();
+        }
+        psg.chip_mut()
+            .write(GameGearPsgSpec { value: 0x10 })
+            .unwrap();
+        let mut samples = [0; 16];
+        assert_eq!(
+            psg.capture(&mut samples).unwrap().samples(),
+            &[
+                -8191, 0, -8191, 0, 0, 0, 0, 0, -8191, 0, -8191, 0, 0, 0, 0, 0
+            ]
+        );
     }
-    psg.chip_mut()
-        .write(GameGearPsgSpec { value: 0x10 })
-        .unwrap();
-    let mut samples = [0; 16];
-    assert_eq!(
-        psg.capture(&mut samples).unwrap().samples(),
-        &[
-            -8191, 0, -8191, 0, 0, 0, 0, 0, -8191, 0, -8191, 0, 0, 0, 0, 0
-        ]
-    );
 
-    let mut pwm = ChipRoute::new(Pwm::new(44_100).unwrap());
-    for (register, value) in [(1, 3), (0, 5), (2, 0xabc)] {
-        pwm.chip_mut().write(PwmSpec { register, value }).unwrap();
+    #[cfg(feature = "pwm")]
+    {
+        let mut pwm = ChipRoute::new(Pwm::new(44_100).unwrap());
+        for (register, value) in [(1, 3), (0, 5), (2, 0xabc)] {
+            pwm.chip_mut().write(PwmSpec { register, value }).unwrap();
+        }
+        let mut samples = [0; 2];
+        assert_eq!(
+            pwm.capture(&mut samples).unwrap().samples(),
+            &[0xabc * 32, 0]
+        );
+        assert!(matches!(
+            pwm.chip_mut().write(PwmSpec {
+                register: 4,
+                value: 0x1000
+            }),
+            Err(ChipError::InvalidRegisterValue { value: 0x1000, .. })
+        ));
     }
-    let mut samples = [0; 2];
-    assert_eq!(
-        pwm.capture(&mut samples).unwrap().samples(),
-        &[0xabc * 32, 0]
-    );
-    assert!(matches!(
-        pwm.chip_mut().write(PwmSpec {
-            register: 4,
-            value: 0x1000
-        }),
-        Err(ChipError::InvalidRegisterValue { value: 0x1000, .. })
-    ));
 }
 
 #[test]

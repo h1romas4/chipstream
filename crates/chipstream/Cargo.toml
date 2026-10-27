@@ -10,6 +10,15 @@ readme = "README.md"
 keywords = ["audio", "sound", "game", "vgm", "mdx"]
 categories = ["multimedia::audio", "game-development"]
 
+[features]
+default = []
+c140 = []
+okim6258 = []
+okim6295 = []
+pwm = []
+segapcm = []
+sn76496 = []
+
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }
 ymfm-sys = "0.2.0"

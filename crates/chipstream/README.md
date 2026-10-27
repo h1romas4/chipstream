@@ -17,6 +17,33 @@ provided.
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --open`).
 
+## Cargo features
+
+YMFM chips are always available. The following non-YMFM chip features are
+disabled by default:
+
+| Feature | Chip |
+| --- | --- |
+| `c140` | C140 / ASIC219 |
+| `okim6258` | OKIM6258 |
+| `okim6295` | OKIM6295 |
+| `pwm` | PWM |
+| `segapcm` | SegaPCM |
+| `sn76496` | SN76489 / SN76496 |
+
+Enable the chips your application needs, for example:
+
+```toml
+chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
+```
+
+`chipstream-cli` enables all six features. When a VGM header declares one of
+these chips without its feature, sequencer construction returns
+`VgmSequencerError::FeatureDisabled`; unsupported chips without implementations
+remain silent. MDX playback with a supplied PDX requires `okim6258` even when
+the song does not use PCM notes. Without a PDX, FM-only MDX playback does not
+require it.
+
 ## Sequencers
 
 Render VGM containing a YM2151:
@@ -33,7 +60,7 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Render MDX with an optional PDX loaded by the host:
+Render MDX with a PDX loaded by the host (requires the `okim6258` feature):
 
 ```rust,no_run
 use chipstream::sequencer::{Chip, Instance, MdxSequencer};
@@ -68,8 +95,8 @@ chip.generate(&mut samples)?;
 # Ok::<(), chipstream::chip::ChipError>(())
 ```
 
-The `chip` module provides `YmfmChip`, `Okim6258`, `Okim6295`, `Sn76496`,
-`SegaPcm`, `Pwm`, and `C140`.
+The `chip` module provides `YmfmChip` and, with their respective features,
+`Okim6258`, `Okim6295`, `Sn76496`, `SegaPcm`, `Pwm`, and `C140`.
 
 ## Audio processing
 

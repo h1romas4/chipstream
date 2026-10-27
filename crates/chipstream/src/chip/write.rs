@@ -4,7 +4,19 @@ use soundlog::chip::{
     Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 
-use super::{C140, ChipError, Okim6258, Okim6295, Pwm, SegaPcm, Sn76496, SoundChip, YmfmChip};
+#[cfg(feature = "c140")]
+use super::C140;
+#[cfg(feature = "okim6258")]
+use super::Okim6258;
+#[cfg(feature = "okim6295")]
+use super::Okim6295;
+#[cfg(feature = "pwm")]
+use super::Pwm;
+#[cfg(feature = "segapcm")]
+use super::SegaPcm;
+#[cfg(feature = "sn76496")]
+use super::Sn76496;
+use super::{ChipError, SoundChip, YmfmChip};
 
 /// Applies a chip-specific write to a compatible sound chip.
 ///
@@ -121,12 +133,19 @@ macro_rules! typed_write {
     };
 }
 
+#[cfg(feature = "sn76496")]
 typed_write!(Sn76496, PsgSpec, Psg);
+#[cfg(feature = "sn76496")]
 typed_write!(Sn76496, GameGearPsgSpec, GameGearPsg);
+#[cfg(feature = "segapcm")]
 typed_write!(SegaPcm, SegaPcmSpec, SegaPcm);
+#[cfg(feature = "c140")]
 typed_write!(C140, C140Spec, C140);
+#[cfg(feature = "pwm")]
 typed_write!(Pwm, PwmSpec, Pwm);
+#[cfg(feature = "okim6258")]
 typed_write!(Okim6258, Okim6258Spec, Okim6258);
+#[cfg(feature = "okim6295")]
 typed_write!(Okim6295, Okim6295Spec, Okim6295);
 typed_write!(YmfmChip, Ym2413Spec, Ym2413);
 typed_write!(YmfmChip, Ym2151Spec, Ym2151);

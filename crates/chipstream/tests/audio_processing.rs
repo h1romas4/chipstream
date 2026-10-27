@@ -2,10 +2,13 @@ use std::f32::consts::PI;
 use std::num::NonZeroU32;
 
 use chipstream::audio::{
-    AudioError, ChipRoute, Gain, StereoBalance, StereoBlock, StereoEffect, StereoMatrix,
-    StereoMixer, StereoResampler,
+    AudioError, Gain, StereoBalance, StereoBlock, StereoEffect, StereoMixer, StereoResampler,
 };
-use chipstream::chip::{ClockDivider, Okim6258, SampleRate, SoundChip};
+#[cfg(feature = "okim6258")]
+use chipstream::audio::{ChipRoute, StereoMatrix};
+use chipstream::chip::SampleRate;
+#[cfg(feature = "okim6258")]
+use chipstream::chip::{ClockDivider, Okim6258, SoundChip};
 
 fn block(rate: u32, frames: Vec<[f32; 2]>) -> StereoBlock {
     StereoBlock::new(SampleRate::from_hz(rate), frames).unwrap()
@@ -20,6 +23,7 @@ fn convert_all(src: &StereoBlock, output: u32, chunk: usize) -> Vec<[f32; 2]> {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn matrix_preserves_native_layout_and_applies_oki_pan() {
     let mut route = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
     route.chip_mut().set_divider(ClockDivider::Div512).unwrap();

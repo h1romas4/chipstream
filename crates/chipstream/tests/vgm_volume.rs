@@ -1,8 +1,10 @@
 use chipstream::sequencer::VgmSequencer;
-use soundlog::chip::{Chip, Okim6258Spec};
+use soundlog::chip::Chip;
+use soundlog::chip::Okim6258Spec;
+use soundlog::vgm::VgmBuilder;
+use soundlog::vgm::VgmDocument;
 use soundlog::vgm::command::{Ay8910StereoMask, Instance, VgmCommand, WaitSamples};
 use soundlog::vgm::header::{ChipId, ChipVolume, VgmExtraHeader};
-use soundlog::vgm::{VgmBuilder, VgmDocument};
 
 fn render(document: VgmDocument) -> Vec<[f32; 2]> {
     let mut player = VgmSequencer::new(document, 48_000, 256).unwrap();
@@ -54,6 +56,7 @@ fn oki_builder(dual: bool) -> VgmBuilder {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn global_modifier_covers_signed_and_special_values() {
     let original = oki_builder(false).finalize();
     let baseline = render(original.clone());
@@ -74,6 +77,7 @@ fn global_modifier_covers_signed_and_special_values() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn extra_volume_and_user_gain_compose_after_serialization() {
     let baseline = render(oki_builder(false).finalize());
     let mut builder = oki_builder(false);
@@ -103,6 +107,7 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
 #[test]
 fn absolute_and_relative_chip_volumes_follow_their_own_baselines() {
     let cases: &[(&[u8], ChipId, u16)] = &[
+        #[cfg(feature = "sn76496")]
         (
             include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm"),
             ChipId::Sn76489,
@@ -145,18 +150,22 @@ fn absolute_and_relative_chip_volumes_follow_their_own_baselines() {
             assert_scaled(&render(modified), &baseline, factor, factor);
         }
     }
-    let document = oki_builder(false).finalize();
-    let baseline = render(document.clone());
-    let mut modified = document;
-    modified.extra_header = Some(extra(vec![ChipVolume::new(
-        ChipId::Okim6258,
-        Instance::Primary,
-        0xe0,
-    )]));
-    assert_scaled(&render(modified), &baseline, 0.5, 0.5);
+    #[cfg(feature = "okim6258")]
+    {
+        let document = oki_builder(false).finalize();
+        let baseline = render(document.clone());
+        let mut modified = document;
+        modified.extra_header = Some(extra(vec![ChipVolume::new(
+            ChipId::Okim6258,
+            Instance::Primary,
+            0xe0,
+        )]));
+        assert_scaled(&render(modified), &baseline, 0.5, 0.5);
+    }
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn dual_chip_absolute_volumes_are_independent() {
     let baseline = render(oki_builder(true).finalize());
     assert!(baseline.iter().any(|frame| frame[0].abs() > 0.001));

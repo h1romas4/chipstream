@@ -1,3 +1,5 @@
+#![cfg(feature = "c140")]
+
 use chipstream::chip::{C140, C140Type, ChipError, SoundChip};
 use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
 use soundlog::chip::{C140Spec, Chip};

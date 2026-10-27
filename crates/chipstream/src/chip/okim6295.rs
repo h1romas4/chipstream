@@ -3,7 +3,7 @@
 //! Copyright (c) Mirko Buffoni and Aaron Giles.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
 
-use super::okim6258::{INDEX_SHIFT, difference_table};
+use super::oki_adpcm::{INDEX_SHIFT, difference_table};
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data};
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;

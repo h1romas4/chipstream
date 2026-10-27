@@ -31,11 +31,12 @@ impl<C: SoundChip> ChipRoute<C> {
     ///
     /// ```compile_fail
     /// use chipstream::audio::ChipRoute;
-    /// use chipstream::chip::{Okim6258, SoundChip};
-    /// use soundlog::chip::PwmSpec;
+    /// use chipstream::chip::YmfmChip;
+    /// use soundlog::chip::Chip;
     ///
-    /// let mut route = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
-    /// route.chip_mut().write(PwmSpec { register: 1, value: 42 }).unwrap();
+    /// let mut route = ChipRoute::new(YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap());
+    /// let chip = route.into_inner();
+    /// route.chip_mut();
     /// ```
     pub fn chip_mut(&mut self) -> &mut C {
         &mut self.chip

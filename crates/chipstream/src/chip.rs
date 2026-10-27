@@ -1,10 +1,18 @@
 //! Native sound-chip interfaces and implementations.
 
+#[cfg(feature = "c140")]
 mod c140;
+#[cfg(any(feature = "okim6258", feature = "okim6295"))]
+mod oki_adpcm;
+#[cfg(feature = "okim6258")]
 mod okim6258;
+#[cfg(feature = "okim6295")]
 mod okim6295;
+#[cfg(feature = "pwm")]
 mod pwm;
+#[cfg(feature = "segapcm")]
 mod segapcm;
+#[cfg(feature = "sn76496")]
 mod sn76496;
 mod write;
 mod ymfm;
@@ -15,11 +23,17 @@ use std::num::NonZeroU32;
 
 use soundlog::chip::Chip;
 
+#[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
+#[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
+#[cfg(feature = "okim6295")]
 pub use okim6295::Okim6295;
+#[cfg(feature = "pwm")]
 pub use pwm::Pwm;
+#[cfg(feature = "segapcm")]
 pub use segapcm::SegaPcm;
+#[cfg(feature = "sn76496")]
 pub use sn76496::{Sn76496, Sn76496Config};
 pub use write::{ChipRegisterWrite, ChipWrite};
 pub use ymfm::YmfmChip;
@@ -125,11 +139,11 @@ pub trait SoundChip {
     /// [`ChipWrite`] for additional write types.
     ///
     /// ```compile_fail
-    /// use chipstream::chip::{Okim6258, SoundChip};
-    /// use soundlog::chip::PwmSpec;
+    /// use chipstream::chip::{SoundChip, YmfmChip};
+    /// use soundlog::chip::Chip;
     ///
-    /// let mut chip = Okim6258::new(8_000_000).unwrap();
-    /// chip.write(PwmSpec { register: 1, value: 42 }).unwrap();
+    /// let mut chip = YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap();
+    /// chip.write("not a register write").unwrap();
     /// ```
     fn write<S>(&mut self, spec: S) -> Result<(), ChipError>
     where
@@ -284,6 +298,7 @@ impl fmt::Display for ChipError {
 
 impl Error for ChipError {}
 
+#[cfg(any(feature = "c140", feature = "okim6295", feature = "segapcm"))]
 fn write_rom_data(rom: &mut Vec<u8>, start: usize, data: &[u8]) -> Result<(), ChipError> {
     const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
     let end = start

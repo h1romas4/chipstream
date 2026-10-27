@@ -1,3 +1,5 @@
+#![cfg(feature = "okim6258")]
+
 use chipstream::chip::{ChipError, ClockDivider, Okim6258, OutputBits, SoundChip};
 use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::mdx::pcm::decode_adpcm;

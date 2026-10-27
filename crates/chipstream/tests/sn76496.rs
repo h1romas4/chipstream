@@ -1,3 +1,5 @@
+#![cfg(feature = "sn76496")]
+
 use chipstream::chip::{ChipError, ChipRegisterWrite, Sn76496, Sn76496Config, SoundChip};
 use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
 use soundlog::chip::Chip;

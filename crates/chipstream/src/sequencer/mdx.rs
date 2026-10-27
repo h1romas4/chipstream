@@ -56,6 +56,8 @@ impl Error for MdxSequencerError {
 /// The MDX driver generates commands incrementally, including song loops and
 /// PCM8/PCM8A mixing. It does not retain a whole converted VGM. Rendering can
 /// read ahead and allocate; it is not guaranteed real-time safe.
+/// A supplied PDX requires the `okim6258` Cargo feature, even if the song
+/// does not use PCM notes; without a PDX the PCM path is disabled.
 ///
 /// The parsed MDX/PDX, decoded sample cache, resampler, and output buffers
 /// consume memory. Legacy ADPCM and PCM8/PCM8A use soundlog's driver and its

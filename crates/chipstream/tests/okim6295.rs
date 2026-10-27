@@ -1,3 +1,5 @@
+#![cfg(feature = "okim6295")]
+
 use chipstream::chip::{ChipError, ChipRegisterWrite, Okim6295, SoundChip};
 use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::{Chip, Okim6295Spec};

@@ -1,3 +1,5 @@
+#![cfg(feature = "pwm")]
+
 use chipstream::chip::{ChipError, ChipRegisterWrite, Pwm, SoundChip};
 use chipstream::sequencer::{VgmEventFilter, VgmSequencer, VgmSequencerError};
 use soundlog::chip::{Chip, PwmSpec};

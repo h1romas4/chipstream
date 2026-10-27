@@ -19,10 +19,19 @@ use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 use crate::audio::{
     AudioError, ChipRoute, RouteError, StereoBlock, StereoMatrix, StereoMixer, StereoResampler,
 };
-use crate::chip::{
-    C140, C140Type, ChipError, ChipRegisterWrite, ClockDivider, Okim6258, Okim6295, OutputBits,
-    Pwm, SampleRate, SegaPcm, Sn76496, Sn76496Config, SoundChip, YmfmChip,
-};
+#[cfg(feature = "okim6295")]
+use crate::chip::Okim6295;
+#[cfg(feature = "pwm")]
+use crate::chip::Pwm;
+#[cfg(feature = "segapcm")]
+use crate::chip::SegaPcm;
+#[cfg(feature = "c140")]
+use crate::chip::{C140, C140Type};
+use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, YmfmChip};
+#[cfg(feature = "okim6258")]
+use crate::chip::{ClockDivider, Okim6258, OutputBits};
+#[cfg(feature = "sn76496")]
+use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
 
 use super::{compat::PwmCompatibility, event, volume};
@@ -34,6 +43,22 @@ const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
 
+macro_rules! feature_backend {
+    ($feature:literal, $chip:expr, $body:expr) => {{
+        #[cfg(feature = $feature)]
+        {
+            $body
+        }
+        #[cfg(not(feature = $feature))]
+        {
+            return Err(VgmSequencerError::FeatureDisabled {
+                chip: $chip.clone(),
+                feature: $feature,
+            });
+        }
+    }};
+}
+
 /// Failure to initialize or render a VGM stream.
 #[derive(Debug)]
 pub enum VgmSequencerError {
@@ -43,6 +68,10 @@ pub enum VgmSequencerError {
     ChipNotFound {
         chip: Chip,
         instance: Instance,
+    },
+    FeatureDisabled {
+        chip: Chip,
+        feature: &'static str,
     },
     UnsupportedOkiAdpcm,
     InvalidRomBlock,
@@ -77,6 +106,12 @@ impl fmt::Display for VgmSequencerError {
             Self::InvalidGain => write!(f, "gain must be finite and nonnegative"),
             Self::ChipNotFound { chip, instance } => {
                 write!(f, "no playable {chip:?} {instance:?} chip")
+            }
+            Self::FeatureDisabled { chip, feature } => {
+                write!(
+                    f,
+                    "{chip:?} playback requires the chipstream feature '{feature}'"
+                )
             }
             Self::UnsupportedOkiAdpcm => write!(f, "OKIM6258 3-bit ADPCM is not implemented"),
             Self::InvalidRomBlock => write!(f, "invalid VGM ROM/RAM block"),
@@ -422,7 +457,10 @@ impl Voice {
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
 /// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, and
-/// C140/219; absent or unimplemented chips are silent. Both YM2610 variants,
+/// C140/219. The non-YMFM chips require their corresponding Cargo features;
+/// a chip declared in the header without its feature returns
+/// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
+/// silent. Both YM2610 variants,
 /// dual-chip flags, per-instance extra-header clocks, YM2203 SSG stereo masks,
 /// OKIM6258 pan and rate changes, SN76489 header settings and Game Gear
 /// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
@@ -612,72 +650,82 @@ impl VgmSequencer {
         };
         let memory = Rc::new(RefCell::new(Memory::default()));
         let backend: Box<dyn SoundChip> = if chip == Chip::Sn76489 {
-            if header.misc().t6w28_detected == Some(true) {
-                return Err(ChipError::InvalidConfiguration {
-                    chip,
-                    reason: "T6W28 PSG is not supported",
-                }
-                .into());
-            }
-            let flags = header.sn76489_flags;
-            let feedback = u16::from(header.sn76489_feedback);
-            let width = u8::from(header.sn76489_shift_register_width);
-            Box::new(Sn76496::with_config(
-                clock,
-                Sn76496Config {
-                    feedback: if feedback == 0 { 0x0009 } else { feedback },
-                    shift_width: if width == 0 { 16 } else { width },
-                    negate: flags.output_negate,
-                    stereo: flags.gamegear_stereo,
-                    divider_8: flags.clock_divider_8,
-                    frequency_zero_is_1024: flags.frequency_0_is_400,
-                    xnor: flags.xnor_noise_mode,
-                },
-            )?)
-        } else if chip == Chip::C140 {
-            let kind = match u8::from(header.c140_chip_type) {
-                0 => C140Type::System2,
-                1 => C140Type::System21,
-                2 => C140Type::Asic219,
-                _ => {
+            feature_backend!("sn76496", chip, {
+                if header.misc().t6w28_detected == Some(true) {
                     return Err(ChipError::InvalidConfiguration {
                         chip,
-                        reason: "unknown C140 board type",
+                        reason: "T6W28 PSG is not supported",
                     }
                     .into());
                 }
-            };
-            Box::new(C140::new(clock, kind)?)
+                let flags = header.sn76489_flags;
+                let feedback = u16::from(header.sn76489_feedback);
+                let width = u8::from(header.sn76489_shift_register_width);
+                Box::new(Sn76496::with_config(
+                    clock,
+                    Sn76496Config {
+                        feedback: if feedback == 0 { 0x0009 } else { feedback },
+                        shift_width: if width == 0 { 16 } else { width },
+                        negate: flags.output_negate,
+                        stereo: flags.gamegear_stereo,
+                        divider_8: flags.clock_divider_8,
+                        frequency_zero_is_1024: flags.frequency_0_is_400,
+                        xnor: flags.xnor_noise_mode,
+                    },
+                )?)
+            })
+        } else if chip == Chip::C140 {
+            feature_backend!("c140", chip, {
+                let kind = match u8::from(header.c140_chip_type) {
+                    0 => C140Type::System2,
+                    1 => C140Type::System21,
+                    2 => C140Type::Asic219,
+                    _ => {
+                        return Err(ChipError::InvalidConfiguration {
+                            chip,
+                            reason: "unknown C140 board type",
+                        }
+                        .into());
+                    }
+                };
+                Box::new(C140::new(clock, kind)?)
+            })
         } else if chip == Chip::Pwm {
-            Box::new(Pwm::new(clock)?)
+            feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
         } else if chip == Chip::SegaPcm {
-            Box::new(SegaPcm::with_banking(
-                clock,
-                header.spcm_interface as u8,
-                (header.spcm_interface >> 16) as u8,
-            )?)
+            feature_backend!("segapcm", chip, {
+                Box::new(SegaPcm::with_banking(
+                    clock,
+                    header.spcm_interface as u8,
+                    (header.spcm_interface >> 16) as u8,
+                )?)
+            })
         } else if chip == Chip::Okim6295 {
-            Box::new(Okim6295::with_pin7(
-                clock,
-                header.okim6295_clock & 0x8000_0000 != 0,
-            )?)
+            feature_backend!("okim6295", chip, {
+                Box::new(Okim6295::with_pin7(
+                    clock,
+                    header.okim6295_clock & 0x8000_0000 != 0,
+                )?)
+            })
         } else if chip == Chip::Okim6258 {
-            let flags = &header.okim6258_flags;
-            if flags.adpcm_3bit_select {
-                return Err(VgmSequencerError::UnsupportedOkiAdpcm);
-            }
-            let mut oki = Okim6258::new(clock)?;
-            oki.set_divider(match flags.clock_divider {
-                0 => ClockDivider::Div1024,
-                1 => ClockDivider::Div768,
-                _ => ClockDivider::Div512,
-            })?;
-            oki.set_output_bits(if flags.output_12bit {
-                OutputBits::Bits12
-            } else {
-                OutputBits::Bits10
-            });
-            Box::new(oki)
+            feature_backend!("okim6258", chip, {
+                let flags = &header.okim6258_flags;
+                if flags.adpcm_3bit_select {
+                    return Err(VgmSequencerError::UnsupportedOkiAdpcm);
+                }
+                let mut oki = Okim6258::new(clock)?;
+                oki.set_divider(match flags.clock_divider {
+                    0 => ClockDivider::Div1024,
+                    1 => ClockDivider::Div768,
+                    _ => ClockDivider::Div512,
+                })?;
+                oki.set_output_bits(if flags.output_12bit {
+                    OutputBits::Bits12
+                } else {
+                    OutputBits::Bits10
+                });
+                Box::new(oki)
+            })
         } else {
             let shared = Rc::clone(&memory);
             let handler = InterfaceHandler {

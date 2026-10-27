@@ -1,6 +1,9 @@
+#[cfg(feature = "sn76496")]
 use chipstream::chip::ChipError;
 use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
-use soundlog::chip::{Chip, Okim6258Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec};
+#[cfg(feature = "okim6258")]
+use soundlog::chip::Okim6258Spec;
+use soundlog::chip::{Chip, Ym2608Spec, Ym2610Spec, Ym2612Spec};
 use soundlog::vgm::command::{Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
 
@@ -93,6 +96,7 @@ fn supplied_vgm_examples_produce_stereo_audio() {
     }
 }
 
+#[cfg(feature = "okim6258")]
 fn oki_document() -> VgmDocument {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -119,6 +123,7 @@ fn oki_document() -> VgmDocument {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn chunks_preserve_oki_pan_rate_and_duration() {
     let doc = oki_document();
     let mut small = VgmSequencer::new(doc.clone(), 48_000, 31).unwrap();
@@ -137,6 +142,7 @@ fn chunks_preserve_oki_pan_rate_and_duration() {
 }
 
 #[test]
+#[cfg(feature = "sn76496")]
 fn sn76489_vgm_produces_audio() {
     let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");
     let mut player = VgmSequencer::from_bytes(data, 44_100, 1000).unwrap();
@@ -150,6 +156,7 @@ fn sn76489_vgm_produces_audio() {
 }
 
 #[test]
+#[cfg(feature = "sn76496")]
 fn t6w28_header_is_rejected_for_document_and_stream() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
@@ -196,6 +203,7 @@ fn ym2610_header_variant_selects_correct_fm_channels() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn gain_applies_to_the_correct_chip_and_buffered_audio() {
     let doc = oki_document();
     let mut player = VgmSequencer::new(doc, 48_000, 100).unwrap();
@@ -223,6 +231,7 @@ fn gain_applies_to_the_correct_chip_and_buffered_audio() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn dual_chip_and_independent_gains_survive_serialization() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -309,7 +318,7 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
 #[test]
 fn invalid_input_and_missing_end_are_reported() {
     assert!(VgmSequencer::from_bytes(b"not vgm", 48_000, 100).is_err());
-    let doc = oki_document();
+    let doc = VgmDocument::default();
     assert!(matches!(
         VgmSequencer::new(doc.clone(), 0, 100),
         Err(VgmSequencerError::InvalidSampleRate)
@@ -381,6 +390,7 @@ fn ym2203_ssg_stereo_mask_is_applied_before_resampling() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn oki_clock_byte_changes_keep_time() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -405,6 +415,7 @@ fn oki_clock_byte_changes_keep_time() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn extra_header_clock_overrides_chip_instance_clock() {
     use soundlog::vgm::VgmExtraHeader;
     use soundlog::vgm::header::{ChipClock, ChipId};
@@ -425,6 +436,7 @@ fn extra_header_clock_overrides_chip_instance_clock() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn streamed_dual_oki_matches_document_with_loop_and_extra_header() {
     use soundlog::vgm::VgmExtraHeader;
     use soundlog::vgm::header::{ChipClock, ChipId, ChipVolume};
@@ -493,12 +505,15 @@ fn malformed_commands_are_reported_when_scanned_or_rendered() {
         Err(VgmSequencerError::StreamFailed)
     ));
 
-    let mut bytes: Vec<u8> = oki_document().into();
-    let header = VgmHeader::from_bytes(&bytes).unwrap();
-    let start = VgmHeader::command_start(header.version, header.data_offset);
-    bytes.truncate(start);
-    bytes.extend_from_slice(&[0x67, 0x66, 0, 5, 0, 0, 0, 1]);
-    assert!(VgmSequencer::from_vgm(bytes, 44_100, 100).is_err());
+    #[cfg(feature = "okim6258")]
+    {
+        let mut bytes: Vec<u8> = oki_document().into();
+        let header = VgmHeader::from_bytes(&bytes).unwrap();
+        let start = VgmHeader::command_start(header.version, header.data_offset);
+        bytes.truncate(start);
+        bytes.extend_from_slice(&[0x67, 0x66, 0, 5, 0, 0, 0, 1]);
+        assert!(VgmSequencer::from_vgm(bytes, 44_100, 100).is_err());
+    }
 }
 
 #[test]
@@ -529,6 +544,7 @@ fn supplied_ym2608_rhythm_rom_reaches_the_chip() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn very_short_wait_includes_the_first_native_sample() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -554,6 +570,7 @@ fn very_short_wait_includes_the_first_native_sample() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn chips_with_different_native_rates_mix_on_the_same_timeline() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);

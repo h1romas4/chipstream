@@ -4,16 +4,18 @@ use chipstream::sequencer::{
     Chip, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions, VgmEventFilter,
     VgmSequencer, VgmSequencerError,
 };
-use soundlog::mdx::command::{
-    MdxAdpcmOrNoiseFrequency, MdxNote, MdxPan, MdxRest, MdxVoiceOrPcmBank,
-};
+#[cfg(feature = "okim6258")]
+use soundlog::mdx::command::MdxAdpcmOrNoiseFrequency;
+use soundlog::mdx::command::{MdxNote, MdxPan, MdxRest, MdxVoiceOrPcmBank};
 use soundlog::mdx::convert::{AdpcmMode, MdxConvertError, to_vgm_document};
 use soundlog::mdx::document::MdxBuilder;
 use soundlog::mdx::package::MdxPackage;
+#[cfg(feature = "okim6258")]
 use soundlog::mdx::pdx::PdxBuilder;
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+#[cfg(feature = "okim6258")]
 const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
 
 fn render_mdx(player: &mut MdxSequencer) -> Vec<[f32; 2]> {
@@ -64,6 +66,7 @@ fn fm_package() -> MdxPackage {
     }
 }
 
+#[cfg(feature = "okim6258")]
 fn pcm_package(extended: bool) -> MdxPackage {
     let mut builder = MdxBuilder::new();
     for mode in 0..=4 {
@@ -108,9 +111,13 @@ fn pcm_package(extended: bool) -> MdxPackage {
 fn fm_and_pcm_match_eager_conversion_across_chunks() {
     for (package, mode) in [
         (fm_package(), AdpcmMode::Through),
+        #[cfg(feature = "okim6258")]
         (pcm_package(false), AdpcmMode::Through),
+        #[cfg(feature = "okim6258")]
         (pcm_package(false), AdpcmMode::Resample),
+        #[cfg(feature = "okim6258")]
         (pcm_package(true), AdpcmMode::Through),
+        #[cfg(feature = "okim6258")]
         (pcm_package(true), AdpcmMode::Lpf),
     ] {
         let options = MdxSequencerOptions {
@@ -140,6 +147,7 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn finite_and_infinite_loops_are_driven_incrementally() {
     let package = MdxPackage::parse(MDX, Some(PDX)).unwrap();
     let options = |loop_count| MdxSequencerOptions {
@@ -250,6 +258,7 @@ fn invalid_inputs_limits_and_playback_errors_are_reported() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn compressed_mdx_and_pdx_play_like_uncompressed_inputs() {
     let make_mdx = |compressed| {
         let mut builder = MdxBuilder::new();

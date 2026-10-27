@@ -1,12 +1,15 @@
 use std::error::Error;
 
 use chipstream::audio::{ChipRoute, RouteError};
-use chipstream::chip::{
-    ChipError, ChipRegisterWrite, ClockDivider, Okim6258, SoundChip, StereoMute, YmfmChip,
-};
-use soundlog::chip::{Chip, Okim6258Spec};
+use chipstream::chip::{ChipError, ChipRegisterWrite, SoundChip, YmfmChip};
+#[cfg(feature = "okim6258")]
+use chipstream::chip::{ClockDivider, Okim6258, StereoMute};
+use soundlog::chip::Chip;
+#[cfg(feature = "okim6258")]
+use soundlog::chip::Okim6258Spec;
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn captures_oki_rate_and_pan_changes_at_block_boundaries() {
     let mut route = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
     route
@@ -85,6 +88,7 @@ fn preserves_multichannel_native_output_and_buffer_boundaries() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
 fn boxed_chip_and_empty_blocks_are_supported() {
     let chip: Box<dyn SoundChip> = Box::new(Okim6258::new(8_000_000).unwrap());
     let mut route = ChipRoute::new(chip);

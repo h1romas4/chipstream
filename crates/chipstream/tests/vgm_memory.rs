@@ -1,3 +1,5 @@
+#![cfg(feature = "okim6258")]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

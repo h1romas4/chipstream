@@ -3,6 +3,8 @@
 //! Components can be combined independently of an engine or sequencer:
 //!
 //! ```
+//! # #[cfg(feature = "okim6258")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use chipstream::audio::{
 //!     ChipRoute, Gain, StereoBlock, StereoEffect, StereoMatrix, StereoMixer,
 //!     StereoResampler,
@@ -24,7 +26,10 @@
 //!     Gain::new(0.5)?.process(&mut bus)?;
 //!     // Send bus.frames() to the next processing stage.
 //! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "okim6258"))]
+//! # fn main() {}
 //! ```
 
 mod buffer;

@@ -1,3 +1,5 @@
+#![cfg(feature = "segapcm")]
+
 use chipstream::chip::{ChipError, SegaPcm, SoundChip};
 use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
 use soundlog::chip::{Chip, SegaPcmSpec};
