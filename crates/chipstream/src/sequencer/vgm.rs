@@ -31,6 +31,7 @@ use event::{VgmEventFilter, VgmWriteEvent};
 const WAIT_STEP: u32 = 256;
 const SRC_CHUNK: usize = 256;
 const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
 
 /// Failure to initialize or render a VGM stream.
@@ -39,7 +40,10 @@ pub enum VgmSequencerError {
     InvalidChunkSize,
     InvalidSampleRate,
     InvalidGain,
-    ChipNotFound { chip: Chip, instance: Instance },
+    ChipNotFound {
+        chip: Chip,
+        instance: Instance,
+    },
     UnsupportedOkiAdpcm,
     InvalidRomBlock,
     RomTooLarge,
@@ -51,7 +55,14 @@ pub enum VgmSequencerError {
     PwmCompatibilityConfigurationAfterPlayback,
     FadeoutConfigurationAfterPlayback,
     EventCallbackRequired,
-    EventQueueFull { limit: usize },
+    EventQueueFull {
+        limit: usize,
+    },
+    WriteQueueFull {
+        chip: Chip,
+        instance: Instance,
+        limit: usize,
+    },
     Parse(soundlog::ParseError),
     Chip(ChipError),
     Route(RouteError),
@@ -88,6 +99,16 @@ impl fmt::Display for VgmSequencerError {
             }
             Self::EventQueueFull { limit } => {
                 write!(f, "VGM pending event limit exceeded ({limit})")
+            }
+            Self::WriteQueueFull {
+                chip,
+                instance,
+                limit,
+            } => {
+                write!(
+                    f,
+                    "VGM pending writes for {chip:?} {instance:?} exceed {limit}"
+                )
             }
             Self::Parse(error) => write!(f, "VGM parsing failed: {error}"),
             Self::Chip(error) => write!(f, "chip failed: {error}"),
@@ -242,11 +263,77 @@ struct Voice {
     gain: f32,
     main_coefficient: f32,
     paired_coefficient: f32,
+    paced_writes: Option<VecDeque<ChipRegisterWrite>>,
+    write_interval: usize,
+    write_cooldown: usize,
+}
+
+struct EventContext<'a> {
+    filter: Option<&'a VgmEventFilter>,
+    events: &'a mut VecDeque<(usize, VgmWriteEvent)>,
 }
 
 impl Voice {
-    fn render(&mut self, ticks: u32) -> Result<(), VgmSequencerError> {
+    fn apply_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        position: usize,
+        context: &mut EventContext<'_>,
+    ) -> Result<(), VgmSequencerError> {
+        let (bank, register, value) = write.parts();
+        self.route.chip_mut().apply_register_write(write)?;
+        if let Some(filter) = context.filter {
+            let state_events = if let Some(tracker) = self.tracker.as_mut() {
+                let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                    chip: self.chip.clone(),
+                    register,
+                    value,
+                })?;
+                tracker(bank, register, narrow).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if filter.matches_write(&self.chip, self.instance, bank, register)
+                && (filter.register_writes || !state_events.is_empty())
+            {
+                if context.events.len() >= filter.max_pending_events {
+                    return Err(VgmSequencerError::EventQueueFull {
+                        limit: filter.max_pending_events,
+                    });
+                }
+                let index = context
+                    .events
+                    .partition_point(|(offset, _)| *offset <= position);
+                context.events.insert(
+                    index,
+                    (
+                        position,
+                        VgmWriteEvent {
+                            frame_offset: 0,
+                            chip: self.chip.clone(),
+                            instance: self.instance,
+                            port: bank,
+                            register,
+                            value,
+                            state_events,
+                        },
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn render(
+        &mut self,
+        ticks: u32,
+        output_rate: u32,
+        output_phase: u32,
+        available: usize,
+        context: &mut EventContext<'_>,
+    ) -> Result<(), VgmSequencerError> {
         let rate = self.route.chip().sample_rate_ratio();
+        let initial_phase = self.phase;
         let had_fraction = self.phase != 0;
         if self.phase_rate != Some(rate) {
             self.phase_step =
@@ -270,6 +357,48 @@ impl Voice {
             .checked_add(usize::from(self.phase != 0))
             .and_then(|value| value.checked_sub(usize::from(had_fraction)))
             .ok_or(VgmSequencerError::DurationOverflow)?;
+        if frames == 0 {
+            return Ok(());
+        }
+        let mut rendered = 0;
+        while rendered < frames {
+            if self.write_cooldown != 0 {
+                let count = self.write_cooldown.min(frames - rendered);
+                self.capture(count)?;
+                self.write_cooldown -= count;
+                rendered += count;
+                continue;
+            }
+            let Some(write) = self.paced_writes.as_mut().and_then(VecDeque::pop_front) else {
+                break;
+            };
+            let fraction = if initial_phase == 0 {
+                0
+            } else {
+                (1_u128 << 32) - u128::from(initial_phase)
+            };
+            let native_offset = ((rendered as u128) << 32) + fraction;
+            let output_offset =
+                (native_offset * u128::from(rate.denominator().get()) * u128::from(output_rate)
+                    / u128::from(rate.numerator())
+                    + u128::from(output_phase))
+                    >> 32;
+            let position = available
+                .checked_add(
+                    usize::try_from(output_offset)
+                        .map_err(|_| VgmSequencerError::DurationOverflow)?,
+                )
+                .ok_or(VgmSequencerError::DurationOverflow)?;
+            self.apply_write(write, position, context)?;
+            self.write_cooldown = self.write_interval;
+        }
+        let remaining = frames - rendered;
+        self.capture(remaining)?;
+        self.write_cooldown = self.write_cooldown.saturating_sub(remaining);
+        Ok(())
+    }
+
+    fn capture(&mut self, frames: usize) -> Result<(), VgmSequencerError> {
         if frames == 0 {
             return Ok(());
         }
@@ -299,6 +428,14 @@ impl Voice {
 /// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
 /// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
 /// T6W28 PSG and OKIM6258 3-bit ADPCM return errors.
+///
+/// YMFM register writes are queued per chip instance and applied in order,
+/// at most one per native sample. YM2203/YM2608 and YM2610(B) use intervals
+/// of 18 and 9 native samples respectively so that their oversampled FM
+/// engines advance between writes. A burst can therefore delay subsequent
+/// writes; exceeding 1,048,576 pending writes per instance is an error.
+/// At the end of playback, pending writes are applied at the final boundary
+/// without generating additional audio.
 ///
 /// The global volume modifier and extra-header chip volumes multiply the
 /// per-chip gain. Relative volumes multiply the existing level; absolute
@@ -444,6 +581,26 @@ impl VgmSequencer {
             dual,
             clock_changes,
         } = config;
+        let paced = matches!(
+            chip,
+            Chip::Ym2151
+                | Chip::Ym2203
+                | Chip::Ym2413
+                | Chip::Ym2608
+                | Chip::Ym2610b
+                | Chip::Ym2612
+                | Chip::Ym3526
+                | Chip::Y8950
+                | Chip::Ym3812
+                | Chip::Ymf262
+                | Chip::Ymf278b
+        );
+        // YMFM's OPN/OPNA/OPNB native output is oversampled relative to FM.
+        let write_interval = match chip {
+            Chip::Ym2203 | Chip::Ym2608 => 18,
+            Chip::Ym2610b => 9,
+            _ => 1,
+        };
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
                 (2, 44_100) => 25_056_500,
@@ -611,6 +768,9 @@ impl VgmSequencer {
             gain: 1.0,
             main_coefficient: main,
             paired_coefficient: paired,
+            paced_writes: paced.then(VecDeque::new),
+            write_interval,
+            write_cooldown: 0,
         })
     }
 
@@ -993,6 +1153,7 @@ impl VgmSequencer {
                 return Ok(Some(bus));
             }
             if self.fade_remaining == Some(0) {
+                self.flush_paced_writes()?;
                 for voice in &mut self.voices {
                     voice
                         .queue
@@ -1007,7 +1168,16 @@ impl VgmSequencer {
                     .min(WAIT_STEP)
                     .min(self.fade_remaining.unwrap_or(u32::MAX));
                 for voice in &mut self.voices {
-                    voice.render(ticks)?;
+                    voice.render(
+                        ticks,
+                        self.output_rate,
+                        self.output_phase,
+                        self.available,
+                        &mut EventContext {
+                            filter: self.event_filter.as_ref(),
+                            events: &mut self.events,
+                        },
+                    )?;
                 }
                 self.wait -= ticks;
                 if let Some(remaining) = &mut self.fade_remaining {
@@ -1053,6 +1223,7 @@ impl VgmSequencer {
             }
             match result {
                 StreamResult::EndOfStream => {
+                    self.flush_paced_writes()?;
                     for voice in &mut self.voices {
                         voice
                             .queue
@@ -1153,46 +1324,45 @@ impl VgmSequencer {
         write: ChipRegisterWrite,
     ) -> Result<(), VgmSequencerError> {
         let chip = write.chip();
-        let (bank, register, value) = write.parts();
         if let Some(voice) = self
             .voices
             .iter_mut()
             .find(|v| v.chip == chip && v.instance == instance)
         {
-            voice.route.chip_mut().apply_register_write(write)?;
-            if let Some(filter) = &self.event_filter {
-                let state_events = if let Some(tracker) = voice.tracker.as_mut() {
-                    let narrow =
-                        u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
-                            chip: chip.clone(),
-                            register,
-                            value,
-                        })?;
-                    tracker(bank, register, narrow).unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                if filter.matches_write(&chip, instance, bank, register)
-                    && (filter.register_writes || !state_events.is_empty())
-                {
-                    if self.events.len() >= filter.max_pending_events {
-                        return Err(VgmSequencerError::EventQueueFull {
-                            limit: filter.max_pending_events,
-                        });
-                    }
-                    self.events.push_back((
-                        self.available,
-                        VgmWriteEvent {
-                            frame_offset: 0,
-                            chip,
-                            instance,
-                            port: bank,
-                            register,
-                            value,
-                            state_events,
-                        },
-                    ));
+            if let Some(queue) = &mut voice.paced_writes {
+                if queue.len() == MAX_PENDING_WRITES {
+                    return Err(VgmSequencerError::WriteQueueFull {
+                        chip,
+                        instance,
+                        limit: MAX_PENDING_WRITES,
+                    });
                 }
+                queue.push_back(write);
+            } else {
+                voice.apply_write(
+                    write,
+                    self.available,
+                    &mut EventContext {
+                        filter: self.event_filter.as_ref(),
+                        events: &mut self.events,
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_paced_writes(&mut self) -> Result<(), VgmSequencerError> {
+        for voice in &mut self.voices {
+            while let Some(write) = voice.paced_writes.as_mut().and_then(VecDeque::pop_front) {
+                voice.apply_write(
+                    write,
+                    self.available,
+                    &mut EventContext {
+                        filter: self.event_filter.as_ref(),
+                        events: &mut self.events,
+                    },
+                )?;
             }
         }
         Ok(())
@@ -1257,5 +1427,39 @@ impl VgmSequencer {
         }
         target[start..end].copy_from_slice(&dump.data);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundlog::chip::Ym2151Spec;
+    use soundlog::vgm::VgmBuilder;
+
+    #[test]
+    fn pending_write_limit_is_per_instance_and_explicit() {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.register_chip(Chip::Ym2151, Instance::Secondary, 4_000_000);
+        let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64).unwrap();
+        let write = ChipRegisterWrite::Ym2151(Ym2151Spec {
+            register: 0x20,
+            value: 0xc7,
+        });
+        player.voices[0]
+            .paced_writes
+            .as_mut()
+            .unwrap()
+            .resize(MAX_PENDING_WRITES - 1, write.clone());
+        player.write_chip(Instance::Primary, write.clone()).unwrap();
+        assert!(matches!(
+            player.write_chip(Instance::Primary, write.clone()),
+            Err(VgmSequencerError::WriteQueueFull {
+                chip: Chip::Ym2151,
+                instance: Instance::Primary,
+                limit: MAX_PENDING_WRITES,
+            })
+        ));
+        player.write_chip(Instance::Secondary, write).unwrap();
     }
 }

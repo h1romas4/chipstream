@@ -20,6 +20,10 @@ use soundlog::vgm::command::Instance;
 /// but not tone events. State events describe register-derived key state,
 /// not measured volume or envelope tails.
 ///
+/// YMFM writes are reported when applied, which can be later than their
+/// source timestamp because the sequencer paces queued writes. At the final
+/// boundary, writes still pending are applied without producing more audio.
+///
 /// Both [`super::VgmSequencer`] and [`super::MdxSequencer`] support event
 /// collection. Configure it before rendering:
 ///

@@ -122,7 +122,7 @@ fn event_timing_matches_pcm_across_chunks_loop_and_final_boundary() {
     assert_eq!(events, flatten(events_b));
     assert_eq!(
         events.iter().map(|(pos, _)| *pos).collect::<Vec<_>>(),
-        vec![0, 0, 0, 0, 100, 200, 200, 300]
+        vec![0, 0, 1, 1, 100, 200, 201, 300]
     );
     assert!(matches!(
         events[3].1.state_events.as_slice(),
@@ -168,7 +168,7 @@ fn event_positions_follow_output_rate_rounding() {
             .iter()
             .map(|(position, _)| *position)
             .collect::<Vec<_>>(),
-        vec![0, 1, 110]
+        vec![0, 2, 111]
     );
 }
 
@@ -245,7 +245,7 @@ fn state_tracking_includes_suppressed_writes_and_filters_instances() {
         .unwrap();
     let (_, events) = collect(&mut player);
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].0, 0);
+    assert_eq!(events[0].0, 1);
     match events[0].1.state_events.as_slice() {
         [StateEvent::KeyOn { channel: 0, tone }] => assert!(tone.freq_hz.unwrap() > 0.0),
         other => panic!("unexpected events: {other:?}"),
@@ -296,7 +296,7 @@ fn port_and_generated_dac_writes_are_filtered() {
             .iter()
             .map(|(pos, event)| (*pos, event.port, event.register, event.value))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 0x2a, 0x34), (1, 0, 0x2a, 0x56)]
+        vec![(1, 0, 0x2a, 0x34), (2, 0, 0x2a, 0x56)]
     );
 }
 
@@ -340,7 +340,7 @@ fn invalid_configuration_queue_limit_and_required_callback_are_explicit() {
         Err(VgmSequencerError::EventCallbackRequired)
     ));
     let (_, events) = collect(&mut player);
-    assert_eq!(events[0].0, 0);
+    assert_eq!(events[0].0, 1);
 }
 
 #[test]

@@ -60,6 +60,108 @@ A t120 @1 l8 c L def
 }
 
 #[test]
+fn cli_retriggers_adjacent_notes_in_mml_mdx_and_vgm() {
+    use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
+    use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
+    use soundlog::mdx::package::MdxPackage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = r#"
+@1 = {
+  31,0,12,15,0,20,0,1,0,0,0,
+  31,0,12,15,0,20,0,1,0,0,0,
+  31,0,12,15,0,20,0,1,0,0,0,
+  31,0,12,15,0,20,0,1,0,0,0,
+  7,0,15
+}
+A t120 @1 q8 l4 cccccccc
+"#;
+    let mml = dir.path().join("song.mml");
+    let mdx = dir.path().join("song.mdx");
+    let vgm = dir.path().join("song.vgm");
+    fs::write(&mml, source).unwrap();
+    let document = mmlx::mdx::compile(&mmlx::mdx::parse(source).unwrap()).unwrap();
+    let mdx_bytes = document.to_bytes().unwrap();
+    fs::write(&mdx, &mdx_bytes).unwrap();
+    let package = MdxPackage::parse(&mdx_bytes, None).unwrap();
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..Default::default()
+    };
+    let vgm_document = to_vgm_document(&package, &options).unwrap();
+    let vgm_bytes: Vec<u8> = vgm_document.into();
+    fs::write(&vgm, &vgm_bytes).unwrap();
+
+    let mut sequencer = VgmSequencer::from_vgm(vgm_bytes, 44_100, 256).unwrap();
+    sequencer
+        .configure_events(VgmEventFilter {
+            register: Some(0x08),
+            register_writes: true,
+            state_changes: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut key_ons = Vec::new();
+    let mut key_offs = Vec::new();
+    let mut offset = 0;
+    while let Some(block) = sequencer
+        .render_with_events(|event| {
+            let frame = offset + event.frame_offset as usize;
+            if event.value & 0x78 != 0 {
+                key_ons.push(frame);
+            } else {
+                key_offs.push(frame);
+            }
+        })
+        .unwrap()
+    {
+        offset += block.frames().len();
+    }
+    assert_eq!(key_ons.len(), 8);
+    assert!(key_ons[1..].iter().all(|frame| {
+        key_offs
+            .iter()
+            .any(|off| *off <= *frame && frame - off <= 4)
+    }));
+
+    let mut rendered = Vec::new();
+    for (index, input) in [&mml, &mdx, &vgm].into_iter().enumerate() {
+        let output = dir.path().join(format!("{index}.wav"));
+        let result = cli()
+            .arg("play")
+            .arg(input)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let mut wav = hound::WavReader::open(output).unwrap();
+        rendered.push(wav.samples::<i16>().collect::<Result<Vec<_>, _>>().unwrap());
+    }
+    assert_eq!(rendered[0], rendered[1]);
+    assert_eq!(rendered[0], rendered[2]);
+    let peaks: Vec<_> = key_ons
+        .iter()
+        .map(|&frame| {
+            rendered[0][frame * 2..(frame + 2_000) * 2]
+                .iter()
+                .map(|sample| i32::from(*sample).abs())
+                .max()
+                .unwrap()
+        })
+        .collect();
+    assert!(peaks[0] > 100, "first note must be audible: {peaks:?}");
+    assert!(
+        peaks.iter().all(|peak| *peak >= peaks[0] / 2),
+        "every note must retrigger: {peaks:?}"
+    );
+}
+
+#[test]
 fn cli_mml_resolves_pdx_and_protects_inputs() {
     use soundlog::mdx::command::MdxCommand;
     use soundlog::mdx::pdx::PdxBuilder;
