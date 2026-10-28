@@ -415,7 +415,9 @@ impl Voice {
 /// OKIM6258 pan and rate changes, SN76489 header settings and Game Gear
 /// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
 /// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
-/// T6W28 PSG and OKIM6258 3-bit ADPCM return errors.
+/// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag is accepted
+/// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
+/// behavior; native 3-bit ADPCM decoding is not implemented.
 ///
 /// Register write pacing is determined by the device timing profile. YMFM
 /// writes are queued per chip instance and applied in order, at most one per
@@ -644,9 +646,7 @@ impl VgmSequencer {
         } else if chip == Chip::Okim6258 {
             feature_backend!("okim6258", chip, {
                 let flags = &header.okim6258_flags;
-                if flags.adpcm_3bit_select {
-                    return Err(VgmSequencerError::UnsupportedOkiAdpcm);
-                }
+                // The MAME-backed vgm2wav compatibility path also ignores this selector.
                 let mut oki = Okim6258::new_for_vgm(clock)?;
                 oki.set_divider(match flags.clock_divider {
                     0 => ClockDivider::Div1024,

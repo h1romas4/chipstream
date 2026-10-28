@@ -601,6 +601,34 @@ fn very_short_wait_includes_the_first_native_sample() {
 
 #[test]
 #[cfg(feature = "okim6258")]
+fn three_bit_okim6258_flag_uses_four_bit_compatibility() {
+    let make_document = |three_bit| {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+        for (register, value) in [(0, 2), (1, 0x71), (1, 0x27), (1, 0xe4)] {
+            builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(4410));
+        let mut document = builder.finalize();
+        document.header.okim6258_flags.adpcm_3bit_select = three_bit;
+        document
+    };
+
+    let mut four_bit = VgmSequencer::new(make_document(false), 44_100, 256).unwrap();
+    let mut three_bit = VgmSequencer::new(make_document(true), 44_100, 256).unwrap();
+    let four_bit_output = render_all(&mut four_bit);
+    let three_bit_output = render_all(&mut three_bit);
+
+    assert_eq!(three_bit_output, four_bit_output);
+    assert!(
+        three_bit_output
+            .iter()
+            .any(|frame| frame[0].abs() > 0.0001 && frame[1].abs() > 0.0001)
+    );
+}
+
+#[test]
+#[cfg(feature = "okim6258")]
 fn chips_with_different_native_rates_mix_on_the_same_timeline() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);

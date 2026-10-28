@@ -54,7 +54,8 @@ pub enum OutputBits {
 /// smooths decoded samples, and fades toward silence when the queue runs dry.
 /// Recording tracks status only. Output is mono `i32` in the signed 16-bit
 /// range. The default clock divider is `/1024` and DAC precision is 10 bits.
-/// Three-bit ADPCM is not implemented.
+/// VGM 3-bit selection flags use the 4-bit compatibility decoder; native
+/// 3-bit ADPCM decoding is not implemented.
 ///
 /// Register 0 is control, 1 is data, 2 is the VGM pan mask, `0x08..=0x0b`
 /// are little-endian clock bytes, and `0x0c` selects the divider. Pan is
