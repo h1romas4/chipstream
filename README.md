@@ -29,7 +29,7 @@ Rust 1.97.1 or later is required.
 To build the VGM player and play a file:
 
 ```bash
-cargo run --release -p chipstream-cli -- play example.vgm
+cargo run --release -p chipstream-cli --bin csplay -- example.vgm
 ```
 
 Linux builds require ALSA development headers; see the

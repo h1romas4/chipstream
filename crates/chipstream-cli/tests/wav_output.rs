@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_chipstream"))
+    Command::new(env!("CARGO_BIN_EXE_csplay"))
 }
 
 #[test]
@@ -35,7 +35,6 @@ A t120 @1 l8 c L def
         for (index, input) in [&mml, &mdx].into_iter().enumerate() {
             let output = dir.path().join(format!("{case}-{index}.wav"));
             let result = cli()
-                .arg("play")
                 .arg(input)
                 .arg("-o")
                 .arg(&output)
@@ -127,13 +126,7 @@ A t120 @1 q8 l4 cccccccc
     let mut rendered = Vec::new();
     for (index, input) in [&mml, &mdx, &vgm].into_iter().enumerate() {
         let output = dir.path().join(format!("{index}.wav"));
-        let result = cli()
-            .arg("play")
-            .arg(input)
-            .arg("-o")
-            .arg(&output)
-            .output()
-            .unwrap();
+        let result = cli().arg(input).arg("-o").arg(&output).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -189,7 +182,7 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
     let mut rendered = Vec::new();
     for override_path in [None, Some(&override_pdx)] {
         let mut command = cli();
-        command.arg("play").arg(&mml).arg("-o").arg(&output);
+        command.arg(&mml).arg("-o").arg(&output);
         if let Some(path) = override_path {
             command.arg("--pdx").arg(path);
         }
@@ -210,18 +203,11 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
     );
     for input in [&mml, &sidecar] {
         let before = fs::read(input).unwrap();
-        let result = cli()
-            .arg("play")
-            .arg(&mml)
-            .arg("-o")
-            .arg(input)
-            .output()
-            .unwrap();
+        let result = cli().arg(&mml).arg("-o").arg(input).output().unwrap();
         assert!(!result.status.success());
         assert_eq!(fs::read(input).unwrap(), before);
     }
     let result = cli()
-        .arg("play")
         .arg(&mml)
         .arg("--pdx")
         .arg(&override_pdx)
@@ -232,13 +218,7 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
     assert!(!result.status.success());
     assert_eq!(fs::read(&override_pdx).unwrap(), pdx);
     fs::remove_file(&sidecar).unwrap();
-    let result = cli()
-        .arg("play")
-        .arg(&mml)
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .unwrap();
+    let result = cli().arg(&mml).arg("-o").arg(&output).output().unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("not found"));
     assert_eq!(fs::read(&output).unwrap(), rendered[0]);
@@ -256,13 +236,7 @@ fn cli_mml_reports_errors_without_overwriting_wav() {
         (&b"A a>>>>>>>>>a"[..], "failed to compile MML"),
     ] {
         fs::write(&mml, source).unwrap();
-        let result = cli()
-            .arg("play")
-            .arg(&mml)
-            .arg("-o")
-            .arg(&output)
-            .output()
-            .unwrap();
+        let result = cli().arg(&mml).arg("-o").arg(&output).output().unwrap();
         assert!(!result.status.success());
         assert!(
             String::from_utf8_lossy(&result.stderr).contains(expected),
@@ -279,7 +253,6 @@ fn cli_mml_reports_errors_without_overwriting_wav() {
     fs::write(&mml, "A r4").unwrap();
     for option in ["--compat-vgm-pwm", "--loop-modifier", "--loop-base"] {
         let result = cli()
-            .arg("play")
             .arg(&mml)
             .arg("-o")
             .arg(&output)
@@ -335,7 +308,7 @@ fn cli_pwm_compatibility_defaults_on_and_can_be_disabled() {
     ] {
         let output = dir.path().join(format!("{name}.wav"));
         let mut command = cli();
-        command.arg("play").arg(&source).arg("-o").arg(&output);
+        command.arg(&source).arg("-o").arg(&output);
         if let Some(value) = value {
             command.args(["--compat-vgm-pwm", value]);
         }
@@ -375,7 +348,6 @@ fn cli_rejects_pwm_compatibility_settings_for_mdx() {
     for value in ["true", "false"] {
         let output = dir.path().join(format!("{value}.wav"));
         let result = cli()
-            .arg("play")
             .arg(&source)
             .args(["--compat-vgm-pwm", value, "--pdx"])
             .arg(dir.path().join("mdx_fm_loop.pdx"))
@@ -439,7 +411,6 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
     fs::write(&source, bytes).unwrap();
     fs::write(&output, b"old output").unwrap();
     let result = cli()
-        .args(["play"])
         .arg(&source)
         .arg("-o")
         .arg(&output)
@@ -478,7 +449,6 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         vec!["--sample-rate", "not-a-number"],
     ] {
         let result = cli()
-            .arg("play")
             .arg(&source)
             .arg("-o")
             .arg(&output)
@@ -488,13 +458,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         assert!(!result.status.success());
         assert_eq!(fs::read(&output).unwrap(), rendered);
     }
-    let result = cli()
-        .arg("play")
-        .arg(&source)
-        .arg("-o")
-        .arg(&source)
-        .output()
-        .unwrap();
+    let result = cli().arg(&source).arg("-o").arg(&source).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&source).unwrap(), bytes);
 }
@@ -510,7 +474,6 @@ fn cli_wav_default_rate_needs_no_audio_device() {
     )
     .unwrap();
     let result = cli()
-        .arg("play")
         .arg(&source)
         .arg("--output")
         .arg(&output)
@@ -551,7 +514,6 @@ fn cli_fades_vgm_and_mdx_to_wav() {
     for (index, input) in [&vgm, &mdx].into_iter().enumerate() {
         let output = dir.path().join(format!("{index}.wav"));
         let result = cli()
-            .arg("play")
             .arg(input)
             .arg("-o")
             .arg(&output)
@@ -574,7 +536,6 @@ fn cli_fades_vgm_and_mdx_to_wav() {
     for value in ["-1", "invalid"] {
         assert!(
             !cli()
-                .arg("play")
                 .arg(&vgm)
                 .args(["--fadeout-samples", value])
                 .output()
@@ -610,7 +571,6 @@ fn cli_renders_mdx_with_pdx_and_compressed_vgm() {
     for (index, input) in [&mdx, &vgz].into_iter().enumerate() {
         let output = dir.path().join(format!("{index}.wav"));
         let result = cli()
-            .arg("play")
             .arg(input)
             .arg("-o")
             .arg(&output)
@@ -653,7 +613,6 @@ fn cli_applies_ym2608_rom_when_rendering_wav() {
     fs::write(&input, bytes).unwrap();
     fs::write(&rom, [0x77; 8192]).unwrap();
     let result = cli()
-        .arg("play")
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -684,13 +643,7 @@ fn cli_protects_pdx_and_rhythm_rom_from_output() {
     fs::write(&mdx, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
     let samples = soundlog::mdx::pdx::PdxBuilder::new().finalize().to_bytes();
     fs::write(&pdx, &samples).unwrap();
-    let result = cli()
-        .arg("play")
-        .arg(&mdx)
-        .arg("-o")
-        .arg(&pdx)
-        .output()
-        .unwrap();
+    let result = cli().arg(&mdx).arg("-o").arg(&pdx).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&pdx).unwrap(), samples);
     let vgm = dir.path().join("song.vgm");
@@ -701,7 +654,6 @@ fn cli_protects_pdx_and_rhythm_rom_from_output() {
     .unwrap();
     fs::write(&rom, [0x77; 8192]).unwrap();
     let result = cli()
-        .arg("play")
         .arg(&vgm)
         .arg("-o")
         .arg(&rom)
@@ -728,13 +680,7 @@ fn cli_does_not_replace_symlink_outputs() {
     .unwrap();
     fs::write(&target, b"keep").unwrap();
     symlink(&target, &output).unwrap();
-    let result = cli()
-        .arg("play")
-        .arg(&vgm)
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .unwrap();
+    let result = cli().arg(&vgm).arg("-o").arg(&output).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&target).unwrap(), b"keep");
     assert!(

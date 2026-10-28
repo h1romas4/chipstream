@@ -1,6 +1,6 @@
 # chipstream-cli
 
-`chipstream` plays VGM, VGZ, MDX, and MML files through an audio device or renders
+`csplay` plays VGM, VGZ, MDX, and MML files through an audio device or renders
 them to WAV.
 
 ## CLI overview
@@ -8,23 +8,7 @@ them to WAV.
 ```text
 Play retro sound-chip music
 
-Usage: chipstream <COMMAND>
-
-Commands:
-  play  Play a VGM, gzip-compressed VGZ, MDX, or MML file
-  help  Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
-
-## Subcommands and usage
-
-### `play`: Play or render a song
-
-```text
-Usage: chipstream play [OPTIONS] <FILE>
+Usage: csplay [OPTIONS] <FILE>
 
 Options:
   -o, --output <WAV_FILE>              Render to a stereo 16-bit PCM WAV file
@@ -37,23 +21,24 @@ Options:
       --loop-modifier <LOOP_MODIFIER>  Override the VGM loop modifier
       --loop-base <LOOP_BASE>          Override the VGM loop base
       --compat-vgm-pwm <BOOL>          Enable the VGM PWM workaround (default: true)
-  -h, --help                           Print help
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
-Run `chipstream play --help` for the full option descriptions.
+Run `csplay --help` for the full option descriptions.
 
 Examples:
 
 ```bash
-chipstream play example.vgm
-chipstream play example.vgz --loop-count 2
-chipstream play example.vgm --infinite
-chipstream play example.mdx --pdx samples.pdx
-chipstream play example.mml
-chipstream play example.vgm --ym2608-rhythm-rom ym2608.rom
-chipstream play example.vgm --compat-vgm-pwm false
-chipstream play example.vgz -o example.wav --sample-rate 48000
-chipstream play example.vgz -o example.wav --loop-count 2 --fadeout-samples 88200
+csplay example.vgm
+csplay example.vgz --loop-count 2
+csplay example.vgm --infinite
+csplay example.mdx --pdx samples.pdx
+csplay example.mml
+csplay example.vgm --ym2608-rhythm-rom ym2608.rom
+csplay example.vgm --compat-vgm-pwm false
+csplay example.vgz -o example.wav --sample-rate 48000
+csplay example.vgz -o example.wav --loop-count 2 --fadeout-samples 88200
 ```
 
 - WAV output defaults to 44,100 Hz; device playback defaults to the device's
