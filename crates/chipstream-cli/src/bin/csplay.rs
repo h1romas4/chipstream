@@ -27,12 +27,17 @@ struct Args {
     #[arg(long, value_name = "ROM_FILE")]
     ym2608_rhythm_rom: Option<PathBuf>,
 
-    /// Number of playthroughs (default: 1; 0 means 1).
-    #[arg(long, value_name = "COUNT", conflicts_with = "infinite")]
+    /// Number of playthroughs (default: 2; 0 means 1).
+    #[arg(
+        long,
+        value_name = "COUNT",
+        default_value = "2",
+        conflicts_with = "infinite"
+    )]
     loop_count: Option<u32>,
 
-    /// Fade after the final loop, in 44,100 Hz samples (0 disables).
-    #[arg(long, value_name = "SAMPLES")]
+    /// Fade after the final loop, in 44,100 Hz samples (default: 88,200; 0 disables).
+    #[arg(long, value_name = "SAMPLES", default_value = "88200")]
     fadeout_samples: Option<u32>,
 
     /// Repeat indefinitely when the file has a loop point.
@@ -124,6 +129,17 @@ mod tests {
             Args::try_parse_from(["csplay", "song.vgm", "--loop-count", "2", "--infinite",])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn playback_defaults_to_two_loops_and_two_second_fade() {
+        let Args {
+            loop_count,
+            fadeout_samples,
+            ..
+        } = Args::try_parse_from(["csplay", "song.vgm"]).unwrap();
+        assert_eq!(loop_count, Some(2));
+        assert_eq!(fadeout_samples, Some(88_200));
     }
 
     #[test]

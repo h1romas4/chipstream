@@ -15,8 +15,8 @@ Options:
       --sample-rate <HZ>               Output sample rate
       --pdx <PDX_FILE>                 PDX sample file for MDX/MML
       --ym2608-rhythm-rom <ROM_FILE>   YM2608 rhythm ROM for VGM/VGZ
-      --loop-count <COUNT>             Number of playthroughs
-      --fadeout-samples <SAMPLES>      Fade duration in 44,100 Hz samples
+      --loop-count <COUNT>             Number of playthroughs (default: 2)
+      --fadeout-samples <SAMPLES>      Fade duration in 44,100 Hz samples (default: 88,200)
       --infinite                       Repeat indefinitely when a loop exists
       --loop-modifier <LOOP_MODIFIER>  Override the VGM loop modifier
       --loop-base <LOOP_BASE>          Override the VGM loop base
@@ -43,8 +43,9 @@ csplay example.vgz -o example.wav --loop-count 2 --fadeout-samples 88200
 
 - WAV output defaults to 44,100 Hz; device playback defaults to the device's
   rate. An explicit device rate must be supported. Output samples are clipped.
-- Playback defaults to one playthrough (`--loop-count 0` also means one).
-  `--fadeout-samples 44100` fades for one second after the selected loop;
+- Playback defaults to two playthroughs (`--loop-count 0` means one).
+  The default `--fadeout-samples 88200` fades for two seconds after the selected
+  loop; `--fadeout-samples 44100` fades for one second;
   fadeout has no effect without a loop, with `--infinite`, or with a zero
   duration. `--infinite` cannot be combined with WAV output or `--loop-count`.
 - MML files must be UTF-8 and are compiled to MDX in memory. MDX and MML

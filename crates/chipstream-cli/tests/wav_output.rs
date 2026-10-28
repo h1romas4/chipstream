@@ -25,7 +25,7 @@ A t120 @1 l8 c L def
     fs::write(&mdx, document.to_bytes().unwrap()).unwrap();
     let mut lengths = Vec::new();
     for (case, options) in [
-        ("once", vec!["--loop-count", "1"]),
+        ("once", vec!["--loop-count", "1", "--fadeout-samples", "0"]),
         (
             "fade",
             vec!["--loop-count", "2", "--fadeout-samples", "4410"],
@@ -465,14 +465,16 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
 
 #[test]
 fn cli_wav_default_rate_needs_no_audio_device() {
+    use soundlog::vgm::command::WaitSamples;
+
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("input.vgm");
     let output = dir.path().join("output.wav");
-    fs::write(
-        &source,
-        include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
-    )
-    .unwrap();
+    let mut builder = soundlog::vgm::VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.set_loop_index(1);
+    builder.add_vgm_command(WaitSamples(1000));
+    fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
     let result = cli()
         .arg(&source)
         .arg("--output")
@@ -484,10 +486,9 @@ fn cli_wav_default_rate_needs_no_audio_device() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(
-        hound::WavReader::open(output).unwrap().spec().sample_rate,
-        44_100
-    );
+    let wav = hound::WavReader::open(output).unwrap();
+    assert_eq!(wav.spec().sample_rate, 44_100);
+    assert_eq!(wav.duration(), 90_300);
 }
 
 #[test]
@@ -517,7 +518,14 @@ fn cli_fades_vgm_and_mdx_to_wav() {
             .arg(input)
             .arg("-o")
             .arg(&output)
-            .args(["--fadeout-samples", "4410", "--sample-rate", "48000"])
+            .args([
+                "--loop-count",
+                "1",
+                "--fadeout-samples",
+                "4410",
+                "--sample-rate",
+                "48000",
+            ])
             .output()
             .unwrap();
         assert!(
