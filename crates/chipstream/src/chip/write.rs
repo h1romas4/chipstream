@@ -3,6 +3,7 @@ use soundlog::chip::{
     Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
     Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
+use soundlog::vgm::command::{Instance, VgmCommand};
 
 #[cfg(feature = "c140")]
 use super::C140;
@@ -121,6 +122,33 @@ define_writes! {
     Ym2610(Ym2610Spec, Ym2610b, |s| (s.port, s.register, u32::from(s.value))),
     Ymf262(Ymf262Spec, Ymf262, |s| (s.port, s.register, u32::from(s.value))),
     Ymf278b(Ymf278bSpec, Ymf278b, |s| (s.port, s.register, u32::from(s.value))),
+}
+
+impl ChipRegisterWrite {
+    pub(crate) fn from_vgm_command(command: &VgmCommand) -> Option<(Instance, Self)> {
+        use VgmCommand::*;
+        Some(match command {
+            Sn76489Write(i, s) => (*i, Self::Psg(s.clone())),
+            GameGearPsgWrite(i, s) => (*i, Self::GameGearPsg(s.clone())),
+            SegaPcmWrite(i, s) => (*i, Self::SegaPcm(s.clone())),
+            C140Write(i, s) => (*i, Self::C140(s.clone())),
+            PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
+            Ym2413Write(i, s) => (*i, Self::Ym2413(s.clone())),
+            Ym2612Write(i, s) => (*i, Self::Ym2612(s.clone())),
+            Ym2151Write(i, s) => (*i, Self::Ym2151(s.clone())),
+            Ym2203Write(i, s) => (*i, Self::Ym2203(s.clone())),
+            Ym2608Write(i, s) => (*i, Self::Ym2608(s.clone())),
+            Ym2610bWrite(i, s) => (*i, Self::Ym2610(s.clone())),
+            Ym3812Write(i, s) => (*i, Self::Ym3812(s.clone())),
+            Ym3526Write(i, s) => (*i, Self::Ym3526(s.clone())),
+            Y8950Write(i, s) => (*i, Self::Y8950(s.clone())),
+            Ymf262Write(i, s) => (*i, Self::Ymf262(s.clone())),
+            Ymf278bWrite(i, s) => (*i, Self::Ymf278b(s.clone())),
+            Okim6258Write(i, s) => (*i, Self::Okim6258(s.clone())),
+            Okim6295Write(i, s) => (*i, Self::Okim6295(s.clone())),
+            _ => return None,
+        })
+    }
 }
 
 macro_rules! typed_write {

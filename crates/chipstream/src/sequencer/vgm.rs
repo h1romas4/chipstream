@@ -1,5 +1,7 @@
 //! VGM command playback, chip routing, and stereo audio rendering.
 
+mod timing;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
@@ -36,6 +38,7 @@ use crate::fixed::{advance, divide_ratio};
 
 use super::{compat::PwmCompatibility, event, volume};
 use event::{VgmEventFilter, VgmWriteEvent};
+use timing::{Timing, TimingProfile};
 
 const WAIT_STEP: u32 = 256;
 const SRC_CHUNK: usize = 256;
@@ -194,58 +197,6 @@ struct Memory {
     writes: HashMap<(u8, u32), u8>,
 }
 
-#[derive(Clone, Copy)]
-struct OkiClockChanges {
-    low: [u8; 4],
-    high: [u8; 4],
-}
-
-impl Default for OkiClockChanges {
-    fn default() -> Self {
-        Self {
-            low: [u8::MAX; 4],
-            high: [0; 4],
-        }
-    }
-}
-
-impl OkiClockChanges {
-    fn observe(changes: &mut [[Self; 2]; 2], command: &VgmCommand) {
-        let (kind, instance, register, value) = match command {
-            VgmCommand::Okim6258Write(instance, spec) => (0, instance, spec.register, spec.value),
-            VgmCommand::Okim6295Write(instance, spec) => (1, instance, spec.register, spec.value),
-            _ => return,
-        };
-        if (0x08..=0x0b).contains(&register) {
-            let instance = match instance {
-                Instance::Primary => 0,
-                Instance::Secondary => 1,
-            };
-            let index = usize::from(register - 0x08);
-            let value = if kind == 1 && register == 0x0b {
-                value & 0x7f
-            } else {
-                value
-            };
-            changes[kind][instance].low[index] = changes[kind][instance].low[index].min(value);
-            changes[kind][instance].high[index] = changes[kind][instance].high[index].max(value);
-        }
-    }
-
-    fn rate_bounds(self, clock: u32, max_divisor: u32, min_divisor: u32) -> (u32, u32) {
-        let mut low = clock.to_le_bytes();
-        let mut high = low;
-        for index in 0..4 {
-            low[index] = low[index].min(self.low[index]);
-            high[index] = high[index].max(self.high[index]);
-        }
-        (
-            (u32::from_le_bytes(low) / max_divisor).max(1),
-            u32::from_le_bytes(high).div_ceil(min_divisor).max(1),
-        )
-    }
-}
-
 impl Memory {
     fn key(access: AccessClass) -> Option<u8> {
         match access {
@@ -279,7 +230,6 @@ struct VoiceConfig {
     instance: Instance,
     clock: u32,
     dual: bool,
-    clock_changes: OkiClockChanges,
 }
 
 struct Voice {
@@ -467,13 +417,16 @@ impl Voice {
 /// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
 /// T6W28 PSG and OKIM6258 3-bit ADPCM return errors.
 ///
-/// YMFM register writes are queued per chip instance and applied in order,
-/// at most one per native sample. YM2203/YM2608 and YM2610(B) use intervals
-/// of 18 and 9 native samples respectively so that their oversampled FM
-/// engines advance between writes. A burst can therefore delay subsequent
-/// writes; exceeding 1,048,576 pending writes per instance is an error.
+/// Register write pacing is determined by the device timing profile. YMFM
+/// writes are queued per chip instance and applied in order, at most one per
+/// native sample. YM2203/YM2608 and YM2610(B) use intervals of 18 and 9
+/// native samples respectively so that their oversampled FM engines advance
+/// between writes. A burst can therefore delay subsequent writes; exceeding
+/// 1,048,576 pending writes per instance is an error.
 /// At the end of playback, pending writes are applied at the final boundary
 /// without generating additional audio.
+/// Devices with variable clocks use a conservative range derived from their
+/// timing profile and the stream's clock writes to configure resampling.
 ///
 /// The global volume modifier and extra-header chip volumes multiply the
 /// per-chip gain. Relative volumes multiply the existing level; absolute
@@ -541,13 +494,13 @@ impl VgmSequencer {
         let data = data.into();
         let header = VgmHeader::from_bytes(&data)?;
         let extra = header.extra_header_from_bytes(&data)?;
-        let mut changes = [[OkiClockChanges::default(); 2]; 2];
-        if header.okim6258_clock & 0x3fff_ffff != 0 || header.okim6295_clock & 0x3fff_ffff != 0 {
+        let mut timing = Timing::new(&Self::supported_clocks(&header));
+        if timing.needs_scan() {
             visit_non_data_block_commands(&data, &header, |command| {
-                OkiClockChanges::observe(&mut changes, command);
+                timing.observe(command);
             })?;
         }
-        let voices = Self::make_voices(&header, extra.as_ref(), changes, output_rate)?;
+        let voices = Self::make_voices(&header, extra.as_ref(), &timing, output_rate)?;
         let stream = VgmStream::from_vgm(data)?;
         Self::from_parts(stream, voices, output_rate, chunk_frames)
     }
@@ -610,6 +563,7 @@ impl VgmSequencer {
         header: &VgmHeader,
         extra: Option<&VgmExtraHeader>,
         config: VoiceConfig,
+        timing: &Timing,
         output_rate: u32,
     ) -> Result<Voice, VgmSequencerError> {
         let VoiceConfig {
@@ -617,28 +571,8 @@ impl VgmSequencer {
             instance,
             clock,
             dual,
-            clock_changes,
         } = config;
-        let paced = matches!(
-            chip,
-            Chip::Ym2151
-                | Chip::Ym2203
-                | Chip::Ym2413
-                | Chip::Ym2608
-                | Chip::Ym2610b
-                | Chip::Ym2612
-                | Chip::Ym3526
-                | Chip::Y8950
-                | Chip::Ym3812
-                | Chip::Ymf262
-                | Chip::Ymf278b
-        );
-        // YMFM's OPN/OPNA/OPNB native output is oversampled relative to FM.
-        let write_interval = match chip {
-            Chip::Ym2203 | Chip::Ym2608 => 18,
-            Chip::Ym2610b => 9,
-            _ => 1,
-        };
+        let profile = TimingProfile::for_chip(&chip);
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
                 (2, 44_100) => 25_056_500,
@@ -789,17 +723,8 @@ impl VgmSequencer {
                 actual: backend.channels(),
             }));
         }
-        let (min_rate, max_rate) = if chip == Chip::Okim6258 {
-            clock_changes.rate_bounds(clock, 1024, 512)
-        } else if chip == Chip::Okim6295 {
-            clock_changes.rate_bounds(clock, 165, 132)
-        } else {
-            let rate = backend.sample_rate_ratio();
-            (
-                rate.floor_hz(),
-                rate.numerator().div_ceil(rate.denominator().get()),
-            )
-        };
+        let (min_rate, max_rate) =
+            timing.bounds(&chip, instance, clock, backend.sample_rate_ratio());
         Ok(Voice {
             chip,
             instance,
@@ -816,8 +741,8 @@ impl VgmSequencer {
             gain: 1.0,
             main_coefficient: main,
             paired_coefficient: paired,
-            paced_writes: paced.then(VecDeque::new),
-            write_interval,
+            paced_writes: profile.write_interval.map(|_| VecDeque::new()),
+            write_interval: profile.write_interval.unwrap_or(1),
             write_cooldown: 0,
         })
     }
@@ -845,14 +770,16 @@ impl VgmSequencer {
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
-        let mut changes = [[OkiClockChanges::default(); 2]; 2];
-        for command in &document.commands {
-            OkiClockChanges::observe(&mut changes, command);
+        let mut timing = Timing::new(&Self::supported_clocks(&document.header));
+        if timing.needs_scan() {
+            for command in &document.commands {
+                timing.observe(command);
+            }
         }
         let voices = Self::make_voices(
             &document.header,
             document.extra_header.as_ref(),
-            changes,
+            &timing,
             output_rate,
         )?;
         Self::from_parts(
@@ -877,25 +804,14 @@ impl VgmSequencer {
             ..VgmHeader::default()
         };
         header.okim6258_flags.clock_divider = soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
-        let mut changes = [[OkiClockChanges::default(); 2]; 2];
+        let mut timing = Timing::new(&Self::supported_clocks(&header));
         if okim6258_clock.is_some() {
             // Legacy MDX PCM rate commands can switch between these clocks.
             for clock in [4_000_000_u32, 8_000_000_u32] {
-                for (index, value) in clock.to_le_bytes().into_iter().enumerate() {
-                    OkiClockChanges::observe(
-                        &mut changes,
-                        &VgmCommand::Okim6258Write(
-                            Instance::Primary,
-                            soundlog::chip::Okim6258Spec {
-                                register: 0x08 + index as u8,
-                                value,
-                            },
-                        ),
-                    );
-                }
+                timing.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
             }
         }
-        let voices = Self::make_voices(&header, None, changes, output_rate)?;
+        let voices = Self::make_voices(&header, None, &timing, output_rate)?;
         Self::from_parts(stream, voices, output_rate, chunk_frames)
     }
 
@@ -912,7 +828,7 @@ impl VgmSequencer {
     fn make_voices(
         header: &VgmHeader,
         extra: Option<&VgmExtraHeader>,
-        changes: [[OkiClockChanges; 2]; 2],
+        timing: &Timing,
         output_rate: u32,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
         let mut voices = Vec::new();
@@ -939,11 +855,8 @@ impl VgmSequencer {
                         instance,
                         clock,
                         dual: raw & 0x4000_0000 != 0,
-                        clock_changes: changes[usize::from(chip == Chip::Okim6295)][match instance {
-                            Instance::Primary => 0,
-                            Instance::Secondary => 1,
-                        }],
                     },
+                    timing,
                     output_rate,
                 )?);
             }
@@ -1290,11 +1203,8 @@ impl VgmSequencer {
 
     fn command(&mut self, command: VgmCommand) -> Result<(), VgmSequencerError> {
         use VgmCommand::*;
-        let write = match command {
-            Sn76489Write(i, s) => Some((i, ChipRegisterWrite::Psg(s))),
-            GameGearPsgWrite(i, s) => Some((i, ChipRegisterWrite::GameGearPsg(s))),
-            SegaPcmWrite(i, s) => Some((i, ChipRegisterWrite::SegaPcm(s))),
-            C140Write(i, s) => Some((i, ChipRegisterWrite::C140(s))),
+        let write = ChipRegisterWrite::from_vgm_command(&command);
+        match command {
             PwmWrite(i, s) => {
                 let index = match i {
                     Instance::Primary => 0,
@@ -1318,21 +1228,7 @@ impl VgmSequencer {
                         }),
                     )?;
                 }
-                Some((i, ChipRegisterWrite::Pwm(s)))
             }
-            Ym2413Write(i, s) => Some((i, ChipRegisterWrite::Ym2413(s))),
-            Ym2612Write(i, s) => Some((i, ChipRegisterWrite::Ym2612(s))),
-            Ym2151Write(i, s) => Some((i, ChipRegisterWrite::Ym2151(s))),
-            Ym2203Write(i, s) => Some((i, ChipRegisterWrite::Ym2203(s))),
-            Ym2608Write(i, s) => Some((i, ChipRegisterWrite::Ym2608(s))),
-            Ym2610bWrite(i, s) => Some((i, ChipRegisterWrite::Ym2610(s))),
-            Ym3812Write(i, s) => Some((i, ChipRegisterWrite::Ym3812(s))),
-            Ym3526Write(i, s) => Some((i, ChipRegisterWrite::Ym3526(s))),
-            Y8950Write(i, s) => Some((i, ChipRegisterWrite::Y8950(s))),
-            Ymf262Write(i, s) => Some((i, ChipRegisterWrite::Ymf262(s))),
-            Ymf278bWrite(i, s) => Some((i, ChipRegisterWrite::Ymf278b(s))),
-            Okim6258Write(i, s) => Some((i, ChipRegisterWrite::Okim6258(s))),
-            Okim6295Write(i, s) => Some((i, ChipRegisterWrite::Okim6295(s))),
             AY8910StereoMask(mask) if mask.is_ym2203 => {
                 if let Some(voice) = self
                     .voices
@@ -1352,14 +1248,12 @@ impl VgmSequencer {
                         coefficient(mask.left_ch3, mask.right_ch3),
                     ])?;
                 }
-                None
             }
             DataBlock(block) => {
                 self.load_block(*block)?;
-                None
             }
-            _ => None,
-        };
+            _ => {}
+        }
         if let Some((instance, write)) = write {
             self.write_chip(instance, write)?;
         }
