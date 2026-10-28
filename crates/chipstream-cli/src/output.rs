@@ -1,4 +1,4 @@
-use std::io::BufWriter;
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -28,13 +28,7 @@ fn wav_sample(sample: f32) -> Result<i16> {
 }
 
 pub(crate) fn write_wav(input: Input, options: Options, rate: u32, output: &Path) -> Result<()> {
-    options.validate(&input)?;
-    if options.loop_count.is_none() {
-        bail!("infinite playback cannot be rendered to a WAV file");
-    }
-    if rate == 0 || rate > u32::MAX / 4 {
-        bail!("WAV sample rate must be in 1..={} Hz", u32::MAX / 4);
-    }
+    validate_wav(&input, &options, rate)?;
     match std::fs::symlink_metadata(output) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             bail!("WAV output must be a regular file, not a symlink or special file");
@@ -46,37 +40,70 @@ pub(crate) fn write_wav(input: Input, options: Options, rate: u32, output: &Path
                 .with_context(|| format!("failed to inspect WAV output {}", output.display()));
         }
     }
-    let mut player = Player::new(input, rate, &options)?;
     let directory = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(directory)
         .with_context(|| format!("failed to create temporary WAV in {}", directory.display()))?;
-    {
-        let writer = BufWriter::new(temporary.as_file_mut());
-        let spec = hound::WavSpec {
-            channels: 2,
-            sample_rate: rate,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer =
-            hound::WavWriter::new(writer, spec).context("failed to create WAV header")?;
-        let mut bytes_written = 0;
-        while let Some(block) = player.render()? {
-            bytes_written = wav_data_size(bytes_written, block.frames().len())?;
-            for sample in block.frames().iter().flatten() {
-                writer
-                    .write_sample(wav_sample(*sample)?)
-                    .context("failed to write WAV sample")?;
-            }
-        }
-        writer.finalize().context("failed to finalize WAV output")?;
-    }
+    render_wav(input, options, rate, temporary.as_file_mut())?;
     temporary
         .persist(output)
         .with_context(|| format!("failed to replace WAV output {}", output.display()))?;
+    Ok(())
+}
+
+pub(crate) fn write_wav_stdout(input: Input, options: Options, rate: u32) -> Result<()> {
+    validate_wav(&input, &options, rate)?;
+    let mut temporary = tempfile::tempfile().context("failed to create temporary WAV")?;
+    render_wav(input, options, rate, &mut temporary)?;
+    temporary
+        .seek(SeekFrom::Start(0))
+        .context("failed to rewind temporary WAV")?;
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    io::copy(&mut temporary, &mut stdout).context("failed to write WAV to standard output")?;
+    stdout
+        .flush()
+        .context("failed to flush WAV from standard output")
+}
+
+fn validate_wav(input: &Input, options: &Options, rate: u32) -> Result<()> {
+    options.validate(input)?;
+    if options.loop_count.is_none() {
+        bail!("infinite playback cannot be rendered to a WAV file");
+    }
+    if rate == 0 || rate > u32::MAX / 4 {
+        bail!("WAV sample rate must be in 1..={} Hz", u32::MAX / 4);
+    }
+    Ok(())
+}
+
+fn render_wav(
+    input: Input,
+    options: Options,
+    rate: u32,
+    output: &mut (impl Write + Seek),
+) -> Result<()> {
+    let mut player = Player::new(input, rate, &options)?;
+    let writer = BufWriter::new(output);
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::new(writer, spec).context("failed to create WAV header")?;
+    let mut bytes_written = 0;
+    while let Some(block) = player.render()? {
+        bytes_written = wav_data_size(bytes_written, block.frames().len())?;
+        for sample in block.frames().iter().flatten() {
+            writer
+                .write_sample(wav_sample(*sample)?)
+                .context("failed to write WAV sample")?;
+        }
+    }
+    writer.finalize().context("failed to finalize WAV output")?;
     Ok(())
 }
 

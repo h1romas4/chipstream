@@ -36,7 +36,6 @@ A t120 @1 l8 c L def
             let output = dir.path().join(format!("{case}-{index}.wav"));
             let result = cli()
                 .arg(input)
-                .arg("-o")
                 .arg(&output)
                 .args(["--sample-rate", "48000"])
                 .args(&options)
@@ -126,7 +125,7 @@ A t120 @1 q8 l4 cccccccc
     let mut rendered = Vec::new();
     for (index, input) in [&mml, &mdx, &vgm].into_iter().enumerate() {
         let output = dir.path().join(format!("{index}.wav"));
-        let result = cli().arg(input).arg("-o").arg(&output).output().unwrap();
+        let result = cli().arg(input).arg(&output).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -182,7 +181,7 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
     let mut rendered = Vec::new();
     for override_path in [None, Some(&override_pdx)] {
         let mut command = cli();
-        command.arg(&mml).arg("-o").arg(&output);
+        command.arg(&mml).arg(&output);
         if let Some(path) = override_path {
             command.arg("--pdx").arg(path);
         }
@@ -203,7 +202,7 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
     );
     for input in [&mml, &sidecar] {
         let before = fs::read(input).unwrap();
-        let result = cli().arg(&mml).arg("-o").arg(input).output().unwrap();
+        let result = cli().arg(&mml).arg(input).output().unwrap();
         assert!(!result.status.success());
         assert_eq!(fs::read(input).unwrap(), before);
     }
@@ -211,14 +210,13 @@ fn cli_mml_resolves_pdx_and_protects_inputs() {
         .arg(&mml)
         .arg("--pdx")
         .arg(&override_pdx)
-        .arg("-o")
         .arg(&override_pdx)
         .output()
         .unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&override_pdx).unwrap(), pdx);
     fs::remove_file(&sidecar).unwrap();
-    let result = cli().arg(&mml).arg("-o").arg(&output).output().unwrap();
+    let result = cli().arg(&mml).arg(&output).output().unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("not found"));
     assert_eq!(fs::read(&output).unwrap(), rendered[0]);
@@ -236,7 +234,7 @@ fn cli_mml_reports_errors_without_overwriting_wav() {
         (&b"A a>>>>>>>>>a"[..], "failed to compile MML"),
     ] {
         fs::write(&mml, source).unwrap();
-        let result = cli().arg(&mml).arg("-o").arg(&output).output().unwrap();
+        let result = cli().arg(&mml).arg(&output).output().unwrap();
         assert!(!result.status.success());
         assert!(
             String::from_utf8_lossy(&result.stderr).contains(expected),
@@ -254,7 +252,6 @@ fn cli_mml_reports_errors_without_overwriting_wav() {
     for option in ["--compat-vgm-pwm", "--loop-modifier", "--loop-base"] {
         let result = cli()
             .arg(&mml)
-            .arg("-o")
             .arg(&output)
             .args([
                 option,
@@ -308,7 +305,7 @@ fn cli_pwm_compatibility_defaults_on_and_can_be_disabled() {
     ] {
         let output = dir.path().join(format!("{name}.wav"));
         let mut command = cli();
-        command.arg(&source).arg("-o").arg(&output);
+        command.arg(&source).arg(&output);
         if let Some(value) = value {
             command.args(["--compat-vgm-pwm", value]);
         }
@@ -351,7 +348,6 @@ fn cli_rejects_pwm_compatibility_settings_for_mdx() {
             .arg(&source)
             .args(["--compat-vgm-pwm", value, "--pdx"])
             .arg(dir.path().join("mdx_fm_loop.pdx"))
-            .arg("-o")
             .arg(&output)
             .output()
             .unwrap();
@@ -375,6 +371,7 @@ fn library_rejects_conflicting_infinite_options() {
         loop_modifier: None,
         loop_base: None,
         compat_vgm_pwm: None,
+        no_progress: false,
     };
     assert!(
         chipstream_cli::play(options())
@@ -412,7 +409,6 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
     fs::write(&output, b"old output").unwrap();
     let result = cli()
         .arg(&source)
-        .arg("-o")
         .arg(&output)
         .args(["--sample-rate", "48000"])
         .output()
@@ -440,6 +436,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         loop_modifier: None,
         loop_base: None,
         compat_vgm_pwm: None,
+        no_progress: false,
     })
     .unwrap();
     assert_eq!(fs::read(library_output).unwrap(), rendered);
@@ -448,17 +445,11 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         vec!["--sample-rate", "0"],
         vec!["--sample-rate", "not-a-number"],
     ] {
-        let result = cli()
-            .arg(&source)
-            .arg("-o")
-            .arg(&output)
-            .args(args)
-            .output()
-            .unwrap();
+        let result = cli().arg(&source).arg(&output).args(args).output().unwrap();
         assert!(!result.status.success());
         assert_eq!(fs::read(&output).unwrap(), rendered);
     }
-    let result = cli().arg(&source).arg("-o").arg(&source).output().unwrap();
+    let result = cli().arg(&source).arg(&source).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&source).unwrap(), bytes);
 }
@@ -475,12 +466,7 @@ fn cli_wav_default_rate_needs_no_audio_device() {
     builder.set_loop_index(1);
     builder.add_vgm_command(WaitSamples(1000));
     fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
-    let result = cli()
-        .arg(&source)
-        .arg("--output")
-        .arg(&output)
-        .output()
-        .unwrap();
+    let result = cli().arg(&source).arg(&output).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -489,6 +475,46 @@ fn cli_wav_default_rate_needs_no_audio_device() {
     let wav = hound::WavReader::open(output).unwrap();
     assert_eq!(wav.spec().sample_rate, 44_100);
     assert_eq!(wav.duration(), 90_300);
+}
+
+#[test]
+fn cli_streams_wav_to_stdout_when_output_is_dash() {
+    use soundlog::vgm::command::WaitSamples;
+    use std::io::Cursor;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("input.vgm");
+    let output = dir.path().join("output.wav");
+    let mut builder = soundlog::vgm::VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(100));
+    builder.set_loop_index(1);
+    builder.add_vgm_command(WaitSamples(1000));
+    fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
+
+    let streamed = cli()
+        .arg(&source)
+        .arg("-")
+        .args(["--loop-count", "1", "--fadeout-samples", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        streamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    assert!(streamed.stdout.starts_with(b"RIFF"));
+    let wav = hound::WavReader::new(Cursor::new(&streamed.stdout)).unwrap();
+    assert_eq!(wav.spec().sample_rate, 44_100);
+    assert_eq!(wav.duration(), 1100);
+
+    let saved = cli()
+        .arg(&source)
+        .arg(&output)
+        .args(["--loop-count", "1", "--fadeout-samples", "0"])
+        .output()
+        .unwrap();
+    assert!(saved.status.success());
+    assert_eq!(streamed.stdout, fs::read(output).unwrap());
 }
 
 #[test]
@@ -516,7 +542,6 @@ fn cli_fades_vgm_and_mdx_to_wav() {
         let output = dir.path().join(format!("{index}.wav"));
         let result = cli()
             .arg(input)
-            .arg("-o")
             .arg(&output)
             .args([
                 "--loop-count",
@@ -580,7 +605,6 @@ fn cli_renders_mdx_with_pdx_and_compressed_vgm() {
         let output = dir.path().join(format!("{index}.wav"));
         let result = cli()
             .arg(input)
-            .arg("-o")
             .arg(&output)
             .args(["--sample-rate", "48000"])
             .output()
@@ -622,7 +646,6 @@ fn cli_applies_ym2608_rom_when_rendering_wav() {
     fs::write(&rom, [0x77; 8192]).unwrap();
     let result = cli()
         .arg(&input)
-        .arg("-o")
         .arg(&output)
         .arg("--ym2608-rhythm-rom")
         .arg(&rom)
@@ -651,7 +674,7 @@ fn cli_protects_pdx_and_rhythm_rom_from_output() {
     fs::write(&mdx, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
     let samples = soundlog::mdx::pdx::PdxBuilder::new().finalize().to_bytes();
     fs::write(&pdx, &samples).unwrap();
-    let result = cli().arg(&mdx).arg("-o").arg(&pdx).output().unwrap();
+    let result = cli().arg(&mdx).arg(&pdx).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&pdx).unwrap(), samples);
     let vgm = dir.path().join("song.vgm");
@@ -663,7 +686,6 @@ fn cli_protects_pdx_and_rhythm_rom_from_output() {
     fs::write(&rom, [0x77; 8192]).unwrap();
     let result = cli()
         .arg(&vgm)
-        .arg("-o")
         .arg(&rom)
         .arg("--ym2608-rhythm-rom")
         .arg(&rom)
@@ -688,7 +710,7 @@ fn cli_does_not_replace_symlink_outputs() {
     .unwrap();
     fs::write(&target, b"keep").unwrap();
     symlink(&target, &output).unwrap();
-    let result = cli().arg(&vgm).arg("-o").arg(&output).output().unwrap();
+    let result = cli().arg(&vgm).arg(&output).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(fs::read(&target).unwrap(), b"keep");
     assert!(

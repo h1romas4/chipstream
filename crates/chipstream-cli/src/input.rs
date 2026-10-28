@@ -37,6 +37,87 @@ pub enum Input {
     Mdx(Box<MdxPackage>),
 }
 
+pub fn metadata_line(input: &Input) -> Result<String> {
+    let mut fields = Vec::new();
+    let chips = match input {
+        Input::Vgm(bytes) => {
+            let header =
+                soundlog::VgmHeader::from_bytes(bytes).context("failed to parse VGM metadata")?;
+            if header.gd3_offset != 0 {
+                let gd3_start = header
+                    .gd3_offset
+                    .checked_add(0x14)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .ok_or_else(|| anyhow!("VGM GD3 metadata offset is out of range"))?;
+                let gd3_bytes = bytes
+                    .get(gd3_start..)
+                    .ok_or_else(|| anyhow!("VGM GD3 metadata offset exceeds the input"))?;
+                let gd3 = soundlog::meta::Gd3::try_from(gd3_bytes)
+                    .context("failed to parse VGM GD3 metadata")?;
+                push_metadata_field(&mut fields, "Title", gd3.track_name_en.as_deref());
+            }
+            let mut chips: Vec<(String, usize)> = Vec::new();
+            for (_, chip, _) in header.chip_instances().iter() {
+                let name = format!("{chip:?}").to_ascii_uppercase();
+                if let Some((_, count)) = chips.iter_mut().find(|(existing, _)| *existing == name) {
+                    *count += 1;
+                } else {
+                    chips.push((name, 1));
+                }
+            }
+            chips
+                .into_iter()
+                .map(|(name, count)| {
+                    if count == 1 {
+                        name
+                    } else {
+                        format!("{name} x{count}")
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        Input::Mdx(package) => {
+            push_metadata_field(&mut fields, "Title", Some(&package.mdx.header.title));
+            let mut chips = vec!["YM2151".to_owned()];
+            if package.drives_okim6258() {
+                chips.push("OKIM6258".to_owned());
+            }
+            chips
+        }
+    };
+    fields.push(format!(
+        "Chips: {}",
+        if chips.is_empty() {
+            "none".to_owned()
+        } else {
+            chips.join(", ")
+        }
+    ));
+    Ok(fields.join(" | "))
+}
+
+fn push_metadata_field(fields: &mut Vec<String>, name: &str, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    let value = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !value.is_empty() {
+        fields.push(format!("{name}: {value}"));
+    }
+}
+
 impl From<Vec<u8>> for Input {
     fn from(data: Vec<u8>) -> Self {
         Self::Vgm(data)
@@ -258,6 +339,59 @@ mod tests {
         assert!(decode(compressed, false, 4).is_err());
         assert!(decode(raw.to_vec(), true, 32).is_err());
         assert!(read_bounded(&raw[..], 4).is_err());
+    }
+
+    #[test]
+    fn metadata_line_uses_vgm_english_title_and_declared_chips() {
+        use soundlog::chip::Chip;
+        use soundlog::meta::Gd3;
+        use soundlog::vgm::VgmBuilder;
+        use soundlog::vgm::command::Instance;
+
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+        builder.register_chip(Chip::Ym2612, Instance::Secondary, 7_670_454);
+        builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+        builder.set_gd3(Gd3 {
+            track_name_en: Some("One\nSong".to_owned()),
+            track_name_origin: Some("Japanese Title".to_owned()),
+            game_name_en: Some("Demo".to_owned()),
+            author_name_origin: Some("Artist".to_owned()),
+            ..Gd3::default()
+        });
+        let bytes: Vec<u8> = builder.finalize().into();
+
+        assert_eq!(
+            metadata_line(&Input::Vgm(bytes)).unwrap(),
+            "Title: One Song | Chips: SN76489, YM2612 x2"
+        );
+    }
+
+    #[test]
+    fn metadata_line_lists_mdx_chips_based_on_loaded_pdx() {
+        use soundlog::mdx::document::MdxBuilder;
+        use soundlog::mdx::pdx::PdxBuilder;
+
+        let mut builder = MdxBuilder::new();
+        builder.set_title("MDX Song");
+        let mdx = builder.finalize().unwrap();
+        let without_pdx = Input::Mdx(Box::new(MdxPackage {
+            mdx: mdx.clone(),
+            pdx: None,
+        }));
+        let with_pdx = Input::Mdx(Box::new(MdxPackage {
+            mdx,
+            pdx: Some(PdxBuilder::new().finalize()),
+        }));
+
+        assert_eq!(
+            metadata_line(&without_pdx).unwrap(),
+            "Title: MDX Song | Chips: YM2151"
+        );
+        assert_eq!(
+            metadata_line(&with_pdx).unwrap(),
+            "Title: MDX Song | Chips: YM2151, OKIM6258"
+        );
     }
 
     #[test]

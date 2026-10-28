@@ -4,7 +4,7 @@ mod input;
 mod output;
 mod playback;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 pub struct PlayOptions {
     /// Input file.
     pub file: PathBuf,
-    /// WAV output path, or `None` for device playback.
+    /// WAV output path, `-` for stdout, or `None` for device playback.
     pub output: Option<PathBuf>,
     /// Output rate in Hz; defaults to 44,100 for WAV or the device rate.
     pub sample_rate: Option<u32>,
@@ -32,6 +32,8 @@ pub struct PlayOptions {
     pub loop_base: Option<i8>,
     /// Configure the VGM PWM workaround; `None` enables it by default.
     pub compat_vgm_pwm: Option<bool>,
+    /// Suppress playback progress output for audio-device playback.
+    pub no_progress: bool,
 }
 
 /// Play through the default device, or render to WAV when an output is given.
@@ -48,6 +50,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        no_progress,
     } = options;
     if infinite && (output.is_some() || loop_count.is_some()) {
         anyhow::bail!("infinite playback cannot be combined with WAV output or a loop count");
@@ -55,11 +58,12 @@ pub fn play(options: PlayOptions) -> Result<()> {
     if sample_rate == Some(0) {
         anyhow::bail!("sample rate must be nonzero");
     }
-    input::protect_source(&file, output.as_deref())?;
+    let output_path = output.as_deref().filter(|path| *path != Path::new("-"));
+    input::protect_source(&file, output_path)?;
     if let Some(path) = ym2608_rhythm_rom.as_deref() {
-        input::protect_source(path, output.as_deref())?;
+        input::protect_source(path, output_path)?;
     }
-    let data = input::load(&file, pdx.as_deref(), output.as_deref())
+    let data = input::load(&file, pdx.as_deref(), output_path)
         .with_context(|| format!("failed to load {}", file.display()))?;
     if ym2608_rhythm_rom.is_some() && matches!(data, input::Input::Mdx(_)) {
         anyhow::bail!("--ym2608-rhythm-rom applies only to VGM/VGZ");
@@ -81,9 +85,13 @@ pub fn play(options: PlayOptions) -> Result<()> {
         ym2608_rhythm_rom,
     };
     match output {
+        Some(path) if path == Path::new("-") => {
+            output::write_wav_stdout(data, options, sample_rate.unwrap_or(44_100))
+                .with_context(|| format!("failed to render {}", file.display()))
+        }
         Some(path) => output::write_wav(data, options, sample_rate.unwrap_or(44_100), &path)
             .with_context(|| format!("failed to render {}", file.display())),
-        None => playback::play(data, options, sample_rate)
+        None => playback::play(data, options, sample_rate, no_progress)
             .with_context(|| format!("failed to play {}", file.display())),
     }
 }

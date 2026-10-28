@@ -13,12 +13,14 @@ readme = "README.md"
 anyhow = "1.0"
 chipstream = { path = "../chipstream", version = "0.1.0", features = ["c140", "okim6258", "okim6295", "pwm", "segapcm", "sn76496"] }
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
 cpal = { version = "0.18.2", features = ["audioworklet"] }
 flate2 = "1.0"
 hound = "3.5"
 mmlx = { workspace = true, features = ["source-map"] }
 soundlog = { workspace = true }
 tempfile = "3"
+terminal_size = "0.4"
 
 [[bin]]
 name = "csplay"

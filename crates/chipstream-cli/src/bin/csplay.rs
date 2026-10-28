@@ -11,8 +11,8 @@ struct Args {
     #[arg(value_name = "FILE")]
     file: PathBuf,
 
-    /// Render to a stereo 16-bit PCM WAV file instead of the audio device.
-    #[arg(short, long, value_name = "WAV_FILE", conflicts_with = "infinite")]
+    /// Render a stereo 16-bit PCM WAV file instead of using the audio device; use - for stdout.
+    #[arg(value_name = "OUTPUT")]
     output: Option<PathBuf>,
 
     /// Output sample rate in Hz (WAV default: 44100; device default otherwise).
@@ -41,7 +41,7 @@ struct Args {
     fadeout_samples: Option<u32>,
 
     /// Repeat indefinitely when the file has a loop point.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "output")]
     infinite: bool,
 
     /// Override the VGM loop modifier (0 means the default multiplier).
@@ -55,6 +55,10 @@ struct Args {
     /// Enable the VGM PWM bad-rip workaround (default: true).
     #[arg(long, value_name = "BOOL")]
     compat_vgm_pwm: Option<bool>,
+
+    /// Do not display playback progress on standard output.
+    #[arg(long)]
+    no_progress: bool,
 }
 
 fn main() -> Result<()> {
@@ -70,6 +74,7 @@ fn main() -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        no_progress,
     } = Args::parse();
     crate::play(PlayOptions {
         file,
@@ -83,6 +88,7 @@ fn main() -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        no_progress,
     })
 }
 
@@ -140,6 +146,26 @@ mod tests {
         } = Args::try_parse_from(["csplay", "song.vgm"]).unwrap();
         assert_eq!(loop_count, Some(2));
         assert_eq!(fadeout_samples, Some(88_200));
+    }
+
+    #[test]
+    fn wav_output_is_positional_and_dash_is_allowed() {
+        let args = Args::try_parse_from(["csplay", "song.vgm", "song.wav"]).unwrap();
+        assert_eq!(args.output, Some(PathBuf::from("song.wav")));
+
+        let args = Args::try_parse_from(["csplay", "song.vgm", "-"]).unwrap();
+        assert_eq!(args.output, Some(PathBuf::from("-")));
+        assert!(Args::try_parse_from(["csplay", "song.vgm", "-o", "song.wav"]).is_err());
+        assert!(Args::try_parse_from(["csplay", "song.vgm", "-", "--infinite"]).is_err());
+    }
+
+    #[test]
+    fn no_progress_option_defaults_off_and_can_be_enabled() {
+        let args = Args::try_parse_from(["csplay", "song.vgm"]).unwrap();
+        assert!(!args.no_progress);
+
+        let args = Args::try_parse_from(["csplay", "song.vgm", "--no-progress"]).unwrap();
+        assert!(args.no_progress);
     }
 
     #[test]
