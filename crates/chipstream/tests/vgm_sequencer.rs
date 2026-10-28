@@ -97,12 +97,30 @@ fn supplied_vgm_examples_produce_stereo_audio() {
 }
 
 #[cfg(feature = "okim6258")]
+fn add_oki_data(builder: &mut VgmBuilder, instance: Instance, count: usize) {
+    for _ in 0..count {
+        builder.add_chip_write(
+            instance,
+            Okim6258Spec {
+                register: 1,
+                value: 0x71,
+            },
+        );
+    }
+}
+
+#[cfg(feature = "okim6258")]
 fn oki_document() -> VgmDocument {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
-    for (register, value) in [(0, 2), (1, 0x71)] {
-        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
-    }
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    add_oki_data(&mut builder, Instance::Primary, 1024);
     builder.add_vgm_command(WaitSamples(2_000));
     builder.add_chip_write(
         Instance::Primary,
@@ -237,9 +255,21 @@ fn dual_chip_and_independent_gains_survive_serialization() {
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
     builder.register_chip(Chip::Okim6258, Instance::Secondary, 8_000_000);
     for (instance, pan) in [(Instance::Primary, 2), (Instance::Secondary, 1)] {
-        for (register, value) in [(0, 2), (1, 0x71), (2, pan)] {
-            builder.add_chip_write(instance, Okim6258Spec { register, value });
-        }
+        builder.add_chip_write(
+            instance,
+            Okim6258Spec {
+                register: 0,
+                value: 2,
+            },
+        );
+        add_oki_data(&mut builder, instance, 512);
+        builder.add_chip_write(
+            instance,
+            Okim6258Spec {
+                register: 2,
+                value: pan,
+            },
+        );
     }
     builder.add_vgm_command(WaitSamples(4000));
     let bytes: Vec<u8> = builder.finalize().into();

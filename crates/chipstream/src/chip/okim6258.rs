@@ -4,6 +4,7 @@
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
 
 use soundlog::chip::Chip;
+use std::collections::VecDeque;
 use std::num::NonZeroU32;
 
 use super::oki_adpcm::{INDEX_SHIFT, difference_table};
@@ -14,6 +15,11 @@ const COMMAND_PLAY: u8 = 1 << 1;
 const COMMAND_RECORD: u8 = 1 << 2;
 const STATUS_PLAYING: u8 = 1 << 1;
 const STATUS_RECORDING: u8 = 1 << 2;
+const VGM_FILTER_RETENTION: i64 = 3;
+const VGM_FILTER_DIVISOR: i64 = 4;
+const VGM_UNDERRUN_RETENTION: i64 = 15;
+const VGM_UNDERRUN_DIVISOR: i64 = 16;
+const VGM_SIGNAL_SCALE: i64 = 256;
 
 /// OKIM6258 clock divider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,10 +50,11 @@ pub enum OutputBits {
 
 /// OKIM6258 4-bit ADPCM decoder with mono native-rate output.
 ///
-/// The data register holds one byte, not a FIFO. Its low and high nibbles
-/// repeat until the next data write. Recording tracks status only.
-/// Output is mono `i32` in the signed 16-bit range. The default clock divider
-/// is `/1024` and DAC precision is 10 bits. Three-bit ADPCM is not implemented.
+/// Direct instances use a one-byte data latch. VGM playback uses a byte queue,
+/// smooths decoded samples, and fades toward silence when the queue runs dry.
+/// Recording tracks status only. Output is mono `i32` in the signed 16-bit
+/// range. The default clock divider is `/1024` and DAC precision is 10 bits.
+/// Three-bit ADPCM is not implemented.
 ///
 /// Register 0 is control, 1 is data, 2 is the VGM pan mask, `0x08..=0x0b`
 /// are little-endian clock bytes, and `0x0c` selects the divider. Pan is
@@ -61,6 +68,10 @@ pub struct Okim6258 {
     output_bits: OutputBits,
     status: u8,
     pan_mask: u8,
+    vgm_streaming: bool,
+    vgm_data: VecDeque<u8>,
+    vgm_byte_loaded: bool,
+    vgm_signal_q8: i64,
     data_in: u8,
     nibble_shift: u8,
     signal: i32,
@@ -79,12 +90,22 @@ impl Okim6258 {
             output_bits: OutputBits::Bits10,
             status: 0,
             pan_mask: 0,
+            vgm_streaming: false,
+            vgm_data: VecDeque::new(),
+            vgm_byte_loaded: false,
+            vgm_signal_q8: 0,
             data_in: 0,
             nibble_shift: 0,
             signal: -2,
             step: 0,
             diff_lookup: difference_table(),
         })
+    }
+
+    pub(crate) fn new_for_vgm(clock: u32) -> Result<Self, ChipError> {
+        let mut chip = Self::new(clock)?;
+        chip.vgm_streaming = true;
+        Ok(chip)
     }
 
     /// Change the input clock without resetting the decoder.
@@ -144,6 +165,7 @@ impl Okim6258 {
                 self.signal = -2;
                 self.step = 0;
                 self.nibble_shift = 0;
+                self.vgm_signal_q8 = 0;
             }
         } else {
             self.status &= !STATUS_PLAYING;
@@ -161,6 +183,41 @@ impl Okim6258 {
             .clamp(-limit, limit - 1);
         self.step = (self.step as i32 + INDEX_SHIFT[usize::from(nibble & 7)]).clamp(0, 48) as usize;
         self.signal << 4
+    }
+
+    fn filter_vgm_sample(&mut self, sample: i32, retention: i64, divisor: i64) -> i32 {
+        self.vgm_signal_q8 = (self.vgm_signal_q8 * retention
+            + i64::from(sample) * VGM_SIGNAL_SCALE * (divisor - retention))
+            / divisor;
+        let limit = 1_i32 << (self.output_bits as u8 - 1);
+        self.vgm_signal_q8 = self.vgm_signal_q8.clamp(
+            -i64::from(limit) * 16 * VGM_SIGNAL_SCALE,
+            i64::from(limit - 1) * 16 * VGM_SIGNAL_SCALE,
+        );
+        (self.vgm_signal_q8 / VGM_SIGNAL_SCALE) as i32
+    }
+
+    fn clock_vgm_stream(&mut self) -> i32 {
+        if !self.vgm_byte_loaded
+            && self.nibble_shift == 0
+            && let Some(data) = self.vgm_data.pop_front()
+        {
+            self.data_in = data;
+            self.vgm_byte_loaded = true;
+        }
+
+        if self.vgm_byte_loaded {
+            let nibble = (self.data_in >> self.nibble_shift) & 0x0f;
+            let sample = self.clock_adpcm(nibble);
+            self.nibble_shift ^= 4;
+            if self.nibble_shift == 0 {
+                self.vgm_byte_loaded = false;
+            }
+            self.filter_vgm_sample(sample, VGM_FILTER_RETENTION, VGM_FILTER_DIVISOR)
+        } else {
+            self.nibble_shift = 0;
+            self.filter_vgm_sample(0, VGM_UNDERRUN_RETENTION, VGM_UNDERRUN_DIVISOR)
+        }
     }
 }
 
@@ -206,8 +263,12 @@ impl SoundChip for Okim6258 {
         match register {
             0x00 => self.write_control(value),
             0x01 => {
-                self.data_in = value;
-                self.nibble_shift = 0;
+                if self.vgm_streaming {
+                    self.vgm_data.push_back(value);
+                } else {
+                    self.data_in = value;
+                    self.nibble_shift = 0;
+                }
             }
             0x02 => self.pan_mask = value & 3,
             0x08..=0x0b => {
@@ -237,10 +298,16 @@ impl SoundChip for Okim6258 {
             buffer.fill(0);
             return Ok(());
         }
-        for sample in buffer {
-            let nibble = (self.data_in >> self.nibble_shift) & 0x0f;
-            *sample = self.clock_adpcm(nibble);
-            self.nibble_shift ^= 4;
+        if self.vgm_streaming {
+            for sample in buffer {
+                *sample = self.clock_vgm_stream();
+            }
+        } else {
+            for sample in buffer {
+                let nibble = (self.data_in >> self.nibble_shift) & 0x0f;
+                *sample = self.clock_adpcm(nibble);
+                self.nibble_shift ^= 4;
+            }
         }
         Ok(())
     }
@@ -249,6 +316,7 @@ impl SoundChip for Okim6258 {
         self.signal = -2;
         self.step = 0;
         self.status = 0;
+        self.vgm_signal_q8 = 0;
     }
 }
 
@@ -258,5 +326,84 @@ fn validate_clock(clock: u32, divider: ClockDivider) -> Result<(), ChipError> {
         Err(ChipError::InvalidClock { clock, minimum })
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundlog::chip::Okim6258Spec;
+
+    fn write(chip: &mut Okim6258, register: u8, value: u8) {
+        chip.apply_register_write(ChipRegisterWrite::Okim6258(Okim6258Spec {
+            register,
+            value,
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn vgm_stream_consumes_queued_bytes_in_order() {
+        let mut queued = Okim6258::new_for_vgm(8_000_000).unwrap();
+        write(&mut queued, 0, COMMAND_PLAY);
+        write(&mut queued, 1, 0x21);
+        write(&mut queued, 1, 0x43);
+        let mut queued_output = [0; 4];
+        queued.generate(&mut queued_output).unwrap();
+
+        let mut paced = Okim6258::new_for_vgm(8_000_000).unwrap();
+        write(&mut paced, 0, COMMAND_PLAY);
+        write(&mut paced, 1, 0x21);
+        let mut first_paced_output = [0; 2];
+        paced.generate(&mut first_paced_output).unwrap();
+        write(&mut paced, 1, 0x43);
+        let mut second_paced_output = [0; 2];
+        paced.generate(&mut second_paced_output).unwrap();
+
+        assert_eq!(
+            queued_output,
+            [
+                first_paced_output[0],
+                first_paced_output[1],
+                second_paced_output[0],
+                second_paced_output[1]
+            ]
+        );
+    }
+
+    #[test]
+    fn vgm_stream_smooths_samples_without_attenuating_sustained_levels() {
+        let mut vgm = Okim6258::new_for_vgm(8_000_000).unwrap();
+        let mut direct = Okim6258::new(8_000_000).unwrap();
+        write(&mut vgm, 0, COMMAND_PLAY);
+        write(&mut direct, 0, COMMAND_PLAY);
+        write(&mut direct, 1, 0x11);
+        for _ in 0..64 {
+            write(&mut vgm, 1, 0x11);
+        }
+
+        let mut averaged = [0; 128];
+        let mut accumulated = [0; 128];
+        vgm.generate(&mut averaged).unwrap();
+        direct.generate(&mut accumulated).unwrap();
+
+        assert!(averaged[3] < accumulated[3]);
+        assert!(averaged[127] > 4_000);
+        assert!(accumulated[127] > 4_000);
+    }
+
+    #[test]
+    fn vgm_stream_fades_when_input_runs_dry() {
+        let mut chip = Okim6258::new_for_vgm(8_000_000).unwrap();
+        write(&mut chip, 0, COMMAND_PLAY);
+        write(&mut chip, 1, 0x77);
+        let mut active = [0; 2];
+        chip.generate(&mut active).unwrap();
+        assert!(active.iter().any(|sample| *sample != 0));
+
+        let mut tail = [0; 128];
+        chip.generate(&mut tail).unwrap();
+        assert_eq!(tail[127], 0);
+        assert!(tail.windows(2).all(|pair| pair[1].abs() <= pair[0].abs()));
     }
 }

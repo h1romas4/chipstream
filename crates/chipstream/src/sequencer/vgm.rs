@@ -647,7 +647,7 @@ impl VgmSequencer {
                 if flags.adpcm_3bit_select {
                     return Err(VgmSequencerError::UnsupportedOkiAdpcm);
                 }
-                let mut oki = Okim6258::new(clock)?;
+                let mut oki = Okim6258::new_for_vgm(clock)?;
                 oki.set_divider(match flags.clock_divider {
                     0 => ClockDivider::Div1024,
                     1 => ClockDivider::Div768,

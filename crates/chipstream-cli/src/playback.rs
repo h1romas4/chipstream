@@ -1683,7 +1683,8 @@ mod playback_tests {
                         faded[start..]
                             .iter()
                             .flatten()
-                            .any(|sample| sample.abs() > 0.00001)
+                            .any(|sample| sample.abs() > 0.00001),
+                        "MDX={is_mdx}, rate={rate}"
                     );
                     assert_eq!(faded.last(), Some(&[0.0, 0.0]));
                     let short_length = faded.len() - start;

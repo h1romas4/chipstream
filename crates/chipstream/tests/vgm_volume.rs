@@ -47,9 +47,29 @@ fn oki_builder(dual: bool) -> VgmBuilder {
         if instance == Instance::Secondary && !dual {
             continue;
         }
-        for (register, value) in [(0, 2), (1, 0x71), (2, pan)] {
-            builder.add_chip_write(instance, Okim6258Spec { register, value });
+        builder.add_chip_write(
+            instance,
+            Okim6258Spec {
+                register: 0,
+                value: 2,
+            },
+        );
+        for _ in 0..512 {
+            builder.add_chip_write(
+                instance,
+                Okim6258Spec {
+                    register: 1,
+                    value: 0x71,
+                },
+            );
         }
+        builder.add_chip_write(
+            instance,
+            Okim6258Spec {
+                register: 2,
+                value: pan,
+            },
+        );
     }
     builder.add_vgm_command(WaitSamples(4000));
     builder
