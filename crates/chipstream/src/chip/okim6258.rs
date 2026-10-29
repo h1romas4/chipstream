@@ -15,11 +15,11 @@ const COMMAND_PLAY: u8 = 1 << 1;
 const COMMAND_RECORD: u8 = 1 << 2;
 const STATUS_PLAYING: u8 = 1 << 1;
 const STATUS_RECORDING: u8 = 1 << 2;
-const VGM_FILTER_RETENTION: i64 = 3;
-const VGM_FILTER_DIVISOR: i64 = 4;
-const VGM_UNDERRUN_RETENTION: i64 = 15;
-const VGM_UNDERRUN_DIVISOR: i64 = 16;
-const VGM_SIGNAL_SCALE: i64 = 256;
+const VGM_FILTER_RETENTION: i32 = 3;
+const VGM_FILTER_DIVISOR: i32 = 4;
+const VGM_UNDERRUN_RETENTION: i32 = 15;
+const VGM_UNDERRUN_DIVISOR: i32 = 16;
+const VGM_SIGNAL_SCALE: i32 = 256;
 
 /// OKIM6258 clock divider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,7 +72,7 @@ pub struct Okim6258 {
     vgm_streaming: bool,
     vgm_data: VecDeque<u8>,
     vgm_byte_loaded: bool,
-    vgm_signal_q8: i64,
+    vgm_signal_q8: i32,
     data_in: u8,
     nibble_shift: u8,
     signal: i32,
@@ -186,16 +186,17 @@ impl Okim6258 {
         self.signal << 4
     }
 
-    fn filter_vgm_sample(&mut self, sample: i32, retention: i64, divisor: i64) -> i32 {
+    fn filter_vgm_sample(&mut self, sample: i32, retention: i32, divisor: i32) -> i32 {
+        // The 12-bit DAC bounds the Q8 signal to 2^23 and retention to 15.
         self.vgm_signal_q8 = (self.vgm_signal_q8 * retention
-            + i64::from(sample) * VGM_SIGNAL_SCALE * (divisor - retention))
+            + sample * VGM_SIGNAL_SCALE * (divisor - retention))
             / divisor;
         let limit = 1_i32 << (self.output_bits as u8 - 1);
         self.vgm_signal_q8 = self.vgm_signal_q8.clamp(
-            -i64::from(limit) * 16 * VGM_SIGNAL_SCALE,
-            i64::from(limit - 1) * 16 * VGM_SIGNAL_SCALE,
+            -limit * 16 * VGM_SIGNAL_SCALE,
+            (limit - 1) * 16 * VGM_SIGNAL_SCALE,
         );
-        (self.vgm_signal_q8 / VGM_SIGNAL_SCALE) as i32
+        self.vgm_signal_q8 / VGM_SIGNAL_SCALE
     }
 
     fn clock_vgm_stream(&mut self) -> i32 {
@@ -341,6 +342,73 @@ mod tests {
             value,
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn vgm_filter_matches_i64_reference_at_bounds_and_precision_changes() {
+        for bits in [OutputBits::Bits10, OutputBits::Bits12] {
+            let limit = 1_i64 << (bits as u8 - 1);
+            for initial in [-8_388_608_i32, -1, 0, 1, 8_384_512] {
+                for sample in [-32_768_i32, -16, 0, 16, 32_752] {
+                    for (retention, divisor) in [
+                        (VGM_FILTER_RETENTION, VGM_FILTER_DIVISOR),
+                        (VGM_UNDERRUN_RETENTION, VGM_UNDERRUN_DIVISOR),
+                    ] {
+                        let mut chip = Okim6258::new_for_vgm(8_000_000).unwrap();
+                        chip.set_output_bits(bits);
+                        chip.vgm_signal_q8 = initial;
+                        let expected = ((i64::from(initial) * i64::from(retention)
+                            + i64::from(sample)
+                                * i64::from(VGM_SIGNAL_SCALE)
+                                * i64::from(divisor - retention))
+                            / i64::from(divisor))
+                        .clamp(-limit * 16 * 256, (limit - 1) * 16 * 256);
+                        let output = chip.filter_vgm_sample(sample, retention, divisor);
+                        assert_eq!(i64::from(chip.vgm_signal_q8), expected);
+                        assert_eq!(i64::from(output), expected / 256);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vgm_filter_matches_i64_reference_over_long_stream() {
+        let mut chip = Okim6258::new_for_vgm(8_000_000).unwrap();
+        let mut reference = 0_i64;
+        let mut random = 0x4a32_f19b_u32;
+        for index in 0..50_000 {
+            random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let bits = if (index / 113) % 2 == 0 {
+                OutputBits::Bits12
+            } else {
+                OutputBits::Bits10
+            };
+            chip.set_output_bits(bits);
+            let limit = 1_i32 << (bits as u8 - 1);
+            let (sample, retention, divisor) = if index % 7 == 0 {
+                (0, VGM_UNDERRUN_RETENTION, VGM_UNDERRUN_DIVISOR)
+            } else {
+                (
+                    ((random % (2 * limit) as u32) as i32 - limit) * 16,
+                    VGM_FILTER_RETENTION,
+                    VGM_FILTER_DIVISOR,
+                )
+            };
+            reference = ((reference * i64::from(retention)
+                + i64::from(sample) * 256 * i64::from(divisor - retention))
+                / i64::from(divisor))
+            .clamp(
+                -i64::from(limit) * 16 * 256,
+                i64::from(limit - 1) * 16 * 256,
+            );
+            assert_eq!(
+                i64::from(chip.filter_vgm_sample(sample, retention, divisor)),
+                reference / 256,
+                "sample {index}"
+            );
+            assert_eq!(i64::from(chip.vgm_signal_q8), reference, "sample {index}");
+        }
     }
 
     #[test]
