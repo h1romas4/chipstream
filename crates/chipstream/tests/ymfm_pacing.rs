@@ -138,6 +138,33 @@ fn pending_writes_at_eof_are_reported_without_extending_audio() {
 }
 
 #[test]
+fn paced_event_positions_remain_close_to_the_native_timeline() {
+    let clock = 4_000_000;
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, clock);
+    for value in 0..128 {
+        write(&mut builder, &Chip::Ym2151, 0x20, value);
+    }
+    builder.add_vgm_command(WaitSamples(256));
+    let document = builder.finalize();
+
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let (_, events) = render(document.clone(), rate, 17);
+        assert_eq!(events.len(), 128);
+        for (index, (position, value)) in events.iter().enumerate() {
+            let expected =
+                (index as f64 * 64.0 * f64::from(rate) / f64::from(clock) + 0.5).floor() as usize;
+            assert!(
+                position.abs_diff(expected) <= 1,
+                "rate {rate}, write {index}: {position} vs {expected}"
+            );
+            assert_eq!(*value, index as u32);
+        }
+        assert_eq!(events, render(document.clone(), rate, 257).1);
+    }
+}
+
+#[test]
 fn oversampled_opn_chips_retrigger_adjacent_notes() {
     for (chip, clock, channel) in [
         (Chip::Ym2203, 4_000_000, 0),

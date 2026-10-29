@@ -45,6 +45,7 @@ const SRC_CHUNK: usize = 256;
 const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
+const PHASE_SCALE: f32 = 1.0 / 4_294_967_296.0;
 
 macro_rules! feature_backend {
     ($feature:literal, $chip:expr, $body:expr) => {{
@@ -258,6 +259,40 @@ struct EventContext<'a> {
     events: &'a mut VecDeque<(usize, VgmWriteEvent)>,
 }
 
+struct Fade {
+    pending: usize,
+    length: f32,
+    rate: u32,
+    seconds: u32,
+    frames: u32,
+}
+
+impl Fade {
+    fn process(&mut self, frames: &mut [[f32; 2]]) {
+        let divisor = self.length - 1.0;
+        for frame in frames {
+            if self.pending > 0 {
+                self.pending -= 1;
+            } else {
+                let position = self.seconds as f32 * self.rate as f32 + self.frames as f32;
+                let gain = if self.length <= 1.0 {
+                    0.0
+                } else {
+                    ((divisor - position) / divisor).clamp(0.0, 1.0)
+                };
+                frame[0] *= gain;
+                frame[1] *= gain;
+                if self.frames == self.rate - 1 {
+                    self.seconds += 1;
+                    self.frames = 0;
+                } else {
+                    self.frames += 1;
+                }
+            }
+        }
+    }
+}
+
 impl Voice {
     fn apply_write(
         &mut self,
@@ -357,23 +392,22 @@ impl Voice {
             let Some(write) = self.paced_writes.as_mut().and_then(VecDeque::pop_front) else {
                 break;
             };
-            let fraction = if initial_phase == 0 {
-                0
+            let position = if context.filter.is_some() {
+                let fraction = initial_phase.wrapping_neg() as f32 * PHASE_SCALE;
+                let offset = (rendered as f32 + fraction)
+                    * rate.denominator().get() as f32
+                    * output_rate as f32
+                    / rate.numerator() as f32
+                    + output_phase as f32 * PHASE_SCALE;
+                if !offset.is_finite() || offset >= 4_294_967_296.0 {
+                    return Err(VgmSequencerError::DurationOverflow);
+                }
+                available
+                    .checked_add(offset as u32 as usize)
+                    .ok_or(VgmSequencerError::DurationOverflow)?
             } else {
-                (1_u128 << 32) - u128::from(initial_phase)
+                0
             };
-            let native_offset = ((rendered as u128) << 32) + fraction;
-            let output_offset =
-                (native_offset * u128::from(rate.denominator().get()) * u128::from(output_rate)
-                    / u128::from(rate.numerator())
-                    + u128::from(output_phase))
-                    >> 32;
-            let position = available
-                .checked_add(
-                    usize::try_from(output_offset)
-                        .map_err(|_| VgmSequencerError::DurationOverflow)?,
-                )
-                .ok_or(VgmSequencerError::DurationOverflow)?;
             self.apply_write(write, position, context)?;
             self.write_cooldown = self.write_interval;
         }
@@ -425,6 +459,8 @@ impl Voice {
 /// native samples respectively so that their oversampled FM engines advance
 /// between writes. A burst can therefore delay subsequent writes; exceeding
 /// 1,048,576 pending writes per instance is an error.
+/// Paced write event positions use `f32` arithmetic and may differ from
+/// exact rational arithmetic due to rounding.
 /// At the end of playback, pending writes are applied at the final boundary
 /// without generating additional audio.
 /// Devices with variable clocks use a conservative range derived from their
@@ -459,8 +495,7 @@ pub struct VgmSequencer {
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
     fade_samples: Option<u32>,
     fade_remaining: Option<u32>,
-    fade_frames: Option<(u64, u64)>,
-    rendered_frames: u64,
+    fade_frames: Option<Fade>,
     mdx_loop_marker: Option<MdxLoopMarker>,
 }
 
@@ -890,14 +925,15 @@ impl VgmSequencer {
             fade_samples: None,
             fade_remaining: None,
             fade_frames: None,
-            rendered_frames: 0,
             mdx_loop_marker: None,
         })
     }
 
     /// Fade linearly to silence after the final VGM loop, over this many
     /// 44,100 Hz samples. Files without a loop and infinite playback ignore it.
-    /// A zero duration disables the fade. Configure before rendering.
+    /// A zero duration disables the fade. Configure before rendering. Fade
+    /// length and gain use `f32` arithmetic, so long fades have reduced
+    /// frame-level precision.
     pub fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
         self.configure_fadeout(samples, None)?;
         self.stream
@@ -1081,10 +1117,6 @@ impl VgmSequencer {
                 if count == 0 {
                     return Ok(None);
                 }
-                let next_rendered_frames = self
-                    .rendered_frames
-                    .checked_add(count as u64)
-                    .ok_or(VgmSequencerError::DurationOverflow)?;
                 let mut bus = StereoBlock::silence(SampleRate::from_hz(self.output_rate), count)?;
                 for voice in &mut self.voices {
                     let mut frames = Vec::with_capacity(count);
@@ -1094,23 +1126,10 @@ impl VgmSequencer {
                     let source = StereoBlock::new(SampleRate::from_hz(self.output_rate), frames)?;
                     StereoMixer::mix(&mut bus, &source, voice.gain)?;
                 }
-                if let Some((start, length)) = self.fade_frames {
-                    for (index, frame) in bus.frames.iter_mut().enumerate() {
-                        let position = self.rendered_frames + index as u64;
-                        if position >= start {
-                            let remaining = length.saturating_sub(position - start + 1);
-                            let gain = if length <= 1 {
-                                0.0
-                            } else {
-                                remaining as f32 / (length - 1) as f32
-                            };
-                            frame[0] *= gain;
-                            frame[1] *= gain;
-                        }
-                    }
+                if let Some(fade) = &mut self.fade_frames {
+                    fade.process(&mut bus.frames);
                 }
                 self.available -= count;
-                self.rendered_frames = next_rendered_frames;
                 return Ok(Some(bus));
             }
             if self.fade_remaining == Some(0) {
@@ -1170,16 +1189,17 @@ impl VgmSequencer {
                         .is_some_and(MdxLoopMarker::reached))
                 && let Some(samples) = self.fade_samples
             {
-                let start = self
-                    .rendered_frames
-                    .checked_add(self.available as u64)
-                    .ok_or(VgmSequencerError::DurationOverflow)?;
-                let step = (u128::from(self.output_rate / VGM_SAMPLE_RATE) << 32)
-                    + u128::from(self.output_step);
-                let length = (u128::from(self.output_phase) + u128::from(samples) * step) >> 32;
+                let step = (self.output_rate / VGM_SAMPLE_RATE) as f32
+                    + self.output_step as f32 * PHASE_SCALE;
                 let length =
-                    u64::try_from(length).map_err(|_| VgmSequencerError::DurationOverflow)?;
-                self.fade_frames = Some((start, length));
+                    (self.output_phase as f32 * PHASE_SCALE + samples as f32 * step).floor();
+                self.fade_frames = Some(Fade {
+                    pending: self.available,
+                    length,
+                    rate: self.output_rate,
+                    seconds: 0,
+                    frames: 0,
+                });
                 self.fade_remaining = Some(samples);
             }
             match result {
@@ -1377,6 +1397,39 @@ mod tests {
     use super::*;
     use soundlog::chip::Ym2151Spec;
     use soundlog::vgm::VgmBuilder;
+
+    #[test]
+    fn fade_waits_for_buffered_frames_and_continues_across_blocks() {
+        let mut fade = Fade {
+            pending: 2,
+            length: 5.0,
+            rate: 3,
+            seconds: 0,
+            frames: 0,
+        };
+        let mut first = [[1.0; 2]; 4];
+        let mut second = [[1.0; 2]; 4];
+        fade.process(&mut first);
+        fade.process(&mut second);
+        assert_eq!(first, [[1.0; 2], [1.0; 2], [1.0; 2], [0.75; 2]]);
+        assert_eq!(second, [[0.5; 2], [0.25; 2], [0.0; 2], [0.0; 2]]);
+    }
+
+    #[test]
+    fn fade_supports_more_than_u32_frames() {
+        let mut fade = Fade {
+            pending: 0,
+            length: 8_589_934_592.0,
+            rate: 48_000,
+            seconds: 89_478,
+            frames: 47_999,
+        };
+        let mut frames = [[1.0; 2]; 2];
+        fade.process(&mut frames);
+        assert!(frames.iter().all(|frame| (frame[0] - 0.5).abs() < 0.001));
+        assert_eq!(fade.seconds, 89_479);
+        assert_eq!(fade.frames, 1);
+    }
 
     #[test]
     fn pending_write_limit_is_per_instance_and_explicit() {
