@@ -157,3 +157,7 @@ let position = compiled.source().position(span.start()).unwrap();
 assert_eq!((position.line_number, position.column), (1, 3));
 # }
 ```
+
+## License
+
+MIT License

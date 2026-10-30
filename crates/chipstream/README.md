@@ -145,6 +145,10 @@ The coefficients control routing and scaling; mixing does not clip. Mix
 additional stereo sources into the bus after aligning their rates and frame
 counts. `Gain` and `StereoBalance` provide additional processing.
 
+## License
+
+BSD-3-Clause License
+
 ## Third-party notices
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for implementation

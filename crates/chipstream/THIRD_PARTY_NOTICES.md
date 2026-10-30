@@ -2,6 +2,7 @@
 
 The C140 implementation is based on MAME's C140 implementation, revision
 `1bc5484698bb746c6f9f7dae58b005d2472f1215`.
+Original MAME source: `src/devices/sound/c140.cpp`.
 
 Copyright (c) R. Belmont
 All rights reserved.
@@ -35,6 +36,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 The OKIM6295 implementation is based on MAME's OKIM6295 implementation, revision
 `92ffd8d0269cd49b0ef256cd3912269387f8d318`.
+Original MAME source: `src/devices/sound/okim6295.cpp`.
 
 Copyright (c) Mirko Buffoni
 Copyright (c) Aaron Giles
@@ -69,6 +71,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 The PWM implementation is based on MAME's 32X implementation, revision
 `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
+Original MAME source: `src/mame/machine/mega32x.cpp`.
 
 Copyright (c) David Haywood
 All rights reserved.
@@ -102,6 +105,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 The SegaPCM implementation is based on MAME's SegaPCM implementation, revision
 `70743c6fb2602a5c2666c679b618706eabfca2ad`.
+Original MAME source: `src/devices/sound/segapcm.cpp`.
 
 Copyright (c) Hiromitsu Shioya
 Copyright (c) Olivier Galibert
@@ -136,6 +140,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 The SN76496 implementation is based on MAME's SN76496 implementation, revision
 `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
+Original MAME source: `src/devices/sound/sn76496.cpp`.
 
 Copyright (c) Nicola Salmoria
 All rights reserved.
@@ -168,6 +173,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 # OKIM6258 implementation
 
 The OKIM6258 implementation is based on MAME's OKIM6258 implementation.
+Original MAME source: `src/devices/sound/okim6258.cpp`.
 
 Copyright (c) Barry Rodewald
 All rights reserved.

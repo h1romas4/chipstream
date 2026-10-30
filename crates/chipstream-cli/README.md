@@ -76,3 +76,7 @@ csplay example.vgm - | ffplay -i -
 - Input files and decompressed data are limited to 64 MiB. Unsupported chips
   are silent. Rendering and device playback are not guaranteed real-time safe.
 - This CLI targets desktop systems; it is not a browser application.
+
+## License
+
+BSD-3-Clause License
