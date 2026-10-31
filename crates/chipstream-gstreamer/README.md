@@ -43,8 +43,8 @@ Example URI: `chipstream:///music/game%20theme.vgm`
 
 ### NDSIF hardware playback
 
-When `ndsif-port` is set, the plugin opens the serial device, optionally resets
-it, and queries its capabilities. YM2151 uses the device when its reported
+When `ndsif-port` is set, the shared `ndsif-transport` crate opens the serial
+device, optionally resets it, and queries its capabilities. YM2151 uses the device when its reported
 clock matches. If the file has no OKIM6258 clock, YM2151 writes are sent
 directly and paced by the host playback clock. When the file uses OKIM6258, its
 audio stream also provides timing for YM2151 events; that path is used only

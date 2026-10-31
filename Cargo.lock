@@ -715,8 +715,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-audio",
  "gstreamer-base",
- "ndsif",
- "serialport",
+ "ndsif-transport",
  "soundlog",
 ]
 
@@ -2533,6 +2532,16 @@ version = "0.1.0"
 dependencies = [
  "cobs",
  "crc",
+]
+
+[[package]]
+name = "ndsif-transport"
+version = "0.1.0"
+dependencies = [
+ "chipstream",
+ "ndsif",
+ "serialport",
+ "soundlog",
 ]
 
 [[package]]

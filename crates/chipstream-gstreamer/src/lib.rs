@@ -1,7 +1,6 @@
 use gst::glib;
 use gstreamer as gst;
 
-mod ndsif_transport;
 mod source;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {

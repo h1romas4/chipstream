@@ -1,10 +1,15 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chipstream::chip::{
-    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifRegisterEvent, NdsifTransport,
+    ChipError, ClockDivider, NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent,
+    NdsifOkim6258, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport, Okim6258, OutputBits,
+    SoundChip, YmfmChip,
 };
+use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::{
     AudioEvent, AudioStreamState, AudioTiming, BytePosition, ClockMode, Command, Decoder, Divider,
     OkiClock, Reply, Response, Status, WriteId,
@@ -14,6 +19,109 @@ use serialport::SerialPort;
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const AUDIO_PREBUFFER_SECONDS: u64 = 2;
+
+/// Serial connection and reset options for an NDSIF device.
+#[derive(Debug, Clone)]
+pub struct NdsifSerialConfig {
+    /// Path to the serial device.
+    pub port: String,
+    /// Serial baud rate.
+    pub baud_rate: u32,
+    /// Timeout for each request/response transaction.
+    pub response_timeout: Duration,
+    /// Reset the device before querying capabilities.
+    pub reset_device: bool,
+}
+
+/// Open the configured NDSIF device and register hardware-backed factories.
+///
+/// YM2151 and OKIM6258 instances are routed to NDSIF when the device reports
+/// compatible capabilities. Unsupported configurations retain their normal
+/// emulated backends.
+pub fn create_chip_factories(config: &NdsifSerialConfig) -> Result<ChipFactoryRegistry, String> {
+    let transport = Rc::new(RefCell::new(NdsifSerialTransport::open(
+        &config.port,
+        config.baud_rate,
+        config.response_timeout,
+        config.reset_device,
+    )?));
+    let mut factories = ChipFactoryRegistry::new();
+
+    let ym_transport = Rc::clone(&transport);
+    factories.register(Chip::Ym2151, move |config| {
+        let instance = instance_number(config.instance());
+        let oki_clock = config.header().okim6258_clock & 0x3fff_ffff;
+        let supported = {
+            let transport = ym_transport.try_borrow().map_err(|_| ChipError::External {
+                chip: Chip::Ym2151,
+                message: "NDSIF transport is already borrowed".to_owned(),
+            })?;
+            let ym_supported = transport.supports_clock(WriteId::YM2151, instance, config.clock());
+            let oki_timing_supported = oki_clock != 0
+                && transport.supports_clock(WriteId::OKIM6258, 0, oki_clock)
+                && transport.supports_audio_stream(0, oki_clock);
+            should_use_ndsif_ym2151(ym_supported, oki_clock, oki_timing_supported)
+        };
+        let chip: Box<dyn SoundChip> = if supported {
+            Box::new(NdsifSoundChip::new(config, Rc::clone(&ym_transport))?)
+        } else {
+            Box::new(YmfmChip::new(Chip::Ym2151, config.clock())?)
+        };
+        Ok(chip)
+    });
+
+    let oki_transport = Rc::clone(&transport);
+    factories.register(Chip::Okim6258, move |config| {
+        let instance = instance_number(config.instance());
+        let supported = {
+            let transport = oki_transport
+                .try_borrow()
+                .map_err(|_| ChipError::External {
+                    chip: Chip::Okim6258,
+                    message: "NDSIF transport is already borrowed".to_owned(),
+                })?;
+            transport.supports_clock(WriteId::OKIM6258, instance, config.clock())
+                && transport.supports_audio_stream(instance, config.clock())
+        };
+        if supported {
+            return Ok(Box::new(NdsifOkim6258::new(
+                config,
+                Rc::clone(&oki_transport),
+            )?));
+        }
+
+        let flags = &config.header().okim6258_flags;
+        let mut chip = Okim6258::new_for_vgm(config.clock())?;
+        chip.set_divider(match flags.clock_divider {
+            0 => ClockDivider::Div1024,
+            1 => ClockDivider::Div768,
+            _ => ClockDivider::Div512,
+        })?;
+        chip.set_output_bits(if flags.output_12bit {
+            OutputBits::Bits12
+        } else {
+            OutputBits::Bits10
+        });
+        Ok(Box::new(chip))
+    });
+
+    Ok(factories)
+}
+
+fn should_use_ndsif_ym2151(
+    ym_clock_supported: bool,
+    oki_clock: u32,
+    oki_timing_supported: bool,
+) -> bool {
+    ym_clock_supported && (oki_clock == 0 || oki_timing_supported)
+}
+
+fn instance_number(instance: Instance) -> u8 {
+    match instance {
+        Instance::Primary => 0,
+        Instance::Secondary => 1,
+    }
+}
 
 struct AudioStream {
     instance: u8,
@@ -55,7 +163,7 @@ impl PendingEvent {
     }
 }
 
-pub(super) struct NdsifSerialTransport {
+pub struct NdsifSerialTransport {
     port: Box<dyn SerialPort>,
     response_timeout: Duration,
     decoder: Decoder,
@@ -73,7 +181,7 @@ pub(super) struct NdsifSerialTransport {
 }
 
 impl NdsifSerialTransport {
-    pub(super) fn open(
+    pub fn open(
         path: &str,
         baud_rate: u32,
         timeout: Duration,
@@ -112,7 +220,7 @@ impl NdsifSerialTransport {
         Ok(transport)
     }
 
-    pub(super) fn supports_clock(&self, write_id: WriteId, instance: u8, clock_hz: u32) -> bool {
+    pub fn supports_clock(&self, write_id: WriteId, instance: u8, clock_hz: u32) -> bool {
         self.capability(write_id, instance)
             .is_some_and(|capability| match capability.clock_mode {
                 ClockMode::Variable => true,
@@ -121,7 +229,7 @@ impl NdsifSerialTransport {
             })
     }
 
-    pub(super) fn supports_audio_stream(&self, instance: u8, clock_hz: u32) -> bool {
+    pub fn supports_audio_stream(&self, instance: u8, clock_hz: u32) -> bool {
         instance == 0
             && self.data_capacity > 0
             && self.event_capacity > 0
@@ -912,6 +1020,14 @@ impl Drop for NdsifSerialTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ndsif_ym2151_does_not_require_an_oki_timing_clock_when_absent() {
+        assert!(should_use_ndsif_ym2151(true, 0, false));
+        assert!(should_use_ndsif_ym2151(true, 4_000_000, true));
+        assert!(!should_use_ndsif_ym2151(true, 4_000_000, false));
+        assert!(!should_use_ndsif_ym2151(false, 0, false));
+    }
 
     fn stream_with_data(accepted: usize) -> AudioStream {
         let mut state =

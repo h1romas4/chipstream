@@ -1,9 +1,7 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,22 +18,17 @@ use gst_base::subclass::base_src::CreateSuccess;
 use gst_base::subclass::prelude::*;
 use gstreamer as gst;
 use gstreamer_base as gst_base;
-use ndsif::WriteId;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
 use soundlog::mdx::package::MdxPackage;
 
-use crate::ndsif_transport::NdsifSerialTransport;
 use chipstream::audio::StereoBlock;
-use chipstream::chip::{
-    ChipError, ClockDivider, NdsifOkim6258, NdsifSoundChip, Okim6258, OutputBits, SoundChip,
-    YmfmChip,
-};
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions,
     VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
     measure_vgm_duration_frames,
 };
+use ndsif_transport::{NdsifSerialConfig, create_chip_factories as create_ndsif_factories};
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
@@ -1202,88 +1195,12 @@ fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactory
     let Some(settings) = settings.filter(|settings| settings.port.is_some()) else {
         return Ok(ChipFactoryRegistry::new());
     };
-    let transport = Rc::new(RefCell::new(NdsifSerialTransport::open(
-        settings.port.as_deref().expect("checked above"),
-        settings.baud_rate,
-        Duration::from_millis(u64::from(settings.timeout_ms)),
-        settings.reset_device,
-    )?));
-    let mut factories = ChipFactoryRegistry::new();
-
-    let ym_transport = Rc::clone(&transport);
-    factories.register(Chip::Ym2151, move |config| {
-        let instance = instance_number(config.instance());
-        let oki_clock = config.header().okim6258_clock & 0x3fff_ffff;
-        let supported = {
-            let transport = ym_transport.try_borrow().map_err(|_| ChipError::External {
-                chip: Chip::Ym2151,
-                message: "NDSIF transport is already borrowed".to_owned(),
-            })?;
-            let ym_supported = transport.supports_clock(WriteId::YM2151, instance, config.clock());
-            let oki_timing_supported = oki_clock != 0
-                && transport.supports_clock(WriteId::OKIM6258, 0, oki_clock)
-                && transport.supports_audio_stream(0, oki_clock);
-            should_use_ndsif_ym2151(ym_supported, oki_clock, oki_timing_supported)
-        };
-        let chip: Box<dyn SoundChip> = if supported {
-            Box::new(NdsifSoundChip::new(config, Rc::clone(&ym_transport))?)
-        } else {
-            Box::new(YmfmChip::new(Chip::Ym2151, config.clock())?)
-        };
-        Ok(chip)
-    });
-
-    let oki_transport = Rc::clone(&transport);
-    factories.register(Chip::Okim6258, move |config| {
-        let instance = instance_number(config.instance());
-        let supported = {
-            let transport = oki_transport
-                .try_borrow()
-                .map_err(|_| ChipError::External {
-                    chip: Chip::Okim6258,
-                    message: "NDSIF transport is already borrowed".to_owned(),
-                })?;
-            transport.supports_clock(WriteId::OKIM6258, instance, config.clock())
-                && transport.supports_audio_stream(instance, config.clock())
-        };
-        if supported {
-            return Ok(Box::new(NdsifOkim6258::new(
-                config,
-                Rc::clone(&oki_transport),
-            )?));
-        }
-
-        let flags = &config.header().okim6258_flags;
-        let mut chip = Okim6258::new_for_vgm(config.clock())?;
-        chip.set_divider(match flags.clock_divider {
-            0 => ClockDivider::Div1024,
-            1 => ClockDivider::Div768,
-            _ => ClockDivider::Div512,
-        })?;
-        chip.set_output_bits(if flags.output_12bit {
-            OutputBits::Bits12
-        } else {
-            OutputBits::Bits10
-        });
-        Ok(Box::new(chip))
-    });
-
-    Ok(factories)
-}
-
-fn should_use_ndsif_ym2151(
-    ym_clock_supported: bool,
-    oki_clock: u32,
-    oki_timing_supported: bool,
-) -> bool {
-    ym_clock_supported && (oki_clock == 0 || oki_timing_supported)
-}
-
-fn instance_number(instance: Instance) -> u8 {
-    match instance {
-        Instance::Primary => 0,
-        Instance::Secondary => 1,
-    }
+    create_ndsif_factories(&NdsifSerialConfig {
+        port: settings.port.clone().expect("checked above"),
+        baud_rate: settings.baud_rate,
+        response_timeout: Duration::from_millis(u64::from(settings.timeout_ms)),
+        reset_device: settings.reset_device,
+    })
 }
 
 fn configure_adjacent_ym2608_rhythm_rom(
@@ -1509,14 +1426,6 @@ mod tests {
     use soundlog::chip::{Chip as SoundlogChip, Ym2608Spec};
     use soundlog::vgm::VgmBuilder;
     use soundlog::vgm::command::{Instance as SoundlogInstance, WaitSamples};
-
-    #[test]
-    fn ndsif_ym2151_does_not_require_an_oki_timing_clock_when_absent() {
-        assert!(should_use_ndsif_ym2151(true, 0, false));
-        assert!(should_use_ndsif_ym2151(true, 4_000_000, true));
-        assert!(!should_use_ndsif_ym2151(true, 4_000_000, false));
-        assert!(!should_use_ndsif_ym2151(false, 0, false));
-    }
 
     #[test]
     fn checkpoint_cache_keeps_origin_and_two_recent_entries() {

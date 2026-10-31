@@ -1,0 +1,18 @@
+[package]
+name = "ndsif-transport"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Serial transport and chipstream backend integration for NDSIF devices."
+license = "BSD-3-Clause"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+repository = "https://github.com/h1romas4/chipstream"
+readme = "README.md"
+
+[dependencies]
+chipstream = { path = "../chipstream", version = "0.1.0", features = ["ndsif", "okim6258"] }
+ndsif = { path = "../ndsif", version = "0.1.0" }
+serialport = { version = "4.7", default-features = false }
+
+[dev-dependencies]
+soundlog = { workspace = true }
