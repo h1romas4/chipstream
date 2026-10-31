@@ -40,6 +40,7 @@ fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u32) -> u32 
         .min(u64::from(safe_capacity)) as u32
 }
 
+#[derive(Clone)]
 enum PendingEvent {
     Register(NdsifRegisterEvent),
     Data(NdsifAdpcmEvent),
@@ -57,10 +58,10 @@ impl PendingEvent {
 
     fn priority(&self) -> u8 {
         match self {
-            Self::Register(_) => 0,
-            Self::Data(_) => 1,
+            Self::Data(_) => 0,
+            Self::Register(_) => 1,
             Self::Control(event) if matches!(event.control, NdsifAudioControl::End(_)) => 2,
-            Self::Control(_) => 0,
+            Self::Control(_) => 1,
         }
     }
 }
@@ -272,6 +273,36 @@ impl NdsifSerialTransport {
         let position =
             u32::try_from(position).map_err(|_| "NDSIF audio position overflow".to_owned())?;
         Ok(BytePosition::new(position))
+    }
+
+    fn event_is_ready(event: &PendingEvent, stream: Option<&AudioStream>) -> Result<bool, String> {
+        let Some(stream) = stream else {
+            return Ok(true);
+        };
+        let position = match event {
+            PendingEvent::Register(event) => {
+                Some(Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get())
+            }
+            PendingEvent::Control(event) => Some(event.position.get()),
+            PendingEvent::Data(_) => None,
+        };
+        Ok(position.is_none_or(|position| position <= stream.accepted))
+    }
+
+    fn event_sort_position(
+        event: &PendingEvent,
+        stream: Option<&AudioStream>,
+    ) -> Result<u128, String> {
+        let Some(stream) = stream else {
+            return Ok(event.sample_frame() as u128);
+        };
+        match event {
+            PendingEvent::Register(event) => Ok(u128::from(
+                Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get(),
+            )),
+            PendingEvent::Data(event) => Ok(u128::from(event.position.get())),
+            PendingEvent::Control(event) => Ok(u128::from(event.position.get())),
+        }
     }
 
     fn send_event(&mut self, event: PendingEvent) -> Result<(), String> {
@@ -711,6 +742,7 @@ impl NdsifTransport for NdsifSerialTransport {
         }
         let mut due = Vec::new();
         let mut future = Vec::new();
+        let mut deferred = Vec::new();
         for event in self.pending.drain(..) {
             if event.sample_frame() <= sample_frame {
                 due.push(event);
@@ -720,7 +752,16 @@ impl NdsifTransport for NdsifSerialTransport {
         }
 
         self.pending = future;
-        due.sort_by_key(|event| (event.sample_frame(), event.priority()));
+        let mut ordered = Vec::with_capacity(due.len());
+        for (sequence, event) in due.into_iter().enumerate() {
+            let position = Self::event_sort_position(&event, self.audio_stream.as_ref())?;
+            ordered.push((event.priority(), position, sequence, event));
+        }
+        ordered.sort_by_key(|(priority, position, sequence, _)| (*priority, *position, *sequence));
+        let mut due = ordered
+            .into_iter()
+            .map(|(_, _, _, event)| event)
+            .collect::<Vec<_>>();
         let mut index = 0;
         while index < due.len() {
             match &due[index] {
@@ -764,6 +805,10 @@ impl NdsifTransport for NdsifSerialTransport {
                             _ => unreachable!("register batch contains only register events"),
                         })
                         .collect::<Vec<_>>();
+                    if !Self::event_is_ready(&due[start], self.audio_stream.as_ref())? {
+                        deferred.extend(due[start..index].iter().cloned());
+                        continue;
+                    }
                     self.send_registers(&registers)?;
                 }
                 PendingEvent::Data(_) => {
@@ -783,14 +828,19 @@ impl NdsifTransport for NdsifSerialTransport {
                         })
                         .collect::<Vec<_>>();
                     self.send_data(&data)?;
-                    self.start_stream_if_ready(false)?;
                 }
                 _ => {
+                    if !Self::event_is_ready(&due[index], self.audio_stream.as_ref())? {
+                        deferred.push(due[index].clone());
+                        index += 1;
+                        continue;
+                    }
                     let event = due.remove(index);
                     self.send_event(event)?;
                 }
             }
         }
+        self.pending.extend(deferred);
         self.start_stream_if_ready(false)?;
         self.check_status_if_due()?;
         Ok(())
@@ -892,5 +942,91 @@ mod tests {
         assert!(!stream.should_start(false));
         assert!(stream.should_start(true));
         assert_eq!(audio_prebuffer_bytes(4_000_000, Divider::Div1024, 512), 262);
+    }
+
+    #[test]
+    fn audio_data_is_sent_before_time_positioned_events() {
+        let control = PendingEvent::Control(NdsifAudioControlEvent {
+            instance: 0,
+            position: BytePosition::new(0),
+            sample_frame: 0,
+            sample_rate: 48_000,
+            control: NdsifAudioControl::Pan(ndsif::Pan::Both),
+        });
+        let data = PendingEvent::Data(NdsifAdpcmEvent {
+            instance: 0,
+            position: BytePosition::new(0),
+            sample_frame: 1_024,
+            sample_rate: 48_000,
+            value: 0,
+        });
+        let mut events = vec![control, data];
+
+        events.sort_by_key(|event| (event.priority(), event.sample_frame()));
+
+        assert!(matches!(events[0], PendingEvent::Data(_)));
+        assert!(matches!(events[1], PendingEvent::Control(_)));
+    }
+
+    #[test]
+    fn audio_events_are_ordered_by_byte_position() {
+        let stream = AudioStream {
+            instance: 0,
+            clock: OkiClock::Mhz4,
+            divider: Divider::Div1024,
+            output_rate: 44_100,
+            prebuffer_bytes: 4096,
+            accepted: 4,
+            played: 0,
+            started: false,
+        };
+        let later = PendingEvent::Control(NdsifAudioControlEvent {
+            instance: 0,
+            position: BytePosition::new(2),
+            sample_frame: 0,
+            sample_rate: 44_100,
+            control: NdsifAudioControl::Pan(ndsif::Pan::Both),
+        });
+        let earlier = PendingEvent::Register(NdsifRegisterEvent {
+            chip: soundlog::chip::Chip::Ym2151,
+            write_id: WriteId::YM2151,
+            instance: 0,
+            page: 0,
+            write: ndsif::RegisterWrite::new(0x20, 0xc7),
+            sample_frame: 0,
+            sample_rate: 44_100,
+        });
+
+        assert!(
+            NdsifSerialTransport::event_sort_position(&earlier, Some(&stream)).unwrap()
+                < NdsifSerialTransport::event_sort_position(&later, Some(&stream)).unwrap()
+        );
+    }
+
+    #[test]
+    fn timed_events_wait_until_the_audio_position_is_accepted() {
+        let stream = AudioStream {
+            instance: 0,
+            clock: OkiClock::Mhz4,
+            divider: Divider::Div1024,
+            output_rate: 44_100,
+            prebuffer_bytes: 4096,
+            accepted: 0,
+            played: 0,
+            started: false,
+        };
+        let control = PendingEvent::Control(NdsifAudioControlEvent {
+            instance: 0,
+            position: BytePosition::new(1),
+            sample_frame: 0,
+            sample_rate: 44_100,
+            control: NdsifAudioControl::Pan(ndsif::Pan::Both),
+        });
+
+        assert!(!NdsifSerialTransport::event_is_ready(&control, Some(&stream)).unwrap());
+
+        let mut stream = stream;
+        stream.accepted = 1;
+        assert!(NdsifSerialTransport::event_is_ready(&control, Some(&stream)).unwrap());
     }
 }
