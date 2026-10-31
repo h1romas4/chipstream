@@ -43,30 +43,42 @@ Install Rust and the GStreamer development packages for GStreamer 1.14 or newer.
 On Debian or Ubuntu, install `pkg-config`, `libgstreamer1.0-dev`, and
 `libgstreamer-plugins-base1.0-dev`.
 
-For real-time playback, build the optimized release plugin from the workspace root.
-Debug builds can be too slow to render CPU-intensive VGM files and may cause audio
-underruns.
+For real-time playback, build and install the optimized release plugin from the
+workspace root. Debug builds can be too slow to render CPU-intensive VGM files and
+may cause audio underruns.
 
 ```sh
-cargo build --release -p chipstream-gstreamer
+cargo run -p xtasks -- install-gstreamer
 ```
 
-The build produces `target/release/libgstchipstream.so`.
+On Linux, this builds `libgstchipstream.so` and copies it to
+`~/.local/lib/chipstream/`.
 
 Inspect the registered element:
 
 ```sh
-GST_PLUGIN_PATH=target/release gst-inspect-1.0 chipstreamsrc
+GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-inspect-1.0 chipstreamsrc
 ```
 
 Play a file through an installed audio sink:
 
 ```sh
-GST_PLUGIN_PATH=target/release gst-launch-1.0 chipstreamsrc location=song.vgm play-count=3 fadeout-seconds=4.5 ! audioconvert ! audioresample ! autoaudiosink
+GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-launch-1.0 chipstreamsrc location=song.vgm play-count=3 fadeout-seconds=4.5 ! audioconvert ! audioresample ! autoaudiosink
 ```
 
 Play through `playbin3` using the URI source:
 
 ```sh
-GST_PLUGIN_PATH=target/release gst-launch-1.0 playbin3 uri=chipstream:///music/song.vgm
+GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-launch-1.0 playbin3 uri=chipstream:///music/song.vgm
+```
+
+## Termusic
+
+Termusic requires several patches before it can use the chipstream GStreamer
+plugin; these environment variables alone are not sufficient.
+
+```sh
+# termusic
+export GST_PLUGIN_PATH=/home/hiromasa/.local/lib/chipstream
+export TMS_BACKEND=gstreamer
 ```
