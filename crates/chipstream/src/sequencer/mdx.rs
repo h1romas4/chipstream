@@ -13,6 +13,7 @@ use soundlog::vgm::VgmStream;
 
 use crate::audio::StereoBlock;
 
+use super::factory::ChipFactoryRegistry;
 use super::vgm::StreamFactory;
 use super::{
     Chip, Instance, StateEvent, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
@@ -91,13 +92,30 @@ impl<'a> MdxSequencer<'a> {
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, MdxSequencerError> {
+        Self::from_mdx_with_factories(
+            mdx,
+            pdx,
+            output_rate,
+            chunk_frames,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Parse owned MDX/PDX buffers and use selected external chip factories.
+    pub fn from_mdx_with_factories(
+        mdx: Vec<u8>,
+        pdx: Option<Vec<u8>>,
+        output_rate: u32,
+        chunk_frames: usize,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, MdxSequencerError> {
         let normalized =
             match normalize_mdx_for_playback(&mdx).map_err(MdxSequencerError::Compatibility)? {
                 Cow::Borrowed(_) => mdx,
                 Cow::Owned(normalized) => normalized,
             };
         let package = MdxPackage::parse_owned(normalized, pdx).map_err(MdxSequencerError::Parse)?;
-        Self::new(package, output_rate, chunk_frames)
+        Self::new_with_factories(package, output_rate, chunk_frames, factories)
     }
 
     /// Play a parsed package once using the default playback limits.
@@ -106,11 +124,33 @@ impl<'a> MdxSequencer<'a> {
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, MdxSequencerError> {
+        Self::new_with_factories(
+            package,
+            output_rate,
+            chunk_frames,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Play a parsed package once with selected external chip factories.
+    pub fn new_with_factories(
+        package: MdxPackage,
+        output_rate: u32,
+        chunk_frames: usize,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, MdxSequencerError> {
         let options = MdxSequencerOptions {
             loop_count: Some(1),
             ..MdxSequencerOptions::default()
         };
-        Self::with_options(package, output_rate, chunk_frames, options)
+        Self::with_options_and_fadeout_with_factories(
+            package,
+            output_rate,
+            chunk_frames,
+            options,
+            None,
+            factories,
+        )
     }
 
     /// Play a parsed package with explicit driver options.
@@ -130,7 +170,31 @@ impl<'a> MdxSequencer<'a> {
         chunk_frames: usize,
         options: MdxSequencerOptions,
     ) -> Result<Self, MdxSequencerError> {
-        Self::with_options_and_fadeout(package, output_rate, chunk_frames, options, None)
+        Self::with_options_with_factories(
+            package,
+            output_rate,
+            chunk_frames,
+            options,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Play a parsed package with explicit options and external chip factories.
+    pub fn with_options_with_factories(
+        package: MdxPackage,
+        output_rate: u32,
+        chunk_frames: usize,
+        options: MdxSequencerOptions,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, MdxSequencerError> {
+        Self::with_options_and_fadeout_with_factories(
+            package,
+            output_rate,
+            chunk_frames,
+            options,
+            None,
+            factories,
+        )
     }
 
     /// Play with a linear fade after the selected MDX loop boundary.
@@ -149,6 +213,25 @@ impl<'a> MdxSequencer<'a> {
         chunk_frames: usize,
         options: MdxSequencerOptions,
         fadeout_samples: Option<u32>,
+    ) -> Result<Self, MdxSequencerError> {
+        Self::with_options_and_fadeout_with_factories(
+            package,
+            output_rate,
+            chunk_frames,
+            options,
+            fadeout_samples,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Play with a fadeout and external factories for selected chip types.
+    pub fn with_options_and_fadeout_with_factories(
+        package: MdxPackage,
+        output_rate: u32,
+        chunk_frames: usize,
+        options: MdxSequencerOptions,
+        fadeout_samples: Option<u32>,
+        factories: ChipFactoryRegistry,
     ) -> Result<Self, MdxSequencerError> {
         if options.ym2151_clock == 0 || options.ym2151_clock > 0x3fff_ffff {
             return Err(MdxSequencerError::Conversion(
@@ -192,6 +275,7 @@ impl<'a> MdxSequencer<'a> {
             has_pcm.then_some(options.okim6258_clock),
             output_rate,
             chunk_frames,
+            factories,
         )
         .map_err(MdxSequencerError::Playback)?;
         player

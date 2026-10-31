@@ -701,6 +701,7 @@ dependencies = [
 name = "chipstream"
 version = "0.1.0"
 dependencies = [
+ "ndsif",
  "soundlog",
  "ymfm-sys",
 ]

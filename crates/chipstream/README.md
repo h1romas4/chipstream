@@ -8,7 +8,7 @@ provided.
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| `sequencer` | `VgmSequencer`, `MdxSequencer` | Render songs to stereo PCM with typed register-write callbacks and optional state tracking. |
+| `sequencer` | `VgmSequencer`, `MdxSequencer`, `ChipFactoryRegistry` | Render songs to stereo PCM with typed register-write callbacks, optional state tracking, and replaceable chip backends. |
 | `chip` | `SoundChip`, chip implementations | Apply typed soundlog writes and generate native-rate samples. |
 | `audio` | `ChipRoute`, `NativeBlock` | Capture native samples and chip metadata. |
 | `audio` | `StereoMatrix`, `StereoBlock` | Convert native outputs to stereo. |
@@ -19,8 +19,7 @@ details and limitations, see the rustdoc (`cargo doc -p chipstream --open`).
 
 ## Cargo features
 
-YMFM chips are always available. The following non-YMFM chip features are
-disabled by default:
+YMFM chips are always available. Optional features are disabled by default:
 
 | Feature | Chip |
 | --- | --- |
@@ -30,6 +29,7 @@ disabled by default:
 | `pwm` | PWM |
 | `segapcm` | SegaPCM |
 | `sn76496` | SN76489 / SN76496 |
+| `ndsif` | Scheduled NDSIF output adapter for YMFM chip replacements |
 
 Enable the chips your application needs, for example:
 
@@ -124,6 +124,62 @@ chip.generate(&mut samples)?;
 
 The `chip` module provides `YmfmChip` and, with their respective features,
 `Okim6258`, `Okim6295`, `Sn76496`, `SegaPcm`, `Pwm`, and `C140`.
+
+### External chip backends
+
+Implement `SoundChip` and register a factory with `ChipFactoryRegistry` to
+replace a built-in backend. Factories are selected independently by chip type;
+unregistered types keep using their built-in implementations. Pass the
+registry to `VgmSequencer::from_vgm_with_factories`,
+`VgmSequencer::new_with_factories`, or the corresponding
+`MdxSequencer` constructor.
+
+| Factory configuration | Description |
+|---|---|
+| `chip()` | Chip type selected by the VGM/MDX stream |
+| `instance()` | Primary or secondary instance |
+| `clock()` | Effective input clock in Hz |
+| `output_rate()` | Sequencer output rate in frames per second |
+| `header()` | Parsed VGM header, or synthesized MDX header |
+| `extra_header()` | Optional VGM extra header |
+
+YMFM-backed chip types can be replaced individually:
+
+| Chip type | Native outputs per frame |
+|---|---:|
+| `Ym2413` | 2 |
+| `Ym2151` | 2 |
+| `Ym2203` | 4 |
+| `Ym2608` | 3 |
+| `Ym2610b` | 3 |
+| `Ym2612` | 2 |
+| `Ym3526` | 1 |
+| `Y8950` | 1 |
+| `Ym3812` | 1 |
+| `Ymf262` | 4 |
+| `Ymf278b` | 6 |
+
+The returned backend must report the configured chip type and clock and match
+the native output count above. Its `generate()` method still supplies samples
+to the sequencer; routing register writes to physical hardware does not by
+itself route that hardware's audio into the host PCM output. Implement
+`save_state()` and `restore_state()` to support checkpoint seeking. Backend
+errors can be returned as `ChipError::External`.
+
+### NDSIF scheduled output
+
+The optional `ndsif` feature provides `NdsifSoundChip` and helpers to register
+one or all YMFM replacements through `chip::ndsif`. The adapter schedules typed
+register writes through an injected `NdsifTransport` and fills host PCM buffers
+with silence; audible audio must come from the physical chip's output path.
+Transport implementations must queue writes at the supplied absolute output
+frame and accept events arriving out of chronological order during rendering.
+
+The `ndsif` crate is a protocol codec, not a serial transport or playback
+scheduler. The application supplies the transport and is responsible for
+converting output-frame times to the device's timing model, including any
+mapping to NDSIF's ADPCM-byte-position event format. Device clock and chip
+support remain transport/device responsibilities.
 
 ## Audio processing
 

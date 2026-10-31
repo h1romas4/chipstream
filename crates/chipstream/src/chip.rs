@@ -2,6 +2,8 @@
 
 #[cfg(feature = "c140")]
 mod c140;
+#[cfg(feature = "ndsif")]
+pub mod ndsif;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]
@@ -26,6 +28,8 @@ use soundlog::chip::Chip;
 
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
+#[cfg(feature = "ndsif")]
+pub use ndsif::{NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
 #[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "okim6295")]
@@ -159,6 +163,20 @@ pub trait SoundChip {
     /// changing state.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError>;
 
+    /// Apply a typed write at an absolute output-frame position.
+    ///
+    /// The frame position uses `output_rate` frames per second. Ordinary
+    /// emulators can use the default implementation; scheduled external
+    /// backends can override it to enqueue writes at the corresponding time.
+    fn apply_register_write_at(
+        &mut self,
+        write: ChipRegisterWrite,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.apply_register_write(write)
+    }
+
     /// Write a contiguous portion of a chip's sample ROM.
     ///
     /// Chips without sample ROM return an error. Existing bytes outside the
@@ -271,6 +289,15 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         (**self).apply_register_write(write)
     }
 
+    fn apply_register_write_at(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        (**self).apply_register_write_at(write, sample_frame, output_rate)
+    }
+
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         (**self).write_rom(start, data)
     }
@@ -305,6 +332,14 @@ pub enum ChipError {
     RomTooLarge,
     /// The input clock is too low to produce a nonzero native sample rate.
     InvalidClock { clock: u32, minimum: u32 },
+    /// An external factory created a chip at a different clock than requested.
+    ClockMismatch {
+        chip: Chip,
+        expected: u32,
+        actual: u32,
+    },
+    /// An external backend failed with a backend-specific error.
+    External { chip: Chip, message: String },
     /// A chip-specific configuration is invalid.
     InvalidConfiguration { chip: Chip, reason: &'static str },
     /// The chip backend could not create an instance.
@@ -340,6 +375,17 @@ impl fmt::Display for ChipError {
             Self::RomTooLarge => write!(f, "sample ROM exceeds the supported size"),
             Self::InvalidClock { clock, minimum } => {
                 write!(f, "chip clock {clock} Hz is below the minimum {minimum} Hz")
+            }
+            Self::ClockMismatch {
+                chip,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{chip:?} backend clock is {actual} Hz, expected {expected} Hz"
+            ),
+            Self::External { chip, message } => {
+                write!(f, "external {chip:?} backend failed: {message}")
             }
             Self::InvalidConfiguration { chip, reason } => {
                 write!(f, "invalid {chip:?} configuration: {reason}")

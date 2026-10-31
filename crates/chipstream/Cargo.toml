@@ -18,7 +18,9 @@ okim6295 = []
 pwm = []
 segapcm = []
 sn76496 = []
+ndsif = ["dep:ndsif"]
 
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }
 ymfm-sys = "0.2.0"
+ndsif = { path = "../ndsif", version = "0.1.0", optional = true }

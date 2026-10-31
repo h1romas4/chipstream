@@ -38,6 +38,7 @@ use crate::chip::{ClockDivider, Okim6258, OutputBits};
 use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
 
+use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
 use event::{CallbackRegistry, PendingWriteEvent, VgmStateTracker};
 use timing::{Timing, TimingProfile};
@@ -334,7 +335,9 @@ impl Voice {
     fn apply_write(
         &mut self,
         write: ChipRegisterWrite,
-        position: usize,
+        event_position: usize,
+        sample_frame: usize,
+        output_rate: u32,
         context: &mut EventContext<'_, '_>,
     ) -> Result<(), VgmSequencerError> {
         let (bank, register, value) = write.parts();
@@ -342,7 +345,9 @@ impl Voice {
             .callbacks
             .has_callback(&write)
             .then(|| write.clone());
-        self.route.chip_mut().apply_register_write(write)?;
+        self.route
+            .chip_mut()
+            .apply_register_write_at(write, sample_frame, output_rate)?;
         let state_events = if let Some(tracker) = self.tracker.as_mut() {
             let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
                 chip: self.chip.clone(),
@@ -364,11 +369,11 @@ impl Voice {
             }
             let index = context
                 .events
-                .partition_point(|(offset, _)| *offset <= position);
+                .partition_point(|(offset, _)| *offset <= event_position);
             context.events.insert(
                 index,
                 (
-                    position,
+                    event_position,
                     PendingWriteEvent {
                         instance: self.instance,
                         write,
@@ -386,6 +391,7 @@ impl Voice {
         output_rate: u32,
         output_phase: u32,
         available: usize,
+        sample_frame_origin: usize,
         context: &mut EventContext<'_, '_>,
     ) -> Result<(), VgmSequencerError> {
         let rate = self.route.chip().sample_rate_ratio();
@@ -428,23 +434,26 @@ impl Voice {
             let Some(write) = self.paced_writes.as_mut().and_then(VecDeque::pop_front) else {
                 break;
             };
-            let position = if context.callbacks.has_callback(&write) {
-                let fraction = initial_phase.wrapping_neg() as f32 * PHASE_SCALE;
-                let offset = (rendered as f32 + fraction)
-                    * rate.denominator().get() as f32
-                    * output_rate as f32
+            let fraction = initial_phase.wrapping_neg() as f32 * PHASE_SCALE;
+            let offset =
+                (rendered as f32 + fraction) * rate.denominator().get() as f32 * output_rate as f32
                     / rate.numerator() as f32
                     + output_phase as f32 * PHASE_SCALE;
-                if !offset.is_finite() || offset >= 4_294_967_296.0 {
-                    return Err(VgmSequencerError::DurationOverflow);
-                }
-                available
-                    .checked_add(offset as u32 as usize)
-                    .ok_or(VgmSequencerError::DurationOverflow)?
+            if !offset.is_finite() || offset >= 4_294_967_296.0 {
+                return Err(VgmSequencerError::DurationOverflow);
+            }
+            let relative_position = available
+                .checked_add(offset as u32 as usize)
+                .ok_or(VgmSequencerError::DurationOverflow)?;
+            let sample_frame = sample_frame_origin
+                .checked_add(relative_position)
+                .ok_or(VgmSequencerError::DurationOverflow)?;
+            let event_position = if context.callbacks.has_callback(&write) {
+                relative_position
             } else {
                 0
             };
-            self.apply_write(write, position, context)?;
+            self.apply_write(write, event_position, sample_frame, output_rate, context)?;
             self.write_cooldown = self.write_interval;
         }
         let remaining = frames - rendered;
@@ -642,6 +651,19 @@ impl<'a> VgmSequencer<'a> {
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
+        Self::from_vgm_with_factories(data, output_rate, chunk_frames, ChipFactoryRegistry::new())
+    }
+
+    /// Create a sequencer with replacement factories for selected chip types.
+    ///
+    /// Factories replace the built-in backend only for registered chip types.
+    /// They receive the parsed header, chip instance, and effective clock.
+    pub fn from_vgm_with_factories(
+        data: impl Into<Vec<u8>>,
+        output_rate: u32,
+        chunk_frames: usize,
+        mut factories: ChipFactoryRegistry,
+    ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let data = Arc::new(data.into());
         let header = VgmHeader::from_bytes(&data)?;
@@ -652,7 +674,13 @@ impl<'a> VgmSequencer<'a> {
                 timing.observe(command);
             })?;
         }
-        let voices = Self::make_voices(&header, extra.as_ref(), &timing, output_rate)?;
+        let voices = Self::make_voices(
+            &header,
+            extra.as_ref(),
+            &timing,
+            output_rate,
+            &mut factories,
+        )?;
         let replay_data = Arc::clone(&data);
         let stream = VgmStream::from_vgm_shared(Arc::clone(&data))?;
         let stream_factory: StreamFactory = Box::new(move || {
@@ -723,6 +751,7 @@ impl<'a> VgmSequencer<'a> {
         config: VoiceConfig,
         timing: &Timing,
         output_rate: u32,
+        factories: &mut ChipFactoryRegistry,
     ) -> Result<Voice, VgmSequencerError> {
         let VoiceConfig {
             chip,
@@ -741,116 +770,121 @@ impl<'a> VgmSequencer<'a> {
             clock
         };
         let memory = Rc::new(RefCell::new(Memory::default()));
-        let backend: Box<dyn SoundChip> = if chip == Chip::Sn76489 {
-            feature_backend!("sn76496", chip, {
-                if header.misc().t6w28_detected == Some(true) {
-                    return Err(ChipError::InvalidConfiguration {
-                        chip,
-                        reason: "T6W28 PSG is not supported",
-                    }
-                    .into());
-                }
-                let flags = header.sn76489_flags;
-                let feedback = u16::from(header.sn76489_feedback);
-                let width = u8::from(header.sn76489_shift_register_width);
-                Box::new(Sn76496::with_config(
-                    clock,
-                    Sn76496Config {
-                        feedback: if feedback == 0 { 0x0009 } else { feedback },
-                        shift_width: if width == 0 { 16 } else { width },
-                        negate: flags.output_negate,
-                        stereo: flags.gamegear_stereo,
-                        divider_8: flags.clock_divider_8,
-                        frequency_zero_is_1024: flags.frequency_0_is_400,
-                        xnor: flags.xnor_noise_mode,
-                    },
-                )?)
-            })
-        } else if chip == Chip::C140 {
-            feature_backend!("c140", chip, {
-                let kind = match u8::from(header.c140_chip_type) {
-                    0 => C140Type::System2,
-                    1 => C140Type::System21,
-                    2 => C140Type::Asic219,
-                    _ => {
+        let factory_config =
+            ChipFactoryConfig::new(chip.clone(), instance, clock, output_rate, header, extra);
+        let backend: Box<dyn SoundChip> =
+            if let Some(backend) = factories.create(&factory_config)? {
+                backend
+            } else if chip == Chip::Sn76489 {
+                feature_backend!("sn76496", chip, {
+                    if header.misc().t6w28_detected == Some(true) {
                         return Err(ChipError::InvalidConfiguration {
                             chip,
-                            reason: "unknown C140 board type",
+                            reason: "T6W28 PSG is not supported",
                         }
                         .into());
                     }
-                };
-                Box::new(C140::new(clock, kind)?)
-            })
-        } else if chip == Chip::Pwm {
-            feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
-        } else if chip == Chip::SegaPcm {
-            feature_backend!("segapcm", chip, {
-                Box::new(SegaPcm::with_banking(
-                    clock,
-                    header.spcm_interface as u8,
-                    (header.spcm_interface >> 16) as u8,
-                )?)
-            })
-        } else if chip == Chip::Okim6295 {
-            feature_backend!("okim6295", chip, {
-                Box::new(Okim6295::with_pin7(
-                    clock,
-                    header.okim6295_clock & 0x8000_0000 != 0,
-                )?)
-            })
-        } else if chip == Chip::Okim6258 {
-            feature_backend!("okim6258", chip, {
-                let flags = &header.okim6258_flags;
-                // The MAME-backed vgm2wav compatibility path also ignores this selector.
-                let mut oki = Okim6258::new_for_vgm(clock)?;
-                oki.set_divider(match flags.clock_divider {
-                    0 => ClockDivider::Div1024,
-                    1 => ClockDivider::Div768,
-                    _ => ClockDivider::Div512,
-                })?;
-                oki.set_output_bits(if flags.output_12bit {
-                    OutputBits::Bits12
-                } else {
-                    OutputBits::Bits10
-                });
-                Box::new(oki)
-            })
-        } else {
-            let shared = Rc::clone(&memory);
-            let handler = InterfaceHandler {
-                ymfm_external_read: Some(Box::new(move |access, address| {
-                    let memory = shared.borrow();
-                    Memory::key(access)
-                        .and_then(|key| memory.writes.get(&(key, address)))
-                        .or_else(|| {
-                            memory
-                                .get(access)
-                                .and_then(|data| data.get(address as usize))
-                        })
-                        .copied()
-                        .unwrap_or(0)
-                })),
-                ymfm_external_write: Some(Box::new({
-                    let shared = Rc::clone(&memory);
-                    move |access, address, value| {
-                        if let Some(key) = Memory::key(access) {
-                            shared.borrow_mut().writes.insert((key, address), value);
+                    let flags = header.sn76489_flags;
+                    let feedback = u16::from(header.sn76489_feedback);
+                    let width = u8::from(header.sn76489_shift_register_width);
+                    Box::new(Sn76496::with_config(
+                        clock,
+                        Sn76496Config {
+                            feedback: if feedback == 0 { 0x0009 } else { feedback },
+                            shift_width: if width == 0 { 16 } else { width },
+                            negate: flags.output_negate,
+                            stereo: flags.gamegear_stereo,
+                            divider_8: flags.clock_divider_8,
+                            frequency_zero_is_1024: flags.frequency_0_is_400,
+                            xnor: flags.xnor_noise_mode,
+                        },
+                    )?)
+                })
+            } else if chip == Chip::C140 {
+                feature_backend!("c140", chip, {
+                    let kind = match u8::from(header.c140_chip_type) {
+                        0 => C140Type::System2,
+                        1 => C140Type::System21,
+                        2 => C140Type::Asic219,
+                        _ => {
+                            return Err(ChipError::InvalidConfiguration {
+                                chip,
+                                reason: "unknown C140 board type",
+                            }
+                            .into());
                         }
-                    }
-                })),
-                ..Default::default()
-            };
-            if chip == Chip::Ym2610b {
-                Box::new(YmfmChip::with_ym2610_variant(
-                    clock,
-                    header.misc().ym2610b_detected == Some(true),
-                    handler,
-                )?)
+                    };
+                    Box::new(C140::new(clock, kind)?)
+                })
+            } else if chip == Chip::Pwm {
+                feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+            } else if chip == Chip::SegaPcm {
+                feature_backend!("segapcm", chip, {
+                    Box::new(SegaPcm::with_banking(
+                        clock,
+                        header.spcm_interface as u8,
+                        (header.spcm_interface >> 16) as u8,
+                    )?)
+                })
+            } else if chip == Chip::Okim6295 {
+                feature_backend!("okim6295", chip, {
+                    Box::new(Okim6295::with_pin7(
+                        clock,
+                        header.okim6295_clock & 0x8000_0000 != 0,
+                    )?)
+                })
+            } else if chip == Chip::Okim6258 {
+                feature_backend!("okim6258", chip, {
+                    let flags = &header.okim6258_flags;
+                    // The MAME-backed vgm2wav compatibility path also ignores this selector.
+                    let mut oki = Okim6258::new_for_vgm(clock)?;
+                    oki.set_divider(match flags.clock_divider {
+                        0 => ClockDivider::Div1024,
+                        1 => ClockDivider::Div768,
+                        _ => ClockDivider::Div512,
+                    })?;
+                    oki.set_output_bits(if flags.output_12bit {
+                        OutputBits::Bits12
+                    } else {
+                        OutputBits::Bits10
+                    });
+                    Box::new(oki)
+                })
             } else {
-                Box::new(YmfmChip::with_handler(chip.clone(), clock, handler)?)
-            }
-        };
+                let shared = Rc::clone(&memory);
+                let handler = InterfaceHandler {
+                    ymfm_external_read: Some(Box::new(move |access, address| {
+                        let memory = shared.borrow();
+                        Memory::key(access)
+                            .and_then(|key| memory.writes.get(&(key, address)))
+                            .or_else(|| {
+                                memory
+                                    .get(access)
+                                    .and_then(|data| data.get(address as usize))
+                            })
+                            .copied()
+                            .unwrap_or(0)
+                    })),
+                    ymfm_external_write: Some(Box::new({
+                        let shared = Rc::clone(&memory);
+                        move |access, address, value| {
+                            if let Some(key) = Memory::key(access) {
+                                shared.borrow_mut().writes.insert((key, address), value);
+                            }
+                        }
+                    })),
+                    ..Default::default()
+                };
+                if chip == Chip::Ym2610b {
+                    Box::new(YmfmChip::with_ym2610_variant(
+                        clock,
+                        header.misc().ym2610b_detected == Some(true),
+                        handler,
+                    )?)
+                } else {
+                    Box::new(YmfmChip::with_handler(chip.clone(), clock, handler)?)
+                }
+            };
         let global = volume::global_gain(header.volume_modifier);
         let id = Self::chip_id(&chip);
         let main = SCALE * global * volume::chip_gain(extra, &chip, id, instance, false, dual);
@@ -925,6 +959,21 @@ impl<'a> VgmSequencer<'a> {
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
+        Self::new_with_factories(
+            document,
+            output_rate,
+            chunk_frames,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Create a sequencer from a parsed document with selected chip factories.
+    pub fn new_with_factories(
+        document: VgmDocument,
+        output_rate: u32,
+        chunk_frames: usize,
+        mut factories: ChipFactoryRegistry,
+    ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let mut timing = Timing::new(&Self::supported_clocks(&document.header));
         if timing.needs_scan() {
@@ -937,6 +986,7 @@ impl<'a> VgmSequencer<'a> {
             document.extra_header.as_ref(),
             &timing,
             output_rate,
+            &mut factories,
         )?;
         let document = Arc::new(document);
         let replay_document = Arc::clone(&document);
@@ -957,6 +1007,7 @@ impl<'a> VgmSequencer<'a> {
         okim6258_clock: Option<u32>,
         output_rate: u32,
         chunk_frames: usize,
+        mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let mut header = VgmHeader {
@@ -972,7 +1023,7 @@ impl<'a> VgmSequencer<'a> {
                 timing.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
             }
         }
-        let voices = Self::make_voices(&header, None, &timing, output_rate)?;
+        let voices = Self::make_voices(&header, None, &timing, output_rate, &mut factories)?;
         Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
@@ -991,6 +1042,7 @@ impl<'a> VgmSequencer<'a> {
         extra: Option<&VgmExtraHeader>,
         timing: &Timing,
         output_rate: u32,
+        factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
         let mut voices = Vec::new();
         for (chip, raw) in Self::supported_clocks(header) {
@@ -1019,6 +1071,7 @@ impl<'a> VgmSequencer<'a> {
                     },
                     timing,
                     output_rate,
+                    factories,
                 )?);
             }
         }
@@ -1410,7 +1463,7 @@ impl<'a> VgmSequencer<'a> {
             if is_cancelled() {
                 return Err(VgmSequencerError::SeekCancelled);
             }
-            let Some(block) = (match self.render_inner() {
+            let Some(block) = (match self.render_inner(self.position_frames) {
                 Ok(block) => block,
                 Err(error) => {
                     self.failed = true;
@@ -1456,7 +1509,7 @@ impl<'a> VgmSequencer<'a> {
         }
         self.started = true;
         let sample_start = self.position_frames;
-        let result = self.render_inner();
+        let result = self.render_inner(sample_start);
         if result.is_err() {
             self.failed = true;
         }
@@ -1485,7 +1538,10 @@ impl<'a> VgmSequencer<'a> {
         result
     }
 
-    fn render_inner(&mut self) -> Result<Option<StereoBlock>, VgmSequencerError> {
+    fn render_inner(
+        &mut self,
+        sample_frame_origin: usize,
+    ) -> Result<Option<StereoBlock>, VgmSequencerError> {
         loop {
             if !self.pending_output.is_empty() {
                 let count = self.pending_output.len().min(self.chunk_frames);
@@ -1522,7 +1578,7 @@ impl<'a> VgmSequencer<'a> {
                 return Ok(Some(bus));
             }
             if self.fade_remaining == Some(0) {
-                self.flush_paced_writes()?;
+                self.flush_paced_writes(sample_frame_origin)?;
                 for voice in &mut self.voices {
                     voice
                         .queue
@@ -1542,6 +1598,7 @@ impl<'a> VgmSequencer<'a> {
                         self.output_rate,
                         self.output_phase,
                         self.available,
+                        sample_frame_origin,
                         &mut EventContext {
                             callbacks: &self.callbacks,
                             events: &mut self.events,
@@ -1598,7 +1655,7 @@ impl<'a> VgmSequencer<'a> {
             }
             match result {
                 StreamResult::EndOfStream => {
-                    self.flush_paced_writes()?;
+                    self.flush_paced_writes(sample_frame_origin)?;
                     for voice in &mut self.voices {
                         voice
                             .queue
@@ -1610,12 +1667,16 @@ impl<'a> VgmSequencer<'a> {
                 StreamResult::Command(VgmCommand::WaitSamples(wait)) => {
                     self.wait = u32::from(wait.0)
                 }
-                StreamResult::Command(command) => self.command(command)?,
+                StreamResult::Command(command) => self.command(command, sample_frame_origin)?,
             }
         }
     }
 
-    fn command(&mut self, command: VgmCommand) -> Result<(), VgmSequencerError> {
+    fn command(
+        &mut self,
+        command: VgmCommand,
+        sample_frame_origin: usize,
+    ) -> Result<(), VgmSequencerError> {
         use VgmCommand::*;
         let write = ChipRegisterWrite::from_vgm_command(&command);
         match command {
@@ -1640,6 +1701,7 @@ impl<'a> VgmSequencer<'a> {
                             register: 0,
                             value: 5,
                         }),
+                        sample_frame_origin,
                     )?;
                 }
             }
@@ -1669,7 +1731,7 @@ impl<'a> VgmSequencer<'a> {
             _ => {}
         }
         if let Some((instance, write)) = write {
-            self.write_chip(instance, write)?;
+            self.write_chip(instance, write, sample_frame_origin)?;
         }
         Ok(())
     }
@@ -1678,6 +1740,7 @@ impl<'a> VgmSequencer<'a> {
         &mut self,
         instance: Instance,
         write: ChipRegisterWrite,
+        sample_frame_origin: usize,
     ) -> Result<(), VgmSequencerError> {
         let chip = write.chip();
         if let Some(voice) = self
@@ -1695,9 +1758,14 @@ impl<'a> VgmSequencer<'a> {
                 }
                 queue.push_back(write);
             } else {
+                let sample_frame = sample_frame_origin
+                    .checked_add(self.available)
+                    .ok_or(VgmSequencerError::DurationOverflow)?;
                 voice.apply_write(
                     write,
                     self.available,
+                    sample_frame,
+                    self.output_rate,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,
@@ -1708,12 +1776,17 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
-    fn flush_paced_writes(&mut self) -> Result<(), VgmSequencerError> {
+    fn flush_paced_writes(&mut self, sample_frame_origin: usize) -> Result<(), VgmSequencerError> {
         for voice in &mut self.voices {
             while let Some(write) = voice.paced_writes.as_mut().and_then(VecDeque::pop_front) {
+                let sample_frame = sample_frame_origin
+                    .checked_add(self.available)
+                    .ok_or(VgmSequencerError::DurationOverflow)?;
                 voice.apply_write(
                     write,
                     self.available,
+                    sample_frame,
+                    self.output_rate,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,
@@ -1840,15 +1913,17 @@ mod tests {
             .as_mut()
             .unwrap()
             .resize(MAX_PENDING_WRITES - 1, write.clone());
-        player.write_chip(Instance::Primary, write.clone()).unwrap();
+        player
+            .write_chip(Instance::Primary, write.clone(), 0)
+            .unwrap();
         assert!(matches!(
-            player.write_chip(Instance::Primary, write.clone()),
+            player.write_chip(Instance::Primary, write.clone(), 0),
             Err(VgmSequencerError::WriteQueueFull {
                 chip: Chip::Ym2151,
                 instance: Instance::Primary,
                 limit: MAX_PENDING_WRITES,
             })
         ));
-        player.write_chip(Instance::Secondary, write).unwrap();
+        player.write_chip(Instance::Secondary, write, 0).unwrap();
     }
 }
