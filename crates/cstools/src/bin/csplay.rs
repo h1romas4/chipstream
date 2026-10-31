@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use chipstream_cli::{PlayOptions, play};
 use clap::Parser;
+use cstools::{PlayOptions, play};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Play retro sound-chip music")]

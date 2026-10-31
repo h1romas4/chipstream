@@ -359,7 +359,7 @@ fn cli_rejects_pwm_compatibility_settings_for_mdx() {
 
 #[test]
 fn library_rejects_conflicting_infinite_options() {
-    let options = || chipstream_cli::PlayOptions {
+    let options = || cstools::PlayOptions {
         file: "unused.vgm".into(),
         output: Some("unused.wav".into()),
         sample_rate: None,
@@ -374,7 +374,7 @@ fn library_rejects_conflicting_infinite_options() {
         no_progress: false,
     };
     assert!(
-        chipstream_cli::play(options())
+        cstools::play(options())
             .unwrap_err()
             .to_string()
             .contains("infinite playback")
@@ -383,7 +383,7 @@ fn library_rejects_conflicting_infinite_options() {
     with_count.output = None;
     with_count.loop_count = Some(2);
     assert!(
-        chipstream_cli::play(with_count)
+        cstools::play(with_count)
             .unwrap_err()
             .to_string()
             .contains("infinite playback")
@@ -392,7 +392,7 @@ fn library_rejects_conflicting_infinite_options() {
     invalid_rate.infinite = false;
     invalid_rate.sample_rate = Some(0);
     assert!(
-        chipstream_cli::play(invalid_rate)
+        cstools::play(invalid_rate)
             .unwrap_err()
             .to_string()
             .contains("sample rate")
@@ -424,7 +424,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
     assert!(wav.samples::<i16>().any(|sample| sample.unwrap() != 0));
     let rendered = fs::read(&output).unwrap();
     let library_output = dir.path().join("library.wav");
-    chipstream_cli::play(chipstream_cli::PlayOptions {
+    cstools::play(cstools::PlayOptions {
         file: source.clone(),
         output: Some(library_output.clone()),
         sample_rate: Some(48_000),

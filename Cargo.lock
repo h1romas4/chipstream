@@ -700,23 +700,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chipstream-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chipstream",
- "clap",
- "cpal",
- "crossterm",
- "flate2",
- "hound",
- "mmlx",
- "soundlog",
- "tempfile",
- "terminal_size",
-]
-
-[[package]]
 name = "chipstream-gstreamer"
 version = "0.1.0"
 dependencies = [
@@ -986,6 +969,23 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
+name = "cstools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chipstream",
+ "clap",
+ "cpal",
+ "crossterm",
+ "flate2",
+ "hound",
+ "mmlx",
+ "soundlog",
+ "tempfile",
+ "terminal_size",
+]
 
 [[package]]
 name = "cursor-icon"

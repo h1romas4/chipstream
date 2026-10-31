@@ -37,7 +37,7 @@ Enable the chips your application needs, for example:
 chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 ```
 
-`chipstream-cli` enables all six features. When a VGM header declares one of
+`cstools` enables all six features. When a VGM header declares one of
 these chips without its feature, sequencer construction returns
 `VgmSequencerError::FeatureDisabled`; unsupported chips without implementations
 remain silent. MDX playback with a supplied PDX requires `okim6258` even when

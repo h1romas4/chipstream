@@ -3,7 +3,7 @@ resolver = "3"
 members = [
 	"crates/chipstream",
 	"crates/chipstream-gstreamer",
-	"crates/chipstream-cli",
+	"crates/cstools",
 	"crates/mmlx",
 	"crates/soundlog",
 	"crates/soundlog-cli",
