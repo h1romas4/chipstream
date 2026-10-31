@@ -72,6 +72,10 @@ impl NdsifSerialTransport {
             .timeout(timeout)
             .open()
             .map_err(|error| format!("failed to open NDSIF serial port {path}: {error}"))?;
+        port.clear(serialport::ClearBuffer::Input)
+            .map_err(|error| {
+                format!("failed to clear pending NDSIF serial input on {path}: {error}")
+            })?;
         let mut transport = Self {
             port,
             response_timeout: timeout,
@@ -169,18 +173,23 @@ impl NdsifSerialTransport {
         let encoded = request.encode();
         self.port
             .write_all(encoded.as_bytes())
-            .and_then(|()| self.port.flush())
             .map_err(|error| format!("failed to write NDSIF frame: {error}"))?;
 
         if !command.expects_response() {
             return Ok(request);
         }
+        self.port
+            .flush()
+            .map_err(|error| format!("failed to flush NDSIF request: {error}"))?;
 
         let deadline = Instant::now() + self.response_timeout;
         let mut bytes = [0_u8; 256];
         loop {
             if Instant::now() >= deadline {
-                return Err("timed out waiting for NDSIF response".to_owned());
+                return Err(format!(
+                    "timed out waiting for NDSIF response to command 0x{:02x} transaction {transaction_id}",
+                    request.command_id()
+                ));
             }
             match self.port.read(&mut bytes) {
                 Ok(0) => continue,
@@ -243,32 +252,7 @@ impl NdsifSerialTransport {
 
     fn send_event(&mut self, event: PendingEvent) -> Result<(), String> {
         match event {
-            PendingEvent::Register(event) => {
-                let Some(stream) = self.audio_stream.as_ref() else {
-                    return self
-                        .request(Command::WriteRegisters {
-                            write_id: event.write_id,
-                            instance: event.instance,
-                            page: event.page,
-                            writes: &[event.write],
-                        })
-                        .map(|_| ());
-                };
-                let position =
-                    Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?;
-                self.request(Command::AudioEvent {
-                    stream_id: AUDIO_STREAM_ID,
-                    instance: stream.instance,
-                    position,
-                    event: AudioEvent::Registers {
-                        write_id: event.write_id,
-                        instance: event.instance,
-                        page: event.page,
-                        writes: &[event.write],
-                    },
-                })
-                .map(|_| ())
-            }
+            PendingEvent::Register(event) => self.send_registers(&[event]),
             PendingEvent::Control(event) => {
                 let Some(stream) = self.audio_stream.as_ref() else {
                     return Err("NDSIF audio event has no configured OKIM6258 stream".to_owned());
@@ -293,6 +277,36 @@ impl NdsifSerialTransport {
                 Err("ADPCM data must be sent in a contiguous batch".to_owned())
             }
         }
+    }
+
+    fn send_registers(&mut self, events: &[NdsifRegisterEvent]) -> Result<(), String> {
+        let Some(first) = events.first() else {
+            return Ok(());
+        };
+        let writes = events.iter().map(|event| event.write).collect::<Vec<_>>();
+        let Some(stream) = self.audio_stream.as_ref() else {
+            return self
+                .request(Command::WriteRegisters {
+                    write_id: first.write_id,
+                    instance: first.instance,
+                    page: first.page,
+                    writes: &writes,
+                })
+                .map(|_| ());
+        };
+        let position = Self::position_for_frame(stream, first.sample_frame, first.sample_rate)?;
+        self.request(Command::AudioEvent {
+            stream_id: AUDIO_STREAM_ID,
+            instance: stream.instance,
+            position,
+            event: AudioEvent::Registers {
+                write_id: first.write_id,
+                instance: first.instance,
+                page: first.page,
+                writes: &writes,
+            },
+        })
+        .map(|_| ())
     }
 
     fn send_data(&mut self, events: &[NdsifAdpcmEvent]) -> Result<(), String> {
@@ -394,8 +408,17 @@ impl NdsifSerialTransport {
             Reply::AudioStatus(status) if !status.flags.fault() => {}
             Reply::AudioStatus(status) => {
                 return Err(format!(
-                    "NDSIF audio stream faulted (underflows={}, overflows={}, rejected={})",
-                    status.underflows, status.overflows, status.rejected
+                    "NDSIF audio stream faulted (accepted={}, played={}, pending={}, underflows={}, overflows={}, rejected={}, max_pending={}, flags={:?}, late_events={}, max_event_lag={})",
+                    status.accepted,
+                    status.played,
+                    status.pending,
+                    status.underflows,
+                    status.overflows,
+                    status.rejected,
+                    status.max_pending,
+                    status.flags,
+                    status.late_events,
+                    status.max_event_lag
                 ));
             }
             _ => return Err("NDSIF AUDIO_STATUS returned an unexpected response".to_owned()),
@@ -514,6 +537,48 @@ impl NdsifTransport for NdsifSerialTransport {
         let mut index = 0;
         while index < due.len() {
             match &due[index] {
+                PendingEvent::Register(first) => {
+                    let start = index;
+                    let position = self
+                        .audio_stream
+                        .as_ref()
+                        .map(|stream| {
+                            Self::position_for_frame(stream, first.sample_frame, first.sample_rate)
+                        })
+                        .transpose()?;
+                    index += 1;
+                    while index < due.len() && index - start < ndsif::MAX_REGISTER_EVENT_WRITES {
+                        let PendingEvent::Register(next) = &due[index] else {
+                            break;
+                        };
+                        let same_position = match (self.audio_stream.as_ref(), position) {
+                            (Some(stream), Some(position)) => {
+                                Self::position_for_frame(
+                                    stream,
+                                    next.sample_frame,
+                                    next.sample_rate,
+                                )? == position
+                            }
+                            _ => true,
+                        };
+                        if next.write_id != first.write_id
+                            || next.instance != first.instance
+                            || next.page != first.page
+                            || !same_position
+                        {
+                            break;
+                        }
+                        index += 1;
+                    }
+                    let registers = due[start..index]
+                        .iter()
+                        .map(|event| match event {
+                            PendingEvent::Register(event) => event.clone(),
+                            _ => unreachable!("register batch contains only register events"),
+                        })
+                        .collect::<Vec<_>>();
+                    self.send_registers(&registers)?;
+                }
                 PendingEvent::Data(_) => {
                     let start = index;
                     index += 1;
@@ -570,23 +635,8 @@ impl Drop for NdsifSerialTransport {
         if !self.configured_chip {
             return;
         }
-        let reset = Command::Reset
-            .to_frame(self.transaction_id)
-            .map(|frame| frame.encode());
-        match reset {
-            Ok(frame) => {
-                if let Err(error) = self
-                    .port
-                    .write_all(frame.as_bytes())
-                    .and_then(|()| self.port.flush())
-                {
-                    eprintln!("failed to reset NDSIF device while closing: {error}");
-                }
-            }
-
-            Err(error) => {
-                eprintln!("failed to encode NDSIF reset while closing: {error}");
-            }
+        if let Err(error) = self.request(Command::Reset) {
+            eprintln!("failed to reset NDSIF device while closing: {error}");
         }
     }
 }

@@ -203,6 +203,7 @@ mod imp {
         controls: Mutex<Option<Sender<WorkerControl>>>,
         cancelled: Arc<AtomicBool>,
         flushing: AtomicBool,
+        initial_ndsif_seek_pending: AtomicBool,
         duration: Arc<Mutex<Option<gst::ClockTime>>>,
     }
 
@@ -215,6 +216,7 @@ mod imp {
                 controls: Mutex::new(None),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 flushing: AtomicBool::new(false),
+                initial_ndsif_seek_pending: AtomicBool::new(false),
                 duration: Arc::new(Mutex::new(None)),
             }
         }
@@ -490,11 +492,17 @@ mod imp {
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
             self.flushing.store(false, Ordering::Release);
-            self.start_worker(settings)
+            let ndsif_enabled = settings.ndsif_port.is_some();
+            self.start_worker(settings)?;
+            self.initial_ndsif_seek_pending
+                .store(ndsif_enabled, Ordering::Release);
+            Ok(())
         }
 
         fn stop(&self) -> Result<(), gst::ErrorMessage> {
             self.flushing.store(true, Ordering::Release);
+            self.initial_ndsif_seek_pending
+                .store(false, Ordering::Release);
             self.stop_worker()
         }
 
@@ -611,13 +619,18 @@ mod imp {
         }
 
         fn do_seek(&self, segment: &mut gst::Segment) -> bool {
-            if self
+            let ndsif_enabled = self
                 .settings
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .ndsif_port
-                .is_some()
-            {
+                .is_some();
+            if ndsif_enabled {
+                if is_initial_noop_time_segment(segment) {
+                    return self
+                        .initial_ndsif_seek_pending
+                        .swap(false, Ordering::AcqRel);
+                }
                 return false;
             }
             if segment.format() != gst::Format::Time
@@ -1469,6 +1482,18 @@ fn checked_frame_time(frame: u64, sample_rate: u32) -> Option<gst::ClockTime> {
     (nanoseconds < u64::MAX).then(|| gst::ClockTime::from_nseconds(nanoseconds))
 }
 
+fn is_initial_noop_time_segment(segment: &gst::Segment) -> bool {
+    let zero = gst::GenericFormattedValue::Time(Some(gst::ClockTime::ZERO));
+    segment.format() == gst::Format::Time
+        && segment.rate().to_bits() == 1.0_f64.to_bits()
+        && segment.start() == zero
+        && segment.offset() == zero
+        && segment.position() == zero
+        && segment.base() == zero
+        && segment.time() == zero
+        && segment.stop() == gst::GenericFormattedValue::Time(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1514,6 +1539,18 @@ mod tests {
             .map(|bytes| f32::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
         assert_eq!(samples, [1.0, -0.5, 0.25, -1.0]);
+    }
+
+    #[test]
+    fn ndsif_initial_seek_accepts_only_the_origin_segment() {
+        gst::init().unwrap();
+        let initial = gst::FormattedSegment::<gst::ClockTime>::new().upcast();
+        assert!(is_initial_noop_time_segment(&initial));
+
+        let mut later = gst::FormattedSegment::<gst::ClockTime>::new();
+        later.set_start(gst::ClockTime::from_seconds(1));
+        later.set_position(gst::ClockTime::from_seconds(1));
+        assert!(!is_initial_noop_time_segment(&later.upcast()));
     }
 
     #[test]
