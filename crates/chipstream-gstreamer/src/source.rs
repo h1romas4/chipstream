@@ -65,6 +65,12 @@ struct Settings {
     ndsif_reset: bool,
 }
 
+impl Settings {
+    fn ndsif_enabled(&self) -> bool {
+        self.ndsif_port.is_some() || self.ndsif_ports.is_some()
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -497,7 +503,7 @@ mod imp {
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
             self.flushing.store(false, Ordering::Release);
-            let ndsif_enabled = settings.ndsif_port.is_some();
+            let ndsif_enabled = settings.ndsif_enabled();
             self.start_worker(settings)?;
             self.initial_ndsif_seek_pending
                 .store(ndsif_enabled, Ordering::Release);
@@ -512,11 +518,11 @@ mod imp {
         }
 
         fn is_seekable(&self) -> bool {
-            self.settings
+            !self
+                .settings
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .ndsif_port
-                .is_none()
+                .ndsif_enabled()
         }
 
         fn size(&self) -> Option<u64> {
@@ -628,8 +634,7 @@ mod imp {
                 .settings
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .ndsif_port
-                .is_some();
+                .ndsif_enabled();
             if ndsif_enabled {
                 if is_initial_noop_time_segment(segment) {
                     return self
@@ -1545,6 +1550,13 @@ mod tests {
         assert_eq!(
             configured.property::<Option<String>>("ndsif-port"),
             Some("/dev/ttyUSB0".to_owned())
+        );
+        let configured_ports = glib::Object::builder::<ChipstreamSrc>()
+            .property("ndsif-ports", "/dev/ttyACM0,/dev/ttyACM1")
+            .build();
+        assert_eq!(
+            configured_ports.property::<Option<String>>("ndsif-ports"),
+            Some("/dev/ttyACM0,/dev/ttyACM1".to_owned())
         );
         assert_eq!(configured.property::<u32>("ndsif-baud-rate"), 230_400);
         assert_eq!(configured.property::<u32>("ndsif-timeout-ms"), 1_000);
