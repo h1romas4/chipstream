@@ -151,7 +151,7 @@ fn absolute_and_relative_chip_volumes_follow_their_own_baselines() {
         (
             include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
             ChipId::Ym2610,
-            0x80,
+            0x40, // This fixture sets the dual-chip flag, halving the per-instance baseline.
         ),
     ];
     for (bytes, chip, default) in cases {
