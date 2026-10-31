@@ -40,9 +40,11 @@ YM2203, YM2413 (when its clock is configured), YMF262, YM3526, and YM3812;
 NanoDrive 8 advertises YM2151 and an OKIM6258 stream. Only chip types already
 supported by `chipstream` are routed.
 
-NanoDrive 6's optional revision-40 timed YM2612 DAC profile is not implemented
-by the current `ndsif` codec; YM2612 register writes use the regular scheduled
-register path.
+When a device advertises revision 40/profile 1, YM2612 playback uses its timed
+DAC stream: `$2A` and `$2B` writes become ordered DAC records, while FM and PSG
+writes are submitted as positioned events. The transport queries capacities,
+prebuffers 80 ms, and seals/drains the profile at end of playback. Devices that
+do not advertise the profile keep using regular scheduled register writes.
 
 ## License
 

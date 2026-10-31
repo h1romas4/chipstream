@@ -58,11 +58,12 @@ silent in the GStreamer PCM stream.
 `ndsif-port` remains available for a single device. Use `ndsif-ports` for
 multiple devices, for example `ndsif-ports=/dev/ttyACM0,/dev/ttyACM1`; list
 order determines preference when multiple devices support the same chip.
-NanoDrive 6's optional revision-40 timed YM2612 DAC profile is not implemented
-by the current `ndsif` codec.
+NanoDrive 6's advertised revision-40/profile-1 timed DAC path schedules
+YM2612 `$2A`/`$2B` writes and positioned FM/PSG events. Devices without that
+profile continue to use normal YM2612 register writes.
 
-NDSIF exposes a continuous OKIM6258 stream, so loop/restart behavior and the
-GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
+NDSIF OKIM6258 and timed DAC streams are one-shot, so loop/restart behavior and
+the GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
 For predictable hardware playback, use `play-count=1` and
 `fadeout-seconds=0`. Only the primary OKIM6258 stream is supported.
 

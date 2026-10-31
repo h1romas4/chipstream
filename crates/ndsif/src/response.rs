@@ -45,6 +45,7 @@ pub struct CapabilityEntry {
 
 pub const CAPABILITY_ENTRY_SIZE: usize = 9;
 pub const MAX_CAPABILITY_ENTRIES: usize = (MAX_PAYLOAD_SIZE - 14) / CAPABILITY_ENTRY_SIZE;
+pub const CONTROL_FEATURE_DAC_PROFILE: u16 = 1 << 1;
 const CONFIGURABLE_CLOCK_FEATURE: u8 = 1 << 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +185,108 @@ impl AudioStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DacCapabilities {
+    pub profile: u8,
+    pub revision: u32,
+    pub ticks_per_second: u32,
+    pub record_capacity: u32,
+    pub event_capacity: u16,
+    pub max_records: u8,
+    pub record_bytes: u8,
+    pub max_dac_late_us: u32,
+}
+
+impl DacCapabilities {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 21 {
+            return Err(Error::InvalidLength);
+        }
+        let capabilities = Self {
+            profile: bytes[0],
+            revision: u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]),
+            ticks_per_second: u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]),
+            record_capacity: u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]),
+            event_capacity: u16::from_le_bytes([bytes[13], bytes[14]]),
+            max_records: bytes[15],
+            record_bytes: bytes[16],
+            max_dac_late_us: u32::from_le_bytes([bytes[17], bytes[18], bytes[19], bytes[20]]),
+        };
+        if capabilities.ticks_per_second == 0
+            || capabilities.record_capacity == 0
+            || capabilities.event_capacity == 0
+            || capabilities.max_records == 0
+            || capabilities.record_bytes == 0
+        {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(capabilities)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DacStatus {
+    pub profile: u8,
+    pub state: u8,
+    pub fault: u8,
+    pub sealed: bool,
+    pub accepted: u32,
+    pub consumed: u32,
+    pub queued: u32,
+    pub free: u32,
+    pub event_queued: u32,
+    pub event_consumed: u32,
+    pub underflows: u32,
+    pub overflows: u32,
+    pub rejected: u32,
+    pub late_dac: u32,
+    pub max_late_us: u32,
+    pub accepted_tick: u64,
+    pub played_tick: u64,
+    pub executed_tick: u64,
+}
+
+impl DacStatus {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 72 || bytes[3] > 1 {
+            return Err(Error::InvalidLength);
+        }
+        let mut values = [0; 11];
+        for (value, bytes) in values.iter_mut().zip(bytes[4..48].chunks_exact(4)) {
+            *value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        Ok(Self {
+            profile: bytes[0],
+            state: bytes[1],
+            fault: bytes[2],
+            sealed: bytes[3] != 0,
+            accepted: values[0],
+            consumed: values[1],
+            queued: values[2],
+            free: values[3],
+            event_queued: values[4],
+            event_consumed: values[5],
+            underflows: values[6],
+            overflows: values[7],
+            rejected: values[8],
+            late_dac: values[9],
+            max_late_us: values[10],
+            accepted_tick: u64::from_le_bytes([
+                bytes[48], bytes[49], bytes[50], bytes[51], bytes[52], bytes[53], bytes[54],
+                bytes[55],
+            ]),
+            played_tick: u64::from_le_bytes([
+                bytes[56], bytes[57], bytes[58], bytes[59], bytes[60], bytes[61], bytes[62],
+                bytes[63],
+            ]),
+            executed_tick: u64::from_le_bytes([
+                bytes[64], bytes[65], bytes[66], bytes[67], bytes[68], bytes[69], bytes[70],
+                bytes[71],
+            ]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Reply<'a> {
     Complete,
@@ -192,6 +295,8 @@ pub enum Reply<'a> {
     Info(DeviceInfo<'a>),
     Capabilities(Capabilities<'a>),
     AudioStatus(AudioStatus),
+    DacCapabilities(DacCapabilities),
+    DacStatus(DacStatus),
     Unknown(&'a [u8]),
 }
 
@@ -299,6 +404,47 @@ impl<'a> Response<'a> {
                     }
                     41
                 }
+                Reply::DacCapabilities(capabilities) => {
+                    payload[1] = capabilities.profile;
+                    payload[2..6].copy_from_slice(&capabilities.revision.to_le_bytes());
+                    payload[6..10].copy_from_slice(&capabilities.ticks_per_second.to_le_bytes());
+                    payload[10..14].copy_from_slice(&capabilities.record_capacity.to_le_bytes());
+                    payload[14..16].copy_from_slice(&capabilities.event_capacity.to_le_bytes());
+                    payload[16] = capabilities.max_records;
+                    payload[17] = capabilities.record_bytes;
+                    payload[18..22].copy_from_slice(&capabilities.max_dac_late_us.to_le_bytes());
+                    22
+                }
+                Reply::DacStatus(status) => {
+                    payload[1] = status.profile;
+                    payload[2] = status.state;
+                    payload[3] = status.fault;
+                    payload[4] = u8::from(status.sealed);
+                    let values = [
+                        status.accepted,
+                        status.consumed,
+                        status.queued,
+                        status.free,
+                        status.event_queued,
+                        status.event_consumed,
+                        status.underflows,
+                        status.overflows,
+                        status.rejected,
+                        status.late_dac,
+                        status.max_late_us,
+                    ];
+                    for (bytes, value) in payload[5..49].chunks_exact_mut(4).zip(values) {
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                    for (bytes, value) in payload[49..73].chunks_exact_mut(8).zip([
+                        status.accepted_tick,
+                        status.played_tick,
+                        status.executed_tick,
+                    ]) {
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                    73
+                }
             }
         };
         let frame = Frame::new(
@@ -338,7 +484,7 @@ impl<'a> Response<'a> {
             Reply::Rejected
         } else {
             match frame.command_id() {
-                0x00 | 0x03 | 0x04 => {
+                0x00 | 0x03 | 0x04 | 0x1a => {
                     if !body.is_empty() {
                         return Err(Error::InvalidLength);
                     }
@@ -353,6 +499,8 @@ impl<'a> Response<'a> {
                 0x02 => Reply::Info(decode_info(body)?),
                 0x05 => Reply::Capabilities(decode_capabilities(body)?),
                 0x13 => Reply::AudioStatus(AudioStatus::decode(body)?),
+                0x18 => Reply::DacCapabilities(DacCapabilities::decode(body)?),
+                0x1c => Reply::DacStatus(DacStatus::decode(body)?),
                 _ => Reply::Unknown(body),
             }
         };
@@ -418,4 +566,80 @@ fn decode_capabilities(body: &[u8]) -> Result<Capabilities<'_>, Error> {
         next_offset,
         entries,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, DAC_PROFILE_YM2612};
+
+    #[test]
+    fn dac_capabilities_response_round_trips() {
+        let request = Command::GetDacCapabilities.to_frame(7).unwrap();
+        let capabilities = DacCapabilities {
+            profile: DAC_PROFILE_YM2612,
+            revision: 40,
+            ticks_per_second: 44_100,
+            record_capacity: 8192,
+            event_capacity: 512,
+            max_records: 60,
+            record_bytes: 4,
+            max_dac_late_us: 2_000,
+        };
+        let response =
+            Response::for_request(&request, Reply::DacCapabilities(capabilities)).unwrap();
+        let frame = response.to_frame().unwrap();
+        let decoded = Response::decode(&frame).unwrap();
+        assert_eq!(decoded.reply, Reply::DacCapabilities(capabilities));
+        decoded.matches_request(&request).unwrap();
+    }
+
+    #[test]
+    fn dac_start_completion_response_is_typed() {
+        let request = Command::DacStart {
+            profile: DAC_PROFILE_YM2612,
+            minimum_lead_ticks: 3_528,
+        }
+        .to_frame(8)
+        .unwrap();
+        let response = Response::for_request(&request, Reply::Complete).unwrap();
+        let frame = response.to_frame().unwrap();
+        let decoded = Response::decode(&frame).unwrap();
+        assert_eq!(decoded.reply, Reply::Complete);
+        decoded.matches_request(&request).unwrap();
+    }
+
+    #[test]
+    fn dac_status_response_round_trips() {
+        let request = Command::DacStatus {
+            profile: DAC_PROFILE_YM2612,
+        }
+        .to_frame(9)
+        .unwrap();
+        let status = DacStatus {
+            profile: DAC_PROFILE_YM2612,
+            state: 1,
+            fault: 0,
+            sealed: false,
+            accepted: 300,
+            consumed: 100,
+            queued: 200,
+            free: 7_992,
+            event_queued: 12,
+            event_consumed: 4,
+            underflows: 0,
+            overflows: 0,
+            rejected: 0,
+            late_dac: 1,
+            max_late_us: 12,
+            accepted_tick: 44_100,
+            played_tick: 33_000,
+            executed_tick: 32_000,
+        };
+        let response = Response::for_request(&request, Reply::DacStatus(status)).unwrap();
+        let frame = response.to_frame().unwrap();
+        let decoded = Response::decode(&frame).unwrap();
+        assert_eq!(decoded.reply, Reply::DacStatus(status));
+        decoded.matches_request(&request).unwrap();
+    }
 }

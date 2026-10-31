@@ -65,6 +65,7 @@ impl BytePosition {
 pub struct WriteId(u8);
 
 impl WriteId {
+    pub const YM2612: Self = Self(0x52);
     pub const YM2151: Self = Self(0x54);
     pub const OKIM6258: Self = Self(0xb7);
     pub const SN76489: Self = Self(0x50);

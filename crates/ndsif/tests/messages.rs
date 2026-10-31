@@ -289,7 +289,7 @@ fn info_capabilities_and_audio_status_decode_the_draft_payload_shapes() {
 fn capability_entries_enforce_clock_modes_features_and_page_consistency() {
     use ndsif::{ClockMode, MAX_CAPABILITY_ENTRIES, SPEC_REVISION};
 
-    assert_eq!(SPEC_REVISION, 39);
+    assert_eq!(SPEC_REVISION, 40);
     assert_eq!(MAX_CAPABILITY_ENTRIES, 26);
     let fixed = [0x54, 0, 0, 0x03, 1, 0x99, 0x9e, 0x36, 0];
     let capabilities = Capabilities::new(256, 0, 0, 0, u16::MAX, &fixed).unwrap();

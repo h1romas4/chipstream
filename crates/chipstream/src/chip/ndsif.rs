@@ -127,6 +127,11 @@ pub trait NdsifTransport {
     ) -> Result<(), String> {
         Err("NDSIF transport does not support audio streams".to_owned())
     }
+
+    /// Seal and drain an optional timed DAC profile at end of playback.
+    fn finish_dac_stream(&mut self, _sample_frame: usize, _output_rate: u32) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// NDSIF-backed YMFM replacement that emits silence to the host PCM path.
@@ -259,6 +264,14 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
             .try_borrow_mut()
             .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
             .flush_scheduled_until(sample_frame, output_rate)
+            .map_err(|error| external_error(&self.chip, error))
+    }
+
+    fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
+            .finish_dac_stream(sample_frame, output_rate)
             .map_err(|error| external_error(&self.chip, error))
     }
 
@@ -816,7 +829,7 @@ fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipErr
                 1 => 0x53,
                 bank => return Err(invalid_bank(bank)),
             },
-            0,
+            spec.port,
             spec.register,
             spec.value,
         ),
@@ -937,7 +950,7 @@ mod tests {
                     register: 1,
                     value: 2,
                 }),
-                (0x53, 0),
+                (0x53, 1),
             ),
             (
                 ChipRegisterWrite::Ym3526(Ym3526Spec {

@@ -5,8 +5,11 @@ Allocation-free `no_std` Rust codec for the NDSIF v1 draft.
 The v1 draft shares wire version `01` with the previous b protocol but is not
 wire-compatible. Select the profile explicitly at the transport boundary.
 
-API revision: 39. Frame wire version: `01`.
-Device firmware: [NanoDrive8](https://github.com/Fujix1/NanoDrive8).
+API revision: 40. Frame wire version: `01`.
+Device firmware: [NanoDrive6](https://github.com/Fujix1/NanoDrive6),
+[NanoDrive8](https://github.com/Fujix1/NanoDrive8).
+The optional timed DAC profile follows [NanoDrive6 NDSIF API section 9](https://github.com/Fujix1/NanoDrive6/blob/main/NDSIF_API.md)
+and remains an RC extension, not a requirement for every NDSIF device.
 
 ## Scope
 
@@ -14,6 +17,7 @@ Device firmware: [NanoDrive8](https://github.com/Fujix1/NanoDrive8).
 |---|---|
 | `no_std`, allocation-free framing, CRC, and incremental decoding | Serial I/O, retries, or capability discovery |
 | Typed commands, responses, capabilities, and audio-stream messages | Remote-device state validation |
+| YM2612 timed DAC profile 1 commands and status codecs | DAC playback scheduling or VGM stream expansion |
 | Argument validation, batch encoding, and transaction correlation | Playback scheduling, synthesis, or ADPCM encoding |
 | Audio timing and local stream-position/status tracking | |
 
@@ -86,7 +90,8 @@ assert_eq!(decoded.reply, Reply::Ping(b"ND8"));
 | Variable clock mode | Entry advertises clock-setting support |
 | Capability validation | Rejects invalid modes, inconsistent clock metadata and duplicate pages |
 | Device support | Query GET_CAPABILITIES; support is device-specific and must not be inferred from product name |
-| API revision 39 | Not wire-compatible with the previous 4-byte capability-entry format |
+| API revision 40 | Adds the optional, capability-gated YM2612 timed DAC profile 1 |
+| Profile availability | Requires control feature bit 1 and a matching `GET_DAC_CAPABILITIES` response |
 
 ## Register and stream batching
 
