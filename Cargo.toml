@@ -5,6 +5,7 @@ members = [
 	"crates/chipstream-gstreamer",
 	"crates/cstools",
 	"crates/mmlx",
+	"crates/ndsif",
 	"crates/soundlog",
 	"crates/soundlog-cli",
 	"crates/soundlog-gui",

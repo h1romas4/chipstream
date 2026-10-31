@@ -1,0 +1,13 @@
+[package]
+name = "ndsif"
+version = "0.1.0"
+edition = "2024"
+description = "I/O-independent NDSIF v1 protocol codec for NanoDrive"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/h1romas4/chipstream"
+readme = "README.md"
+
+[dependencies]
+cobs = { version = "0.5.1", default-features = false }
+crc = { version = "3.4", default-features = false }
