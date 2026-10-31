@@ -1,7 +1,7 @@
 #![cfg(feature = "pwm")]
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, Pwm, SoundChip};
-use chipstream::sequencer::{VgmEventFilter, VgmSequencer, VgmSequencerError};
+use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
 use soundlog::chip::{Chip, PwmSpec};
 use soundlog::vgm::command::{Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
@@ -89,25 +89,17 @@ fn vgm_playback_and_events_preserve_12_bit_samples() {
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 30).unwrap();
     let mut document = VgmSequencer::new(parsed, 44_100, 128).unwrap();
-    for player in [&mut stream, &mut document] {
-        player
-            .configure_events(VgmEventFilter {
-                chip: Some(Chip::Pwm),
-                register_writes: true,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    let render = |player: &mut VgmSequencer| {
+    let render = |player: &mut VgmSequencer<'_>| {
         let mut audio = Vec::new();
-        let mut values = Vec::new();
-        while let Some(block) = player
-            .render_with_events(|event| values.push(event.value))
-            .unwrap()
-        {
+        let values = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let callback_values = std::rc::Rc::clone(&values);
+        player.on_write(move |_, spec: PwmSpec, _, _| {
+            callback_values.borrow_mut().push(spec.value);
+        });
+        while let Some(block) = player.render().unwrap() {
             audio.extend_from_slice(block.frames());
         }
-        (audio, values)
+        (audio, values.borrow().clone())
     };
     let (a, events) = render(&mut stream);
     let (b, other_events) = render(&mut document);
@@ -145,29 +137,19 @@ fn pwm_rip(control: Option<u32>, non_control_writes: usize) -> VgmDocument {
 
 type CapturedEvents = Vec<(u8, u32, usize)>;
 
-fn render_events(player: &mut VgmSequencer) -> (Vec<[f32; 2]>, CapturedEvents) {
-    player
-        .configure_events(VgmEventFilter {
-            chip: Some(Chip::Pwm),
-            register_writes: true,
-            ..Default::default()
-        })
-        .unwrap();
+fn render_events(player: &mut VgmSequencer<'_>) -> (Vec<[f32; 2]>, CapturedEvents) {
     let mut audio = Vec::new();
-    let mut events = Vec::new();
-    while let Some(block) = player
-        .render_with_events(|event| {
-            events.push((
-                event.register,
-                event.value,
-                audio.len() + event.frame_offset as usize,
-            ))
-        })
-        .unwrap()
-    {
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let callback_events = std::rc::Rc::clone(&events);
+    player.on_write(move |_, spec: PwmSpec, sample, _| {
+        callback_events
+            .borrow_mut()
+            .push((spec.register, spec.value, sample));
+    });
+    while let Some(block) = player.render().unwrap() {
         audio.extend_from_slice(block.frames());
     }
-    (audio, events)
+    (audio, events.borrow().clone())
 }
 
 #[test]
@@ -258,22 +240,16 @@ fn pwm_compatibility_is_independent_for_each_chip_instance() {
         .collect::<Vec<_>>();
     document.commands.splice(end..end, secondary);
     let mut player = VgmSequencer::new(document, 44_100, 32).unwrap();
-    player
-        .configure_events(VgmEventFilter {
-            chip: Some(Chip::Pwm),
-            register: Some(0),
-            register_writes: true,
-            ..Default::default()
-        })
-        .unwrap();
-    let mut instances = Vec::new();
-    while player
-        .render_with_events(|event| instances.push((event.instance, event.value)))
-        .unwrap()
-        .is_some()
-    {}
+    let instances = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let callback_instances = std::rc::Rc::clone(&instances);
+    player.on_write(move |instance, spec: PwmSpec, _, _| {
+        if spec.register == 0 {
+            callback_instances.borrow_mut().push((instance, spec.value));
+        }
+    });
+    while player.render().unwrap().is_some() {}
     assert_eq!(
-        instances,
+        *instances.borrow(),
         vec![(Instance::Primary, 5), (Instance::Secondary, 5)]
     );
 }

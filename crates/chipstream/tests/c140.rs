@@ -1,7 +1,7 @@
 #![cfg(feature = "c140")]
 
 use chipstream::chip::{C140, C140Type, ChipError, SoundChip};
-use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
+use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::{C140Spec, Chip};
 use soundlog::vgm::command::{DataBlock, Instance, WaitSamples};
 use soundlog::vgm::header::C140ChipType;
@@ -139,27 +139,19 @@ fn vgm_chip_rom_and_wide_events() {
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31).unwrap();
     let mut document = VgmSequencer::new(parsed, 44_100, 256).unwrap();
-    for player in [&mut stream, &mut document] {
-        player
-            .configure_events(VgmEventFilter {
-                chip: Some(Chip::C140),
-                port: Some(1),
-                register: Some(0xf7),
-                register_writes: true,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    let render = |player: &mut VgmSequencer| {
+    let render = |player: &mut VgmSequencer<'_>| {
         let mut output = Vec::new();
-        let mut events = Vec::new();
-        while let Some(block) = player
-            .render_with_events(|event| events.push(event.value))
-            .unwrap()
-        {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let callback_events = std::rc::Rc::clone(&events);
+        player.on_write(move |_, spec: C140Spec, _, _| {
+            if spec.register == 0x1f7 {
+                callback_events.borrow_mut().push(spec.value);
+            }
+        });
+        while let Some(block) = player.render().unwrap() {
             output.extend_from_slice(block.frames());
         }
-        (output, events)
+        (output, events.borrow().clone())
     };
     let (a, events) = render(&mut stream);
     let (b, other_events) = render(&mut document);

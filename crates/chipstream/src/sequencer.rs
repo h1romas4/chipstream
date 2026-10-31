@@ -2,7 +2,7 @@
 //!
 //! [`VgmSequencer`] and [`MdxSequencer`] render songs into stereo PCM blocks
 //! without an audio device or sound engine. They support per-chip gain and
-//! optional register-write and state events through [`VgmEventFilter`].
+//! typed register-write callbacks with optional chip-state tracking.
 //! Output is not clipped, and rendering may allocate.
 //!
 //! Render a VGM file containing a YM2151:
@@ -42,7 +42,7 @@ mod vgm;
 mod volume;
 
 pub use duration::{measure_mdx_duration_frames, measure_vgm_duration_frames};
-pub use event::{VgmEventFilter, VgmWriteEvent};
+pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
 pub use mdx::{MdxSequencer, MdxSequencerError, MdxSequencerOptions};
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};

@@ -1,4 +1,7 @@
-use chipstream::sequencer::{Chip, Instance, VgmEventFilter, VgmSequencer};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use chipstream::sequencer::{Chip, Instance, VgmSequencer};
 use soundlog::chip::{
     Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
     Ym3812Spec, Ymf262Spec, Ymf278bSpec,
@@ -59,28 +62,43 @@ fn write(builder: &mut VgmBuilder, chip: &Chip, register: u8, value: u8) {
     };
 }
 
-fn render(document: VgmDocument, rate: u32, chunk: usize) -> (Vec<[f32; 2]>, Vec<(usize, u32)>) {
+fn render(
+    document: VgmDocument,
+    chip: &Chip,
+    rate: u32,
+    chunk: usize,
+) -> (Vec<[f32; 2]>, Vec<(usize, u32)>) {
     let mut player = VgmSequencer::new(document, rate, chunk).unwrap();
-    player
-        .configure_events(VgmEventFilter {
-            register_writes: true,
-            state_changes: false,
-            ..Default::default()
-        })
-        .unwrap();
+    let captured = Rc::new(RefCell::new(Vec::new()));
+    macro_rules! listen {
+        ($spec:ty) => {{
+            let callback_events = Rc::clone(&captured);
+            player.on_write(move |_, spec: $spec, sample, _| {
+                callback_events
+                    .borrow_mut()
+                    .push((sample, u32::from(spec.value)));
+            });
+        }};
+    }
+    match chip {
+        Chip::Ym2151 => listen!(Ym2151Spec),
+        Chip::Ym2203 => listen!(Ym2203Spec),
+        Chip::Ym2413 => listen!(Ym2413Spec),
+        Chip::Ym2608 => listen!(Ym2608Spec),
+        Chip::Ym2610b => listen!(Ym2610Spec),
+        Chip::Ym2612 => listen!(Ym2612Spec),
+        Chip::Ym3526 => listen!(Ym3526Spec),
+        Chip::Y8950 => listen!(Y8950Spec),
+        Chip::Ym3812 => listen!(Ym3812Spec),
+        Chip::Ymf262 => listen!(Ymf262Spec),
+        Chip::Ymf278b => listen!(Ymf278bSpec),
+        _ => panic!("not a YMFM chip"),
+    }
     let mut frames = Vec::new();
-    let mut events = Vec::new();
-    loop {
-        let offset = frames.len();
-        let block = player
-            .render_with_events(|event| {
-                events.push((offset + event.frame_offset as usize, event.value));
-            })
-            .unwrap();
-        let Some(block) = block else { break };
+    while let Some(block) = player.render().unwrap() {
         frames.extend_from_slice(block.frames());
     }
-    (frames, events)
+    (frames, captured.borrow().clone())
 }
 
 #[test]
@@ -110,7 +128,7 @@ fn all_ymfm_chips_pace_fifo_writes_on_native_timeline() {
             builder.add_vgm_command(WaitSamples(if spaced { 80 - 2 * interval } else { 80 }));
             builder.finalize()
         };
-        let burst = render(document(false), 176_400, 7);
+        let burst = render(document(false), &chip, 176_400, 7);
         assert_eq!(
             burst.1,
             vec![
@@ -120,7 +138,11 @@ fn all_ymfm_chips_pace_fifo_writes_on_native_timeline() {
             ],
             "{chip:?}"
         );
-        assert_eq!(burst, render(document(true), 176_400, 127), "{chip:?}");
+        assert_eq!(
+            burst,
+            render(document(true), &chip, 176_400, 127),
+            "{chip:?}"
+        );
     }
 }
 
@@ -132,7 +154,7 @@ fn pending_writes_at_eof_are_reported_without_extending_audio() {
         write(&mut builder, &Chip::Ym2151, 0x20, value);
     }
     builder.add_vgm_command(WaitSamples(1));
-    let (frames, events) = render(builder.finalize(), 44_100, 1);
+    let (frames, events) = render(builder.finalize(), &Chip::Ym2151, 44_100, 1);
     assert_eq!(frames.len(), 1);
     assert_eq!(events, vec![(0, 1), (1, 2), (1, 3), (1, 4)]);
 }
@@ -149,7 +171,7 @@ fn paced_event_positions_remain_close_to_the_native_timeline() {
     let document = builder.finalize();
 
     for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
-        let (_, events) = render(document.clone(), rate, 17);
+        let (_, events) = render(document.clone(), &Chip::Ym2151, rate, 17);
         assert_eq!(events.len(), 128);
         for (index, (position, value)) in events.iter().enumerate() {
             let expected =
@@ -160,7 +182,7 @@ fn paced_event_positions_remain_close_to_the_native_timeline() {
             );
             assert_eq!(*value, index as u32);
         }
-        assert_eq!(events, render(document.clone(), rate, 257).1);
+        assert_eq!(events, render(document.clone(), &Chip::Ym2151, rate, 257).1);
     }
 }
 
@@ -198,7 +220,7 @@ fn oversampled_opn_chips_retrigger_adjacent_notes() {
         write(&mut builder, &chip, 0x28, channel);
         write(&mut builder, &chip, 0x28, 0xf0 | channel);
         builder.add_vgm_command(WaitSamples(4_410));
-        let (frames, events) = render(builder.finalize(), 192_000, 257);
+        let (frames, events) = render(builder.finalize(), &chip, 192_000, 257);
         let key_events: Vec<_> = events
             .iter()
             .filter(|(_, value)| *value == u32::from(0xf0 | channel))

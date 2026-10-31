@@ -98,8 +98,8 @@ enum WorkerControl {
 }
 
 enum Sequencer {
-    Vgm(VgmSequencer),
-    Mdx(MdxSequencer),
+    Vgm(VgmSequencer<'static>),
+    Mdx(MdxSequencer<'static>),
 }
 
 enum SequencerCheckpoint {
@@ -1077,7 +1077,7 @@ fn load_sequencer(
 
 fn configure_adjacent_ym2608_rhythm_rom(
     input_path: &Path,
-    player: &mut VgmSequencer,
+    player: &mut VgmSequencer<'_>,
 ) -> Result<(), String> {
     let rom_path = input_path.with_file_name("ym2608_adpcm_rom.bin");
     match fs::metadata(&rom_path) {

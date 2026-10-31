@@ -1,7 +1,10 @@
 #![cfg(feature = "segapcm")]
 
 use chipstream::chip::{ChipError, SegaPcm, SoundChip};
-use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::{Chip, SegaPcmSpec};
 use soundlog::vgm::command::{DataBlock, Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
@@ -154,24 +157,17 @@ fn vgm_events_report_both_address_bytes() {
     );
     builder.add_vgm_command(WaitSamples(100));
     let mut player = VgmSequencer::new(builder.finalize(), 44_100, 128).unwrap();
-    player
-        .configure_events(VgmEventFilter {
-            chip: Some(Chip::SegaPcm),
-            port: Some(1),
-            register: Some(0x84),
-            register_writes: true,
-            ..Default::default()
-        })
-        .unwrap();
-    let mut events = Vec::new();
-    while player
-        .render_with_events(|event| events.push(event.clone()))
-        .unwrap()
-        .is_some()
-    {}
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let callback_events = Rc::clone(&events);
+    player.on_write(move |instance, spec: SegaPcmSpec, sample, _| {
+        if spec.offset >> 8 == 1 && spec.offset as u8 == 0x84 {
+            callback_events
+                .borrow_mut()
+                .push((sample, instance, spec.offset, spec.value));
+        }
+    });
+    while player.render().unwrap().is_some() {}
+    let events = events.borrow();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        (events[0].port, events[0].register, events[0].value),
-        (1, 0x84, 0x91)
-    );
+    assert_eq!(events[0], (0, Instance::Primary, 0x184, 0x91));
 }

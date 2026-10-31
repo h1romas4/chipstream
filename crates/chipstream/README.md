@@ -8,7 +8,7 @@ provided.
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| `sequencer` | `VgmSequencer`, `MdxSequencer` | Render songs to stereo PCM, optionally reporting register and state events. |
+| `sequencer` | `VgmSequencer`, `MdxSequencer` | Render songs to stereo PCM with typed register-write callbacks and optional state tracking. |
 | `chip` | `SoundChip`, chip implementations | Apply typed soundlog writes and generate native-rate samples. |
 | `audio` | `ChipRoute`, `NativeBlock` | Capture native samples and chip metadata. |
 | `audio` | `StereoMatrix`, `StereoBlock` | Convert native outputs to stereo. |
@@ -77,8 +77,35 @@ while let Some(block) = player.render()? {
 ```
 
 `set_gain` applies a linear gain to a chip instance and returns an error if it
-is absent. Both sequencers also support optional write and state events. Their
-output is not clipped, and rendering may allocate.
+is absent. Both sequencers support typed write callbacks. Register callbacks
+with `on_write` and state tracking with `track_state` before rendering:
+
+```rust,no_run
+use chipstream::sequencer::{Instance, StateEvent, VgmSequencer};
+use soundlog::chip::{Ym2151Spec, state::Ym2151State};
+
+let bytes = std::fs::read("song.vgm")?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
+player.on_write(|instance, spec: Ym2151Spec, sample, events| {
+    if let Some(events) = events {
+        for event in events {
+            if let StateEvent::KeyOn { channel, tone } = event {
+                println!("{instance:?} sample {sample}: channel {channel} at {:?}", tone.freq_hz);
+            }
+        }
+    }
+});
+while let Some(block) = player.render()? {
+    // Send block.frames() to the host.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Callbacks receive the instance, a chip-specific write specification, the
+absolute output-frame position at the sequencer's sample rate, and optional
+state changes. They run synchronously during `render`; rendering may allocate
+and is not guaranteed real-time safe. Output is not clipped.
 
 ## Chips
 

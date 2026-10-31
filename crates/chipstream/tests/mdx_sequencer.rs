@@ -1,9 +1,7 @@
 use std::error::Error;
 
-use chipstream::sequencer::{
-    Chip, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions, VgmEventFilter,
-    VgmSequencer, VgmSequencerError,
-};
+use chipstream::sequencer::{Chip, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer};
+use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 #[cfg(feature = "okim6258")]
 use soundlog::mdx::command::MdxAdpcmOrNoiseFrequency;
 use soundlog::mdx::command::{MdxNote, MdxPan, MdxRest, MdxVoiceOrPcmBank};
@@ -18,7 +16,7 @@ const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
 #[cfg(feature = "okim6258")]
 const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
 
-fn render_mdx(player: &mut MdxSequencer) -> Vec<[f32; 2]> {
+fn render_mdx(player: &mut MdxSequencer<'_>) -> Vec<[f32; 2]> {
     let mut frames = Vec::new();
     while let Some(block) = player.render().unwrap() {
         frames.extend_from_slice(block.frames());
@@ -27,7 +25,7 @@ fn render_mdx(player: &mut MdxSequencer) -> Vec<[f32; 2]> {
     frames
 }
 
-fn render_vgm(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
+fn render_vgm(player: &mut VgmSequencer<'_>) -> Vec<[f32; 2]> {
     let mut frames = Vec::new();
     while let Some(block) = player.render().unwrap() {
         frames.extend_from_slice(block.frames());
@@ -197,38 +195,31 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
 #[test]
 fn events_and_gain_are_available_for_mdx() {
     let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
-    player
-        .configure_events(VgmEventFilter {
-            chip: Some(Chip::Ym2151),
-            register: Some(0x08),
-            register_writes: true,
-            state_changes: true,
-            ..Default::default()
-        })
-        .unwrap();
-    assert!(matches!(
-        player.render(),
-        Err(MdxSequencerError::Playback(
-            VgmSequencerError::EventCallbackRequired
-        ))
-    ));
-    let mut events = Vec::new();
+    player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let callback_events = std::rc::Rc::clone(&events);
+    player.on_write(move |instance, spec: Ym2151Spec, sample, state_events| {
+        if spec.register == 0x08 {
+            callback_events
+                .borrow_mut()
+                .push((sample, instance, spec, state_events));
+        }
+    });
     let mut frames = Vec::new();
-    while let Some(block) = player
-        .render_with_events(|event| events.push(event.clone()))
-        .unwrap()
-    {
+    while let Some(block) = player.render().unwrap() {
         frames.extend_from_slice(block.frames());
     }
+    let events = events.borrow();
     assert!(
         events
             .iter()
-            .any(|event| event.value & 0x78 != 0 && !event.state_events.is_empty())
+            .any(|(_, _, spec, state)| spec.value & 0x78 != 0
+                && state.as_ref().is_some_and(|s| !s.is_empty()))
     );
     assert!(
         events
             .iter()
-            .all(|event| event.chip == Chip::Ym2151 && event.register == 0x08)
+            .all(|(_, instance, spec, _)| *instance == Instance::Primary && spec.register == 0x08)
     );
     let mut muted = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
     muted

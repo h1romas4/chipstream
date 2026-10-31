@@ -15,8 +15,8 @@ use crate::audio::StereoBlock;
 
 use super::vgm::StreamFactory;
 use super::{
-    Chip, Instance, VgmEventFilter, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
-    VgmWriteEvent,
+    Chip, Instance, StateEvent, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
+    VgmStateTracker, VgmWriteCallbackTarget,
 };
 
 /// Playback options for the incremental MDX driver.
@@ -70,14 +70,14 @@ impl Error for MdxSequencerError {
 /// mixer and apply it. Commands, timing, PCM handling, and limits follow
 /// [`soundlog::mdx::convert`]. Output is not clipped.
 ///
-/// [`Self::configure_events`] and [`Self::render_with_events`] report the
-/// driver's register writes using the same event types as [`VgmSequencer`].
+/// [`Self::on_write`] reports typed chip writes while rendering, with optional
+/// state-change data registered through [`Self::track_state`].
 /// After a rendering error the sequencer cannot be resumed.
-pub struct MdxSequencer {
-    player: VgmSequencer,
+pub struct MdxSequencer<'a> {
+    player: VgmSequencer<'a>,
 }
 
-impl MdxSequencer {
+impl<'a> MdxSequencer<'a> {
     /// Parse owned MDX and optional PDX buffers, and play once with defaults.
     ///
     /// PDX lookup is the caller's responsibility. A missing PDX is accepted,
@@ -212,11 +212,25 @@ impl MdxSequencer {
             .map_err(MdxSequencerError::Playback)
     }
 
-    /// Enable filtered chip-write and state events before rendering.
-    pub fn configure_events(&mut self, filter: VgmEventFilter) -> Result<(), MdxSequencerError> {
-        self.player
-            .configure_events(filter)
-            .map_err(MdxSequencerError::Playback)
+    /// Register a typed chip-write callback.
+    ///
+    /// The callback receives the instance, typed write, absolute output-frame
+    /// position at this sequencer's sample rate, and state changes when state
+    /// tracking is enabled. Register callbacks before rendering.
+    pub fn on_write<C, F>(&mut self, callback: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize, Option<Vec<StateEvent>>) + 'a,
+    {
+        self.player.on_write(callback);
+    }
+
+    /// Enable state tracking for a chip type and instance.
+    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    where
+        S: VgmStateTracker,
+    {
+        self.player.track_state::<S>(instance, clock);
     }
 
     /// Return the current command-stream position in 44.1 kHz samples.
@@ -278,15 +292,5 @@ impl MdxSequencer {
     /// Return the next block, or `None` after playback finishes.
     pub fn render(&mut self) -> Result<Option<StereoBlock>, MdxSequencerError> {
         self.player.render().map_err(MdxSequencerError::Playback)
-    }
-
-    /// Render a block and synchronously report its configured chip events.
-    pub fn render_with_events(
-        &mut self,
-        callback: impl FnMut(&VgmWriteEvent),
-    ) -> Result<Option<StereoBlock>, MdxSequencerError> {
-        self.player
-            .render_with_events(callback)
-            .map_err(MdxSequencerError::Playback)
     }
 }

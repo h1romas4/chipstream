@@ -59,7 +59,8 @@ A t120 @1 l8 c L def
 
 #[test]
 fn cli_retriggers_adjacent_notes_in_mml_mdx_and_vgm() {
-    use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
+    use chipstream::sequencer::{Instance, VgmSequencer};
+    use soundlog::chip::{Ym2151Spec, state::Ym2151State};
     use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
     use soundlog::mdx::package::MdxPackage;
 
@@ -90,31 +91,24 @@ A t120 @1 q8 l4 cccccccc
     let vgm_bytes: Vec<u8> = vgm_document.into();
     fs::write(&vgm, &vgm_bytes).unwrap();
 
+    let key_ons = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let key_offs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let callback_key_ons = std::rc::Rc::clone(&key_ons);
+    let callback_key_offs = std::rc::Rc::clone(&key_offs);
     let mut sequencer = VgmSequencer::from_vgm(vgm_bytes, 44_100, 256).unwrap();
-    sequencer
-        .configure_events(VgmEventFilter {
-            register: Some(0x08),
-            register_writes: true,
-            state_changes: false,
-            ..Default::default()
-        })
-        .unwrap();
-    let mut key_ons = Vec::new();
-    let mut key_offs = Vec::new();
-    let mut offset = 0;
-    while let Some(block) = sequencer
-        .render_with_events(|event| {
-            let frame = offset + event.frame_offset as usize;
-            if event.value & 0x78 != 0 {
-                key_ons.push(frame);
+    sequencer.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
+    sequencer.on_write(move |_, spec: Ym2151Spec, sample, _| {
+        if spec.register == 0x08 {
+            if spec.value & 0x78 != 0 {
+                callback_key_ons.borrow_mut().push(sample);
             } else {
-                key_offs.push(frame);
+                callback_key_offs.borrow_mut().push(sample);
             }
-        })
-        .unwrap()
-    {
-        offset += block.frames().len();
-    }
+        }
+    });
+    while sequencer.render().unwrap().is_some() {}
+    let key_ons = key_ons.borrow();
+    let key_offs = key_offs.borrow();
     assert_eq!(key_ons.len(), 8);
     assert!(key_ons[1..].iter().all(|frame| {
         key_offs

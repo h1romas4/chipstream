@@ -39,7 +39,7 @@ use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
 
 use super::{compat::PwmCompatibility, event, volume};
-use event::{VgmEventFilter, VgmWriteEvent};
+use event::{CallbackRegistry, PendingWriteEvent, VgmStateTracker};
 use timing::{Timing, TimingProfile};
 
 const WAIT_STEP: u32 = 256;
@@ -95,11 +95,8 @@ pub enum VgmSequencerError {
     UnexpectedEnd,
     StreamFailed,
     DurationOverflow,
-    InvalidEventFilter,
-    EventConfigurationAfterPlayback,
     PwmCompatibilityConfigurationAfterPlayback,
     FadeoutConfigurationAfterPlayback,
-    EventCallbackRequired,
     CheckpointMismatch,
     StreamReconstruction(String),
     SeekTargetBeforeCheckpoint {
@@ -146,18 +143,11 @@ impl fmt::Display for VgmSequencerError {
             Self::UnexpectedEnd => write!(f, "VGM command stream ended without an end command"),
             Self::StreamFailed => write!(f, "sequencer cannot continue after a rendering error"),
             Self::DurationOverflow => write!(f, "VGM playback duration exceeds supported limits"),
-            Self::InvalidEventFilter => write!(f, "invalid VGM event filter or queue limit"),
-            Self::EventConfigurationAfterPlayback => {
-                write!(f, "event configuration must be set before rendering")
-            }
             Self::PwmCompatibilityConfigurationAfterPlayback => {
                 write!(f, "PWM compatibility must be configured before rendering")
             }
             Self::FadeoutConfigurationAfterPlayback => {
                 write!(f, "fadeout must be configured before rendering")
-            }
-            Self::EventCallbackRequired => {
-                write!(f, "configured event collection requires render_with_events")
             }
             Self::CheckpointMismatch => {
                 write!(
@@ -300,9 +290,9 @@ struct Voice {
     write_cooldown: usize,
 }
 
-struct EventContext<'a> {
-    filter: Option<&'a VgmEventFilter>,
-    events: &'a mut VecDeque<(usize, VgmWriteEvent)>,
+struct EventContext<'a, 'callbacks> {
+    callbacks: &'a CallbackRegistry<'callbacks>,
+    events: &'a mut VecDeque<(usize, PendingWriteEvent)>,
 }
 
 #[derive(Clone)]
@@ -345,50 +335,47 @@ impl Voice {
         &mut self,
         write: ChipRegisterWrite,
         position: usize,
-        context: &mut EventContext<'_>,
+        context: &mut EventContext<'_, '_>,
     ) -> Result<(), VgmSequencerError> {
         let (bank, register, value) = write.parts();
+        let pending_write = context
+            .callbacks
+            .has_callback(&write)
+            .then(|| write.clone());
         self.route.chip_mut().apply_register_write(write)?;
-        if let Some(filter) = context.filter {
-            let state_events = if let Some(tracker) = self.tracker.as_mut() {
-                let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
-                    chip: self.chip.clone(),
-                    register,
-                    value,
-                })?;
-                tracker
-                    .on_register_write(bank, register, narrow)
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            if filter.matches_write(&self.chip, self.instance, bank, register)
-                && (filter.register_writes || !state_events.is_empty())
-            {
-                if context.events.len() >= filter.max_pending_events {
-                    return Err(VgmSequencerError::EventQueueFull {
-                        limit: filter.max_pending_events,
-                    });
-                }
-                let index = context
-                    .events
-                    .partition_point(|(offset, _)| *offset <= position);
-                context.events.insert(
-                    index,
-                    (
-                        position,
-                        VgmWriteEvent {
-                            frame_offset: 0,
-                            chip: self.chip.clone(),
-                            instance: self.instance,
-                            port: bank,
-                            register,
-                            value,
-                            state_events,
-                        },
-                    ),
-                );
+        let state_events = if let Some(tracker) = self.tracker.as_mut() {
+            let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                chip: self.chip.clone(),
+                register,
+                value,
+            })?;
+            tracker
+                .on_register_write(bank, register, narrow)
+                .unwrap_or_default()
+                .into()
+        } else {
+            None
+        };
+        if let Some(write) = pending_write {
+            if context.events.len() >= event::MAX_PENDING_EVENTS {
+                return Err(VgmSequencerError::EventQueueFull {
+                    limit: event::MAX_PENDING_EVENTS,
+                });
             }
+            let index = context
+                .events
+                .partition_point(|(offset, _)| *offset <= position);
+            context.events.insert(
+                index,
+                (
+                    position,
+                    PendingWriteEvent {
+                        instance: self.instance,
+                        write,
+                        state_events,
+                    },
+                ),
+            );
         }
         Ok(())
     }
@@ -399,7 +386,7 @@ impl Voice {
         output_rate: u32,
         output_phase: u32,
         available: usize,
-        context: &mut EventContext<'_>,
+        context: &mut EventContext<'_, '_>,
     ) -> Result<(), VgmSequencerError> {
         let rate = self.route.chip().sample_rate_ratio();
         let initial_phase = self.phase;
@@ -441,7 +428,7 @@ impl Voice {
             let Some(write) = self.paced_writes.as_mut().and_then(VecDeque::pop_front) else {
                 break;
             };
-            let position = if context.filter.is_some() {
+            let position = if context.callbacks.has_callback(&write) {
                 let fraction = initial_phase.wrapping_neg() as f32 * PHASE_SCALE;
                 let offset = (rendered as f32 + fraction)
                     * rate.denominator().get() as f32
@@ -527,7 +514,7 @@ impl Voice {
 ///
 /// PCM is not clipped or normalized. Rendering can allocate and is not
 /// guaranteed real-time safe. After a rendering error, create a new sequencer.
-pub struct VgmSequencer {
+pub struct VgmSequencer<'a> {
     stream: VgmStream,
     stream_factory: StreamFactory,
     stream_steps: usize,
@@ -543,8 +530,8 @@ pub struct VgmSequencer {
     ended: bool,
     failed: bool,
     started: bool,
-    event_filter: Option<VgmEventFilter>,
-    events: VecDeque<(usize, VgmWriteEvent)>,
+    callbacks: CallbackRegistry<'a>,
+    events: VecDeque<(usize, PendingWriteEvent)>,
     pending_output: VecDeque<[f32; 2]>,
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
     fade_samples: Option<u32>,
@@ -575,8 +562,7 @@ pub struct VgmSequencerCheckpoint {
     ended: bool,
     failed: bool,
     started: bool,
-    event_filter: Option<VgmEventFilter>,
-    events: VecDeque<(usize, VgmWriteEvent)>,
+    events: VecDeque<(usize, PendingWriteEvent)>,
     pending_output: VecDeque<[f32; 2]>,
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
     fade_samples: Option<u32>,
@@ -628,7 +614,7 @@ fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
     }
 }
 
-impl VgmSequencer {
+impl<'a> VgmSequencer<'a> {
     /// Create a sequencer from a borrowed uncompressed VGM file.
     ///
     /// The bytes are copied into the stream. Use [`Self::from_vgm`] to pass
@@ -1064,7 +1050,7 @@ impl VgmSequencer {
             ended: false,
             failed: false,
             started: false,
-            event_filter: None,
+            callbacks: CallbackRegistry::default(),
             events: VecDeque::new(),
             pending_output: VecDeque::new(),
             pwm_compatibility: Some([PwmCompatibility::default(); 2]),
@@ -1122,33 +1108,34 @@ impl VgmSequencer {
         Ok(())
     }
 
-    /// Enable filtered event collection before the first render call.
+    /// Register a typed chip-write callback.
     ///
-    /// State is tracked for all writes to matching chips, even when the port
-    /// or register filter suppresses their notifications.
-    /// Once configured, use [`Self::render_with_events`]; [`Self::render`]
-    /// returns an error to prevent events from being lost. Exceeding the
-    /// pending-event limit also returns an error and stops the sequencer.
-    pub fn configure_events(&mut self, filter: VgmEventFilter) -> Result<(), VgmSequencerError> {
-        if self.started {
-            return Err(VgmSequencerError::EventConfigurationAfterPlayback);
-        }
-        if filter.max_pending_events == 0
-            || (!filter.register_writes && !filter.state_changes)
-            || u32::try_from(self.chunk_frames).is_err()
-        {
-            return Err(VgmSequencerError::InvalidEventFilter);
-        }
+    /// The callback receives the instance, typed write, absolute output-frame
+    /// position at this sequencer's sample rate, and state changes when state
+    /// tracking is enabled. Register callbacks before rendering. Registering
+    /// another callback for the same write type replaces the previous one.
+    pub fn on_write<C, F>(&mut self, callback: F)
+    where
+        C: event::VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize, Option<Vec<soundlog::chip::event::StateEvent>>) + 'a,
+    {
+        self.callbacks.register::<C, F>(callback);
+    }
+
+    /// Enable state tracking for a chip type and instance.
+    ///
+    /// State tracking is available for YM2151, YM2203, YM2413, YM2608, YM2610B,
+    /// YM2612, YM3526, Y8950, YM3812, YMF262, and YMF278B.
+    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    where
+        S: VgmStateTracker,
+    {
+        let chip = event::tracker_chip(S::KIND);
         for voice in &mut self.voices {
-            voice.tracker =
-                if filter.state_changes && filter.matches_chip(&voice.chip, voice.instance) {
-                    event::tracker(&voice.chip, voice.clock)
-                } else {
-                    None
-                };
+            if voice.chip == chip && voice.instance == instance {
+                voice.tracker = Some(event::tracker(S::KIND, clock));
+            }
         }
-        self.event_filter = Some(filter);
-        Ok(())
     }
 
     /// Set the number of playthroughs (`None` loops indefinitely).
@@ -1288,7 +1275,6 @@ impl VgmSequencer {
             ended: self.ended,
             failed: self.failed,
             started: self.started,
-            event_filter: self.event_filter.clone(),
             events: self.events.clone(),
             pending_output: self.pending_output.clone(),
             pwm_compatibility: self.pwm_compatibility,
@@ -1384,7 +1370,6 @@ impl VgmSequencer {
         self.ended = checkpoint.ended;
         self.failed = checkpoint.failed;
         self.started = checkpoint.started;
-        self.event_filter = checkpoint.event_filter.clone();
         self.events.clone_from(&checkpoint.events);
         self.pending_output.clone_from(&checkpoint.pending_output);
         self.pwm_compatibility = checkpoint.pwm_compatibility;
@@ -1464,27 +1449,13 @@ impl VgmSequencer {
     }
 
     /// Return the next chunk; the final block can be shorter. `None` means EOF.
+    /// Registered write callbacks are invoked synchronously before this returns.
     pub fn render(&mut self) -> Result<Option<StereoBlock>, VgmSequencerError> {
-        if self.event_filter.is_some() && !self.failed {
-            return Err(VgmSequencerError::EventCallbackRequired);
-        }
-        self.render_with_events(|_| {})
-    }
-
-    /// Render PCM and deliver configured events relative to that block.
-    ///
-    /// Events at a block boundary belong to the next block. At EOF, events
-    /// at the final boundary are delivered with an offset equal to the block
-    /// length, or zero when no PCM block remains. Callbacks run synchronously,
-    /// not at device time.
-    pub fn render_with_events(
-        &mut self,
-        mut callback: impl FnMut(&VgmWriteEvent),
-    ) -> Result<Option<StereoBlock>, VgmSequencerError> {
         if self.failed {
             return Err(VgmSequencerError::StreamFailed);
         }
         self.started = true;
+        let sample_start = self.position_frames;
         let result = self.render_inner();
         if result.is_err() {
             self.failed = true;
@@ -1501,9 +1472,11 @@ impl VgmSequencer {
             while self.events.front().is_some_and(|(offset, _)| {
                 *offset < count || (self.ended && self.available == 0 && *offset <= count)
             }) {
-                let (offset, mut event) = self.events.pop_front().expect("front exists");
-                event.frame_offset = u32::try_from(offset).expect("configured chunk fits u32");
-                callback(&event);
+                let (offset, event) = self.events.pop_front().expect("front exists");
+                let sample = sample_start
+                    .checked_add(offset)
+                    .ok_or(VgmSequencerError::DurationOverflow)?;
+                self.callbacks.dispatch(event, sample);
             }
             for (offset, _) in &mut self.events {
                 *offset -= count;
@@ -1570,7 +1543,7 @@ impl VgmSequencer {
                         self.output_phase,
                         self.available,
                         &mut EventContext {
-                            filter: self.event_filter.as_ref(),
+                            callbacks: &self.callbacks,
                             events: &mut self.events,
                         },
                     )?;
@@ -1726,7 +1699,7 @@ impl VgmSequencer {
                     write,
                     self.available,
                     &mut EventContext {
-                        filter: self.event_filter.as_ref(),
+                        callbacks: &self.callbacks,
                         events: &mut self.events,
                     },
                 )?;
@@ -1742,7 +1715,7 @@ impl VgmSequencer {
                     write,
                     self.available,
                     &mut EventContext {
-                        filter: self.event_filter.as_ref(),
+                        callbacks: &self.callbacks,
                         events: &mut self.events,
                     },
                 )?;

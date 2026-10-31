@@ -76,8 +76,8 @@ impl Options {
 }
 
 pub(super) enum Player {
-    Vgm(VgmSequencer),
-    Mdx(MdxSequencer),
+    Vgm(VgmSequencer<'static>),
+    Mdx(MdxSequencer<'static>),
 }
 
 impl Player {

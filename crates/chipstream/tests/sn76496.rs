@@ -1,7 +1,7 @@
 #![cfg(feature = "sn76496")]
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, Sn76496, Sn76496Config, SoundChip};
-use chipstream::sequencer::{VgmEventFilter, VgmSequencer};
+use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::Chip;
 use soundlog::chip::{GameGearPsgSpec, PsgSpec};
 use soundlog::vgm::command::{Instance, WaitSamples};
@@ -117,26 +117,17 @@ fn vgm_dual_psg_and_game_gear_stereo() {
     document
         .set_gain(Chip::Sn76489, Instance::Secondary, 0.0)
         .unwrap();
-    for player in [&mut stream, &mut document] {
-        player
-            .configure_events(VgmEventFilter {
-                chip: Some(Chip::Sn76489),
-                register: Some(1),
-                register_writes: true,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    let render = |player: &mut VgmSequencer| {
+    let render = |player: &mut VgmSequencer<'_>| {
         let mut audio = Vec::new();
-        let mut events = Vec::new();
-        while let Some(block) = player
-            .render_with_events(|event| events.push((event.instance, event.value)))
-            .unwrap()
-        {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let callback_events = std::rc::Rc::clone(&events);
+        player.on_write(move |instance, spec: GameGearPsgSpec, _, _| {
+            callback_events.borrow_mut().push((instance, spec.value));
+        });
+        while let Some(block) = player.render().unwrap() {
             audio.extend_from_slice(block.frames());
         }
-        (audio, events)
+        (audio, events.borrow().clone())
     };
     let (a, events) = render(&mut stream);
     let (b, other_events) = render(&mut document);
