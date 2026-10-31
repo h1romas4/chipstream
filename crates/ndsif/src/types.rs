@@ -87,6 +87,11 @@ impl WriteId {
                 | 0xd0
         )
     }
+
+    /// Whether this target accepts raw chip bytes instead of register pairs.
+    pub const fn supports_raw_bytes(self) -> bool {
+        matches!(self.0, 0x30 | 0x50)
+    }
 }
 
 impl TryFrom<u8> for WriteId {

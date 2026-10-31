@@ -1,13 +1,13 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chipstream::chip::{
     ChipError, ClockDivider, NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent,
-    NdsifOkim6258, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport, Okim6258, OutputBits,
-    SoundChip, YmfmChip,
+    NdsifOkim6258, NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport,
+    Okim6258, OutputBits, Sn76496, Sn76496Config, YmfmChip,
 };
 use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::{
@@ -33,61 +33,153 @@ pub struct NdsifSerialConfig {
     pub reset_device: bool,
 }
 
-/// Open the configured NDSIF device and register hardware-backed factories.
+/// Open configured NDSIF devices and register hardware-backed factories.
 ///
-/// YM2151 and OKIM6258 instances are routed to NDSIF when the device reports
-/// compatible capabilities. Unsupported configurations retain their normal
-/// emulated backends.
-pub fn create_chip_factories(config: &NdsifSerialConfig) -> Result<ChipFactoryRegistry, String> {
-    let transport = Rc::new(RefCell::new(NdsifSerialTransport::open(
-        &config.port,
-        config.baud_rate,
-        config.response_timeout,
-        config.reset_device,
-    )?));
+/// Each chip instance is routed to the first configured device advertising a
+/// compatible chip/clock capability. When no device matches, the normal
+/// emulated backend is retained. An empty list returns an empty registry.
+pub fn create_chip_factories(configs: &[NdsifSerialConfig]) -> Result<ChipFactoryRegistry, String> {
+    let mut ports = HashSet::with_capacity(configs.len());
+    let mut transports = Vec::with_capacity(configs.len());
+    for config in configs {
+        if config.port.trim().is_empty() {
+            return Err("NDSIF serial port cannot be empty".to_owned());
+        }
+        if !ports.insert(&config.port) {
+            return Err(format!(
+                "NDSIF serial port is configured more than once: {}",
+                config.port
+            ));
+        }
+        if config.baud_rate == 0 {
+            return Err(format!(
+                "NDSIF baud rate cannot be zero for {}",
+                config.port
+            ));
+        }
+        if config.response_timeout.is_zero() {
+            return Err(format!(
+                "NDSIF response timeout cannot be zero for {}",
+                config.port
+            ));
+        }
+        transports.push(Rc::new(RefCell::new(
+            NdsifSerialTransport::open(
+                &config.port,
+                config.baud_rate,
+                config.response_timeout,
+                config.reset_device,
+            )
+            .map_err(|error| format!("NDSIF port {}: {error}", config.port))?,
+        )));
+    }
+
+    let transports = Rc::new(transports);
     let mut factories = ChipFactoryRegistry::new();
 
-    let ym_transport = Rc::clone(&transport);
-    factories.register(Chip::Ym2151, move |config| {
+    for chip in [
+        Chip::Ym2413,
+        Chip::Ym2151,
+        Chip::Ym2203,
+        Chip::Ym2608,
+        Chip::Ym2610b,
+        Chip::Ym2612,
+        Chip::Ym3526,
+        Chip::Y8950,
+        Chip::Ym3812,
+        Chip::Ymf262,
+        Chip::Ymf278b,
+    ] {
+        let Some(write_id) = ymfm_write_id(&chip) else {
+            continue;
+        };
+        let registered_chip = chip.clone();
+        let chip_transports = Rc::clone(&transports);
+        factories.register(chip, move |config| {
+            let instance = instance_number(config.instance());
+            let oki_clock = if registered_chip == Chip::Ym2151 {
+                config.header().okim6258_clock & 0x3fff_ffff
+            } else {
+                0
+            };
+            let oki_timing_clock = (oki_clock != 0).then_some(oki_clock);
+            let transport = find_transport(
+                &chip_transports,
+                &registered_chip,
+                write_id,
+                instance,
+                config.clock(),
+                oki_timing_clock,
+            )?;
+            if let Some(transport) = transport {
+                Ok(Box::new(NdsifSoundChip::new(config, transport)?))
+            } else {
+                Ok(Box::new(YmfmChip::new(
+                    registered_chip.clone(),
+                    config.clock(),
+                )?))
+            }
+        });
+    }
+
+    let psg_transports = Rc::clone(&transports);
+    factories.register(Chip::Sn76489, move |config| {
+        let flags = &config.header().sn76489_flags;
+        if config.header().misc().t6w28_detected == Some(true) {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "T6W28 PSG is not supported",
+            });
+        }
+        let write_id = match config.instance() {
+            Instance::Primary => WriteId::SN76489,
+            Instance::Secondary => WriteId::SN76489_SECOND,
+        };
         let instance = instance_number(config.instance());
-        let oki_clock = config.header().okim6258_clock & 0x3fff_ffff;
-        let supported = {
-            let transport = ym_transport.try_borrow().map_err(|_| ChipError::External {
-                chip: Chip::Ym2151,
-                message: "NDSIF transport is already borrowed".to_owned(),
-            })?;
-            let ym_supported = transport.supports_clock(WriteId::YM2151, instance, config.clock());
-            let oki_timing_supported = oki_clock != 0
-                && transport.supports_clock(WriteId::OKIM6258, 0, oki_clock)
-                && transport.supports_audio_stream(0, oki_clock);
-            should_use_ndsif_ym2151(ym_supported, oki_clock, oki_timing_supported)
-        };
-        let chip: Box<dyn SoundChip> = if supported {
-            Box::new(NdsifSoundChip::new(config, Rc::clone(&ym_transport))?)
+        let transport = if flags.gamegear_stereo {
+            None
         } else {
-            Box::new(YmfmChip::new(Chip::Ym2151, config.clock())?)
+            find_transport(
+                &psg_transports,
+                &Chip::Sn76489,
+                write_id,
+                instance,
+                config.clock(),
+                None,
+            )?
         };
-        Ok(chip)
+        if let Some(transport) = transport {
+            return Ok(Box::new(NdsifSn76489::new(config, transport)?));
+        }
+
+        let feedback = u16::from(config.header().sn76489_feedback);
+        let width = u8::from(config.header().sn76489_shift_register_width);
+        Ok(Box::new(Sn76496::with_config(
+            config.clock(),
+            Sn76496Config {
+                feedback: if feedback == 0 { 0x0009 } else { feedback },
+                shift_width: if width == 0 { 16 } else { width },
+                negate: flags.output_negate,
+                stereo: flags.gamegear_stereo,
+                divider_8: flags.clock_divider_8,
+                frequency_zero_is_1024: flags.frequency_0_is_400,
+                xnor: flags.xnor_noise_mode,
+            },
+        )?))
     });
 
-    let oki_transport = Rc::clone(&transport);
+    let oki_transports = Rc::clone(&transports);
     factories.register(Chip::Okim6258, move |config| {
         let instance = instance_number(config.instance());
-        let supported = {
-            let transport = oki_transport
-                .try_borrow()
-                .map_err(|_| ChipError::External {
-                    chip: Chip::Okim6258,
-                    message: "NDSIF transport is already borrowed".to_owned(),
-                })?;
-            transport.supports_clock(WriteId::OKIM6258, instance, config.clock())
-                && transport.supports_audio_stream(instance, config.clock())
-        };
-        if supported {
-            return Ok(Box::new(NdsifOkim6258::new(
-                config,
-                Rc::clone(&oki_transport),
-            )?));
+        if let Some(transport) = find_transport(
+            &oki_transports,
+            &Chip::Okim6258,
+            WriteId::OKIM6258,
+            instance,
+            config.clock(),
+            Some(config.clock()),
+        )? {
+            return Ok(Box::new(NdsifOkim6258::new(config, transport)?));
         }
 
         let flags = &config.header().okim6258_flags;
@@ -108,12 +200,49 @@ pub fn create_chip_factories(config: &NdsifSerialConfig) -> Result<ChipFactoryRe
     Ok(factories)
 }
 
-fn should_use_ndsif_ym2151(
-    ym_clock_supported: bool,
-    oki_clock: u32,
-    oki_timing_supported: bool,
-) -> bool {
-    ym_clock_supported && (oki_clock == 0 || oki_timing_supported)
+fn find_transport(
+    transports: &[Rc<RefCell<NdsifSerialTransport>>],
+    chip: &Chip,
+    write_id: WriteId,
+    instance: u8,
+    clock_hz: u32,
+    oki_timing_clock: Option<u32>,
+) -> Result<Option<Rc<RefCell<NdsifSerialTransport>>>, ChipError> {
+    for transport in transports {
+        let device = transport.try_borrow().map_err(|_| ChipError::External {
+            chip: chip.clone(),
+            message: "NDSIF transport is already borrowed".to_owned(),
+        })?;
+        if !device.supports_clock(write_id, instance, clock_hz) {
+            continue;
+        }
+        if oki_timing_clock.is_some_and(|clock| {
+            !device.supports_clock(WriteId::OKIM6258, 0, clock)
+                || !device.supports_audio_stream(0, clock)
+        }) {
+            continue;
+        }
+        return Ok(Some(Rc::clone(transport)));
+    }
+    Ok(None)
+}
+
+fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
+    let write_id = match chip {
+        Chip::Ym2413 => 0x51,
+        Chip::Ym2151 => 0x54,
+        Chip::Ym2203 => 0x55,
+        Chip::Ym2608 => 0x56,
+        Chip::Ym2610b => 0x58,
+        Chip::Ym2612 => 0x52,
+        Chip::Ym3526 => 0x5b,
+        Chip::Y8950 => 0x5c,
+        Chip::Ym3812 => 0x5a,
+        Chip::Ymf262 => 0x5e,
+        Chip::Ymf278b => 0xd0,
+        _ => return None,
+    };
+    WriteId::try_from(write_id).ok()
 }
 
 fn instance_number(instance: Instance) -> u8 {
@@ -140,6 +269,7 @@ fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u32) -> u32 
 #[derive(Clone)]
 enum PendingEvent {
     Register(NdsifRegisterEvent),
+    Psg(NdsifPsgEvent),
     Data(NdsifAdpcmEvent),
     Control(NdsifAudioControlEvent),
 }
@@ -148,6 +278,7 @@ impl PendingEvent {
     fn sample_frame(&self) -> usize {
         match self {
             Self::Register(event) => event.sample_frame,
+            Self::Psg(event) => event.sample_frame,
             Self::Data(event) => event.sample_frame,
             Self::Control(event) => event.sample_frame,
         }
@@ -157,6 +288,7 @@ impl PendingEvent {
         match self {
             Self::Data(_) => 0,
             Self::Register(_) => 1,
+            Self::Psg(_) => 1,
             Self::Control(event) if matches!(event.control, NdsifAudioControl::End(_)) => 2,
             Self::Control(_) => 1,
         }
@@ -376,6 +508,9 @@ impl NdsifSerialTransport {
             PendingEvent::Register(event) => {
                 Some(Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get())
             }
+            PendingEvent::Psg(event) => {
+                Some(Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get())
+            }
             PendingEvent::Control(event) => Some(event.position.get()),
             PendingEvent::Data(_) => None,
         };
@@ -394,6 +529,9 @@ impl NdsifSerialTransport {
         };
         match event {
             PendingEvent::Register(event) => Ok(u128::from(
+                Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get(),
+            )),
+            PendingEvent::Psg(event) => Ok(u128::from(
                 Self::position_for_frame(stream, event.sample_frame, event.sample_rate)?.get(),
             )),
             PendingEvent::Data(event) => Ok(u128::from(event.position.get())),
@@ -417,6 +555,7 @@ impl NdsifSerialTransport {
     fn send_event(&mut self, event: PendingEvent) -> Result<(), String> {
         match event {
             PendingEvent::Register(event) => self.send_registers(&[event]),
+            PendingEvent::Psg(event) => self.send_psg(&[event]),
             PendingEvent::Control(event) => {
                 let Some(stream) = self.audio_stream.as_ref() else {
                     return Err("NDSIF audio event has no configured OKIM6258 stream".to_owned());
@@ -510,6 +649,23 @@ impl NdsifSerialTransport {
             .record_event_position(position)
             .map_err(|error| format!("invalid NDSIF register-event position: {error}"))?;
         self.record_queued_events(position_value, writes.len())
+    }
+
+    fn send_psg(&mut self, events: &[NdsifPsgEvent]) -> Result<(), String> {
+        let Some(first) = events.first() else {
+            return Ok(());
+        };
+        if self.audio_stream.is_some() {
+            return Err("NDSIF raw PSG writes cannot share an audio stream".to_owned());
+        }
+        let bytes = events.iter().map(|event| event.value).collect::<Vec<_>>();
+        self.request(Command::WriteBytes {
+            write_id: first.write_id,
+            instance: first.instance,
+            page: first.page,
+            bytes: &bytes,
+        })
+        .map(|_| ())
     }
 
     fn send_data(&mut self, events: &[NdsifAdpcmEvent]) -> Result<(), String> {
@@ -788,6 +944,10 @@ impl NdsifSerialTransport {
             ndsif::MAX_REGISTER_WRITES
         }
     }
+
+    fn max_psg_batch_len(&self) -> usize {
+        ndsif::MAX_REGISTER_BYTES
+    }
 }
 
 impl NdsifTransport for NdsifSerialTransport {
@@ -833,6 +993,11 @@ impl NdsifTransport for NdsifSerialTransport {
 
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
         self.pending.push(PendingEvent::Register(event));
+        Ok(())
+    }
+
+    fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.pending.push(PendingEvent::Psg(event));
         Ok(())
     }
 
@@ -949,6 +1114,33 @@ impl NdsifTransport for NdsifSerialTransport {
                     }
                     self.send_registers(&registers)?;
                 }
+                PendingEvent::Psg(first) => {
+                    let start = index;
+                    index += 1;
+                    while index < due.len()
+                        && index - start < self.max_psg_batch_len()
+                        && matches!(&due[index], PendingEvent::Psg(next)
+                            if next.write_id == first.write_id
+                                && next.instance == first.instance
+                                && next.page == first.page
+                                && next.sample_frame == first.sample_frame
+                                && next.sample_rate == first.sample_rate)
+                    {
+                        index += 1;
+                    }
+                    let psg_writes = due[start..index]
+                        .iter()
+                        .map(|event| match event {
+                            PendingEvent::Psg(event) => *event,
+                            _ => unreachable!("PSG batch contains only PSG events"),
+                        })
+                        .collect::<Vec<_>>();
+                    if !Self::event_is_ready(&due[start], self.audio_stream.as_ref())? {
+                        deferred.extend(due[start..index].iter().cloned());
+                        continue;
+                    }
+                    self.send_psg(&psg_writes)?;
+                }
                 PendingEvent::Data(_) => {
                     let start = index;
                     index += 1;
@@ -1022,11 +1214,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ndsif_ym2151_does_not_require_an_oki_timing_clock_when_absent() {
-        assert!(should_use_ndsif_ym2151(true, 0, false));
-        assert!(should_use_ndsif_ym2151(true, 4_000_000, true));
-        assert!(!should_use_ndsif_ym2151(true, 4_000_000, false));
-        assert!(!should_use_ndsif_ym2151(false, 0, false));
+    fn maps_supported_ymfm_chips_to_ndsif_write_ids() {
+        for (chip, expected) in [
+            (Chip::Ym2413, 0x51),
+            (Chip::Ym2151, 0x54),
+            (Chip::Ym2203, 0x55),
+            (Chip::Ym2608, 0x56),
+            (Chip::Ym2610b, 0x58),
+            (Chip::Ym2612, 0x52),
+            (Chip::Ym3526, 0x5b),
+            (Chip::Y8950, 0x5c),
+            (Chip::Ym3812, 0x5a),
+            (Chip::Ymf262, 0x5e),
+            (Chip::Ymf278b, 0xd0),
+        ] {
+            assert_eq!(ymfm_write_id(&chip).map(WriteId::get), Some(expected));
+        }
+        assert_eq!(ymfm_write_id(&Chip::Sn76489), None);
     }
 
     fn stream_with_data(accepted: usize) -> AudioStream {

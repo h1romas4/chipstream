@@ -10,7 +10,7 @@ repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 
 [dependencies]
-chipstream = { path = "../chipstream", version = "0.1.0", features = ["ndsif", "okim6258"] }
+chipstream = { path = "../chipstream", version = "0.1.0", features = ["ndsif", "okim6258", "sn76496"] }
 ndsif = { path = "../ndsif", version = "0.1.0" }
 serialport = { version = "4.7", default-features = false }
 

@@ -21,6 +21,17 @@ pub struct NdsifRegisterEvent {
     pub sample_rate: u32,
 }
 
+/// One timed raw byte for an NDSIF SN76489 stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NdsifPsgEvent {
+    pub write_id: WriteId,
+    pub instance: u8,
+    pub page: u8,
+    pub sample_frame: usize,
+    pub sample_rate: u32,
+    pub value: u8,
+}
+
 /// One source ADPCM byte for an NDSIF OKIM6258 stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NdsifAdpcmEvent {
@@ -66,6 +77,11 @@ pub trait NdsifTransport {
 
     /// Queue a register write at its absolute output-frame position.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String>;
+
+    /// Queue a raw PSG byte at its absolute output-frame position.
+    fn schedule_psg_write(&mut self, _event: NdsifPsgEvent) -> Result<(), String> {
+        Err("NDSIF transport does not support raw PSG writes".to_owned())
+    }
 
     /// Configure an OKIM6258 stream and its host timing.
     fn configure_audio_stream(
@@ -251,6 +267,140 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
             return Err(ChipError::InvalidBufferLength {
                 length: samples.len(),
                 channels: self.channels,
+            });
+        }
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// NDSIF-backed SN76489 replacement that emits silence to the host PCM path.
+pub struct NdsifSn76489<T> {
+    instance: u8,
+    write_id: WriteId,
+    clock: u32,
+    output_rate: u32,
+    sample_rate: SampleRate,
+    transport: Rc<RefCell<T>>,
+}
+
+impl<T: NdsifTransport> NdsifSn76489<T> {
+    /// Configure an SN76489 instance and create its scheduled adapter.
+    pub fn new(
+        config: &ChipFactoryConfig<'_>,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
+        let instance = instance_id(config.instance());
+        let write_id = match config.instance() {
+            Instance::Primary => WriteId::SN76489,
+            Instance::Secondary => WriteId::SN76489_SECOND,
+        };
+        transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
+            .configure_chip(write_id, instance, config.clock())
+            .map_err(|error| external_error(&Chip::Sn76489, error))?;
+
+        Ok(Self {
+            instance,
+            write_id,
+            clock: config.clock(),
+            output_rate: config.output_rate(),
+            sample_rate: SampleRate::from_ratio(
+                config.clock(),
+                NonZeroU32::new(16).expect("SN76489 divider is nonzero"),
+            ),
+            transport,
+        })
+    }
+
+    fn schedule_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        sample_rate: u32,
+    ) -> Result<(), ChipError> {
+        let (page, register, value) = write.byte_parts_for(&Chip::Sn76489)?;
+        if page != 0 {
+            return Err(ChipError::InvalidRegisterBank {
+                chip: Chip::Sn76489,
+                bank: page,
+            });
+        }
+        if register != 0 {
+            return Err(ChipError::InvalidRegister {
+                chip: Chip::Sn76489,
+                register,
+            });
+        }
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
+            .schedule_psg_write(NdsifPsgEvent {
+                write_id: self.write_id,
+                instance: self.instance,
+                page,
+                sample_frame,
+                sample_rate,
+                value,
+            })
+            .map_err(|error| external_error(&Chip::Sn76489, error))
+    }
+}
+
+impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
+    fn chip_type(&self) -> &Chip {
+        &Chip::Sn76489
+    }
+
+    fn clock(&self) -> u32 {
+        self.clock
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate.floor_hz()
+    }
+
+    fn sample_rate_ratio(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    fn channels(&self) -> usize {
+        2
+    }
+
+    fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
+        self.schedule_write(write, 0, self.output_rate)
+    }
+
+    fn apply_register_write_at(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.schedule_write(write, sample_frame, output_rate)
+    }
+
+    fn flush_scheduled_until(
+        &mut self,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
+            .flush_scheduled_until(sample_frame, output_rate)
+            .map_err(|error| external_error(&Chip::Sn76489, error))
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        if !samples.len().is_multiple_of(2) {
+            return Err(ChipError::InvalidBufferLength {
+                length: samples.len(),
+                channels: 2,
             });
         }
         samples.fill(0);

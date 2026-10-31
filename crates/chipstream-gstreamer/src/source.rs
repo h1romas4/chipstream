@@ -59,6 +59,7 @@ struct Settings {
     play_count: u32,
     fadeout_seconds: f64,
     ndsif_port: Option<String>,
+    ndsif_ports: Option<String>,
     ndsif_baud_rate: u32,
     ndsif_timeout_ms: u32,
     ndsif_reset: bool,
@@ -74,6 +75,7 @@ impl Default for Settings {
             play_count: DEFAULT_PLAY_COUNT,
             fadeout_seconds: DEFAULT_FADEOUT_SECONDS,
             ndsif_port: None,
+            ndsif_ports: None,
             ndsif_baud_rate: DEFAULT_NDSIF_BAUD_RATE,
             ndsif_timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
             ndsif_reset: true,
@@ -84,6 +86,7 @@ impl Default for Settings {
 #[derive(Clone)]
 struct NdsifSettings {
     port: Option<String>,
+    ports: Option<String>,
     baud_rate: u32,
     timeout_ms: u32,
     reset_device: bool,
@@ -276,6 +279,11 @@ mod imp {
                         .blurb("Optional serial port connected to a NanoDrive NDSIF device")
                         .flags(mutable_ready)
                         .build(),
+                    glib::ParamSpecString::builder("ndsif-ports")
+                        .nick("NDSIF serial ports")
+                        .blurb("Comma-separated serial ports; compatible chips route to the first matching device")
+                        .flags(mutable_ready)
+                        .build(),
                     glib::ParamSpecUInt::builder("ndsif-baud-rate")
                         .nick("NDSIF baud rate")
                         .blurb("Serial port baud rate")
@@ -325,6 +333,9 @@ mod imp {
                     settings.fadeout_seconds = value.get().expect("fadeout-seconds is a double")
                 }
                 "ndsif-port" => settings.ndsif_port = value.get().expect("ndsif-port is a string"),
+                "ndsif-ports" => {
+                    settings.ndsif_ports = value.get().expect("ndsif-ports is a string")
+                }
                 "ndsif-baud-rate" => {
                     settings.ndsif_baud_rate =
                         value.get().expect("ndsif-baud-rate is an unsigned int")
@@ -353,6 +364,7 @@ mod imp {
                 "play-count" => settings.play_count.to_value(),
                 "fadeout-seconds" => settings.fadeout_seconds.to_value(),
                 "ndsif-port" => settings.ndsif_port.to_value(),
+                "ndsif-ports" => settings.ndsif_ports.to_value(),
                 "ndsif-baud-rate" => settings.ndsif_baud_rate.to_value(),
                 "ndsif-timeout-ms" => settings.ndsif_timeout_ms.to_value(),
                 "ndsif-reset" => settings.ndsif_reset.to_value(),
@@ -679,6 +691,7 @@ mod imp {
             };
             let ndsif_settings = NdsifSettings {
                 port: settings.ndsif_port.clone(),
+                ports: settings.ndsif_ports.clone(),
                 baud_rate: settings.ndsif_baud_rate,
                 timeout_ms: settings.ndsif_timeout_ms,
                 reset_device: settings.ndsif_reset,
@@ -1192,15 +1205,34 @@ fn load_sequencer_with_ndsif(
 }
 
 fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactoryRegistry, String> {
-    let Some(settings) = settings.filter(|settings| settings.port.is_some()) else {
+    let Some(settings) = settings else {
         return Ok(ChipFactoryRegistry::new());
     };
-    create_ndsif_factories(&NdsifSerialConfig {
-        port: settings.port.clone().expect("checked above"),
-        baud_rate: settings.baud_rate,
-        response_timeout: Duration::from_millis(u64::from(settings.timeout_ms)),
-        reset_device: settings.reset_device,
-    })
+    let ports = parse_ndsif_ports(settings)?;
+    let configs = ports
+        .into_iter()
+        .map(|port| NdsifSerialConfig {
+            port,
+            baud_rate: settings.baud_rate,
+            response_timeout: Duration::from_millis(u64::from(settings.timeout_ms)),
+            reset_device: settings.reset_device,
+        })
+        .collect::<Vec<_>>();
+    create_ndsif_factories(&configs)
+}
+
+fn parse_ndsif_ports(settings: &NdsifSettings) -> Result<Vec<String>, String> {
+    if settings.port.is_some() && settings.ports.is_some() {
+        return Err("configure either ndsif-port or ndsif-ports, not both".to_owned());
+    }
+    let Some(ports) = settings.ports.as_deref().or(settings.port.as_deref()) else {
+        return Ok(Vec::new());
+    };
+    let ports = ports.split(',').map(str::trim).collect::<Vec<_>>();
+    if ports.is_empty() || ports.iter().any(|port| port.is_empty()) {
+        return Err("NDSIF serial port list contains an empty entry".to_owned());
+    }
+    Ok(ports.into_iter().map(str::to_owned).collect())
 }
 
 fn configure_adjacent_ym2608_rhythm_rom(
@@ -1498,6 +1530,7 @@ mod tests {
         );
         assert!(defaults.property::<bool>("ndsif-reset"));
         assert_eq!(defaults.property::<Option<String>>("ndsif-port"), None);
+        assert_eq!(defaults.property::<Option<String>>("ndsif-ports"), None);
 
         let configured = glib::Object::builder::<ChipstreamSrc>()
             .property("play-count", 3_u32)
@@ -1518,6 +1551,52 @@ mod tests {
         assert!(!configured.property::<bool>("ndsif-reset"));
         assert_eq!(fadeout_samples(2.0), Some(88_200));
         assert_eq!(fadeout_samples(0.0), None);
+    }
+
+    #[test]
+    fn ndsif_port_list_accepts_multiple_devices_and_rejects_ambiguous_values() {
+        assert_eq!(
+            parse_ndsif_ports(&NdsifSettings {
+                port: None,
+                ports: Some("/dev/ttyACM0, /dev/ttyACM1".to_owned()),
+                baud_rate: DEFAULT_NDSIF_BAUD_RATE,
+                timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
+                reset_device: true,
+            })
+            .unwrap(),
+            ["/dev/ttyACM0", "/dev/ttyACM1"]
+        );
+        assert_eq!(
+            parse_ndsif_ports(&NdsifSettings {
+                port: Some("/dev/ttyUSB0".to_owned()),
+                ports: None,
+                baud_rate: DEFAULT_NDSIF_BAUD_RATE,
+                timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
+                reset_device: true,
+            })
+            .unwrap(),
+            ["/dev/ttyUSB0"]
+        );
+        assert!(
+            parse_ndsif_ports(&NdsifSettings {
+                port: Some("/dev/ttyUSB0".to_owned()),
+                ports: Some("/dev/ttyACM0".to_owned()),
+                baud_rate: DEFAULT_NDSIF_BAUD_RATE,
+                timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
+                reset_device: true,
+            })
+            .is_err()
+        );
+        assert!(
+            parse_ndsif_ports(&NdsifSettings {
+                port: None,
+                ports: Some("/dev/ttyACM0, ".to_owned()),
+                baud_rate: DEFAULT_NDSIF_BAUD_RATE,
+                timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
+                reset_device: true,
+            })
+            .is_err()
+        );
     }
 
     #[test]

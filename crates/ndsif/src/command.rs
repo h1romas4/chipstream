@@ -4,6 +4,7 @@ use crate::{
 };
 
 pub const MAX_REGISTER_WRITES: usize = (MAX_PAYLOAD_SIZE - 2) / 2;
+pub const MAX_REGISTER_BYTES: usize = MAX_PAYLOAD_SIZE - 2;
 pub const MAX_REGISTER_EVENT_WRITES: usize = (MAX_PAYLOAD_SIZE - 10) / 2;
 pub const MAX_AUDIO_DATA_BYTES: usize = MAX_PAYLOAD_SIZE - 6;
 
@@ -49,6 +50,12 @@ pub enum Command<'a> {
         page: u8,
         writes: &'a [RegisterWrite],
     },
+    WriteBytes {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        bytes: &'a [u8],
+    },
     AudioData {
         stream_id: u8,
         instance: u8,
@@ -86,7 +93,9 @@ impl Command<'_> {
             Self::AudioEvent { .. } => 0x11,
             Self::AudioStart { .. } => 0x12,
             Self::AudioStatus { .. } => 0x13,
-            Self::WriteRegisters { write_id, .. } => write_id.get(),
+            Self::WriteRegisters { write_id, .. } | Self::WriteBytes { write_id, .. } => {
+                write_id.get()
+            }
         }
     }
 
@@ -101,6 +110,7 @@ impl Command<'_> {
                 *response
             }
             Self::WriteRegisters { .. }
+            | Self::WriteBytes { .. }
             | Self::AudioData { .. }
             | Self::AudioEvent { .. }
             | Self::AudioStart { .. } => false,
@@ -153,6 +163,21 @@ impl Command<'_> {
                 payload[0] = instance;
                 payload[1] = page;
                 2 + encode_writes(writes, &mut payload[2..], MAX_REGISTER_WRITES)?
+            }
+            Self::WriteBytes {
+                write_id,
+                instance,
+                page,
+                bytes,
+            } => {
+                validate_byte_id(write_id)?;
+                if bytes.is_empty() || bytes.len() > MAX_REGISTER_BYTES {
+                    return Err(Error::InvalidArgument);
+                }
+                payload[0] = instance;
+                payload[1] = page;
+                payload[2..2 + bytes.len()].copy_from_slice(bytes);
+                2 + bytes.len()
             }
             Self::AudioData {
                 stream_id,
@@ -233,7 +258,7 @@ impl Command<'_> {
             }
         };
         let message_type = match self {
-            Self::WriteRegisters { .. } => MessageType::NoResponse,
+            Self::WriteRegisters { .. } | Self::WriteBytes { .. } => MessageType::NoResponse,
             _ if self.expects_response() => MessageType::Request,
             _ => MessageType::NoResponse,
         };
@@ -309,6 +334,12 @@ pub enum Request<'a> {
         page: u8,
         writes: crate::types::RegisterWrites<'a>,
     },
+    WriteBytes {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        bytes: &'a [u8],
+    },
     AudioData {
         stream_id: u8,
         instance: u8,
@@ -351,6 +382,17 @@ impl<'a> Request<'a> {
         if message_type == MessageType::NoResponse && (0x30..=0xff).contains(&command_id) {
             let write_id = WriteId::try_from(command_id)?;
             if !write_id.supports_register_pairs() {
+                if write_id.supports_raw_bytes() {
+                    if bytes.len() < 3 {
+                        return Err(Error::InvalidLength);
+                    }
+                    return Ok(Self::WriteBytes {
+                        write_id,
+                        instance: bytes[0],
+                        page: bytes[1],
+                        bytes: &bytes[2..],
+                    });
+                }
                 return Ok(Self::Unknown {
                     message_type,
                     command_id,
@@ -531,5 +573,70 @@ fn validate_register_id(write_id: WriteId) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::InvalidArgument)
+    }
+}
+
+fn validate_byte_id(write_id: WriteId) -> Result<(), Error> {
+    if write_id.supports_raw_bytes() {
+        Ok(())
+    } else {
+        Err(Error::InvalidArgument)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_psg_write_bytes_round_trip() {
+        for (write_id, instance, bytes) in [
+            (WriteId::SN76489, 0, &[0x90, 0x20, 0xff][..]),
+            (WriteId::SN76489_SECOND, 1, &[0x9f, 0x10][..]),
+        ] {
+            let frame = Command::WriteBytes {
+                write_id,
+                instance,
+                page: 0,
+                bytes,
+            }
+            .to_frame(7)
+            .unwrap();
+            assert_eq!(frame.message_type(), MessageType::NoResponse);
+            assert_eq!(frame.command_id(), write_id.get());
+            assert_eq!(
+                Request::decode(&frame).unwrap(),
+                Request::WriteBytes {
+                    write_id,
+                    instance,
+                    page: 0,
+                    bytes,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn raw_write_bytes_reject_invalid_targets_and_empty_data() {
+        assert!(
+            Command::WriteBytes {
+                write_id: WriteId::YM2151,
+                instance: 0,
+                page: 0,
+                bytes: &[0x80],
+            }
+            .to_frame(0)
+            .is_err()
+        );
+        assert!(
+            Command::WriteBytes {
+                write_id: WriteId::SN76489,
+                instance: 0,
+                page: 0,
+                bytes: &[],
+            }
+            .to_frame(0)
+            .is_err()
+        );
     }
 }

@@ -26,6 +26,7 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | `play-count` | uint | 2 | Total traversals; `0` repeats indefinitely |
 | `fadeout-seconds` | double | 2.0 | Fade after the final loop point; `0` disables it (maximum 3600) |
 | `ndsif-port` | string | — | Optional NDSIF serial port; unset uses emulation for every chip |
+| `ndsif-ports` | string | — | Optional comma-separated serial ports; compatible chips use the first matching device |
 | `ndsif-baud-rate` | uint | 115200 | NDSIF serial baud rate |
 | `ndsif-timeout-ms` | uint | 500 | Serial request/response timeout |
 | `ndsif-reset` | boolean | true | Reset the device when opening the serial port |
@@ -43,17 +44,22 @@ Example URI: `chipstream:///music/game%20theme.vgm`
 
 ### NDSIF hardware playback
 
-When `ndsif-port` is set, the shared `ndsif-transport` crate opens the serial
-device, optionally resets it, and queries its capabilities. YM2151 uses the device when its reported
-clock matches. If the file has no OKIM6258 clock, YM2151 writes are sent
-directly and paced by the host playback clock. When the file uses OKIM6258, its
-audio stream also provides timing for YM2151 events; that path is used only
-when the device supports the required clock and stream capabilities.
+When `ndsif-port` or `ndsif-ports` is set, the shared `ndsif-transport` crate
+opens each serial device, optionally resets it, and queries its capabilities.
+Chip instances route to the first configured device with matching chip and
+clock capabilities. NanoDrive 6 can receive YM2612 and SN76489 writes,
+NanoDrive 7 can receive the FM targets it advertises, and NanoDrive 8 can
+receive YM2151 and OKIM6258. The OKIM6258 path streams source ADPCM bytes and
+generates state-matched ADPCM silence for timing gaps and the track tail.
 Unsupported chips or instances continue through their emulator backends. The
-OKIM6258 path streams source ADPCM bytes and generates state-matched ADPCM
-silence for timing gaps and the track tail. The device produces the audible
-hardware output; NDSIF-backed chip voices are silent in the GStreamer PCM
-stream.
+device produces the audible hardware output; NDSIF-backed chip voices are
+silent in the GStreamer PCM stream.
+
+`ndsif-port` remains available for a single device. Use `ndsif-ports` for
+multiple devices, for example `ndsif-ports=/dev/ttyACM0,/dev/ttyACM1`; list
+order determines preference when multiple devices support the same chip.
+NanoDrive 6's optional revision-40 timed YM2612 DAC profile is not implemented
+by the current `ndsif` codec.
 
 NDSIF exposes a continuous OKIM6258 stream, so loop/restart behavior and the
 GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
@@ -67,9 +73,9 @@ GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-launch-1.0 \
   ! audioconvert ! audioresample ! autoaudiosink
 ```
 
-Serial communication and hardware playback require a connected, compatible
-NDSIF device. Seeking is disabled while `ndsif-port` is set because the device
-stream cannot be restored from a sequencer checkpoint.
+Serial communication and hardware playback require connected, compatible
+NDSIF devices. Seeking is disabled while an NDSIF port is configured because
+device state cannot be restored from a sequencer checkpoint.
 
 ## Build requirements
 
