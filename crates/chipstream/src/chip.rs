@@ -4,7 +4,7 @@
 mod c140;
 #[cfg(feature = "ndsif")]
 pub mod ndsif;
-#[cfg(any(feature = "okim6258", feature = "okim6295"))]
+#[cfg(any(feature = "ndsif", feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]
 mod okim6258;
@@ -29,7 +29,10 @@ use soundlog::chip::Chip;
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
 #[cfg(feature = "ndsif")]
-pub use ndsif::{NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
+pub use ndsif::{
+    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifOkim6258, NdsifRegisterEvent,
+    NdsifSoundChip, NdsifTransport, register_okim6258_factory,
+};
 #[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "okim6295")]
@@ -177,6 +180,28 @@ pub trait SoundChip {
         self.apply_register_write(write)
     }
 
+    /// Commit scheduled external events through an absolute output frame.
+    ///
+    /// Sequencers call this after all chip voices have rendered a block, so
+    /// transports can order events from different voices before committing
+    /// them to a device.
+    fn flush_scheduled_until(
+        &mut self,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Finish a scheduled external stream at an absolute output frame.
+    fn finish_scheduled(
+        &mut self,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        Ok(())
+    }
+
     /// Write a contiguous portion of a chip's sample ROM.
     ///
     /// Chips without sample ROM return an error. Existing bytes outside the
@@ -296,6 +321,18 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         output_rate: u32,
     ) -> Result<(), ChipError> {
         (**self).apply_register_write_at(write, sample_frame, output_rate)
+    }
+
+    fn flush_scheduled_until(
+        &mut self,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        (**self).flush_scheduled_until(sample_frame, output_rate)
+    }
+
+    fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
+        (**self).finish_scheduled(sample_frame, output_rate)
     }
 
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {

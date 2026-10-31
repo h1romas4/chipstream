@@ -104,7 +104,8 @@ impl Okim6258 {
         })
     }
 
-    pub(crate) fn new_for_vgm(clock: u32) -> Result<Self, ChipError> {
+    /// Create an OKIM6258 backend using the queued data path used by VGM.
+    pub fn new_for_vgm(clock: u32) -> Result<Self, ChipError> {
         let mut chip = Self::new(clock)?;
         chip.vgm_streaming = true;
         Ok(chip)

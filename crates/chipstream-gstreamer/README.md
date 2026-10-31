@@ -25,6 +25,10 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | `chunk-frames` | uint | 512 | Stereo frames per output buffer (64–8192) |
 | `play-count` | uint | 2 | Total traversals; `0` repeats indefinitely |
 | `fadeout-seconds` | double | 2.0 | Fade after the final loop point; `0` disables it (maximum 3600) |
+| `ndsif-port` | string | — | Optional NDSIF serial port; unset uses emulation for every chip |
+| `ndsif-baud-rate` | uint | 115200 | NDSIF serial baud rate |
+| `ndsif-timeout-ms` | uint | 500 | Serial request/response timeout |
+| `ndsif-reset` | boolean | true | Reset the device when opening the serial port |
 
 ### Playback behavior
 
@@ -36,6 +40,32 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | Adjacent `ym2608_adpcm_rom.bin` | Automatically loaded for VGM/VGZ and applied to each YM2608 instance |
 
 Example URI: `chipstream:///music/game%20theme.vgm`
+
+### NDSIF hardware playback
+
+When `ndsif-port` is set, the plugin opens the serial device, optionally resets
+it, and queries its capabilities. YM2151 and OKIM6258 use the device only when
+the reported clock/stream capabilities match; unsupported chips or instances
+continue through their emulator backends. The OKIM6258 path streams source
+ADPCM bytes and generates state-matched ADPCM silence for timing gaps and the
+track tail. The device produces the audible hardware output; those chip voices
+are silent in the GStreamer PCM stream.
+
+NDSIF exposes a continuous OKIM6258 stream, so loop/restart behavior and the
+GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
+For predictable hardware playback, use `play-count=1` and
+`fadeout-seconds=0`. Only the primary OKIM6258 stream is supported.
+
+```sh
+GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-launch-1.0 \
+  chipstreamsrc location=song.vgm ndsif-port=/dev/ttyACM0 \
+    ndsif-baud-rate=115200 ndsif-timeout-ms=500 \
+  ! audioconvert ! audioresample ! autoaudiosink
+```
+
+Serial communication and hardware playback require a connected, compatible
+NDSIF device. Seeking is disabled while `ndsif-port` is set because the device
+stream cannot be restored from a sequencer checkpoint.
 
 ## Build requirements
 

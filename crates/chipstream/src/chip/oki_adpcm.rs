@@ -5,6 +5,72 @@
 
 pub(super) const INDEX_SHIFT: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
 
+#[derive(Clone)]
+pub(crate) struct OkiAdpcmState {
+    signal: i32,
+    step: usize,
+    limit: i32,
+    differences: [[i32; 16]; 49],
+}
+
+impl OkiAdpcmState {
+    pub(crate) fn new(output_bits: u8) -> Self {
+        Self {
+            signal: -2,
+            step: 0,
+            limit: 1_i32 << (output_bits - 1),
+            differences: difference_table(),
+        }
+    }
+
+    pub(crate) fn decode_byte(&mut self, value: u8) {
+        self.decode_nibble(value & 0x0f);
+        self.decode_nibble(value >> 4);
+    }
+
+    pub(crate) fn encode_zero_byte(&mut self) -> u8 {
+        let low = self.encode_zero_nibble();
+        let high = self.encode_zero_nibble();
+        low | (high << 4)
+    }
+
+    pub(crate) fn zero_pair(&self) -> u8 {
+        let score = |byte| {
+            let mut state = self.clone();
+            let mut accumulated = 0_i64;
+            for _ in 0..32 {
+                state.decode_byte(byte);
+                accumulated += i64::from(state.signal.abs());
+            }
+            (accumulated, state.signal.abs(), state.step)
+        };
+        if score(0x80) <= score(0x08) {
+            0x80
+        } else {
+            0x08
+        }
+    }
+
+    fn decode_nibble(&mut self, nibble: u8) {
+        self.signal = (self.signal + self.differences[self.step][usize::from(nibble)])
+            .clamp(-self.limit, self.limit - 1);
+        self.step = (self.step as i32 + INDEX_SHIFT[usize::from(nibble & 7)]).clamp(0, 48) as usize;
+    }
+
+    fn encode_zero_nibble(&mut self) -> u8 {
+        let nibble = (0..16)
+            .min_by_key(|nibble| {
+                let signal = (self.signal + self.differences[self.step][*nibble])
+                    .clamp(-self.limit, self.limit - 1);
+                let step = (self.step as i32 + INDEX_SHIFT[*nibble & 7]).clamp(0, 48) as usize;
+                (signal.abs(), step, *nibble)
+            })
+            .expect("nibble range is nonempty");
+        self.decode_nibble(nibble as u8);
+        nibble as u8
+    }
+}
+
 pub(super) fn difference_table() -> [[i32; 16]; 49] {
     const STEPS: [i32; 49] = [
         16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
@@ -29,7 +95,7 @@ pub(super) fn difference_table() -> [[i32; 16]; 49] {
 
 #[cfg(test)]
 mod tests {
-    use super::difference_table;
+    use super::{OkiAdpcmState, difference_table};
 
     #[test]
     fn difference_table_matches_reference_for_every_step_and_nibble() {
@@ -49,5 +115,26 @@ mod tests {
                 assert_eq!(table[index][nibble | 8], -expected);
             }
         }
+    }
+
+    #[test]
+    fn zero_encoder_converges_from_a_loud_state() {
+        let mut state = OkiAdpcmState::new(12);
+        for _ in 0..32 {
+            state.decode_byte(0x77);
+        }
+        for _ in 0..256 {
+            state.encode_zero_byte();
+        }
+
+        assert!(state.signal.abs() <= 2);
+        assert_eq!(state.step, 0);
+        let pair = state.zero_pair();
+        assert!(matches!(pair, 0x80 | 0x08));
+        for _ in 0..32 {
+            state.decode_byte(pair);
+        }
+        assert!(state.signal.abs() <= 2);
+        assert_eq!(state.step, 0);
     }
 }

@@ -1,7 +1,7 @@
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
-use ::ndsif::{RegisterWrite, WriteId};
-use soundlog::chip::Chip;
+use ::ndsif::{BytePosition, Divider, Pan, RegisterWrite, WriteId, ZeroPair};
+use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::vgm::command::Instance;
 
 use crate::{
@@ -21,6 +21,34 @@ pub struct NdsifRegisterEvent {
     pub sample_rate: u32,
 }
 
+/// One source ADPCM byte for an NDSIF OKIM6258 stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NdsifAdpcmEvent {
+    pub instance: u8,
+    pub position: BytePosition,
+    pub sample_frame: usize,
+    pub sample_rate: u32,
+    pub value: u8,
+}
+
+/// A control change positioned on the NDSIF ADPCM stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NdsifAudioControl {
+    Clock { clock_hz: u32, divider: Divider },
+    Pan(Pan),
+    End(ZeroPair),
+}
+
+/// One positioned audio-stream control event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NdsifAudioControlEvent {
+    pub instance: u8,
+    pub position: BytePosition,
+    pub sample_frame: usize,
+    pub sample_rate: u32,
+    pub control: NdsifAudioControl,
+}
+
 /// Schedules chip writes on an NDSIF-capable device.
 ///
 /// Implementations must queue writes for `sample_frame`; they must not treat
@@ -38,6 +66,51 @@ pub trait NdsifTransport {
 
     /// Queue a register write at its absolute output-frame position.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String>;
+
+    /// Configure an OKIM6258 stream and its host timing.
+    fn configure_audio_stream(
+        &mut self,
+        _instance: u8,
+        _clock_hz: u32,
+        _divider: Divider,
+        _output_rate: u32,
+    ) -> Result<(), String> {
+        Err("NDSIF transport does not support audio streams".to_owned())
+    }
+
+    /// Queue one ADPCM byte at its absolute output-frame position.
+    fn schedule_adpcm_data(&mut self, _event: NdsifAdpcmEvent) -> Result<(), String> {
+        Err("NDSIF transport does not support audio streams".to_owned())
+    }
+
+    /// Queue a stream control at its absolute output-frame position.
+    fn schedule_audio_control(&mut self, _event: NdsifAudioControlEvent) -> Result<(), String> {
+        Err("NDSIF transport does not support audio streams".to_owned())
+    }
+
+    /// Commit all queued events through an output-frame position.
+    fn flush_scheduled_until(
+        &mut self,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Start a configured audio stream after prebuffering.
+    fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
+        Err("NDSIF transport does not support audio streams".to_owned())
+    }
+
+    /// Finish an audio stream at an absolute output-frame position.
+    fn finish_audio_stream(
+        &mut self,
+        _instance: u8,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), String> {
+        Err("NDSIF transport does not support audio streams".to_owned())
+    }
 }
 
 /// NDSIF-backed YMFM replacement that emits silence to the host PCM path.
@@ -161,6 +234,18 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
         self.schedule_write(write, sample_frame, output_rate)
     }
 
+    fn flush_scheduled_until(
+        &mut self,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
+            .flush_scheduled_until(sample_frame, output_rate)
+            .map_err(|error| external_error(&self.chip, error))
+    }
+
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
         if !samples.len().is_multiple_of(self.channels) {
             return Err(ChipError::InvalidBufferLength {
@@ -173,6 +258,318 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
     }
 
     fn reset(&mut self) {}
+}
+
+/// NDSIF-backed OKIM6258 replacement.
+///
+/// Register-1 ADPCM bytes are transferred to the device stream. `generate()`
+/// supplies silence to host PCM; the device's OKIM6258 produces the audible
+/// output.
+pub struct NdsifOkim6258<T> {
+    instance: u8,
+    clock: u32,
+    divider: Divider,
+    output_rate: u32,
+    stream_finished: bool,
+    next_byte_position: u32,
+    decoder: super::oki_adpcm::OkiAdpcmState,
+    transport: Rc<RefCell<T>>,
+}
+
+impl<T: NdsifTransport> NdsifOkim6258<T> {
+    /// Configure an NDSIF audio stream from the sequencer's chip metadata.
+    pub fn new(
+        config: &ChipFactoryConfig<'_>,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
+        let instance = instance_id(config.instance());
+        let divider = match config.header().okim6258_flags.clock_divider {
+            0 => Divider::Div1024,
+            1 => Divider::Div768,
+            _ => Divider::Div512,
+        };
+        if config.clock() < divider as u32 {
+            return Err(ChipError::InvalidClock {
+                clock: config.clock(),
+                minimum: divider as u32,
+            });
+        }
+        let output_bits = if config.header().okim6258_flags.output_12bit {
+            12
+        } else {
+            10
+        };
+        let chip = Chip::Okim6258;
+        {
+            let mut transport = transport
+                .try_borrow_mut()
+                .map_err(|_| external_error(&chip, "NDSIF transport is already borrowed"))?;
+            transport
+                .configure_chip(WriteId::OKIM6258, instance, config.clock())
+                .map_err(|error| external_error(&chip, error))?;
+            transport
+                .configure_audio_stream(instance, config.clock(), divider, config.output_rate())
+                .map_err(|error| external_error(&chip, error))?;
+            transport
+                .schedule_audio_control(NdsifAudioControlEvent {
+                    instance,
+                    position: BytePosition::new(0),
+                    sample_frame: 0,
+                    sample_rate: config.output_rate(),
+                    control: NdsifAudioControl::Pan(Pan::Both),
+                })
+                .map_err(|error| external_error(&chip, error))?;
+        }
+
+        Ok(Self {
+            instance,
+            clock: config.clock(),
+            divider,
+            output_rate: config.output_rate(),
+            stream_finished: false,
+            next_byte_position: 0,
+            decoder: super::oki_adpcm::OkiAdpcmState::new(output_bits),
+            transport,
+        })
+    }
+
+    fn schedule_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        sample_rate: u32,
+    ) -> Result<(), ChipError> {
+        let ChipRegisterWrite::Okim6258(Okim6258Spec { register, value }) = write else {
+            return Err(ChipError::ChipMismatch {
+                expected: Chip::Okim6258,
+                actual: write.chip(),
+            });
+        };
+        let position = self.position_for_frame(sample_frame, sample_rate)?;
+        let event = match register {
+            0x00 => None,
+            0x01 => {
+                while self.next_byte_position < position.get() {
+                    let value = self.decoder.encode_zero_byte();
+                    self.schedule_data(sample_frame, sample_rate, value)?;
+                }
+                self.decoder.decode_byte(value);
+                Some(Okim6258Event::Data(NdsifAdpcmEvent {
+                    instance: self.instance,
+                    position: BytePosition::new(self.next_byte_position),
+                    sample_frame,
+                    sample_rate,
+                    value,
+                }))
+            }
+            0x02 => {
+                let pan = match value & 3 {
+                    0 => Pan::Both,
+                    1 => Pan::Right,
+                    2 => Pan::Left,
+                    _ => Pan::Off,
+                };
+                Some(Okim6258Event::Control(NdsifAudioControlEvent {
+                    instance: self.instance,
+                    position: BytePosition::new(self.next_byte_position.max(position.get())),
+                    sample_frame,
+                    sample_rate,
+                    control: NdsifAudioControl::Pan(pan),
+                }))
+            }
+            _ => {
+                return Err(ChipError::InvalidRegister {
+                    chip: Chip::Okim6258,
+                    register,
+                });
+            }
+        };
+
+        let Some(event) = event else {
+            return Ok(());
+        };
+        let mut transport = self
+            .transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?;
+        match event {
+            Okim6258Event::Data(event) => {
+                transport
+                    .schedule_adpcm_data(event)
+                    .map_err(|error| external_error(&Chip::Okim6258, error))?;
+                self.next_byte_position = self
+                    .next_byte_position
+                    .checked_add(1)
+                    .ok_or_else(|| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
+                Ok(())
+            }
+            Okim6258Event::Control(event) => transport
+                .schedule_audio_control(event)
+                .map_err(|error| external_error(&Chip::Okim6258, error)),
+        }
+    }
+
+    fn position_for_frame(
+        &self,
+        sample_frame: usize,
+        sample_rate: u32,
+    ) -> Result<BytePosition, ChipError> {
+        if sample_rate == 0 {
+            return Err(external_error(
+                &Chip::Okim6258,
+                "output sample rate is zero",
+            ));
+        }
+        let position = (sample_frame as u128) * u128::from(self.clock)
+            / (u128::from(sample_rate) * u128::from(self.divider as u32) * 2);
+        let position = u32::try_from(position)
+            .map_err(|_| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
+        Ok(BytePosition::new(position.max(self.next_byte_position)))
+    }
+
+    fn schedule_data(
+        &mut self,
+        sample_frame: usize,
+        sample_rate: u32,
+        value: u8,
+    ) -> Result<(), ChipError> {
+        let position = BytePosition::new(self.next_byte_position);
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
+            .schedule_adpcm_data(NdsifAdpcmEvent {
+                instance: self.instance,
+                position,
+                sample_frame,
+                sample_rate,
+                value,
+            })
+            .map_err(|error| external_error(&Chip::Okim6258, error))?;
+        self.next_byte_position = self
+            .next_byte_position
+            .checked_add(1)
+            .ok_or_else(|| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
+        Ok(())
+    }
+}
+
+enum Okim6258Event {
+    Data(NdsifAdpcmEvent),
+    Control(NdsifAudioControlEvent),
+}
+
+impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
+    fn chip_type(&self) -> &Chip {
+        static CHIP: Chip = Chip::Okim6258;
+        &CHIP
+    }
+
+    fn clock(&self) -> u32 {
+        self.clock
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.clock / self.divider as u32
+    }
+
+    fn sample_rate_ratio(&self) -> SampleRate {
+        SampleRate::from_ratio(
+            self.clock,
+            NonZeroU32::new(self.divider as u32).expect("NDSIF dividers are nonzero"),
+        )
+    }
+
+    fn channels(&self) -> usize {
+        1
+    }
+
+    fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
+        self.schedule_write(write, 0, self.output_rate)
+    }
+
+    fn apply_register_write_at(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.schedule_write(write, sample_frame, output_rate)
+    }
+
+    fn flush_scheduled_until(
+        &mut self,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        let target = self.position_for_frame(sample_frame, output_rate)?.get();
+        while self.next_byte_position < target {
+            let value = self.decoder.encode_zero_byte();
+            self.schedule_data(sample_frame, output_rate, value)?;
+        }
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
+            .flush_scheduled_until(sample_frame, output_rate)
+            .map_err(|error| external_error(&Chip::Okim6258, error))
+    }
+
+    fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
+        if self.stream_finished {
+            return Ok(());
+        }
+        let target = self.position_for_frame(sample_frame, output_rate)?.get();
+        while self.next_byte_position < target {
+            let value = self.decoder.encode_zero_byte();
+            self.schedule_data(sample_frame, output_rate, value)?;
+        }
+        for _ in 0..32 {
+            let value = self.decoder.encode_zero_byte();
+            self.schedule_data(sample_frame, output_rate, value)?;
+        }
+        let pair = ZeroPair::try_from(self.decoder.zero_pair())
+            .map_err(|error| external_error(&Chip::Okim6258, error.to_string()))?;
+        {
+            let mut transport = self.transport.try_borrow_mut().map_err(|_| {
+                external_error(&Chip::Okim6258, "NDSIF transport is already borrowed")
+            })?;
+            transport
+                .flush_scheduled_until(sample_frame, output_rate)
+                .map_err(|error| external_error(&Chip::Okim6258, error))?;
+            transport
+                .schedule_audio_control(NdsifAudioControlEvent {
+                    instance: self.instance,
+                    position: BytePosition::new(self.next_byte_position),
+                    sample_frame,
+                    sample_rate: output_rate,
+                    control: NdsifAudioControl::End(pair),
+                })
+                .map_err(|error| external_error(&Chip::Okim6258, error))?;
+        }
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
+            .finish_audio_stream(self.instance, sample_frame, output_rate)
+            .map_err(|error| external_error(&Chip::Okim6258, error))?;
+        self.stream_finished = true;
+        Ok(())
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// Register an NDSIF OKIM6258 replacement factory.
+pub fn register_okim6258_factory<T: NdsifTransport + 'static>(
+    registry: &mut ChipFactoryRegistry,
+    transport: Rc<RefCell<T>>,
+) {
+    registry.register(Chip::Okim6258, move |config| {
+        Ok(Box::new(NdsifOkim6258::new(config, Rc::clone(&transport))?))
+    });
 }
 
 /// Register one YMFM chip type with an NDSIF transport.

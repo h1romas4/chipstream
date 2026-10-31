@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,14 +20,20 @@ use gst_base::subclass::base_src::CreateSuccess;
 use gst_base::subclass::prelude::*;
 use gstreamer as gst;
 use gstreamer_base as gst_base;
+use ndsif::WriteId;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
 use soundlog::mdx::package::MdxPackage;
 
+use crate::ndsif_transport::NdsifSerialTransport;
 use chipstream::audio::StereoBlock;
+use chipstream::chip::{
+    ChipError, ClockDivider, NdsifOkim6258, NdsifSoundChip, Okim6258, OutputBits, SoundChip,
+    YmfmChip,
+};
 use chipstream::sequencer::{
-    Chip, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions, VgmSequencer,
-    VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions,
+    VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
     measure_vgm_duration_frames,
 };
 
@@ -41,6 +49,8 @@ const FADEOUT_REFERENCE_RATE: u32 = 44_100;
 const MIN_CHUNK_FRAMES: u32 = 64;
 const MAX_CHUNK_FRAMES: u32 = 8_192;
 const DEFAULT_CHUNK_FRAMES: u32 = 512;
+const DEFAULT_NDSIF_BAUD_RATE: u32 = 115_200;
+const DEFAULT_NDSIF_TIMEOUT_MS: u32 = 500;
 const QUEUE_BLOCKS: usize = 4;
 const CHECKPOINT_INTERVAL_SECONDS: usize = 30;
 const RECENT_CHECKPOINTS: usize = 2;
@@ -55,6 +65,10 @@ struct Settings {
     chunk_frames: u32,
     play_count: u32,
     fadeout_seconds: f64,
+    ndsif_port: Option<String>,
+    ndsif_baud_rate: u32,
+    ndsif_timeout_ms: u32,
+    ndsif_reset: bool,
 }
 
 impl Default for Settings {
@@ -66,8 +80,20 @@ impl Default for Settings {
             chunk_frames: DEFAULT_CHUNK_FRAMES,
             play_count: DEFAULT_PLAY_COUNT,
             fadeout_seconds: DEFAULT_FADEOUT_SECONDS,
+            ndsif_port: None,
+            ndsif_baud_rate: DEFAULT_NDSIF_BAUD_RATE,
+            ndsif_timeout_ms: DEFAULT_NDSIF_TIMEOUT_MS,
+            ndsif_reset: true,
         }
     }
+}
+
+#[derive(Clone)]
+struct NdsifSettings {
+    port: Option<String>,
+    baud_rate: u32,
+    timeout_ms: u32,
+    reset_device: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -250,6 +276,33 @@ mod imp {
                         .default_value(DEFAULT_FADEOUT_SECONDS)
                         .flags(mutable_ready)
                         .build(),
+                    glib::ParamSpecString::builder("ndsif-port")
+                        .nick("NDSIF serial port")
+                        .blurb("Optional serial port connected to a NanoDrive NDSIF device")
+                        .flags(mutable_ready)
+                        .build(),
+                    glib::ParamSpecUInt::builder("ndsif-baud-rate")
+                        .nick("NDSIF baud rate")
+                        .blurb("Serial port baud rate")
+                        .minimum(1_200)
+                        .maximum(4_000_000)
+                        .default_value(DEFAULT_NDSIF_BAUD_RATE)
+                        .flags(mutable_ready)
+                        .build(),
+                    glib::ParamSpecUInt::builder("ndsif-timeout-ms")
+                        .nick("NDSIF timeout")
+                        .blurb("Serial request/response timeout in milliseconds")
+                        .minimum(10)
+                        .maximum(10_000)
+                        .default_value(DEFAULT_NDSIF_TIMEOUT_MS)
+                        .flags(mutable_ready)
+                        .build(),
+                    glib::ParamSpecBoolean::builder("ndsif-reset")
+                        .nick("Reset NDSIF device")
+                        .blurb("Reset the device when opening the serial connection")
+                        .default_value(true)
+                        .flags(mutable_ready)
+                        .build(),
                 ]
             })
         }
@@ -276,6 +329,18 @@ mod imp {
                 "fadeout-seconds" => {
                     settings.fadeout_seconds = value.get().expect("fadeout-seconds is a double")
                 }
+                "ndsif-port" => settings.ndsif_port = value.get().expect("ndsif-port is a string"),
+                "ndsif-baud-rate" => {
+                    settings.ndsif_baud_rate =
+                        value.get().expect("ndsif-baud-rate is an unsigned int")
+                }
+                "ndsif-timeout-ms" => {
+                    settings.ndsif_timeout_ms =
+                        value.get().expect("ndsif-timeout-ms is an unsigned int")
+                }
+                "ndsif-reset" => {
+                    settings.ndsif_reset = value.get().expect("ndsif-reset is a boolean")
+                }
                 _ => unreachable!("unknown property {}", pspec.name()),
             }
         }
@@ -292,6 +357,10 @@ mod imp {
                 "chunk-frames" => settings.chunk_frames.to_value(),
                 "play-count" => settings.play_count.to_value(),
                 "fadeout-seconds" => settings.fadeout_seconds.to_value(),
+                "ndsif-port" => settings.ndsif_port.to_value(),
+                "ndsif-baud-rate" => settings.ndsif_baud_rate.to_value(),
+                "ndsif-timeout-ms" => settings.ndsif_timeout_ms.to_value(),
+                "ndsif-reset" => settings.ndsif_reset.to_value(),
                 _ => unreachable!("unknown property {}", pspec.name()),
             }
         }
@@ -430,7 +499,11 @@ mod imp {
         }
 
         fn is_seekable(&self) -> bool {
-            true
+            self.settings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .ndsif_port
+                .is_none()
         }
 
         fn size(&self) -> Option<u64> {
@@ -538,6 +611,15 @@ mod imp {
         }
 
         fn do_seek(&self, segment: &mut gst::Segment) -> bool {
+            if self
+                .settings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .ndsif_port
+                .is_some()
+            {
+                return false;
+            }
             if segment.format() != gst::Format::Time
                 || segment.rate().to_bits() != 1.0_f64.to_bits()
             {
@@ -589,6 +671,12 @@ mod imp {
                 play_count: settings.play_count,
                 fadeout_samples: fadeout_samples(settings.fadeout_seconds),
             };
+            let ndsif_settings = NdsifSettings {
+                port: settings.ndsif_port.clone(),
+                baud_rate: settings.ndsif_baud_rate,
+                timeout_ms: settings.ndsif_timeout_ms,
+                reset_device: settings.ndsif_reset,
+            };
             let worker = thread::Builder::new()
                 .name("chipstream-render".to_owned())
                 .spawn(move || {
@@ -596,6 +684,7 @@ mod imp {
                         PathBuf::from(location),
                         settings.pdx_location.map(PathBuf::from),
                         render_settings,
+                        ndsif_settings,
                         cancelled,
                         duration,
                         sender,
@@ -700,12 +789,18 @@ fn render_file(
     location: PathBuf,
     pdx_location: Option<PathBuf>,
     settings: RenderSettings,
+    ndsif_settings: NdsifSettings,
     cancelled: Arc<AtomicBool>,
     duration: Arc<Mutex<Option<gst::ClockTime>>>,
     sender: SyncSender<WorkerMessage>,
     controls: Receiver<WorkerControl>,
 ) {
-    let result = load_sequencer(&location, pdx_location.as_deref(), settings);
+    let result = load_sequencer_with_ndsif(
+        &location,
+        pdx_location.as_deref(),
+        settings,
+        Some(&ndsif_settings),
+    );
     let (mut player, metadata, metadata_warning, duration_frames) = match result {
         Ok(result) => result,
         Err(error) => {
@@ -982,6 +1077,16 @@ fn load_sequencer(
     pdx_location: Option<&Path>,
     settings: RenderSettings,
 ) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
+    load_sequencer_with_ndsif(path, pdx_location, settings, None)
+}
+
+fn load_sequencer_with_ndsif(
+    path: &Path,
+    pdx_location: Option<&Path>,
+    settings: RenderSettings,
+    ndsif_settings: Option<&NdsifSettings>,
+) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
+    let factories = create_chip_factories(ndsif_settings)?;
     let bytes = read_path(path, MAX_FILE_BYTES)?;
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("mdx") => {
@@ -1016,12 +1121,13 @@ fn load_sequencer(
                 settings.fadeout_samples,
             )
             .map_err(|error| format!("failed to measure MDX duration: {error}"))?;
-            let player = MdxSequencer::with_options_and_fadeout(
+            let player = MdxSequencer::with_options_and_fadeout_with_factories(
                 package,
                 settings.sample_rate,
                 settings.chunk_frames,
                 options,
                 settings.fadeout_samples,
+                factories,
             )
             .map_err(|error| format!("failed to create MDX sequencer: {error}"))?;
             Ok((Sequencer::Mdx(player), metadata, None, duration_frames))
@@ -1055,9 +1161,13 @@ fn load_sequencer(
                     return Err(format!("failed to probe VGM metadata: {error}"));
                 }
             };
-            let mut player =
-                VgmSequencer::from_vgm(bytes, settings.sample_rate, settings.chunk_frames)
-                    .map_err(|error| format!("failed to create VGM sequencer: {error}"))?;
+            let mut player = VgmSequencer::from_vgm_with_factories(
+                bytes,
+                settings.sample_rate,
+                settings.chunk_frames,
+                factories,
+            )
+            .map_err(|error| format!("failed to create VGM sequencer: {error}"))?;
             configure_adjacent_ym2608_rhythm_rom(path, &mut player)?;
             player
                 .set_pwm_compatibility(true)
@@ -1072,6 +1182,85 @@ fn load_sequencer(
             "unsupported input extension for {} (expected .vgm, .vgz, or .mdx)",
             path.display()
         )),
+    }
+}
+
+fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactoryRegistry, String> {
+    let Some(settings) = settings.filter(|settings| settings.port.is_some()) else {
+        return Ok(ChipFactoryRegistry::new());
+    };
+    let transport = Rc::new(RefCell::new(NdsifSerialTransport::open(
+        settings.port.as_deref().expect("checked above"),
+        settings.baud_rate,
+        Duration::from_millis(u64::from(settings.timeout_ms)),
+        settings.reset_device,
+    )?));
+    let mut factories = ChipFactoryRegistry::new();
+
+    let ym_transport = Rc::clone(&transport);
+    factories.register(Chip::Ym2151, move |config| {
+        let instance = instance_number(config.instance());
+        let oki_clock = config.header().okim6258_clock & 0x3fff_ffff;
+        let supported = {
+            let transport = ym_transport.try_borrow().map_err(|_| ChipError::External {
+                chip: Chip::Ym2151,
+                message: "NDSIF transport is already borrowed".to_owned(),
+            })?;
+            oki_clock != 0
+                && transport.supports_clock(WriteId::YM2151, instance, config.clock())
+                && transport.supports_clock(WriteId::OKIM6258, 0, oki_clock)
+                && transport.supports_audio_stream(0, oki_clock)
+        };
+        let chip: Box<dyn SoundChip> = if supported {
+            Box::new(NdsifSoundChip::new(config, Rc::clone(&ym_transport))?)
+        } else {
+            Box::new(YmfmChip::new(Chip::Ym2151, config.clock())?)
+        };
+        Ok(chip)
+    });
+
+    let oki_transport = Rc::clone(&transport);
+    factories.register(Chip::Okim6258, move |config| {
+        let instance = instance_number(config.instance());
+        let supported = {
+            let transport = oki_transport
+                .try_borrow()
+                .map_err(|_| ChipError::External {
+                    chip: Chip::Okim6258,
+                    message: "NDSIF transport is already borrowed".to_owned(),
+                })?;
+            transport.supports_clock(WriteId::OKIM6258, instance, config.clock())
+                && transport.supports_audio_stream(instance, config.clock())
+        };
+        if supported {
+            return Ok(Box::new(NdsifOkim6258::new(
+                config,
+                Rc::clone(&oki_transport),
+            )?));
+        }
+
+        let flags = &config.header().okim6258_flags;
+        let mut chip = Okim6258::new_for_vgm(config.clock())?;
+        chip.set_divider(match flags.clock_divider {
+            0 => ClockDivider::Div1024,
+            1 => ClockDivider::Div768,
+            _ => ClockDivider::Div512,
+        })?;
+        chip.set_output_bits(if flags.output_12bit {
+            OutputBits::Bits12
+        } else {
+            OutputBits::Bits10
+        });
+        Ok(Box::new(chip))
+    });
+
+    Ok(factories)
+}
+
+fn instance_number(instance: Instance) -> u8 {
+    match instance {
+        Instance::Primary => 0,
+        Instance::Secondary => 1,
     }
 }
 
@@ -1336,13 +1525,34 @@ mod tests {
             defaults.property::<f64>("fadeout-seconds"),
             DEFAULT_FADEOUT_SECONDS
         );
+        assert_eq!(
+            defaults.property::<u32>("ndsif-baud-rate"),
+            DEFAULT_NDSIF_BAUD_RATE
+        );
+        assert_eq!(
+            defaults.property::<u32>("ndsif-timeout-ms"),
+            DEFAULT_NDSIF_TIMEOUT_MS
+        );
+        assert!(defaults.property::<bool>("ndsif-reset"));
+        assert_eq!(defaults.property::<Option<String>>("ndsif-port"), None);
 
         let configured = glib::Object::builder::<ChipstreamSrc>()
             .property("play-count", 3_u32)
             .property("fadeout-seconds", 0.5_f64)
+            .property("ndsif-port", "/dev/ttyUSB0")
+            .property("ndsif-baud-rate", 230_400_u32)
+            .property("ndsif-timeout-ms", 1_000_u32)
+            .property("ndsif-reset", false)
             .build();
         assert_eq!(configured.property::<u32>("play-count"), 3);
         assert_eq!(configured.property::<f64>("fadeout-seconds"), 0.5);
+        assert_eq!(
+            configured.property::<Option<String>>("ndsif-port"),
+            Some("/dev/ttyUSB0".to_owned())
+        );
+        assert_eq!(configured.property::<u32>("ndsif-baud-rate"), 230_400);
+        assert_eq!(configured.property::<u32>("ndsif-timeout-ms"), 1_000);
+        assert!(!configured.property::<bool>("ndsif-reset"));
         assert_eq!(fadeout_samples(2.0), Some(88_200));
         assert_eq!(fadeout_samples(0.0), None);
     }

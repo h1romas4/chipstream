@@ -1509,7 +1509,33 @@ impl<'a> VgmSequencer<'a> {
         }
         self.started = true;
         let sample_start = self.position_frames;
-        let result = self.render_inner(sample_start);
+        let result = self.render_inner(sample_start).and_then(|block| {
+            if let Some(block) = &block {
+                let sample_end = sample_start
+                    .checked_add(block.frames().len())
+                    .ok_or(VgmSequencerError::DurationOverflow)?;
+                for voice in &mut self.voices {
+                    voice
+                        .route
+                        .chip_mut()
+                        .flush_scheduled_until(sample_end, self.output_rate)?;
+                }
+            } else {
+                for voice in &mut self.voices {
+                    voice
+                        .route
+                        .chip_mut()
+                        .flush_scheduled_until(sample_start, self.output_rate)?;
+                }
+                for voice in &mut self.voices {
+                    voice
+                        .route
+                        .chip_mut()
+                        .finish_scheduled(sample_start, self.output_rate)?;
+                }
+            }
+            Ok(block)
+        });
         if result.is_err() {
             self.failed = true;
         }

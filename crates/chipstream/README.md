@@ -29,7 +29,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `pwm` | PWM |
 | `segapcm` | SegaPCM |
 | `sn76496` | SN76489 / SN76496 |
-| `ndsif` | Scheduled NDSIF output adapter for YMFM chip replacements |
+| `ndsif` | Scheduled NDSIF adapters for YMFM chips and OKIM6258 |
 
 Enable the chips your application needs, for example:
 
@@ -168,18 +168,20 @@ errors can be returned as `ChipError::External`.
 
 ### NDSIF scheduled output
 
-The optional `ndsif` feature provides `NdsifSoundChip` and helpers to register
-one or all YMFM replacements through `chip::ndsif`. The adapter schedules typed
-register writes through an injected `NdsifTransport` and fills host PCM buffers
-with silence; audible audio must come from the physical chip's output path.
-Transport implementations must queue writes at the supplied absolute output
-frame and accept events arriving out of chronological order during rendering.
+The optional `ndsif` feature provides `NdsifSoundChip` for YMFM replacements
+and `NdsifOkim6258` for hardware ADPCM streams through `chip::ndsif`. Both use
+an injected `NdsifTransport`; their host PCM output is silent, and audible
+audio must come from the physical device's output path. The OKIM6258 adapter
+tracks its decoder state and supplies state-matched ADPCM silence for timing
+gaps and stream termination. Transport implementations must queue events at
+their absolute output-frame positions and accept events arriving out of
+chronological order during rendering.
 
 The `ndsif` crate is a protocol codec, not a serial transport or playback
 scheduler. The application supplies the transport and is responsible for
-converting output-frame times to the device's timing model, including any
-mapping to NDSIF's ADPCM-byte-position event format. Device clock and chip
-support remain transport/device responsibilities.
+sending events in protocol order and mapping output-frame positions to the
+device's timing model, including NDSIF's ADPCM-byte-position event format.
+Device clock and chip support remain transport/device responsibilities.
 
 ## Audio processing
 
