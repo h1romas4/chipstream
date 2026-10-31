@@ -159,6 +159,14 @@ impl AudioTiming {
         Self { clock, divider }
     }
 
+    pub const fn clock(self) -> OkiClock {
+        self.clock
+    }
+
+    pub const fn divider(self) -> Divider {
+        self.divider
+    }
+
     pub fn sample_converter(self, tick_rate: u32) -> Result<AudioSampleConverter, Error> {
         if tick_rate == 0 {
             return Err(Error::InvalidArgument);

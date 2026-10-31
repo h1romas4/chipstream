@@ -10,17 +10,15 @@ Device firmware: [NanoDrive8](https://github.com/Fujix1/NanoDrive8).
 
 ## Scope
 
-- COBS framing, CRC-16/CCITT-FALSE, bounded frame buffers and incremental
-  decoding.
-- Generic VGM register-write requests, control requests, capabilities,
-  MSM6258-compatible stream requests, typed responses and transaction
-  correlation.
-- Local argument and message-shape validation, allocation-free batch encoding,
-  and exact audio tick/sample conversion.
+| Provides | Not provided |
+|---|---|
+| `no_std`, allocation-free framing, CRC, and incremental decoding | Serial I/O, retries, or capability discovery |
+| Typed commands, responses, capabilities, and audio-stream messages | Remote-device state validation |
+| Argument validation, batch encoding, and transaction correlation | Playback scheduling, synthesis, or ADPCM encoding |
+| Audio timing and local stream-position/status tracking | |
 
-The crate does not perform serial I/O, device-state validation, transport
-retries, playback scheduling, synthesis, ADPCM encoding or capability
-discovery. Request and response payloads borrow from caller-owned data/frames.
+`AudioStreamState` tracks host-side protocol state; it does not communicate with
+the device. Request and response payloads borrow caller-owned data or frames.
 
 ## Framing and commands
 
@@ -132,5 +130,22 @@ assert_eq!(timing.bytes_from_ticks(20_480, 1_000_000)?, 160);
 let mut converter = timing.sample_converter(44_100)?;
 assert_eq!(converter.advance(1)?, 0);
 assert_eq!(converter.advance(44_099)?, 15_625);
+# Ok::<(), Error>(())
+```
+
+`AudioStreamState` provides the local position and lifecycle bookkeeping shared
+by transports. Playback buffering thresholds remain caller policy.
+
+```rust
+use ndsif::{AudioStreamState, AudioTiming, BytePosition, Divider, Error, OkiClock};
+
+let mut stream = AudioStreamState::new(
+    AudioTiming::new(OkiClock::Mhz4, Divider::Div1024),
+    44_100,
+)?;
+let position = stream.position_for_frame(441, 44_100)?;
+assert_eq!(position, BytePosition::new(19));
+stream.record_data_accepted(BytePosition::new(0), 32)?;
+assert!(stream.event_is_ready(position));
 # Ok::<(), Error>(())
 ```

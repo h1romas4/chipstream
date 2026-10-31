@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
 
+pub mod audio;
 pub mod batch;
 pub mod command;
 pub mod decoder;
@@ -12,6 +13,7 @@ pub mod types;
 /// NDSIF API specification revision implemented by this codec.
 pub const SPEC_REVISION: u32 = 39;
 
+pub use audio::AudioStreamState;
 pub use batch::CommandEncoder;
 pub use command::{
     AudioEvent, Command, MAX_AUDIO_DATA_BYTES, MAX_REGISTER_EVENT_WRITES, MAX_REGISTER_WRITES,
