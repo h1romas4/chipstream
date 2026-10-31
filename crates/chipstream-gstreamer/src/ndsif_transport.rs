@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
@@ -12,14 +13,31 @@ use serialport::SerialPort;
 
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const AUDIO_PREBUFFER_SECONDS: u64 = 2;
 
 struct AudioStream {
     instance: u8,
     clock: OkiClock,
     divider: Divider,
     output_rate: u32,
+    prebuffer_bytes: u32,
     accepted: u32,
+    played: u32,
     started: bool,
+}
+
+impl AudioStream {
+    fn should_start(&self, force: bool) -> bool {
+        !self.started && self.accepted > 0 && (force || self.accepted >= self.prebuffer_bytes)
+    }
+}
+
+fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u32) -> u32 {
+    let safe_capacity = capacity
+        .saturating_sub(ndsif::MAX_AUDIO_DATA_BYTES as u32)
+        .max(1);
+    (u64::from(clock_hz) * AUDIO_PREBUFFER_SECONDS / (u64::from(divider as u32) * 2))
+        .min(u64::from(safe_capacity)) as u32
 }
 
 enum PendingEvent {
@@ -58,7 +76,10 @@ pub(super) struct NdsifSerialTransport {
     configured_chip: bool,
     audio_stream: Option<AudioStream>,
     pending: Vec<PendingEvent>,
+    queued_events: VecDeque<(u32, u32)>,
+    queued_event_count: u32,
     last_status_check: Option<Instant>,
+    wall_clock_origin: Option<Instant>,
 }
 
 impl NdsifSerialTransport {
@@ -87,7 +108,10 @@ impl NdsifSerialTransport {
             configured_chip: false,
             audio_stream: None,
             pending: Vec::new(),
+            queued_events: VecDeque::new(),
+            queued_event_count: 0,
             last_status_check: None,
+            wall_clock_origin: None,
         };
         if reset_device {
             transport.request(Command::Reset)?;
@@ -257,6 +281,8 @@ impl NdsifSerialTransport {
                 let Some(stream) = self.audio_stream.as_ref() else {
                     return Err("NDSIF audio event has no configured OKIM6258 stream".to_owned());
                 };
+                let instance = stream.instance;
+                let position = event.position.get();
                 let audio_event = match event.control {
                     NdsifAudioControl::Clock { clock_hz, divider } => AudioEvent::Clock {
                         clock: OkiClock::try_from(clock_hz).map_err(|error| error.to_string())?,
@@ -265,13 +291,14 @@ impl NdsifSerialTransport {
                     NdsifAudioControl::Pan(pan) => AudioEvent::Pan(pan),
                     NdsifAudioControl::End(pair) => AudioEvent::End(pair),
                 };
+                self.ensure_event_capacity(1)?;
                 self.request(Command::AudioEvent {
                     stream_id: AUDIO_STREAM_ID,
-                    instance: stream.instance,
-                    position: event.position,
+                    instance,
+                    position: BytePosition::new(position),
                     event: audio_event,
-                })
-                .map(|_| ())
+                })?;
+                self.record_queued_events(position, 1)
             }
             PendingEvent::Data(_) => {
                 Err("ADPCM data must be sent in a contiguous batch".to_owned())
@@ -295,9 +322,12 @@ impl NdsifSerialTransport {
                 .map(|_| ());
         };
         let position = Self::position_for_frame(stream, first.sample_frame, first.sample_rate)?;
+        let stream_instance = stream.instance;
+        let position_value = position.get();
+        self.ensure_event_capacity(writes.len())?;
         self.request(Command::AudioEvent {
             stream_id: AUDIO_STREAM_ID,
-            instance: stream.instance,
+            instance: stream_instance,
             position,
             event: AudioEvent::Registers {
                 write_id: first.write_id,
@@ -305,8 +335,8 @@ impl NdsifSerialTransport {
                 page: first.page,
                 writes: &writes,
             },
-        })
-        .map(|_| ())
+        })?;
+        self.record_queued_events(position_value, writes.len())
     }
 
     fn send_data(&mut self, events: &[NdsifAdpcmEvent]) -> Result<(), String> {
@@ -335,6 +365,7 @@ impl NdsifSerialTransport {
             }
         }
         let data = events.iter().map(|event| event.value).collect::<Vec<_>>();
+        self.ensure_audio_data_capacity(data.len())?;
         self.request(Command::AudioData {
             stream_id: AUDIO_STREAM_ID,
             instance,
@@ -352,13 +383,165 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
-    fn start_stream_if_ready(&mut self) -> Result<(), String> {
+    fn ensure_audio_data_capacity(&mut self, incoming_bytes: usize) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let Some((instance, accepted, played, started)) =
+                self.audio_stream.as_ref().map(|stream| {
+                    (
+                        stream.instance,
+                        stream.accepted,
+                        stream.played,
+                        stream.started,
+                    )
+                })
+            else {
+                return Err("NDSIF ADPCM data has no configured stream".to_owned());
+            };
+            let pending = accepted.saturating_sub(played);
+            if u64::from(pending) + incoming_bytes as u64 <= u64::from(self.data_capacity) {
+                return Ok(());
+            }
+            if !started {
+                return Err(format!(
+                    "NDSIF prebuffer exceeds device capacity (pending={pending}, incoming={incoming_bytes}, capacity={})",
+                    self.data_capacity
+                ));
+            }
+            let status = self.query_audio_status(instance)?;
+            self.update_audio_progress(status);
+            let pending = accepted.saturating_sub(status.played);
+            if u64::from(pending) + incoming_bytes as u64 <= u64::from(self.data_capacity) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for NDSIF audio buffer capacity (pending={pending}, incoming={incoming_bytes}, capacity={})",
+                    self.data_capacity
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn query_audio_status(&mut self, instance: u8) -> Result<ndsif::AudioStatus, String> {
+        let frame = self.request(Command::AudioStatus {
+            stream_id: AUDIO_STREAM_ID,
+            instance,
+        })?;
+        let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+        match response.reply {
+            Reply::AudioStatus(status) if !status.flags.fault() => Ok(status),
+            Reply::AudioStatus(status) => Err(format!(
+                "NDSIF audio stream faulted (accepted={}, played={}, pending={}, underflows={}, overflows={}, rejected={}, max_pending={}, flags={:?}, late_events={}, max_event_lag={})",
+                status.accepted,
+                status.played,
+                status.pending,
+                status.underflows,
+                status.overflows,
+                status.rejected,
+                status.max_pending,
+                status.flags,
+                status.late_events,
+                status.max_event_lag
+            )),
+            _ => Err("NDSIF AUDIO_STATUS returned an unexpected response".to_owned()),
+        }
+    }
+
+    fn ensure_event_capacity(&mut self, incoming_events: usize) -> Result<(), String> {
+        let incoming_events =
+            u32::try_from(incoming_events).map_err(|_| "NDSIF event count overflow".to_owned())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            self.prune_queued_events();
+            if self.queued_event_count + incoming_events <= u32::from(self.event_capacity) {
+                return Ok(());
+            }
+            let Some((instance, accepted, started)) = self
+                .audio_stream
+                .as_ref()
+                .map(|stream| (stream.instance, stream.accepted, stream.started))
+            else {
+                return Err("NDSIF audio event has no configured stream".to_owned());
+            };
+            if !started {
+                if accepted == 0 {
+                    return Err(
+                        "NDSIF event capacity exhausted before audio data was queued".to_owned(),
+                    );
+                }
+                self.start_stream_if_ready(true)?;
+            }
+            let status = self.query_audio_status(instance)?;
+            self.update_audio_progress(status);
+            if self.queued_event_count + incoming_events <= u32::from(self.event_capacity) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for NDSIF event capacity (queued={}, incoming={}, capacity={})",
+                    self.queued_event_count, incoming_events, self.event_capacity
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn record_queued_events(&mut self, position: u32, count: usize) -> Result<(), String> {
+        let count = u32::try_from(count).map_err(|_| "NDSIF event count overflow".to_owned())?;
+        self.queued_event_count = self
+            .queued_event_count
+            .checked_add(count)
+            .ok_or_else(|| "NDSIF queued event count overflow".to_owned())?;
+        self.queued_events.push_back((position, count));
+        Ok(())
+    }
+
+    fn prune_queued_events(&mut self) {
+        let played = self.audio_stream.as_ref().map_or(0, |stream| stream.played);
+        while self
+            .queued_events
+            .front()
+            .is_some_and(|(position, _)| *position <= played)
+        {
+            let (_, count) = self.queued_events.pop_front().expect("front was checked");
+            self.queued_event_count = self.queued_event_count.saturating_sub(count);
+        }
+    }
+
+    fn update_audio_progress(&mut self, status: ndsif::AudioStatus) {
+        if let Some(stream) = self.audio_stream.as_mut() {
+            stream.played = status.played;
+        }
+        self.prune_queued_events();
+    }
+
+    fn pace_without_audio_stream(
+        &mut self,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), String> {
+        if output_rate == 0 {
+            return Err("NDSIF output rate is zero".to_owned());
+        }
+        let target_nanos = (sample_frame as u128) * 1_000_000_000 / u128::from(output_rate);
+        let target_nanos = u64::try_from(target_nanos)
+            .map_err(|_| "NDSIF playback pacing duration overflow".to_owned())?;
+        let origin = *self.wall_clock_origin.get_or_insert_with(Instant::now);
+        let deadline = origin
+            .checked_add(Duration::from_nanos(target_nanos))
+            .ok_or_else(|| "NDSIF playback pacing deadline overflow".to_owned())?;
+        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+            std::thread::sleep(delay);
+        }
+        Ok(())
+    }
+    fn start_stream_if_ready(&mut self, force: bool) -> Result<(), String> {
         let Some((instance, clock, divider)) = self.audio_stream.as_ref().and_then(|stream| {
-            (!stream.started && stream.accepted > 0).then_some((
-                stream.instance,
-                stream.clock,
-                stream.divider,
-            ))
+            stream
+                .should_start(force)
+                .then_some((stream.instance, stream.clock, stream.divider))
         }) else {
             return Ok(());
         };
@@ -369,22 +552,27 @@ impl NdsifSerialTransport {
             clock,
             divider,
         })?;
-        let frame = self.request(Command::AudioStatus {
-            stream_id: AUDIO_STREAM_ID,
-            instance,
-        })?;
-        let response = Response::decode(&frame).map_err(|error| error.to_string())?;
-        match response.reply {
-            Reply::AudioStatus(status) if status.flags.running() => {}
-            Reply::AudioStatus(_) => {
-                return Err("NDSIF audio stream did not enter the running state".to_owned());
-            }
-            _ => return Err("NDSIF AUDIO_STATUS returned an unexpected response".to_owned()),
+        let status = self.query_audio_status(instance)?;
+        if !status.flags.running() {
+            return Err(format!(
+                "NDSIF audio stream did not enter the running state (accepted={}, played={}, pending={}, underflows={}, overflows={}, rejected={}, max_pending={}, flags={:?})",
+                status.accepted,
+                status.played,
+                status.pending,
+                status.underflows,
+                status.overflows,
+                status.rejected,
+                status.max_pending,
+                status.flags
+            ));
         }
-        self.audio_stream
+        let stream = self
+            .audio_stream
             .as_mut()
-            .expect("stream was checked above")
-            .started = true;
+            .expect("stream was checked above");
+        stream.started = true;
+        stream.played = status.played;
+        self.prune_queued_events();
         self.last_status_check = Some(Instant::now());
         Ok(())
     }
@@ -399,32 +587,25 @@ impl NdsifSerialTransport {
         }) else {
             return Ok(());
         };
-        let frame = self.request(Command::AudioStatus {
-            stream_id: AUDIO_STREAM_ID,
-            instance,
-        })?;
-        let response = Response::decode(&frame).map_err(|error| error.to_string())?;
-        match response.reply {
-            Reply::AudioStatus(status) if !status.flags.fault() => {}
-            Reply::AudioStatus(status) => {
-                return Err(format!(
-                    "NDSIF audio stream faulted (accepted={}, played={}, pending={}, underflows={}, overflows={}, rejected={}, max_pending={}, flags={:?}, late_events={}, max_event_lag={})",
-                    status.accepted,
-                    status.played,
-                    status.pending,
-                    status.underflows,
-                    status.overflows,
-                    status.rejected,
-                    status.max_pending,
-                    status.flags,
-                    status.late_events,
-                    status.max_event_lag
-                ));
-            }
-            _ => return Err("NDSIF AUDIO_STATUS returned an unexpected response".to_owned()),
-        }
+        let status = self.query_audio_status(instance)?;
+        self.update_audio_progress(status);
         self.last_status_check = Some(Instant::now());
         Ok(())
+    }
+
+    fn max_audio_data_batch_len(&self) -> usize {
+        let maximum = self.data_capacity.min(ndsif::MAX_AUDIO_DATA_BYTES as u32) as usize;
+        maximum.max(1)
+    }
+
+    fn max_register_event_batch_len(&self) -> usize {
+        if self.audio_stream.is_some() {
+            ndsif::MAX_REGISTER_EVENT_WRITES
+                .min(self.event_capacity as usize)
+                .max(1)
+        } else {
+            ndsif::MAX_REGISTER_WRITES
+        }
     }
 }
 
@@ -488,6 +669,7 @@ impl NdsifTransport for NdsifSerialTransport {
             return Err("NDSIF device does not advertise audio stream capacity".to_owned());
         }
         let clock = OkiClock::try_from(clock_hz).map_err(|error| error.to_string())?;
+        let prebuffer_bytes = audio_prebuffer_bytes(clock as u32, divider, self.data_capacity);
         if self.audio_stream.is_some() {
             return Err("NDSIF transport supports only one OKIM6258 stream".to_owned());
         }
@@ -496,7 +678,9 @@ impl NdsifTransport for NdsifSerialTransport {
             clock,
             divider,
             output_rate,
+            prebuffer_bytes,
             accepted: 0,
+            played: 0,
             started: false,
         });
         Ok(())
@@ -521,6 +705,9 @@ impl NdsifTransport for NdsifSerialTransport {
             && stream.output_rate != output_rate
         {
             return Err("NDSIF event output rate changed during playback".to_owned());
+        }
+        if self.audio_stream.is_none() && self.configured_chip {
+            self.pace_without_audio_stream(sample_frame, output_rate)?;
         }
         let mut due = Vec::new();
         let mut future = Vec::new();
@@ -547,7 +734,7 @@ impl NdsifTransport for NdsifSerialTransport {
                         })
                         .transpose()?;
                     index += 1;
-                    while index < due.len() && index - start < ndsif::MAX_REGISTER_EVENT_WRITES {
+                    while index < due.len() && index - start < self.max_register_event_batch_len() {
                         let PendingEvent::Register(next) = &due[index] else {
                             break;
                         };
@@ -584,7 +771,7 @@ impl NdsifTransport for NdsifSerialTransport {
                     index += 1;
                     while index < due.len()
                         && matches!(&due[index], PendingEvent::Data(_))
-                        && index - start < ndsif::MAX_AUDIO_DATA_BYTES
+                        && index - start < self.max_audio_data_batch_len()
                     {
                         index += 1;
                     }
@@ -596,6 +783,7 @@ impl NdsifTransport for NdsifSerialTransport {
                         })
                         .collect::<Vec<_>>();
                     self.send_data(&data)?;
+                    self.start_stream_if_ready(false)?;
                 }
                 _ => {
                     let event = due.remove(index);
@@ -603,13 +791,13 @@ impl NdsifTransport for NdsifSerialTransport {
                 }
             }
         }
-        self.start_stream_if_ready()?;
+        self.start_stream_if_ready(false)?;
         self.check_status_if_due()?;
         Ok(())
     }
 
     fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
-        self.start_stream_if_ready()
+        self.start_stream_if_ready(true)
     }
 
     fn finish_audio_stream(
@@ -626,7 +814,7 @@ impl NdsifTransport for NdsifSerialTransport {
         {
             return Err("NDSIF finish request does not match the configured stream".to_owned());
         }
-        self.start_stream_if_ready()
+        self.start_stream_if_ready(true)
     }
 }
 
@@ -652,7 +840,9 @@ mod tests {
             clock: OkiClock::Mhz4,
             divider: Divider::Div1024,
             output_rate: 44_100,
+            prebuffer_bytes: 4096,
             accepted: 0,
+            played: 0,
             started: false,
         };
 
@@ -664,5 +854,43 @@ mod tests {
             NdsifSerialTransport::position_for_frame(&stream, 882, 44_100).unwrap(),
             BytePosition::new(39)
         );
+    }
+
+    #[test]
+    fn audio_stream_waits_for_two_seconds_of_prebuffer() {
+        let mut stream = AudioStream {
+            instance: 0,
+            clock: OkiClock::Mhz4,
+            divider: Divider::Div1024,
+            output_rate: 44_100,
+            prebuffer_bytes: audio_prebuffer_bytes(4_000_000, Divider::Div1024, 8192),
+            accepted: 500,
+            played: 0,
+            started: false,
+        };
+
+        assert_eq!(stream.prebuffer_bytes, 3906);
+        assert!(!stream.should_start(false));
+
+        stream.accepted = stream.prebuffer_bytes;
+        assert!(stream.should_start(false));
+    }
+
+    #[test]
+    fn audio_stream_can_start_with_a_short_final_buffer() {
+        let stream = AudioStream {
+            instance: 0,
+            clock: OkiClock::Mhz4,
+            divider: Divider::Div1024,
+            output_rate: 44_100,
+            prebuffer_bytes: 3906,
+            accepted: 120,
+            played: 0,
+            started: false,
+        };
+
+        assert!(!stream.should_start(false));
+        assert!(stream.should_start(true));
+        assert_eq!(audio_prebuffer_bytes(4_000_000, Divider::Div1024, 512), 262);
     }
 }

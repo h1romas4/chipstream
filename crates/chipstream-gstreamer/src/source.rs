@@ -1219,10 +1219,11 @@ fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactory
                 chip: Chip::Ym2151,
                 message: "NDSIF transport is already borrowed".to_owned(),
             })?;
-            oki_clock != 0
-                && transport.supports_clock(WriteId::YM2151, instance, config.clock())
+            let ym_supported = transport.supports_clock(WriteId::YM2151, instance, config.clock());
+            let oki_timing_supported = oki_clock != 0
                 && transport.supports_clock(WriteId::OKIM6258, 0, oki_clock)
-                && transport.supports_audio_stream(0, oki_clock)
+                && transport.supports_audio_stream(0, oki_clock);
+            should_use_ndsif_ym2151(ym_supported, oki_clock, oki_timing_supported)
         };
         let chip: Box<dyn SoundChip> = if supported {
             Box::new(NdsifSoundChip::new(config, Rc::clone(&ym_transport))?)
@@ -1268,6 +1269,14 @@ fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactory
     });
 
     Ok(factories)
+}
+
+fn should_use_ndsif_ym2151(
+    ym_clock_supported: bool,
+    oki_clock: u32,
+    oki_timing_supported: bool,
+) -> bool {
+    ym_clock_supported && (oki_clock == 0 || oki_timing_supported)
 }
 
 fn instance_number(instance: Instance) -> u8 {
@@ -1500,6 +1509,14 @@ mod tests {
     use soundlog::chip::{Chip as SoundlogChip, Ym2608Spec};
     use soundlog::vgm::VgmBuilder;
     use soundlog::vgm::command::{Instance as SoundlogInstance, WaitSamples};
+
+    #[test]
+    fn ndsif_ym2151_does_not_require_an_oki_timing_clock_when_absent() {
+        assert!(should_use_ndsif_ym2151(true, 0, false));
+        assert!(should_use_ndsif_ym2151(true, 4_000_000, true));
+        assert!(!should_use_ndsif_ym2151(true, 4_000_000, false));
+        assert!(!should_use_ndsif_ym2151(false, 0, false));
+    }
 
     #[test]
     fn checkpoint_cache_keeps_origin_and_two_recent_entries() {

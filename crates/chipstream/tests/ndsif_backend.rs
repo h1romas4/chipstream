@@ -162,6 +162,7 @@ fn factory_schedules_absolute_frames_and_protocol_registers() {
             .configured
             .contains(&(WriteId::YM2151, 0, 4_000_000))
     );
+    assert!(transport.audio_streams.is_empty());
     assert_eq!(transport.events.len(), 6);
     assert_eq!(
         transport.events[0],

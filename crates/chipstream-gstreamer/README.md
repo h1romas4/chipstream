@@ -44,12 +44,16 @@ Example URI: `chipstream:///music/game%20theme.vgm`
 ### NDSIF hardware playback
 
 When `ndsif-port` is set, the plugin opens the serial device, optionally resets
-it, and queries its capabilities. YM2151 and OKIM6258 use the device only when
-the reported clock/stream capabilities match; unsupported chips or instances
-continue through their emulator backends. The OKIM6258 path streams source
-ADPCM bytes and generates state-matched ADPCM silence for timing gaps and the
-track tail. The device produces the audible hardware output; those chip voices
-are silent in the GStreamer PCM stream.
+it, and queries its capabilities. YM2151 uses the device when its reported
+clock matches. If the file has no OKIM6258 clock, YM2151 writes are sent
+directly and paced by the host playback clock. When the file uses OKIM6258, its
+audio stream also provides timing for YM2151 events; that path is used only
+when the device supports the required clock and stream capabilities.
+Unsupported chips or instances continue through their emulator backends. The
+OKIM6258 path streams source ADPCM bytes and generates state-matched ADPCM
+silence for timing gaps and the track tail. The device produces the audible
+hardware output; NDSIF-backed chip voices are silent in the GStreamer PCM
+stream.
 
 NDSIF exposes a continuous OKIM6258 stream, so loop/restart behavior and the
 GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
