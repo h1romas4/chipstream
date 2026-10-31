@@ -1,11 +1,12 @@
 # ndsif
 
-Allocation-free `no_std` Rust codec for the NDSIF v1 draft specification.
-The v1 draft is not wire-compatible with the previous
-b protocol even though both use wire version `01`; select the profile
-explicitly at the transport boundary.
-This codec implements API specification revision 39; the frame wire version
-remains `01`.
+Allocation-free `no_std` Rust codec for the NDSIF v1 draft.
+
+The v1 draft shares wire version `01` with the previous b protocol but is not
+wire-compatible. Select the profile explicitly at the transport boundary.
+
+API revision: 39. Frame wire version: `01`.
+Device firmware: [NanoDrive8](https://github.com/Fujix1/NanoDrive8).
 
 ## Scope
 
@@ -45,16 +46,25 @@ assert_eq!(wire.as_bytes()[0], 0);
 # Ok::<(), Error>(())
 ```
 
-`Frame::encode()` includes both zero delimiters; `Frame::decode()` accepts
-only the COBS body without delimiters. `Decoder` handles split and concatenated
-transport reads, discards through the next delimiter after overflow, and waits
-for a synchronization delimiter after reset. The caller measures 500 ms of
-inactivity and calls `expire_partial_frame()` for an incomplete frame.
+### Frame and decoder reference
 
-`MessageType` distinguishes no-response requests, response-requesting controls,
-and responses. The response repeats the request's `command_id` and
-`transaction_id`; command IDs are never changed to encode response status.
-`Command::expects_response()` exposes which commands need response tracking.
+| API / condition | Behavior |
+|---|---|
+| `Frame::encode()` | Includes both zero delimiters |
+| `Frame::decode()` | Accepts the COBS body without delimiters |
+| `Decoder` input | Handles split and concatenated transport reads |
+| `Decoder` overflow | Discards input through the next delimiter |
+| `Decoder` reset | Waits for a synchronization delimiter |
+| Incomplete frame | After 500 ms of inactivity, the caller invokes `expire_partial_frame()` |
+
+### Message reference
+
+| API / field | Behavior |
+|---|---|
+| `MessageType` | Distinguishes no-response requests, response-requesting controls, and responses |
+| Response correlation | Repeats the request's `command_id` and `transaction_id` |
+| Command ID | Identifies the command; response status does not alter it |
+| `Command::expects_response()` | Indicates whether a command requires response tracking |
 
 ## Controls and replies
 
@@ -70,15 +80,15 @@ assert_eq!(decoded.reply, Reply::Ping(b"ND8"));
 # Ok::<(), Error>(())
 ```
 
-The crate provides typed codecs for RESET, PING, GET_INFO, SET_OUTPUT_VOLUME,
-SET_CHIP_CLOCK, GET_CAPABILITIES and AUDIO_STATUS. Capability pages expose
-their 9-byte entries as a borrowing iterator, including unknown, fixed and
-variable logical clock modes. Fixed entries provide their input frequency;
-variable entries advertise clock-setting support. Invalid modes, inconsistent
-clock metadata and duplicate pages are rejected. Device and capability support
-remain device-specific and must be read from GET_CAPABILITIES rather than
-inferred from a product name. API revision 39 is not wire-compatible with the
-previous 4-byte capability-entry format.
+| API / data | Behavior |
+|---|---|
+| Control codecs | Typed codecs for RESET, PING, GET_INFO, SET_OUTPUT_VOLUME, SET_CHIP_CLOCK, GET_CAPABILITIES and AUDIO_STATUS |
+| Capability entries | Borrowing iterator over 9-byte entries; supports unknown, fixed and variable clock modes |
+| Fixed clock mode | Entry provides the input frequency |
+| Variable clock mode | Entry advertises clock-setting support |
+| Capability validation | Rejects invalid modes, inconsistent clock metadata and duplicate pages |
+| Device support | Query GET_CAPABILITIES; support is device-specific and must not be inferred from product name |
+| API revision 39 | Not wire-compatible with the previous 4-byte capability-entry format |
 
 ## Register and stream batching
 
@@ -102,11 +112,14 @@ assert!(encoded_bytes > adpcm.len());
 # Ok::<(), Error>(())
 ```
 
-`CommandEncoder` splits register BURSTs at 127 pairs, positioned register
-events at 123 pairs, and AUDIO_DATA at 250 bytes. It advances transaction IDs
-modulo 65536. These IDs correlate responses; they do not provide duplicate
-suppression or retransmission guarantees. Empty batch inputs emit nothing.
-Positions count ADPCM bytes, not samples or ticks, and never wrap.
+| `CommandEncoder` behavior | Limit / semantics |
+|---|---|
+| Register BURST | Up to 127 register/value pairs per frame |
+| Positioned register event | Up to 123 register/value pairs per frame |
+| AUDIO_DATA | Up to 250 bytes per frame |
+| Transaction IDs | Advance modulo 65536; correlate responses only, with no duplicate suppression or retransmission guarantees |
+| Empty batches | Emit no frames |
+| Positions | Count ADPCM bytes, not samples or ticks; never wrap |
 
 ## Timing helpers
 
