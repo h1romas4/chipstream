@@ -3,6 +3,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use chipstream::metadata::probe_vgm_bytes;
 use flate2::read::GzDecoder;
 use mmlx::diagnostic::Diagnostic;
 use mmlx::frontend::SourceFile;
@@ -43,19 +44,8 @@ pub fn metadata_line(input: &Input) -> Result<String> {
         Input::Vgm(bytes) => {
             let header =
                 soundlog::VgmHeader::from_bytes(bytes).context("failed to parse VGM metadata")?;
-            if header.gd3_offset != 0 {
-                let gd3_start = header
-                    .gd3_offset
-                    .checked_add(0x14)
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .ok_or_else(|| anyhow!("VGM GD3 metadata offset is out of range"))?;
-                let gd3_bytes = bytes
-                    .get(gd3_start..)
-                    .ok_or_else(|| anyhow!("VGM GD3 metadata offset exceeds the input"))?;
-                let gd3 = soundlog::meta::Gd3::try_from(gd3_bytes)
-                    .context("failed to parse VGM GD3 metadata")?;
-                push_metadata_field(&mut fields, "Title", gd3.track_name_en.as_deref());
-            }
+            let metadata = probe_vgm_bytes(bytes).context("failed to parse VGM metadata")?;
+            push_metadata_field(&mut fields, "Title", metadata.title.as_deref());
             let mut chips: Vec<(String, usize)> = Vec::new();
             for (_, chip, _) in header.chip_instances().iter() {
                 let name = format!("{chip:?}").to_ascii_uppercase();

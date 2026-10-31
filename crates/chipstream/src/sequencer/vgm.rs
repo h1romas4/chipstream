@@ -7,6 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use soundlog::chip::{Chip, PwmSpec};
 use soundlog::mdx::convert::MdxLoopMarker;
@@ -20,6 +21,7 @@ use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
 use crate::audio::{
     AudioError, ChipRoute, RouteError, StereoBlock, StereoMatrix, StereoMixer, StereoResampler,
+    StereoResamplerState,
 };
 #[cfg(feature = "okim6295")]
 use crate::chip::Okim6295;
@@ -29,7 +31,7 @@ use crate::chip::Pwm;
 use crate::chip::SegaPcm;
 #[cfg(feature = "c140")]
 use crate::chip::{C140, C140Type};
-use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, YmfmChip};
+use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChipState, YmfmChip};
 #[cfg(feature = "okim6258")]
 use crate::chip::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "sn76496")]
@@ -46,6 +48,16 @@ const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
 const PHASE_SCALE: f32 = 1.0 / 4_294_967_296.0;
+
+pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<MdxLoopMarker>), String>>;
+
+#[derive(Clone)]
+enum StreamSetting {
+    LoopCount(Option<u32>),
+    LoopModifier(u8),
+    LoopBase(i8),
+    FadeoutSamples(Option<u32>),
+}
 
 macro_rules! feature_backend {
     ($feature:literal, $chip:expr, $body:expr) => {{
@@ -88,6 +100,17 @@ pub enum VgmSequencerError {
     PwmCompatibilityConfigurationAfterPlayback,
     FadeoutConfigurationAfterPlayback,
     EventCallbackRequired,
+    CheckpointMismatch,
+    StreamReconstruction(String),
+    SeekTargetBeforeCheckpoint {
+        target: usize,
+        checkpoint: usize,
+    },
+    SeekTargetBeyondEnd {
+        target: usize,
+        reached: usize,
+    },
+    SeekCancelled,
     EventQueueFull {
         limit: usize,
     },
@@ -136,6 +159,29 @@ impl fmt::Display for VgmSequencerError {
             Self::EventCallbackRequired => {
                 write!(f, "configured event collection requires render_with_events")
             }
+            Self::CheckpointMismatch => {
+                write!(
+                    f,
+                    "checkpoint does not belong to this sequencer configuration"
+                )
+            }
+            Self::StreamReconstruction(error) => {
+                write!(
+                    f,
+                    "failed to reconstruct command stream for checkpoint: {error}"
+                )
+            }
+            Self::SeekTargetBeforeCheckpoint { target, checkpoint } => write!(
+                f,
+                "seek target {target} precedes checkpoint position {checkpoint}"
+            ),
+            Self::SeekTargetBeyondEnd { target, reached } => {
+                write!(
+                    f,
+                    "seek target {target} is beyond end of stream at {reached}"
+                )
+            }
+            Self::SeekCancelled => write!(f, "seek was cancelled"),
             Self::EventQueueFull { limit } => {
                 write!(f, "VGM pending event limit exceeded ({limit})")
             }
@@ -190,7 +236,7 @@ impl From<AudioError> for VgmSequencerError {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Memory {
     adpcm_a: Vec<u8>,
     adpcm_b: Vec<u8>,
@@ -259,6 +305,7 @@ struct EventContext<'a> {
     events: &'a mut VecDeque<(usize, VgmWriteEvent)>,
 }
 
+#[derive(Clone)]
 struct Fade {
     pending: usize,
     length: f32,
@@ -309,7 +356,9 @@ impl Voice {
                     register,
                     value,
                 })?;
-                tracker(bank, register, narrow).unwrap_or_default()
+                tracker
+                    .on_register_write(bank, register, narrow)
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -480,9 +529,13 @@ impl Voice {
 /// guaranteed real-time safe. After a rendering error, create a new sequencer.
 pub struct VgmSequencer {
     stream: VgmStream,
+    stream_factory: StreamFactory,
+    stream_steps: usize,
+    stream_settings: Vec<(usize, StreamSetting)>,
     voices: Vec<Voice>,
     output_rate: u32,
     chunk_frames: usize,
+    position_frames: usize,
     wait: u32,
     available: usize,
     output_phase: u32,
@@ -492,11 +545,87 @@ pub struct VgmSequencer {
     started: bool,
     event_filter: Option<VgmEventFilter>,
     events: VecDeque<(usize, VgmWriteEvent)>,
+    pending_output: VecDeque<[f32; 2]>,
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
     fade_samples: Option<u32>,
     fade_remaining: Option<u32>,
     fade_frames: Option<Fade>,
     mdx_loop_marker: Option<MdxLoopMarker>,
+    source_identity: Arc<()>,
+}
+
+/// Exact sequencer state captured at an output-block boundary.
+///
+/// A checkpoint can be restored repeatedly on the sequencer that created it.
+/// Restoring rebuilds the command stream by replaying commands only; chip
+/// emulation and audio rendering are not repeated for the checkpoint prefix.
+pub struct VgmSequencerCheckpoint {
+    source_identity: Arc<()>,
+    output_rate: u32,
+    chunk_frames: usize,
+    stream_steps: usize,
+    stream_settings: Vec<(usize, StreamSetting)>,
+    voices: Vec<VoiceCheckpoint>,
+    memory: Vec<Memory>,
+    position_frames: usize,
+    wait: u32,
+    available: usize,
+    output_phase: u32,
+    output_step: u32,
+    ended: bool,
+    failed: bool,
+    started: bool,
+    event_filter: Option<VgmEventFilter>,
+    events: VecDeque<(usize, VgmWriteEvent)>,
+    pending_output: VecDeque<[f32; 2]>,
+    pwm_compatibility: Option<[PwmCompatibility; 2]>,
+    fade_samples: Option<u32>,
+    fade_remaining: Option<u32>,
+    fade_frames: Option<Fade>,
+}
+
+struct VoiceCheckpoint {
+    chip: Chip,
+    instance: Instance,
+    clock: u32,
+    state: Box<dyn SoundChipState>,
+    tracker: Option<event::Tracker>,
+    matrix: StereoMatrix,
+    resampler: StereoResamplerState,
+    phase: u32,
+    phase_rate: Option<SampleRate>,
+    phase_step: u32,
+    queue: VecDeque<[f32; 2]>,
+    gain: f32,
+    main_coefficient: f32,
+    paired_coefficient: f32,
+    paced_writes: Option<VecDeque<ChipRegisterWrite>>,
+    write_interval: usize,
+    write_cooldown: usize,
+}
+
+fn unique_memories(voices: &[Voice]) -> Vec<Rc<RefCell<Memory>>> {
+    let mut memories: Vec<Rc<RefCell<Memory>>> = Vec::new();
+    for voice in voices {
+        if !memories
+            .iter()
+            .any(|memory| Rc::ptr_eq(memory, &voice.memory))
+        {
+            memories.push(Rc::clone(&voice.memory));
+        }
+    }
+    memories
+}
+
+fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
+    match setting {
+        StreamSetting::LoopCount(count) => stream.set_loop_count(*count),
+        StreamSetting::LoopModifier(modifier) => stream.set_loop_modifier(*modifier),
+        StreamSetting::LoopBase(base) => stream.set_loop_base(*base),
+        StreamSetting::FadeoutSamples(samples) => {
+            stream.set_fadeout_samples(samples.map(|samples| samples as usize))
+        }
+    }
 }
 
 impl VgmSequencer {
@@ -528,7 +657,7 @@ impl VgmSequencer {
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
-        let data = data.into();
+        let data = Arc::new(data.into());
         let header = VgmHeader::from_bytes(&data)?;
         let extra = header.extra_header_from_bytes(&data)?;
         let mut timing = Timing::new(&Self::supported_clocks(&header));
@@ -538,8 +667,14 @@ impl VgmSequencer {
             })?;
         }
         let voices = Self::make_voices(&header, extra.as_ref(), &timing, output_rate)?;
-        let stream = VgmStream::from_vgm(data)?;
-        Self::from_parts(stream, voices, output_rate, chunk_frames)
+        let replay_data = Arc::clone(&data);
+        let stream = VgmStream::from_vgm_shared(Arc::clone(&data))?;
+        let stream_factory: StreamFactory = Box::new(move || {
+            VgmStream::from_vgm_shared(Arc::clone(&replay_data))
+                .map(|stream| (stream, None))
+                .map_err(|error| error.to_string())
+        });
+        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
     fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 17] {
@@ -817,16 +952,21 @@ impl VgmSequencer {
             &timing,
             output_rate,
         )?;
-        Self::from_parts(
-            VgmStream::from_document(document),
-            voices,
-            output_rate,
-            chunk_frames,
-        )
+        let document = Arc::new(document);
+        let replay_document = Arc::clone(&document);
+        let stream = VgmStream::from_document_shared(Arc::clone(&document));
+        let stream_factory: StreamFactory = Box::new(move || {
+            Ok((
+                VgmStream::from_document_shared(Arc::clone(&replay_document)),
+                None,
+            ))
+        });
+        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
     pub(super) fn from_mdx_stream(
         stream: VgmStream,
+        stream_factory: StreamFactory,
         ym2151_clock: u32,
         okim6258_clock: Option<u32>,
         output_rate: u32,
@@ -847,7 +987,7 @@ impl VgmSequencer {
             }
         }
         let voices = Self::make_voices(&header, None, &timing, output_rate)?;
-        Self::from_parts(stream, voices, output_rate, chunk_frames)
+        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
     fn validate_output(output_rate: u32, chunk_frames: usize) -> Result<(), VgmSequencerError> {
@@ -901,15 +1041,20 @@ impl VgmSequencer {
 
     fn from_parts(
         stream: VgmStream,
+        stream_factory: StreamFactory,
         voices: Vec<Voice>,
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
         Ok(Self {
             stream,
+            stream_factory,
+            stream_steps: 0,
+            stream_settings: Vec::new(),
             voices,
             output_rate,
             chunk_frames,
+            position_frames: 0,
             wait: 0,
             available: 0,
             output_phase: 1 << 31,
@@ -921,11 +1066,13 @@ impl VgmSequencer {
             started: false,
             event_filter: None,
             events: VecDeque::new(),
+            pending_output: VecDeque::new(),
             pwm_compatibility: Some([PwmCompatibility::default(); 2]),
             fade_samples: None,
             fade_remaining: None,
             fade_frames: None,
             mdx_loop_marker: None,
+            source_identity: Arc::new(()),
         })
     }
 
@@ -936,8 +1083,11 @@ impl VgmSequencer {
     /// frame-level precision.
     pub fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
         self.configure_fadeout(samples, None)?;
+        let samples = samples.filter(|samples| *samples != 0);
         self.stream
-            .set_fadeout_samples(samples.filter(|samples| *samples != 0).map(|n| n as usize));
+            .set_fadeout_samples(samples.map(|samples| samples as usize));
+        self.stream_settings
+            .push((self.stream_steps, StreamSetting::FadeoutSamples(samples)));
         Ok(())
     }
 
@@ -1005,16 +1155,22 @@ impl VgmSequencer {
     /// This should be called before rendering begins.
     pub fn set_loop_count(&mut self, count: Option<u32>) {
         self.stream.set_loop_count(count);
+        self.stream_settings
+            .push((self.stream_steps, StreamSetting::LoopCount(count)));
     }
 
     /// Override the VGM loop modifier before rendering.
     pub fn set_loop_modifier(&mut self, modifier: u8) {
         self.stream.set_loop_modifier(modifier);
+        self.stream_settings
+            .push((self.stream_steps, StreamSetting::LoopModifier(modifier)));
     }
 
     /// Override the VGM loop base before rendering.
     pub fn set_loop_base(&mut self, base: i8) {
         self.stream.set_loop_base(base);
+        self.stream_settings
+            .push((self.stream_steps, StreamSetting::LoopBase(base)));
     }
 
     /// Change the gain for one chip instance, including already buffered PCM.
@@ -1062,6 +1218,251 @@ impl VgmSequencer {
         Ok(())
     }
 
+    /// Return the current command-stream position in 44.1 kHz samples.
+    ///
+    /// This follows [`soundlog::vgm::VgmStream::current_sample`]: the position
+    /// is relative to the current loop iteration and resets when a loop begins.
+    /// It tracks command processing, which may run ahead of emitted PCM.
+    pub fn current_sample(&self) -> usize {
+        self.stream.current_sample()
+    }
+
+    /// Return the number of output frames returned by this sequencer.
+    ///
+    /// Unlike [`Self::current_sample`], this position is monotonic across loops
+    /// and uses the configured output rate. It does not account for downstream
+    /// buffering or device playback latency.
+    pub fn position_frames(&self) -> usize {
+        self.position_frames
+    }
+
+    /// Capture the exact state at the current output-block boundary.
+    ///
+    /// The checkpoint can be restored repeatedly on this sequencer. It stores
+    /// chip and audio-filter state; restoring reconstructs the parser by
+    /// replaying the consumed command stream without generating PCM.
+    pub fn checkpoint(&mut self) -> Result<VgmSequencerCheckpoint, VgmSequencerError> {
+        if self.failed {
+            return Err(VgmSequencerError::StreamFailed);
+        }
+
+        let mut voices = Vec::with_capacity(self.voices.len());
+        for voice in &mut self.voices {
+            voices.push(VoiceCheckpoint {
+                chip: voice.chip.clone(),
+                instance: voice.instance,
+                clock: voice.clock,
+                state: voice.route.chip_mut().save_state()?,
+                tracker: voice.tracker.clone(),
+                matrix: voice.matrix.clone(),
+                resampler: voice.resampler.save_state(),
+                phase: voice.phase,
+                phase_rate: voice.phase_rate,
+                phase_step: voice.phase_step,
+                queue: voice.queue.clone(),
+                gain: voice.gain,
+                main_coefficient: voice.main_coefficient,
+                paired_coefficient: voice.paired_coefficient,
+                paced_writes: voice.paced_writes.clone(),
+                write_interval: voice.write_interval,
+                write_cooldown: voice.write_cooldown,
+            });
+        }
+
+        Ok(VgmSequencerCheckpoint {
+            source_identity: Arc::clone(&self.source_identity),
+            output_rate: self.output_rate,
+            chunk_frames: self.chunk_frames,
+            stream_steps: self.stream_steps,
+            stream_settings: self.stream_settings.clone(),
+            voices,
+            memory: unique_memories(&self.voices)
+                .iter()
+                .map(|memory| memory.borrow().clone())
+                .collect(),
+            position_frames: self.position_frames,
+            wait: self.wait,
+            available: self.available,
+            output_phase: self.output_phase,
+            output_step: self.output_step,
+            ended: self.ended,
+            failed: self.failed,
+            started: self.started,
+            event_filter: self.event_filter.clone(),
+            events: self.events.clone(),
+            pending_output: self.pending_output.clone(),
+            pwm_compatibility: self.pwm_compatibility,
+            fade_samples: self.fade_samples,
+            fade_remaining: self.fade_remaining,
+            fade_frames: self.fade_frames.clone(),
+        })
+    }
+
+    /// Restore a checkpoint created by this sequencer.
+    ///
+    /// The command parser is recreated from the original source and advanced
+    /// through the checkpoint's consumed commands. Chip synthesis and PCM
+    /// rendering are not repeated for that prefix.
+    pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+    ) -> Result<(), VgmSequencerError> {
+        if !Arc::ptr_eq(&self.source_identity, &checkpoint.source_identity)
+            || self.output_rate != checkpoint.output_rate
+            || self.chunk_frames != checkpoint.chunk_frames
+            || self.voices.len() != checkpoint.voices.len()
+            || self
+                .voices
+                .iter()
+                .zip(&checkpoint.voices)
+                .any(|(voice, saved)| {
+                    voice.chip != saved.chip
+                        || voice.instance != saved.instance
+                        || voice.clock != saved.clock
+                })
+            || unique_memories(&self.voices).len() != checkpoint.memory.len()
+        {
+            return Err(VgmSequencerError::CheckpointMismatch);
+        }
+
+        let (mut stream, marker) =
+            (self.stream_factory)().map_err(VgmSequencerError::StreamReconstruction)?;
+        let mut setting_index = 0;
+        for step in 0..=checkpoint.stream_steps {
+            while checkpoint
+                .stream_settings
+                .get(setting_index)
+                .is_some_and(|(at, _)| *at == step)
+            {
+                apply_stream_setting(&mut stream, &checkpoint.stream_settings[setting_index].1);
+                setting_index += 1;
+            }
+            if step == checkpoint.stream_steps {
+                break;
+            }
+            let result = stream
+                .next()
+                .ok_or(VgmSequencerError::UnexpectedEnd)?
+                .map_err(VgmSequencerError::Parse)?;
+            if matches!(result, StreamResult::EndOfStream) && step + 1 != checkpoint.stream_steps {
+                return Err(VgmSequencerError::UnexpectedEnd);
+            }
+        }
+        if setting_index != checkpoint.stream_settings.len() {
+            return Err(VgmSequencerError::CheckpointMismatch);
+        }
+
+        for (memory, saved) in unique_memories(&self.voices).iter().zip(&checkpoint.memory) {
+            *memory.borrow_mut() = saved.clone();
+        }
+        for (voice, saved) in self.voices.iter_mut().zip(&checkpoint.voices) {
+            voice.route.chip_mut().restore_state(saved.state.as_ref())?;
+            voice.tracker = saved.tracker.clone();
+            voice.matrix = saved.matrix.clone();
+            voice.resampler.restore_state(&saved.resampler);
+            voice.phase = saved.phase;
+            voice.phase_rate = saved.phase_rate;
+            voice.phase_step = saved.phase_step;
+            voice.queue.clone_from(&saved.queue);
+            voice.gain = saved.gain;
+            voice.main_coefficient = saved.main_coefficient;
+            voice.paired_coefficient = saved.paired_coefficient;
+            voice.paced_writes.clone_from(&saved.paced_writes);
+            voice.write_interval = saved.write_interval;
+            voice.write_cooldown = saved.write_cooldown;
+        }
+
+        self.stream = stream;
+        self.stream_steps = checkpoint.stream_steps;
+        self.stream_settings.clone_from(&checkpoint.stream_settings);
+        self.mdx_loop_marker = marker;
+        self.position_frames = checkpoint.position_frames;
+        self.wait = checkpoint.wait;
+        self.available = checkpoint.available;
+        self.output_phase = checkpoint.output_phase;
+        self.output_step = checkpoint.output_step;
+        self.ended = checkpoint.ended;
+        self.failed = checkpoint.failed;
+        self.started = checkpoint.started;
+        self.event_filter = checkpoint.event_filter.clone();
+        self.events.clone_from(&checkpoint.events);
+        self.pending_output.clone_from(&checkpoint.pending_output);
+        self.pwm_compatibility = checkpoint.pwm_compatibility;
+        self.fade_samples = checkpoint.fade_samples;
+        self.fade_remaining = checkpoint.fade_remaining;
+        self.fade_frames = checkpoint.fade_frames.clone();
+        Ok(())
+    }
+
+    /// Restore a checkpoint and advance to an output-frame position.
+    ///
+    /// The target must not precede the checkpoint. Audio before the target is
+    /// rendered only from the checkpoint; if the target falls inside a block,
+    /// the remaining frames are preserved for the next render call.
+    pub fn seek_to_frame(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+        target: usize,
+    ) -> Result<(), VgmSequencerError> {
+        self.seek_to_frame_with_cancel(checkpoint, target, || false)
+    }
+
+    /// Restore a checkpoint and seek while allowing the caller to cancel.
+    pub fn seek_to_frame_with_cancel(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+        target: usize,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<(), VgmSequencerError> {
+        if target < checkpoint.position_frames {
+            return Err(VgmSequencerError::SeekTargetBeforeCheckpoint {
+                target,
+                checkpoint: checkpoint.position_frames,
+            });
+        }
+        self.restore_checkpoint(checkpoint)?;
+        while self.position_frames < target {
+            if is_cancelled() {
+                return Err(VgmSequencerError::SeekCancelled);
+            }
+            let Some(block) = (match self.render_inner() {
+                Ok(block) => block,
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error);
+                }
+            }) else {
+                return Err(VgmSequencerError::SeekTargetBeyondEnd {
+                    target,
+                    reached: self.position_frames,
+                });
+            };
+            let start = self.position_frames;
+            let discard = (target - start).min(block.frames().len());
+            self.discard_events(discard);
+            self.position_frames = self
+                .position_frames
+                .checked_add(discard)
+                .ok_or(VgmSequencerError::DurationOverflow)?;
+            self.pending_output
+                .extend(block.frames()[discard..].iter().copied());
+        }
+        Ok(())
+    }
+
+    fn discard_events(&mut self, frames: usize) {
+        while self
+            .events
+            .front()
+            .is_some_and(|(offset, _)| *offset < frames)
+        {
+            self.events.pop_front();
+        }
+        for (offset, _) in &mut self.events {
+            *offset = offset.saturating_sub(frames);
+        }
+    }
+
     /// Return the next chunk; the final block can be shorter. `None` means EOF.
     pub fn render(&mut self) -> Result<Option<StereoBlock>, VgmSequencerError> {
         if self.event_filter.is_some() && !self.failed {
@@ -1090,6 +1491,13 @@ impl VgmSequencer {
         }
         if let Ok(ref block) = result {
             let count = block.as_ref().map_or(0, |block| block.frames().len());
+            if let Some(block) = block {
+                let Some(position) = self.position_frames.checked_add(block.frames().len()) else {
+                    self.failed = true;
+                    return Err(VgmSequencerError::DurationOverflow);
+                };
+                self.position_frames = position;
+            }
             while self.events.front().is_some_and(|(offset, _)| {
                 *offset < count || (self.ended && self.available == 0 && *offset <= count)
             }) {
@@ -1106,6 +1514,14 @@ impl VgmSequencer {
 
     fn render_inner(&mut self) -> Result<Option<StereoBlock>, VgmSequencerError> {
         loop {
+            if !self.pending_output.is_empty() {
+                let count = self.pending_output.len().min(self.chunk_frames);
+                let frames = self.pending_output.drain(..count).collect();
+                return Ok(Some(StereoBlock::new(
+                    SampleRate::from_hz(self.output_rate),
+                    frames,
+                )?));
+            }
             if self.ended
                 || (self.available >= self.chunk_frames
                     && self
@@ -1180,7 +1596,12 @@ impl VgmSequencer {
             let result = self
                 .stream
                 .next()
-                .expect("VgmStream iterator is continuous")?;
+                .expect("VgmStream iterator is continuous");
+            self.stream_steps = self
+                .stream_steps
+                .checked_add(1)
+                .ok_or(VgmSequencerError::DurationOverflow)?;
+            let result = result?;
             if self.fade_frames.is_none()
                 && (self.stream.is_fading_out()
                     || self

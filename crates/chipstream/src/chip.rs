@@ -17,6 +17,7 @@ mod sn76496;
 mod write;
 mod ymfm;
 
+use std::any::Any;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -176,6 +177,69 @@ pub trait SoundChip {
     /// This does not necessarily recreate the chip or reset external callback
     /// state; exact reset behavior is backend- and chip-specific.
     fn reset(&mut self);
+
+    /// Capture the complete emulated state for a later restore.
+    ///
+    /// External chip implementations may leave the default implementation in
+    /// place when they do not support snapshots. Built-in backends capture
+    /// their internal state and configuration. State held outside a backend
+    /// by callbacks must be captured separately by its owner.
+    fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
+        Err(ChipError::UnsupportedStateSnapshot(
+            self.chip_type().clone(),
+        ))
+    }
+
+    /// Restore a state captured from the same concrete backend.
+    fn restore_state(&mut self, _state: &dyn SoundChipState) -> Result<(), ChipError> {
+        Err(ChipError::UnsupportedStateSnapshot(
+            self.chip_type().clone(),
+        ))
+    }
+}
+
+/// Type-erased state captured from a [`SoundChip`].
+pub trait SoundChipState: Any {
+    /// Access the concrete state for backend-specific restoration.
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Any> SoundChipState for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg(any(
+    feature = "c140",
+    feature = "okim6258",
+    feature = "okim6295",
+    feature = "pwm",
+    feature = "segapcm",
+    feature = "sn76496"
+))]
+pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipState> {
+    Box::new(state.clone())
+}
+
+#[cfg(any(
+    feature = "c140",
+    feature = "okim6258",
+    feature = "okim6295",
+    feature = "pwm",
+    feature = "segapcm",
+    feature = "sn76496"
+))]
+pub(crate) fn restore_cloned_state<T: Clone + Any>(
+    current: &mut T,
+    state: &dyn SoundChipState,
+    chip: Chip,
+) -> Result<(), ChipError> {
+    let Some(state) = state.as_any().downcast_ref::<T>() else {
+        return Err(ChipError::InvalidStateSnapshot(chip));
+    };
+    *current = state.clone();
+    Ok(())
 }
 
 impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
@@ -218,6 +282,14 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
     fn reset(&mut self) {
         (**self).reset()
     }
+
+    fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
+        (**self).save_state()
+    }
+
+    fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
+        (**self).restore_state(state)
+    }
 }
 
 /// Errors creating or using a sound chip.
@@ -251,6 +323,10 @@ pub enum ChipError {
     InvalidBufferLength { length: usize, channels: usize },
     /// The buffer is too large for the backend's native interface.
     BufferTooLarge { length: usize },
+    /// This chip backend does not support state snapshots.
+    UnsupportedStateSnapshot(Chip),
+    /// The state snapshot belongs to a different chip backend.
+    InvalidStateSnapshot(Chip),
 }
 
 impl fmt::Display for ChipError {
@@ -291,6 +367,12 @@ impl fmt::Display for ChipError {
             ),
             Self::BufferTooLarge { length } => {
                 write!(f, "buffer length {length} exceeds the backend limit")
+            }
+            Self::UnsupportedStateSnapshot(chip) => {
+                write!(f, "{chip:?} does not support state snapshots")
+            }
+            Self::InvalidStateSnapshot(chip) => {
+                write!(f, "state snapshot is incompatible with {chip:?}")
             }
         }
     }

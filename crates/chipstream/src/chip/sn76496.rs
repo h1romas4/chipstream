@@ -41,6 +41,7 @@ impl Default for Sn76496Config {
 /// masks. [`Sn76496Config`] controls feedback, width, divider, polarity, and
 /// stereo behavior. The native rate is clock/16 with the divider enabled,
 /// or clock/2 without it.
+#[derive(Clone)]
 pub struct Sn76496 {
     clock: u32,
     config: Sn76496Config,
@@ -242,6 +243,15 @@ impl SoundChip for Sn76496 {
         }
         Ok(())
     }
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
+    }
+
     fn reset(&mut self) {
         self.registers = [0; 8];
         self.selected = if self.config.frequency_zero_is_1024 {

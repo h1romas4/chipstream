@@ -54,6 +54,19 @@ pub struct StereoResampler {
     finished: bool,
 }
 
+pub(crate) struct StereoResamplerState {
+    input: VecDeque<([f32; 2], SampleRate)>,
+    position: usize,
+    phase: u32,
+    phase_rate: Option<SampleRate>,
+    phase_step: u32,
+    pending_advance: bool,
+    duration: u32,
+    due: usize,
+    last_rate: Option<SampleRate>,
+    finished: bool,
+}
+
 impl StereoResampler {
     /// Create a converter to `output_rate`, accepting the inclusive input-rate
     /// range and processing at most `max_chunk_frames` input frames at a time.
@@ -219,6 +232,34 @@ impl StereoResampler {
         self.due = 0;
         self.last_rate = None;
         self.finished = false;
+    }
+
+    pub(crate) fn save_state(&self) -> StereoResamplerState {
+        StereoResamplerState {
+            input: self.input.clone(),
+            position: self.position,
+            phase: self.phase,
+            phase_rate: self.phase_rate,
+            phase_step: self.phase_step,
+            pending_advance: self.pending_advance,
+            duration: self.duration,
+            due: self.due,
+            last_rate: self.last_rate,
+            finished: self.finished,
+        }
+    }
+
+    pub(crate) fn restore_state(&mut self, state: &StereoResamplerState) {
+        self.input.clone_from(&state.input);
+        self.position = state.position;
+        self.phase = state.phase;
+        self.phase_rate = state.phase_rate;
+        self.phase_step = state.phase_step;
+        self.pending_advance = state.pending_advance;
+        self.duration = state.duration;
+        self.due = state.due;
+        self.last_rate = state.last_rate;
+        self.finished = state.finished;
     }
 
     fn generate(&mut self, output: &mut Vec<[f32; 2]>) -> Result<(), AudioError> {

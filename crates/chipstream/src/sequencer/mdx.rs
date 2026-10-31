@@ -13,7 +13,11 @@ use soundlog::vgm::VgmStream;
 
 use crate::audio::StereoBlock;
 
-use super::{Chip, Instance, VgmEventFilter, VgmSequencer, VgmSequencerError, VgmWriteEvent};
+use super::vgm::StreamFactory;
+use super::{
+    Chip, Instance, VgmEventFilter, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
+    VgmWriteEvent,
+};
 
 /// Playback options for the incremental MDX driver.
 pub use soundlog::mdx::convert::MdxToVgmOptions as MdxSequencerOptions;
@@ -158,6 +162,7 @@ impl MdxSequencer {
             ));
         }
         let fadeout_samples = fadeout_samples.filter(|samples| *samples != 0);
+        let replay_package = package.clone();
         let (generator, marker) = if fadeout_samples.is_some() && options.loop_count.is_some() {
             let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)
                 .map_err(MdxSequencerError::Conversion)?;
@@ -168,8 +173,21 @@ impl MdxSequencer {
                 None,
             )
         };
+        let stream_factory: StreamFactory = Box::new(move || {
+            if fadeout_samples.is_some() && options.loop_count.is_some() {
+                let (generator, marker) =
+                    to_vgm_stream_generator_with_loop_marker(replay_package.clone(), options)
+                        .map_err(|error| error.to_string())?;
+                Ok((VgmStream::from_generator(generator), Some(marker)))
+            } else {
+                let generator = to_vgm_stream_generator(replay_package.clone(), options)
+                    .map_err(|error| error.to_string())?;
+                Ok((VgmStream::from_generator(generator), None))
+            }
+        });
         let mut player = VgmSequencer::from_mdx_stream(
             VgmStream::from_generator(generator),
+            stream_factory,
             options.ym2151_clock,
             has_pcm.then_some(options.okim6258_clock),
             output_rate,
@@ -198,6 +216,62 @@ impl MdxSequencer {
     pub fn configure_events(&mut self, filter: VgmEventFilter) -> Result<(), MdxSequencerError> {
         self.player
             .configure_events(filter)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Return the current command-stream position in 44.1 kHz samples.
+    ///
+    /// This follows [`VgmSequencer::current_sample`], including its loop-relative
+    /// position and command-processing lookahead semantics.
+    pub fn current_sample(&self) -> usize {
+        self.player.current_sample()
+    }
+
+    /// Return the number of output frames returned by this sequencer.
+    ///
+    /// This uses the configured output rate and advances monotonically across
+    /// loops. It does not account for downstream buffering or device latency.
+    pub fn position_frames(&self) -> usize {
+        self.player.position_frames()
+    }
+
+    /// Capture the exact state at the current output-block boundary.
+    pub fn checkpoint(&mut self) -> Result<VgmSequencerCheckpoint, MdxSequencerError> {
+        self.player
+            .checkpoint()
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Restore a checkpoint created by this MDX sequencer.
+    pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .restore_checkpoint(checkpoint)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Restore a checkpoint and advance to an output-frame position.
+    pub fn seek_to_frame(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+        target: usize,
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .seek_to_frame(checkpoint, target)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Restore a checkpoint and seek while allowing the caller to cancel.
+    pub fn seek_to_frame_with_cancel(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+        target: usize,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .seek_to_frame_with_cancel(checkpoint, target, is_cancelled)
             .map_err(MdxSequencerError::Playback)
     }
 

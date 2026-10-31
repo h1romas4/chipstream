@@ -16,6 +16,34 @@ fn render_all(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
 }
 
 #[test]
+fn current_sample_tracks_the_soundlog_command_position() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(4410));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 256).unwrap();
+
+    assert_eq!(player.current_sample(), 0);
+    player.render().unwrap();
+    assert!(player.current_sample() > 0);
+}
+
+#[test]
+fn position_frames_counts_returned_pcm_across_loops() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(1000));
+    builder.set_loop_index(0);
+    builder.add_vgm_command(WaitSamples(1000));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 256).unwrap();
+    player.set_loop_count(Some(2));
+
+    let mut returned_frames = 0;
+    while let Some(block) = player.render().unwrap() {
+        returned_frames += block.frames().len();
+        assert_eq!(player.position_frames(), returned_frames);
+    }
+    assert_eq!(player.position_frames(), returned_frames);
+}
+
+#[test]
 fn supplied_vgm_examples_produce_stereo_audio() {
     let fixtures: &[(&str, &[u8])] = &[
         (

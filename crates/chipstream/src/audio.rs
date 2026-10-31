@@ -42,4 +42,5 @@ pub use buffer::{AudioError, StereoBlock, StereoMatrix};
 pub use effect::{Gain, StereoBalance, StereoEffect};
 pub use mixer::StereoMixer;
 pub use resampler::StereoResampler;
+pub(crate) use resampler::StereoResamplerState;
 pub use route::{ChipRoute, NativeBlock, RouteError};

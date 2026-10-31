@@ -36,6 +36,7 @@ struct Voice {
 /// unloaded addresses read as zero and reset preserves ROM. [`C140Type`]
 /// selects the System 2, System 21, or ASIC 219 mapping. The native rate is
 /// clock/576; the VGM sequencer also accepts legacy sample-rate headers.
+#[derive(Clone)]
 pub struct C140 {
     clock: u32,
     kind: C140Type,
@@ -272,6 +273,15 @@ impl SoundChip for C140 {
         }
         Ok(())
     }
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
+    }
+
     fn reset(&mut self) {
         self.registers = [0; 0x200];
         self.voices = [Voice::default(); 24];

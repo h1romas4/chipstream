@@ -8,7 +8,7 @@ use soundlog::chip::Chip;
 
 const RATE: u32 = 22_050;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Fifo {
     data: [u16; 3],
     len: usize,
@@ -38,6 +38,7 @@ impl Fifo {
 ///
 /// `PwmSpec` carries 12-bit writes. Undefined channel routing values are
 /// rejected.
+#[derive(Clone)]
 pub struct Pwm {
     clock: u32,
     control: u16,
@@ -182,6 +183,15 @@ impl SoundChip for Pwm {
         }
         Ok(())
     }
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
+    }
+
     fn reset(&mut self) {
         self.control = 0;
         self.cycle = 0;

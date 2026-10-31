@@ -23,6 +23,13 @@ pub struct YmfmChip {
     inner: ChipPtr,
 }
 
+struct YmfmStateSnapshot {
+    chip_type: Chip,
+    clock: u32,
+    banks: u8,
+    native: Vec<u8>,
+}
+
 impl YmfmChip {
     /// Create a chip using ymfm-sys's default callbacks.
     pub fn new(chip: Chip, clock: u32) -> Result<Self, ChipError> {
@@ -151,6 +158,39 @@ impl SoundChip for YmfmChip {
             });
         }
         self.inner.pin_mut().generate(buffer);
+        Ok(())
+    }
+
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        let native = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| super::ChipError::InvalidStateSnapshot(self.chip_type.clone()))?
+            .save_state();
+        Ok(Box::new(YmfmStateSnapshot {
+            chip_type: self.chip_type.clone(),
+            clock: self.clock,
+            banks: self.banks,
+            native,
+        }))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let Some(state) = state.as_any().downcast_ref::<YmfmStateSnapshot>() else {
+            return Err(super::ChipError::InvalidStateSnapshot(
+                self.chip_type.clone(),
+            ));
+        };
+        if state.chip_type != self.chip_type || state.clock != self.clock {
+            return Err(super::ChipError::InvalidStateSnapshot(
+                self.chip_type.clone(),
+            ));
+        }
+        self.inner
+            .as_mut()
+            .ok_or_else(|| super::ChipError::InvalidStateSnapshot(self.chip_type.clone()))?
+            .restore_state(&state.native);
+        self.banks = state.banks;
         Ok(())
     }
 

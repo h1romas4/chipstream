@@ -1,0 +1,22 @@
+[package]
+name = "chipstream-gstreamer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "GStreamer plugin for chipstream VGM and MDX playback."
+license = "BSD-3-Clause"
+authors = ["h1romas4 <h1romas4@gmail.com>"]
+repository = "https://github.com/h1romas4/chipstream"
+readme = "README.md"
+
+[lib]
+name = "gstchipstream"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chipstream = { path = "../chipstream", version = "0.1.0", features = ["c140", "okim6258", "okim6295", "pwm", "segapcm", "sn76496"] }
+gstreamer = "0.24"
+gstreamer-audio = "0.24"
+gstreamer-base = "0.24"
+flate2 = "1.0"
+soundlog = { workspace = true, features = ["mdx"] }

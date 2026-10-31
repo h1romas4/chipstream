@@ -33,7 +33,7 @@ jobs:
           override: true
 
       - name: Install audio dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
 
       - name: Test
         run: |
@@ -42,6 +42,9 @@ jobs:
       - name: Test (rustdoc)
         run: |
           cargo test --doc --workspace --all-features
+
+      - name: Build GStreamer plugin
+        run: cargo build --release -p chipstream-gstreamer
 
       - name: Compile
         run: |

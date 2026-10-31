@@ -24,6 +24,7 @@ struct Voice {
 /// Accepts VGM command, clock, pin 7, and ROM-bank writes. Clock and pin 7
 /// writes can change the native rate; the four clock bytes are committed
 /// when register `0x0b` is written. [`Self::status`] reports active voices.
+#[derive(Clone)]
 pub struct Okim6295 {
     clock: u32,
     clock_latch: u32,
@@ -230,6 +231,15 @@ impl SoundChip for Okim6295 {
         }
         Ok(())
     }
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
+    }
+
     fn reset(&mut self) {
         self.voices = [Voice::default(); 4];
         self.command = None;

@@ -63,6 +63,7 @@ pub enum OutputBits {
 /// divider writes can change the native rate; an update producing zero rate is
 /// rejected without changing configuration. Reset stops decoding but retains
 /// input data, configuration, and pan mask.
+#[derive(Clone)]
 pub struct Okim6258 {
     clock: u32,
     divider: ClockDivider,
@@ -312,6 +313,15 @@ impl SoundChip for Okim6258 {
             }
         }
         Ok(())
+    }
+
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
     }
 
     fn reset(&mut self) {

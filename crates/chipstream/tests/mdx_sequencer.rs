@@ -35,6 +35,24 @@ fn render_vgm(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
     frames
 }
 
+#[test]
+fn current_sample_tracks_the_soundlog_command_position() {
+    let mut player = MdxSequencer::new(fm_package(), 44_100, 256).unwrap();
+
+    assert_eq!(player.current_sample(), 0);
+    player.render().unwrap();
+    assert!(player.current_sample() > 0);
+}
+
+#[test]
+fn position_frames_counts_returned_pcm() {
+    let mut player = MdxSequencer::new(fm_package(), 44_100, 256).unwrap();
+
+    assert_eq!(player.position_frames(), 0);
+    let block = player.render().unwrap().unwrap();
+    assert_eq!(player.position_frames(), block.frames().len());
+}
+
 fn fm_package() -> MdxPackage {
     let mut builder = MdxBuilder::new();
     builder

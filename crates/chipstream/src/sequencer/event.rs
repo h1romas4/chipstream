@@ -116,39 +116,72 @@ pub struct VgmWriteEvent {
     pub state_events: Vec<StateEvent>,
 }
 
-pub(super) type Tracker = Box<dyn FnMut(u8, u8, u8) -> Option<Vec<StateEvent>>>;
+#[derive(Clone)]
+pub(super) enum Tracker {
+    Ym2151(Ym2151State),
+    Ym2203(Ym2203State),
+    Ym2413(Ym2413State),
+    Ym2608(Ym2608State),
+    Ym2610b(Ym2610bState),
+    Ym2612(Ym2612State),
+    Ym3526(Ym3526State),
+    Y8950(Y8950State),
+    Ym3812(Ym3812State),
+    Ymf262(Ymf262State),
+    Ymf278b(Ymf278bState),
+}
 
-pub(super) fn tracker(chip: &Chip, clock: u32) -> Option<Tracker> {
-    macro_rules! single {
-        ($ty:ty) => {{
-            let mut state = <$ty>::new(clock as f32);
-            Some(
-                Box::new(move |_port, register, value| state.on_register_write(register, value))
-                    as Tracker,
-            )
-        }};
-    }
-    macro_rules! multi {
-        ($ty:ty) => {{
-            let mut state = <$ty>::new(clock as f32);
-            Some(Box::new(move |port, register, value| {
+impl Tracker {
+    pub(super) fn on_register_write(
+        &mut self,
+        port: u8,
+        register: u8,
+        value: u8,
+    ) -> Option<Vec<StateEvent>> {
+        match self {
+            Self::Ym2151(state) => state.on_register_write(register, value),
+            Self::Ym2203(state) => state.on_register_write(register, value),
+            Self::Ym2413(state) => state.on_register_write(register, value),
+            Self::Ym2608(state) => {
                 state.set_port(port);
                 state.on_register_write(register, value)
-            }) as Tracker)
-        }};
+            }
+            Self::Ym2610b(state) => {
+                state.set_port(port);
+                state.on_register_write(register, value)
+            }
+            Self::Ym2612(state) => {
+                state.set_port(port);
+                state.on_register_write(register, value)
+            }
+            Self::Ym3526(state) => state.on_register_write(register, value),
+            Self::Y8950(state) => state.on_register_write(register, value),
+            Self::Ym3812(state) => state.on_register_write(register, value),
+            Self::Ymf262(state) => {
+                state.set_port(port);
+                state.on_register_write(register, value)
+            }
+            Self::Ymf278b(state) => {
+                state.set_port(port);
+                state.on_register_write(register, value)
+            }
+        }
     }
+}
+
+pub(super) fn tracker(chip: &Chip, clock: u32) -> Option<Tracker> {
     match chip {
-        Chip::Ym2151 => single!(Ym2151State),
-        Chip::Ym2203 => single!(Ym2203State),
-        Chip::Ym2413 => single!(Ym2413State),
-        Chip::Ym2608 => multi!(Ym2608State),
-        Chip::Ym2610b => multi!(Ym2610bState),
-        Chip::Ym2612 => multi!(Ym2612State),
-        Chip::Ym3526 => single!(Ym3526State),
-        Chip::Y8950 => single!(Y8950State),
-        Chip::Ym3812 => single!(Ym3812State),
-        Chip::Ymf262 => multi!(Ymf262State),
-        Chip::Ymf278b => multi!(Ymf278bState),
+        Chip::Ym2151 => Some(Tracker::Ym2151(Ym2151State::new(clock as f32))),
+        Chip::Ym2203 => Some(Tracker::Ym2203(Ym2203State::new(clock as f32))),
+        Chip::Ym2413 => Some(Tracker::Ym2413(Ym2413State::new(clock as f32))),
+        Chip::Ym2608 => Some(Tracker::Ym2608(Ym2608State::new(clock as f32))),
+        Chip::Ym2610b => Some(Tracker::Ym2610b(Ym2610bState::new(clock as f32))),
+        Chip::Ym2612 => Some(Tracker::Ym2612(Ym2612State::new(clock as f32))),
+        Chip::Ym3526 => Some(Tracker::Ym3526(Ym3526State::new(clock as f32))),
+        Chip::Y8950 => Some(Tracker::Y8950(Y8950State::new(clock as f32))),
+        Chip::Ym3812 => Some(Tracker::Ym3812(Ym3812State::new(clock as f32))),
+        Chip::Ymf262 => Some(Tracker::Ymf262(Ymf262State::new(clock as f32))),
+        Chip::Ymf278b => Some(Tracker::Ymf278b(Ymf278bState::new(clock as f32))),
         _ => None,
     }
 }

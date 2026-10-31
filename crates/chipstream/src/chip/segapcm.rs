@@ -12,6 +12,7 @@ use std::num::NonZeroU32;
 /// Writes use 16-bit addresses. ROM writes load or update sample data;
 /// unloaded addresses read as zero and reset preserves ROM. Bank shift and
 /// mask can be configured with [`Self::with_banking`].
+#[derive(Clone)]
 pub struct SegaPcm {
     clock: u32,
     bank_shift: u8,
@@ -131,6 +132,15 @@ impl SoundChip for SegaPcm {
         }
         Ok(())
     }
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
+        Ok(super::save_cloned_state(self))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
+        let chip = self.chip_type().clone();
+        super::restore_cloned_state(self, state, chip)
+    }
+
     fn reset(&mut self) {
         self.ram = [0xff; 0x800];
         self.fraction = [0; 16];
