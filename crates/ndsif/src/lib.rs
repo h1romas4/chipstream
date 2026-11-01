@@ -15,7 +15,7 @@ pub mod types;
 /// NDSIF API specification revision implemented by this codec.
 pub const SPEC_REVISION: u32 = 40;
 
-pub use audio::AudioStreamState;
+pub use audio::{AudioPositionClock, AudioStreamState};
 pub use batch::CommandEncoder;
 pub use command::{
     AudioEvent, Command, DAC_PROFILE_YM2612, DAC_TICKS_PER_SECOND, DacRecord, DacRecordKind,

@@ -101,10 +101,11 @@ externally; the software volume control does not adjust it. Pause is disabled
 when a hardware route is active. Stop and track changes cancel the workers and
 reset the devices before reuse.
 
-OKIM6258 dynamic clock or divider changes are not yet supported in this
-synchronized mode. Device buffer limits, unavailable devices, unsupported clocks, and device errors stop
-playback with a notification; explicit hardware routes never silently fall back
-to emulation. Cable editing uses clicks, not dragging.
+OKIM6258 clock and divider changes are supported at ADPCM byte boundaries.
+NDSIF supports 4 MHz and 8 MHz OKIM6258 clocks; other clocks, incompatible
+device capabilities, buffer limits, and device errors stop playback with a
+notification. Explicit hardware routes never silently fall back to emulation.
+Cable editing uses clicks, not dragging.
 
 For a track using YM2151 and OKIM6258, one temporary option is to route YM2151
 to NanoDrive and explicitly connect OKIM6258 to chipstream emulation. The two

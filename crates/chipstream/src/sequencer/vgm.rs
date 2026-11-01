@@ -1565,6 +1565,9 @@ impl<'a> VgmSequencer<'a> {
         self.started = true;
         let sample_start = self.position_frames;
         let result = self.render_inner(sample_start).and_then(|block| {
+            for voice in &mut self.voices {
+                voice.route.chip_mut().prepare_scheduled()?;
+            }
             if let Some(block) = &block {
                 let sample_end = sample_start
                     .checked_add(block.frames().len())

@@ -694,6 +694,20 @@ mod tests {
         mpsc::Sender<()>,
         JoinHandle<()>,
     ) {
+        fake_audio_device_observed(id, starts, fail_start, None)
+    }
+
+    fn fake_audio_device_observed(
+        id: u64,
+        starts: mpsc::Sender<Instant>,
+        fail_start: bool,
+        events: Option<mpsc::Sender<(u32, &'static str)>>,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
         let (mut fake, port) = serialport::TTYPort::pair().unwrap();
         fake.set_timeout(Duration::from_secs(3)).unwrap();
         let device = Device {
@@ -736,8 +750,35 @@ mod tests {
                         accepted += adpcm.len() as u32;
                         None
                     }
-                    Request::AudioEvent { .. } => None,
-                    Request::AudioStart { .. } => {
+                    Request::AudioEvent {
+                        position, event, ..
+                    } => {
+                        if let Some(events) = &events {
+                            let kind = match event {
+                                ndsif::RequestEvent::Clock {
+                                    clock: ndsif::OkiClock::Mhz8,
+                                    divider: ndsif::Divider::Div768,
+                                } => Some("clock8"),
+                                ndsif::RequestEvent::Clock {
+                                    clock: ndsif::OkiClock::Mhz4,
+                                    divider: ndsif::Divider::Div512,
+                                } => Some("clock4"),
+                                ndsif::RequestEvent::Registers { .. } => Some("register"),
+                                _ => None,
+                            };
+                            if let Some(kind) = kind {
+                                events.send((position.get(), kind)).unwrap();
+                            }
+                        }
+                        None
+                    }
+                    Request::AudioStart { clock, divider, .. } => {
+                        if events.is_some() {
+                            assert_eq!(
+                                (clock, divider),
+                                (ndsif::OkiClock::Mhz4, ndsif::Divider::Div1024)
+                            );
+                        }
                         assert!(!running);
                         running = !fail_start;
                         starts.send(Instant::now()).unwrap();
@@ -861,6 +902,131 @@ mod tests {
         fake1.join().unwrap();
         fake2.join().unwrap();
         drop((port1, port2));
+    }
+
+    #[test]
+    fn sequencer_clock_changes_and_fm_writes_share_the_device_timeline() {
+        use chipstream::sequencer::{Instance, VgmSequencer};
+        use soundlog::chip::{Okim6258Spec, Ym2151Spec};
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        let (starts, started) = mpsc::channel();
+        let (events, received) = mpsc::channel();
+        let (device, port, release, fake) =
+            fake_audio_device_observed(1, starts, false, Some(events));
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        let routes: Vec<_> = [Chip::Ym2151, Chip::Okim6258]
+            .into_iter()
+            .map(|chip| ndsif_transport::NdsifRoute {
+                chip,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            })
+            .collect();
+        let factories =
+            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+        builder.add_vgm_command(WaitSamples(220));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(221));
+        for (register, value) in (0x08..=0x0b).zip(8_000_000_u32.to_le_bytes()) {
+            builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+        }
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 0x0c,
+                value: 1,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(220));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(221));
+        for (register, value) in (0x08..=0x0b).zip(4_000_000_u32.to_le_bytes()) {
+            builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+        }
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 0x0c,
+                value: 2,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(220));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(441));
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            Vec::<u8>::from(builder.finalize()),
+            44_100,
+            1024,
+            factories,
+        )
+        .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut frames = 0;
+        for _ in 0..2 {
+            let block = sequencer.render().unwrap().unwrap();
+            frames += block.frames().len();
+            workers.enqueue(&recorders, &cancelled).unwrap();
+        }
+        workers.prepare_audio(frames, 44_100, &cancelled).unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
+        timeline.start(Instant::now()).unwrap();
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        while let Some(_) = sequencer.render().unwrap() {
+            workers.enqueue(&recorders, &cancelled).unwrap();
+        }
+        workers.enqueue(&recorders, &cancelled).unwrap();
+        let actual: Vec<_> = (0..5)
+            .map(|_| received.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                (9, "register"),
+                (19, "clock8"),
+                (45, "register"),
+                (71, "clock4"),
+                (91, "register")
+            ]
+        );
+        workers.finish().unwrap();
+        drop(sequencer);
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
     }
 
     #[test]

@@ -1689,7 +1689,7 @@ impl AppView {
         div().flex().flex_col().gap_3()
             .child(div().text_lg().child("ROUTING CONNECTIONS"))
             .child(div().text_sm().text_color(rgb(0xa6b6c3)).child(
-                "Select a sequencer source, then a matching chipstream or connected NanoDrive target. Dashed orange cables are unavailable. Hardware timing is best-effort; OKIM6258 clock changes are not yet supported."))
+                "Select a sequencer source, then a matching chipstream or connected NanoDrive target. Dashed orange cables are unavailable. Hardware timing is best-effort."))
             .when(!editable, |view| view.child(div().text_sm().text_color(rgb(0xf2a968)).child(
                 if self.playing.is_some() { "Stop playback to edit connections." } else { "Create or select a profile to edit connections." }
             )))

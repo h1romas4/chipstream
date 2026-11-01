@@ -10,9 +10,9 @@ use chipstream::chip::{
     NdsifTransport,
 };
 use ndsif::{
-    AudioEvent, AudioStreamState, AudioTiming, BytePosition, CONTROL_FEATURE_DAC_PROFILE,
-    ClockMode, Command, DAC_PROFILE_YM2612, DAC_TICKS_PER_SECOND, DacCapabilities, Divider,
-    OkiClock, Reply, Response, WriteId,
+    AudioEvent, AudioPositionClock, AudioStreamState, AudioTiming, BytePosition,
+    CONTROL_FEATURE_DAC_PROFILE, ClockMode, Command, DAC_PROFILE_YM2612, DAC_TICKS_PER_SECOND,
+    DacCapabilities, Divider, OkiClock, Reply, Response, WriteId,
 };
 
 use crate::NdsifTransportError;
@@ -512,10 +512,7 @@ impl NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<BytePosition, String> {
-        stream
-            .state
-            .position_for_frame(sample_frame, output_rate)
-            .map_err(|error| format!("invalid NDSIF audio position: {error}"))
+        stream.position_for_frame(sample_frame, output_rate)
     }
 
     /// Check whether an event can be sent against the current audio position.
@@ -882,6 +879,12 @@ impl NdsifTransport for NdsifSerialTransport {
         self.audio_stream = Some(AudioStream {
             instance,
             state,
+            clock_changes: Vec::new(),
+            committed_frame: None,
+            timeline: vec![
+                AudioPositionClock::new(AudioTiming::new(clock, divider), output_rate)
+                    .map_err(|error| format!("invalid NDSIF audio timeline: {error}"))?,
+            ],
             prebuffer_bytes,
             start_mode: AudioStartMode::Automatic,
             cancellation: None,
@@ -898,6 +901,24 @@ impl NdsifTransport for NdsifSerialTransport {
     }
 
     fn schedule_audio_control(&mut self, event: NdsifAudioControlEvent) -> Result<(), String> {
+        if let NdsifAudioControl::Clock { clock_hz, .. } = event.control {
+            if let Some(capability) = self.capability(WriteId::OKIM6258, event.instance)
+                && !supports_cached_clock(
+                    &[capability],
+                    WriteId::OKIM6258,
+                    event.instance,
+                    clock_hz,
+                )
+            {
+                return Err(format!(
+                    "NDSIF OKIM6258 clock {clock_hz} Hz is not supported by the device"
+                ));
+            }
+            self.audio_stream
+                .as_mut()
+                .ok_or_else(|| "NDSIF audio event has no configured OKIM6258 stream".to_owned())?
+                .record_clock_change(event)?;
+        }
         self.pending.push(PendingEvent::Control(event));
         Ok(())
     }
@@ -920,6 +941,13 @@ impl NdsifTransport for NdsifSerialTransport {
             && stream.state.output_rate() != output_rate
         {
             return Err("NDSIF event output rate changed during playback".to_owned());
+        }
+        if self.audio_stream.as_ref().is_some_and(|stream| {
+            stream
+                .committed_frame
+                .is_some_and(|frame| sample_frame < frame)
+        }) {
+            return Err("NDSIF audio flush moved backward".into());
         }
         let host_paced =
             self.audio_stream.is_none() && self.timed_dac_stream.is_none() && self.configured_chip;
@@ -1058,6 +1086,23 @@ impl NdsifTransport for NdsifSerialTransport {
             }
         }
         self.pending.extend(deferred);
+        let first_pending_register = self
+            .pending
+            .iter()
+            .filter_map(|event| match event {
+                PendingEvent::Register(event) => Some(event.sample_frame),
+                PendingEvent::Psg(event) => Some(event.sample_frame),
+                _ => None,
+            })
+            .min();
+        if let Some(stream) = self.audio_stream.as_mut() {
+            stream.committed_frame = Some(sample_frame);
+            if stream.state.started() {
+                stream.discard_clock_history_before(
+                    first_pending_register.map_or(sample_frame, |frame| frame.min(sample_frame)),
+                );
+            }
+        }
         if host_paced {
             self.pace_without_audio_stream(sample_frame, output_rate)?;
         }

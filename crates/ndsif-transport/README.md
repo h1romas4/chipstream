@@ -266,6 +266,11 @@ error. Recording does not itself synchronize host audio or device-timed streams.
 - Only one primary OKIM6258 audio stream is supported per transport. It cannot
   share a transport with the timed DAC profile. Raw PSG writes cannot share an
   OKIM6258 audio stream.
+- OKIM6258 clock and divider changes are scheduled at ADPCM byte positions.
+  The host retains fractional byte timing across changes, and register events
+  for other chips use the same timeline. Only 4 MHz and 8 MHz clocks and the
+  advertised device clock capabilities are supported. Changes earlier than an
+  already committed audio frame are rejected.
 - An application can defer the OKIM6258 start after configuration and before
   sending audio data. It must buffer enough bytes for its intended lead time,
   call `prepare_audio_stream_start` to validate the minimum and complete the

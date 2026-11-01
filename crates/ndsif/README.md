@@ -138,6 +138,24 @@ assert_eq!(converter.advance(44_099)?, 15_625);
 # Ok::<(), Error>(())
 ```
 
+For a changing clock or divider, `AudioPositionClock` preserves the fractional
+byte position when creating a new timeline segment:
+
+```rust
+use ndsif::{AudioPositionClock, AudioTiming, Divider, Error, OkiClock};
+
+let initial = AudioPositionClock::new(
+    AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 44_100,
+)?;
+let position = initial.position_for_frame(4410, 44_100)?;
+assert_eq!(position.get(), 195);
+let changed = initial.change_at(
+    4410, 44_100, position, AudioTiming::new(OkiClock::Mhz8, Divider::Div768),
+)?;
+assert_eq!(changed.position_for_frame(8820, 44_100)?.get(), 716);
+# Ok::<(), Error>(())
+```
+
 `AudioStreamState` provides the local position and lifecycle bookkeeping shared
 by transports. Playback buffering thresholds remain caller policy.
 

@@ -715,6 +715,235 @@ fn host_paced_events_are_ordered_and_only_same_frame_writes_are_batched() {
 
 #[cfg(unix)]
 #[test]
+fn clock_changes_reject_unsupported_device_clocks_without_mutating_the_timeline() {
+    let (mut transport, _device) = test_transport();
+    transport
+        .configure_audio_stream(0, 4_000_000, Divider::Div1024, 44_100)
+        .unwrap();
+    transport.capabilities.push(ndsif::CapabilityEntry {
+        write_id: WriteId::OKIM6258.get(),
+        instance: 0,
+        page: 0,
+        features: 0,
+        clock_mode: ndsif::ClockMode::Fixed,
+        fixed_clock_hz: 4_000_000,
+    });
+    let event = NdsifAudioControlEvent {
+        instance: 0,
+        position: BytePosition::new(0),
+        sample_frame: 0,
+        sample_rate: 44_100,
+        control: NdsifAudioControl::Clock {
+            clock_hz: 8_000_000,
+            divider: Divider::Div512,
+        },
+    };
+    assert!(
+        transport
+            .schedule_audio_control(event)
+            .unwrap_err()
+            .contains("not supported")
+    );
+    let stream = transport.audio_stream.as_ref().unwrap();
+    assert!(stream.clock_changes.is_empty());
+    assert!(transport.pending.is_empty());
+    let divider_only = NdsifAudioControlEvent {
+        control: NdsifAudioControl::Clock {
+            clock_hz: 4_000_000,
+            divider: Divider::Div512,
+        },
+        ..event
+    };
+    transport.schedule_audio_control(divider_only).unwrap();
+    assert_eq!(
+        transport
+            .audio_stream
+            .as_ref()
+            .unwrap()
+            .position_for_frame(4410, 44_100)
+            .unwrap()
+            .get(),
+        390
+    );
+}
+
+#[test]
+fn audio_clock_history_discards_only_segments_no_longer_needed() {
+    let mut stream = stream_with_data(4);
+    for (sample_frame, position, clock_hz, divider) in [
+        (4410, 195, 8_000_000, Divider::Div768),
+        (8820, 716, 4_000_000, Divider::Div512),
+    ] {
+        stream
+            .record_clock_change(NdsifAudioControlEvent {
+                instance: 0,
+                position: BytePosition::new(position),
+                sample_frame,
+                sample_rate: 44_100,
+                control: NdsifAudioControl::Clock { clock_hz, divider },
+            })
+            .unwrap();
+    }
+    stream.discard_clock_history_before(6615);
+    assert_eq!(stream.timeline.len(), 2);
+    assert_eq!(stream.clock_changes.len(), 1);
+    assert_eq!(stream.position_for_frame(6615, 44_100).unwrap().get(), 455);
+    assert_eq!(
+        stream.position_for_frame(13230, 44_100).unwrap().get(),
+        1106
+    );
+    assert!(stream.position_for_frame(4409, 44_100).is_err());
+    stream.discard_clock_history_before(13230);
+    assert_eq!(stream.timeline.len(), 1);
+    assert!(stream.clock_changes.is_empty());
+    assert_eq!(
+        stream.position_for_frame(13230, 44_100).unwrap().get(),
+        1106
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn clock_changes_and_other_chip_writes_share_the_audio_timeline() {
+    let (mut transport, mut device) = test_transport();
+    transport
+        .configure_audio_stream(0, 4_000_000, Divider::Div1024, 44_100)
+        .unwrap();
+    transport.defer_audio_stream_start().unwrap();
+    let changes = [
+        (8820, 716, 4_000_000, Divider::Div512),
+        (4410, 195, 8_000_000, Divider::Div768),
+    ];
+    for (sample_frame, position, clock_hz, divider) in changes {
+        transport
+            .schedule_audio_control(NdsifAudioControlEvent {
+                instance: 0,
+                position: BytePosition::new(position),
+                sample_frame,
+                sample_rate: 44_100,
+                control: NdsifAudioControl::Clock { clock_hz, divider },
+            })
+            .unwrap();
+    }
+    for sample_frame in [2205, 6615, 11025] {
+        transport
+            .schedule_register_write(NdsifRegisterEvent {
+                chip: Chip::Ym2151,
+                write_id: WriteId::YM2151,
+                instance: 0,
+                page: 0,
+                write: ndsif::RegisterWrite::new(0x20, 0xc7),
+                sample_frame,
+                sample_rate: 44_100,
+            })
+            .unwrap();
+    }
+    for position in 0..1107 {
+        transport
+            .schedule_adpcm_data(NdsifAdpcmEvent {
+                instance: 0,
+                position: BytePosition::new(position),
+                sample_frame: 0,
+                sample_rate: 44_100,
+                value: 0x80,
+            })
+            .unwrap();
+    }
+    let (release, wait) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let batches = 1107_usize.div_ceil(ndsif::MAX_AUDIO_DATA_BYTES);
+        let mut accepted = 0;
+        let mut events = Vec::new();
+        for _ in 0..batches + 6 {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match ndsif::Request::decode(&frame).unwrap() {
+                ndsif::Request::AudioData {
+                    position, adpcm, ..
+                } => {
+                    assert_eq!(position.get(), accepted);
+                    accepted += adpcm.len() as u32;
+                }
+                ndsif::Request::AudioEvent {
+                    position, event, ..
+                } => {
+                    events.push((
+                        position.get(),
+                        match event {
+                            ndsif::RequestEvent::Registers { .. } => "register",
+                            ndsif::RequestEvent::Clock {
+                                clock: OkiClock::Mhz8,
+                                divider: Divider::Div768,
+                            } => "clock8",
+                            ndsif::RequestEvent::Clock {
+                                clock: OkiClock::Mhz4,
+                                divider: Divider::Div512,
+                            } => "clock4",
+                            other => panic!("unexpected audio event: {other:?}"),
+                        },
+                    ));
+                }
+                ndsif::Request::Ping(bytes) => {
+                    reply_to_device_frame(&mut device, &frame, Reply::Ping(bytes));
+                }
+                request => panic!("unexpected request: {request:?}"),
+            }
+        }
+        assert_eq!(accepted, 1107);
+        wait.recv().unwrap();
+        events
+    });
+    transport.flush_scheduled_until(13230, 44_100).unwrap();
+    assert!(
+        transport
+            .prepare_audio_stream_start_for_frames(13275, 44_100)
+            .unwrap_err()
+            .contains("prebuffer is insufficient")
+    );
+    transport
+        .prepare_audio_stream_start_for_frames(13230, 44_100)
+        .unwrap();
+    assert_eq!(
+        transport
+            .audio_stream
+            .as_ref()
+            .unwrap()
+            .position_for_frame(13230, 44_100)
+            .unwrap()
+            .get(),
+        1106
+    );
+    let old = NdsifAudioControlEvent {
+        instance: 0,
+        position: BytePosition::new(195),
+        sample_frame: 4410,
+        sample_rate: 44_100,
+        control: NdsifAudioControl::Clock {
+            clock_hz: 4_000_000,
+            divider: Divider::Div1024,
+        },
+    };
+    assert!(
+        transport
+            .schedule_audio_control(old)
+            .unwrap_err()
+            .contains("earlier than the committed")
+    );
+    release.send(()).unwrap();
+    assert_eq!(
+        worker.join().unwrap(),
+        vec![
+            (97, "register"),
+            (195, "clock8"),
+            (455, "register"),
+            (716, "clock4"),
+            (911, "register"),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn audio_data_events_and_start_keep_their_device_order() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();
@@ -1490,6 +1719,12 @@ fn stream_with_data(accepted: usize) -> AudioStream {
     AudioStream {
         instance: 0,
         state,
+        clock_changes: Vec::new(),
+        committed_frame: None,
+        timeline: vec![
+            AudioPositionClock::new(AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 44_100)
+                .unwrap(),
+        ],
         prebuffer_bytes: 4096,
         start_mode: AudioStartMode::Automatic,
         cancellation: None,

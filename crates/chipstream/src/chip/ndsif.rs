@@ -6,7 +6,10 @@
 
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
-use ::ndsif::{BytePosition, Divider, Pan, RegisterWrite, WriteId, ZeroPair};
+use ::ndsif::{
+    AudioPositionClock, AudioTiming, BytePosition, Divider, OkiClock, Pan, RegisterWrite, WriteId,
+    ZeroPair,
+};
 use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::vgm::command::Instance;
 
@@ -484,7 +487,9 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
 ///
 /// Register-1 ADPCM bytes are transferred to the device stream. `generate()`
 /// supplies silence to host PCM; the device's OKIM6258 produces the audible
-/// output.
+/// output. Clock-byte writes at the same frame are combined into one change.
+/// NDSIF supports 4 MHz and 8 MHz clocks and positions changes at ADPCM byte
+/// boundaries.
 pub struct NdsifOkim6258<T> {
     instance: u8,
     clock: u32,
@@ -492,8 +497,17 @@ pub struct NdsifOkim6258<T> {
     output_rate: u32,
     stream_finished: bool,
     next_byte_position: u32,
+    timeline: Vec<AudioPositionClock>,
+    pending_timing: Option<PendingOkiTiming>,
     decoder: super::oki_adpcm::OkiAdpcmState,
     transport: Rc<RefCell<T>>,
+}
+
+struct PendingOkiTiming {
+    frame: usize,
+    rate: u32,
+    clock: u32,
+    divider: Divider,
 }
 
 impl<T: NdsifTransport> NdsifOkim6258<T> {
@@ -529,6 +543,17 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             10
         };
         let chip = Chip::Okim6258;
+        let clock = OkiClock::try_from(config.clock()).map_err(|_| {
+            external_error(
+                &chip,
+                format!("unsupported OKIM6258 clock {} Hz", config.clock()),
+            )
+        })?;
+        let timeline =
+            AudioPositionClock::new(AudioTiming::new(clock, divider), config.output_rate())
+                .map_err(|error| {
+                    external_error(&chip, format!("invalid OKIM6258 timeline: {error}"))
+                })?;
         {
             let mut transport = transport
                 .try_borrow_mut()
@@ -557,6 +582,8 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             output_rate: config.output_rate(),
             stream_finished: false,
             next_byte_position: 0,
+            timeline: vec![timeline],
+            pending_timing: None,
             decoder: super::oki_adpcm::OkiAdpcmState::new(output_bits),
             transport,
         })
@@ -575,6 +602,36 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
                 actual: write.chip(),
             });
         };
+        let timing_write = matches!(register, 0x08..=0x0c);
+        if self.pending_timing.as_ref().is_some_and(|pending| {
+            pending.frame != sample_frame || pending.rate != sample_rate || !timing_write
+        }) {
+            self.commit_timing()?;
+        }
+        if timing_write {
+            let pending = self.pending_timing.get_or_insert(PendingOkiTiming {
+                frame: sample_frame,
+                rate: sample_rate,
+                clock: self.clock,
+                divider: self.divider,
+            });
+            match register {
+                0x08..=0x0b => {
+                    let shift = u32::from(register - 0x08) * 8;
+                    pending.clock =
+                        (pending.clock & !(0xff << shift)) | (u32::from(value) << shift);
+                }
+                0x0c => {
+                    pending.divider = match value & 3 {
+                        0 => Divider::Div1024,
+                        1 => Divider::Div768,
+                        _ => Divider::Div512,
+                    };
+                }
+                _ => unreachable!("timing register was checked"),
+            }
+            return Ok(());
+        }
         let position = self.position_for_frame(sample_frame, sample_rate)?;
         let event = match register {
             0x00 => None,
@@ -639,23 +696,74 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         }
     }
 
+    fn commit_timing(&mut self) -> Result<(), ChipError> {
+        let Some(pending) = self.pending_timing.take() else {
+            return Ok(());
+        };
+        if pending.clock == self.clock && pending.divider == self.divider {
+            return Ok(());
+        }
+        let clock = OkiClock::try_from(pending.clock).map_err(|_| {
+            external_error(
+                &Chip::Okim6258,
+                format!("unsupported OKIM6258 clock {} Hz", pending.clock),
+            )
+        })?;
+        let position = self.position_for_frame(pending.frame, pending.rate)?;
+        let timeline = self
+            .timeline
+            .last()
+            .expect("initial audio timeline exists")
+            .change_at(
+                pending.frame,
+                pending.rate,
+                position,
+                AudioTiming::new(clock, pending.divider),
+            )
+            .map_err(|error| {
+                external_error(
+                    &Chip::Okim6258,
+                    format!("invalid OKIM6258 clock change: {error}"),
+                )
+            })?;
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
+            .schedule_audio_control(NdsifAudioControlEvent {
+                instance: self.instance,
+                position,
+                sample_frame: pending.frame,
+                sample_rate: pending.rate,
+                control: NdsifAudioControl::Clock {
+                    clock_hz: pending.clock,
+                    divider: pending.divider,
+                },
+            })
+            .map_err(|error| external_error(&Chip::Okim6258, error))?;
+        self.clock = pending.clock;
+        self.divider = pending.divider;
+        self.timeline.push(timeline);
+        Ok(())
+    }
+
     /// Convert a host frame to a nondecreasing ADPCM byte position.
     fn position_for_frame(
         &self,
         sample_frame: usize,
         sample_rate: u32,
     ) -> Result<BytePosition, ChipError> {
-        if sample_rate == 0 {
-            return Err(external_error(
-                &Chip::Okim6258,
-                "output sample rate is zero",
-            ));
-        }
-        let position = (sample_frame as u128) * u128::from(self.clock)
-            / (u128::from(sample_rate) * u128::from(self.divider as u32) * 2);
-        let position = u32::try_from(position)
-            .map_err(|_| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
-        Ok(BytePosition::new(position.max(self.next_byte_position)))
+        let index = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= sample_frame)
+            .saturating_sub(1);
+        let position = self.timeline[index]
+            .position_for_frame(sample_frame, sample_rate)
+            .map_err(|error| {
+                external_error(&Chip::Okim6258, format!("invalid ADPCM position: {error}"))
+            })?;
+        Ok(BytePosition::new(
+            position.get().max(self.next_byte_position),
+        ))
     }
 
     /// Schedule one ADPCM byte and advance the next byte position.
@@ -728,11 +836,16 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         self.schedule_write(write, sample_frame, output_rate)
     }
 
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        self.commit_timing()
+    }
+
     fn flush_scheduled_until(
         &mut self,
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), ChipError> {
+        self.commit_timing()?;
         let target = self.position_for_frame(sample_frame, output_rate)?.get();
         while self.next_byte_position < target {
             let value = self.decoder.encode_zero_byte();
@@ -742,10 +855,17 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
             .try_borrow_mut()
             .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
             .flush_scheduled_until(sample_frame, output_rate)
-            .map_err(|error| external_error(&Chip::Okim6258, error))
+            .map_err(|error| external_error(&Chip::Okim6258, error))?;
+        let keep = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= sample_frame)
+            .saturating_sub(1);
+        self.timeline.drain(..keep);
+        Ok(())
     }
 
     fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
+        self.commit_timing()?;
         if self.stream_finished {
             return Ok(());
         }

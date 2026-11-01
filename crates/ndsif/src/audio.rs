@@ -4,6 +4,105 @@
 
 use crate::{AudioStatus, AudioTiming, BytePosition, Error, MAX_AUDIO_DATA_BYTES};
 
+// Common denominator for /512, /768, and /1024 without losing byte fractions.
+const DIVIDER_LCM: u128 = 3072;
+
+/// A piece of an ADPCM byte timeline, retaining fractional bytes across changes.
+///
+/// The clock change is quantized to an ADPCM byte position. `minimum_position`
+/// accounts for bytes already scheduled ahead of the nominal frame position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioPositionClock {
+    timing: AudioTiming,
+    output_rate: u32,
+    frame: usize,
+    numerator: u128,
+}
+
+impl AudioPositionClock {
+    /// Create a timeline starting at frame and byte position zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `output_rate` is zero.
+    pub fn new(timing: AudioTiming, output_rate: u32) -> Result<Self, Error> {
+        if output_rate == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(Self {
+            timing,
+            output_rate,
+            frame: 0,
+            numerator: 0,
+        })
+    }
+
+    fn denominator(&self) -> u128 {
+        u128::from(self.output_rate) * DIVIDER_LCM * 2
+    }
+
+    fn numerator_at(&self, frame: usize, output_rate: u32) -> Result<u128, Error> {
+        if output_rate != self.output_rate || frame < self.frame {
+            return Err(Error::InvalidArgument);
+        }
+        let weight =
+            u128::from(self.timing.clock() as u32) * (DIVIDER_LCM / self.timing.divider() as u128);
+        let elapsed = (frame - self.frame) as u128;
+        self.numerator
+            .checked_add(elapsed.checked_mul(weight).ok_or(Error::InvalidArgument)?)
+            .ok_or(Error::InvalidArgument)
+    }
+
+    /// Return the containing ADPCM byte at an absolute output frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an earlier frame, a mismatched rate, or overflow.
+    pub fn position_for_frame(
+        &self,
+        frame: usize,
+        output_rate: u32,
+    ) -> Result<BytePosition, Error> {
+        let position = self.numerator_at(frame, output_rate)? / self.denominator();
+        u32::try_from(position)
+            .map(BytePosition::new)
+            .map_err(|_| Error::InvalidArgument)
+    }
+
+    /// Produce the next timeline segment at a byte-positioned clock change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an earlier frame, a mismatched rate, a position
+    /// behind the nominal timeline, or overflow.
+    pub fn change_at(
+        &self,
+        frame: usize,
+        output_rate: u32,
+        position: BytePosition,
+        timing: AudioTiming,
+    ) -> Result<Self, Error> {
+        let numerator = self.numerator_at(frame, output_rate)?;
+        let denominator = self.denominator();
+        let nominal = numerator / denominator;
+        if u128::from(position.get()) < nominal {
+            return Err(Error::InvalidArgument);
+        }
+        let numerator = numerator.max(u128::from(position.get()) * denominator);
+        Ok(Self {
+            timing,
+            output_rate,
+            frame,
+            numerator,
+        })
+    }
+
+    /// Return the first frame covered by this timeline segment.
+    pub const fn frame(&self) -> usize {
+        self.frame
+    }
+}
+
 /// Local protocol state for one continuous NDSIF ADPCM stream.
 ///
 /// This type tracks byte positions and stream progress but performs no I/O,
@@ -168,6 +267,83 @@ impl AudioStreamState {
 mod tests {
     use super::*;
     use crate::{Divider, OkiClock, StatusFlags};
+
+    #[test]
+    fn position_clock_matches_fixed_timing_for_all_supported_dividers() {
+        for clock in [OkiClock::Mhz4, OkiClock::Mhz8] {
+            for divider in [Divider::Div512, Divider::Div768, Divider::Div1024] {
+                let timing = AudioTiming::new(clock, divider);
+                let timeline = AudioPositionClock::new(timing, 44_100).unwrap();
+                for frame in [0, 1, 123, 4410, 44_100, 1_000_000] {
+                    assert_eq!(
+                        u64::from(timeline.position_for_frame(frame, 44_100).unwrap().get()),
+                        timing.bytes_from_ticks(frame as u64, 44_100).unwrap()
+                    );
+                }
+            }
+        }
+        assert!(
+            AudioPositionClock::new(AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 0).is_err()
+        );
+    }
+
+    #[test]
+    fn position_clock_preserves_fractional_bytes_across_rate_changes() {
+        let initial =
+            AudioPositionClock::new(AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 44_100)
+                .unwrap();
+        let first = initial.position_for_frame(4410, 44_100).unwrap();
+        assert_eq!(first.get(), 195);
+        let faster = initial
+            .change_at(
+                4410,
+                44_100,
+                first,
+                AudioTiming::new(OkiClock::Mhz8, Divider::Div768),
+            )
+            .unwrap();
+        assert_eq!(faster.position_for_frame(6615, 44_100).unwrap().get(), 455);
+        let second = faster.position_for_frame(8820, 44_100).unwrap();
+        assert_eq!(second.get(), 716);
+        let next = faster
+            .change_at(
+                8820,
+                44_100,
+                second,
+                AudioTiming::new(OkiClock::Mhz4, Divider::Div512),
+            )
+            .unwrap();
+        assert_eq!(next.position_for_frame(13230, 44_100).unwrap().get(), 1106);
+        assert!(next.position_for_frame(8819, 44_100).is_err());
+        assert!(next.position_for_frame(8820, 48_000).is_err());
+        assert!(
+            initial
+                .change_at(
+                    4410,
+                    44_100,
+                    BytePosition::new(194),
+                    AudioTiming::new(OkiClock::Mhz4, Divider::Div512),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn position_clock_accounts_for_audio_already_queued_ahead() {
+        let initial =
+            AudioPositionClock::new(AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 44_100)
+                .unwrap();
+        let next = initial
+            .change_at(
+                0,
+                44_100,
+                BytePosition::new(3),
+                AudioTiming::new(OkiClock::Mhz4, Divider::Div512),
+            )
+            .unwrap();
+        assert_eq!(next.position_for_frame(0, 44_100).unwrap().get(), 3);
+        assert_eq!(next.position_for_frame(4410, 44_100).unwrap().get(), 393);
+    }
 
     fn status(accepted: u32, played: u32, running: bool) -> AudioStatus {
         AudioStatus {

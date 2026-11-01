@@ -4,8 +4,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chipstream::chip::NdsifAdpcmEvent;
-use ndsif::{AudioStreamState, Command, Divider, Reply, Response};
+use chipstream::chip::{NdsifAdpcmEvent, NdsifAudioControlEvent};
+use ndsif::{
+    AudioPositionClock, AudioStreamState, AudioTiming, BytePosition, Command, Divider, Reply,
+    Response,
+};
 
 use super::{AUDIO_STREAM_ID, NdsifHostTimeline, NdsifSerialTransport, STATUS_POLL_INTERVAL};
 
@@ -22,6 +25,9 @@ pub(super) enum AudioStartMode {
 pub(super) struct AudioStream {
     pub(super) instance: u8,
     pub(super) state: AudioStreamState,
+    pub(super) clock_changes: Vec<NdsifAudioControlEvent>,
+    pub(super) timeline: Vec<AudioPositionClock>,
+    pub(super) committed_frame: Option<usize>,
     pub(super) prebuffer_bytes: u32,
     pub(super) start_mode: AudioStartMode,
     pub(super) cancellation: Option<Arc<NdsifHostTimeline>>,
@@ -31,6 +37,93 @@ pub(super) struct AudioStream {
 }
 
 impl AudioStream {
+    pub(super) fn discard_clock_history_before(&mut self, frame: usize) {
+        let keep = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= frame)
+            .saturating_sub(1);
+        self.timeline.drain(..keep);
+        self.clock_changes.drain(..keep);
+    }
+
+    pub(super) fn position_for_frame(
+        &self,
+        frame: usize,
+        rate: u32,
+    ) -> Result<BytePosition, String> {
+        let index = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= frame)
+            .saturating_sub(1);
+        self.timeline[index]
+            .position_for_frame(frame, rate)
+            .map_err(|error| format!("invalid NDSIF audio position: {error}"))
+    }
+
+    pub(super) fn record_clock_change(
+        &mut self,
+        event: NdsifAudioControlEvent,
+    ) -> Result<(), String> {
+        use chipstream::chip::NdsifAudioControl;
+        let NdsifAudioControl::Clock { clock_hz, divider } = event.control else {
+            return Err("NDSIF event is not a clock change".into());
+        };
+        if event.instance != self.instance || event.sample_rate != self.state.output_rate() {
+            return Err("NDSIF clock change does not match the audio stream".into());
+        }
+        if self
+            .committed_frame
+            .is_some_and(|frame| event.sample_frame < frame)
+        {
+            return Err("NDSIF clock change is earlier than the committed audio timeline".into());
+        }
+        let clock = ndsif::OkiClock::try_from(clock_hz)
+            .map_err(|_| format!("unsupported OKIM6258 clock {clock_hz} Hz"))?;
+        let index = self
+            .clock_changes
+            .partition_point(|change| change.sample_frame <= event.sample_frame);
+        if index == self.clock_changes.len() {
+            let segment = self
+                .timeline
+                .last()
+                .expect("initial audio timeline exists")
+                .change_at(
+                    event.sample_frame,
+                    event.sample_rate,
+                    event.position,
+                    AudioTiming::new(clock, divider),
+                )
+                .map_err(|error| format!("invalid NDSIF clock change: {error}"))?;
+            self.clock_changes.push(event);
+            self.timeline.push(segment);
+            return Ok(());
+        }
+        let mut changes = self.clock_changes.clone();
+        changes.insert(index, event);
+        let mut timeline = vec![self.timeline[0]];
+        for change in &changes {
+            let NdsifAudioControl::Clock { clock_hz, divider } = change.control else {
+                unreachable!("only clock changes are stored");
+            };
+            let clock = ndsif::OkiClock::try_from(clock_hz)
+                .map_err(|_| format!("unsupported OKIM6258 clock {clock_hz} Hz"))?;
+            let segment = timeline
+                .last()
+                .expect("initial audio timeline exists")
+                .change_at(
+                    change.sample_frame,
+                    change.sample_rate,
+                    change.position,
+                    AudioTiming::new(clock, divider),
+                )
+                .map_err(|error| format!("invalid NDSIF clock change: {error}"))?;
+            timeline.push(segment);
+        }
+        self.clock_changes = changes;
+        self.timeline = timeline;
+        Ok(())
+    }
+
     /// Record events queued at an audio byte position.
     pub(super) fn record_queued_events(
         &mut self,
@@ -435,11 +528,7 @@ impl NdsifSerialTransport {
             .audio_stream
             .as_ref()
             .ok_or_else(|| "NDSIF audio stream is not configured".to_owned())?;
-        let bytes = stream
-            .state
-            .position_for_frame(frames, output_rate)
-            .map_err(|error| format!("invalid NDSIF audio prebuffer duration: {error}"))?
-            .get();
+        let bytes = stream.position_for_frame(frames, output_rate)?.get();
         self.prepare_audio_stream_start(bytes)
     }
 
