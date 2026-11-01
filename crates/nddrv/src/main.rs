@@ -74,7 +74,7 @@ impl SelectItem for ProfileChoice {
 fn profile_choices(config: &routing::RoutingConfig) -> Vec<ProfileChoice> {
     std::iter::once(ProfileChoice {
         id: None,
-        name: "Software emulation".into(),
+        name: "Emulation (chipstream)".into(),
     })
     .chain(config.profiles.iter().map(|profile| ProfileChoice {
         id: Some(profile.id),
@@ -1591,9 +1591,9 @@ impl AppView {
             panels.push(
                 div()
                     .absolute()
-                    .left(px(patchbay::TARGET_X))
+                    .left(px(patchbay::DEVICE_X))
                     .top(px(device.top))
-                    .w(px(patchbay::TARGET_WIDTH))
+                    .w(px(patchbay::DEVICE_WIDTH))
                     .h(px(device.height))
                     .rounded_md()
                     .border_1()
@@ -1605,6 +1605,7 @@ impl AppView {
                             .py_2()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_ellipsis()
                             .child(title),
                     )
                     .when(device.endpoints.is_empty(), |panel| {
@@ -1644,9 +1645,9 @@ impl AppView {
                         instance.number()
                     )))
                     .absolute()
-                    .left(px(patchbay::TARGET_X - 4.))
+                    .left(px(patchbay::DEVICE_X - 4.))
                     .top(px(endpoint.y))
-                    .w(px(patchbay::TARGET_WIDTH))
+                    .w(px(patchbay::DEVICE_WIDTH))
                     .h(px(patchbay::ROW))
                     .flex()
                     .items_center()
@@ -1694,20 +1695,31 @@ impl AppView {
             )))
             .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
                 .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))
-                    .children(panels)
                     .child(canvas(
                         |_, _, _| {},
                         move |bounds, _, window, _| {
                             for cable in &cables {
                                 let start = point(bounds.origin.x + px(patchbay::SOURCE_X + patchbay::SOURCE_WIDTH),
                                     bounds.origin.y + px(cable.source_y));
-                                let end = point(bounds.origin.x + px(patchbay::TARGET_X),
+                                let end = point(bounds.origin.x + px(cable.target_x),
                                     bounds.origin.y + px(cable.target_y));
                                 let mut path = PathBuilder::stroke(px(if cable.hardware { 2.5 } else { 1.5 }));
                                 if !cable.available { path = path.dash_array(&[px(6.), px(4.)]); }
                                 path.move_to(start);
-                                path.cubic_bezier_to(end, point(start.x + px(120.), start.y),
-                                    point(end.x - px(120.), end.y));
+                                if cable.hardware {
+                                    let under_panel = point(
+                                        bounds.origin.x + px(patchbay::TARGET_X + 40.),
+                                        start.y - px(patchbay::ROW / 2.),
+                                    );
+                                    path.cubic_bezier_to(under_panel, point(start.x + px(70.), start.y),
+                                        point(under_panel.x - px(70.), under_panel.y));
+                                    path.cubic_bezier_to(end, point(under_panel.x + px(100.), under_panel.y),
+                                        point(end.x - px(70.), end.y));
+                                } else {
+                                    let control_offset = (end.x - start.x) * 0.45;
+                                    path.cubic_bezier_to(end, point(start.x + control_offset, start.y),
+                                        point(end.x - control_offset, end.y));
+                                }
                                 match path.build() {
                                     Ok(path) => window.paint_path(path, rgb(if !cable.available { 0xf2a968 }
                                         else if cable.hardware { ACCENT_COLOR } else { 0x466370 })),
@@ -1716,6 +1728,7 @@ impl AppView {
                             }
                         }
                     ).absolute().top_0().left_0().w(px(patchbay::WIDTH)).h(px(graph.height)))
+                    .children(panels)
                     .children(nodes)))
     }
 
@@ -2277,9 +2290,17 @@ mod tests {
 
     use super::{
         ACCENT_COLOR, adjacent_track, capability_labels, chip_colors, chip_suggestions,
-        inclusive_range, is_select_all, remove_playlist_entries, search_terms, select_for_context,
-        select_item, select_range, unique_device_name,
+        inclusive_range, is_select_all, profile_choices, remove_playlist_entries, search_terms,
+        select_for_context, select_item, select_range, unique_device_name,
     };
+
+    #[test]
+    fn default_profile_uses_chipstream_emulation_label() {
+        let choices = profile_choices(&crate::routing::RoutingConfig::default());
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].id, None);
+        assert_eq!(choices[0].name, "Emulation (chipstream)");
+    }
 
     #[test]
     fn device_names_are_unique_and_stable_across_reconnections() {

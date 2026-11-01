@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use crate::DeviceStatus;
 use crate::routing::{ChipInstance, Connection, Device, HardwareChip, Profile};
 
-pub const WIDTH: f32 = 840.;
+pub const WIDTH: f32 = 866.;
 pub const SOURCE_X: f32 = 16.;
-pub const SOURCE_WIDTH: f32 = 210.;
-pub const TARGET_X: f32 = 550.;
-pub const TARGET_WIDTH: f32 = 270.;
+pub const SOURCE_WIDTH: f32 = 180.;
+pub const TARGET_X: f32 = 336.;
+pub const TARGET_WIDTH: f32 = 200.;
+pub const DEVICE_X: f32 = 620.;
+pub const DEVICE_WIDTH: f32 = 230.;
 pub const HEADER: f32 = 40.;
 pub const ROW: f32 = 30.;
 const GAP: f32 = 16.;
@@ -51,6 +53,7 @@ pub struct DeviceBox {
 #[derive(Debug)]
 pub struct Cable {
     pub source_y: f32,
+    pub target_x: f32,
     pub target_y: f32,
     pub hardware: bool,
     pub available: bool,
@@ -87,7 +90,7 @@ pub fn build(
         .collect();
     let routes = profile.map_or(&[][..], |profile| profile.connections.as_slice());
     let emulator_height = HEADER + ROW * sources.len() as f32 + 8.;
-    let mut next_top = emulator_height + GAP;
+    let mut next_top = 0.;
     let mut boxes = Vec::new();
     for device in devices {
         let connected = matches!(statuses.get(&device.id), Some(DeviceStatus::Connected(_)));
@@ -150,6 +153,7 @@ pub fn build(
                     .expect("validated routes have a device and retained endpoint");
                 Cable {
                     source_y: row_y(index) + ROW / 2.,
+                    target_x: DEVICE_X,
                     target_y: endpoint.y + ROW / 2.,
                     hardware: true,
                     available: endpoint.available,
@@ -157,6 +161,7 @@ pub fn build(
             } else {
                 Cable {
                     source_y: row_y(index) + ROW / 2.,
+                    target_x: TARGET_X,
                     target_y: row_y(index) + ROW / 2.,
                     hardware: false,
                     available: true,
@@ -169,7 +174,7 @@ pub fn build(
         devices: boxes,
         cables,
         emulator_height,
-        height: next_top.max(emulator_height),
+        height: (next_top - GAP).max(emulator_height),
     }
 }
 
@@ -210,8 +215,17 @@ mod tests {
         assert_eq!(graph.cables.iter().filter(|c| c.hardware).count(), 1);
         let cable = graph.cables.iter().find(|c| c.hardware).unwrap();
         assert!(!cable.available);
+        assert_eq!(cable.target_x, DEVICE_X);
         assert_eq!(cable.target_y, graph.devices[0].endpoints[0].y + ROW / 2.);
-        assert!(graph.height > graph.emulator_height);
+        assert_eq!(graph.devices[0].top, 0.);
+        assert_eq!(graph.height, graph.emulator_height);
+        assert!(
+            graph
+                .cables
+                .iter()
+                .filter(|c| !c.hardware)
+                .all(|c| c.target_x == TARGET_X)
+        );
     }
 
     #[test]
@@ -303,6 +317,10 @@ mod tests {
         let hardware: Vec<_> = graph.cables.iter().filter(|c| c.hardware).collect();
         assert_eq!(hardware.len(), 2);
         assert!(hardware.iter().all(|c| c.available));
+        assert_eq!(graph.devices[0].top, 0.);
+        assert_eq!(graph.devices[1].top, graph.devices[0].height + GAP);
+        assert_eq!(hardware[0].target_x, DEVICE_X);
+        assert_eq!(hardware[1].target_x, DEVICE_X);
         assert_ne!(hardware[0].target_y, hardware[1].target_y);
         statuses.remove(&1);
         let offline = build(&config.devices, &statuses, config.profiles.first());
@@ -320,5 +338,23 @@ mod tests {
             .unwrap();
         let restored = build(&config.devices, &statuses, config.profiles.first());
         assert_eq!(restored.cables.iter().filter(|c| c.hardware).count(), 1);
+    }
+
+    #[test]
+    fn device_column_extends_graph_when_it_exceeds_emulator_height() {
+        let devices: Vec<_> = (0..20)
+            .map(|id| Device {
+                id,
+                name: format!("Drive {id}"),
+                port: format!("port{id}"),
+                baud_rate: 115_200,
+            })
+            .collect();
+        let graph = build(&devices, &HashMap::new(), None);
+        let last = graph.devices.last().unwrap();
+        assert!(graph.height > graph.emulator_height);
+        assert_eq!(graph.height, last.top + last.height);
+        assert!(TARGET_X + TARGET_WIDTH < DEVICE_X);
+        assert!(DEVICE_X + DEVICE_WIDTH <= WIDTH);
     }
 }

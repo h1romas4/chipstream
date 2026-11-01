@@ -84,7 +84,9 @@ In the routing connections section below the devices, click a sequencer chip
 instance, then click a highlighted matching device target or its chipstream
 emulation target. Cables show each connection; disconnected or unsupported
 targets and their cables are orange and dashed without removing the saved route.
-Scroll down within the page to reach NanoDrive targets below chipstream.
+NanoDrive targets are to the right of chipstream, with hardware cables passing
+behind the chipstream panel. Additional devices are stacked in that column;
+scroll horizontally or vertically as needed.
 The same profile selector is also available in the Playlist transport; profile
 selection and editing are disabled during playback. Devices used by a profile
 cannot be removed until the routes or profiles are removed.
