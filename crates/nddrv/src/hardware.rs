@@ -20,6 +20,18 @@ const MAX_OPERATIONS_PER_BLOCK: usize = 16_384;
 
 pub type Recorder = Rc<RefCell<NdsifRecordingTransport>>;
 
+pub fn supports_master_volume(lease: &DeviceLease<NdsifSerialTransport>) -> Result<bool> {
+    lease
+        .devices()
+        .iter()
+        .try_fold(true, |supported, (id, device)| {
+            let device = device
+                .lock()
+                .map_err(|_| anyhow!("NanoDrive device {id} worker failed"))?;
+            Ok(supported && device.supports_output_volume())
+        })
+}
+
 enum Work {
     Batch(NdsifCommandBatch),
     PrepareAudio {
@@ -114,6 +126,8 @@ impl HardwareWorkers {
                         let mut device = device
                             .lock()
                             .map_err(|_| "device lock poisoned".to_owned())?;
+                        device.set_output_fade_timeline(Arc::clone(&timeline))?;
+                        device.synchronize_output_volume()?;
                         if timing == DeviceTiming::Host {
                             device
                                 .set_host_timeline(Arc::clone(&timeline))
@@ -143,9 +157,8 @@ impl HardwareWorkers {
                         if timeline.is_cancelled() {
                             return Ok(());
                         }
-                        match receiver.recv_timeout(Duration::from_millis(10)) {
-                            Ok(work) => {
-                                let result = match work {
+                        let result = match receiver.recv_timeout(Duration::from_millis(10)) {
+                            Ok(work) => match work {
                                     Work::Batch(batch) => device
                                         .lock()
                                         .map_err(|_| "device lock poisoned".to_owned())
@@ -171,10 +184,13 @@ impl HardwareWorkers {
                                                         }
                                                         device.lock()
                                                             .map_err(|_| "device lock poisoned".to_owned())
-                                                            .and_then(|mut device| match timing {
-                                                                DeviceTiming::Audio => device.start_prepared_audio_stream(),
-                                                                DeviceTiming::Dac => device.start_prepared_timed_dac(),
-                                                                DeviceTiming::Host => unreachable!("host workers do not start streams"),
+                                                            .and_then(|mut device| {
+                                                                device.synchronize_output_volume()?;
+                                                                match timing {
+                                                                    DeviceTiming::Audio => device.start_prepared_audio_stream(),
+                                                                    DeviceTiming::Dac => device.start_prepared_timed_dac(),
+                                                                    DeviceTiming::Host => unreachable!("host workers do not start streams"),
+                                                                }
                                                             })
                                                     })
                                                 }
@@ -185,21 +201,23 @@ impl HardwareWorkers {
                                             }
                                         }
                                     }
-                                };
-                                if let Err(error) = result {
-                                    if timeline.is_cancelled() {
-                                        return Ok(());
-                                    }
-                                    let message = format!("NanoDrive device {id}: {error}");
-                                    if errors_tx.send(message.clone()).is_err() {
-                                        eprintln!("{message}");
-                                    }
-                                    timeline.cancel();
-                                    return Err(message);
-                                }
-                            }
-                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            },
+                            Err(mpsc::RecvTimeoutError::Timeout) => device
+                                .lock()
+                                .map_err(|_| "device lock poisoned".to_owned())
+                                .and_then(|mut device| device.update_output_fade()),
                             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                        };
+                        if let Err(error) = result {
+                            if timeline.is_cancelled() {
+                                return Ok(());
+                            }
+                            let message = format!("NanoDrive device {id}: {error}");
+                            if errors_tx.send(message.clone()).is_err() {
+                                eprintln!("{message}");
+                            }
+                            timeline.cancel();
+                            return Err(message);
                         }
                     }
                 })
@@ -370,6 +388,18 @@ mod tests {
         mpsc::Sender<()>,
         JoinHandle<()>,
     ) {
+        fake_dac_device_observed(starts, None)
+    }
+
+    fn fake_dac_device_observed(
+        starts: mpsc::Sender<Instant>,
+        volumes: Option<mpsc::Sender<(u8, Instant)>>,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
         let (mut fake, port) = serialport::TTYPort::pair().unwrap();
         fake.set_timeout(Duration::from_secs(3)).unwrap();
         let device = Device {
@@ -402,7 +432,12 @@ mod tests {
                             256,
                             0,
                             0,
-                            ndsif::CONTROL_FEATURE_DAC_PROFILE,
+                            ndsif::CONTROL_FEATURE_DAC_PROFILE
+                                | if volumes.is_some() {
+                                    ndsif::CONTROL_FEATURE_OUTPUT_VOLUME
+                                } else {
+                                    0
+                                },
                             u16::MAX,
                             &[0x52, 0, 0, 4, 2, 0, 0, 0, 0],
                         )
@@ -425,6 +460,14 @@ mod tests {
                         firmware: "test",
                     })),
                     Request::SetChipClock { .. } => Some(Reply::Complete),
+                    Request::SetOutputVolume { attenuation } => {
+                        volumes
+                            .as_ref()
+                            .unwrap()
+                            .send((attenuation, Instant::now()))
+                            .unwrap();
+                        Some(Reply::Complete)
+                    }
                     Request::DacData {
                         sequence,
                         position,
@@ -694,7 +737,332 @@ mod tests {
         mpsc::Sender<()>,
         JoinHandle<()>,
     ) {
-        fake_audio_device_observed(id, starts, fail_start, None)
+        fake_audio_device_observed(id, starts, fail_start, None, None)
+    }
+
+    fn fake_volume_device(
+        id: u64,
+        supported: bool,
+        volumes: mpsc::Sender<(u64, u8, Instant)>,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
+        let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+        fake.set_timeout(Duration::from_secs(3)).unwrap();
+        let device = Device {
+            id,
+            name: format!("Volume {id}"),
+            port: port.name().unwrap(),
+            baud_rate: crate::device::BAUD_RATE,
+        };
+        let (release, wait) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let mut decoder = Decoder::new();
+            let mut modified = false;
+            let mut reset = false;
+            loop {
+                let mut frame = None;
+                while frame.is_none() {
+                    let mut byte = [0];
+                    fake.read_exact(&mut byte).unwrap();
+                    decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                }
+                let frame = frame.unwrap();
+                let request = Request::decode(&frame).unwrap();
+                let reply = match request {
+                    Request::Ping(data) => Some(Reply::Ping(data)),
+                    Request::GetCapabilities { offset: 0 } => Some(Reply::Capabilities(
+                        Capabilities::new(
+                            256,
+                            0,
+                            0,
+                            if supported {
+                                ndsif::CONTROL_FEATURE_OUTPUT_VOLUME
+                            } else {
+                                0
+                            },
+                            u16::MAX,
+                            &[0x54, 0, 0, 4, 2, 0, 0, 0, 0],
+                        )
+                        .unwrap(),
+                    )),
+                    Request::GetInfo => Some(Reply::Info(ndsif::DeviceInfo {
+                        model: "Volume test",
+                        firmware: "test",
+                    })),
+                    Request::SetChipClock { .. } => Some(Reply::Complete),
+                    Request::SetOutputVolume { attenuation } => {
+                        assert!(supported);
+                        volumes.send((id, attenuation, Instant::now())).unwrap();
+                        modified = true;
+                        Some(Reply::Complete)
+                    }
+                    Request::WriteRegisters { .. } => None,
+                    Request::Reset => {
+                        reset = true;
+                        Some(Reply::Complete)
+                    }
+                    request => panic!("unexpected volume test request: {request:?}"),
+                };
+                let stop = reset
+                    && (!modified
+                        || matches!(request, Request::SetOutputVolume { attenuation: 0 }));
+                if let Some(reply) = reply {
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake.write_all(response.as_bytes()).unwrap();
+                }
+                if stop {
+                    break;
+                }
+            }
+            wait.recv().unwrap();
+        });
+        (device, port, release, thread)
+    }
+
+    #[test]
+    fn volume_fade_tracks_presentation_on_multiple_workers_and_restores() {
+        let (volumes, received) = mpsc::channel();
+        let (first, port1, release1, fake1) = fake_volume_device(1, true, volumes.clone());
+        let (second, port2, release2, fake2) = fake_volume_device(2, true, volumes.clone());
+        let (third, port3, release3, fake3) = fake_volume_device(3, false, volumes);
+        let service = DeviceService::new();
+        for device in [first, second, third] {
+            service.connect(device).unwrap();
+            assert!(matches!(
+                service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+                DeviceEvent::Connected(_, _, _)
+            ));
+        }
+        let lease = service.playback_handle().acquire(vec![1, 2, 3]).unwrap();
+        assert!(!supports_master_volume(&lease).unwrap());
+        let recorders = recorders(&lease).unwrap();
+        for recorder in &recorders {
+            recorder
+                .borrow_mut()
+                .configure_chip(WriteId::YM2151, 0, 4_000_000)
+                .unwrap();
+        }
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        timeline
+            .schedule_output_fade(0, 44_100, Duration::from_millis(300))
+            .unwrap();
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        record_write(&recorders[0], 0x7f, 44_100 / 2);
+        workers
+            .enqueue(&recorders, &AtomicBool::new(false))
+            .unwrap();
+        let origin = Instant::now() + Duration::from_millis(80);
+        timeline.start(origin).unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+        let mut steps = [Vec::new(), Vec::new()];
+        while steps.iter().any(|values| !values.contains(&96)) {
+            let (id, value, at) = received.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(at >= origin);
+            assert!(id == 1 || id == 2);
+            steps[(id - 1) as usize].push(value);
+        }
+        for values in &steps {
+            assert!(values.len() >= 3, "{values:?}");
+            assert!(
+                values.windows(2).all(|pair| pair[0] < pair[1]),
+                "{values:?}"
+            );
+        }
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        for _ in 0..2 {
+            let (id, value, _) = received.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(id == 1 || id == 2);
+            assert_eq!(value, 0);
+        }
+        for release in [release1, release2, release3] {
+            release.send(()).unwrap();
+        }
+        for fake in [fake1, fake2, fake3] {
+            fake.join().unwrap();
+        }
+        drop((port1, port2, port3));
+    }
+
+    #[test]
+    fn master_volume_is_applied_before_start_and_updated_while_idle() {
+        let (volumes, received) = mpsc::channel();
+        let (device, port, release, fake) = fake_volume_device(1, true, volumes);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        assert!(supports_master_volume(&lease).unwrap());
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2151, 0, 4_000_000)
+            .unwrap();
+        let gain = Arc::new(ndsif_transport::NdsifOutputGain::new());
+        gain.set(0.0).unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        timeline.set_output_gain(Arc::clone(&gain)).unwrap();
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
+        gain.set(0.5).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 6);
+        gain.set(0.0).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
+        timeline.cancel();
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn volume_fade_runs_while_adpcm_stream_is_active() {
+        use chipstream::sequencer::{Instance, VgmSequencer};
+        use soundlog::chip::Okim6258Spec;
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        let (starts, started) = mpsc::channel();
+        let (volumes, received) = mpsc::channel();
+        let (device, port, release, fake) =
+            fake_audio_device_observed(1, starts, false, None, Some(volumes));
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        let routes = [ndsif_transport::NdsifRoute {
+            chip: Chip::Okim6258,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        }];
+        let factories =
+            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+        for (register, value) in [(0, 2), (1, 0x21)] {
+            builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+        let mut sequencer =
+            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        timeline
+            .schedule_output_fade(0, 44_100, Duration::from_millis(300))
+            .unwrap();
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut frames = 0;
+        for _ in 0..4 {
+            frames += sequencer.render().unwrap().unwrap().frames().len();
+            workers.enqueue(&recorders, &cancelled).unwrap();
+        }
+        workers.prepare_audio(frames, 44_100, &cancelled).unwrap();
+        let origin = Instant::now() + Duration::from_millis(50);
+        timeline.start(origin).unwrap();
+        assert!(started.recv_timeout(Duration::from_secs(1)).unwrap() >= origin);
+        for _ in 0..15 {
+            sequencer.render().unwrap().unwrap();
+            workers.enqueue(&recorders, &cancelled).unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+        let mut steps = Vec::new();
+        while let Ok((attenuation, at)) = received.try_recv() {
+            assert!(at >= origin);
+            steps.push(attenuation);
+        }
+        assert!(steps.len() >= 3, "{steps:?}");
+        assert!(steps.windows(2).all(|pair| pair[0] < pair[1]), "{steps:?}");
+        timeline.cancel();
+        workers.finish().unwrap();
+        drop(sequencer);
+        drop(recorders);
+        lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn volume_fade_runs_while_timed_dac_is_active() {
+        let (starts, started) = mpsc::channel();
+        let (volumes, received) = mpsc::channel();
+        let (device, port, release, fake) = fake_dac_device_observed(starts, Some(volumes));
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        timeline
+            .schedule_output_fade(0, 44_100, Duration::from_millis(300))
+            .unwrap();
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for index in 0..=10 {
+            let frame = index * 441;
+            {
+                let mut recorder = recorders[0].borrow_mut();
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x2a, 0x80 + index as u8),
+                        sample_frame: frame,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+                recorder.flush_scheduled_until(frame + 441, 44_100).unwrap();
+            }
+            workers.enqueue(&recorders, &cancelled).unwrap();
+            if index == 0 {
+                workers.prepare_audio(441, 44_100, &cancelled).unwrap();
+                let origin = Instant::now() + Duration::from_millis(50);
+                timeline.start(origin).unwrap();
+                assert!(started.recv_timeout(Duration::from_secs(1)).unwrap() >= origin);
+            } else {
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+        let steps: Vec<_> = received.try_iter().map(|(value, _)| value).collect();
+        assert!(steps.len() >= 3, "{steps:?}");
+        assert!(steps.windows(2).all(|pair| pair[0] < pair[1]), "{steps:?}");
+        timeline.cancel();
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
     }
 
     fn fake_audio_device_observed(
@@ -702,6 +1070,7 @@ mod tests {
         starts: mpsc::Sender<Instant>,
         fail_start: bool,
         events: Option<mpsc::Sender<(u32, &'static str)>>,
+        volumes: Option<mpsc::Sender<(u8, Instant)>>,
     ) -> (
         Device,
         serialport::TTYPort,
@@ -735,7 +1104,19 @@ mod tests {
                     Request::GetCapabilities { offset: 0 } => {
                         let entries = &[0x54, 0, 0, 4, 2, 0, 0, 0, 0, 0xb7, 0, 0, 4, 2, 0, 0, 0, 0];
                         Some(Reply::Capabilities(
-                            Capabilities::new(256, 8192, 256, 0, u16::MAX, entries).unwrap(),
+                            Capabilities::new(
+                                256,
+                                8192,
+                                256,
+                                if volumes.is_some() {
+                                    ndsif::CONTROL_FEATURE_OUTPUT_VOLUME
+                                } else {
+                                    0
+                                },
+                                u16::MAX,
+                                entries,
+                            )
+                            .unwrap(),
                         ))
                     }
                     Request::GetInfo => Some(Reply::Info(ndsif::DeviceInfo {
@@ -743,6 +1124,14 @@ mod tests {
                         firmware: "test",
                     })),
                     Request::SetChipClock { .. } => Some(Reply::Complete),
+                    Request::SetOutputVolume { attenuation } => {
+                        volumes
+                            .as_ref()
+                            .unwrap()
+                            .send((attenuation, Instant::now()))
+                            .unwrap();
+                        Some(Reply::Complete)
+                    }
                     Request::AudioData {
                         position, adpcm, ..
                     } => {
@@ -913,7 +1302,7 @@ mod tests {
         let (starts, started) = mpsc::channel();
         let (events, received) = mpsc::channel();
         let (device, port, release, fake) =
-            fake_audio_device_observed(1, starts, false, Some(events));
+            fake_audio_device_observed(1, starts, false, Some(events), None);
         let service = DeviceService::new();
         service.connect(device).unwrap();
         assert!(matches!(

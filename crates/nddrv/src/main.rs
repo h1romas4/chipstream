@@ -28,7 +28,7 @@ use gpui_kit::component::{Disableable, IndexPath, Theme, ThemeMode, TitleBar, Wi
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use library::{ChipTag, Config, DirectoryEntry, ScanProgress, Track};
-use playback::{Event, Playback};
+use playback::{Event, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
@@ -146,6 +146,7 @@ struct AppView {
     player: Playback,
     playing: Option<usize>,
     playing_hardware: bool,
+    displayed_volume_mode: VolumeMode,
     paused: bool,
     looped: bool,
     elapsed: u64,
@@ -197,7 +198,10 @@ impl AppView {
         });
         let volume_subscription = cx.subscribe(&volume, |view: &mut Self, _, event, cx| {
             if let SliderEvent::Change(SliderValue::Single(value)) = event {
-                view.player.set_volume(*value / 100.);
+                if let Err(error) = view.player.set_volume(*value / 100.) {
+                    view.pending_errors
+                        .push(error_notification("Volume error", error.to_string()));
+                }
                 cx.notify();
             }
         });
@@ -293,6 +297,7 @@ impl AppView {
             player: Playback::new(),
             playing: None,
             playing_hardware: false,
+            displayed_volume_mode: VolumeMode::Master,
             paused: false,
             looped: false,
             elapsed: 0,
@@ -698,6 +703,7 @@ impl AppView {
             } else {
                 self.player.play(path.clone(), self.looped);
             }
+            self.displayed_volume_mode = self.player.volume_mode();
             if indexed.is_none() {
                 let generation = self.player.generation();
                 cx.spawn(async move |this, cx| {
@@ -824,6 +830,11 @@ impl AppView {
             }
         }
         if self.playing.is_some() {
+            let mode = self.player.volume_mode();
+            if mode != self.displayed_volume_mode {
+                self.displayed_volume_mode = mode;
+                cx.notify();
+            }
             let elapsed = self.player.elapsed_seconds();
             if elapsed != self.elapsed {
                 self.elapsed = elapsed;
@@ -874,6 +885,16 @@ impl AppView {
 
     fn transport(&self, cx: &mut Context<Self>) -> Div {
         let active = self.playing.is_some();
+        let volume_mode = if active {
+            self.displayed_volume_mode
+        } else {
+            VolumeMode::Master
+        };
+        let volume_label = match volume_mode {
+            VolumeMode::Master => "Master volume",
+            VolumeMode::SoftwareOnly => "Software volume (NanoDrive fixed)",
+            VolumeMode::Preparing => "Checking NanoDrive volume",
+        };
         let play_label = if active && self.playing_hardware {
             "Pause unavailable during NanoDrive playback"
         } else if !active {
@@ -1119,9 +1140,14 @@ impl AppView {
                             .flex_1()
                             .min_w(px(95.))
                             .child(gpui_kit::component::Icon::from(assets::IconName::Volume2))
+                            .child(div().text_xs().child(match volume_mode {
+                                VolumeMode::Master => "Master",
+                                VolumeMode::SoftwareOnly => "Software (ND fixed)",
+                                VolumeMode::Preparing => "Checking ND",
+                            }))
                             .child(
                                 Slider::new(&self.volume)
-                                    .accessibility_label("Software playback volume")
+                                    .accessibility_label(volume_label)
                                     .bg(rgb(ACCENT_COLOR))
                                     .w_full(),
                             ),

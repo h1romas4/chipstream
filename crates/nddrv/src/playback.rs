@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, VgmSequencer};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use ndsif_transport::NdsifHostTimeline;
+use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain};
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
@@ -20,16 +20,25 @@ use crate::routing::PlaybackPlan;
 
 const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
-const FADEOUT_SAMPLES: u32 = 2 * 44_100;
+const FADEOUT_SECONDS: u32 = 2;
+const FADEOUT_SAMPLES: u32 = FADEOUT_SECONDS * 44_100;
 
 pub enum Event {
     Finished(u64),
     Error(u64, String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum VolumeMode {
+    Master,
+    SoftwareOnly,
+    Preparing,
+}
+
 pub struct Playback {
     control: Arc<PlaybackControl>,
-    volume: Arc<AtomicU32>,
+    volume: Arc<NdsifOutputGain>,
     generation: u64,
     backend: Arc<dyn PlaybackBackend>,
     worker_gate: Arc<Mutex<()>>,
@@ -54,19 +63,21 @@ struct PlaybackControl {
     paused: AtomicBool,
     frames: AtomicU64,
     sample_rate: AtomicU32,
-    volume: Arc<AtomicU32>,
+    volume: Arc<NdsifOutputGain>,
+    volume_mode: AtomicU8,
     first_presentation: OnceLock<Instant>,
     hardware_timeline: OnceLock<Arc<NdsifHostTimeline>>,
 }
 
 impl PlaybackControl {
-    fn new(volume: Arc<AtomicU32>) -> Self {
+    fn new(volume: Arc<NdsifOutputGain>) -> Self {
         Self {
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
             sample_rate: AtomicU32::new(0),
             volume,
+            volume_mode: AtomicU8::new(VolumeMode::Master as u8),
             first_presentation: OnceLock::new(),
             hardware_timeline: OnceLock::new(),
         }
@@ -85,7 +96,7 @@ impl PlaybackControl {
 impl Playback {
     pub fn new() -> Self {
         let (sender, events) = mpsc::channel();
-        let volume = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let volume = Arc::new(NdsifOutputGain::new());
         Self {
             control: Arc::new(PlaybackControl::new(volume.clone())),
             volume,
@@ -122,6 +133,11 @@ impl Playback {
     ) {
         self.stop();
         self.control = Arc::new(PlaybackControl::new(self.volume.clone()));
+        if hardware.is_some() {
+            self.control
+                .volume_mode
+                .store(VolumeMode::Preparing as u8, Ordering::Release);
+        }
         let control = self.control.clone();
         let sender = self.sender.clone();
         let backend = self.backend.clone();
@@ -162,9 +178,17 @@ impl Playback {
         self.control.paused.store(paused, Ordering::Relaxed);
     }
 
-    pub fn set_volume(&self, volume: f32) {
-        self.volume
-            .store(volume.clamp(0., 1.).to_bits(), Ordering::Relaxed);
+    pub fn set_volume(&self, volume: f32) -> Result<()> {
+        self.volume.set(volume).map_err(anyhow::Error::msg)
+    }
+
+    pub fn volume_mode(&self) -> VolumeMode {
+        match self.control.volume_mode.load(Ordering::Acquire) {
+            0 => VolumeMode::Master,
+            1 => VolumeMode::SoftwareOnly,
+            2 => VolumeMode::Preparing,
+            _ => unreachable!("invalid volume mode"),
+        }
     }
 
     pub fn elapsed_seconds(&self) -> u64 {
@@ -253,6 +277,31 @@ impl Sequencer {
             Self::Mdx(player) => Ok(player.render()?),
         }
     }
+
+    fn vgm_fade_start_frame(&self) -> Option<usize> {
+        match self {
+            Self::Vgm(player) => player.fade_start_frame(),
+            Self::Mdx(_) => None,
+        }
+    }
+
+    fn schedule_hardware_fade(
+        &self,
+        control: &PlaybackControl,
+        rate: u32,
+        scheduled: &mut bool,
+    ) -> Result<()> {
+        if !*scheduled
+            && let Some(start) = self.vgm_fade_start_frame()
+            && let Some(timeline) = control.hardware_timeline.get()
+        {
+            timeline
+                .schedule_output_fade(start, rate, Duration::from_secs(u64::from(FADEOUT_SECONDS)))
+                .map_err(anyhow::Error::msg)?;
+            *scheduled = true;
+        }
+        Ok(())
+    }
 }
 
 fn resolve_pdx(path: &Path, name: &str) -> Result<PathBuf> {
@@ -320,7 +369,7 @@ impl AudioConsumer {
         {
             return;
         }
-        let volume = f32::from_bits(self.control.volume.load(Ordering::Relaxed));
+        let volume = self.control.volume.get();
         let mut played = 0;
         let mut needs_origin = self.control.first_presentation.get().is_none();
         for (frame_index, frame) in out.chunks_mut(self.channels).enumerate() {
@@ -454,6 +503,15 @@ fn run_hardware(
     plan: PlaybackPlan,
 ) -> Result<()> {
     let lease = devices.acquire(plan.device_ids.clone())?;
+    let supports_master = crate::hardware::supports_master_volume(&lease)?;
+    control.volume_mode.store(
+        if supports_master {
+            VolumeMode::Master as u8
+        } else {
+            VolumeMode::SoftwareOnly as u8
+        },
+        Ordering::Release,
+    );
     let playback = if control.cancel.load(Ordering::Acquire) {
         Ok(())
     } else {
@@ -488,6 +546,11 @@ fn run_inner(
     let config = supported.config();
     let (mut sequencer, hardware) = if let Some((lease, plan)) = hardware {
         let timeline = Arc::new(NdsifHostTimeline::pending());
+        if control.volume_mode.load(Ordering::Acquire) == VolumeMode::Master as u8 {
+            timeline
+                .set_output_gain(Arc::clone(&control.volume))
+                .map_err(anyhow::Error::msg)?;
+        }
         control
             .hardware_timeline
             .set(Arc::clone(&timeline))
@@ -524,9 +587,15 @@ fn run_inner(
         other => bail!("unsupported audio sample format: {other:?}"),
     };
     let mut exhausted = false;
+    let mut hardware_fade_scheduled = false;
     let mut prebuffered_frames = 0_usize;
     for _ in 0..4 {
         let block = sequencer.render()?;
+        sequencer.schedule_hardware_fade(
+            &control,
+            config.sample_rate,
+            &mut hardware_fade_scheduled,
+        )?;
         if let Some((recorders, workers)) = &hardware {
             workers.enqueue(recorders, &control.cancel)?;
         }
@@ -576,6 +645,11 @@ fn run_inner(
         }
         if !exhausted {
             let rendered = sequencer.render()?;
+            sequencer.schedule_hardware_fade(
+                &control,
+                config.sample_rate,
+                &mut hardware_fade_scheduled,
+            )?;
             if let Some((recorders, workers)) = &hardware {
                 workers.enqueue(recorders, &control.cancel)?;
             }
@@ -771,7 +845,7 @@ mod tests {
         consumer.fill(&mut out, Duration::ZERO);
         assert_eq!(out, [0., 0.]);
         assert_eq!(control.frames.load(Ordering::Relaxed), 0);
-        player.set_volume(0.5);
+        player.set_volume(0.5).unwrap();
         player.set_paused(false);
         consumer.fill(&mut out, Duration::ZERO);
         assert_eq!(out, [0.4, -0.2]);
@@ -780,7 +854,7 @@ mod tests {
         consumer.fill(&mut out, Duration::ZERO);
         assert_eq!(out, [0., 0.]);
         assert_eq!(control.frames.load(Ordering::Relaxed), 1);
-        player.set_volume(0.);
+        player.set_volume(0.).unwrap();
         player.set_paused(false);
         consumer.fill(&mut out, Duration::ZERO);
         assert_eq!(out, [0., 0.]);
@@ -848,7 +922,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let mut player = Playback::new();
         player.backend = Arc::new(TestBackend(tx));
-        player.set_volume(0.25);
+        player.set_volume(0.25).unwrap();
         player.play(PathBuf::from("first.vgm"), true);
         let first_generation = player.generation;
         let (looped, first) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -860,7 +934,7 @@ mod tests {
         assert!(!looped);
         assert!(first.cancel.load(Ordering::Relaxed));
         assert!(!second.paused.load(Ordering::Relaxed));
-        assert_eq!(f32::from_bits(second.volume.load(Ordering::Relaxed)), 0.25);
+        assert_eq!(second.volume.get(), 0.25);
         assert!(!player.is_current(first_generation));
         player.stop();
         assert!(second.cancel.load(Ordering::Relaxed));
@@ -962,6 +1036,8 @@ mod tests {
             let mut finite_vgm = Sequencer::new(&vgm, rate, false).unwrap();
             let expected = ((7_000 + FADEOUT_SAMPLES) as u64 * u64::from(rate) + 22_050) / 44_100;
             assert_eq!(render_frames(&mut finite_vgm), expected as usize);
+            let fade_start = (7_000_u64 * u64::from(rate) + 22_050) / 44_100;
+            assert_eq!(finite_vgm.vgm_fade_start_frame(), Some(fade_start as usize));
 
             let package = MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap();
             let options = MdxSequencerOptions {
@@ -1019,6 +1095,8 @@ mod tests {
             assert!(samples.len() < 44_100 * 300, "playback did not end");
         }
         let fade_start = samples.len() - FADEOUT_SAMPLES as usize;
+        assert_eq!(fade_start, 6_000);
+        assert_eq!(finite.vgm_fade_start_frame(), Some(fade_start));
         let mut infinite = Sequencer::new(&vgm, 44_100, true).unwrap();
         let mut reference = Vec::new();
         while reference.len() < samples.len() {
@@ -1042,6 +1120,65 @@ mod tests {
             }
         }
         assert!(audible > 100, "fade test must contain audible samples");
+    }
+
+    #[test]
+    fn short_vgm_schedules_hardware_fade_during_prebuffer() {
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("short.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.set_loop_index(0);
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        control
+            .hardware_timeline
+            .set(Arc::clone(&timeline))
+            .unwrap_or_else(|_| panic!("timeline already set"));
+        let mut player = Sequencer::new(&vgm, 44_100, false).unwrap();
+        let mut scheduled = false;
+        for _ in 0..4 {
+            player.render().unwrap().unwrap();
+            player
+                .schedule_hardware_fade(&control, 44_100, &mut scheduled)
+                .unwrap();
+        }
+        assert!(scheduled);
+        assert_eq!(player.vgm_fade_start_frame(), Some(200));
+        assert!(
+            timeline
+                .schedule_output_fade(0, 44_100, Duration::from_secs(2))
+                .is_err()
+        );
+
+        let no_loop = dir.path().join("no-loop.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&no_loop, Vec::<u8>::from(builder.finalize())).unwrap();
+        for (path, looped) in [(&vgm, true), (&no_loop, false)] {
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            let timeline = Arc::new(NdsifHostTimeline::pending());
+            assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+            let mut player = Sequencer::new(path, 44_100, looped).unwrap();
+            let mut scheduled = false;
+            for _ in 0..4 {
+                if player.render().unwrap().is_none() {
+                    break;
+                }
+                player
+                    .schedule_hardware_fade(&control, 44_100, &mut scheduled)
+                    .unwrap();
+            }
+            assert!(!scheduled);
+            assert!(
+                timeline
+                    .schedule_output_fade(0, 44_100, Duration::from_secs(2))
+                    .is_ok()
+            );
+        }
     }
 
     #[test]

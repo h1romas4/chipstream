@@ -18,6 +18,12 @@ fn test_transport() -> (NdsifSerialTransport, serialport::TTYPort) {
             capabilities: Vec::new(),
             data_capacity: 8192,
             event_capacity: 64,
+            output_volume_supported: false,
+            output_fade_timeline: None,
+            last_volume_update: None,
+            output_attenuation: 0,
+            output_volume_modified: false,
+            presentation_volume_synchronized: false,
             timed_dac_capabilities: None,
             configured_chip: false,
             audio_stream: None,
@@ -81,6 +87,284 @@ fn reply_to_device_frame(device: &mut serialport::TTYPort, frame: &ndsif::Frame,
         .unwrap()
         .encode();
     device.write_all(response.as_bytes()).unwrap();
+}
+
+#[test]
+fn output_fade_uses_the_presentation_clock_and_linear_amplitude() {
+    let origin = Instant::now();
+    let timeline = NdsifHostTimeline::new(origin);
+    assert!(
+        timeline
+            .schedule_output_fade(0, 0, Duration::from_secs(2))
+            .is_err()
+    );
+    assert!(
+        timeline
+            .schedule_output_fade(0, 44_100, Duration::ZERO)
+            .is_err()
+    );
+    timeline
+        .schedule_output_fade(44_100, 44_100, Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        timeline
+            .schedule_output_fade(0, 44_100, Duration::from_secs(1))
+            .is_err()
+    );
+    assert_eq!(timeline.fade_attenuation(origin).unwrap(), None);
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(1))
+            .unwrap(),
+        Some(0)
+    );
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(2))
+            .unwrap(),
+        Some(6)
+    );
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_millis(2500))
+            .unwrap(),
+        Some(12)
+    );
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(3))
+            .unwrap(),
+        Some(96)
+    );
+    timeline.cancel();
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(4))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn shared_gain_combines_with_fade_and_validates_input() {
+    let origin = Instant::now();
+    let timeline = NdsifHostTimeline::new(origin);
+    let gain = Arc::new(NdsifOutputGain::new());
+    assert_eq!(gain.get(), 1.0);
+    for invalid in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        assert!(gain.set(invalid).is_err());
+        assert_eq!(gain.get(), 1.0);
+    }
+    gain.set(0.5).unwrap();
+    timeline.set_output_gain(Arc::clone(&gain)).unwrap();
+    assert!(timeline.set_output_gain(Arc::clone(&gain)).is_err());
+    timeline
+        .schedule_output_fade(44_100, 44_100, Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(timeline.fade_attenuation(origin).unwrap(), Some(6));
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(2))
+            .unwrap(),
+        Some(12)
+    );
+    gain.set(0.0).unwrap();
+    assert_eq!(timeline.fade_attenuation(origin).unwrap(), Some(96));
+    gain.set(1.0).unwrap();
+    assert_eq!(timeline.fade_attenuation(origin).unwrap(), Some(0));
+    assert_eq!(
+        timeline
+            .fade_attenuation(origin + Duration::from_secs(3))
+            .unwrap(),
+        Some(96)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn output_fade_is_capability_gated_and_restored_after_cancellation() {
+    let (mut transport, mut device) = test_transport();
+    let timeline = Arc::new(NdsifHostTimeline::new(
+        Instant::now() - Duration::from_secs(1),
+    ));
+    timeline
+        .schedule_output_fade(0, 44_100, Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        !transport
+            .set_output_fade_timeline(Arc::clone(&timeline))
+            .unwrap()
+    );
+    transport.update_output_fade().unwrap();
+    transport.output_volume_supported = true;
+    assert!(
+        transport
+            .set_output_fade_timeline(Arc::clone(&timeline))
+            .unwrap()
+    );
+    assert!(
+        transport
+            .set_output_fade_timeline(Arc::clone(&timeline))
+            .is_err()
+    );
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        for expected in [Some(false), None, Some(true)] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match expected {
+                Some(false) => assert!(matches!(
+                    ndsif::Request::decode(&frame).unwrap(),
+                    ndsif::Request::SetOutputVolume {
+                        attenuation: 1..=96
+                    }
+                )),
+                Some(true) => assert_eq!(
+                    ndsif::Request::decode(&frame).unwrap(),
+                    ndsif::Request::SetOutputVolume { attenuation: 0 }
+                ),
+                None => assert_eq!(
+                    ndsif::Request::decode(&frame).unwrap(),
+                    ndsif::Request::Reset
+                ),
+            }
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        wait.recv().unwrap();
+    });
+    transport.update_output_fade().unwrap();
+    timeline.cancel();
+    transport.update_output_fade().unwrap();
+    transport.reset_for_reuse().unwrap();
+    assert!(!transport.output_volume_modified);
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn output_fade_rejection_is_reported_and_requires_restoration() {
+    let (mut transport, mut device) = test_transport();
+    transport.output_volume_supported = true;
+    let timeline = Arc::new(NdsifHostTimeline::new(
+        Instant::now() - Duration::from_secs(1),
+    ));
+    timeline
+        .schedule_output_fade(0, 44_100, Duration::from_secs(2))
+        .unwrap();
+    transport.set_output_fade_timeline(timeline).unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let frame = read_device_frame(&mut device, &mut decoder);
+        reply_to_device_frame(&mut device, &frame, Reply::Rejected);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::Reset
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        wait.recv().unwrap();
+    });
+    assert!(
+        transport
+            .update_output_fade()
+            .unwrap_err()
+            .contains("rejected")
+    );
+    assert!(transport.output_volume_modified);
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_after_a_volume_change_resets_and_restores_output() {
+    let (mut transport, mut device) = test_transport();
+    transport.output_volume_modified = true;
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::Reset
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        wait.recv().unwrap();
+    });
+    drop(transport);
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn live_gain_changes_are_combined_with_an_active_fade() {
+    let (mut transport, mut device) = test_transport();
+    transport.output_volume_supported = true;
+    let timeline = Arc::new(NdsifHostTimeline::new(
+        Instant::now() - Duration::from_secs(1),
+    ));
+    timeline
+        .schedule_output_fade(0, 44_100, Duration::from_secs(4))
+        .unwrap();
+    let gain = Arc::new(NdsifOutputGain::new());
+    gain.set(0.5).unwrap();
+    timeline.set_output_gain(Arc::clone(&gain)).unwrap();
+    transport.set_output_fade_timeline(timeline).unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let mut values = Vec::new();
+        for _ in 0..3 {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            let ndsif::Request::SetOutputVolume { attenuation } =
+                ndsif::Request::decode(&frame).unwrap()
+            else {
+                panic!("expected output-volume command");
+            };
+            values.push(attenuation);
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::Reset
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        wait.recv().unwrap();
+        values
+    });
+    transport.synchronize_output_volume().unwrap();
+    gain.set(0.25).unwrap();
+    transport.synchronize_output_volume().unwrap();
+    gain.set(0.0).unwrap();
+    transport.synchronize_output_volume().unwrap();
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    let values = fake.join().unwrap();
+    assert!(values[0] > 6 && values[0] < values[1], "{values:?}");
+    assert_eq!(values[2], 96);
 }
 
 #[cfg(unix)]

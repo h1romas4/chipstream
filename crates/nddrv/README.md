@@ -100,9 +100,21 @@ and started against the same estimated time. This is best-effort, not
 sample-accurate: serial bandwidth, device
 latency, OS scheduling, and independent clock drift can cause timing
 differences. Physical output comes from each NanoDrive and must be mixed
-externally; neither the software volume control nor the two-second software
-fade adjusts NanoDrive output. Hardware playback ends after the fade interval
-but its sound is not gradually faded. Pause is disabled
+externally. The playback volume is a common master when every NanoDrive in
+the route advertises output-volume control; it adjusts the software output
+and each device's global output. If any routed device lacks that capability,
+the panel shows `Software (ND fixed)` and the slider adjusts only software
+audio; adjust NanoDrive levels externally. While capabilities are being
+checked, the panel shows `Checking ND`. The same slider value carries across
+tracks and is applied before supported hardware playback starts. Device
+controls are quantized and best-effort, and external mixer settings are not
+changed. For VGM/VGZ with
+loop disabled, devices advertising output-volume control also fade their
+global output over the two-second fade interval. Volume updates use immediate
+integer-decibel commands, so their timing and smoothness are best-effort.
+Devices without that capability do not fade; NanoDrive output for MDX does
+not fade. The master gain and fade multiply together. After a hardware volume
+change, the device is restored to zero attenuation when reset for reuse. Pause is disabled
 when a hardware route is active. Stop and track changes cancel the workers and
 reset the devices before reuse.
 

@@ -18,4 +18,4 @@ pub use routing::{
     NdsifRoute, NdsifRoutingError, NdsifRoutingTransport, create_routed_chip_factories,
     create_routed_transport_factories, create_shared_routed_chip_factories,
 };
-pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifSerialTransport};
+pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};

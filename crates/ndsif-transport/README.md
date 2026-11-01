@@ -22,6 +22,8 @@ Emulated chips continue to produce host PCM normally.
 | `NdsifSerialTransport::{defer_audio_stream_start, prepare_audio_stream_start, start_prepared_audio_stream}` | Prebuffer an OKIM6258 stream and explicitly control its start. |
 | `NdsifSerialTransport::{defer_timed_dac_start_with_cancellation, prepare_timed_dac_start_for_frames, start_prepared_timed_dac}` | Prebuffer and synchronize a supported YM2612 timed DAC stream. |
 | `NdsifHostTimeline`, `NdsifSerialTransport::set_host_timeline` | Share a cancellable host-pacing origin for untimed writes. |
+| `NdsifHostTimeline::schedule_output_fade`, `NdsifSerialTransport::{supports_output_volume, set_output_fade_timeline, update_output_fade}` | Schedule a best-effort device-global fade on capable devices. |
+| `NdsifOutputGain`, `NdsifHostTimeline::set_output_gain`, `NdsifSerialTransport::synchronize_output_volume` | Share a live linear master gain, including before playback starts. |
 | `NdsifSerialTransport::supports_clock` | Check cached chip and clock capabilities. |
 | `NdsifSerialTransport::supports_audio_stream` | Check cached OKIM6258 stream support. |
 | `NdsifRoute`, `create_routed_chip_factories` | Route individual source instances to explicitly selected open devices. |
@@ -310,9 +312,24 @@ error. Recording does not itself synchronize host audio or device-timed streams.
   `cancel` interrupts host-pacing waits; it does not interrupt serial I/O
   already in progress. This mechanism rejects OKIM6258 and timed DAC streams,
   which run on a device clock and require separate synchronization.
-- Dropping a transport after chip configuration attempts a device reset;
-  reset failures are reported to standard error. `reset_device: false` only
-  disables the **initial** reset.
+- A shared timeline can also schedule one linear-amplitude output fade, and
+  transports advertising output-volume control can attach it with
+  `set_output_fade_timeline`. Attenuation is sent as immediate whole-decibel
+  commands at most every 50 ms; timing is best-effort, including for
+  device-timed streams. Playback requests and host pacing service the fade;
+  callers must also call `update_output_fade` while the device is idle.
+  Cancellation stops further changes. After an attempted volume change,
+  `reset_for_reuse` explicitly restores zero attenuation; a failed reset or
+  restore requires closing the connection. Devices without the capability
+  return `Ok(false)` when the timeline is attached and remain unchanged.
+- A shared `NdsifOutputGain` can be attached to the timeline for live master
+  volume; it multiplies the fade gain, if any. Apply the initial gain before
+  audio starts with `synchronize_output_volume`. Gain and fade share the
+  same global device control and are quantized to integer decibels.
+- Dropping a transport after chip configuration or a volume change attempts a
+  device reset and, after a volume change, restores zero attenuation. Failures
+  are reported to standard error. `reset_device: false` only disables the
+  **initial** reset.
 
 Capabilities, firmware, physical audio routing, and serial configuration vary
 by device. For reference, current NanoDrive 6 firmware advertises YM2612 and

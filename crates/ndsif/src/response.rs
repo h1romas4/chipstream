@@ -69,6 +69,8 @@ pub struct CapabilityEntry {
 pub const CAPABILITY_ENTRY_SIZE: usize = 9;
 /// Maximum capability entries in a single response.
 pub const MAX_CAPABILITY_ENTRIES: usize = (MAX_PAYLOAD_SIZE - 14) / CAPABILITY_ENTRY_SIZE;
+/// Control feature bit indicating output attenuation is supported.
+pub const CONTROL_FEATURE_OUTPUT_VOLUME: u16 = 1 << 0;
 /// Control feature bit indicating timed DAC profile discovery is supported.
 pub const CONTROL_FEATURE_DAC_PROFILE: u16 = 1 << 1;
 const CONFIGURABLE_CLOCK_FEATURE: u8 = 1 << 2;
