@@ -60,6 +60,7 @@ impl SegaPcm {
         self.ram[usize::from(address) & 0x7ff]
     }
 
+    /// Advance active PCM channels and mix one stereo sample.
     fn tick(&mut self) -> [i32; 2] {
         let mut output = [0; 2];
         for channel in 0..16 {

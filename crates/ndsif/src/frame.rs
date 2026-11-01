@@ -1,18 +1,32 @@
+//! NDSIF v1 frame layout, CRC, and COBS encoding.
+//!
+//! Encoded frames have leading and trailing zero delimiters; [`Frame::decode`]
+//! accepts only the COBS body between those delimiters.
+
 use crate::Error;
 
+/// NDSIF v1 wire version byte.
 pub const PROTOCOL_VERSION: u8 = 1;
+/// Maximum message payload size in bytes.
 pub const MAX_PAYLOAD_SIZE: usize = 256;
+/// Maximum decoded frame size, including header and CRC.
 pub const MAX_RAW_SIZE: usize = 267;
+/// Maximum encoded COBS body size, excluding delimiters.
 pub const MAX_COBS_SIZE: usize = 269;
+/// Maximum encoded frame size, including both delimiters.
 pub const MAX_ENCODED_SIZE: usize = 271;
 
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&crc::CRC_16_IBM_3740);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+/// The request/response role encoded in a frame.
 pub enum MessageType {
+    /// Request that does not require a response.
     NoResponse = 0,
+    /// Request that requires a response.
     Request = 1,
+    /// Response to a request.
     Response = 2,
 }
 
@@ -45,6 +59,10 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Construct a frame after checking that `payload` fits.
+    ///
+    /// Command-specific payload and message-type validation is performed by
+    /// the request and response codecs, not by this constructor.
     pub fn new(
         message_type: MessageType,
         command_id: u8,
@@ -67,22 +85,27 @@ impl Frame {
         Ok(frame)
     }
 
+    /// Return the frame's request/response role.
     pub const fn message_type(&self) -> MessageType {
         self.message_type
     }
 
+    /// Return the command identifier, unchanged for a response.
     pub const fn command_id(&self) -> u8 {
         self.command_id
     }
 
+    /// Return the request/response correlation identifier.
     pub const fn transaction_id(&self) -> u16 {
         self.transaction_id
     }
 
+    /// Return whether this is a response frame.
     pub const fn is_response(&self) -> bool {
         matches!(self.message_type, MessageType::Response)
     }
 
+    /// Borrow the payload without the frame header or CRC.
     pub fn payload(&self) -> &[u8] {
         &self.payload[..self.length]
     }
@@ -149,6 +172,10 @@ impl Frame {
         result
     }
 
+    /// Encode into `output`, returning the byte count including delimiters.
+    ///
+    /// An insufficient buffer returns [`Error::BufferTooSmall`] without
+    /// modifying the output.
     pub fn encode_into(&self, output: &mut [u8]) -> Result<usize, Error> {
         let encoded = self.encode();
         if output.len() < encoded.as_bytes().len() {
@@ -162,12 +189,14 @@ impl Frame {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// An owned COBS-encoded frame including both zero delimiters.
 pub struct EncodedFrame {
     bytes: [u8; MAX_ENCODED_SIZE],
     length: usize,
 }
 
 impl EncodedFrame {
+    /// Borrow the encoded bytes including both delimiters.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.length]
     }

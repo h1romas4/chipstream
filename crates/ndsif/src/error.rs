@@ -1,21 +1,49 @@
+//! Errors reported by local frame, message, and timing validation.
+
 use core::fmt;
 
+/// Invalid frame, message, argument, or output buffer encountered by the codec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    PayloadTooLong { length: usize },
+    /// The frame payload exceeds the protocol maximum.
+    PayloadTooLong {
+        /// Attempted payload length in bytes.
+        length: usize,
+    },
+    /// The encoded frame body exceeds its maximum length.
     FrameTooLong,
+    /// The input is not a valid delimiter-free COBS body.
     InvalidCobs,
+    /// The decoded frame has an invalid magic header.
     InvalidMagic,
+    /// The frame uses an unsupported wire version.
     UnsupportedVersion(u8),
+    /// The frame contains an unknown message-type value.
     InvalidMessageType(u8),
+    /// A frame or message has an invalid length.
     InvalidLength,
-    CrcMismatch { expected: u16, received: u16 },
-    BufferTooSmall { required: usize },
+    /// The frame CRC does not match the calculated checksum.
+    CrcMismatch {
+        /// Calculated checksum.
+        expected: u16,
+        /// Checksum received in the frame.
+        received: u16,
+    },
+    /// The caller's output buffer is too small.
+    BufferTooSmall {
+        /// Required buffer length in bytes.
+        required: usize,
+    },
+    /// An argument or locally validated message value is invalid.
     InvalidArgument,
+    /// A message contains an unsupported opcode.
     UnexpectedOpcode(u8),
+    /// A response contains an unknown status value.
     InvalidStatus(u8),
+    /// Device information contains invalid UTF-8.
     InvalidUtf8,
+    /// The response does not correspond to the supplied request.
     ResponseMismatch,
 }
 

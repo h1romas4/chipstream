@@ -1,5 +1,6 @@
 //! Fixed-point timing arithmetic using only 32-bit integer operations.
 
+/// Double a remainder, add a bit, and report a carry past the divisor.
 fn double_remainder(value: u32, divisor: u32, bit: u32) -> (u32, bool) {
     let (doubled, overflow) = value.overflowing_add(value);
     let (sum, extra) = doubled.overflowing_add(bit);
@@ -10,6 +11,7 @@ fn double_remainder(value: u32, divisor: u32, bit: u32) -> (u32, bool) {
     }
 }
 
+/// Compute quotient and remainder without requiring a wide intermediate product.
 fn multiply_divide(a: u32, b: u32, divisor: u32) -> Option<(u32, u32)> {
     if divisor == 0 {
         return None;
@@ -40,6 +42,7 @@ fn multiply_divide(a: u32, b: u32, divisor: u32) -> Option<(u32, u32)> {
     Some((whole, remainder))
 }
 
+/// Convert a remainder to a rounded Q0.32 fraction, carrying into `whole`.
 fn rounded_fraction(mut whole: u32, mut remainder: u32, divisor: u32) -> Option<(u32, u32)> {
     let mut fraction = 0_u32;
     for _ in 0..32 {
@@ -87,11 +90,13 @@ pub(crate) fn divide_ratio(n: u32, a: u32, b: u32) -> Option<(u32, u32)> {
     Some((whole, fraction))
 }
 
+/// Compute `ceil(a * b / divisor)`, returning `None` on invalid or overflowing input.
 pub(crate) fn ceil_multiply_divide(a: u32, b: u32, divisor: u32) -> Option<u32> {
     let (whole, remainder) = multiply_divide(a, b, divisor)?;
     whole.checked_add(u32::from(remainder != 0))
 }
 
+/// Advance a Q0.32 phase and return the resulting whole-unit increment.
 pub(crate) fn advance(phase: &mut u32, whole: u32, fraction: u32) -> Option<u32> {
     let (next, carry) = phase.overflowing_add(fraction);
     *phase = next;

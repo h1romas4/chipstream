@@ -1,3 +1,5 @@
+//! User-supplied chip factories for replacing built-in sequencer backends.
+
 use std::collections::HashMap;
 
 use soundlog::chip::Chip;
@@ -17,6 +19,7 @@ pub struct ChipFactoryConfig<'a> {
 }
 
 impl<'a> ChipFactoryConfig<'a> {
+    /// Assemble the effective chip and header settings passed to a factory.
     pub(super) fn new(
         chip: Chip,
         instance: Instance,
@@ -97,6 +100,7 @@ impl ChipFactoryRegistry {
         self
     }
 
+    /// Invoke a registered factory and validate its chip type and clock.
     pub(super) fn create(
         &mut self,
         config: &ChipFactoryConfig<'_>,

@@ -1,3 +1,5 @@
+//! Yamaha chip emulation backed by `ymfm-sys` and its external callbacks.
+
 use soundlog::chip::Chip;
 use ymfm_sys::ffi::{self, ChipType};
 use ymfm_sys::{ChipPtr, InterfaceCallbacks, InterfaceHandler};
@@ -86,6 +88,7 @@ impl YmfmChip {
         )
     }
 
+    /// Validate the clock and create a YMFM backend with memory callbacks.
     fn create(
         chip: Chip,
         clock: u32,

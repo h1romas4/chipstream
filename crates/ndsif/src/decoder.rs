@@ -1,5 +1,8 @@
+//! Incremental, delimiter-synchronized decoding of NDSIF frames.
+
 use crate::{Error, Frame, frame::MAX_COBS_SIZE};
 
+/// Recommended inactivity timeout for an incomplete frame, in milliseconds.
 pub const PARTIAL_FRAME_TIMEOUT_MS: u64 = 500;
 
 /// Incremental parser. Starts by discarding input until the first zero delimiter.
@@ -12,6 +15,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// Create a decoder waiting for its initial synchronization delimiter.
     pub const fn new() -> Self {
         Self {
             buffer: [0; MAX_COBS_SIZE],
@@ -26,6 +30,7 @@ impl Decoder {
         self.discarding = true;
     }
 
+    /// Return whether a nonempty frame body is being accumulated.
     pub const fn has_partial_frame(&self) -> bool {
         self.length != 0
     }
@@ -39,6 +44,9 @@ impl Decoder {
         true
     }
 
+    /// Consume one byte, returning a completed frame or error when available.
+    ///
+    /// After overflow the decoder discards input until the next delimiter.
     pub fn push_byte(&mut self, byte: u8) -> Option<Result<Frame, Error>> {
         if byte == 0 {
             self.discarding = false;

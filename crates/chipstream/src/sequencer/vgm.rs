@@ -79,47 +79,83 @@ macro_rules! feature_backend {
 /// Failure to initialize or render a VGM stream.
 #[derive(Debug)]
 pub enum VgmSequencerError {
+    /// The output chunk size is zero.
     InvalidChunkSize,
+    /// The output sample rate is zero.
     InvalidSampleRate,
+    /// A gain is negative or non-finite.
     InvalidGain,
+    /// The requested chip instance is not playable.
     ChipNotFound {
+        /// Requested chip type.
         chip: Chip,
+        /// Requested instance.
         instance: Instance,
     },
+    /// The chip requires a disabled Cargo feature.
     FeatureDisabled {
+        /// Chip requiring the feature.
         chip: Chip,
+        /// Required Cargo feature name.
         feature: &'static str,
     },
+    /// Native OKIM6258 3-bit ADPCM decoding is unsupported.
     UnsupportedOkiAdpcm,
+    /// A ROM or RAM data block is invalid.
     InvalidRomBlock,
+    /// Chip memory exceeds the supported size.
     RomTooLarge,
+    /// The command stream ended without an end command.
     UnexpectedEnd,
+    /// The sequencer cannot resume after a rendering error.
     StreamFailed,
+    /// The playback duration exceeds supported limits.
     DurationOverflow,
+    /// PWM compatibility was configured after playback began.
     PwmCompatibilityConfigurationAfterPlayback,
+    /// Fadeout was configured after playback began.
     FadeoutConfigurationAfterPlayback,
+    /// A checkpoint is incompatible with this sequencer.
     CheckpointMismatch,
+    /// The original stream could not be reconstructed for a checkpoint.
     StreamReconstruction(String),
+    /// A seek target precedes its starting checkpoint.
     SeekTargetBeforeCheckpoint {
+        /// Requested output-frame position.
         target: usize,
+        /// Checkpoint output-frame position.
         checkpoint: usize,
     },
+    /// Playback ended before the requested seek position.
     SeekTargetBeyondEnd {
+        /// Requested output-frame position.
         target: usize,
+        /// Output-frame position reached at the end.
         reached: usize,
     },
+    /// A seek was cancelled by its caller.
     SeekCancelled,
+    /// The pending callback event queue reached its limit.
     EventQueueFull {
+        /// Maximum pending event count.
         limit: usize,
     },
+    /// A chip's pending write queue reached its limit.
     WriteQueueFull {
+        /// Target chip type.
         chip: Chip,
+        /// Target chip instance.
         instance: Instance,
+        /// Maximum pending write count.
         limit: usize,
     },
+    /// Parsing or streaming failed.
     Parse(soundlog::ParseError),
+    /// A chip backend failed.
     Chip(ChipError),
+    /// Capturing native chip output failed.
     Route(RouteError),
+    /// Audio processing failed.
     Audio(AudioError),
 }
 
@@ -236,6 +272,7 @@ struct Memory {
 }
 
 impl Memory {
+    /// Map supported external-memory classes to write-overlay keys.
     fn key(access: AccessClass) -> Option<u8> {
         match access {
             AccessClass::AdpcmA => Some(0),
@@ -245,6 +282,7 @@ impl Memory {
         }
     }
 
+    /// Borrow the ROM backing a supported external-memory class.
     fn get(&self, access: AccessClass) -> Option<&Vec<u8>> {
         match access {
             AccessClass::AdpcmA => Some(&self.adpcm_a),
@@ -253,6 +291,7 @@ impl Memory {
             _ => None,
         }
     }
+    /// Mutably borrow the ROM backing a supported external-memory class.
     fn get_mut(&mut self, access: AccessClass) -> Option<&mut Vec<u8>> {
         match access {
             AccessClass::AdpcmA => Some(&mut self.adpcm_a),
@@ -306,6 +345,7 @@ struct Fade {
 }
 
 impl Fade {
+    /// Apply the pending delay and linear fade to a block in place.
     fn process(&mut self, frames: &mut [[f32; 2]]) {
         let divisor = self.length - 1.0;
         for frame in frames {
@@ -332,6 +372,7 @@ impl Fade {
 }
 
 impl Voice {
+    /// Apply a timed write, update state tracking, and enqueue its callback.
     fn apply_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -385,6 +426,7 @@ impl Voice {
         Ok(())
     }
 
+    /// Advance the chip timeline, pacing queued writes between native captures.
     fn render(
         &mut self,
         ticks: u32,
@@ -462,6 +504,7 @@ impl Voice {
         Ok(())
     }
 
+    /// Capture native frames, convert them to stereo, and queue resampled output.
     fn capture(&mut self, frames: usize) -> Result<(), VgmSequencerError> {
         if frames == 0 {
             return Ok(());
@@ -599,6 +642,7 @@ struct VoiceCheckpoint {
     write_cooldown: usize,
 }
 
+/// Collect distinct memory allocations shared among chip voices.
 fn unique_memories(voices: &[Voice]) -> Vec<Rc<RefCell<Memory>>> {
     let mut memories: Vec<Rc<RefCell<Memory>>> = Vec::new();
     for voice in voices {
@@ -612,6 +656,7 @@ fn unique_memories(voices: &[Voice]) -> Vec<Rc<RefCell<Memory>>> {
     memories
 }
 
+/// Reapply a saved loop or fade setting to a reconstructed stream.
 fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
     match setting {
         StreamSetting::LoopCount(count) => stream.set_loop_count(*count),
@@ -691,6 +736,7 @@ impl<'a> VgmSequencer<'a> {
         Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
+    /// Extract clocks for supported chips, including legacy header aliases.
     fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 17] {
         let misc = header.misc();
         [
@@ -722,6 +768,7 @@ impl<'a> VgmSequencer<'a> {
         ]
     }
 
+    /// Map a supported sequencer chip to its VGM extra-header identifier.
     fn chip_id(chip: &Chip) -> ChipId {
         match chip {
             Chip::Sn76489 => ChipId::Sn76489,
@@ -745,6 +792,7 @@ impl<'a> VgmSequencer<'a> {
         }
     }
 
+    /// Construct a backend, routing matrix, and resampler for one chip instance.
     fn make_voice(
         header: &VgmHeader,
         extra: Option<&VgmExtraHeader>,
@@ -937,6 +985,7 @@ impl<'a> VgmSequencer<'a> {
         })
     }
 
+    /// Return the native output count expected by the chip's stereo matrix.
     fn matrix_channels(chip: &Chip) -> usize {
         match chip {
             Chip::Ym2203 | Chip::Ymf262 => 4,
@@ -1000,6 +1049,7 @@ impl<'a> VgmSequencer<'a> {
         Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
+    /// Create a sequencer for an MDX-generated stream using a synthesized header.
     pub(super) fn from_mdx_stream(
         stream: VgmStream,
         stream_factory: StreamFactory,
@@ -1027,6 +1077,7 @@ impl<'a> VgmSequencer<'a> {
         Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
+    /// Reject zero output rates and chunk sizes before allocating voices.
     fn validate_output(output_rate: u32, chunk_frames: usize) -> Result<(), VgmSequencerError> {
         if output_rate == 0 {
             return Err(VgmSequencerError::InvalidSampleRate);
@@ -1037,6 +1088,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Create voices for each present chip and enabled instance in the header.
     fn make_voices(
         header: &VgmHeader,
         extra: Option<&VgmExtraHeader>,
@@ -1078,6 +1130,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(voices)
     }
 
+    /// Initialize playback state from an existing stream and constructed voices.
     fn from_parts(
         stream: VgmStream,
         stream_factory: StreamFactory,
@@ -1130,6 +1183,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Set the fade duration and optional MDX loop marker before playback.
     pub(super) fn configure_fadeout(
         &mut self,
         samples: Option<u32>,
@@ -1488,6 +1542,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Discard events skipped during seeking and rebase remaining offsets.
     fn discard_events(&mut self, frames: usize) {
         while self
             .events
@@ -1564,6 +1619,7 @@ impl<'a> VgmSequencer<'a> {
         result
     }
 
+    /// Generate and mix a block, advancing the stream until output is available.
     fn render_inner(
         &mut self,
         sample_frame_origin: usize,
@@ -1698,6 +1754,7 @@ impl<'a> VgmSequencer<'a> {
         }
     }
 
+    /// Handle a VGM command's routing, compatibility effects, and data blocks.
     fn command(
         &mut self,
         command: VgmCommand,
@@ -1762,6 +1819,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Route a write to its voice, queuing it when pacing is required.
     fn write_chip(
         &mut self,
         instance: Instance,
@@ -1802,6 +1860,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Apply any remaining paced writes at the current output position.
     fn flush_paced_writes(&mut self, sample_frame_origin: usize) -> Result<(), VgmSequencerError> {
         for voice in &mut self.voices {
             while let Some(write) = voice.paced_writes.as_mut().and_then(VecDeque::pop_front) {
@@ -1823,6 +1882,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Load a supported ROM/RAM block into the target chip's memory.
     fn load_block(
         &mut self,
         block: soundlog::vgm::command::DataBlock,

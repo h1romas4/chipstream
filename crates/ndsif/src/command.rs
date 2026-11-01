@@ -1,36 +1,59 @@
+//! Typed request commands and borrowed views of decoded request payloads.
+//!
+//! Encoding validates the message shape and arguments, not whether a device
+//! supports the command or whether its current stream state permits it.
+
 use crate::{
     BytePosition, Divider, EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, OkiClock,
     Pan, RegisterWrite, WriteId, ZeroPair,
 };
 
+/// Maximum immediate address/value pairs in one frame.
 pub const MAX_REGISTER_WRITES: usize = (MAX_PAYLOAD_SIZE - 2) / 2;
+/// Maximum immediate raw register-write bytes in one frame.
 pub const MAX_REGISTER_BYTES: usize = MAX_PAYLOAD_SIZE - 2;
+/// Maximum address/value pairs in one positioned audio event.
 pub const MAX_REGISTER_EVENT_WRITES: usize = (MAX_PAYLOAD_SIZE - 10) / 2;
+/// Maximum ADPCM data bytes in one audio-data frame.
 pub const MAX_AUDIO_DATA_BYTES: usize = MAX_PAYLOAD_SIZE - 6;
+/// Maximum timed DAC records in one DAC-data frame.
 pub const MAX_DAC_RECORDS: usize = (MAX_PAYLOAD_SIZE - 15) / 4;
+/// Maximum raw write bytes in one timed DAC register event.
 pub const MAX_DAC_EVENT_BYTES: usize = MAX_PAYLOAD_SIZE - 12;
+/// Optional timed DAC profile identifier for the primary YM2612.
 pub const DAC_PROFILE_YM2612: u8 = 1;
+/// Tick frequency of the YM2612 timed DAC profile.
 pub const DAC_TICKS_PER_SECOND: u32 = 44_100;
 
+/// Kind of record in a timed YM2612 DAC stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DacRecordKind {
+    /// Write a DAC data value.
     Dac = 0,
+    /// Set DAC enable using the high bit of the value.
     Select = 1,
+    /// Advance time without a register write.
     Wait = 2,
 }
 
+/// One timed DAC operation and its associated wait duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DacRecord {
+    /// Operation type.
     pub kind: DacRecordKind,
+    /// Operation value; its valid bits depend on `kind`.
     pub value: u8,
+    /// Wait duration in profile ticks.
     pub wait_ticks: u16,
 }
 
+/// Validated timed DAC records borrowed from a decoded request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DacRecords<'a>(&'a [u8]);
 
 impl<'a> DacRecords<'a> {
+    /// Validate record framing, operation values, and the per-frame limit.
     fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.is_empty() || bytes.len() % 4 != 0 || bytes.len() / 4 > MAX_DAC_RECORDS {
             return Err(Error::InvalidLength);
@@ -50,14 +73,17 @@ impl<'a> DacRecords<'a> {
         Ok(Self(bytes))
     }
 
+    /// Number of four-byte records.
     pub fn len(self) -> usize {
         self.0.len() / 4
     }
 
+    /// Whether there are no records. Valid decoded data is nonempty.
     pub fn is_empty(self) -> bool {
         self.0.is_empty()
     }
 
+    /// Iterate over records in wire order.
     pub fn iter(self) -> impl ExactSizeIterator<Item = DacRecord> + 'a {
         self.0.chunks_exact(4).map(|record| DacRecord {
             kind: DacRecordKind::try_from(record[0]).expect("validated DAC record"),
@@ -80,19 +106,30 @@ impl TryFrom<u8> for DacRecordKind {
     }
 }
 
+/// An event positioned on an ADPCM byte stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioEvent<'a> {
+    /// Register writes to a chip, distinct from the stream's target.
     Registers {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Nonempty ordered register writes.
         writes: &'a [RegisterWrite],
     },
+    /// Change the ADPCM stream clock and divider.
     Clock {
+        /// Input clock.
         clock: OkiClock,
+        /// Clock divider.
         divider: Divider,
     },
+    /// Change output-channel selection.
     Pan(Pan),
+    /// End the stream using a state-dependent repeated ADPCM byte.
     End(ZeroPair),
 }
 
@@ -100,88 +137,154 @@ pub enum AudioEvent<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command<'a> {
+    /// Reset device state.
     Reset,
+    /// Request an echo of at most 32 bytes.
     Ping(&'a [u8]),
+    /// Request device model and firmware information.
     GetInfo,
+    /// Set output attenuation.
     SetOutputVolume {
+        /// Attenuation value in the supported range `0..=96`.
         attenuation: u8,
+        /// Whether a response is required.
         response: bool,
     },
+    /// Configure an instance's chip input clock.
     SetChipClock {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Nonzero clock frequency in hertz.
         hz: u32,
+        /// Whether a response is required.
         response: bool,
     },
+    /// Request a page of device capabilities.
     GetCapabilities {
+        /// Entry offset for pagination.
         offset: u16,
     },
+    /// Send immediate register writes.
     WriteRegisters {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Nonempty register pairs, bounded by [`MAX_REGISTER_WRITES`].
         writes: &'a [RegisterWrite],
     },
+    /// Send immediate raw bytes to a compatible target.
     WriteBytes {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target page.
         page: u8,
+        /// Nonempty raw bytes, bounded by [`MAX_REGISTER_BYTES`].
         bytes: &'a [u8],
     },
+    /// Queue a contiguous ADPCM data chunk.
     AudioData {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Absolute ADPCM byte position of the chunk.
         position: BytePosition,
+        /// Nonempty ADPCM bytes, bounded by [`MAX_AUDIO_DATA_BYTES`].
         adpcm: &'a [u8],
     },
+    /// Queue an event at an absolute ADPCM byte position.
     AudioEvent {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Absolute ADPCM byte position.
         position: BytePosition,
+        /// Event to execute at the position.
         event: AudioEvent<'a>,
     },
+    /// Start an ADPCM stream.
     AudioStart {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Input clock.
         clock: OkiClock,
+        /// Clock divider.
         divider: Divider,
     },
+    /// Request audio stream status.
     AudioStatus {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
     },
+    /// Request timed DAC profile capabilities.
     GetDacCapabilities,
+    /// Queue records for the optional timed DAC profile.
     DacData {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Sequence number of the first record.
         sequence: u32,
+        /// Starting position in profile ticks.
         position: u64,
+        /// Nonempty ordered records, bounded by [`MAX_DAC_RECORDS`].
         records: &'a [DacRecord],
     },
+    /// Start timed DAC playback.
     DacStart {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Minimum buffered lead, in profile ticks.
         minimum_lead_ticks: u32,
     },
+    /// Seal timed DAC playback after all submitted records.
     DacEnd {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Sequence number immediately after the final record.
         next_sequence: u32,
+        /// End position in profile ticks.
         end_tick: u64,
     },
+    /// Request timed DAC profile status.
     DacStatus {
+        /// Timed DAC profile identifier.
         profile: u8,
     },
+    /// Queue register or PSG writes at a timed DAC profile position.
     DacRegisterEvent {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Absolute position in profile ticks.
         tick: u64,
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Raw write bytes, bounded by [`MAX_DAC_EVENT_BYTES`].
         writes: &'a [u8],
     },
 }
 
 impl Command<'_> {
+    /// Return the command ID encoded in the frame.
     pub const fn command_id(&self) -> u8 {
         match self {
             Self::Reset => 0x00,
@@ -206,6 +309,7 @@ impl Command<'_> {
         }
     }
 
+    /// Return whether this request requires a response.
     pub const fn expects_response(&self) -> bool {
         match self {
             Self::Reset
@@ -230,6 +334,7 @@ impl Command<'_> {
         }
     }
 
+    /// Validate local arguments and construct a frame for the transaction.
     pub fn to_frame(&self, transaction_id: u16) -> Result<Frame, Error> {
         let mut payload = [0; MAX_PAYLOAD_SIZE];
         let length = match *self {
@@ -487,15 +592,18 @@ impl Command<'_> {
         )
     }
 
+    /// Validate and encode a frame including both zero delimiters.
     pub fn encode(&self, transaction_id: u16) -> Result<EncodedFrame, Error> {
         Ok(self.to_frame(transaction_id)?.encode())
     }
 
+    /// Encode into a caller-provided buffer, returning the number of bytes.
     pub fn encode_into(&self, transaction_id: u16, output: &mut [u8]) -> Result<usize, Error> {
         self.to_frame(transaction_id)?.encode_into(output)
     }
 }
 
+/// Encode nonempty register pairs into an already-sized payload buffer.
 fn encode_writes(
     writes: &[RegisterWrite],
     output: &mut [u8],
@@ -511,19 +619,30 @@ fn encode_writes(
     Ok(writes.len() * 2)
 }
 
+/// Decoded ADPCM-positioned event with register pairs borrowed from a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestEvent<'a> {
+    /// Ordered register writes to a target chip.
     Registers {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Validated borrowed register pairs.
         writes: crate::types::RegisterWrites<'a>,
     },
+    /// Change the ADPCM stream clock and divider.
     Clock {
+        /// Input clock.
         clock: OkiClock,
+        /// Clock divider.
         divider: Divider,
     },
+    /// Change output-channel selection.
     Pan(Pan),
+    /// End the stream using a state-dependent repeated ADPCM byte.
     End(ZeroPair),
 }
 
@@ -531,92 +650,164 @@ pub enum RequestEvent<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Request<'a> {
+    /// Reset device state.
     Reset,
+    /// Echo the borrowed payload.
     Ping(&'a [u8]),
+    /// Request model and firmware information.
     GetInfo,
+    /// Set output attenuation.
     SetOutputVolume {
+        /// Attenuation value in `0..=96`.
         attenuation: u8,
     },
+    /// Set a chip instance's input clock.
     SetChipClock {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Clock frequency in hertz.
         hz: u32,
     },
+    /// Request a page of capabilities.
     GetCapabilities {
+        /// Entry offset for pagination.
         offset: u16,
     },
+    /// Immediate register writes.
     WriteRegisters {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Validated borrowed register pairs.
         writes: crate::types::RegisterWrites<'a>,
     },
+    /// Immediate raw chip bytes.
     WriteBytes {
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target page.
         page: u8,
+        /// Borrowed raw bytes.
         bytes: &'a [u8],
     },
+    /// ADPCM data for a stream.
     AudioData {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Absolute ADPCM byte position.
         position: BytePosition,
+        /// Borrowed ADPCM data.
         adpcm: &'a [u8],
     },
+    /// Event positioned on an ADPCM stream.
     AudioEvent {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Absolute ADPCM byte position.
         position: BytePosition,
+        /// Decoded stream event.
         event: RequestEvent<'a>,
     },
+    /// Start an ADPCM stream.
     AudioStart {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
+        /// Input clock.
         clock: OkiClock,
+        /// Clock divider.
         divider: Divider,
     },
+    /// Request ADPCM stream status.
     AudioStatus {
+        /// Audio stream identifier.
         stream_id: u8,
+        /// Audio stream instance.
         instance: u8,
     },
+    /// Request timed DAC profile capabilities.
     GetDacCapabilities,
+    /// Timed DAC records.
     DacData {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Sequence number of the first record.
         sequence: u32,
+        /// Starting position in profile ticks.
         position: u64,
+        /// Validated borrowed records.
         records: DacRecords<'a>,
     },
+    /// Start timed DAC playback.
     DacStart {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Minimum buffered lead in profile ticks.
         minimum_lead_ticks: u32,
     },
+    /// Seal timed DAC playback.
     DacEnd {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Sequence number immediately after the final record.
         next_sequence: u32,
+        /// End position in profile ticks.
         end_tick: u64,
     },
+    /// Request timed DAC status.
     DacStatus {
+        /// Timed DAC profile identifier.
         profile: u8,
     },
+    /// Register or PSG writes positioned on the timed DAC clock.
     DacRegisterEvent {
+        /// Timed DAC profile identifier.
         profile: u8,
+        /// Absolute position in profile ticks.
         tick: u64,
+        /// Target chip command ID.
         write_id: WriteId,
+        /// Target chip instance.
         instance: u8,
+        /// Target register page.
         page: u8,
+        /// Borrowed raw write bytes.
         writes: &'a [u8],
     },
+    /// An unrecognized command, preserved without interpreting its payload.
     Unknown {
+        /// Request message type.
         message_type: MessageType,
+        /// Unrecognized command ID.
         command_id: u8,
+        /// Transaction ID.
         transaction_id: u16,
+        /// Borrowed payload bytes.
         payload: &'a [u8],
     },
 }
 
 impl<'a> Request<'a> {
+    /// Decode and locally validate a request, borrowing data from `frame`.
+    ///
+    /// Response frames are rejected. Unrecognized request commands are
+    /// preserved as [`Request::Unknown`].
     pub fn decode(frame: &'a Frame) -> Result<Self, Error> {
         let message_type = frame.message_type();
         let command_id = frame.command_id();
@@ -887,6 +1078,7 @@ impl<'a> Request<'a> {
     }
 }
 
+/// Reject a message body whose length differs from the expected fixed size.
 fn require_length(bytes: &[u8], length: usize) -> Result<(), Error> {
     if bytes.len() != length {
         return Err(Error::InvalidLength);
@@ -894,16 +1086,19 @@ fn require_length(bytes: &[u8], length: usize) -> Result<(), Error> {
     Ok(())
 }
 
+/// Read a little-endian word after the caller has checked its length.
 fn read_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+/// Read a little-endian double word after the caller has checked its length.
 fn read_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes([
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ])
 }
 
+/// Validate the profile target and check sequence and tick-position overflow.
 fn validate_dac_data(
     profile: u8,
     write_id: WriteId,
@@ -930,6 +1125,7 @@ fn validate_dac_data(
     Ok(())
 }
 
+/// Accept supported timed-event targets while reserving YM2612 DAC registers.
 fn valid_dac_event_target(write_id: WriteId, instance: u8, page: u8, writes: &[u8]) -> bool {
     match (write_id.get(), instance, page) {
         (0x52, 0, 0) | (0x53, 0, 1) if writes.len() >= 2 && writes.len().is_multiple_of(2) => {
@@ -943,6 +1139,7 @@ fn valid_dac_event_target(write_id: WriteId, instance: u8, page: u8, writes: &[u
     }
 }
 
+/// Reject targets that cannot accept register pairs.
 fn validate_register_id(write_id: WriteId) -> Result<(), Error> {
     if write_id.supports_register_pairs() {
         Ok(())
@@ -951,6 +1148,7 @@ fn validate_register_id(write_id: WriteId) -> Result<(), Error> {
     }
 }
 
+/// Reject targets that cannot accept raw chip bytes.
 fn validate_byte_id(write_id: WriteId) -> Result<(), Error> {
     if write_id.supports_raw_bytes() {
         Ok(())

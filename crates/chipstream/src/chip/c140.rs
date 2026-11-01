@@ -10,8 +10,11 @@ use std::num::NonZeroU32;
 /// C140 board ROM wiring or the related 219 ASIC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum C140Type {
+    /// Namco System 2 ROM mapping.
     System2,
+    /// Namco System 21 ROM mapping.
     System21,
+    /// ASIC 219 ROM mapping and playback behavior.
     Asic219,
 }
 
@@ -109,6 +112,7 @@ impl C140 {
         self.registers[address]
     }
 
+    /// Write a mirrored register and update voice key-on state when needed.
     fn write_address(&mut self, address: usize, value: u8) {
         let mut address = address & 0x1ff;
         let asic = self.kind == C140Type::Asic219;
@@ -143,6 +147,7 @@ impl C140 {
         }
     }
 
+    /// Fetch a sample using the selected C140 variant's ROM mapping.
     fn sample(&self, address: u32) -> u8 {
         let offset = match self.kind {
             C140Type::System2 => ((address & 0x20_0000) >> 2) | (address & 0x07_ffff),
@@ -152,6 +157,7 @@ impl C140 {
         self.rom.get(offset as usize).copied().unwrap_or(0)
     }
 
+    /// Advance active voices and mix one stereo sample.
     fn tick(&mut self) -> [i32; 2] {
         const BANKS: [usize; 4] = [0x1f7, 0x1f1, 0x1f3, 0x1f5];
         let asic = self.kind == C140Type::Asic219;

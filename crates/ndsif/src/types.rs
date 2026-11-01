@@ -1,12 +1,18 @@
+//! Shared register, audio timing, position, and device status types.
+
 use crate::Error;
 
+/// A single register address/value pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegisterWrite {
+    /// Register address within the selected page.
     pub address: u8,
+    /// Value written to the register.
     pub value: u8,
 }
 
 impl RegisterWrite {
+    /// Construct a register address/value pair.
     pub const fn new(address: u8, value: u8) -> Self {
         Self { address, value }
     }
@@ -17,6 +23,7 @@ impl RegisterWrite {
 pub struct RegisterWrites<'a>(&'a [u8]);
 
 impl<'a> RegisterWrites<'a> {
+    /// Validate the count and framing of borrowed address/value pairs.
     pub(crate) fn decode(bytes: &'a [u8], maximum: usize) -> Result<Self, Error> {
         let pairs = bytes.chunks_exact(2);
         if bytes.is_empty() || !pairs.remainder().is_empty() || pairs.len() > maximum {
@@ -24,15 +31,19 @@ impl<'a> RegisterWrites<'a> {
         }
         Ok(Self(bytes))
     }
+    /// Borrow the alternating address/value payload bytes.
     pub const fn as_bytes(self) -> &'a [u8] {
         self.0
     }
+    /// Return the number of register pairs.
     pub const fn len(self) -> usize {
         self.0.len() / 2
     }
+    /// Return whether there are no pairs. Valid decoded requests are nonempty.
     pub const fn is_empty(self) -> bool {
         self.0.is_empty()
     }
+    /// Iterate over the decoded register pairs in wire order.
     pub fn iter(self) -> impl ExactSizeIterator<Item = RegisterWrite> + 'a {
         self.0
             .chunks_exact(2)
@@ -45,12 +56,15 @@ impl<'a> RegisterWrites<'a> {
 pub struct BytePosition(u32);
 
 impl BytePosition {
+    /// Construct an absolute ADPCM byte position.
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
+    /// Return the absolute byte position.
     pub const fn get(self) -> u32 {
         self.0
     }
+    /// Advance by a byte count, rejecting values that would overflow `u32`.
     pub fn checked_advance(self, bytes: usize) -> Result<Self, Error> {
         let bytes = u32::try_from(bytes).map_err(|_| Error::InvalidArgument)?;
         self.0
@@ -65,16 +79,23 @@ impl BytePosition {
 pub struct WriteId(u8);
 
 impl WriteId {
+    /// Primary YM2612 register-write command ID.
     pub const YM2612: Self = Self(0x52);
+    /// YM2151 register-write command ID.
     pub const YM2151: Self = Self(0x54);
+    /// OKIM6258 register-write command ID.
     pub const OKIM6258: Self = Self(0xb7);
+    /// Primary SN76489 raw-byte command ID.
     pub const SN76489: Self = Self(0x50);
+    /// Secondary SN76489 raw-byte command ID.
     pub const SN76489_SECOND: Self = Self(0x30);
 
+    /// Return the underlying VGM-style command ID.
     pub const fn get(self) -> u8 {
         self.0
     }
 
+    /// Return whether this target accepts address/value register pairs.
     pub const fn supports_register_pairs(self) -> bool {
         matches!(
             self.0,
@@ -106,10 +127,13 @@ impl TryFrom<u8> for WriteId {
     }
 }
 
+/// Supported OKIM6258 input clocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum OkiClock {
+    /// 4 MHz input clock.
     Mhz4 = 4_000_000,
+    /// 8 MHz input clock.
     Mhz8 = 8_000_000,
 }
 
@@ -124,11 +148,15 @@ impl TryFrom<u32> for OkiClock {
     }
 }
 
+/// OKIM6258 input clock divisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Divider {
+    /// Divide the input clock by 512.
     Div512 = 512,
+    /// Divide the input clock by 768.
     Div768 = 768,
+    /// Divide the input clock by 1024.
     Div1024 = 1024,
 }
 
@@ -144,12 +172,17 @@ impl TryFrom<u16> for Divider {
     }
 }
 
+/// Output-channel selection for an ADPCM stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Pan {
+    /// Enable both output channels.
     Both = 0,
+    /// Enable the left output channel only.
     Left = 1,
+    /// Enable the right output channel only.
     Right = 2,
+    /// Disable both output channels.
     Off = 3,
 }
 
@@ -161,18 +194,22 @@ pub struct AudioTiming {
 }
 
 impl AudioTiming {
+    /// Construct timing from a supported input clock and divider.
     pub const fn new(clock: OkiClock, divider: Divider) -> Self {
         Self { clock, divider }
     }
 
+    /// Return the input clock.
     pub const fn clock(self) -> OkiClock {
         self.clock
     }
 
+    /// Return the input clock divider.
     pub const fn divider(self) -> Divider {
         self.divider
     }
 
+    /// Create a stateful converter for a nonzero tick rate in ticks per second.
     pub fn sample_converter(self, tick_rate: u32) -> Result<AudioSampleConverter, Error> {
         if tick_rate == 0 {
             return Err(Error::InvalidArgument);
@@ -184,10 +221,12 @@ impl AudioTiming {
         })
     }
 
+    /// Convert a duration to samples, rounding down.
     pub fn samples_from_ticks(self, ticks: u64, tick_rate: u32) -> Result<u64, Error> {
         self.sample_converter(tick_rate)?.advance(ticks)
     }
 
+    /// Convert a duration to whole ADPCM bytes, rounding down.
     pub fn bytes_from_ticks(self, ticks: u64, tick_rate: u32) -> Result<u64, Error> {
         let converter = self.sample_converter(tick_rate)?;
         let bytes = u128::from(ticks) * u128::from(converter.numerator)
@@ -195,6 +234,7 @@ impl AudioTiming {
         u64::try_from(bytes).map_err(|_| Error::InvalidArgument)
     }
 
+    /// Convert an ADPCM byte count to whole ticks, rounding down.
     pub fn ticks_from_bytes(self, bytes: u64, tick_rate: u32) -> Result<u64, Error> {
         if tick_rate == 0 {
             return Err(Error::InvalidArgument);
@@ -241,7 +281,9 @@ impl TryFrom<u8> for Pan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ZeroPair {
+    /// Repeat byte `0x80`.
     Byte80 = 0x80,
+    /// Repeat byte `0x08`.
     Byte08 = 0x08,
 }
 
@@ -261,32 +303,48 @@ impl TryFrom<u8> for ZeroPair {
 pub struct StatusFlags(u32);
 
 impl StatusFlags {
+    /// The audio stream is running.
     pub const RUNNING: Self = Self(0x001);
+    /// The audio stream has ended.
     pub const ENDED: Self = Self(0x002);
+    /// The device reports a fault.
     pub const FAULT: Self = Self(0x004);
+    /// The transport was reset.
     pub const TRANSPORT_RESET: Self = Self(0x008);
+    /// Receive buffering overflowed.
     pub const RECEIVE_OVERFLOW: Self = Self(0x010);
+    /// Received data was discarded.
     pub const RECEIVE_DISCARDED: Self = Self(0x020);
+    /// The PCM stream underflowed.
     pub const PCM_UNDERFLOW: Self = Self(0x040);
+    /// The PCM stream overflowed.
     pub const PCM_OVERFLOW: Self = Self(0x080);
+    /// The event queue overflowed.
     pub const EVENT_OVERFLOW: Self = Self(0x100);
+    /// An argument was rejected.
     pub const ARGUMENT_REJECTED: Self = Self(0x200);
 
+    /// Construct flags while retaining unknown bits.
     pub const fn from_bits_retain(bits: u32) -> Self {
         Self(bits)
     }
+    /// Return all flag bits, including unknown bits.
     pub const fn bits(self) -> u32 {
         self.0
     }
+    /// Return whether all bits in `flag` are present.
     pub const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0
     }
+    /// Return whether [`Self::RUNNING`] is set.
     pub const fn running(self) -> bool {
         self.contains(Self::RUNNING)
     }
+    /// Return whether [`Self::ENDED`] is set.
     pub const fn ended(self) -> bool {
         self.contains(Self::ENDED)
     }
+    /// Return whether [`Self::FAULT`] is set.
     pub const fn fault(self) -> bool {
         self.contains(Self::FAULT)
     }

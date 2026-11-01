@@ -1,3 +1,5 @@
+//! Typed chip register writes and conversions from soundlog VGM commands.
+
 use soundlog::chip::{
     C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec, SegaPcmSpec,
     Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
@@ -53,10 +55,12 @@ macro_rules! define_writes {
                 match self { $(Self::$variant(_) => Chip::$chip,)+ }
             }
 
+            /// Extract bank, register, and value from the typed write.
             pub(crate) fn parts(&self) -> (u8, u8, u32) {
                 match self { $(Self::$variant($s) => $parts,)+ }
             }
 
+            /// Extract write parts after checking the target chip.
             pub(crate) fn parts_for(&self, actual: &Chip) -> Result<(u8, u8, u32), ChipError> {
                 let expected = self.chip();
                 if &expected != actual {
@@ -68,6 +72,7 @@ macro_rules! define_writes {
                 Ok(self.parts())
             }
 
+            /// Extract write parts and reject values that do not fit in a byte.
             pub(crate) fn byte_parts_for(&self, actual: &Chip) -> Result<(u8, u8, u8), ChipError> {
                 let (bank, register, value) = self.parts_for(actual)?;
                 let value = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
@@ -125,6 +130,7 @@ define_writes! {
 }
 
 impl ChipRegisterWrite {
+    /// Convert a supported VGM write command into its typed chip write.
     pub(crate) fn from_vgm_command(command: &VgmCommand) -> Option<(Instance, Self)> {
         use VgmCommand::*;
         Some(match command {

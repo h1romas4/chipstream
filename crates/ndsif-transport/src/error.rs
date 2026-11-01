@@ -1,3 +1,5 @@
+//! Typed errors for serial device configuration and initialization.
+
 use std::error::Error;
 use std::fmt;
 
@@ -8,43 +10,79 @@ pub enum NdsifTransportError {
     /// The serial port name is empty or consists only of whitespace.
     EmptyPort,
     /// The same port was specified more than once.
-    DuplicatePort { port: String },
+    DuplicatePort {
+        /// Port specified more than once.
+        port: String,
+    },
     /// The serial baud rate must be nonzero.
-    InvalidBaudRate { port: String },
+    InvalidBaudRate {
+        /// Port with a zero baud rate.
+        port: String,
+    },
     /// The response timeout must be nonzero.
-    InvalidTimeout { port: String },
+    InvalidTimeout {
+        /// Port with a zero response timeout.
+        port: String,
+    },
     /// An error occurred while initializing the named device.
     Device {
+        /// Port being initialized.
         port: String,
+        /// Underlying device initialization failure.
         source: Box<NdsifTransportError>,
     },
     /// Opening or configuring the serial port failed.
     Serial {
+        /// Description of the failed serial operation.
         operation: &'static str,
+        /// Underlying serial-port error.
         source: serialport::Error,
     },
     /// Reading, writing, or flushing the serial port failed.
     Io {
+        /// Description of the failed I/O operation.
         operation: &'static str,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
     /// Encoding or decoding an NDSIF message failed.
     Protocol {
+        /// Description of the failed protocol operation.
         operation: &'static str,
+        /// Underlying codec error.
         source: ndsif::Error,
     },
     /// The device did not respond before the configured timeout.
-    Timeout { command: u8, transaction_id: u16 },
+    Timeout {
+        /// Command ID for which a response was expected.
+        command: u8,
+        /// Transaction ID of the request.
+        transaction_id: u16,
+    },
     /// The device rejected a command.
-    Rejected { command: u8, status: ndsif::Status },
+    Rejected {
+        /// Rejected command ID.
+        command: u8,
+        /// Device response status.
+        status: ndsif::Status,
+    },
     /// The response contained a different reply than expected.
-    UnexpectedResponse { operation: &'static str },
+    UnexpectedResponse {
+        /// Operation whose response had an unexpected reply.
+        operation: &'static str,
+    },
     /// Capability pagination failed to advance.
     InvalidCapabilitiesPagination,
     /// A DAC status reply referred to a different profile.
-    UnexpectedDacProfile { profile: u8 },
+    UnexpectedDacProfile {
+        /// Profile returned by the device.
+        profile: u8,
+    },
     /// A device stream was not idle during initialization.
-    DeviceBusy { stream: &'static str },
+    DeviceBusy {
+        /// Name of the stream or profile that is not idle.
+        stream: &'static str,
+    },
 }
 
 impl fmt::Display for NdsifTransportError {

@@ -4,6 +4,7 @@ use soundlog::chip::Chip;
 use soundlog::vgm::command::Instance;
 use soundlog::vgm::header::{ChipId, VgmExtraHeader};
 
+/// Convert the VGM header's logarithmic volume modifier to linear gain.
 pub(super) fn global_gain(raw: u8) -> f32 {
     let value = match raw {
         0x00..=0xc0 => i32::from(raw),
@@ -13,6 +14,7 @@ pub(super) fn global_gain(raw: u8) -> f32 {
     2.0_f32.powf(value as f32 / 32.0)
 }
 
+/// Resolve an extra-header chip volume against its default reference level.
 pub(super) fn chip_gain(
     extra: Option<&VgmExtraHeader>,
     chip: &Chip,

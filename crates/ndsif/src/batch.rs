@@ -1,3 +1,5 @@
+//! Allocation-free splitting and encoding of register and audio-data batches.
+
 use crate::{
     AudioEvent, BytePosition, Command, Error, MAX_AUDIO_DATA_BYTES, MAX_REGISTER_EVENT_WRITES,
     MAX_REGISTER_WRITES, RegisterWrite, WriteId,
@@ -12,6 +14,7 @@ pub struct CommandEncoder<F> {
 }
 
 impl<F: FnMut(&[u8])> CommandEncoder<F> {
+    /// Start emitting frames at the specified transaction ID.
     pub const fn new(transaction_id: u16, emit: F) -> Self {
         Self {
             emit,
@@ -20,10 +23,12 @@ impl<F: FnMut(&[u8])> CommandEncoder<F> {
         }
     }
 
+    /// Return the number of frames emitted.
     pub const fn count(&self) -> usize {
         self.count
     }
 
+    /// Return the ID to use for the next frame, wrapping after `u16::MAX`.
     pub const fn next_transaction_id(&self) -> u16 {
         self.transaction_id
     }

@@ -1,4 +1,7 @@
-//! Metadata probing for VGM, VGZ, and MDX files.
+//! Metadata probing for VGM and MDX byte inputs.
+//!
+//! VGZ input must be decompressed by the caller before probing. MDX input is
+//! normalized for playback, including supported compressed MDX bodies.
 
 use std::error::Error;
 use std::fmt;
@@ -13,18 +16,28 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 /// Standard metadata tags available from a VGM/VGZ or MDX file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackMetadata {
+    /// Normalized track title, if available.
     pub title: Option<String>,
+    /// Normalized artist or author, if available.
     pub artist: Option<String>,
+    /// Normalized game or album name, if available.
     pub album: Option<String>,
+    /// Normalized comment or notes, if available.
     pub comment: Option<String>,
 }
 
 /// Errors encountered while reading or parsing metadata.
 #[derive(Debug)]
 pub enum MetadataError {
+    /// Invalid input header or MDX compatibility data.
     InvalidData(String),
+    /// Invalid or out-of-range GD3 metadata.
     InvalidGd3(String),
-    InputTooLarge { limit: u64 },
+    /// The input exceeds the metadata probe's byte limit.
+    InputTooLarge {
+        /// Maximum input size in bytes.
+        limit: u64,
+    },
 }
 
 impl fmt::Display for MetadataError {
@@ -71,7 +84,7 @@ pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     })
 }
 
-/// Parse the title metadata from uncompressed MDX bytes.
+/// Parse title metadata from MDX bytes, including supported compressed bodies.
 pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     check_size(bytes, MAX_INPUT_BYTES)?;
     let normalized = normalize_mdx_for_playback(bytes)
@@ -85,6 +98,7 @@ pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     })
 }
 
+/// Enforce the input-size limit before parsing metadata.
 fn check_size(bytes: &[u8], limit: u64) -> Result<(), MetadataError> {
     if bytes.len() as u64 > limit {
         return Err(MetadataError::InputTooLarge { limit });
@@ -92,12 +106,14 @@ fn check_size(bytes: &[u8], limit: u64) -> Result<(), MetadataError> {
     Ok(())
 }
 
+/// Prefer a normalized primary tag, falling back when it is empty.
 fn first_nonempty(primary: Option<String>, fallback: Option<String>) -> Option<String> {
     primary
         .and_then(nonempty)
         .or_else(|| fallback.and_then(nonempty))
 }
 
+/// Collapse whitespace and discard empty metadata values.
 fn nonempty(value: String) -> Option<String> {
     let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     (!value.is_empty()).then_some(value)

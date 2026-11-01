@@ -234,6 +234,7 @@ impl StereoResampler {
         self.finished = false;
     }
 
+    /// Capture buffered samples and timing state for checkpoint restoration.
     pub(crate) fn save_state(&self) -> StereoResamplerState {
         StereoResamplerState {
             input: self.input.clone(),
@@ -249,6 +250,7 @@ impl StereoResampler {
         }
     }
 
+    /// Restore a previously captured resampling state.
     pub(crate) fn restore_state(&mut self, state: &StereoResamplerState) {
         self.input.clone_from(&state.input);
         self.position = state.position;
@@ -262,6 +264,7 @@ impl StereoResampler {
         self.finished = state.finished;
     }
 
+    /// Produce due output frames while enough input exists for the sinc window.
     fn generate(&mut self, output: &mut Vec<[f32; 2]>) -> Result<(), AudioError> {
         while self.due != 0 {
             if self.pending_advance {
@@ -305,6 +308,7 @@ impl StereoResampler {
         Ok(())
     }
 
+    /// Advance the input cursor, accounting for rate changes across the interval.
     fn advance_position(&mut self) -> Result<bool, AudioError> {
         let rate = self.phase_rate.expect("output has a sample rate");
         let whole_step = rate.numerator() / rate.denominator().get() / self.output_rate;
@@ -362,6 +366,7 @@ impl StereoResampler {
         Ok(true)
     }
 
+    /// Find the first buffered rate boundary between the cursor and target.
     fn find_rate_change(&self, position: usize, target: usize, rate: SampleRate) -> Option<usize> {
         let end = target.min(self.input.len().saturating_sub(1));
         ((position + 1)..=end).find(|index| !same_rate(self.input[*index].1, rate))

@@ -26,9 +26,13 @@ pub use soundlog::mdx::convert::MdxToVgmOptions as MdxSequencerOptions;
 /// Failure to parse, initialize, or render an MDX package.
 #[derive(Debug)]
 pub enum MdxSequencerError {
+    /// MDX compatibility normalization failed.
     Compatibility(String),
+    /// MDX or PDX parsing failed.
     Parse(soundlog::ParseError),
+    /// MDX driver initialization or options failed.
     Conversion(MdxConvertError),
+    /// The underlying sequencer failed.
     Playback(VgmSequencerError),
 }
 

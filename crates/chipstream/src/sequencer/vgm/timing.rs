@@ -20,6 +20,7 @@ pub(super) struct TimingProfile {
 }
 
 impl TimingProfile {
+    /// Select write pacing and dynamic-clock register metadata for a chip.
     pub(super) fn for_chip(chip: &Chip) -> Self {
         // Oversampled FM backends need several native frames per FM clock.
         let write_interval = match chip {
@@ -73,11 +74,13 @@ impl Default for ClockChanges {
 }
 
 impl ClockChanges {
+    /// Track byte-wise extrema for a dynamically written clock.
     fn observe_byte(&mut self, index: usize, value: u8) {
         self.low[index] = self.low[index].min(value);
         self.high[index] = self.high[index].max(value);
     }
 
+    /// Estimate conservative sample-rate bounds across clock byte changes.
     fn bounds(&self, clock: u32, registers: ClockRegisters) -> (u32, u32) {
         // Byte-wise extrema conservatively include intermediate clock writes.
         let mut low = clock.to_le_bytes();
@@ -107,6 +110,7 @@ pub(super) struct Timing {
 }
 
 impl Timing {
+    /// Track dynamic clocks for the supported chips present in the header.
     pub(super) fn new(clocks: &[(Chip, u32)]) -> Self {
         Self {
             clocks: clocks
@@ -125,10 +129,12 @@ impl Timing {
         }
     }
 
+    /// Return whether any chip requires a clock-change scan.
     pub(super) fn needs_scan(&self) -> bool {
         !self.clocks.is_empty()
     }
 
+    /// Collect a clock-register write from a VGM command.
     pub(super) fn observe(&mut self, command: &VgmCommand) {
         let Some((instance, write)) = ChipRegisterWrite::from_vgm_command(command) else {
             return;
@@ -152,6 +158,7 @@ impl Timing {
         }
     }
 
+    /// Include a complete clock value in a chip instance's bounds.
     pub(super) fn observe_clock(&mut self, chip: &Chip, instance: Instance, clock: u32) {
         if let Some(clock_changes) = self.clocks.iter_mut().find(|entry| &entry.chip == chip) {
             for (index, value) in clock.to_le_bytes().into_iter().enumerate() {
@@ -160,6 +167,7 @@ impl Timing {
         }
     }
 
+    /// Return conservative native-rate bounds, or the fixed rate's bounds.
     pub(super) fn bounds(
         &self,
         chip: &Chip,

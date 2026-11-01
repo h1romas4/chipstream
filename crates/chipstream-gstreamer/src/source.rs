@@ -1,3 +1,5 @@
+//! GStreamer source element, playback worker, input loading, and seek handling.
+
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
@@ -66,6 +68,7 @@ struct Settings {
 }
 
 impl Settings {
+    /// Return whether either NDSIF port property is configured.
     fn ndsif_enabled(&self) -> bool {
         self.ndsif_port.is_some() || self.ndsif_ports.is_some()
     }
@@ -136,6 +139,7 @@ enum SequencerCheckpoint {
 }
 
 impl Sequencer {
+    /// Render a block from either supported sequencer.
     fn render(&mut self) -> Result<Option<StereoBlock>, String> {
         match self {
             Self::Vgm(player) => player.render().map_err(|error| error.to_string()),
@@ -143,6 +147,7 @@ impl Sequencer {
         }
     }
 
+    /// Return the current output-frame position.
     fn position_frames(&self) -> usize {
         match self {
             Self::Vgm(player) => player.position_frames(),
@@ -150,6 +155,7 @@ impl Sequencer {
         }
     }
 
+    /// Capture a format-specific playback checkpoint.
     fn checkpoint(&mut self) -> Result<SequencerCheckpoint, String> {
         match self {
             Self::Vgm(player) => player
@@ -163,6 +169,7 @@ impl Sequencer {
         }
     }
 
+    /// Restore a matching checkpoint and seek, reporting an unreachable target.
     fn seek_to_frame(
         &mut self,
         checkpoint: &SequencerCheckpoint,
@@ -671,6 +678,7 @@ mod imp {
     }
 
     impl ChipstreamSrc {
+        /// Replace any existing render worker with one using the current settings.
         fn start_worker(&self, settings: Settings) -> Result<(), gst::ErrorMessage> {
             self.stop_worker()?;
             *self
@@ -736,6 +744,7 @@ mod imp {
             Ok(())
         }
 
+        /// Send a seek request and replace the worker's output receiver.
         fn request_seek(&self, target_frame: u64) -> Result<(), ()> {
             let control_sender = self
                 .controls
@@ -760,6 +769,7 @@ mod imp {
             Ok(())
         }
 
+        /// Cancel and join the render worker, releasing its channels.
         fn stop_worker(&self) -> Result<(), gst::ErrorMessage> {
             self.cancelled.store(true, Ordering::Release);
             self.receiver
@@ -785,6 +795,7 @@ mod imp {
             Ok(())
         }
 
+        /// Read the configured output sample rate.
         fn sample_rate(&self) -> u32 {
             self.settings
                 .lock()
@@ -800,6 +811,7 @@ glib::wrapper! {
         @implements gst::URIHandler;
 }
 
+/// Register the source element with the plugin.
 pub(super) fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
@@ -809,6 +821,7 @@ pub(super) fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     )
 }
 
+/// Run the render worker, forwarding metadata, audio, seek results, and errors.
 fn render_file(
     location: PathBuf,
     pdx_location: Option<PathBuf>,
@@ -989,6 +1002,7 @@ fn render_file(
     }
 }
 
+/// Keep the origin checkpoint and a bounded set of recent checkpoints.
 fn cache_checkpoint<T>(checkpoints: &mut VecDeque<(usize, T)>, frame: usize, checkpoint: T) {
     if let Some(index) = checkpoints
         .iter()
@@ -1006,6 +1020,7 @@ fn cache_checkpoint<T>(checkpoints: &mut VecDeque<(usize, T)>, frame: usize, che
     }
 }
 
+/// Find the latest checkpoint no later than the seek target.
 fn nearest_checkpoint<T>(checkpoints: &VecDeque<(usize, T)>, target: usize) -> Option<&T> {
     checkpoints
         .iter()
@@ -1014,6 +1029,7 @@ fn nearest_checkpoint<T>(checkpoints: &VecDeque<(usize, T)>, target: usize) -> O
         .map(|(_, checkpoint)| checkpoint)
 }
 
+/// Capture and cache the player's current playback state.
 fn capture_checkpoint(
     player: &mut Sequencer,
     checkpoints: &mut VecDeque<(usize, SequencerCheckpoint)>,
@@ -1024,6 +1040,7 @@ fn capture_checkpoint(
     Ok(())
 }
 
+/// Seek from a cached checkpoint or rebuild the player when necessary.
 fn seek_player(
     player: &mut Sequencer,
     checkpoints: &mut VecDeque<(usize, SequencerCheckpoint)>,
@@ -1072,6 +1089,7 @@ fn seek_player(
     Ok((position, pending_frames, !reached_target))
 }
 
+/// Render and discard audio until a requested frame is reached.
 fn discard_to_frame(
     player: &mut Sequencer,
     target_frame: u64,
@@ -1096,6 +1114,7 @@ fn discard_to_frame(
     Ok(None)
 }
 
+/// Load a software-only player, metadata, and measured duration.
 fn load_sequencer(
     path: &Path,
     pdx_location: Option<&Path>,
@@ -1104,6 +1123,7 @@ fn load_sequencer(
     load_sequencer_with_ndsif(path, pdx_location, settings, None)
 }
 
+/// Load an MDX or VGM player with optional NDSIF chip factories.
 fn load_sequencer_with_ndsif(
     path: &Path,
     pdx_location: Option<&Path>,
@@ -1211,6 +1231,7 @@ fn load_sequencer_with_ndsif(
     }
 }
 
+/// Create hardware factories for the configured serial ports, if any.
 fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactoryRegistry, String> {
     let Some(settings) = settings else {
         return Ok(ChipFactoryRegistry::new());
@@ -1228,6 +1249,7 @@ fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactory
     create_ndsif_factories(&configs).map_err(|error| error.to_string())
 }
 
+/// Parse mutually exclusive single-port and comma-separated port settings.
 fn parse_ndsif_ports(settings: &NdsifSettings) -> Result<Vec<String>, String> {
     if settings.port.is_some() && settings.ports.is_some() {
         return Err("configure either ndsif-port or ndsif-ports, not both".to_owned());
@@ -1242,6 +1264,7 @@ fn parse_ndsif_ports(settings: &NdsifSettings) -> Result<Vec<String>, String> {
     Ok(ports.into_iter().map(str::to_owned).collect())
 }
 
+/// Load the optional adjacent YM2608 rhythm ROM for available chip instances.
 fn configure_adjacent_ym2608_rhythm_rom(
     input_path: &Path,
     player: &mut VgmSequencer<'_>,
@@ -1287,17 +1310,20 @@ fn configure_adjacent_ym2608_rhythm_rom(
     Ok(())
 }
 
+/// Convert fade seconds to the VGM reference sample rate.
 fn fadeout_samples(seconds: f64) -> Option<u32> {
     let samples = (seconds * f64::from(FADEOUT_REFERENCE_RATE)).round() as u32;
     (samples > 0).then_some(samples)
 }
 
+/// Read a file with a size limit and contextualize I/O errors.
 fn read_path(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file =
         File::open(path).map_err(|error| format!("failed to open {}: {error}", path.display()))?;
     read_bounded(file, limit).map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
+/// Read at most the allowed size, rejecting inputs that exceed it.
 fn read_bounded(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.take(limit + 1).read_to_end(&mut bytes)?;
@@ -1309,6 +1335,7 @@ fn read_bounded(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Decompress gzip VGM input when indicated by extension or content.
 fn decode_vgm(bytes: Vec<u8>, gzip_extension: bool) -> Result<Vec<u8>, String> {
     if gzip_extension || bytes.starts_with(&[0x1f, 0x8b]) {
         read_bounded(GzDecoder::new(Cursor::new(bytes)), MAX_DECOMPRESSED_BYTES)
@@ -1318,6 +1345,7 @@ fn decode_vgm(bytes: Vec<u8>, gzip_extension: bool) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Resolve an MDX-referenced PDX file next to the input.
 fn resolve_pdx_path(input: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.rsplit(['/', '\\']).next().unwrap_or("");
     if name.is_empty() || name == "." || name == ".." {
@@ -1371,6 +1399,7 @@ fn resolve_pdx_path(input: &Path, name: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Push nonempty track metadata as a downstream tag event.
 fn push_metadata(source: &ChipstreamSrc, metadata: TrackMetadata) {
     if metadata.title.is_none()
         && metadata.artist.is_none()
@@ -1398,6 +1427,7 @@ fn push_metadata(source: &ChipstreamSrc, metadata: TrackMetadata) {
     source.src_pad().push_event(gst::event::Tag::new(tags));
 }
 
+/// Pack stereo frames into a timestamped little-endian GStreamer buffer.
 fn make_buffer(
     start_frame: u64,
     frames: Vec<[f32; 2]>,
@@ -1436,17 +1466,20 @@ fn make_buffer(
     Ok(CreateSuccess::NewBuffer(buffer))
 }
 
+/// Convert a frame position to a saturated GStreamer timestamp.
 fn frame_time(frame: u64, sample_rate: u32) -> gst::ClockTime {
     let nanoseconds = u128::from(frame) * 1_000_000_000 / u128::from(sample_rate);
     gst::ClockTime::from_nseconds(nanoseconds.min(u128::from(u64::MAX)) as u64)
 }
 
+/// Convert a frame position to a timestamp when it fits the valid range.
 fn checked_frame_time(frame: u64, sample_rate: u32) -> Option<gst::ClockTime> {
     let nanoseconds = u128::from(frame) * 1_000_000_000 / u128::from(sample_rate);
     let nanoseconds = u64::try_from(nanoseconds).ok()?;
     (nanoseconds < u64::MAX).then(|| gst::ClockTime::from_nseconds(nanoseconds))
 }
 
+/// Identify the initial zero-position time segment that requires no seek.
 fn is_initial_noop_time_segment(segment: &gst::Segment) -> bool {
     let zero = gst::GenericFormattedValue::Time(Some(gst::ClockTime::ZERO));
     segment.format() == gst::Format::Time

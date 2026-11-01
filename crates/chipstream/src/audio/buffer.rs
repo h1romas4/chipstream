@@ -10,35 +10,60 @@ use super::NativeBlock;
 /// An error in the shared audio processing components.
 #[derive(Debug)]
 pub enum AudioError {
+    /// A sample rate is zero.
     InvalidSampleRate,
+    /// The configured input rate range is invalid.
     InvalidRateRange {
+        /// Minimum input rate in hertz.
         min: u32,
+        /// Maximum input rate in hertz.
         max: u32,
     },
+    /// The input rate is outside the configured range.
     RateOutOfRange {
+        /// Actual rational input rate.
         rate: SampleRate,
+        /// Minimum input rate in hertz.
         min: u32,
+        /// Maximum input rate in hertz.
         max: u32,
     },
+    /// A maximum input chunk size is zero.
     InvalidChunkSize,
+    /// A stereo matrix is empty or contains non-finite coefficients.
     InvalidMatrix,
+    /// The input has an unexpected number of channels.
     ChannelMismatch {
+        /// Required channel count.
         expected: usize,
+        /// Actual channel count.
         actual: usize,
     },
+    /// The input has an unexpected sample rate.
     RateMismatch {
+        /// Required sample rate.
         expected: SampleRate,
+        /// Actual sample rate.
         actual: SampleRate,
     },
+    /// Audio blocks have incompatible frame counts.
     FrameMismatch {
+        /// Required frame count.
         expected: usize,
+        /// Actual frame count.
         actual: usize,
     },
+    /// Gain is negative or non-finite.
     InvalidGain,
+    /// Balance is non-finite or outside `-1..=1`.
     InvalidBalance,
+    /// An input or calculated sample is non-finite.
     NonFiniteSample,
+    /// The resampler stream has already finished.
     StreamFinished,
+    /// The resampled output length exceeds supported limits.
     OutputLengthOverflow,
+    /// The resampler did not drain within the supported padding length.
     ResamplerDrainIncomplete,
 }
 
@@ -186,7 +211,9 @@ impl StereoMatrix {
     }
 }
 
+/// Compare rational sample rates after reducing their fractions.
 pub(crate) fn same_rate(a: SampleRate, b: SampleRate) -> bool {
+    /// Compute the greatest common divisor for rate reduction.
     fn gcd(mut a: u32, mut b: u32) -> u32 {
         while b != 0 {
             (a, b) = (b, a % b);

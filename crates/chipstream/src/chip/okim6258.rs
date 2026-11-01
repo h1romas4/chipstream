@@ -24,8 +24,11 @@ const VGM_SIGNAL_SCALE: i32 = 256;
 /// OKIM6258 clock divider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockDivider {
+    /// Divide the input clock by 1024.
     Div1024,
+    /// Divide the input clock by 768.
     Div768,
+    /// Divide the input clock by 512.
     Div512,
 }
 
@@ -44,7 +47,9 @@ impl ClockDivider {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum OutputBits {
+    /// Clamp to 10-bit DAC precision.
     Bits10 = 10,
+    /// Clamp to 12-bit DAC precision.
     Bits12 = 12,
 }
 
@@ -157,6 +162,7 @@ impl Okim6258 {
         self.pan_mask
     }
 
+    /// Apply playback and recording control bits.
     fn write_control(&mut self, data: u8) {
         if data & COMMAND_STOP != 0 {
             self.status &= !(STATUS_PLAYING | STATUS_RECORDING);
@@ -180,6 +186,7 @@ impl Okim6258 {
         }
     }
 
+    /// Decode one ADPCM nibble and advance the predictor.
     fn clock_adpcm(&mut self, nibble: u8) -> i32 {
         let limit = 1_i32 << (self.output_bits as u8 - 1);
         self.signal = (self.signal + self.diff_lookup[self.step][usize::from(nibble)])
@@ -188,6 +195,7 @@ impl Okim6258 {
         self.signal << 4
     }
 
+    /// Smooth and clamp a VGM playback sample using fixed-point state.
     fn filter_vgm_sample(&mut self, sample: i32, retention: i32, divisor: i32) -> i32 {
         // The 12-bit DAC bounds the Q8 signal to 2^23 and retention to 15.
         self.vgm_signal_q8 = (self.vgm_signal_q8 * retention
@@ -201,6 +209,7 @@ impl Okim6258 {
         self.vgm_signal_q8 / VGM_SIGNAL_SCALE
     }
 
+    /// Decode the next queued VGM nibble or filter silence on underrun.
     fn clock_vgm_stream(&mut self) -> i32 {
         if !self.vgm_byte_loaded
             && self.nibble_shift == 0
@@ -333,6 +342,7 @@ impl SoundChip for Okim6258 {
     }
 }
 
+/// Ensure the clock is high enough for the selected divider.
 fn validate_clock(clock: u32, divider: ClockDivider) -> Result<(), ChipError> {
     let minimum = divider.value();
     if clock < minimum {

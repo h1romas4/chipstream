@@ -1,3 +1,7 @@
+//! Local bookkeeping for ADPCM stream positions and lifecycle.
+//!
+//! This module neither performs I/O nor validates remote device state.
+
 use crate::{AudioStatus, AudioTiming, BytePosition, Error, MAX_AUDIO_DATA_BYTES};
 
 /// Local protocol state for one continuous NDSIF ADPCM stream.
@@ -16,6 +20,7 @@ pub struct AudioStreamState {
 }
 
 impl AudioStreamState {
+    /// Create a stream with zero positions and a nonzero host output rate.
     pub fn new(timing: AudioTiming, output_rate: u32) -> Result<Self, Error> {
         if output_rate == 0 {
             return Err(Error::InvalidArgument);
@@ -31,30 +36,37 @@ impl AudioStreamState {
         })
     }
 
+    /// Return the ADPCM clock and divider used for position conversion.
     pub const fn timing(self) -> AudioTiming {
         self.timing
     }
 
+    /// Return the host output frame rate in frames per second.
     pub const fn output_rate(self) -> u32 {
         self.output_rate
     }
 
+    /// Return the end position of audio data recorded as accepted.
     pub const fn accepted(self) -> BytePosition {
         self.accepted
     }
 
+    /// Return the most recently reported played byte position.
     pub const fn played(self) -> BytePosition {
         self.played
     }
 
+    /// Return the accepted but not yet played byte count.
     pub const fn pending_bytes(self) -> u32 {
         self.accepted.get() - self.played.get()
     }
 
+    /// Return whether a status has reported the stream running.
     pub const fn started(self) -> bool {
         self.started
     }
 
+    /// Return whether an end event was recorded or status reported an end.
     pub const fn ended(self) -> bool {
         self.ended
     }
@@ -134,7 +146,10 @@ impl AudioStreamState {
         Ok(())
     }
 
-    /// Applies a non-faulted AUDIO_STATUS response to the local stream state.
+    /// Applies AUDIO_STATUS position and lifecycle fields to the local state.
+    ///
+    /// The caller must check `status.flags.fault()` separately; this method
+    /// validates position consistency but does not reject faulted status.
     pub fn update_status(&mut self, status: AudioStatus) -> Result<(), Error> {
         if status.accepted != self.accepted.get()
             || status.played > status.accepted

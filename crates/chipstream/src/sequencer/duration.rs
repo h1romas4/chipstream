@@ -1,3 +1,5 @@
+//! Bounded playback-duration measurement without generating PCM audio.
+
 use soundlog::mdx::convert::{
     MdxLoopMarker, MdxToVgmOptions, to_vgm_stream_generator,
     to_vgm_stream_generator_with_loop_marker,
@@ -82,6 +84,7 @@ pub fn measure_mdx_duration_frames(
     .map_err(MdxSequencerError::Playback)
 }
 
+/// Scan waits and loop markers up to the command limit without rendering audio.
 fn measure_stream_frames(
     mut stream: VgmStream,
     output_rate: u32,
@@ -126,6 +129,7 @@ fn measure_stream_frames(
     Ok(None)
 }
 
+/// Accumulate output frames for a VGM wait using fixed-point timing.
 fn advance_frames(
     samples: u32,
     whole: u32,
@@ -149,6 +153,7 @@ fn advance_frames(
     Ok(())
 }
 
+/// Return the high and low words of a 32-bit product.
 fn multiply_u32_wide(a: u32, b: u32) -> (u32, u32) {
     let a_low = a & 0xffff;
     let a_high = a >> 16;

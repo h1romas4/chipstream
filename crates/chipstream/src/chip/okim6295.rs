@@ -87,6 +87,7 @@ impl Okim6295 {
         Ok(())
     }
 
+    /// Read a ROM byte through the configured standard or NMK bank mapping.
     fn read_rom(&self, address: u32) -> u8 {
         let offset = if self.nmk_enable != 0 {
             if address < 0x400 && self.nmk_enable & 0x80 != 0 {
@@ -101,6 +102,7 @@ impl Okim6295 {
         self.rom.get(offset as usize).copied().unwrap_or(0)
     }
 
+    /// Interpret a sample-start or voice-stop command byte.
     fn write_command(&mut self, value: u8) {
         const VOLUME: [i32; 16] = [32, 22, 16, 11, 8, 6, 4, 3, 2, 0, 0, 0, 0, 0, 0, 0];
         if let Some(sample) = self.command.take() {
@@ -138,6 +140,7 @@ impl Okim6295 {
         }
     }
 
+    /// Decode one nibble per active voice and mix a mono sample.
     fn tick(&mut self) -> i32 {
         let mut output = 0;
         for i in 0..4 {

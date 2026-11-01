@@ -1,3 +1,7 @@
+//! Serial NDSIF transport and scheduled chipstream backend integration.
+
+#![doc = include_str!("../README.md")]
+
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -200,6 +204,7 @@ pub fn create_chip_factories(
     Ok(factories)
 }
 
+/// Reject invalid serial settings before opening any device.
 fn validate_config(
     path: &str,
     baud_rate: u32,
@@ -221,6 +226,7 @@ fn validate_config(
     Ok(())
 }
 
+/// Find the first configured device supporting the requested chip and clock.
 fn find_transport(
     transports: &[Rc<RefCell<NdsifSerialTransport>>],
     chip: &Chip,
@@ -248,6 +254,7 @@ fn find_transport(
     Ok(None)
 }
 
+/// Map supported YMFM chip types to their NDSIF write identifiers.
 fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
     let write_id = match chip {
         Chip::Ym2413 => 0x51,
@@ -266,6 +273,7 @@ fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
     WriteId::try_from(write_id).ok()
 }
 
+/// Convert a sequencer instance to its protocol instance number.
 fn instance_number(instance: Instance) -> u8 {
     match instance {
         Instance::Primary => 0,
@@ -279,6 +287,7 @@ struct AudioStream {
     prebuffer_bytes: u32,
 }
 
+/// Compute the prebuffer target while reserving room for another data frame.
 fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u32) -> u32 {
     let safe_capacity = capacity
         .saturating_sub(ndsif::MAX_AUDIO_DATA_BYTES as u32)
@@ -287,6 +296,7 @@ fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u32) -> u32 
         .min(u64::from(safe_capacity)) as u32
 }
 
+/// Convert an output frame to a bounded device tick position.
 fn ticks_for_frame(
     sample_frame: usize,
     sample_rate: u32,
@@ -304,6 +314,7 @@ fn ticks_for_frame(
     Ok(ticks)
 }
 
+/// Append bounded wait records to advance the DAC timeline to a target tick.
 fn append_dac_waits(
     records: &mut Vec<DacRecord>,
     current_tick: &mut u64,
@@ -329,6 +340,7 @@ fn append_dac_waits(
     Ok(())
 }
 
+/// Identify YM2612 writes represented directly by timed DAC records.
 fn is_timed_dac_data_register(event: &NdsifRegisterEvent) -> bool {
     event.write_id == WriteId::YM2612
         && event.instance == 0
@@ -350,6 +362,7 @@ struct TimedDacStream {
 }
 
 impl TimedDacStream {
+    /// Initialize counters for a discovered timed DAC profile.
     fn new(capabilities: DacCapabilities) -> Self {
         Self {
             capabilities,
@@ -365,6 +378,7 @@ impl TimedDacStream {
         }
     }
 
+    /// Compute the target DAC prebuffer lead in device ticks.
     fn minimum_lead_ticks(&self) -> u32 {
         (u64::from(self.capabilities.ticks_per_second) * DAC_PREBUFFER_MILLISECONDS / 1000)
             .min(u64::from(u32::MAX)) as u32
@@ -380,6 +394,7 @@ enum PendingEvent {
 }
 
 impl PendingEvent {
+    /// Return the event's absolute host output-frame position.
     fn sample_frame(&self) -> usize {
         match self {
             Self::Register(event) => event.sample_frame,
@@ -389,6 +404,7 @@ impl PendingEvent {
         }
     }
 
+    /// Order data, writes, and end controls at the same position.
     fn priority(&self) -> u8 {
         match self {
             Self::Data(_) => 0,
@@ -445,6 +461,7 @@ impl NdsifSerialTransport {
         })
     }
 
+    /// Open and initialize a validated device, optionally resetting it.
     fn open_device(
         path: &str,
         baud_rate: u32,
@@ -492,6 +509,10 @@ impl NdsifSerialTransport {
         Ok(transport)
     }
 
+    /// Check cached capabilities for the chip instance and requested clock.
+    ///
+    /// Variable-clock targets are accepted; fixed clocks must match exactly.
+    /// This does not set the device clock or perform I/O.
     pub fn supports_clock(&self, write_id: WriteId, instance: u8, clock_hz: u32) -> bool {
         self.capability(write_id, instance)
             .is_some_and(|capability| match capability.clock_mode {
@@ -501,6 +522,11 @@ impl NdsifSerialTransport {
             })
     }
 
+    /// Check cached capability and capacity for a primary OKIM6258 stream.
+    ///
+    /// The clock must be supported by `ndsif::OkiClock`. This does not check
+    /// the chip's advertised clock mode; callers should also use
+    /// [`Self::supports_clock`].
     pub fn supports_audio_stream(&self, instance: u8, clock_hz: u32) -> bool {
         instance == 0
             && self.data_capacity > 0
@@ -509,6 +535,7 @@ impl NdsifSerialTransport {
             && self.capability(WriteId::OKIM6258, instance).is_some()
     }
 
+    /// Read all capability pages and discover the supported timed DAC profile.
     fn load_capabilities(&mut self) -> Result<(), NdsifTransportError> {
         let mut offset = 0_u16;
         let mut timed_dac_supported = false;
@@ -559,6 +586,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Reject a timed DAC profile with existing activity or faults.
     fn verify_timed_dac_idle(&mut self) -> Result<(), NdsifTransportError> {
         if self.timed_dac_capabilities.is_none() {
             return Ok(());
@@ -588,6 +616,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Reject an OKIM6258 audio stream with existing activity or faults.
     fn verify_audio_stream_idle(&mut self) -> Result<(), NdsifTransportError> {
         if self.capability(WriteId::OKIM6258, 0).is_none() {
             return Ok(());
@@ -620,11 +649,13 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Send a command using the playback trait's string error boundary.
     fn request(&mut self, command: Command<'_>) -> Result<ndsif::Frame, String> {
         self.request_typed(command)
             .map_err(|error| error.to_string())
     }
 
+    /// Exchange a command and validate its response, preserving typed errors.
     fn request_typed(&mut self, command: Command<'_>) -> Result<ndsif::Frame, NdsifTransportError> {
         let transaction_id = self.transaction_id;
         let request =
@@ -714,6 +745,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Find a cached capability for a chip target and instance.
     fn capability(&self, write_id: WriteId, instance: u8) -> Option<ndsif::CapabilityEntry> {
         self.capabilities
             .iter()
@@ -721,6 +753,7 @@ impl NdsifSerialTransport {
             .find(|entry| entry.write_id == write_id.get() && entry.instance == instance)
     }
 
+    /// Convert a host frame to the audio stream's byte timeline.
     fn position_for_frame(
         stream: &AudioStream,
         sample_frame: usize,
@@ -732,6 +765,7 @@ impl NdsifSerialTransport {
             .map_err(|error| format!("invalid NDSIF audio position: {error}"))
     }
 
+    /// Check whether an event can be sent against the current audio position.
     fn event_is_ready(event: &PendingEvent, stream: Option<&AudioStream>) -> Result<bool, String> {
         let Some(stream) = stream else {
             return Ok(true);
@@ -752,6 +786,7 @@ impl NdsifSerialTransport {
         )
     }
 
+    /// Determine the position used to order an event on the active timeline.
     fn event_sort_position(
         event: &PendingEvent,
         stream: Option<&AudioStream>,
@@ -771,6 +806,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Sort pending events by timeline position and same-position priority.
     fn order_events(
         events: Vec<PendingEvent>,
         stream: Option<&AudioStream>,
@@ -784,6 +820,7 @@ impl NdsifSerialTransport {
         Ok(ordered.into_iter().map(|(_, _, _, event)| event).collect())
     }
 
+    /// Send one non-batched event and update audio-stream bookkeeping.
     fn send_event(&mut self, event: PendingEvent) -> Result<(), String> {
         match event {
             PendingEvent::Register(event) => self.send_registers(&[event]),
@@ -840,6 +877,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Send a compatible register batch directly or on the audio timeline.
     fn send_registers(&mut self, events: &[NdsifRegisterEvent]) -> Result<(), String> {
         let Some(first) = events.first() else {
             return Ok(());
@@ -883,6 +921,7 @@ impl NdsifSerialTransport {
         self.record_queued_events(position_value, writes.len())
     }
 
+    /// Send a compatible batch of raw PSG bytes.
     fn send_psg(&mut self, events: &[NdsifPsgEvent]) -> Result<(), String> {
         let Some(first) = events.first() else {
             return Ok(());
@@ -900,6 +939,7 @@ impl NdsifSerialTransport {
         .map(|_| ())
     }
 
+    /// Convert due events into timed DAC records and event batches.
     fn flush_timed_dac_until(
         &mut self,
         events: Vec<PendingEvent>,
@@ -1034,6 +1074,7 @@ impl NdsifSerialTransport {
         self.send_timed_dac_records(&records)
     }
 
+    /// Send a contiguous ADPCM data batch and advance the accepted position.
     fn send_data(&mut self, events: &[NdsifAdpcmEvent]) -> Result<(), String> {
         if events.is_empty() {
             return Ok(());
@@ -1078,6 +1119,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Wait for enough audio data capacity before sending a batch.
     fn ensure_audio_data_capacity(&mut self, incoming_bytes: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -1119,6 +1161,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Query and decode the device's audio-stream status.
     fn query_audio_status(&mut self, instance: u8) -> Result<ndsif::AudioStatus, String> {
         let frame = self.request(Command::AudioStatus {
             stream_id: AUDIO_STREAM_ID,
@@ -1144,11 +1187,13 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Query timed DAC status using the playback error boundary.
     fn query_timed_dac_status(&mut self) -> Result<DacStatus, String> {
         self.query_timed_dac_status_typed()
             .map_err(|error| error.to_string())
     }
 
+    /// Query and decode timed DAC status with typed errors.
     fn query_timed_dac_status_typed(&mut self) -> Result<DacStatus, NdsifTransportError> {
         let frame = self.request_typed(Command::DacStatus {
             profile: DAC_PROFILE_YM2612,
@@ -1169,6 +1214,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Validate device DAC progress and update local queue counters.
     fn update_timed_dac_progress(&mut self, status: DacStatus) -> Result<(), String> {
         if status.fault != 0 || status.state == 3 {
             return Err(format!(
@@ -1213,6 +1259,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Wait for room in the device's timed DAC record queue.
     fn ensure_timed_dac_record_capacity(&mut self, incoming: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -1252,6 +1299,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Wait for room in the device's timed DAC event queue.
     fn ensure_timed_dac_event_capacity(&mut self, incoming: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -1291,6 +1339,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Send DAC records in bounded batches and update the accepted timeline.
     fn send_timed_dac_records(&mut self, records: &[DacRecord]) -> Result<(), String> {
         let maximum = self
             .timed_dac_stream
@@ -1340,6 +1389,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Send a register or PSG event on the timed DAC timeline.
     fn send_timed_dac_register_event(
         &mut self,
         tick: u64,
@@ -1384,6 +1434,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Start the DAC profile when sufficiently buffered or explicitly forced.
     fn start_timed_dac_if_ready(&mut self, force: bool) -> Result<(), String> {
         let Some((ready, minimum_lead_ticks)) = self.timed_dac_stream.as_ref().map(|stream| {
             (
@@ -1425,6 +1476,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Poll and validate DAC progress when the status interval has elapsed.
     fn check_timed_dac_status_if_due(&mut self) -> Result<(), String> {
         let due = self.timed_dac_stream.as_ref().is_some_and(|stream| {
             stream.started
@@ -1440,6 +1492,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Seal the timed DAC profile and wait for its queued work to drain.
     fn finish_timed_dac_stream(
         &mut self,
         sample_frame: usize,
@@ -1512,6 +1565,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Wait for space in the audio stream's event queue.
     fn ensure_event_capacity(&mut self, incoming_events: usize) -> Result<(), String> {
         let incoming_events =
             u32::try_from(incoming_events).map_err(|_| "NDSIF event count overflow".to_owned())?;
@@ -1553,6 +1607,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Record events queued at an audio byte position.
     fn record_queued_events(&mut self, position: u32, count: usize) -> Result<(), String> {
         let count = u32::try_from(count).map_err(|_| "NDSIF event count overflow".to_owned())?;
         self.queued_event_count = self
@@ -1563,6 +1618,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Remove queued-event accounting for positions the device has played.
     fn prune_queued_events(&mut self) {
         let played = self
             .audio_stream
@@ -1578,6 +1634,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Validate audio status and update local progress and queue accounting.
     fn update_audio_progress(&mut self, status: ndsif::AudioStatus) -> Result<(), String> {
         if let Some(stream) = self.audio_stream.as_mut() {
             stream
@@ -1589,6 +1646,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Pace untimed device writes against the host playback clock.
     fn pace_without_audio_stream(
         &mut self,
         sample_frame: usize,
@@ -1609,6 +1667,7 @@ impl NdsifSerialTransport {
         }
         Ok(())
     }
+    /// Start the audio stream after prebuffering or when explicitly forced.
     fn start_stream_if_ready(&mut self, force: bool) -> Result<(), String> {
         let Some((instance, clock, divider)) = self.audio_stream.as_ref().and_then(|stream| {
             stream
@@ -1648,6 +1707,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Poll and validate audio progress when the status interval has elapsed.
     fn check_status_if_due(&mut self) -> Result<(), String> {
         let Some(instance) = self.audio_stream.as_ref().and_then(|stream| {
             (stream.state.started()
@@ -1664,11 +1724,13 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Return the supported maximum ADPCM data batch length.
     fn max_audio_data_batch_len(&self) -> usize {
         let maximum = self.data_capacity.min(ndsif::MAX_AUDIO_DATA_BYTES as u32) as usize;
         maximum.max(1)
     }
 
+    /// Return the supported maximum register-event batch length.
     fn max_register_event_batch_len(&self) -> usize {
         if self.audio_stream.is_some() {
             ndsif::MAX_REGISTER_EVENT_WRITES
@@ -1679,6 +1741,7 @@ impl NdsifSerialTransport {
         }
     }
 
+    /// Return the protocol limit for a raw PSG batch.
     fn max_psg_batch_len(&self) -> usize {
         ndsif::MAX_REGISTER_BYTES
     }

@@ -14,6 +14,7 @@ pub struct Gain {
 }
 
 impl Gain {
+    /// Create a gain with a finite, nonnegative linear amplitude factor.
     pub fn new(gain: f32) -> Result<Self, AudioError> {
         if !gain.is_finite() || gain < 0.0 {
             return Err(AudioError::InvalidGain);
@@ -21,11 +22,13 @@ impl Gain {
         Ok(Self { gain })
     }
 
+    /// Change the gain; an invalid value leaves it unchanged.
     pub fn set_gain(&mut self, gain: f32) -> Result<(), AudioError> {
         *self = Self::new(gain)?;
         Ok(())
     }
 
+    /// Return the current linear amplitude factor.
     pub fn gain(&self) -> f32 {
         self.gain
     }
@@ -46,6 +49,7 @@ pub struct StereoBalance {
 }
 
 impl StereoBalance {
+    /// Create a balance using a finite value in `-1..=1`.
     pub fn new(balance: f32) -> Result<Self, AudioError> {
         if !balance.is_finite() || !(-1.0..=1.0).contains(&balance) {
             return Err(AudioError::InvalidBalance);
@@ -53,11 +57,13 @@ impl StereoBalance {
         Ok(Self { balance })
     }
 
+    /// Change the balance; an invalid value leaves it unchanged.
     pub fn set_balance(&mut self, balance: f32) -> Result<(), AudioError> {
         *self = Self::new(balance)?;
         Ok(())
     }
 
+    /// Return the current balance value.
     pub fn balance(&self) -> f32 {
         self.balance
     }
@@ -72,6 +78,7 @@ impl StereoEffect for StereoBalance {
     }
 }
 
+/// Apply channel gains only after verifying that all results are finite.
 fn apply_gains(block: &mut StereoBlock, gains: [f32; 2]) -> Result<(), AudioError> {
     for frame in &block.frames {
         if !(frame[0] * gains[0]).is_finite() || !(frame[1] * gains[1]).is_finite() {

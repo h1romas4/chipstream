@@ -14,6 +14,7 @@ pub(crate) struct OkiAdpcmState {
 }
 
 impl OkiAdpcmState {
+    /// Initialize a decoder with the selected signal width.
     pub(crate) fn new(output_bits: u8) -> Self {
         Self {
             signal: -2,
@@ -23,17 +24,20 @@ impl OkiAdpcmState {
         }
     }
 
+    /// Decode both nibbles of a byte in OKIM6258 playback order.
     pub(crate) fn decode_byte(&mut self, value: u8) {
         self.decode_nibble(value & 0x0f);
         self.decode_nibble(value >> 4);
     }
 
+    /// Encode two near-zero nibbles and advance the decoder state.
     pub(crate) fn encode_zero_byte(&mut self) -> u8 {
         let low = self.encode_zero_nibble();
         let high = self.encode_zero_nibble();
         low | (high << 4)
     }
 
+    /// Choose the repeated near-zero byte best suited to the current state.
     pub(crate) fn zero_pair(&self) -> u8 {
         let score = |byte| {
             let mut state = self.clone();
@@ -51,12 +55,14 @@ impl OkiAdpcmState {
         }
     }
 
+    /// Advance the predictor and step index by one ADPCM nibble.
     fn decode_nibble(&mut self, nibble: u8) {
         self.signal = (self.signal + self.differences[self.step][usize::from(nibble)])
             .clamp(-self.limit, self.limit - 1);
         self.step = (self.step as i32 + INDEX_SHIFT[usize::from(nibble & 7)]).clamp(0, 48) as usize;
     }
 
+    /// Select and decode the nibble that brings the predictor closest to zero.
     fn encode_zero_nibble(&mut self) -> u8 {
         let nibble = (0..16)
             .min_by_key(|nibble| {
@@ -71,6 +77,7 @@ impl OkiAdpcmState {
     }
 }
 
+/// Build signed ADPCM predictor differences for each step and nibble.
 pub(super) fn difference_table() -> [[i32; 16]; 49] {
     const STEPS: [i32; 49] = [
         16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,

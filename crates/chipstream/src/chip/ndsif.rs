@@ -1,3 +1,9 @@
+//! Scheduled chipstream adapters for external NDSIF transports.
+//!
+//! Hardware-backed chips emit silence into host PCM; audible output must be
+//! captured or played through the physical device. Transport events use
+//! absolute output-frame positions and can arrive out of chronological order.
+
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
 use ::ndsif::{BytePosition, Divider, Pan, RegisterWrite, WriteId, ZeroPair};
@@ -12,51 +18,82 @@ use crate::{
 /// One timed register write for an NDSIF transport to schedule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NdsifRegisterEvent {
+    /// Chip type represented by the write.
     pub chip: Chip,
+    /// NDSIF target command ID.
     pub write_id: WriteId,
+    /// Target chip instance.
     pub instance: u8,
+    /// Target register page.
     pub page: u8,
+    /// Register address and value.
     pub write: RegisterWrite,
+    /// Absolute host output-frame position.
     pub sample_frame: usize,
+    /// Host output rate in frames per second.
     pub sample_rate: u32,
 }
 
 /// One timed raw byte for an NDSIF SN76489 stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NdsifPsgEvent {
+    /// NDSIF target command ID.
     pub write_id: WriteId,
+    /// Target chip instance.
     pub instance: u8,
+    /// Target page.
     pub page: u8,
+    /// Absolute host output-frame position.
     pub sample_frame: usize,
+    /// Host output rate in frames per second.
     pub sample_rate: u32,
+    /// Raw PSG byte.
     pub value: u8,
 }
 
 /// One source ADPCM byte for an NDSIF OKIM6258 stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NdsifAdpcmEvent {
+    /// Audio stream instance.
     pub instance: u8,
+    /// Absolute position in ADPCM bytes.
     pub position: BytePosition,
+    /// Absolute host output-frame position.
     pub sample_frame: usize,
+    /// Host output rate in frames per second.
     pub sample_rate: u32,
+    /// Encoded ADPCM byte.
     pub value: u8,
 }
 
 /// A control change positioned on the NDSIF ADPCM stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NdsifAudioControl {
-    Clock { clock_hz: u32, divider: Divider },
+    /// Change the stream clock and divider.
+    Clock {
+        /// Input clock in hertz.
+        clock_hz: u32,
+        /// Clock divider.
+        divider: Divider,
+    },
+    /// Change the output-channel selection.
     Pan(Pan),
+    /// End the stream using a state-dependent repeated ADPCM byte.
     End(ZeroPair),
 }
 
 /// One positioned audio-stream control event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NdsifAudioControlEvent {
+    /// Audio stream instance.
     pub instance: u8,
+    /// Absolute position in ADPCM bytes.
     pub position: BytePosition,
+    /// Absolute host output-frame position.
     pub sample_frame: usize,
+    /// Host output rate in frames per second.
     pub sample_rate: u32,
+    /// Stream control to execute.
     pub control: NdsifAudioControl,
 }
 
@@ -190,6 +227,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         })
     }
 
+    /// Validate and schedule a YMFM register write on the transport.
     fn schedule_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -329,6 +367,7 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         })
     }
 
+    /// Validate and schedule a raw SN76489 byte on the transport.
     fn schedule_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -496,6 +535,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         })
     }
 
+    /// Translate an OKIM6258 write into positioned data or control events.
     fn schedule_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -572,6 +612,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         }
     }
 
+    /// Convert a host frame to a nondecreasing ADPCM byte position.
     fn position_for_frame(
         &self,
         sample_frame: usize,
@@ -590,6 +631,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         Ok(BytePosition::new(position.max(self.next_byte_position)))
     }
 
+    /// Schedule one ADPCM byte and advance the next byte position.
     fn schedule_data(
         &mut self,
         sample_frame: usize,
@@ -776,6 +818,7 @@ pub fn register_ymfm_factories<T: NdsifTransport + 'static>(
     Ok(())
 }
 
+/// Return the native divider, channel count, and write ID for a YMFM chip.
 fn ymfm_config(chip: &Chip) -> Option<(u32, usize, u8)> {
     Some(match chip {
         Chip::Ym2413 => (72, 2, 0x51),
@@ -793,6 +836,7 @@ fn ymfm_config(chip: &Chip) -> Option<(u32, usize, u8)> {
     })
 }
 
+/// Convert a YMFM write to its NDSIF ID, page, address, and value.
 fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipError> {
     let chip = write.chip();
     let invalid_bank = |bank| ChipError::InvalidRegisterBank {
@@ -854,10 +898,12 @@ fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipErr
     })
 }
 
+/// Validate a protocol write ID and associate errors with its chip.
 fn write_id_for(write_id: u8, chip: &Chip) -> Result<WriteId, ChipError> {
     WriteId::try_from(write_id).map_err(|error| external_error(chip, error.to_string()))
 }
 
+/// Convert a sequencer instance to its protocol instance number.
 fn instance_id(instance: Instance) -> u8 {
     match instance {
         Instance::Primary => 0,
@@ -865,6 +911,7 @@ fn instance_id(instance: Instance) -> u8 {
     }
 }
 
+/// Wrap a transport failure with its associated chip.
 fn external_error(chip: &Chip, message: impl Into<String>) -> ChipError {
     ChipError::External {
         chip: chip.clone(),

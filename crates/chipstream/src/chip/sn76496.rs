@@ -14,10 +14,15 @@ pub struct Sn76496Config {
     pub shift_width: u8,
     /// Bit mask of the two white-noise feedback taps.
     pub feedback: u16,
+    /// Negate the generated output waveform.
     pub negate: bool,
+    /// Enable Game Gear stereo routing.
     pub stereo: bool,
+    /// Enable the input clock's divide-by-eight stage.
     pub divider_8: bool,
+    /// Treat a zero tone frequency as a period of 1024.
     pub frequency_zero_is_1024: bool,
+    /// Use XNOR instead of XOR for noise feedback.
     pub xnor: bool,
 }
 
@@ -100,6 +105,7 @@ impl Sn76496 {
         self.stereo_mask = mask;
     }
 
+    /// Apply a PSG latch or data byte to the selected register.
     fn write_data(&mut self, value: u8) {
         const VOLUME: [i32; 16] = [
             8191, 6506, 5168, 4105, 3260, 2590, 2057, 1634, 1298, 1031, 819, 650, 516, 410, 326, 0,
@@ -150,6 +156,7 @@ impl Sn76496 {
         }
     }
 
+    /// Advance tone and noise generators and mix their stereo output.
     fn tick(&mut self) -> [i32; 2] {
         for channel in 0..3 {
             self.counters[channel] -= 1;

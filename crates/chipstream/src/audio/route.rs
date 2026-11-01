@@ -143,7 +143,12 @@ pub enum RouteError {
     /// A chip reported zero native outputs per frame.
     InvalidChannelCount,
     /// The supplied buffer cannot hold a whole number of native frames.
-    InvalidBufferLength { length: usize, channels: usize },
+    InvalidBufferLength {
+        /// Number of sample values in the buffer.
+        length: usize,
+        /// Native output values per frame.
+        channels: usize,
+    },
     /// The chip failed to generate the block.
     Chip(ChipError),
 }

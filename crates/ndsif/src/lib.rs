@@ -1,3 +1,5 @@
+//! Allocation-free NDSIF v1 protocol types, framing, and local stream bookkeeping.
+
 #![doc = include_str!("../README.md")]
 #![no_std]
 

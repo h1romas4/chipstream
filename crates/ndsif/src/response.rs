@@ -1,22 +1,37 @@
+//! Borrowed response views, device capabilities, and audio/DAC status.
+//!
+//! Correlation checks compare request and response identifiers; a completed
+//! response is not a readback or proof of a physical chip's state.
+
 use crate::{EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, StatusFlags};
 
+/// Completion status carried by a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
+    /// The command completed.
     Complete,
+    /// The device rejected the command.
     Rejected,
 }
 
+/// Model and firmware strings borrowed from a response payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceInfo<'a> {
+    /// Device model identifier.
     pub model: &'a str,
+    /// Firmware identifier.
     pub firmware: &'a str,
 }
 
+/// Clock configuration advertised for a chip instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClockMode {
+    /// The clock is unknown.
     Unknown = 0,
+    /// The chip uses the advertised fixed clock.
     Fixed = 1,
+    /// The clock can be configured.
     Variable = 2,
 }
 
@@ -33,32 +48,52 @@ impl TryFrom<u8> for ClockMode {
     }
 }
 
+/// One advertised target chip, instance, page, and clock configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityEntry {
+    /// Target command ID.
     pub write_id: u8,
+    /// Chip instance.
     pub instance: u8,
+    /// Register page.
     pub page: u8,
+    /// Device-advertised feature bits.
     pub features: u8,
+    /// Clock configuration mode.
     pub clock_mode: ClockMode,
+    /// Fixed clock frequency in hertz, or zero when not fixed.
     pub fixed_clock_hz: u32,
 }
 
+/// Wire size of one capability entry, in bytes.
 pub const CAPABILITY_ENTRY_SIZE: usize = 9;
+/// Maximum capability entries in a single response.
 pub const MAX_CAPABILITY_ENTRIES: usize = (MAX_PAYLOAD_SIZE - 14) / CAPABILITY_ENTRY_SIZE;
+/// Control feature bit indicating timed DAC profile discovery is supported.
 pub const CONTROL_FEATURE_DAC_PROFILE: u16 = 1 << 1;
 const CONFIGURABLE_CLOCK_FEATURE: u8 = 1 << 2;
 
+/// One page of device capabilities, borrowing its encoded entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities<'a> {
+    /// Maximum payload size advertised by the device, in bytes.
     pub max_payload: u16,
+    /// Advertised audio-data capacity, in bytes.
     pub data_capacity: u32,
+    /// Advertised audio-event capacity.
     pub event_capacity: u16,
+    /// Device control feature bits.
     pub control_features: u16,
+    /// Offset for the next page, or `u16::MAX` for the final page.
     pub next_offset: u16,
     entries: &'a [u8],
 }
 
 impl<'a> Capabilities<'a> {
+    /// Validate and borrow encoded capability entries.
+    ///
+    /// Rejects inconsistent clock metadata, duplicate target pages, and
+    /// payloads exceeding the protocol limits.
     pub fn new(
         max_payload: u16,
         data_capacity: u32,
@@ -84,6 +119,7 @@ impl<'a> Capabilities<'a> {
         })
     }
 
+    /// Iterate over the validated entries in wire order.
     pub fn entries(self) -> impl ExactSizeIterator<Item = CapabilityEntry> + 'a {
         self.entries
             .chunks_exact(CAPABILITY_ENTRY_SIZE)
@@ -91,6 +127,7 @@ impl<'a> Capabilities<'a> {
     }
 }
 
+/// Decode one entry and check its clock mode against the advertised flags.
 fn decode_capability_entry(entry: &[u8]) -> Result<CapabilityEntry, Error> {
     if entry.len() != CAPABILITY_ENTRY_SIZE {
         return Err(Error::InvalidLength);
@@ -114,6 +151,7 @@ fn decode_capability_entry(entry: &[u8]) -> Result<CapabilityEntry, Error> {
     })
 }
 
+/// Reject duplicate pages and inconsistent clocks for the same chip instance.
 fn validate_capability_entries(entries: &[u8]) -> Result<(), Error> {
     let mut previous_entries = entries.chunks_exact(CAPABILITY_ENTRY_SIZE);
     for (index, entry) in previous_entries.by_ref().enumerate() {
@@ -134,21 +172,33 @@ fn validate_capability_entries(entries: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Device-reported status of an ADPCM stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioStatus {
+    /// Accepted ADPCM byte position.
     pub accepted: u32,
+    /// Played ADPCM byte position.
     pub played: u32,
+    /// Pending ADPCM byte count.
     pub pending: u32,
+    /// Reported underflow count.
     pub underflows: u32,
+    /// Reported overflow count.
     pub overflows: u32,
+    /// Reported rejection count.
     pub rejected: u32,
+    /// Maximum reported pending byte count.
     pub max_pending: u32,
+    /// Device state and diagnostic flags.
     pub flags: StatusFlags,
+    /// Number of late events.
     pub late_events: u32,
+    /// Maximum reported event lag.
     pub max_event_lag: u32,
 }
 
 impl AudioStatus {
+    /// Decode the fixed-width audio status counters and flags.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != 40 {
             return Err(Error::InvalidLength);
@@ -184,19 +234,29 @@ impl AudioStatus {
     }
 }
 
+/// Device-advertised limits for an optional timed DAC profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DacCapabilities {
+    /// Profile identifier.
     pub profile: u8,
+    /// API specification revision.
     pub revision: u32,
+    /// Profile clock frequency in ticks per second.
     pub ticks_per_second: u32,
+    /// DAC record queue capacity.
     pub record_capacity: u32,
+    /// Positioned-event queue capacity.
     pub event_capacity: u16,
+    /// Maximum DAC records accepted per request.
     pub max_records: u8,
+    /// Encoded size of one DAC record in bytes.
     pub record_bytes: u8,
+    /// Maximum DAC lateness in microseconds advertised by the device.
     pub max_dac_late_us: u32,
 }
 
 impl DacCapabilities {
+    /// Decode the fixed-width timed-DAC limits and reject zero capacities.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != 21 {
             return Err(Error::InvalidLength);
@@ -223,29 +283,49 @@ impl DacCapabilities {
     }
 }
 
+/// Device-reported timed DAC queue, state, and timing counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DacStatus {
+    /// Profile identifier.
     pub profile: u8,
+    /// Device-defined profile state.
     pub state: u8,
+    /// Device-defined fault code.
     pub fault: u8,
+    /// Whether the stream has been sealed.
     pub sealed: bool,
+    /// Number of accepted DAC records.
     pub accepted: u32,
+    /// Number of consumed DAC records.
     pub consumed: u32,
+    /// Number of queued DAC records.
     pub queued: u32,
+    /// Available DAC record capacity.
     pub free: u32,
+    /// Number of queued positioned events.
     pub event_queued: u32,
+    /// Number of consumed positioned events.
     pub event_consumed: u32,
+    /// Reported underflow count.
     pub underflows: u32,
+    /// Reported overflow count.
     pub overflows: u32,
+    /// Reported rejection count.
     pub rejected: u32,
+    /// Number of late DAC operations.
     pub late_dac: u32,
+    /// Maximum observed lateness in microseconds.
     pub max_late_us: u32,
+    /// Accepted position in profile ticks.
     pub accepted_tick: u64,
+    /// Played position in profile ticks.
     pub played_tick: u64,
+    /// Executed position in profile ticks.
     pub executed_tick: u64,
 }
 
 impl DacStatus {
+    /// Decode the fixed-width timed-DAC status and validate the sealed flag.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != 72 || bytes[3] > 1 {
             return Err(Error::InvalidLength);
@@ -286,26 +366,40 @@ impl DacStatus {
     }
 }
 
+/// Typed response body; borrowed data remains tied to its source frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Reply<'a> {
+    /// Successful command with no reply payload.
     Complete,
+    /// Rejected command with no reply payload.
     Rejected,
+    /// Echoed ping bytes.
     Ping(&'a [u8]),
+    /// Device model and firmware.
     Info(DeviceInfo<'a>),
+    /// A page of device capabilities.
     Capabilities(Capabilities<'a>),
+    /// ADPCM stream status.
     AudioStatus(AudioStatus),
+    /// Timed DAC capabilities.
     DacCapabilities(DacCapabilities),
+    /// Timed DAC status.
     DacStatus(DacStatus),
+    /// Unrecognized command response payload.
     Unknown(&'a [u8]),
 }
 
 /// Typed response. Parsed data borrows the frame payload; outgoing data borrows caller data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Response<'a> {
+    /// Command ID of the corresponding request.
     pub command_id: u8,
+    /// Transaction ID of the corresponding request.
     pub transaction_id: u16,
+    /// Completion or rejection status.
     pub status: Status,
+    /// Typed response payload.
     pub reply: Reply<'a>,
 }
 
@@ -459,14 +553,17 @@ impl<'a> Response<'a> {
         Ok(frame)
     }
 
+    /// Validate and encode a response including both zero delimiters.
     pub fn encode(&self) -> Result<EncodedFrame, Error> {
         Ok(self.to_frame()?.encode())
     }
 
+    /// Encode into a caller-provided buffer, returning the number of bytes.
     pub fn encode_into(&self, output: &mut [u8]) -> Result<usize, Error> {
         self.to_frame()?.encode_into(output)
     }
 
+    /// Decode and locally validate a response, borrowing from `frame`.
     pub fn decode(frame: &'a Frame) -> Result<Self, Error> {
         if frame.message_type() != MessageType::Response {
             return Err(Error::UnexpectedOpcode(frame.command_id()));
@@ -512,6 +609,9 @@ impl<'a> Response<'a> {
         })
     }
 
+    /// Check request type, command and transaction IDs, and any ping echo.
+    ///
+    /// This does not verify physical chip state.
     pub fn matches_request(&self, request: &Frame) -> Result<(), Error> {
         if request.message_type() != MessageType::Request
             || self.command_id != request.command_id()
@@ -526,6 +626,7 @@ impl<'a> Response<'a> {
     }
 }
 
+/// Decode length-prefixed UTF-8 device model and firmware names.
 fn decode_info(body: &[u8]) -> Result<DeviceInfo<'_>, Error> {
     let (&model_length, rest) = body.split_first().ok_or(Error::InvalidLength)?;
     let (model, rest) = rest
@@ -541,6 +642,7 @@ fn decode_info(body: &[u8]) -> Result<DeviceInfo<'_>, Error> {
     })
 }
 
+/// Decode capability metadata and validate its borrowed entry page.
 fn decode_capabilities(body: &[u8]) -> Result<Capabilities<'_>, Error> {
     if body.len() < 13 {
         return Err(Error::InvalidLength);

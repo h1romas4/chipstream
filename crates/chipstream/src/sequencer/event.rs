@@ -20,7 +20,7 @@ mod private {
     pub trait StateTrackerSealed {}
 }
 
-/// A chip-write specification accepted by [`VgmSequencer::on_write`].
+/// A chip-write specification accepted by [`super::VgmSequencer::on_write`].
 ///
 /// The callback receives the instance, typed write, absolute output-frame
 /// position, and optional state changes. A callback can be registered for
@@ -181,12 +181,14 @@ impl Default for CallbackRegistry<'_> {
 }
 
 impl<'a> CallbackRegistry<'a> {
+    /// Check whether a typed callback is registered for this write.
     pub(super) fn has_callback(&self, write: &ChipRegisterWrite) -> bool {
         self.callbacks
             .iter()
             .any(|callback| callback.matches(write))
     }
 
+    /// Deliver an event to the matching callback at its output-frame position.
     pub(super) fn dispatch(&mut self, event: PendingWriteEvent, sample: usize) {
         if let Some(callback) = self
             .callbacks
@@ -197,6 +199,7 @@ impl<'a> CallbackRegistry<'a> {
         }
     }
 
+    /// Install a callback, replacing any previous callback for the same type.
     pub(super) fn register<C, F>(&mut self, callback: F)
     where
         C: VgmWriteCallbackTarget,
@@ -227,6 +230,7 @@ pub(super) enum Tracker {
 }
 
 impl Tracker {
+    /// Update the selected chip state and return any resulting state events.
     pub(super) fn on_register_write(
         &mut self,
         port: u8,
@@ -264,6 +268,7 @@ impl Tracker {
     }
 }
 
+/// Map a tracker kind to the chip instance it observes.
 pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
     match kind {
         VgmStateTrackerKind::Ym2151 => Chip::Ym2151,
@@ -280,6 +285,7 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
     }
 }
 
+/// Create a chip-specific state tracker at the given clock.
 pub(super) fn tracker(kind: VgmStateTrackerKind, clock: f32) -> Tracker {
     match kind {
         VgmStateTrackerKind::Ym2151 => Tracker::Ym2151(Ym2151State::new(clock)),

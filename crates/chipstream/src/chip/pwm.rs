@@ -15,6 +15,7 @@ struct Fifo {
 }
 
 impl Fifo {
+    /// Enqueue a value, discarding the oldest when the FIFO is full.
     fn push(&mut self, value: u16) {
         if self.len == self.data.len() {
             self.pop();
@@ -23,6 +24,7 @@ impl Fifo {
         self.len += 1;
     }
 
+    /// Remove the oldest queued value.
     fn pop(&mut self) -> Option<u16> {
         if self.len == 0 {
             return None;
@@ -70,6 +72,7 @@ impl Pwm {
         })
     }
 
+    /// Recalculate the PWM timer from the current cycle and control settings.
     fn update_timer(&mut self) {
         let cycle = if self.cycle == 0 {
             4095
@@ -85,6 +88,7 @@ impl Pwm {
         }
     }
 
+    /// Consume FIFO values and route them to the configured output channels.
     fn timer_tick(&mut self) {
         let mut output = [0; 2];
         if let Some(value) = self.left.pop() {
@@ -104,6 +108,7 @@ impl Pwm {
         self.output = output;
     }
 
+    /// Advance the PWM timer for one native output sample.
     fn tick(&mut self) -> [i32; 2] {
         if self.timer_rate != 0 {
             // After four ticks both three-entry FIFOs are empty and output is zero.

@@ -49,7 +49,9 @@ pub use ymfm::YmfmChip;
 /// Chip-controlled stereo output mutes, separate from user pan or gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StereoMute {
+    /// Mute the left output when `true`.
     pub left: bool,
+    /// Mute the right output when `true`.
     pub right: bool,
 }
 
@@ -261,6 +263,7 @@ impl<T: Any> SoundChipState for T {
     feature = "segapcm",
     feature = "sn76496"
 ))]
+/// Capture a cloneable backend as a type-erased state snapshot.
 pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipState> {
     Box::new(state.clone())
 }
@@ -273,6 +276,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "segapcm",
     feature = "sn76496"
 ))]
+/// Restore a cloneable backend after checking the snapshot's concrete type.
 pub(crate) fn restore_cloned_state<T: Clone + Any>(
     current: &mut T,
     state: &dyn SoundChipState,
@@ -362,39 +366,83 @@ pub enum ChipError {
     /// The backend does not implement this soundlog chip type.
     UnsupportedChip(Chip),
     /// The typed write belongs to a different chip.
-    ChipMismatch { expected: Chip, actual: Chip },
+    ChipMismatch {
+        /// Expected chip type.
+        expected: Chip,
+        /// Chip type of the backend.
+        actual: Chip,
+    },
     /// The chip has no writable sample ROM.
     UnsupportedRom(Chip),
     /// The sample ROM write exceeds the supported size.
     RomTooLarge,
     /// The input clock is too low to produce a nonzero native sample rate.
-    InvalidClock { clock: u32, minimum: u32 },
+    InvalidClock {
+        /// Requested clock in hertz.
+        clock: u32,
+        /// Minimum supported clock in hertz.
+        minimum: u32,
+    },
     /// An external factory created a chip at a different clock than requested.
     ClockMismatch {
+        /// Chip type of the backend.
         chip: Chip,
+        /// Requested clock in hertz.
         expected: u32,
+        /// Backend clock in hertz.
         actual: u32,
     },
     /// An external backend failed with a backend-specific error.
-    External { chip: Chip, message: String },
+    External {
+        /// Chip associated with the error.
+        chip: Chip,
+        /// Backend-provided error message.
+        message: String,
+    },
     /// A chip-specific configuration is invalid.
-    InvalidConfiguration { chip: Chip, reason: &'static str },
+    InvalidConfiguration {
+        /// Chip with invalid configuration.
+        chip: Chip,
+        /// Description of the invalid setting.
+        reason: &'static str,
+    },
     /// The chip backend could not create an instance.
     CreationFailed(Chip),
     /// This chip does not have the requested register bank.
-    InvalidRegisterBank { chip: Chip, bank: u8 },
+    InvalidRegisterBank {
+        /// Target chip.
+        chip: Chip,
+        /// Unsupported register bank.
+        bank: u8,
+    },
     /// This chip does not implement the requested register.
-    InvalidRegister { chip: Chip, register: u8 },
+    InvalidRegister {
+        /// Target chip.
+        chip: Chip,
+        /// Unsupported register.
+        register: u8,
+    },
     /// The register cannot accept the requested value.
     InvalidRegisterValue {
+        /// Target chip.
         chip: Chip,
+        /// Target register.
         register: u8,
+        /// Invalid value.
         value: u32,
     },
     /// The output buffer does not contain a whole number of frames.
-    InvalidBufferLength { length: usize, channels: usize },
+    InvalidBufferLength {
+        /// Number of sample values in the buffer.
+        length: usize,
+        /// Number of native output values per frame.
+        channels: usize,
+    },
     /// The buffer is too large for the backend's native interface.
-    BufferTooLarge { length: usize },
+    BufferTooLarge {
+        /// Number of sample values in the buffer.
+        length: usize,
+    },
     /// This chip backend does not support state snapshots.
     UnsupportedStateSnapshot(Chip),
     /// The state snapshot belongs to a different chip backend.
@@ -464,6 +512,7 @@ impl fmt::Display for ChipError {
 impl Error for ChipError {}
 
 #[cfg(any(feature = "c140", feature = "okim6295", feature = "segapcm"))]
+/// Copy a ROM segment, extending the backing buffer within the size limit.
 fn write_rom_data(rom: &mut Vec<u8>, start: usize, data: &[u8]) -> Result<(), ChipError> {
     const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
     let end = start
