@@ -18,6 +18,10 @@ use ndsif::{
 };
 use serialport::SerialPort;
 
+mod error;
+
+pub use error::NdsifTransportError;
+
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const AUDIO_PREBUFFER_SECONDS: u64 = 2;
@@ -41,41 +45,33 @@ pub struct NdsifSerialConfig {
 ///
 /// Each chip instance is routed to the first configured device advertising a
 /// compatible chip/clock capability. When no device matches, the normal
-/// emulated backend is retained. An empty list returns an empty registry.
-pub fn create_chip_factories(configs: &[NdsifSerialConfig]) -> Result<ChipFactoryRegistry, String> {
+/// emulated backend is retained. An empty list returns an empty registry. All
+/// configurations are validated before any device is opened or reset.
+///
+/// # Errors
+///
+/// Returns a typed configuration error, or a [`NdsifTransportError::Device`]
+/// identifying the port and preserving the initialization failure.
+pub fn create_chip_factories(
+    configs: &[NdsifSerialConfig],
+) -> Result<ChipFactoryRegistry, NdsifTransportError> {
     let mut ports = HashSet::with_capacity(configs.len());
+    for config in configs {
+        validate_config(&config.port, config.baud_rate, config.response_timeout)?;
+        if !ports.insert(&config.port) {
+            return Err(NdsifTransportError::DuplicatePort {
+                port: config.port.clone(),
+            });
+        }
+    }
     let mut transports = Vec::with_capacity(configs.len());
     for config in configs {
-        if config.port.trim().is_empty() {
-            return Err("NDSIF serial port cannot be empty".to_owned());
-        }
-        if !ports.insert(&config.port) {
-            return Err(format!(
-                "NDSIF serial port is configured more than once: {}",
-                config.port
-            ));
-        }
-        if config.baud_rate == 0 {
-            return Err(format!(
-                "NDSIF baud rate cannot be zero for {}",
-                config.port
-            ));
-        }
-        if config.response_timeout.is_zero() {
-            return Err(format!(
-                "NDSIF response timeout cannot be zero for {}",
-                config.port
-            ));
-        }
-        transports.push(Rc::new(RefCell::new(
-            NdsifSerialTransport::open(
-                &config.port,
-                config.baud_rate,
-                config.response_timeout,
-                config.reset_device,
-            )
-            .map_err(|error| format!("NDSIF port {}: {error}", config.port))?,
-        )));
+        transports.push(Rc::new(RefCell::new(NdsifSerialTransport::open(
+            &config.port,
+            config.baud_rate,
+            config.response_timeout,
+            config.reset_device,
+        )?)));
     }
 
     let transports = Rc::new(transports);
@@ -202,6 +198,27 @@ pub fn create_chip_factories(configs: &[NdsifSerialConfig]) -> Result<ChipFactor
     });
 
     Ok(factories)
+}
+
+fn validate_config(
+    path: &str,
+    baud_rate: u32,
+    timeout: Duration,
+) -> Result<(), NdsifTransportError> {
+    if path.trim().is_empty() {
+        return Err(NdsifTransportError::EmptyPort);
+    }
+    if baud_rate == 0 {
+        return Err(NdsifTransportError::InvalidBaudRate {
+            port: path.to_owned(),
+        });
+    }
+    if timeout.is_zero() {
+        return Err(NdsifTransportError::InvalidTimeout {
+            port: path.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn find_transport(
@@ -383,6 +400,7 @@ impl PendingEvent {
     }
 }
 
+/// Serial connection implementing chipstream's scheduled NDSIF transport.
 pub struct NdsifSerialTransport {
     port: Box<dyn SerialPort>,
     response_timeout: Duration,
@@ -404,19 +422,46 @@ pub struct NdsifSerialTransport {
 }
 
 impl NdsifSerialTransport {
+    /// Open a serial device, discover capabilities, and verify its streams are idle.
+    ///
+    /// During initialization no reset is issued unless `reset_device` is true.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed configuration error, or a [`NdsifTransportError::Device`]
+    /// identifying the port and preserving the initialization failure.
     pub fn open(
         path: &str,
         baud_rate: u32,
         timeout: Duration,
         reset_device: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, NdsifTransportError> {
+        validate_config(path, baud_rate, timeout)?;
+        Self::open_device(path, baud_rate, timeout, reset_device).map_err(|source| {
+            NdsifTransportError::Device {
+                port: path.to_owned(),
+                source: Box::new(source),
+            }
+        })
+    }
+
+    fn open_device(
+        path: &str,
+        baud_rate: u32,
+        timeout: Duration,
+        reset_device: bool,
+    ) -> Result<Self, NdsifTransportError> {
         let port = serialport::new(path, baud_rate)
             .timeout(timeout)
             .open()
-            .map_err(|error| format!("failed to open NDSIF serial port {path}: {error}"))?;
+            .map_err(|source| NdsifTransportError::Serial {
+                operation: "failed to open NDSIF serial port",
+                source,
+            })?;
         port.clear(serialport::ClearBuffer::Input)
-            .map_err(|error| {
-                format!("failed to clear pending NDSIF serial input on {path}: {error}")
+            .map_err(|source| NdsifTransportError::Serial {
+                operation: "failed to clear pending NDSIF serial input",
+                source,
             })?;
         let mut transport = Self {
             port,
@@ -438,9 +483,9 @@ impl NdsifSerialTransport {
             wall_clock_origin: None,
         };
         if reset_device {
-            transport.request(Command::Reset)?;
+            transport.request_typed(Command::Reset)?;
         }
-        transport.request(Command::Ping(b"chipstream"))?;
+        transport.request_typed(Command::Ping(b"chipstream"))?;
         transport.load_capabilities()?;
         transport.verify_audio_stream_idle()?;
         transport.verify_timed_dac_idle()?;
@@ -464,14 +509,20 @@ impl NdsifSerialTransport {
             && self.capability(WriteId::OKIM6258, instance).is_some()
     }
 
-    fn load_capabilities(&mut self) -> Result<(), String> {
+    fn load_capabilities(&mut self) -> Result<(), NdsifTransportError> {
         let mut offset = 0_u16;
         let mut timed_dac_supported = false;
         loop {
-            let frame = self.request(Command::GetCapabilities { offset })?;
-            let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+            let frame = self.request_typed(Command::GetCapabilities { offset })?;
+            let response =
+                Response::decode(&frame).map_err(|source| NdsifTransportError::Protocol {
+                    operation: "invalid NDSIF GET_CAPABILITIES response",
+                    source,
+                })?;
             let Reply::Capabilities(capabilities) = response.reply else {
-                return Err("NDSIF GET_CAPABILITIES returned an unexpected response".to_owned());
+                return Err(NdsifTransportError::UnexpectedResponse {
+                    operation: "GET_CAPABILITIES",
+                });
             };
             self.data_capacity = capabilities.data_capacity;
             self.event_capacity = capabilities.event_capacity;
@@ -481,15 +532,21 @@ impl NdsifSerialTransport {
                 break;
             }
             if capabilities.next_offset <= offset {
-                return Err("NDSIF capabilities pagination did not advance".to_owned());
+                return Err(NdsifTransportError::InvalidCapabilitiesPagination);
             }
             offset = capabilities.next_offset;
         }
         if timed_dac_supported {
-            let frame = self.request(Command::GetDacCapabilities)?;
-            let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+            let frame = self.request_typed(Command::GetDacCapabilities)?;
+            let response =
+                Response::decode(&frame).map_err(|source| NdsifTransportError::Protocol {
+                    operation: "invalid NDSIF GET_DAC_CAPABILITIES response",
+                    source,
+                })?;
             let Reply::DacCapabilities(capabilities) = response.reply else {
-                return Err("NDSIF GET_DAC_CAPABILITIES returned an unexpected response".to_owned());
+                return Err(NdsifTransportError::UnexpectedResponse {
+                    operation: "GET_DAC_CAPABILITIES",
+                });
             };
             if capabilities.profile == DAC_PROFILE_YM2612
                 && capabilities.revision == 40
@@ -502,11 +559,11 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
-    fn verify_timed_dac_idle(&mut self) -> Result<(), String> {
+    fn verify_timed_dac_idle(&mut self) -> Result<(), NdsifTransportError> {
         if self.timed_dac_capabilities.is_none() {
             return Ok(());
         }
-        let status = self.query_timed_dac_status()?;
+        let status = self.query_timed_dac_status_typed()?;
         if status.state == 0
             && status.fault == 0
             && !status.sealed
@@ -525,22 +582,25 @@ impl NdsifSerialTransport {
         {
             Ok(())
         } else {
-            Err(
-                "NDSIF timed DAC profile is not idle; enable ndsif-reset or reset the device"
-                    .to_owned(),
-            )
+            Err(NdsifTransportError::DeviceBusy {
+                stream: "timed DAC profile",
+            })
         }
     }
 
-    fn verify_audio_stream_idle(&mut self) -> Result<(), String> {
+    fn verify_audio_stream_idle(&mut self) -> Result<(), NdsifTransportError> {
         if self.capability(WriteId::OKIM6258, 0).is_none() {
             return Ok(());
         }
-        let frame = self.request(Command::AudioStatus {
+        let frame = self.request_typed(Command::AudioStatus {
             stream_id: AUDIO_STREAM_ID,
             instance: 0,
         })?;
-        let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+        let response =
+            Response::decode(&frame).map_err(|source| NdsifTransportError::Protocol {
+                operation: "invalid NDSIF AUDIO_STATUS response",
+                source,
+            })?;
         match response.reply {
             Reply::AudioStatus(status)
                 if status.accepted == 0
@@ -551,40 +611,56 @@ impl NdsifSerialTransport {
             {
                 Ok(())
             }
-            Reply::AudioStatus(_) => Err(
-                "NDSIF OKIM6258 stream is not idle; enable ndsif-reset or reset the device"
-                    .to_owned(),
-            ),
-            _ => Err("NDSIF AUDIO_STATUS returned an unexpected response".to_owned()),
+            Reply::AudioStatus(_) => Err(NdsifTransportError::DeviceBusy {
+                stream: "OKIM6258 stream",
+            }),
+            _ => Err(NdsifTransportError::UnexpectedResponse {
+                operation: "AUDIO_STATUS",
+            }),
         }
     }
 
     fn request(&mut self, command: Command<'_>) -> Result<ndsif::Frame, String> {
+        self.request_typed(command)
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_typed(&mut self, command: Command<'_>) -> Result<ndsif::Frame, NdsifTransportError> {
         let transaction_id = self.transaction_id;
-        let request = command
-            .to_frame(transaction_id)
-            .map_err(|error| format!("invalid NDSIF command: {error}"))?;
+        let request =
+            command
+                .to_frame(transaction_id)
+                .map_err(|source| NdsifTransportError::Protocol {
+                    operation: "invalid NDSIF command",
+                    source,
+                })?;
         self.transaction_id = self.transaction_id.wrapping_add(1);
         let encoded = request.encode();
         self.port
             .write_all(encoded.as_bytes())
-            .map_err(|error| format!("failed to write NDSIF frame: {error}"))?;
+            .map_err(|source| NdsifTransportError::Io {
+                operation: "failed to write NDSIF frame",
+                source,
+            })?;
 
         if !command.expects_response() {
             return Ok(request);
         }
         self.port
             .flush()
-            .map_err(|error| format!("failed to flush NDSIF request: {error}"))?;
+            .map_err(|source| NdsifTransportError::Io {
+                operation: "failed to flush NDSIF request",
+                source,
+            })?;
 
         let deadline = Instant::now() + self.response_timeout;
         let mut bytes = [0_u8; 256];
         loop {
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for NDSIF response to command 0x{:02x} transaction {transaction_id}",
-                    request.command_id()
-                ));
+                return Err(NdsifTransportError::Timeout {
+                    command: request.command_id(),
+                    transaction_id,
+                });
             }
             match self.port.read(&mut bytes) {
                 Ok(0) => continue,
@@ -596,19 +672,29 @@ impl NdsifSerialTransport {
                         Err(error) => decode_error = Some(error),
                     });
                     if let Some(error) = decode_error {
-                        return Err(format!("invalid NDSIF response frame: {error}"));
+                        return Err(NdsifTransportError::Protocol {
+                            operation: "invalid NDSIF response frame",
+                            source: error,
+                        });
                     }
                     if let Some(frame) = received {
-                        let response =
-                            Response::decode(&frame).map_err(|error| error.to_string())?;
-                        response
-                            .matches_request(&request)
-                            .map_err(|error| error.to_string())?;
+                        let response = Response::decode(&frame).map_err(|source| {
+                            NdsifTransportError::Protocol {
+                                operation: "invalid NDSIF response",
+                                source,
+                            }
+                        })?;
+                        response.matches_request(&request).map_err(|source| {
+                            NdsifTransportError::Protocol {
+                                operation: "NDSIF response does not match request",
+                                source,
+                            }
+                        })?;
                         if response.status != Status::Complete {
-                            return Err(format!(
-                                "NDSIF command 0x{:02x} was rejected",
-                                request.command_id()
-                            ));
+                            return Err(NdsifTransportError::Rejected {
+                                command: request.command_id(),
+                                status: response.status,
+                            });
                         }
                         return Ok(frame);
                     }
@@ -618,7 +704,12 @@ impl NdsifSerialTransport {
                         error.kind(),
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) => {}
-                Err(error) => return Err(format!("failed to read NDSIF response: {error}")),
+                Err(source) => {
+                    return Err(NdsifTransportError::Io {
+                        operation: "failed to read NDSIF response",
+                        source,
+                    });
+                }
             }
         }
     }
@@ -1054,17 +1145,27 @@ impl NdsifSerialTransport {
     }
 
     fn query_timed_dac_status(&mut self) -> Result<DacStatus, String> {
-        let frame = self.request(Command::DacStatus {
+        self.query_timed_dac_status_typed()
+            .map_err(|error| error.to_string())
+    }
+
+    fn query_timed_dac_status_typed(&mut self) -> Result<DacStatus, NdsifTransportError> {
+        let frame = self.request_typed(Command::DacStatus {
             profile: DAC_PROFILE_YM2612,
         })?;
-        let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+        let response =
+            Response::decode(&frame).map_err(|source| NdsifTransportError::Protocol {
+                operation: "invalid NDSIF DAC_STATUS response",
+                source,
+            })?;
         match response.reply {
             Reply::DacStatus(status) if status.profile == DAC_PROFILE_YM2612 => Ok(status),
-            Reply::DacStatus(status) => Err(format!(
-                "NDSIF returned DAC profile {} status while profile 1 was requested",
-                status.profile
-            )),
-            _ => Err("NDSIF DAC_STATUS returned an unexpected response".to_owned()),
+            Reply::DacStatus(status) => Err(NdsifTransportError::UnexpectedDacProfile {
+                profile: status.profile,
+            }),
+            _ => Err(NdsifTransportError::UnexpectedResponse {
+                operation: "DAC_STATUS",
+            }),
         }
     }
 

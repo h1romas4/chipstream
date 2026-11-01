@@ -193,6 +193,26 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
 }
 
 #[test]
+fn mdx_constructor_loop_defaults_are_explicit() {
+    let package = MdxPackage::parse(MDX, None).unwrap();
+    let once = render_mdx(&mut MdxSequencer::new(package.clone(), 44_100, 256).unwrap());
+    let options = MdxSequencerOptions {
+        loop_count: Some(1),
+        ..Default::default()
+    };
+    let explicit_once =
+        render_mdx(&mut MdxSequencer::with_options(package.clone(), 44_100, 256, options).unwrap());
+    assert_eq!(once, explicit_once);
+
+    assert_eq!(MdxSequencerOptions::default().loop_count, None);
+    let mut default_options =
+        MdxSequencer::with_options(package, 44_100, 256, MdxSequencerOptions::default()).unwrap();
+    while default_options.position_frames() <= once.len() {
+        assert!(default_options.render().unwrap().is_some());
+    }
+}
+
+#[test]
 fn events_and_gain_are_available_for_mdx() {
     let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
     player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);

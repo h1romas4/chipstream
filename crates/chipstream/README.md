@@ -76,6 +76,15 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+`MdxSequencer::new` and `from_mdx` play once using the default resource limits.
+In contrast, `MdxSequencer::with_options` uses the supplied options as-is:
+`MdxSequencerOptions::default()` sets `loop_count` to `None`, so looped tracks
+repeat until a limit or another playback ending is reached. Set `loop_count` to
+`Some(1)` for the same single-traversal behavior as `new`. For indefinite
+playback also set `max_ticks` to `None`; other resource limits remain active.
+PDX lookup is the caller's responsibility, and omitting PDX disables the PCM
+path even when the MDX names a PDX.
+
 `set_gain` applies a linear gain to a chip instance and returns an error if it
 is absent. Both sequencers support typed write callbacks. Register callbacks
 with `on_write` and state tracking with `track_state` before rendering:

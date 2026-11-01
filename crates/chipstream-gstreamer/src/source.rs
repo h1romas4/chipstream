@@ -1225,7 +1225,7 @@ fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactory
             reset_device: settings.reset_device,
         })
         .collect::<Vec<_>>();
-    create_ndsif_factories(&configs)
+    create_ndsif_factories(&configs).map_err(|error| error.to_string())
 }
 
 fn parse_ndsif_ports(settings: &NdsifSettings) -> Result<Vec<String>, String> {

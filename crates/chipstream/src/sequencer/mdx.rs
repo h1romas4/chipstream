@@ -79,7 +79,7 @@ pub struct MdxSequencer<'a> {
 }
 
 impl<'a> MdxSequencer<'a> {
-    /// Parse owned MDX and optional PDX buffers, and play once with defaults.
+    /// Parse owned MDX and optional PDX buffers, and play once with default limits.
     ///
     /// PDX lookup is the caller's responsibility. A missing PDX is accepted,
     /// even if the MDX names one, and disables the PCM path.
@@ -119,6 +119,9 @@ impl<'a> MdxSequencer<'a> {
     }
 
     /// Play a parsed package once using the default playback limits.
+    ///
+    /// Equivalent to [`Self::with_options`] with
+    /// `MdxSequencerOptions { loop_count: Some(1), ..Default::default() }`.
     pub fn new(
         package: MdxPackage,
         output_rate: u32,
@@ -157,7 +160,8 @@ impl<'a> MdxSequencer<'a> {
     ///
     /// `loop_count` is applied by the MDX driver, not the VGM stream. Set
     /// `max_ticks` to `None` for an indefinite loop without a time limit.
-    /// Unlike [`Self::new`], the default options use `loop_count: None`.
+    /// Unlike [`Self::new`], the default options use `loop_count: None`,
+    /// so a looped track repeats until a limit or another playback ending.
     /// `Some(n)` selects a finite number of traversals; `Some(0)` means one.
     /// For F1 loops, the intro and first traversal are followed by `n - 1`
     /// further traversals. Finite nested repeats are unaffected.
