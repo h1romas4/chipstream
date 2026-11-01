@@ -117,12 +117,12 @@ audio; adjust NanoDrive levels externally. While capabilities are being
 checked, the panel shows `Checking ND`. The same slider value carries across
 tracks and is applied before supported hardware playback starts. Device
 controls are quantized and best-effort, and external mixer settings are not
-changed. For VGM/VGZ with
+changed. For VGM/VGZ and MDX with
 loop disabled, devices advertising output-volume control also fade their
 global output over the two-second fade interval. Volume updates use immediate
 integer-decibel commands, so their timing and smoothness are best-effort.
-Devices without that capability do not fade; NanoDrive output for MDX does
-not fade. The master gain and fade multiply together. After a hardware volume
+Devices without that capability do not fade. The master gain and fade multiply
+together. After a hardware volume
 change, the device is restored to zero attenuation when reset for reuse. Pause is disabled
 when a hardware route is active. Stop and track changes cancel the workers and
 reset the devices before reuse.

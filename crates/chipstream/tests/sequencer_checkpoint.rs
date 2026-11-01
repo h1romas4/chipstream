@@ -116,3 +116,46 @@ fn mdx_checkpoint_restores_generator_and_audio_state() {
     assert_eq!(player.render().unwrap(), expected);
     assert_eq!(player.position_frames(), expected_position);
 }
+
+#[test]
+fn mdx_checkpoint_restores_fade_start_position() {
+    use soundlog::mdx::command::{MdxCommand, MdxRelativeOffset, MdxRest};
+    use soundlog::mdx::document::MdxBuilder;
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -4,
+            }),
+        );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let options = MdxSequencerOptions {
+        loop_count: Some(2),
+        ..Default::default()
+    };
+    let mut player =
+        MdxSequencer::with_options_and_fadeout(package, 44_100, 128, options, Some(88_200))
+            .unwrap();
+    assert_eq!(player.fade_start_frame(), None);
+    let before_fade = player.checkpoint().unwrap();
+    while player.fade_start_frame().is_none() {
+        assert!(player.render().unwrap().is_some());
+    }
+    let start = player.fade_start_frame();
+    let during_fade = player.checkpoint().unwrap();
+    player.restore_checkpoint(&before_fade).unwrap();
+    assert_eq!(player.fade_start_frame(), None);
+    while player.fade_start_frame().is_none() {
+        assert!(player.render().unwrap().is_some());
+    }
+    assert_eq!(player.fade_start_frame(), start);
+    player.restore_checkpoint(&during_fade).unwrap();
+    assert_eq!(player.fade_start_frame(), start);
+}

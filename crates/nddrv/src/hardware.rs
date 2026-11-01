@@ -894,6 +894,104 @@ mod tests {
     }
 
     #[test]
+    fn mdx_loop_fade_reaches_nanodrive_output_and_restores_volume() {
+        use chipstream::sequencer::{
+            Instance, MdxSequencer, MdxSequencerOptions, measure_mdx_duration_frames,
+        };
+        use soundlog::mdx::command::{MdxCommand, MdxOpmRegisterWrite, MdxRelativeOffset, MdxRest};
+        use soundlog::mdx::document::MdxBuilder;
+        use soundlog::mdx::package::MdxPackage;
+
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(
+                0,
+                MdxOpmRegisterWrite {
+                    register: 0x20,
+                    value: 0xc7,
+                },
+            )
+            .add_mdx_command(0, MdxRest { ticks: 1 })
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: -7,
+                }),
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let options = MdxSequencerOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        };
+        let boundary = measure_mdx_duration_frames(package.clone(), 44_100, options, None)
+            .unwrap()
+            .unwrap() as usize;
+
+        let (volumes, received) = mpsc::channel();
+        let (device, port, release, fake) = fake_volume_device(1, true, volumes);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        let routes = [ndsif_transport::NdsifRoute {
+            chip: Chip::Ym2151,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        }];
+        let factories =
+            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+        let mut sequencer = MdxSequencer::with_options_and_fadeout_with_factories(
+            package,
+            44_100,
+            1024,
+            options,
+            Some(88_200),
+            factories,
+        )
+        .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for _ in 0..4 {
+            assert!(sequencer.render().unwrap().is_some());
+            workers.enqueue(&recorders, &cancelled).unwrap();
+        }
+        assert_eq!(sequencer.fade_start_frame(), Some(boundary));
+        timeline
+            .schedule_output_fade(boundary, 44_100, Duration::from_secs(2))
+            .unwrap();
+        let origin = Instant::now() + Duration::from_millis(80);
+        timeline.start(origin).unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+        let fade_start = origin + Duration::from_secs_f64(boundary as f64 / 44_100.0);
+        let mut steps = Vec::new();
+        while !steps.contains(&96) {
+            let (id, value, at) = received.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(id, 1);
+            assert!(at >= fade_start);
+            steps.push(value);
+        }
+        assert!(steps.len() >= 3, "{steps:?}");
+        assert!(steps.windows(2).all(|pair| pair[0] < pair[1]), "{steps:?}");
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
     fn master_volume_is_applied_before_start_and_updated_while_idle() {
         let (volumes, received) = mpsc::channel();
         let (device, port, release, fake) = fake_volume_device(1, true, volumes);

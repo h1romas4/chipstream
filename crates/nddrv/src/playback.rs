@@ -278,10 +278,10 @@ impl Sequencer {
         }
     }
 
-    fn vgm_fade_start_frame(&self) -> Option<usize> {
+    fn fade_start_frame(&self) -> Option<usize> {
         match self {
             Self::Vgm(player) => player.fade_start_frame(),
-            Self::Mdx(_) => None,
+            Self::Mdx(player) => player.fade_start_frame(),
         }
     }
 
@@ -292,7 +292,7 @@ impl Sequencer {
         scheduled: &mut bool,
     ) -> Result<()> {
         if !*scheduled
-            && let Some(start) = self.vgm_fade_start_frame()
+            && let Some(start) = self.fade_start_frame()
             && let Some(timeline) = control.hardware_timeline.get()
         {
             timeline
@@ -1037,7 +1037,7 @@ mod tests {
             let expected = ((7_000 + FADEOUT_SAMPLES) as u64 * u64::from(rate) + 22_050) / 44_100;
             assert_eq!(render_frames(&mut finite_vgm), expected as usize);
             let fade_start = (7_000_u64 * u64::from(rate) + 22_050) / 44_100;
-            assert_eq!(finite_vgm.vgm_fade_start_frame(), Some(fade_start as usize));
+            assert_eq!(finite_vgm.fade_start_frame(), Some(fade_start as usize));
 
             let package = MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap();
             let options = MdxSequencerOptions {
@@ -1060,6 +1060,7 @@ mod tests {
                         path.display()
                     );
                 }
+                assert_eq!(looped.fade_start_frame(), None);
             }
             for looped in [false, true] {
                 let mut player = Sequencer::new(&no_loop, rate, looped).unwrap();
@@ -1069,6 +1070,8 @@ mod tests {
             let mut finite = Sequencer::new(&no_loop_mdx, rate, false).unwrap();
             let mut infinite = Sequencer::new(&no_loop_mdx, rate, true).unwrap();
             assert_eq!(render_frames(&mut finite), render_frames(&mut infinite));
+            assert_eq!(finite.fade_start_frame(), None);
+            assert_eq!(infinite.fade_start_frame(), None);
         }
     }
 
@@ -1096,7 +1099,7 @@ mod tests {
         }
         let fade_start = samples.len() - FADEOUT_SAMPLES as usize;
         assert_eq!(fade_start, 6_000);
-        assert_eq!(finite.vgm_fade_start_frame(), Some(fade_start));
+        assert_eq!(finite.fade_start_frame(), Some(fade_start));
         let mut infinite = Sequencer::new(&vgm, 44_100, true).unwrap();
         let mut reference = Vec::new();
         while reference.len() < samples.len() {
@@ -1120,6 +1123,152 @@ mod tests {
             }
         }
         assert!(audible > 100, "fade test must contain audible samples");
+    }
+
+    #[test]
+    fn finite_mdx_fades_linearly_after_two_traversals() {
+        use chipstream::sequencer::measure_mdx_duration_frames;
+        use soundlog::mdx::command::{
+            MdxCommand, MdxNote, MdxPan, MdxRelativeOffset, MdxVoiceOrPcmBank,
+        };
+        use soundlog::mdx::tone::{MdxOperator, MdxTone};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mdx = dir.path().join("loop.mdx");
+        let mut builder = soundlog::mdx::document::MdxBuilder::new();
+        builder
+            .append_tone(MdxTone {
+                voice_number: 0,
+                con: 7,
+                fl: 0,
+                op: 0x78,
+                operators: [MdxOperator {
+                    ar: 31,
+                    rr: 15,
+                    ml: 1,
+                    ..Default::default()
+                }; 4],
+            })
+            .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+            .add_mdx_command(0, MdxPan::Center)
+            .add_mdx_command(
+                0,
+                MdxNote {
+                    note: 0x98,
+                    length: 32,
+                },
+            )
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: -5,
+                }),
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        std::fs::write(&mdx, package.to_mdx_bytes().unwrap()).unwrap();
+
+        for rate in [44_100, 48_000] {
+            let options = MdxSequencerOptions {
+                loop_count: Some(2),
+                ..MdxSequencerOptions::default()
+            };
+            let boundary = measure_mdx_duration_frames(package.clone(), rate, options, None)
+                .unwrap()
+                .unwrap() as usize;
+            let mut finite = Sequencer::new(&mdx, rate, false).unwrap();
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            let timeline = Arc::new(NdsifHostTimeline::pending());
+            assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+            let mut scheduled = false;
+            assert_eq!(finite.fade_start_frame(), None);
+            let mut samples = Vec::new();
+            while let Some(block) = finite.render().unwrap() {
+                finite
+                    .schedule_hardware_fade(&control, rate, &mut scheduled)
+                    .unwrap();
+                samples.extend_from_slice(block.frames());
+                assert!(samples.len() < rate as usize * 300, "playback did not end");
+            }
+            assert_eq!(samples.len(), boundary + rate as usize * 2);
+            assert_eq!(finite.fade_start_frame(), Some(boundary));
+            assert!(scheduled);
+            assert!(
+                timeline
+                    .schedule_output_fade(0, rate, Duration::from_secs(2))
+                    .is_err()
+            );
+
+            let mut infinite = Sequencer::new(&mdx, rate, true).unwrap();
+            let mut reference = Vec::new();
+            while reference.len() < samples.len() {
+                reference.extend_from_slice(infinite.render().unwrap().unwrap().frames());
+            }
+            let fade_frames = rate as usize * 2;
+            let mut audible = 0;
+            for (index, (actual, original)) in samples.iter().zip(&reference).enumerate() {
+                let gain = if index < boundary {
+                    1.0
+                } else {
+                    1.0 - (index - boundary) as f32 / (fade_frames - 1) as f32
+                };
+                for channel in 0..2 {
+                    if original[channel].abs() > 0.001 && index >= boundary {
+                        audible += 1;
+                    }
+                    assert!(
+                        (actual[channel] - original[channel] * gain).abs() < 0.0001,
+                        "rate {rate}, frame {index}, channel {channel}, gain {gain}"
+                    );
+                }
+            }
+            assert!(audible > 100, "fade test must contain audible samples");
+        }
+    }
+
+    #[test]
+    fn short_mdx_schedules_hardware_fade_during_prebuffer() {
+        use soundlog::mdx::command::{MdxCommand, MdxRelativeOffset, MdxRest};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mdx = dir.path().join("short.mdx");
+        let mut builder = soundlog::mdx::document::MdxBuilder::new();
+        builder
+            .add_mdx_command(0, MdxRest { ticks: 1 })
+            .add_mdx_command(
+                0,
+                MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                    opcode: 0xf1,
+                    offset: -4,
+                }),
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        std::fs::write(&mdx, package.to_mdx_bytes().unwrap()).unwrap();
+
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+        let mut player = Sequencer::new(&mdx, 44_100, false).unwrap();
+        let mut scheduled = false;
+        for _ in 0..4 {
+            assert!(player.render().unwrap().is_some());
+            player
+                .schedule_hardware_fade(&control, 44_100, &mut scheduled)
+                .unwrap();
+        }
+        assert!(scheduled);
+        assert!(player.fade_start_frame().unwrap() < 4 * CHUNK_FRAMES);
+        assert!(
+            timeline
+                .schedule_output_fade(0, 44_100, Duration::from_secs(2))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1147,7 +1296,7 @@ mod tests {
                 .unwrap();
         }
         assert!(scheduled);
-        assert_eq!(player.vgm_fade_start_frame(), Some(200));
+        assert_eq!(player.fade_start_frame(), Some(200));
         assert!(
             timeline
                 .schedule_output_fade(0, 44_100, Duration::from_secs(2))

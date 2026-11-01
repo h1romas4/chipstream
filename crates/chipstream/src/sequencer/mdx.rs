@@ -341,6 +341,15 @@ impl<'a> MdxSequencer<'a> {
         self.player.position_frames()
     }
 
+    /// Return the output-frame position where the configured fade begins.
+    ///
+    /// The position is available once rendering has reached the loop boundary
+    /// and can be discovered ahead of the returned PCM. It is absent before
+    /// that boundary and for playback without a configured fade.
+    pub fn fade_start_frame(&self) -> Option<usize> {
+        self.player.fade_start_frame()
+    }
+
     /// Capture the exact state at the current output-block boundary.
     pub fn checkpoint(&mut self) -> Result<VgmSequencerCheckpoint, MdxSequencerError> {
         self.player
