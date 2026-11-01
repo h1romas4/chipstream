@@ -4,15 +4,18 @@ use std::{cell::RefCell, rc::Rc};
 
 use chipstream::{
     chip::{
-        ChipError, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifRegisterEvent, NdsifSoundChip,
-        NdsifTransport, SoundChip,
+        ChipError, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258, NdsifPsgEvent,
+        NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
         ndsif::{NdsifAudioControl, register_okim6258_factory, register_ymfm_factories},
     },
     sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
 };
 use ndsif::{Divider, RegisterWrite, WriteId, ZeroPair};
 use soundlog::{
-    chip::{Okim6258Spec, Ym2151Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ymf262Spec, Ymf278bSpec},
+    chip::{
+        Okim6258Spec, PsgSpec, Ym2151Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ymf262Spec,
+        Ymf278bSpec,
+    },
     vgm::{VgmBuilder, command::WaitSamples},
 };
 
@@ -20,6 +23,7 @@ use soundlog::{
 struct FakeTransport {
     configured: Vec<(WriteId, u8, u32)>,
     events: Vec<NdsifRegisterEvent>,
+    psg_events: Vec<NdsifPsgEvent>,
     audio_streams: Vec<(u8, u32, Divider, u32)>,
     adpcm_events: Vec<NdsifAdpcmEvent>,
     audio_controls: Vec<NdsifAudioControlEvent>,
@@ -43,7 +47,13 @@ impl NdsifTransport for FakeTransport {
         if self.fail_writes {
             return Err("simulated scheduler failure".to_owned());
         }
+
         self.events.push(event);
+        Ok(())
+    }
+
+    fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.psg_events.push(event);
         Ok(())
     }
 
@@ -87,6 +97,78 @@ impl NdsifTransport for FakeTransport {
         self.finished.push((instance, sample_frame, output_rate));
         Ok(())
     }
+}
+
+#[test]
+fn target_instance_can_differ_from_source_for_each_ndsif_adapter() {
+    let mut builder = VgmBuilder::new();
+    for chip in [Chip::Ym2151, Chip::Sn76489, Chip::Okim6258] {
+        builder.register_chip(chip, Instance::Primary, 4_000_000);
+    }
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2151Spec {
+            register: 0x20,
+            value: 0xc7,
+        },
+    );
+    builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x01,
+            value: 0x12,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Ym2151, move |config| {
+        Ok(Box::new(NdsifSoundChip::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Sn76489, move |config| {
+        Ok(Box::new(NdsifSn76489::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Okim6258, move |config| {
+        Ok(Box::new(NdsifOkim6258::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+    let device = transport.borrow();
+    assert!(device.configured.contains(&(WriteId::YM2151, 1, 4_000_000)));
+    assert!(
+        device
+            .configured
+            .contains(&(WriteId::SN76489_SECOND, 1, 4_000_000))
+    );
+    assert!(
+        device
+            .configured
+            .contains(&(WriteId::OKIM6258, 1, 4_000_000))
+    );
+    assert!(!device.events.is_empty());
+    assert!(device.events.iter().all(|event| event.instance == 1));
+    assert!(!device.psg_events.is_empty());
+    assert!(device.psg_events.iter().all(|event| event.instance == 1));
+    assert!(!device.adpcm_events.is_empty());
+    assert!(device.adpcm_events.iter().all(|event| event.instance == 1));
 }
 
 #[test]

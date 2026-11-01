@@ -16,8 +16,18 @@ Emulated chips continue to produce host PCM normally.
 | `NdsifSerialConfig` | Serial port and initialization options for one device. |
 | `create_chip_factories` | Open devices and create a `chipstream` factory registry. |
 | `NdsifSerialTransport::open` | Open and initialize one transport directly. |
+| `NdsifSerialTransport::capabilities` | Read the target capabilities discovered on open. |
+| `NdsifSerialTransport::device_info` | Query the model and firmware identifiers. |
+| `NdsifSerialTransport::reset_for_reuse` | Reset playback state while retaining the serial connection. |
+| `NdsifSerialTransport::{defer_audio_stream_start, prepare_audio_stream_start, start_prepared_audio_stream}` | Prebuffer an OKIM6258 stream and explicitly control its start. |
+| `NdsifHostTimeline`, `NdsifSerialTransport::set_host_timeline` | Share a cancellable host-pacing origin for untimed writes. |
 | `NdsifSerialTransport::supports_clock` | Check cached chip and clock capabilities. |
 | `NdsifSerialTransport::supports_audio_stream` | Check cached OKIM6258 stream support. |
+| `NdsifRoute`, `create_routed_chip_factories` | Route individual source instances to explicitly selected open devices. |
+| `create_shared_routed_chip_factories` | Route through shared transport handles that the caller can later recover. |
+| `NdsifRecordingTransport`, `NdsifCommandBatch` | Record bounded batches without serial I/O and replay them on a device worker. |
+| `NdsifRoutingTransport`, `create_routed_transport_factories` | Route through a custom scheduled transport, including a recorder. |
+| `NdsifRoutingError` | Invalid or conflicting explicit route. |
 | `NdsifTransportError` | Typed configuration and initialization errors. |
 
 `NdsifSerialTransport` also implements `chipstream::chip::NdsifTransport` for
@@ -45,6 +55,41 @@ supported chip instance, the first device with a compatible capability and
 clock is selected when the sequencer constructs that chip. If no device
 matches, the normal emulated backend is used. A failure to open or initialize
 any configured device is returned as an error rather than falling back.
+
+For applications that need an exact saved routing, `create_routed_chip_factories`
+instead takes already-opened transports and `NdsifRoute` entries. Each entry
+selects the chip type, source instance, device index, and target instance.
+Unrouted instances use the built-in backend; routed instances fail if their
+selected device does not support the required clock or stream. Duplicate
+sources and physical targets, unsupported chip types, and unknown device
+indices are rejected. The registry retains the supplied devices.
+For applications that must keep connections open across playback, use
+`create_shared_routed_chip_factories` with `Rc<RefCell<NdsifSerialTransport>>`
+handles. Two indices may not alias the same handle. After dropping the
+sequencer and all factories, recover each connection with `Rc::try_unwrap`,
+then call `reset_for_reuse` before returning it to the connection owner.
+The reset checks that supported audio streams are idle and clears the host-side
+playback state. If reset or its idle checks fail, close the transport rather
+than reusing it. Do not reset a transport still used by a sequencer.
+The existing PSG-format and paired YM2151/OKIM6258 compatibility restrictions
+also apply to explicit routes.
+
+```rust,no_run
+use std::time::Duration;
+use chipstream::sequencer::{Chip, Instance};
+use ndsif_transport::{create_routed_chip_factories, NdsifRoute, NdsifSerialTransport};
+
+let device = NdsifSerialTransport::open("/dev/ttyACM0", 115_200, Duration::from_millis(500), false)?;
+let routes = [NdsifRoute {
+    chip: Chip::Ym2151,
+    source: Instance::Secondary,
+    device: 0,
+    target: Instance::Primary,
+}];
+let factories = create_routed_chip_factories(vec![device], &routes)?;
+# let _ = factories;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 Initialization clears pending serial input, optionally resets the device,
 sends a ping, discovers capabilities, and verifies applicable audio and timed
@@ -198,6 +243,17 @@ for configuring the chip, flushing scheduled events, and finishing streams.
 Events from different chips can be queued out of order. Playback operations
 through this trait report errors as `String`.
 
+`NdsifRecordingTransport` snapshots one open device's routing capabilities and
+records transport operations without serial I/O. Use
+`create_routed_transport_factories` to route a sequencer to recorders, then
+drain each recorder after each render block. Send its batches in order to the
+worker owning the corresponding physical device and replay them there. The
+recorder limits operations per batch; applications must also bound their
+inter-thread queues. Overflow makes the recorder unusable for that playback.
+Configuration and device failures can occur during replay, after earlier
+operations have already run: stop playback and reset or close the device on
+error. Recording does not itself synchronize host audio or device-timed streams.
+
 ## Playback behavior and limitations
 
 - Factory routing covers YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
@@ -209,6 +265,17 @@ through this trait report errors as `String`.
 - Only one primary OKIM6258 audio stream is supported per transport. It cannot
   share a transport with the timed DAC profile. Raw PSG writes cannot share an
   OKIM6258 audio stream.
+- An application can defer the OKIM6258 start after configuration and before
+  sending audio data. It must buffer enough bytes for its intended lead time,
+  call `prepare_audio_stream_start` to validate the minimum and complete the
+  serial ping, then call `start_prepared_audio_stream` at its chosen time.
+  Alternatively, `prepare_audio_stream_start_for_frames` checks coverage of
+  a number of host PCM frames. `defer_audio_stream_start_with_cancellation`
+  uses a shared timeline to interrupt buffering and capacity waits on stop.
+  Event and data capacity limits still apply and never force an early start.
+  Reset or close the device after a failed start. This API does not itself
+  synchronize device and host clocks; serial/device latency and clock drift
+  still apply. The existing automatic-start behavior is unchanged by default.
 - A device advertising the supported revision 40, profile 1 timed DAC
   capabilities uses that profile for primary YM2612. YM2612 `$2A` and `$2B`
   writes become DAC records; other supported FM and PSG writes become
@@ -216,8 +283,23 @@ through this trait report errors as `String`.
   seals/drains the profile at end of playback. Without this profile, normal
   scheduled writes are used.
 - Without an audio or timed DAC stream, the transport paces configured chip
-  writes against a host wall clock. Playback operations may block while pacing,
-  waiting for queue capacity, communicating with the device, or draining.
+  writes against a host wall clock, sending events at their scheduled frame
+  positions and batching only writes at the same position. This is best-effort
+  host scheduling, not a guarantee of sample-accurate serial delivery. Each
+  transport has its own clock origin; synchronization between devices or with
+  host PCM is the application's responsibility. Playback operations may block
+  while pacing, waiting for queue capacity, communicating with the device,
+  or draining.
+- An application can opt into a shared `NdsifHostTimeline` before the first
+  host-paced flush. Use a separate worker per transport and choose the
+  frame-zero presentation time to match the application's audio clock. Use
+  `pending()` followed by `start()` if that time is not known at setup; pacing
+  waits until the timeline starts or is cancelled. Device-timed stream workers
+  can use `wait_until_presentation()` before issuing their prepared start.
+  Calling
+  `cancel` interrupts host-pacing waits; it does not interrupt serial I/O
+  already in progress. This mechanism rejects OKIM6258 and timed DAC streams,
+  which run on a device clock and require separate synchronization.
 - Dropping a transport after chip configuration attempts a device reset;
   reset failures are reported to standard error. `reset_device: false` only
   disables the **initial** reset.

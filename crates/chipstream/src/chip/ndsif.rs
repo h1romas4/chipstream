@@ -195,6 +195,15 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         config: &ChipFactoryConfig<'_>,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
+        Self::with_target_instance(config, config.instance(), transport)
+    }
+
+    /// Configure a physical chip instance independently of the source instance.
+    pub fn with_target_instance(
+        config: &ChipFactoryConfig<'_>,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
         let chip = config.chip().clone();
         let Some((divisor, channels, write_id)) = ymfm_config(&chip) else {
             return Err(ChipError::UnsupportedChip(chip));
@@ -205,7 +214,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
                 minimum: divisor,
             });
         }
-        let instance = instance_id(config.instance());
+        let instance = instance_id(target);
         let write_id = write_id_for(write_id, &chip)?;
         transport
             .try_borrow_mut()
@@ -343,8 +352,17 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         config: &ChipFactoryConfig<'_>,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
-        let instance = instance_id(config.instance());
-        let write_id = match config.instance() {
+        Self::with_target_instance(config, config.instance(), transport)
+    }
+
+    /// Configure a physical PSG instance independently of the source instance.
+    pub fn with_target_instance(
+        config: &ChipFactoryConfig<'_>,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
+        let instance = instance_id(target);
+        let write_id = match target {
             Instance::Primary => WriteId::SN76489,
             Instance::Secondary => WriteId::SN76489_SECOND,
         };
@@ -484,7 +502,16 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         config: &ChipFactoryConfig<'_>,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
-        let instance = instance_id(config.instance());
+        Self::with_target_instance(config, config.instance(), transport)
+    }
+
+    /// Configure a physical ADPCM instance independently of the source instance.
+    pub fn with_target_instance(
+        config: &ChipFactoryConfig<'_>,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
+        let instance = instance_id(target);
         let divider = match config.header().okim6258_flags.clock_divider {
             0 => Divider::Div1024,
             1 => Divider::Div768,

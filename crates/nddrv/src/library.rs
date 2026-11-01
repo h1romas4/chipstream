@@ -14,6 +14,19 @@ use soundlog::vgm::header::VgmHeader;
 use walkdir::WalkDir;
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
+const YMFM_CHIPS: [Chip; 11] = [
+    Chip::Ym2413,
+    Chip::Ym2151,
+    Chip::Ym2203,
+    Chip::Ym2608,
+    Chip::Ym2610b,
+    Chip::Ym2612,
+    Chip::Ym3526,
+    Chip::Y8950,
+    Chip::Ym3812,
+    Chip::Ymf262,
+    Chip::Ymf278b,
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChipTag {
@@ -27,21 +40,12 @@ impl ChipTag {
         Self {
             name: Track::chip_name(chip),
             instances: 1,
-            ymfm: matches!(
-                chip,
-                Chip::Ym2413
-                    | Chip::Ym2151
-                    | Chip::Ym2203
-                    | Chip::Ym2608
-                    | Chip::Ym2610b
-                    | Chip::Ym2612
-                    | Chip::Ym3526
-                    | Chip::Y8950
-                    | Chip::Ym3812
-                    | Chip::Ymf262
-                    | Chip::Ymf278b
-            ),
+            ymfm: YMFM_CHIPS.contains(chip),
         }
+    }
+
+    pub fn is_ymfm_name(name: &str) -> bool {
+        YMFM_CHIPS.iter().any(|chip| Track::chip_name(chip) == name)
     }
 
     pub fn label(&self) -> String {
@@ -275,6 +279,8 @@ pub struct Config {
     pub library_width: f32,
     #[serde(default)]
     pub playlist_width: Option<f32>,
+    #[serde(default)]
+    pub routing: crate::routing::RoutingConfig,
 }
 
 impl Default for Config {
@@ -284,6 +290,7 @@ impl Default for Config {
             playlist: Vec::new(),
             library_width: DEFAULT_LIBRARY_WIDTH,
             playlist_width: None,
+            routing: crate::routing::RoutingConfig::default(),
         }
     }
 }
@@ -300,6 +307,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
             let bytes = read_bounded(file).context("failed to read library configuration")?;
             let config: Config =
                 serde_json::from_slice(&bytes).context("invalid library configuration")?;
+            config
+                .routing
+                .validate()
+                .context("invalid routing configuration")?;
             for (name, width) in [
                 ("library_width", Some(config.library_width)),
                 ("playlist_width", config.playlist_width),
@@ -319,6 +330,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
 }
 
 pub fn save_config(path: &Path, config: &Config) -> Result<()> {
+    config
+        .routing
+        .validate()
+        .context("invalid routing configuration")?;
     let parent = path.parent().context("configuration path has no parent")?;
     fs::create_dir_all(parent).context("failed to create configuration directory")?;
     let bytes = serde_json::to_vec_pretty(config)?;
@@ -802,6 +817,21 @@ mod tests {
     }
 
     #[test]
+    fn ymfm_names_match_chip_tag_classification() {
+        for chip in YMFM_CHIPS {
+            let tag = ChipTag::new(&chip);
+            assert!(tag.ymfm);
+            assert!(ChipTag::is_ymfm_name(tag.name), "{}", tag.name);
+        }
+        for chip in [Chip::Sn76489, Chip::Okim6258, Chip::Ymf271, Chip::Ymz280b] {
+            let tag = ChipTag::new(&chip);
+            assert!(!tag.ymfm);
+            assert!(!ChipTag::is_ymfm_name(tag.name), "{}", tag.name);
+        }
+        assert!(!ChipTag::is_ymfm_name("unknown"));
+    }
+
+    #[test]
     fn chip_labels_cover_vgm_instances_and_mdx_pdx_declarations() {
         use soundlog::vgm::command::Instance;
 
@@ -897,6 +927,7 @@ mod tests {
             playlist: vec![tracks[0].path.clone()],
             library_width: 410.,
             playlist_width: Some(380.),
+            routing: crate::routing::RoutingConfig::default(),
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();
@@ -915,6 +946,40 @@ mod tests {
         assert!(tracks.is_empty());
         assert_eq!(errors.len(), 1);
         assert!(read_metadata(&dir.path().join("bad.vgz")).is_err());
+    }
+
+    #[test]
+    fn routing_configuration_is_saved_and_invalid_routes_are_reported() {
+        use crate::routing::{ChipInstance, Connection, Device, HardwareChip, Profile};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let mut config = Config::default();
+        config.routing.devices.push(Device {
+            id: 1,
+            name: "NanoDrive".into(),
+            port: "serial-port".into(),
+            baud_rate: 115_200,
+        });
+        config.routing.profiles.push(Profile {
+            id: 2,
+            name: "Hardware".into(),
+            connections: vec![Connection {
+                chip: HardwareChip::Ym2151,
+                source: ChipInstance::Secondary,
+                device_id: 1,
+                target: ChipInstance::Primary,
+            }],
+        });
+        config.routing.selected_profile = Some(2);
+        save_config(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().routing, config.routing);
+        config.routing.devices.clear();
+        assert!(
+            format!("{:#}", save_config(&path, &config).unwrap_err()).contains("unknown device")
+        );
+        assert_eq!(load_config(&path).unwrap().routing.devices.len(), 1);
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        assert!(format!("{:#}", load_config(&path).unwrap_err()).contains("unknown device"));
     }
 
     #[test]

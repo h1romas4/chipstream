@@ -237,7 +237,7 @@ fn find_transport(
 }
 
 /// Map supported YMFM chip types to their NDSIF write identifiers.
-fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
+pub(super) fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
     let write_id = match chip {
         Chip::Ym2413 => 0x51,
         Chip::Ym2151 => 0x54,
@@ -256,7 +256,7 @@ fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
 }
 
 /// Convert a sequencer instance to its protocol instance number.
-fn instance_number(instance: Instance) -> u8 {
+pub(super) fn instance_number(instance: Instance) -> u8 {
     match instance {
         Instance::Primary => 0,
         Instance::Secondary => 1,

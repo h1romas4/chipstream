@@ -1,19 +1,22 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
-use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions, VgmSequencer};
+use chipstream::sequencer::{ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, VgmSequencer};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
+use ndsif_transport::NdsifHostTimeline;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 
+use crate::device::{DeviceHandle, DeviceLease};
 use crate::library::{extension, read_track};
+use crate::routing::PlaybackPlan;
 
 const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
@@ -28,6 +31,7 @@ pub struct Playback {
     volume: Arc<AtomicU32>,
     generation: u64,
     backend: Arc<dyn PlaybackBackend>,
+    worker_gate: Arc<Mutex<()>>,
     sender: mpsc::Sender<Event>,
     pub events: mpsc::Receiver<Event>,
 }
@@ -50,6 +54,8 @@ struct PlaybackControl {
     frames: AtomicU64,
     sample_rate: AtomicU32,
     volume: Arc<AtomicU32>,
+    first_presentation: OnceLock<Instant>,
+    hardware_timeline: OnceLock<Arc<NdsifHostTimeline>>,
 }
 
 impl PlaybackControl {
@@ -60,6 +66,8 @@ impl PlaybackControl {
             frames: AtomicU64::new(0),
             sample_rate: AtomicU32::new(0),
             volume,
+            first_presentation: OnceLock::new(),
+            hardware_timeline: OnceLock::new(),
         }
     }
 
@@ -82,32 +90,70 @@ impl Playback {
             volume,
             generation: 0,
             backend: Arc::new(EmulationBackend),
+            worker_gate: Arc::new(Mutex::new(())),
             sender,
             events,
         }
     }
 
     pub fn play(&mut self, path: PathBuf, looped: bool) {
+        self.start(path, looped, None);
+    }
+
+    pub fn play_hardware(
+        &mut self,
+        path: PathBuf,
+        looped: bool,
+        devices: DeviceHandle<ndsif_transport::NdsifSerialTransport>,
+        plan: PlaybackPlan,
+    ) {
+        self.start(path, looped, Some((devices, plan)));
+    }
+
+    fn start(
+        &mut self,
+        path: PathBuf,
+        looped: bool,
+        hardware: Option<(
+            DeviceHandle<ndsif_transport::NdsifSerialTransport>,
+            PlaybackPlan,
+        )>,
+    ) {
         self.stop();
         self.control = Arc::new(PlaybackControl::new(self.volume.clone()));
         let control = self.control.clone();
         let sender = self.sender.clone();
         let backend = self.backend.clone();
+        let worker_gate = self.worker_gate.clone();
         let generation = self.generation;
         thread::spawn(move || {
-            let result = backend.play(&path, control.clone(), looped);
+            let result = match worker_gate.lock() {
+                Ok(_guard) if control.cancel.load(Ordering::Acquire) => Ok(()),
+                Ok(_guard) => match hardware {
+                    Some((devices, plan)) => {
+                        run_hardware(&path, control.clone(), looped, devices, plan)
+                    }
+                    None => backend.play(&path, control.clone(), looped),
+                },
+                Err(_) => Err(anyhow::anyhow!("previous playback worker failed")),
+            };
             if !control.cancel.load(Ordering::Relaxed) {
                 let event = match result {
                     Ok(()) => Event::Finished(generation),
                     Err(error) => Event::Error(generation, format!("{error:#}")),
                 };
                 let _ = sender.send(event);
+            } else if let Err(error) = result {
+                eprintln!("Playback cleanup failed after cancellation: {error:#}");
             }
         });
     }
 
     pub fn stop(&mut self) {
-        self.control.cancel.store(true, Ordering::Relaxed);
+        self.control.cancel.store(true, Ordering::Release);
+        if let Some(timeline) = self.control.hardware_timeline.get() {
+            timeline.cancel();
+        }
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -146,6 +192,15 @@ enum Sequencer {
 
 impl Sequencer {
     fn new(path: &Path, rate: u32, looped: bool) -> Result<Self> {
+        Self::with_factories(path, rate, looped, ChipFactoryRegistry::new())
+    }
+
+    fn with_factories(
+        path: &Path,
+        rate: u32,
+        looped: bool,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self> {
         let bytes = read_track(path)?;
         if extension(path) == "mdx" {
             let normalized = normalize_mdx_for_playback(&bytes).map_err(anyhow::Error::msg)?;
@@ -168,14 +223,16 @@ impl Sequencer {
                 },
                 ..MdxSequencerOptions::default()
             };
-            Ok(Self::Mdx(MdxSequencer::with_options(
+            Ok(Self::Mdx(MdxSequencer::with_options_with_factories(
                 package,
                 rate,
                 CHUNK_FRAMES,
                 options,
+                factories,
             )?))
         } else {
-            let mut sequencer = VgmSequencer::from_vgm(bytes, rate, CHUNK_FRAMES)?;
+            let mut sequencer =
+                VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
             sequencer.set_loop_count(if looped { None } else { Some(1) });
             Ok(Self::Vgm(sequencer))
         }
@@ -238,6 +295,15 @@ struct AudioConsumer {
 
 impl AudioConsumer {
     fn fill<T: SizedSample + FromSample<f32>>(&mut self, out: &mut [T], latency: Duration) {
+        self.fill_at(out, Instant::now(), latency);
+    }
+
+    fn fill_at<T: SizedSample + FromSample<f32>>(
+        &mut self,
+        out: &mut [T],
+        callback_time: Instant,
+        latency: Duration,
+    ) {
         out.fill(T::from_sample(0.0));
         if self.ended
             || self.control.paused.load(Ordering::Relaxed)
@@ -247,6 +313,7 @@ impl AudioConsumer {
         }
         let volume = f32::from_bits(self.control.volume.load(Ordering::Relaxed));
         let mut played = 0;
+        let mut needs_origin = self.control.first_presentation.get().is_none();
         for (frame_index, frame) in out.chunks_mut(self.channels).enumerate() {
             if self.position == self.frames.len() {
                 match self.rx.try_recv() {
@@ -258,7 +325,7 @@ impl AudioConsumer {
                         self.ended = true;
                         let remaining =
                             Duration::from_secs_f64(frame_index as f64 / f64::from(self.rate));
-                        let _ = self.events.send(Ok(Instant::now() + latency + remaining));
+                        let _ = self.events.send(Ok(callback_time + latency + remaining));
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => {
@@ -285,6 +352,34 @@ impl AudioConsumer {
                         .events
                         .send(Err(anyhow::anyhow!("non-finite audio sample")));
                     break;
+                }
+                if needs_origin {
+                    let offset = Duration::from_secs_f64(frame_index as f64 / f64::from(self.rate));
+                    let Some(presentation) = callback_time
+                        .checked_add(latency)
+                        .and_then(|time| time.checked_add(offset))
+                    else {
+                        self.ended = true;
+                        let _ = self
+                            .events
+                            .send(Err(anyhow::anyhow!("audio presentation time overflow")));
+                        break;
+                    };
+                    if self.control.first_presentation.set(presentation).is_err() {
+                        self.ended = true;
+                        let _ = self.events.send(Err(anyhow::anyhow!(
+                            "audio presentation clock already started"
+                        )));
+                        break;
+                    }
+                    if let Some(timeline) = self.control.hardware_timeline.get()
+                        && let Err(error) = timeline.start(presentation)
+                    {
+                        self.ended = true;
+                        let _ = self.events.send(Err(error.into()));
+                        break;
+                    }
+                    needs_origin = false;
                 }
                 played += 1;
                 let clip = |v: f32| v.clamp(-1.0, 1.0 - f32::EPSILON);
@@ -339,6 +434,42 @@ fn stream<T: SizedSample + FromSample<f32>>(
 }
 
 fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
+    run_inner(path, control, looped, None)
+}
+
+fn run_hardware(
+    path: &Path,
+    control: Arc<PlaybackControl>,
+    looped: bool,
+    devices: DeviceHandle<ndsif_transport::NdsifSerialTransport>,
+    plan: PlaybackPlan,
+) -> Result<()> {
+    let lease = devices.acquire(plan.device_ids.clone())?;
+    let playback = if control.cancel.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        run_inner(path, control, looped, Some((&lease, &plan)))
+    };
+    let cleanup = lease.release();
+    match (playback, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.context("return NanoDrive devices")),
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("return NanoDrive devices: {cleanup:#}")))
+        }
+    }
+}
+
+fn run_inner(
+    path: &Path,
+    control: Arc<PlaybackControl>,
+    looped: bool,
+    hardware: Option<(
+        &DeviceLease<ndsif_transport::NdsifSerialTransport>,
+        &PlaybackPlan,
+    )>,
+) -> Result<()> {
     let device = cpal::default_host()
         .default_output_device()
         .context("no audio output device")?;
@@ -346,7 +477,25 @@ fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
         .default_output_config()
         .context("no default audio configuration")?;
     let config = supported.config();
-    let mut sequencer = Sequencer::new(path, config.sample_rate, looped)?;
+    let (mut sequencer, hardware) = if let Some((lease, plan)) = hardware {
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        control
+            .hardware_timeline
+            .set(Arc::clone(&timeline))
+            .map_err(|_| anyhow::anyhow!("hardware timeline already configured"))?;
+        if control.cancel.load(Ordering::Acquire) {
+            timeline.cancel();
+            return Ok(());
+        }
+        let recorders = crate::hardware::recorders(lease)?;
+        let factories =
+            ndsif_transport::create_routed_transport_factories(&recorders, &plan.routes)?;
+        let sequencer = Sequencer::with_factories(path, config.sample_rate, looped, factories)?;
+        let workers = crate::hardware::HardwareWorkers::start(lease, &recorders, timeline)?;
+        (sequencer, Some((recorders, workers)))
+    } else {
+        (Sequencer::new(path, config.sample_rate, looped)?, None)
+    };
     control
         .sample_rate
         .store(config.sample_rate, Ordering::Relaxed);
@@ -366,9 +515,17 @@ fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
         other => bail!("unsupported audio sample format: {other:?}"),
     };
     let mut exhausted = false;
+    let mut prebuffered_frames = 0_usize;
     for _ in 0..4 {
-        match sequencer.render()? {
+        let block = sequencer.render()?;
+        if let Some((recorders, workers)) = &hardware {
+            workers.enqueue(recorders, &control.cancel)?;
+        }
+        match block {
             Some(block) if !block.frames().is_empty() => {
+                prebuffered_frames = prebuffered_frames
+                    .checked_add(block.frames().len())
+                    .context("audio prebuffer frame count overflow")?;
                 tx.send(Block::Audio(block.frames().to_vec()))?
             }
             Some(_) => bail!("sequencer produced an empty block"),
@@ -382,13 +539,38 @@ fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
     if control.cancel.load(Ordering::Relaxed) {
         return Ok(());
     }
+    if prebuffered_frames > 0
+        && let Some((_, workers)) = &hardware
+    {
+        workers.prepare_audio(prebuffered_frames, config.sample_rate, &control.cancel)?;
+    }
+    if control.cancel.load(Ordering::Acquire) {
+        return Ok(());
+    }
     stream.play()?;
-    while !control.cancel.load(Ordering::Relaxed) {
+    'playback: while !control.cancel.load(Ordering::Relaxed) {
+        if let Some((_, workers)) = &hardware
+            && let Err(error) = workers.check()
+        {
+            if control.cancel.load(Ordering::Acquire) {
+                break;
+            }
+            return Err(error);
+        }
         if let Ok(result) = event_rx.try_recv() {
-            return wait_for_audio(result?, &control);
+            wait_for_audio_with_hardware(
+                result?,
+                &control,
+                hardware.as_ref().map(|(_, workers)| workers),
+            )?;
+            break 'playback;
         }
         if !exhausted {
-            let block = match sequencer.render()? {
+            let rendered = sequencer.render()?;
+            if let Some((recorders, workers)) = &hardware {
+                workers.enqueue(recorders, &control.cancel)?;
+            }
+            let block = match rendered {
                 Some(block) if !block.frames().is_empty() => Block::Audio(block.frames().to_vec()),
                 Some(_) => bail!("sequencer produced an empty block"),
                 None => {
@@ -405,7 +587,12 @@ fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
                             return Ok(());
                         }
                         if let Ok(result) = event_rx.try_recv() {
-                            return wait_for_audio(result?, &control);
+                            wait_for_audio_with_hardware(
+                                result?,
+                                &control,
+                                hardware.as_ref().map(|(_, workers)| workers),
+                            )?;
+                            break 'playback;
                         }
                         pending = block;
                         thread::sleep(Duration::from_millis(5));
@@ -418,13 +605,36 @@ fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
             thread::sleep(Duration::from_millis(10));
         }
     }
+    drop(stream);
+    drop(sequencer);
+    if let Some((recorders, workers)) = hardware {
+        drop(recorders);
+        if control.cancel.load(Ordering::Acquire) || control.first_presentation.get().is_none() {
+            if let Some(timeline) = control.hardware_timeline.get() {
+                timeline.cancel();
+            }
+        }
+        workers.finish()?;
+    }
     Ok(())
 }
 
+#[cfg(test)]
 fn wait_for_audio(deadline: Instant, control: &PlaybackControl) -> Result<()> {
+    wait_for_audio_with_hardware(deadline, control, None)
+}
+
+fn wait_for_audio_with_hardware(
+    deadline: Instant,
+    control: &PlaybackControl,
+    workers: Option<&crate::hardware::HardwareWorkers>,
+) -> Result<()> {
     while (Instant::now() < deadline || control.paused.load(Ordering::Relaxed))
         && !control.cancel.load(Ordering::Relaxed)
     {
+        if let Some(workers) = workers {
+            workers.check()?;
+        }
         thread::sleep(Duration::from_millis(5));
     }
     Ok(())
@@ -433,6 +643,99 @@ fn wait_for_audio(deadline: Instant, control: &PlaybackControl) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_presentation_uses_the_first_played_frame_and_device_latency() {
+        let player = Playback::new();
+        let control = player.control.clone();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+        let (tx, rx) = mpsc::channel();
+        let (events, _event_rx) = mpsc::channel();
+        tx.send(Block::Audio(vec![[0.1, 0.2], [0.3, 0.4]])).unwrap();
+        let mut consumer = AudioConsumer {
+            rx,
+            events,
+            control: control.clone(),
+            frames: Vec::new(),
+            position: 0,
+            ended: false,
+            channels: 2,
+            rate: 44_100,
+        };
+        let base = Instant::now();
+        let latency = Duration::from_millis(40);
+        let mut out = [0.0_f32; 2];
+        player.set_paused(true);
+        consumer.fill_at(&mut out, base, latency);
+        assert!(control.first_presentation.get().is_none());
+        player.set_paused(false);
+        let first_callback = base + Duration::from_millis(10);
+        consumer.fill_at(&mut out, first_callback, latency);
+        assert_eq!(
+            control.first_presentation.get(),
+            Some(&(first_callback + latency))
+        );
+        assert!(timeline.start(first_callback).is_err());
+        consumer.fill_at(&mut out, base + Duration::from_secs(1), latency);
+        assert_eq!(
+            control.first_presentation.get(),
+            Some(&(first_callback + latency))
+        );
+    }
+
+    #[test]
+    fn no_presentation_origin_is_set_for_end_or_invalid_audio() {
+        for block in [Block::End, Block::Audio(vec![[f32::NAN, 0.0]])] {
+            let player = Playback::new();
+            let control = player.control.clone();
+            let timeline = Arc::new(NdsifHostTimeline::pending());
+            assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+            let (tx, rx) = mpsc::channel();
+            let (events, _event_rx) = mpsc::channel();
+            tx.send(block).unwrap();
+            let mut consumer = AudioConsumer {
+                rx,
+                events,
+                control: control.clone(),
+                frames: Vec::new(),
+                position: 0,
+                ended: false,
+                channels: 2,
+                rate: 44_100,
+            };
+            consumer.fill_at(&mut [0.0_f32; 2], Instant::now(), Duration::ZERO);
+            assert!(control.first_presentation.get().is_none());
+            assert!(timeline.start(Instant::now()).is_ok());
+        }
+    }
+
+    #[test]
+    fn paused_or_cancelled_audio_does_not_start_hardware_timeline() {
+        for cancelled in [false, true] {
+            let player = Playback::new();
+            let control = player.control.clone();
+            let timeline = Arc::new(NdsifHostTimeline::pending());
+            assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+            control.paused.store(!cancelled, Ordering::Relaxed);
+            control.cancel.store(cancelled, Ordering::Relaxed);
+            let (tx, rx) = mpsc::channel();
+            let (events, _) = mpsc::channel();
+            tx.send(Block::Audio(vec![[0.1, 0.2]])).unwrap();
+            let mut consumer = AudioConsumer {
+                rx,
+                events,
+                control,
+                frames: Vec::new(),
+                position: 0,
+                ended: false,
+                channels: 2,
+                rate: 44_100,
+            };
+            consumer.fill_at(&mut [0.0_f32; 2], Instant::now(), Duration::ZERO);
+            assert!(timeline.start(Instant::now()).is_ok());
+        }
+    }
 
     #[test]
     fn audio_pause_resume_volume_and_clock_preserve_queued_frames() {
@@ -529,6 +832,7 @@ mod tests {
                 while !control.cancel.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(1));
                 }
+
                 bail!("cancelled test backend")
             }
         }
@@ -557,6 +861,49 @@ mod tests {
                 .recv_timeout(Duration::from_millis(50))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn replacing_track_waits_for_previous_worker_cleanup() {
+        struct TestBackend {
+            started: mpsc::Sender<String>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl PlaybackBackend for TestBackend {
+            fn play(&self, path: &Path, control: Arc<PlaybackControl>, _: bool) -> Result<()> {
+                self.started.send(path.display().to_string())?;
+                while !control.cancel.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                if path == Path::new("first") {
+                    self.release
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("test lock poisoned"))?
+                        .recv()?;
+                }
+                Ok(())
+            }
+        }
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut player = Playback::new();
+        player.backend = Arc::new(TestBackend {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+        });
+        player.play(PathBuf::from("first"), false);
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "first"
+        );
+        player.play(PathBuf::from("second"), false);
+        assert!(started_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "second"
+        );
+        player.stop();
     }
 
     #[test]
@@ -644,6 +991,225 @@ mod tests {
                     .all(|sample| sample.is_finite())
             );
         }
+    }
+
+    #[test]
+    fn sequencers_use_supplied_factories_and_propagate_errors() {
+        use chipstream::chip::ChipError;
+        use chipstream::sequencer::Chip;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("song.vgm");
+        std::fs::write(
+            &vgm,
+            include_bytes!("../../soundlog/assets/vgm/ym2612_a4.vgm"),
+        )
+        .unwrap();
+        let mdx = dir.path().join("song.mdx");
+        std::fs::write(
+            &mdx,
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mdx_fm_loop.pdx"),
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
+        )
+        .unwrap();
+        for (path, chip) in [(vgm, Chip::Ym2612), (mdx, Chip::Ym2151)] {
+            let mut factories = ChipFactoryRegistry::new();
+            factories.register_optional(chip.clone(), move |_| {
+                Err(ChipError::External {
+                    chip: chip.clone(),
+                    message: "injected factory failure".into(),
+                })
+            });
+            let error = match Sequencer::with_factories(&path, 44_100, false, factories) {
+                Ok(_) => panic!("{} unexpectedly used emulation", path.display()),
+                Err(error) => error,
+            };
+            assert!(format!("{error:#}").contains("injected factory failure"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn routed_render_records_before_device_io_and_returns_the_connection() {
+        run_recorded_routing(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recorded_device_error_stops_replay_and_returns_the_connection() {
+        run_recorded_routing(true);
+    }
+
+    #[cfg(unix)]
+    fn run_recorded_routing(reject_clock: bool) {
+        use crate::device::{DeviceEvent, DeviceService};
+        use crate::routing::{
+            ChipInstance, Connection, Device, HardwareChip, Profile, RoutingConfig,
+        };
+        use chipstream::sequencer::{Chip, Instance};
+        use ndsif::{Capabilities, Decoder, Reply, Request, Response};
+        use ndsif_transport::{NdsifRecordingTransport, create_routed_transport_factories};
+        use serialport::SerialPort;
+        use soundlog::chip::Ym2151Spec;
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+        use std::cell::RefCell;
+        use std::io::{Read, Write};
+        use std::num::NonZeroUsize;
+        use std::rc::Rc;
+
+        let (mut fake_device, port) = serialport::TTYPort::pair().unwrap();
+        let path = port.name().unwrap();
+        fake_device.set_timeout(Duration::from_secs(2)).unwrap();
+        let (release_device, wait_for_release) = mpsc::channel();
+        let (device_started, device_started_rx) = mpsc::channel();
+        let device_worker = thread::spawn(move || {
+            let mut decoder = Decoder::new();
+            for index in 0..if reject_clock { 5 } else { 6 } {
+                let mut frame = None;
+                while frame.is_none() {
+                    let mut byte = [0];
+                    fake_device.read_exact(&mut byte).unwrap();
+                    decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                }
+                let frame = frame.unwrap();
+                if index == 3 {
+                    device_started.send(()).unwrap();
+                }
+                let reply = match (index, Request::decode(&frame).unwrap()) {
+                    (0, Request::Ping(data)) => Some(Reply::Ping(data)),
+                    (1, Request::GetCapabilities { offset: 0 }) => {
+                        let entries = &[0x54, 0, 0, 4, 2, 0, 0, 0, 0];
+                        Some(Reply::Capabilities(
+                            Capabilities::new(256, 0, 0, 0, u16::MAX, entries).unwrap(),
+                        ))
+                    }
+                    (2, Request::GetInfo) => Some(Reply::Info(ndsif::DeviceInfo {
+                        model: "Test NanoDrive",
+                        firmware: "test",
+                    })),
+                    (3, Request::SetChipClock { hz: 4_000_000, .. }) => Some(if reject_clock {
+                        Reply::Rejected
+                    } else {
+                        Reply::Complete
+                    }),
+                    (4, Request::WriteRegisters { writes, .. }) if !reject_clock => {
+                        assert_eq!(writes.as_bytes(), &[0x20, 0xc7]);
+                        None
+                    }
+                    (4, Request::Reset) if reject_clock => Some(Reply::Complete),
+                    (5, Request::Reset) => Some(Reply::Complete),
+                    (_, request) => panic!("unexpected request {index}: {request:?}"),
+                };
+                if let Some(reply) = reply {
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake_device.write_all(response.as_bytes()).unwrap();
+                }
+            }
+            wait_for_release.recv().unwrap();
+        });
+
+        let device = Device {
+            id: 7,
+            name: "Test NanoDrive".into(),
+            port: path,
+            baud_rate: crate::device::BAUD_RATE,
+        };
+        let config = RoutingConfig {
+            devices: vec![device.clone()],
+            profiles: vec![Profile {
+                id: 3,
+                name: "Test".into(),
+                connections: vec![Connection {
+                    chip: HardwareChip::Ym2151,
+                    source: ChipInstance::Primary,
+                    device_id: device.id,
+                    target: ChipInstance::Primary,
+                }],
+            }],
+            selected_profile: Some(3),
+        };
+        let plan = config.playback_plan().unwrap().unwrap();
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(7, _, _)
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let song = dir.path().join("song.vgm");
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(441));
+        std::fs::write(&song, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let handle = service.playback_handle();
+        thread::spawn(move || {
+            let lease = handle.acquire(plan.device_ids).unwrap();
+            let recorder = Rc::new(RefCell::new(NdsifRecordingTransport::new(
+                &lease.devices()[0].1.lock().unwrap(),
+                NonZeroUsize::new(4096).unwrap(),
+            )));
+            let factories =
+                create_routed_transport_factories(std::slice::from_ref(&recorder), &plan.routes)
+                    .unwrap();
+            let mut sequencer = Sequencer::with_factories(&song, 44_100, false, factories).unwrap();
+            let mut batches = Vec::new();
+            loop {
+                let block = sequencer.render().unwrap();
+                let batch = recorder.borrow_mut().take_batch().unwrap();
+                if !batch.is_empty() {
+                    batches.push(batch);
+                }
+                if block.is_none() {
+                    break;
+                }
+            }
+            drop(sequencer);
+            assert!(
+                device_started_rx
+                    .recv_timeout(Duration::from_millis(100))
+                    .is_err(),
+                "rendering must not send commands to the device"
+            );
+            let mut error = None;
+            for batch in batches {
+                if let Err(failure) = batch.replay(&mut *lease.devices()[0].1.lock().unwrap()) {
+                    error = Some(failure);
+                    break;
+                }
+            }
+            if reject_clock {
+                let error = error.expect("a rejected clock must stop replay");
+                assert_eq!(error.index, 0);
+                assert!(error.message.contains("rejected"));
+            } else {
+                assert!(error.is_none());
+            }
+            device_started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            lease.release().unwrap();
+        })
+        .join()
+        .unwrap();
+        release_device.send(()).unwrap();
+        device_worker.join().unwrap();
+        drop(port);
     }
 
     #[test]

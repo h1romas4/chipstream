@@ -13,9 +13,12 @@ cpal = "0.18.2"
 directories = "6"
 flate2 = "1"
 gpui-kit = "0.8.1"
+ndsif = { path = "../ndsif" }
+ndsif-transport = { path = "../ndsif-transport" }
 rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serialport = { version = "4.7", default-features = false }
 soundlog = { workspace = true, features = ["mdx"] }
 tempfile = "3"
 walkdir = "2"

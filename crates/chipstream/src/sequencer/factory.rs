@@ -69,7 +69,8 @@ impl<'a> ChipFactoryConfig<'a> {
     }
 }
 
-type Factory = dyn for<'a> FnMut(&ChipFactoryConfig<'a>) -> Result<Box<dyn SoundChip>, ChipError>;
+type Factory =
+    dyn for<'a> FnMut(&ChipFactoryConfig<'a>) -> Result<Option<Box<dyn SoundChip>>, ChipError>;
 
 /// Factories that replace built-in backends for selected chip types.
 ///
@@ -92,9 +93,22 @@ impl ChipFactoryRegistry {
     /// The factory is called once for each present instance of the selected
     /// chip. Registering the same chip type again replaces the previous
     /// factory.
-    pub fn register<F>(&mut self, chip: Chip, factory: F) -> &mut Self
+    pub fn register<F>(&mut self, chip: Chip, mut factory: F) -> &mut Self
     where
         F: for<'a> FnMut(&ChipFactoryConfig<'a>) -> Result<Box<dyn SoundChip>, ChipError> + 'static,
+    {
+        self.register_optional(chip, move |config| factory(config).map(Some))
+    }
+
+    /// Register a factory that can defer individual instances to the built-in backend.
+    ///
+    /// Returning `Ok(None)` explicitly selects the normal sequencer backend for
+    /// that instance. Errors are propagated and never cause a fallback.
+    /// Registering the same chip type again replaces the previous factory.
+    pub fn register_optional<F>(&mut self, chip: Chip, factory: F) -> &mut Self
+    where
+        F: for<'a> FnMut(&ChipFactoryConfig<'a>) -> Result<Option<Box<dyn SoundChip>>, ChipError>
+            + 'static,
     {
         self.factories.insert(chip, Box::new(factory));
         self
@@ -108,7 +122,9 @@ impl ChipFactoryRegistry {
         let Some(factory) = self.factories.get_mut(config.chip()) else {
             return Ok(None);
         };
-        let chip = factory(config)?;
+        let Some(chip) = factory(config)? else {
+            return Ok(None);
+        };
         let actual_chip = chip.chip_type().clone();
         if actual_chip != config.chip {
             return Err(ChipError::ChipMismatch {

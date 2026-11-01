@@ -152,6 +152,9 @@ registry to `VgmSequencer::from_vgm_with_factories`,
 | `header()` | Parsed VGM header, or synthesized MDX header |
 | `extra_header()` | Optional VGM extra header |
 
+`register_optional` can select the built-in backend for individual instances
+by returning `Ok(None)`; errors are propagated rather than triggering fallback.
+
 YMFM-backed chip types can be replaced individually:
 
 | Chip type | Native outputs per frame |
@@ -191,6 +194,8 @@ scheduler. The application supplies the transport and is responsible for
 sending events in protocol order and mapping output-frame positions to the
 device's timing model, including NDSIF's ADPCM-byte-position event format.
 Device clock and chip support remain transport/device responsibilities.
+The NDSIF adapters' `with_target_instance` constructors allow source and
+physical instance numbers to differ.
 
 ## Audio processing
 

@@ -83,6 +83,10 @@ pub enum NdsifTransportError {
         /// Name of the stream or profile that is not idle.
         stream: &'static str,
     },
+    /// Host pacing was already started or a host timeline was already set.
+    HostTimelineAlreadySet,
+    /// Host pacing cannot control an autonomous device audio stream.
+    HostTimelineUnsupportedStream,
 }
 
 impl fmt::Display for NdsifTransportError {
@@ -126,6 +130,12 @@ impl fmt::Display for NdsifTransportError {
                 f,
                 "NDSIF {stream} is not idle; enable ndsif-reset or reset the device"
             ),
+            Self::HostTimelineAlreadySet => {
+                f.write_str("NDSIF host pacing timeline is already set or started")
+            }
+            Self::HostTimelineUnsupportedStream => {
+                f.write_str("NDSIF host pacing cannot synchronize a device-timed stream")
+            }
         }
     }
 }

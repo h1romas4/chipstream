@@ -1,8 +1,8 @@
 # nddrv
 
 `nddrv` is a GPUI Kit desktop music library and player for VGM, VGZ, and MDX.
-It uses chipstream's software emulation and the system's default audio output.
-NanoDrive hardware output is not yet implemented.
+It uses chipstream's software emulation and the system's default audio output,
+and supports experimental host-paced routing to NanoDrive hardware.
 The interface uses GPUI Kit's dark theme and a custom-styled `TitleBar`.
 Windows and Linux client-side decorations provide themed window controls;
 macOS uses its native traffic-light controls. On Linux, nddrv requests
@@ -61,10 +61,52 @@ The library shows chip tags from VGM/VGZ header clocks. MDX tags show YM2151
 and, when the MDX names a PDX sample bank, OKIM6258. These tags describe
 declared or inferred hardware, not whether a chip is supported for playback.
 Multiple instances are shown as, for example, `YM2203x2`; searching uses the
-base chip name. Chips implemented by the ymfm backend use the same teal color
-as the volume control, while other chip tags use purple.
+base chip name. In both the list and the search input, chips implemented by the
+ymfm backend use the same teal color as the volume control, while other chip
+tags use purple.
 Hover over the tags to see the full chip list when it does not fit.
 Folders and playlist entries are saved in the platform configuration directory.
+
+The cable icon opens the routing page. At the top, create or select a named
+routing profile. Below it, search for serial ports and select one to add a
+NanoDrive device. Connect queries its model name and advertised chip
+instances; duplicate model names get a numbered suffix. The baud rate is fixed
+at 115,200. Device settings are saved, but connections are not restored
+automatically. Unknown
+target IDs are shown explicitly. Disconnect a device before removing it.
+Connection status reflects the initial connection and is not a continuous
+physical-disconnection monitor. Devices are opened on a background worker,
+so connection requests are processed sequentially without blocking the UI.
+Playback exclusively leases the required connections and resets them before
+returning them to the connection service.
+
+In the routing connections section below the devices, click a sequencer chip
+instance, then click a highlighted matching device target or its chipstream
+emulation target. Cables show each connection; disconnected or unsupported
+targets and their cables are orange and dashed without removing the saved route.
+Scroll down within the page to reach NanoDrive targets below chipstream.
+The same profile selector is also available in the Playlist transport; profile
+selection and editing are disabled during playback. Devices used by a profile
+cannot be removed until the routes or profiles are removed.
+Hardware playback sends untimed register writes from separate device workers
+against the system audio's estimated presentation time. OKIM6258 streams are
+prebuffered before the PCM stream begins and started against the same estimated
+time. This is best-effort, not sample-accurate: serial bandwidth, device
+latency, OS scheduling, and independent clock drift can cause timing
+differences. Physical output comes from each NanoDrive and must be mixed
+externally; the software volume control does not adjust it. Pause is disabled
+when a hardware route is active. Stop and track changes cancel the workers and
+reset the devices before reuse.
+
+YM2612 on devices advertising the timed DAC profile and OKIM6258 dynamic clock
+or divider changes are not yet supported in this synchronized mode. Device
+buffer limits, unavailable devices, unsupported clocks, and device errors stop
+playback with a notification; explicit hardware routes never silently fall back
+to emulation. Cable editing uses clicks, not dragging.
+
+For a track using YM2151 and OKIM6258, one temporary option is to route YM2151
+to NanoDrive and explicitly connect OKIM6258 to chipstream emulation. The two
+outputs still need external mixing and their synchronization is best-effort.
 
 MDX files that name a PDX sample bank require a matching PDX beside the MDX;
 matching is case-insensitive, and ambiguous or missing matches are reported.

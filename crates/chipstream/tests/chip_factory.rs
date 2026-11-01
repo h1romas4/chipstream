@@ -143,6 +143,63 @@ fn replaces_ymfm_backends_independently_by_chip_type() {
 }
 
 #[test]
+fn optional_factory_routes_instances_independently_and_keeps_builtin_backend() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Ym2151, instance, 4_000_000);
+        builder.add_chip_write(
+            instance,
+            Ym2151Spec {
+                register: 0x28,
+                value: 0x50,
+            },
+        );
+    }
+    builder.add_vgm_command(WaitSamples(441));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let mut factories = ChipFactoryRegistry::new();
+    let created = Arc::clone(&seen);
+    let fake_writes = Arc::clone(&writes);
+    factories.register_optional(Chip::Ym2151, move |config| {
+        created.lock().unwrap().push(config.instance());
+        if config.instance() == Instance::Secondary {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::clone(&fake_writes),
+        ))))
+    });
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [Instance::Primary, Instance::Secondary]
+    );
+    assert_eq!(*writes.lock().unwrap(), [Chip::Ym2151]);
+}
+
+#[test]
+fn optional_factory_errors_do_not_fall_back() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register_optional(Chip::Ym2151, |_| {
+        Err(ChipError::External {
+            chip: Chip::Ym2151,
+            message: "requested device unavailable".into(),
+        })
+    });
+    assert!(matches!(
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories),
+        Err(VgmSequencerError::Chip(ChipError::External { .. }))
+    ));
+}
+
+#[test]
 fn rejects_factory_chip_type_mismatch() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
