@@ -127,7 +127,7 @@ impl HardwareWorkers {
                             .lock()
                             .map_err(|_| "device lock poisoned".to_owned())?;
                         device.set_output_fade_timeline(Arc::clone(&timeline))?;
-                        device.synchronize_output_volume()?;
+                        device.initialize_output_volume()?;
                         if timing == DeviceTiming::Host {
                             device
                                 .set_host_timeline(Arc::clone(&timeline))
@@ -750,6 +750,20 @@ mod tests {
         mpsc::Sender<()>,
         JoinHandle<()>,
     ) {
+        fake_volume_device_with_rejection(id, supported, volumes, false)
+    }
+
+    fn fake_volume_device_with_rejection(
+        id: u64,
+        supported: bool,
+        volumes: mpsc::Sender<(u64, u8, Instant)>,
+        reject_initial_volume: bool,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
         let (mut fake, port) = serialport::TTYPort::pair().unwrap();
         fake.set_timeout(Duration::from_secs(3)).unwrap();
         let device = Device {
@@ -763,6 +777,7 @@ mod tests {
             let mut decoder = Decoder::new();
             let mut modified = false;
             let mut reset = false;
+            let mut reject_volume = reject_initial_volume;
             loop {
                 let mut frame = None;
                 while frame.is_none() {
@@ -798,7 +813,12 @@ mod tests {
                         assert!(supported);
                         volumes.send((id, attenuation, Instant::now())).unwrap();
                         modified = true;
-                        Some(Reply::Complete)
+                        if reject_volume {
+                            reject_volume = false;
+                            Some(Reply::Rejected)
+                        } else {
+                            Some(Reply::Complete)
+                        }
                     }
                     Request::WriteRegisters { .. } => None,
                     Request::Reset => {
@@ -855,6 +875,14 @@ mod tests {
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
         let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let mut initialized = Vec::new();
+        for _ in 0..2 {
+            let (id, value, _) = received.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(value, 0);
+            initialized.push(id);
+        }
+        initialized.sort_unstable();
+        assert_eq!(initialized, [1, 2]);
         record_write(&recorders[0], 0x7f, 44_100 / 2);
         workers
             .enqueue(&recorders, &AtomicBool::new(false))
@@ -960,6 +988,7 @@ mod tests {
         .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
         let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         let cancelled = AtomicBool::new(false);
         for _ in 0..4 {
             assert!(sequencer.render().unwrap().is_some());
@@ -1029,6 +1058,35 @@ mod tests {
     }
 
     #[test]
+    fn rejected_initial_volume_stops_setup_and_restores_device() {
+        let (volumes, received) = mpsc::channel();
+        let (device, port, release, fake) =
+            fake_volume_device_with_rejection(1, true, volumes, true);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2151, 0, 4_000_000)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let result = HardwareWorkers::start(&lease, &recorders, timeline);
+        assert!(result.err().unwrap().to_string().contains("rejected"));
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
+        drop(recorders);
+        lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
     fn volume_fade_runs_while_adpcm_stream_is_active() {
         use chipstream::sequencer::{Instance, VgmSequencer};
         use soundlog::chip::Okim6258Spec;
@@ -1067,6 +1125,7 @@ mod tests {
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
         let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         let cancelled = AtomicBool::new(false);
         let mut frames = 0;
         for _ in 0..4 {
@@ -1122,6 +1181,7 @@ mod tests {
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
         let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         let cancelled = AtomicBool::new(false);
         for index in 0..=10 {
             let frame = index * 441;

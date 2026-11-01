@@ -23,7 +23,7 @@ Emulated chips continue to produce host PCM normally.
 | `NdsifSerialTransport::{defer_timed_dac_start_with_cancellation, prepare_timed_dac_start_for_frames, start_prepared_timed_dac}` | Prebuffer and synchronize a supported YM2612 timed DAC stream. |
 | `NdsifHostTimeline`, `NdsifSerialTransport::set_host_timeline` | Share a cancellable host-pacing origin for untimed writes. |
 | `NdsifHostTimeline::schedule_output_fade`, `NdsifSerialTransport::{supports_output_volume, set_output_fade_timeline, update_output_fade}` | Schedule a best-effort device-global fade on capable devices. |
-| `NdsifOutputGain`, `NdsifHostTimeline::set_output_gain`, `NdsifSerialTransport::synchronize_output_volume` | Share a live linear master gain, including before playback starts. |
+| `NdsifOutputGain`, `NdsifHostTimeline::set_output_gain`, `NdsifSerialTransport::{initialize_output_volume, synchronize_output_volume}` | Initialize a device's output and share a live linear master gain. |
 | `NdsifSerialTransport::supports_clock` | Check cached chip and clock capabilities. |
 | `NdsifSerialTransport::supports_audio_stream` | Check cached OKIM6258 stream support. |
 | `NdsifRoute`, `create_routed_chip_factories` | Route individual source instances to explicitly selected open devices. |
@@ -323,9 +323,11 @@ error. Recording does not itself synchronize host audio or device-timed streams.
   restore requires closing the connection. Devices without the capability
   return `Ok(false)` when the timeline is attached and remain unchanged.
 - A shared `NdsifOutputGain` can be attached to the timeline for live master
-  volume; it multiplies the fade gain, if any. Apply the initial gain before
-  audio starts with `synchronize_output_volume`. Gain and fade share the
-  same global device control and are quantized to integer decibels.
+  volume; it multiplies the fade gain, if any. Before audio starts, use
+  `initialize_output_volume` to send the current gain even if it matches the
+  cached value, or zero attenuation when no gain is attached. Use
+  `synchronize_output_volume` for later immediate updates. Gain and fade share
+  the same global device control and are quantized to integer decibels.
 - Dropping a transport after chip configuration or a volume change attempts a
   device reset and, after a volume change, restores zero attenuation. Failures
   are reported to standard error. `reset_device: false` only disables the

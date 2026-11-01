@@ -7,8 +7,15 @@ use soundlog::vgm::command::Instance;
 
 const MAX_NOTES: usize = 8192;
 pub const WINDOW_SECONDS: u64 = 6;
-const NOTE_COLORS: [u32; 6] = [
-    0x50ccbdff, 0x6990ccff, 0xc283ccff, 0xccab70ff, 0x78cc9eff, 0xcc7e9bff,
+pub const NOTE_COLORS: [(u32, &str); 8] = [
+    (0x50ccbdff, "Turquoise"),
+    (0x6990ccff, "Blue"),
+    (0xc283ccff, "Purple"),
+    (0xccab70ff, "Amber"),
+    (0x78cc9eff, "Green"),
+    (0xcc7e9bff, "Rose"),
+    (0xb2bb68ff, "Lime"),
+    (0xc97a6cff, "Coral"),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -188,12 +195,19 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
     ))
 }
 
-fn note_color(note: &Note) -> u32 {
-    NOTE_COLORS[(usize::from(note.chip) + usize::from(note.channel)) % NOTE_COLORS.len()]
+fn note_color_index(note: &Note) -> usize {
+    (usize::from(note.chip) + usize::from(note.channel)) % NOTE_COLORS.len()
 }
 
-fn ordered_notes(notes: &[Note]) -> Vec<&Note> {
-    let mut ordered: Vec<_> = notes.iter().collect();
+fn note_color(note: &Note) -> u32 {
+    NOTE_COLORS[note_color_index(note)].0
+}
+
+fn ordered_notes<'a>(notes: &'a [Note], visible: &[bool; NOTE_COLORS.len()]) -> Vec<&'a Note> {
+    let mut ordered: Vec<_> = notes
+        .iter()
+        .filter(|note| visible[note_color_index(note)])
+        .collect();
     ordered.sort_by_key(|note| (note.start, note.chip, note.channel));
     ordered
 }
@@ -311,6 +325,7 @@ fn paint_roll(
     mode: RollMode,
     started: bool,
     scanned: u64,
+    visible_colors: &[bool; NOTE_COLORS.len()],
 ) {
     let x = bounds.origin.x.as_f32();
     let y = bounds.origin.y.as_f32();
@@ -364,7 +379,7 @@ fn paint_roll(
         );
     }
 
-    let ordered = ordered_notes(notes);
+    let ordered = ordered_notes(notes, visible_colors);
     let active = active_key_colors(&ordered, position, started);
     for note in ordered {
         let Some((key, key_width)) = key_position(note.pitch) else {
@@ -437,6 +452,7 @@ pub fn view(
     playing: bool,
     paused: bool,
     mode: RollMode,
+    visible_colors: [bool; NOTE_COLORS.len()],
     snapshot: Result<Snapshot, String>,
 ) -> Div {
     let (snapshot, error) = match snapshot {
@@ -463,7 +479,15 @@ pub fn view(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
                     paint_roll(
-                        window, bounds, position, rate, &notes, mode, started, scanned,
+                        window,
+                        bounds,
+                        position,
+                        rate,
+                        &notes,
+                        mode,
+                        started,
+                        scanned,
+                        &visible_colors,
                     )
                 },
             )
@@ -529,8 +553,8 @@ pub fn view(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, active_key_colors,
-        frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
+        MAX_NOTES, NOTE_COLORS, Note, PianoRoll, RollMode, RollProjection, active_key_colors,
+        frequency_to_pitch, key_position, note_color, note_color_index, note_depths, ordered_notes,
     };
     use soundlog::chip::event::StateEvent;
     use soundlog::chip::event::ToneInfo;
@@ -538,6 +562,52 @@ mod tests {
 
     fn tone(frequency: f32) -> ToneInfo {
         ToneInfo::new(0, 0, Some(frequency))
+    }
+
+    #[test]
+    fn eight_channels_have_distinct_colors_and_independent_filters() {
+        let notes: Vec<_> = (0..=8)
+            .map(|channel| Note {
+                pitch: 60 + channel,
+                chip: 0,
+                channel,
+                start: 0,
+                end: None,
+            })
+            .collect();
+        let colors: std::collections::HashSet<_> = notes[..8].iter().map(note_color).collect();
+        assert_eq!(colors.len(), 8);
+        assert_eq!(note_color(&notes[8]), note_color(&notes[0]));
+        for chip in 0..=10 {
+            let indices: std::collections::HashSet<_> = notes[..8]
+                .iter()
+                .map(|note| {
+                    let mut note = note.clone();
+                    note.chip = chip;
+                    note_color_index(&note)
+                })
+                .collect();
+            assert_eq!(indices.len(), 8);
+        }
+
+        let mut visible = [true; NOTE_COLORS.len()];
+        visible[6] = false;
+        visible[7] = false;
+        let filtered = ordered_notes(&notes, &visible);
+        assert_eq!(filtered.len(), 7);
+        assert!(
+            filtered
+                .iter()
+                .all(|note| note.channel != 6 && note.channel != 7)
+        );
+        assert!(
+            active_key_colors(&filtered, 0, true)[66..=67]
+                .iter()
+                .all(Option::is_none)
+        );
+        visible[6] = true;
+        visible[7] = true;
+        assert_eq!(ordered_notes(&notes, &visible).len(), 9);
     }
 
     #[test]
@@ -579,7 +649,8 @@ mod tests {
                 end: None,
             },
         ];
-        let ordered = ordered_notes(&notes);
+        let visible = [true; NOTE_COLORS.len()];
+        let ordered = ordered_notes(&notes, &visible);
         assert!(
             active_key_colors(&ordered, 25, false)
                 .iter()
@@ -595,7 +666,7 @@ mod tests {
 
         let reversed: Vec<_> = notes.iter().rev().cloned().collect();
         assert_eq!(
-            active_key_colors(&ordered_notes(&reversed), 25, true),
+            active_key_colors(&ordered_notes(&reversed, &visible), 25, true),
             active_key_colors(&ordered, 25, true)
         );
 
@@ -615,7 +686,7 @@ mod tests {
                 end: None,
             },
         ];
-        let ordered = ordered_notes(&tied);
+        let ordered = ordered_notes(&tied, &visible);
         assert_eq!(
             active_key_colors(&ordered, 15, true)[60],
             Some(note_color(&tied[0]))
@@ -625,6 +696,71 @@ mod tests {
             Some(note_color(&tied[1]))
         );
         assert_eq!(active_key_colors(&ordered, 9, true)[60], None);
+    }
+
+    #[test]
+    fn color_visibility_filters_notes_and_matching_keys_without_changing_model() {
+        let notes = vec![
+            Note {
+                pitch: 60,
+                chip: 0,
+                channel: 0,
+                start: 10,
+                end: None,
+            },
+            Note {
+                pitch: 60,
+                chip: 1,
+                channel: 0,
+                start: 20,
+                end: None,
+            },
+            Note {
+                pitch: 61,
+                chip: 8,
+                channel: 0,
+                start: 10,
+                end: None,
+            },
+            Note {
+                pitch: 62,
+                chip: 2,
+                channel: 0,
+                start: 30,
+                end: None,
+            },
+        ];
+        let mut visible = [true; NOTE_COLORS.len()];
+        let all = ordered_notes(&notes, &visible);
+        assert_eq!(all.len(), 4);
+        assert_eq!(
+            active_key_colors(&all, 25, true)[60],
+            Some(note_color(&notes[1]))
+        );
+
+        visible[1] = false;
+        let filtered = ordered_notes(&notes, &visible);
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(
+            active_key_colors(&filtered, 25, true)[60],
+            Some(note_color(&notes[0]))
+        );
+        assert_eq!(
+            active_key_colors(&filtered, 25, true)[61],
+            Some(note_color(&notes[2]))
+        );
+        assert_eq!(active_key_colors(&filtered, 25, true)[62], None);
+
+        visible[0] = false;
+        let filtered = ordered_notes(&notes, &visible);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(active_key_colors(&filtered, 25, true)[60], None);
+        assert_eq!(active_key_colors(&filtered, 25, true)[61], None);
+
+        visible.fill(false);
+        assert!(ordered_notes(&notes, &visible).is_empty());
+        visible.fill(true);
+        assert_eq!(ordered_notes(&notes, &visible).len(), 4);
     }
 
     #[test]

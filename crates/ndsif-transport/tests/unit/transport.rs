@@ -182,6 +182,108 @@ fn shared_gain_combines_with_fade_and_validates_input() {
 
 #[cfg(unix)]
 #[test]
+fn output_volume_initialization_sends_current_gain_despite_cached_values() {
+    let (mut transport, mut device) = test_transport();
+    let timeline = Arc::new(NdsifHostTimeline::pending());
+    assert!(
+        !transport
+            .set_output_fade_timeline(Arc::clone(&timeline))
+            .unwrap()
+    );
+    transport.initialize_output_volume().unwrap();
+    transport.output_volume_supported = true;
+    assert!(
+        transport
+            .set_output_fade_timeline(Arc::clone(&timeline))
+            .unwrap()
+    );
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        for attenuation in [0, 0, 6, 6] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            assert_eq!(
+                ndsif::Request::decode(&frame).unwrap(),
+                ndsif::Request::SetOutputVolume { attenuation }
+            );
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::Reset
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        wait.recv().unwrap();
+    });
+    transport.initialize_output_volume().unwrap();
+    transport.initialize_output_volume().unwrap();
+    transport.update_output_fade().unwrap();
+    transport.synchronize_output_volume().unwrap();
+    let gain = Arc::new(NdsifOutputGain::new());
+    gain.set(0.5).unwrap();
+    timeline.set_output_gain(gain).unwrap();
+    transport.initialize_output_volume().unwrap();
+    transport.initialize_output_volume().unwrap();
+    transport.synchronize_output_volume().unwrap();
+    timeline.cancel();
+    transport.initialize_output_volume().unwrap();
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_output_volume_initialization_is_reported_and_restored() {
+    let (mut transport, mut device) = test_transport();
+    transport.output_volume_supported = true;
+    transport
+        .set_output_fade_timeline(Arc::new(NdsifHostTimeline::pending()))
+        .unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Rejected);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::Reset
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 0 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        wait.recv().unwrap();
+    });
+    assert!(
+        transport
+            .initialize_output_volume()
+            .unwrap_err()
+            .contains("rejected")
+    );
+    assert!(transport.output_volume_modified);
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn output_fade_is_capability_gated_and_restored_after_cancellation() {
     let (mut transport, mut device) = test_transport();
     let timeline = Arc::new(NdsifHostTimeline::new(

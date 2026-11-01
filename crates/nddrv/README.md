@@ -88,8 +88,12 @@ to see up to six seconds of upcoming notes approach the 88-key keyboard, or
 sequencer prepares incoming events without sending them to NanoDrive or
 altering playback. Preparing or catching up may take time for complex tracks;
 preview errors are shown in the view without stopping playback. Colors identify
-chip voices, and a playing key uses the color of its note. When several voices
-share a key, the most recently started note determines its color. The view tracks
+chip voices using eight colors, and a playing key uses the color of its note.
+Use the color buttons
+on the right to show or hide notes and key highlights of each color in either
+view; this affects the visualization only, not sound. Colors are shared by
+multiple voices. When several visible voices share a key, the most recently
+started note determines its color. The view tracks
 YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
 YM3526, Y8950, YM3812, YMF262, and YMF278B state for both software and
 NanoDrive routes. Pitch changes are shown as semitone steps. PCM, noise, and
@@ -134,7 +138,9 @@ and each device's global output. If any routed device lacks that capability,
 the panel shows `Software (ND fixed)` and the slider adjusts only software
 audio; adjust NanoDrive levels externally. While capabilities are being
 checked, the panel shows `Checking ND`. The same slider value carries across
-tracks and is applied before supported hardware playback starts. Device
+tracks and is applied before supported hardware playback starts. Each capable
+device receives an initial volume command before playback; if the route has no
+hardware master control, it is initialized to zero attenuation. Device
 controls are quantized and best-effort, and external mixer settings are not
 changed. For VGM/VGZ and MDX with
 loop disabled, devices advertising output-volume control also fade their

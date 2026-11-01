@@ -386,6 +386,28 @@ impl NdsifSerialTransport {
         self.update_output_volume(false)
     }
 
+    /// Initialize a capable device's output volume before playback.
+    ///
+    /// The current gain and fade are sent even when they match the cached
+    /// attenuation. If the timeline has no gain or active fade, zero
+    /// attenuation is sent. Devices without an attached volume timeline and
+    /// cancelled timelines are left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timing or the device's volume command fails.
+    pub fn initialize_output_volume(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        let Some(timeline) = self.output_fade_timeline.as_ref() else {
+            return Ok(());
+        };
+        if timeline.is_cancelled() {
+            return Ok(());
+        }
+        let attenuation = timeline.fade_attenuation(now)?.unwrap_or(0);
+        self.send_output_attenuation(attenuation, now)
+    }
+
     /// Apply the current output gain without waiting for the update interval.
     ///
     /// # Errors
@@ -414,6 +436,10 @@ impl NdsifSerialTransport {
         {
             return Ok(());
         }
+        self.send_output_attenuation(attenuation, now)
+    }
+
+    fn send_output_attenuation(&mut self, attenuation: u8, now: Instant) -> Result<(), String> {
         self.output_volume_modified = true;
         self.request_typed(Command::SetOutputVolume {
             attenuation,

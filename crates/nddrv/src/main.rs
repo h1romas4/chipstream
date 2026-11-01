@@ -119,6 +119,7 @@ struct AppView {
     config: Config,
     page: Page,
     roll_mode: visualizer::RollMode,
+    roll_visible_colors: [bool; visualizer::NOTE_COLORS.len()],
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
     device_port: Entity<SelectState<SearchableVec<String>>>,
@@ -278,6 +279,7 @@ impl AppView {
             config,
             page: Page::Library,
             roll_mode: visualizer::RollMode::default(),
+            roll_visible_colors: [true; visualizer::NOTE_COLORS.len()],
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
             device_port,
@@ -3096,57 +3098,108 @@ impl Render for AppView {
                                 container.child(
                                     div()
                                         .relative()
+                                        .flex()
                                         .size_full()
-                                        .child(visualizer::view(
-                                            self.now_playing_title(),
-                                            self.playing.is_some(),
-                                            self.paused,
-                                            self.roll_mode,
-                                            snapshot,
-                                        ))
                                         .child(
                                             div()
-                                                .absolute()
-                                                .top(px(24.))
-                                                .right(px(28.))
-                                                .flex()
-                                                .gap_2()
+                                                .relative()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .child(visualizer::view(
+                                                    self.now_playing_title(),
+                                                    self.playing.is_some(),
+                                                    self.paused,
+                                                    self.roll_mode,
+                                                    self.roll_visible_colors,
+                                                    snapshot,
+                                                ))
                                                 .child(
-                                                    Button::new("piano-incoming")
-                                                        .label("Incoming")
-                                                        .when(
-                                                            self.roll_mode
-                                                                == visualizer::RollMode::Incoming,
-                                                            |button| button.primary(),
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(24.))
+                                                        .right(px(28.))
+                                                        .flex()
+                                                        .gap_2()
+                                                        .child(
+                                                            Button::new("piano-incoming")
+                                                                .label("Incoming")
+                                                                .when(
+                                                                    self.roll_mode == visualizer::RollMode::Incoming,
+                                                                    |button| button.primary(),
+                                                                )
+                                                                .toggled(self.roll_mode == visualizer::RollMode::Incoming)
+                                                                .on_click(cx.listener(|view, _, _, cx| {
+                                                                    view.roll_mode = visualizer::RollMode::Incoming;
+                                                                    cx.notify();
+                                                                })),
                                                         )
-                                                        .toggled(
-                                                            self.roll_mode
-                                                                == visualizer::RollMode::Incoming,
-                                                        )
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.roll_mode =
-                                                                visualizer::RollMode::Incoming;
-                                                            cx.notify();
-                                                        })),
+                                                        .child(
+                                                            Button::new("piano-trail")
+                                                                .label("Trail")
+                                                                .when(
+                                                                    self.roll_mode == visualizer::RollMode::Trail,
+                                                                    |button| button.primary(),
+                                                                )
+                                                                .toggled(self.roll_mode == visualizer::RollMode::Trail)
+                                                                .on_click(cx.listener(|view, _, _, cx| {
+                                                                    view.roll_mode = visualizer::RollMode::Trail;
+                                                                    cx.notify();
+                                                                })),
+                                                        ),
                                                 )
+                                        )
+                                        .child(
+                                            div()
+                                                .id("piano-colors")
+                                                .w(px(64.))
+                                                .h_full()
+                                                .flex()
+                                                .flex_col()
+                                                .items_center()
+                                                .gap_2()
+                                                .pt(px(72.))
+                                                .pb_2()
+                                                .overflow_y_scrollbar()
+                                                .bg(rgb(0x0b1623))
                                                 .child(
-                                                    Button::new("piano-trail")
-                                                        .label("Trail")
-                                                        .when(
-                                                            self.roll_mode
-                                                                == visualizer::RollMode::Trail,
-                                                            |button| button.primary(),
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(rgb(0x82a8bb))
+                                                        .child("COLOR"),
+                                                )
+                                                .children(visualizer::NOTE_COLORS.iter().enumerate().map(|(index, (color, name))| {
+                                                    let enabled = self.roll_visible_colors[index];
+                                                    let label = format!("{name} notes");
+                                                    let tooltip = format!(
+                                                        "{} {name} notes",
+                                                        if enabled { "Hide" } else { "Show" }
+                                                    );
+                                                    Button::new(("piano-color", index))
+                                                        .w(px(36.))
+                                                        .h(px(36.))
+                                                        .p_0()
+                                                        .tooltip(tooltip)
+                                                        .accessibility_label(label)
+                                                        .toggled(enabled)
+                                                        .child(
+                                                            div()
+                                                                .size(px(20.))
+                                                                .flex_shrink_0()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .rounded_none()
+                                                                .bg(rgba(if enabled { *color } else { (*color & 0xffffff00) | 0x55 }))
+                                                                .text_color(rgb(if enabled { 0x0b1623 } else { 0xb9c7d0 }))
+                                                                .text_sm()
+                                                                .child(if enabled { "✓" } else { "×" }),
                                                         )
-                                                        .toggled(
-                                                            self.roll_mode
-                                                                == visualizer::RollMode::Trail,
-                                                        )
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.roll_mode =
-                                                                visualizer::RollMode::Trail;
+                                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                                            view.roll_visible_colors[index] = !view.roll_visible_colors[index];
                                                             cx.notify();
-                                                        })),
-                                                ),
+                                                        }))
+                                                })),
                                         ),
                                 )
                             })
