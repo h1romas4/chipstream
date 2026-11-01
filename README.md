@@ -14,6 +14,7 @@ utilities for building and parsing register-write logs such as the VGM
 | `chipstream` | `lib` | Sound-chip emulation and device-independent VGM/MDX playback. | [README](crates/chipstream/README.md) |
 | `chipstream-gstreamer` | `plugin` | GStreamer source for VGM/MDX playback through chipstream. | [README](crates/chipstream-gstreamer/README.md) |
 | `cstools` | `bin` | VGM/VGZ, MDX, and MML player using chipstream. | [README](crates/cstools/README.md) |
+| `nddrv` | `bin` | Desktop VGM/VGZ and MDX library and player using GPUI Kit. | [README](crates/nddrv/README.md) |
 | `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) |
 | `ndsif` | `lib` | I/O-independent, allocation-free NDSIF protocol codec. | [README](crates/ndsif/README.md) |
 | `ndsif-transport` | `lib` | Serial NDSIF transport and chipstream backend integration. | [README](crates/ndsif-transport/README.md) |

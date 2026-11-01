@@ -1,6 +1,8 @@
 //! Scheduled device transport and event routing.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use chipstream::chip::{
@@ -8,9 +10,10 @@ use chipstream::chip::{
     NdsifTransport,
 };
 use ndsif::{
-    AudioEvent, AudioStreamState, AudioTiming, BytePosition, CONTROL_FEATURE_DAC_PROFILE,
-    ClockMode, Command, DAC_PROFILE_YM2612, DAC_TICKS_PER_SECOND, DacCapabilities, Divider,
-    OkiClock, Reply, Response, WriteId,
+    AudioEvent, AudioPositionClock, AudioStreamState, AudioTiming, BytePosition,
+    CONTROL_FEATURE_DAC_PROFILE, CONTROL_FEATURE_OUTPUT_VOLUME, ClockMode, Command,
+    DAC_PROFILE_YM2612, DAC_TICKS_PER_SECOND, DacCapabilities, Divider, OkiClock, Reply, Response,
+    WriteId,
 };
 
 use crate::NdsifTransportError;
@@ -23,12 +26,236 @@ mod dac;
 #[path = "../tests/unit/transport.rs"]
 mod tests;
 
-use audio::{AudioStream, audio_prebuffer_bytes};
+use audio::{AudioStartMode, AudioStream, audio_prebuffer_bytes};
 use dac::TimedDacStream;
 
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const PACING_CANCEL_INTERVAL: Duration = Duration::from_millis(2);
+const VOLUME_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Thread-safe linear output gain shared by a player and its device workers.
+pub struct NdsifOutputGain(AtomicU32);
+
+impl NdsifOutputGain {
+    /// Create an output gain of 1.0.
+    pub fn new() -> Self {
+        Self(AtomicU32::new(1.0_f32.to_bits()))
+    }
+
+    /// Set a finite gain in the range 0.0 through 1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gain is non-finite or outside the range.
+    pub fn set(&self, gain: f32) -> Result<(), String> {
+        if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
+            return Err("NDSIF output gain must be finite and in 0..=1".into());
+        }
+        self.0.store(gain.to_bits(), Ordering::Release);
+        Ok(())
+    }
+
+    /// Return the current linear gain.
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Acquire))
+    }
+}
+
+impl Default for NdsifOutputGain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub(crate) fn supports_cached_clock(
+    capabilities: &[ndsif::CapabilityEntry],
+    write_id: WriteId,
+    instance: u8,
+    clock_hz: u32,
+) -> bool {
+    capabilities
+        .iter()
+        .find(|entry| entry.write_id == write_id.get() && entry.instance == instance)
+        .is_some_and(|entry| match entry.clock_mode {
+            ClockMode::Variable => true,
+            ClockMode::Fixed => entry.fixed_clock_hz == clock_hz,
+            ClockMode::Unknown => false,
+        })
+}
+
+pub(crate) fn supports_cached_audio(
+    capabilities: &[ndsif::CapabilityEntry],
+    data_capacity: u32,
+    event_capacity: u16,
+    instance: u8,
+    clock_hz: u32,
+) -> bool {
+    instance == 0
+        && data_capacity > 0
+        && event_capacity > 0
+        && OkiClock::try_from(clock_hz).is_ok()
+        && capabilities
+            .iter()
+            .any(|entry| entry.write_id == WriteId::OKIM6258.get() && entry.instance == instance)
+}
+
+/// Shared presentation origin, cancellation and optional output fade.
+///
+/// The application chooses when frame zero is presented. Multiple transports
+/// may use the same timeline on separate workers. Scheduling is best-effort:
+/// serial latency and operating-system scheduling can delay individual writes.
+pub struct NdsifHostTimeline {
+    origin: OnceLock<Instant>,
+    cancelled: AtomicBool,
+    output_fade: OnceLock<(Duration, Duration)>,
+    output_gain: OnceLock<Arc<NdsifOutputGain>>,
+}
+
+impl NdsifHostTimeline {
+    /// Create a timeline with a monotonic frame-zero presentation time.
+    pub fn new(origin: Instant) -> Self {
+        let timeline = Self::pending();
+        timeline
+            .origin
+            .set(origin)
+            .expect("new timeline has no origin");
+        timeline
+    }
+
+    /// Create a timeline that waits for the application to provide frame zero.
+    pub fn pending() -> Self {
+        Self {
+            origin: OnceLock::new(),
+            cancelled: AtomicBool::new(false),
+            output_fade: OnceLock::new(),
+            output_gain: OnceLock::new(),
+        }
+    }
+
+    /// Set frame zero once the output device reports its presentation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if frame zero has already been set.
+    pub fn start(&self, origin: Instant) -> Result<(), NdsifTransportError> {
+        self.origin
+            .set(origin)
+            .map_err(|_| NdsifTransportError::HostTimelineAlreadySet)
+    }
+
+    /// Cancel all host-paced transports sharing this timeline.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Return whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Schedule one linear-amplitude output fade on the presentation timeline.
+    ///
+    /// The start position is in output frames. Devices without output-volume
+    /// support are unaffected. Actual updates are best-effort and quantized
+    /// to the device's integer-decibel attenuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero rate or duration, an unrepresentable
+    /// position, or if a fade was already scheduled.
+    pub fn schedule_output_fade(
+        &self,
+        start_frame: usize,
+        rate: u32,
+        duration: Duration,
+    ) -> Result<(), String> {
+        if rate == 0 || duration.is_zero() {
+            return Err("NDSIF output fade requires a nonzero rate and duration".into());
+        }
+        let nanos = (start_frame as u128) * 1_000_000_000 / u128::from(rate);
+        let nanos =
+            u64::try_from(nanos).map_err(|_| "NDSIF output fade position overflow".to_owned())?;
+        self.output_fade
+            .set((Duration::from_nanos(nanos), duration))
+            .map_err(|_| "NDSIF output fade is already scheduled".to_owned())
+    }
+
+    /// Attach a shared linear gain, applied together with any scheduled fade.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a gain source is already attached.
+    pub fn set_output_gain(&self, gain: Arc<NdsifOutputGain>) -> Result<(), String> {
+        self.output_gain
+            .set(gain)
+            .map_err(|_| "NDSIF output gain is already configured".into())
+    }
+
+    fn fade_attenuation(&self, now: Instant) -> Result<Option<u8>, String> {
+        if self.is_cancelled() {
+            return Ok(None);
+        }
+        let mut gain = self.output_gain.get().map(|gain| f64::from(gain.get()));
+        if let (Some(origin), Some((start, duration))) = (self.origin.get(), self.output_fade.get())
+        {
+            let start = origin
+                .checked_add(*start)
+                .ok_or_else(|| "NDSIF output fade deadline overflow".to_owned())?;
+            if let Some(elapsed) = now.checked_duration_since(start) {
+                let fade = if elapsed >= *duration {
+                    0.0
+                } else {
+                    1.0 - elapsed.as_secs_f64() / duration.as_secs_f64()
+                };
+                gain = Some(gain.unwrap_or(1.0) * fade);
+            }
+        }
+        let Some(gain) = gain else {
+            return Ok(None);
+        };
+        if gain == 0.0 {
+            return Ok(Some(96));
+        }
+        let attenuation = (-20.0 * gain.log10()).round().clamp(0.0, 95.0) as u8;
+        Ok(Some(attenuation))
+    }
+
+    /// Wait until the frame-zero presentation time, or until cancellation.
+    ///
+    /// This blocks the calling worker and does not interrupt serial I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the timeline is cancelled.
+    pub fn wait_until_presentation(&self) -> Result<(), String> {
+        loop {
+            if self.is_cancelled() {
+                return Err("NDSIF host pacing was cancelled".into());
+            }
+            if let Some(origin) = self.origin.get() {
+                match origin.checked_duration_since(Instant::now()) {
+                    Some(delay) if !delay.is_zero() => {
+                        std::thread::sleep(delay.min(PACING_CANCEL_INTERVAL));
+                    }
+                    _ => return Ok(()),
+                }
+            } else {
+                std::thread::sleep(PACING_CANCEL_INTERVAL);
+            }
+        }
+    }
+}
+
+/// Device identity returned by an NDSIF GET_INFO request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NdsifDeviceInfo {
+    /// Device model identifier.
+    pub model: String,
+    /// Firmware identifier.
+    pub firmware: String,
+}
 
 #[derive(Clone)]
 enum PendingEvent {
@@ -67,15 +294,196 @@ pub struct NdsifSerialTransport {
     capabilities: Vec<ndsif::CapabilityEntry>,
     data_capacity: u32,
     event_capacity: u16,
+    output_volume_supported: bool,
+    output_fade_timeline: Option<Arc<NdsifHostTimeline>>,
+    last_volume_update: Option<Instant>,
+    output_attenuation: u8,
+    output_volume_modified: bool,
+    presentation_volume_synchronized: bool,
     timed_dac_capabilities: Option<DacCapabilities>,
     configured_chip: bool,
     audio_stream: Option<AudioStream>,
     timed_dac_stream: Option<TimedDacStream>,
     pending: Vec<PendingEvent>,
     wall_clock_origin: Option<Instant>,
+    host_timeline: Option<Arc<NdsifHostTimeline>>,
 }
 
 impl NdsifSerialTransport {
+    /// Query the device's model and firmware identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response is invalid.
+    pub fn device_info(&mut self) -> Result<NdsifDeviceInfo, NdsifTransportError> {
+        let frame = self.request_typed(Command::GetInfo)?;
+        let response =
+            Response::decode(&frame).map_err(|source| NdsifTransportError::Protocol {
+                operation: "invalid NDSIF GET_INFO response",
+                source,
+            })?;
+        let Reply::Info(info) = response.reply else {
+            return Err(NdsifTransportError::UnexpectedResponse {
+                operation: "GET_INFO",
+            });
+        };
+        Ok(NdsifDeviceInfo {
+            model: info.model.to_owned(),
+            firmware: info.firmware.to_owned(),
+        })
+    }
+
+    /// Return the capabilities discovered when this device was opened.
+    ///
+    /// Entries include the advertised write ID, instance, page and clock mode.
+    /// This snapshot is not refreshed after opening the transport.
+    pub fn capabilities(&self) -> &[ndsif::CapabilityEntry] {
+        &self.capabilities
+    }
+
+    /// Return whether the device advertises a supported primary YM2612 DAC profile.
+    pub fn supports_timed_dac(&self) -> bool {
+        self.timed_dac_capabilities.is_some()
+    }
+
+    /// Return whether the device advertises output attenuation control.
+    pub fn supports_output_volume(&self) -> bool {
+        self.output_volume_supported
+    }
+
+    /// Enable best-effort scheduled output fading on a capable device.
+    ///
+    /// Call before playback starts. Devices without output-volume support are
+    /// left unchanged and return `Ok(false)`. Poll [`Self::update_output_fade`]
+    /// while idle; scheduled writes and pacing also service the fade. A fade
+    /// changes the device's global output and restores it to zero attenuation
+    /// during [`Self::reset_for_reuse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another fade timeline is already attached.
+    pub fn set_output_fade_timeline(
+        &mut self,
+        timeline: Arc<NdsifHostTimeline>,
+    ) -> Result<bool, String> {
+        if !self.output_volume_supported {
+            return Ok(false);
+        }
+        if self.output_fade_timeline.is_some() {
+            return Err("NDSIF output fade timeline is already configured".into());
+        }
+        self.output_fade_timeline = Some(timeline);
+        Ok(true)
+    }
+
+    /// Apply any due output fade step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timing overflows or the device rejects or fails a
+    /// volume command. Stop playback and reset or close the device on error.
+    pub fn update_output_fade(&mut self) -> Result<(), String> {
+        self.update_output_volume(false)
+    }
+
+    /// Apply the current output gain without waiting for the update interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timing or the device's volume command fails.
+    pub fn synchronize_output_volume(&mut self) -> Result<(), String> {
+        self.update_output_volume(true)
+    }
+
+    fn update_output_volume(&mut self, force: bool) -> Result<(), String> {
+        let now = Instant::now();
+        let Some(attenuation) = self
+            .output_fade_timeline
+            .as_ref()
+            .map(|timeline| timeline.fade_attenuation(now))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        if attenuation == self.output_attenuation
+            || (!force
+                && self
+                    .last_volume_update
+                    .is_some_and(|last| now.duration_since(last) < VOLUME_UPDATE_INTERVAL))
+        {
+            return Ok(());
+        }
+        self.output_volume_modified = true;
+        self.request_typed(Command::SetOutputVolume {
+            attenuation,
+            response: true,
+        })
+        .map_err(|error| error.to_string())?;
+        self.output_attenuation = attenuation;
+        self.last_volume_update = Some(now);
+        Ok(())
+    }
+
+    /// Set a shared playback origin before any host-paced flush.
+    ///
+    /// This only controls untimed writes. Device-timed OKIM6258 and DAC streams
+    /// have their own clocks and are rejected rather than started unsynchronized.
+    /// Use a separate worker per transport; a blocking flush on one device
+    /// cannot drive another device at the same time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if pacing has already started or a device-timed stream
+    /// is configured.
+    pub fn set_host_timeline(
+        &mut self,
+        timeline: Arc<NdsifHostTimeline>,
+    ) -> Result<(), NdsifTransportError> {
+        if self.wall_clock_origin.is_some() || self.host_timeline.is_some() {
+            return Err(NdsifTransportError::HostTimelineAlreadySet);
+        }
+        if self.audio_stream.is_some() || self.timed_dac_stream.is_some() {
+            return Err(NdsifTransportError::HostTimelineUnsupportedStream);
+        }
+        self.host_timeline = Some(timeline);
+        Ok(())
+    }
+
+    /// Reset the device and clear playback state while keeping the port open.
+    ///
+    /// Call this only after all sequencers using the transport have stopped.
+    /// Cached capabilities remain available. A failed reset or idle check
+    /// leaves the transport unsuitable for reuse; close it instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reset fails or a supported stream is not idle
+    /// after the reset.
+    pub fn reset_for_reuse(&mut self) -> Result<(), NdsifTransportError> {
+        self.request_typed(Command::Reset)?;
+        if self.output_volume_modified {
+            self.request_typed(Command::SetOutputVolume {
+                attenuation: 0,
+                response: true,
+            })?;
+            self.output_volume_modified = false;
+            self.output_attenuation = 0;
+        }
+        self.verify_audio_stream_idle()?;
+        self.verify_timed_dac_idle()?;
+        self.pending.clear();
+        self.audio_stream = None;
+        self.timed_dac_stream = None;
+        self.wall_clock_origin = None;
+        self.host_timeline = None;
+        self.output_fade_timeline = None;
+        self.last_volume_update = None;
+        self.presentation_volume_synchronized = false;
+        self.configured_chip = false;
+        Ok(())
+    }
+
     /// Open a serial device, discover capabilities, and verify its streams are idle.
     ///
     /// During initialization no reset is issued unless `reset_device` is true.
@@ -123,12 +531,19 @@ impl NdsifSerialTransport {
             capabilities: Vec::new(),
             data_capacity: 0,
             event_capacity: 0,
+            output_volume_supported: false,
+            output_fade_timeline: None,
+            last_volume_update: None,
+            output_attenuation: 0,
+            output_volume_modified: false,
+            presentation_volume_synchronized: false,
             timed_dac_capabilities: None,
             configured_chip: false,
             audio_stream: None,
             timed_dac_stream: None,
             pending: Vec::new(),
             wall_clock_origin: None,
+            host_timeline: None,
         };
         if reset_device {
             transport.request_typed(Command::Reset)?;
@@ -145,12 +560,7 @@ impl NdsifSerialTransport {
     /// Variable-clock targets are accepted; fixed clocks must match exactly.
     /// This does not set the device clock or perform I/O.
     pub fn supports_clock(&self, write_id: WriteId, instance: u8, clock_hz: u32) -> bool {
-        self.capability(write_id, instance)
-            .is_some_and(|capability| match capability.clock_mode {
-                ClockMode::Variable => true,
-                ClockMode::Fixed => capability.fixed_clock_hz == clock_hz,
-                ClockMode::Unknown => false,
-            })
+        supports_cached_clock(&self.capabilities, write_id, instance, clock_hz)
     }
 
     /// Check cached capability and capacity for a primary OKIM6258 stream.
@@ -159,11 +569,17 @@ impl NdsifSerialTransport {
     /// the chip's advertised clock mode; callers should also use
     /// [`Self::supports_clock`].
     pub fn supports_audio_stream(&self, instance: u8, clock_hz: u32) -> bool {
-        instance == 0
-            && self.data_capacity > 0
-            && self.event_capacity > 0
-            && OkiClock::try_from(clock_hz).is_ok()
-            && self.capability(WriteId::OKIM6258, instance).is_some()
+        supports_cached_audio(
+            &self.capabilities,
+            self.data_capacity,
+            self.event_capacity,
+            instance,
+            clock_hz,
+        )
+    }
+
+    pub(crate) fn recording_capacities(&self) -> (u32, u16) {
+        (self.data_capacity, self.event_capacity)
     }
 
     /// Read all capability pages and discover the supported timed DAC profile.
@@ -184,6 +600,8 @@ impl NdsifSerialTransport {
             };
             self.data_capacity = capabilities.data_capacity;
             self.event_capacity = capabilities.event_capacity;
+            self.output_volume_supported |=
+                capabilities.control_features & CONTROL_FEATURE_OUTPUT_VOLUME != 0;
             timed_dac_supported |= capabilities.control_features & CONTROL_FEATURE_DAC_PROFILE != 0;
             self.capabilities.extend(capabilities.entries());
             if capabilities.next_offset == u16::MAX {
@@ -282,6 +700,7 @@ impl NdsifSerialTransport {
 
     /// Send a command using the playback trait's string error boundary.
     fn request(&mut self, command: Command<'_>) -> Result<ndsif::Frame, String> {
+        self.update_output_fade()?;
         self.request_typed(command)
             .map_err(|error| error.to_string())
     }
@@ -305,10 +724,7 @@ impl NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<BytePosition, String> {
-        stream
-            .state
-            .position_for_frame(sample_frame, output_rate)
-            .map_err(|error| format!("invalid NDSIF audio position: {error}"))
+        stream.position_for_frame(sample_frame, output_rate)
     }
 
     /// Check whether an event can be sent against the current audio position.
@@ -503,12 +919,43 @@ impl NdsifSerialTransport {
         let target_nanos = (sample_frame as u128) * 1_000_000_000 / u128::from(output_rate);
         let target_nanos = u64::try_from(target_nanos)
             .map_err(|_| "NDSIF playback pacing duration overflow".to_owned())?;
-        let origin = *self.wall_clock_origin.get_or_insert_with(Instant::now);
+        let origin = if let Some(timeline) = &self.host_timeline {
+            loop {
+                if timeline.cancelled.load(Ordering::Acquire) {
+                    return Err("NDSIF host pacing was cancelled".into());
+                }
+                if let Some(origin) = timeline.origin.get() {
+                    break *origin;
+                }
+                std::thread::sleep(PACING_CANCEL_INTERVAL);
+            }
+        } else {
+            *self.wall_clock_origin.get_or_insert_with(Instant::now)
+        };
         let deadline = origin
             .checked_add(Duration::from_nanos(target_nanos))
             .ok_or_else(|| "NDSIF playback pacing deadline overflow".to_owned())?;
-        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
-            std::thread::sleep(delay);
+        if !self.presentation_volume_synchronized {
+            self.synchronize_output_volume()?;
+            self.presentation_volume_synchronized = true;
+        }
+        loop {
+            self.update_output_fade()?;
+            if self
+                .host_timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.cancelled.load(Ordering::Acquire))
+            {
+                return Err("NDSIF host pacing was cancelled".into());
+            }
+            let Some(delay) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            std::thread::sleep(if self.host_timeline.is_some() {
+                delay.min(PACING_CANCEL_INTERVAL)
+            } else {
+                delay
+            });
         }
         Ok(())
     }
@@ -548,6 +995,24 @@ impl NdsifTransport for NdsifSerialTransport {
                 write_id.get()
             )
         })?;
+        if self.host_timeline.is_some() {
+            let unsupported = if write_id == WriteId::OKIM6258 {
+                Some("OKIM6258 audio stream")
+            } else if write_id == WriteId::YM2612
+                && instance == 0
+                && self.timed_dac_capabilities.is_some()
+            {
+                Some("YM2612 timed DAC stream")
+            } else {
+                None
+            };
+            if let Some(stream) = unsupported {
+                return Err(format!(
+                    "{}: {stream} is not supported with host-paced playback",
+                    NdsifTransportError::HostTimelineUnsupportedStream
+                ));
+            }
+        }
         self.configured_chip = true;
         match capability.clock_mode {
             ClockMode::Variable => {
@@ -606,6 +1071,12 @@ impl NdsifTransport for NdsifSerialTransport {
         divider: Divider,
         output_rate: u32,
     ) -> Result<(), String> {
+        if self.host_timeline.is_some() {
+            return Err(format!(
+                "{}: OKIM6258 audio stream is not supported with host-paced playback",
+                NdsifTransportError::HostTimelineUnsupportedStream
+            ));
+        }
         if instance != 0 {
             return Err("NDSIF transport supports only the primary OKIM6258 stream".to_owned());
         }
@@ -625,7 +1096,15 @@ impl NdsifTransport for NdsifSerialTransport {
         self.audio_stream = Some(AudioStream {
             instance,
             state,
+            clock_changes: Vec::new(),
+            committed_frame: None,
+            timeline: vec![
+                AudioPositionClock::new(AudioTiming::new(clock, divider), output_rate)
+                    .map_err(|error| format!("invalid NDSIF audio timeline: {error}"))?,
+            ],
             prebuffer_bytes,
+            start_mode: AudioStartMode::Automatic,
+            cancellation: None,
             queued_events: VecDeque::new(),
             queued_event_count: 0,
             last_status_check: None,
@@ -639,6 +1118,24 @@ impl NdsifTransport for NdsifSerialTransport {
     }
 
     fn schedule_audio_control(&mut self, event: NdsifAudioControlEvent) -> Result<(), String> {
+        if let NdsifAudioControl::Clock { clock_hz, .. } = event.control {
+            if let Some(capability) = self.capability(WriteId::OKIM6258, event.instance)
+                && !supports_cached_clock(
+                    &[capability],
+                    WriteId::OKIM6258,
+                    event.instance,
+                    clock_hz,
+                )
+            {
+                return Err(format!(
+                    "NDSIF OKIM6258 clock {clock_hz} Hz is not supported by the device"
+                ));
+            }
+            self.audio_stream
+                .as_mut()
+                .ok_or_else(|| "NDSIF audio event has no configured OKIM6258 stream".to_owned())?
+                .record_clock_change(event)?;
+        }
         self.pending.push(PendingEvent::Control(event));
         Ok(())
     }
@@ -648,13 +1145,31 @@ impl NdsifTransport for NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        self.check_audio_cancellation()?;
+        if self.audio_stream.as_ref().is_some_and(|stream| {
+            stream.start_mode == AudioStartMode::Attempted && !stream.state.started()
+        }) {
+            return Err(
+                "NDSIF audio stream buffering or start failed; reset or close the device"
+                    .to_owned(),
+            );
+        }
         if let Some(stream) = self.audio_stream.as_ref()
             && stream.state.output_rate() != output_rate
         {
             return Err("NDSIF event output rate changed during playback".to_owned());
         }
-        if self.audio_stream.is_none() && self.timed_dac_stream.is_none() && self.configured_chip {
-            self.pace_without_audio_stream(sample_frame, output_rate)?;
+        if self.audio_stream.as_ref().is_some_and(|stream| {
+            stream
+                .committed_frame
+                .is_some_and(|frame| sample_frame < frame)
+        }) {
+            return Err("NDSIF audio flush moved backward".into());
+        }
+        let host_paced =
+            self.audio_stream.is_none() && self.timed_dac_stream.is_none() && self.configured_chip;
+        if host_paced {
+            self.pace_without_audio_stream(0, output_rate)?;
         }
         let mut due = Vec::new();
         let mut future = Vec::new();
@@ -677,6 +1192,10 @@ impl NdsifTransport for NdsifSerialTransport {
         let mut due = Self::order_events(due, self.audio_stream.as_ref())?;
         let mut index = 0;
         while index < due.len() {
+            self.check_audio_cancellation()?;
+            if host_paced {
+                self.pace_without_audio_stream(due[index].sample_frame(), output_rate)?;
+            }
             match &due[index] {
                 PendingEvent::Register(first) => {
                     let start = index;
@@ -700,7 +1219,10 @@ impl NdsifTransport for NdsifSerialTransport {
                                     next.sample_rate,
                                 )? == position
                             }
-                            _ => true,
+                            _ => {
+                                next.sample_frame == first.sample_frame
+                                    && next.sample_rate == first.sample_rate
+                            }
                         };
                         if next.write_id != first.write_id
                             || next.instance != first.instance
@@ -781,12 +1303,37 @@ impl NdsifTransport for NdsifSerialTransport {
             }
         }
         self.pending.extend(deferred);
+        let first_pending_register = self
+            .pending
+            .iter()
+            .filter_map(|event| match event {
+                PendingEvent::Register(event) => Some(event.sample_frame),
+                PendingEvent::Psg(event) => Some(event.sample_frame),
+                _ => None,
+            })
+            .min();
+        if let Some(stream) = self.audio_stream.as_mut() {
+            stream.committed_frame = Some(sample_frame);
+            if stream.state.started() {
+                stream.discard_clock_history_before(
+                    first_pending_register.map_or(sample_frame, |frame| frame.min(sample_frame)),
+                );
+            }
+        }
+        if host_paced {
+            self.pace_without_audio_stream(sample_frame, output_rate)?;
+        }
         self.start_stream_if_ready(false)?;
         self.check_status_if_due()?;
         Ok(())
     }
 
     fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
+        if self.audio_stream.as_ref().is_some_and(|stream| {
+            stream.start_mode != AudioStartMode::Automatic && !stream.state.started()
+        }) {
+            return Err("NDSIF audio stream start is deferred".into());
+        }
         self.start_stream_if_ready(true)
     }
 
@@ -814,11 +1361,20 @@ impl NdsifTransport for NdsifSerialTransport {
 
 impl Drop for NdsifSerialTransport {
     fn drop(&mut self) {
-        if !self.configured_chip {
+        if !self.configured_chip && !self.output_volume_modified {
             return;
         }
-        if let Err(error) = self.request(Command::Reset) {
+        if let Err(error) = self.request_typed(Command::Reset) {
             eprintln!("failed to reset NDSIF device while closing: {error}");
+            return;
+        }
+        if self.output_volume_modified
+            && let Err(error) = self.request_typed(Command::SetOutputVolume {
+                attenuation: 0,
+                response: true,
+            })
+        {
+            eprintln!("failed to restore NDSIF output volume while closing: {error}");
         }
     }
 }

@@ -4,15 +4,18 @@ use std::{cell::RefCell, rc::Rc};
 
 use chipstream::{
     chip::{
-        ChipError, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifRegisterEvent, NdsifSoundChip,
-        NdsifTransport, SoundChip,
+        ChipError, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258, NdsifPsgEvent,
+        NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
         ndsif::{NdsifAudioControl, register_okim6258_factory, register_ymfm_factories},
     },
     sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
 };
 use ndsif::{Divider, RegisterWrite, WriteId, ZeroPair};
 use soundlog::{
-    chip::{Okim6258Spec, Ym2151Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ymf262Spec, Ymf278bSpec},
+    chip::{
+        Okim6258Spec, PsgSpec, Ym2151Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ymf262Spec,
+        Ymf278bSpec,
+    },
     vgm::{VgmBuilder, command::WaitSamples},
 };
 
@@ -20,6 +23,7 @@ use soundlog::{
 struct FakeTransport {
     configured: Vec<(WriteId, u8, u32)>,
     events: Vec<NdsifRegisterEvent>,
+    psg_events: Vec<NdsifPsgEvent>,
     audio_streams: Vec<(u8, u32, Divider, u32)>,
     adpcm_events: Vec<NdsifAdpcmEvent>,
     audio_controls: Vec<NdsifAudioControlEvent>,
@@ -43,7 +47,13 @@ impl NdsifTransport for FakeTransport {
         if self.fail_writes {
             return Err("simulated scheduler failure".to_owned());
         }
+
         self.events.push(event);
+        Ok(())
+    }
+
+    fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.psg_events.push(event);
         Ok(())
     }
 
@@ -87,6 +97,78 @@ impl NdsifTransport for FakeTransport {
         self.finished.push((instance, sample_frame, output_rate));
         Ok(())
     }
+}
+
+#[test]
+fn target_instance_can_differ_from_source_for_each_ndsif_adapter() {
+    let mut builder = VgmBuilder::new();
+    for chip in [Chip::Ym2151, Chip::Sn76489, Chip::Okim6258] {
+        builder.register_chip(chip, Instance::Primary, 4_000_000);
+    }
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2151Spec {
+            register: 0x20,
+            value: 0xc7,
+        },
+    );
+    builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x01,
+            value: 0x12,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Ym2151, move |config| {
+        Ok(Box::new(NdsifSoundChip::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Sn76489, move |config| {
+        Ok(Box::new(NdsifSn76489::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let target = Rc::clone(&transport);
+    factories.register(Chip::Okim6258, move |config| {
+        Ok(Box::new(NdsifOkim6258::with_target_instance(
+            config,
+            Instance::Secondary,
+            Rc::clone(&target),
+        )?))
+    });
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+    let device = transport.borrow();
+    assert!(device.configured.contains(&(WriteId::YM2151, 1, 4_000_000)));
+    assert!(
+        device
+            .configured
+            .contains(&(WriteId::SN76489_SECOND, 1, 4_000_000))
+    );
+    assert!(
+        device
+            .configured
+            .contains(&(WriteId::OKIM6258, 1, 4_000_000))
+    );
+    assert!(!device.events.is_empty());
+    assert!(device.events.iter().all(|event| event.instance == 1));
+    assert!(!device.psg_events.is_empty());
+    assert!(device.psg_events.iter().all(|event| event.instance == 1));
+    assert!(!device.adpcm_events.is_empty());
+    assert!(device.adpcm_events.iter().all(|event| event.instance == 1));
 }
 
 #[test]
@@ -280,6 +362,132 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
     let mut player =
         VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
     assert!(player.render().unwrap().is_some());
+}
+
+#[test]
+fn okim6258_coalesces_clock_bytes_and_tracks_divider_changes() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    builder.add_vgm_command(WaitSamples(4410));
+    for (register, value) in (0x08..=0x0b).zip(8_000_000_u32.to_le_bytes()) {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+    }
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x0c,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(4410));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 1,
+            value: 0x34,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+
+    let transport = transport.borrow();
+    let changes: Vec<_> = transport
+        .audio_controls
+        .iter()
+        .filter(|event| matches!(event.control, NdsifAudioControl::Clock { .. }))
+        .collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].sample_frame, 4410);
+    assert_eq!(changes[0].position.get(), 195);
+    assert_eq!(
+        changes[0].control,
+        NdsifAudioControl::Clock {
+            clock_hz: 8_000_000,
+            divider: Divider::Div768
+        }
+    );
+    let data = transport
+        .adpcm_events
+        .iter()
+        .find(|event| event.value == 0x34)
+        .unwrap();
+    assert_eq!(data.sample_frame, 8820);
+    assert_eq!(data.position.get(), 716);
+}
+
+#[test]
+fn okim6258_divider_changes_remain_monotonic_during_loops() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    builder.set_loop_index(0);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x0c,
+            value: 2,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x0c,
+            value: 0,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    player.set_loop_count(Some(50));
+    while player.render().unwrap().is_some() {}
+    let transport = transport.borrow();
+    let changes: Vec<_> = transport
+        .audio_controls
+        .iter()
+        .filter(|event| matches!(event.control, NdsifAudioControl::Clock { .. }))
+        .collect();
+    assert_eq!(changes.len(), 100);
+    assert!(changes.windows(2).all(|pair| {
+        pair[0].sample_frame < pair[1].sample_frame && pair[0].position < pair[1].position
+    }));
+    assert_eq!(changes[0].position.get(), 0);
+    assert_eq!(changes[1].position.get(), 39);
+}
+
+#[test]
+fn okim6258_reports_an_unsupported_dynamic_clock() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    for (register, value) in (0x08..=0x0b).zip(3_000_000_u32.to_le_bytes()) {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(441));
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    let error = player.render().unwrap_err().to_string();
+    assert!(
+        error.contains("unsupported OKIM6258 clock 3000000 Hz"),
+        "{error}"
+    );
+    assert!(
+        transport
+            .borrow()
+            .audio_controls
+            .iter()
+            .all(|event| !matches!(event.control, NdsifAudioControl::Clock { .. }))
+    );
 }
 
 #[test]

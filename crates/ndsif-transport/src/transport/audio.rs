@@ -1,25 +1,129 @@
 //! Audio stream bookkeeping and device operations.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chipstream::chip::NdsifAdpcmEvent;
-use ndsif::{AudioStreamState, Command, Divider, Reply, Response};
+use chipstream::chip::{NdsifAdpcmEvent, NdsifAudioControlEvent};
+use ndsif::{
+    AudioPositionClock, AudioStreamState, AudioTiming, BytePosition, Command, Divider, Reply,
+    Response,
+};
 
-use super::{AUDIO_STREAM_ID, NdsifSerialTransport, STATUS_POLL_INTERVAL};
+use super::{AUDIO_STREAM_ID, NdsifHostTimeline, NdsifSerialTransport, STATUS_POLL_INTERVAL};
 
 const AUDIO_PREBUFFER_SECONDS: u64 = 2;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AudioStartMode {
+    Automatic,
+    Deferred,
+    Prepared,
+    Attempted,
+}
 
 pub(super) struct AudioStream {
     pub(super) instance: u8,
     pub(super) state: AudioStreamState,
+    pub(super) clock_changes: Vec<NdsifAudioControlEvent>,
+    pub(super) timeline: Vec<AudioPositionClock>,
+    pub(super) committed_frame: Option<usize>,
     pub(super) prebuffer_bytes: u32,
+    pub(super) start_mode: AudioStartMode,
+    pub(super) cancellation: Option<Arc<NdsifHostTimeline>>,
     pub(super) queued_events: VecDeque<(u32, u32)>,
     pub(super) queued_event_count: u32,
     pub(super) last_status_check: Option<Instant>,
 }
 
 impl AudioStream {
+    pub(super) fn discard_clock_history_before(&mut self, frame: usize) {
+        let keep = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= frame)
+            .saturating_sub(1);
+        self.timeline.drain(..keep);
+        self.clock_changes.drain(..keep);
+    }
+
+    pub(super) fn position_for_frame(
+        &self,
+        frame: usize,
+        rate: u32,
+    ) -> Result<BytePosition, String> {
+        let index = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= frame)
+            .saturating_sub(1);
+        self.timeline[index]
+            .position_for_frame(frame, rate)
+            .map_err(|error| format!("invalid NDSIF audio position: {error}"))
+    }
+
+    pub(super) fn record_clock_change(
+        &mut self,
+        event: NdsifAudioControlEvent,
+    ) -> Result<(), String> {
+        use chipstream::chip::NdsifAudioControl;
+        let NdsifAudioControl::Clock { clock_hz, divider } = event.control else {
+            return Err("NDSIF event is not a clock change".into());
+        };
+        if event.instance != self.instance || event.sample_rate != self.state.output_rate() {
+            return Err("NDSIF clock change does not match the audio stream".into());
+        }
+        if self
+            .committed_frame
+            .is_some_and(|frame| event.sample_frame < frame)
+        {
+            return Err("NDSIF clock change is earlier than the committed audio timeline".into());
+        }
+        let clock = ndsif::OkiClock::try_from(clock_hz)
+            .map_err(|_| format!("unsupported OKIM6258 clock {clock_hz} Hz"))?;
+        let index = self
+            .clock_changes
+            .partition_point(|change| change.sample_frame <= event.sample_frame);
+        if index == self.clock_changes.len() {
+            let segment = self
+                .timeline
+                .last()
+                .expect("initial audio timeline exists")
+                .change_at(
+                    event.sample_frame,
+                    event.sample_rate,
+                    event.position,
+                    AudioTiming::new(clock, divider),
+                )
+                .map_err(|error| format!("invalid NDSIF clock change: {error}"))?;
+            self.clock_changes.push(event);
+            self.timeline.push(segment);
+            return Ok(());
+        }
+        let mut changes = self.clock_changes.clone();
+        changes.insert(index, event);
+        let mut timeline = vec![self.timeline[0]];
+        for change in &changes {
+            let NdsifAudioControl::Clock { clock_hz, divider } = change.control else {
+                unreachable!("only clock changes are stored");
+            };
+            let clock = ndsif::OkiClock::try_from(clock_hz)
+                .map_err(|_| format!("unsupported OKIM6258 clock {clock_hz} Hz"))?;
+            let segment = timeline
+                .last()
+                .expect("initial audio timeline exists")
+                .change_at(
+                    change.sample_frame,
+                    change.sample_rate,
+                    change.position,
+                    AudioTiming::new(clock, divider),
+                )
+                .map_err(|error| format!("invalid NDSIF clock change: {error}"))?;
+            timeline.push(segment);
+        }
+        self.clock_changes = changes;
+        self.timeline = timeline;
+        Ok(())
+    }
+
     /// Record events queued at an audio byte position.
     pub(super) fn record_queued_events(
         &mut self,
@@ -70,6 +174,7 @@ pub(super) fn audio_prebuffer_bytes(clock_hz: u32, divider: Divider, capacity: u
 impl NdsifSerialTransport {
     /// Send a contiguous ADPCM data batch and advance the accepted position.
     pub(super) fn send_data(&mut self, events: &[NdsifAdpcmEvent]) -> Result<(), String> {
+        self.check_audio_cancellation()?;
         if events.is_empty() {
             return Ok(());
         }
@@ -117,6 +222,7 @@ impl NdsifSerialTransport {
     fn ensure_audio_data_capacity(&mut self, incoming_bytes: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            self.check_audio_cancellation()?;
             let Some((instance, accepted, played, started)) =
                 self.audio_stream.as_ref().map(|stream| {
                     (
@@ -134,6 +240,11 @@ impl NdsifSerialTransport {
                 return Ok(());
             }
             if !started {
+                if let Some(stream) = self.audio_stream.as_mut()
+                    && stream.start_mode != AudioStartMode::Automatic
+                {
+                    stream.start_mode = AudioStartMode::Attempted;
+                }
                 return Err(format!(
                     "NDSIF prebuffer exceeds device capacity (pending={pending}, incoming={incoming_bytes}, capacity={})",
                     self.data_capacity
@@ -187,6 +298,7 @@ impl NdsifSerialTransport {
             u32::try_from(incoming_events).map_err(|_| "NDSIF event count overflow".to_owned())?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
+            self.check_audio_cancellation()?;
             if let Some(stream) = self.audio_stream.as_mut() {
                 stream.prune_queued_events();
             }
@@ -207,6 +319,20 @@ impl NdsifSerialTransport {
                 return Err("NDSIF audio event has no configured stream".to_owned());
             };
             if !started {
+                if self
+                    .audio_stream
+                    .as_ref()
+                    .is_some_and(|stream| stream.start_mode != AudioStartMode::Automatic)
+                {
+                    self.audio_stream
+                        .as_mut()
+                        .expect("audio stream was checked above")
+                        .start_mode = AudioStartMode::Attempted;
+                    return Err(
+                        "NDSIF event capacity exhausted before the prepared audio stream started"
+                            .to_owned(),
+                    );
+                }
                 if accepted == 0 {
                     return Err(
                         "NDSIF event capacity exhausted before audio data was queued".to_owned(),
@@ -244,18 +370,26 @@ impl NdsifSerialTransport {
     /// Start the audio stream after prebuffering or when explicitly forced.
     pub(super) fn start_stream_if_ready(&mut self, force: bool) -> Result<(), String> {
         let Some((instance, clock, divider)) = self.audio_stream.as_ref().and_then(|stream| {
-            stream
-                .state
-                .should_start(stream.prebuffer_bytes, force)
-                .then_some((
-                    stream.instance,
-                    stream.state.timing().clock(),
-                    stream.state.timing().divider(),
-                ))
+            (stream.start_mode == AudioStartMode::Automatic
+                && stream.state.should_start(stream.prebuffer_bytes, force))
+            .then_some((
+                stream.instance,
+                stream.state.timing().clock(),
+                stream.state.timing().divider(),
+            ))
         }) else {
             return Ok(());
         };
         self.request(Command::Ping(b"chipstream-start"))?;
+        self.start_audio_after_ping(instance, clock, divider)
+    }
+
+    fn start_audio_after_ping(
+        &mut self,
+        instance: u8,
+        clock: ndsif::OkiClock,
+        divider: Divider,
+    ) -> Result<(), String> {
         self.request(Command::AudioStart {
             stream_id: AUDIO_STREAM_ID,
             instance,
@@ -282,6 +416,152 @@ impl NdsifSerialTransport {
             .expect("audio stream was checked above")
             .last_status_check = Some(Instant::now());
         Ok(())
+    }
+
+    /// Disable automatic starting before queuing audio for an external start barrier.
+    ///
+    /// Call after configuring an OKIM6258 stream and before submitting any data.
+    /// A deferred stream can fill its device buffer but will not start, including
+    /// when finishing the stream. Exhausting the event queue before starting
+    /// returns an error instead of starting it early. Reset or close the device
+    /// after a buffering or communication error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no stream is configured or its data has already been
+    /// submitted, it has started, or starting was already deferred.
+    pub fn defer_audio_stream_start(&mut self) -> Result<(), String> {
+        let stream = self
+            .audio_stream
+            .as_mut()
+            .ok_or_else(|| "NDSIF audio stream is not configured".to_owned())?;
+        if stream.start_mode != AudioStartMode::Automatic
+            || stream.state.started()
+            || stream.state.accepted().get() != 0
+        {
+            return Err("NDSIF audio stream cannot be deferred after buffering or starting".into());
+        }
+        stream.start_mode = AudioStartMode::Deferred;
+        Ok(())
+    }
+
+    /// Defer starting and cancel audio buffering and capacity waits with a timeline.
+    ///
+    /// Cancellation does not interrupt serial I/O already in progress. A
+    /// cancelled stream must be reset or closed rather than resumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as [`Self::defer_audio_stream_start`].
+    pub fn defer_audio_stream_start_with_cancellation(
+        &mut self,
+        timeline: Arc<NdsifHostTimeline>,
+    ) -> Result<(), String> {
+        self.defer_audio_stream_start()?;
+        self.audio_stream
+            .as_mut()
+            .expect("audio stream was checked above")
+            .cancellation = Some(timeline);
+        Ok(())
+    }
+
+    pub(super) fn check_audio_cancellation(&self) -> Result<(), String> {
+        if self.audio_stream.as_ref().is_some_and(|stream| {
+            stream
+                .cancellation
+                .as_ref()
+                .is_some_and(|timeline| timeline.is_cancelled())
+        }) {
+            return Err("NDSIF audio stream was cancelled".into());
+        }
+        Ok(())
+    }
+
+    /// Verify the prebuffer and complete the serial synchronization ping.
+    ///
+    /// This does not start the device clock. `minimum_bytes` must be chosen by
+    /// the caller to provide sufficient lead for its playback and serial timing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if starting was not deferred, the requested minimum is
+    /// zero or not buffered, preparation was already completed, or the ping fails.
+    pub fn prepare_audio_stream_start(&mut self, minimum_bytes: u32) -> Result<(), String> {
+        self.check_audio_cancellation()?;
+        let stream = self
+            .audio_stream
+            .as_ref()
+            .ok_or_else(|| "NDSIF audio stream is not configured".to_owned())?;
+        if stream.start_mode != AudioStartMode::Deferred || stream.state.started() {
+            return Err("NDSIF audio stream is not awaiting preparation".into());
+        }
+        let accepted = stream.state.accepted().get();
+        if minimum_bytes == 0 || accepted < minimum_bytes {
+            return Err(format!(
+                "NDSIF audio prebuffer is insufficient (buffered={accepted}, required={minimum_bytes})"
+            ));
+        }
+        self.request(Command::Ping(b"chipstream-start"))?;
+        self.audio_stream
+            .as_mut()
+            .expect("audio stream was checked above")
+            .start_mode = AudioStartMode::Prepared;
+        Ok(())
+    }
+
+    /// Prepare a deferred stream after buffering the specified host PCM frames.
+    ///
+    /// The frame count must cover enough playback time for the caller's
+    /// scheduling and serial latency. This checks coverage, not synchronization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame count is too small to cover an ADPCM byte,
+    /// the sample rate differs from the stream, the buffer is too short, or
+    /// preparation fails.
+    pub fn prepare_audio_stream_start_for_frames(
+        &mut self,
+        frames: usize,
+        output_rate: u32,
+    ) -> Result<(), String> {
+        let stream = self
+            .audio_stream
+            .as_ref()
+            .ok_or_else(|| "NDSIF audio stream is not configured".to_owned())?;
+        let bytes = stream.position_for_frame(frames, output_rate)?.get();
+        self.prepare_audio_stream_start(bytes)
+    }
+
+    /// Start a prepared audio stream immediately.
+    ///
+    /// The caller is responsible for coordinating this call with other audio
+    /// clocks; serial and device latency still make the start best-effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparation did not complete or the device fails
+    /// to start. Reset or close the device after a failed start.
+    pub fn start_prepared_audio_stream(&mut self) -> Result<(), String> {
+        self.check_audio_cancellation()?;
+        let (instance, clock, divider) = self
+            .audio_stream
+            .as_ref()
+            .filter(|stream| {
+                stream.start_mode == AudioStartMode::Prepared && !stream.state.started()
+            })
+            .map(|stream| {
+                (
+                    stream.instance,
+                    stream.state.timing().clock(),
+                    stream.state.timing().divider(),
+                )
+            })
+            .ok_or_else(|| "NDSIF audio stream is not prepared for starting".to_owned())?;
+        self.audio_stream
+            .as_mut()
+            .expect("audio stream was checked above")
+            .start_mode = AudioStartMode::Attempted;
+        self.start_audio_after_ping(instance, clock, divider)
     }
 
     /// Poll and validate audio progress when the status interval has elapsed.

@@ -337,6 +337,7 @@ struct EventContext<'a, 'callbacks> {
 
 #[derive(Clone)]
 struct Fade {
+    start_frame: usize,
     pending: usize,
     length: f32,
     rate: u32,
@@ -1253,6 +1254,15 @@ impl<'a> VgmSequencer<'a> {
             .push((self.stream_steps, StreamSetting::LoopCount(count)));
     }
 
+    /// Return the output-frame position where the current fade begins, once
+    /// rendering has reached its loop boundary.
+    ///
+    /// Rendering may discover this position ahead of the returned PCM. It is
+    /// absent for tracks without a fade or before the boundary is encountered.
+    pub fn fade_start_frame(&self) -> Option<usize> {
+        self.fade_frames.as_ref().map(|fade| fade.start_frame)
+    }
+
     /// Override the VGM loop modifier before rendering.
     pub fn set_loop_modifier(&mut self, modifier: u8) {
         self.stream.set_loop_modifier(modifier);
@@ -1565,6 +1575,9 @@ impl<'a> VgmSequencer<'a> {
         self.started = true;
         let sample_start = self.position_frames;
         let result = self.render_inner(sample_start).and_then(|block| {
+            for voice in &mut self.voices {
+                voice.route.chip_mut().prepare_scheduled()?;
+            }
             if let Some(block) = &block {
                 let sample_end = sample_start
                     .checked_add(block.frames().len())
@@ -1727,6 +1740,9 @@ impl<'a> VgmSequencer<'a> {
                 let length =
                     (self.output_phase as f32 * PHASE_SCALE + samples as f32 * step).floor();
                 self.fade_frames = Some(Fade {
+                    start_frame: sample_frame_origin
+                        .checked_add(self.available)
+                        .ok_or(VgmSequencerError::DurationOverflow)?,
                     pending: self.available,
                     length,
                     rate: self.output_rate,
@@ -1954,6 +1970,7 @@ mod tests {
     #[test]
     fn fade_waits_for_buffered_frames_and_continues_across_blocks() {
         let mut fade = Fade {
+            start_frame: 0,
             pending: 2,
             length: 5.0,
             rate: 3,
@@ -1971,6 +1988,7 @@ mod tests {
     #[test]
     fn fade_supports_more_than_u32_frames() {
         let mut fade = Fade {
+            start_frame: 0,
             pending: 0,
             length: 8_589_934_592.0,
             rate: 48_000,

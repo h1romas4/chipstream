@@ -182,6 +182,11 @@ pub trait SoundChip {
         self.apply_register_write(write)
     }
 
+    /// Prepare this voice's scheduled events before any shared transport is flushed.
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        Ok(())
+    }
+
     /// Commit scheduled external events through an absolute output frame.
     ///
     /// Sequencers call this after all chip voices have rendered a block, so
@@ -325,6 +330,10 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         output_rate: u32,
     ) -> Result<(), ChipError> {
         (**self).apply_register_write_at(write, sample_frame, output_rate)
+    }
+
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        (**self).prepare_scheduled()
     }
 
     fn flush_scheduled_until(

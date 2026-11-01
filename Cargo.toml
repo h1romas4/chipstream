@@ -11,6 +11,7 @@ members = [
 	"crates/soundlog-cli",
 	"crates/soundlog-gui",
 	"crates/chipstream-gstreamer/xtasks",
+	"crates/nddrv",
 ]
 
 [workspace.dependencies]

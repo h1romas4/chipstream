@@ -4,9 +4,18 @@
 
 mod error;
 mod factory;
+mod recording;
+mod routing;
 mod session;
 mod transport;
 
 pub use error::NdsifTransportError;
 pub use factory::{NdsifSerialConfig, create_chip_factories};
-pub use transport::NdsifSerialTransport;
+pub use recording::{
+    NdsifCommandBatch, NdsifRecordingError, NdsifRecordingTransport, NdsifReplayError,
+};
+pub use routing::{
+    NdsifRoute, NdsifRoutingError, NdsifRoutingTransport, create_routed_chip_factories,
+    create_routed_transport_factories, create_shared_routed_chip_factories,
+};
+pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
