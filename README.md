@@ -49,6 +49,17 @@ Optionally install the GUI inspector:
 cargo install --git https://github.com/h1romas4/chipstream --bin soundlog-inspector --locked --force soundlog-gui
 ```
 
+### NDDRV
+
+Install the NDDRV desktop player:
+
+```bash
+cargo install --git https://github.com/h1romas4/chipstream --bin nddrv --locked --force nddrv
+```
+
+For platform prerequisites, including ALSA development libraries on Linux, see
+the [NDDRV README](crates/nddrv/README.md).
+
 ### soundlog
 
 `soundlog --help`
