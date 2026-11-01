@@ -155,12 +155,12 @@ enum MdxCommands {
         loop_count: u32,
 
         /// Maximum playback ticks; reaching this limit reports an incomplete check
-        #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "parse_only")]
-        max_ticks: u64,
+        #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u32).range(1..), conflicts_with = "parse_only")]
+        max_ticks: u32,
 
         /// Maximum executed MDX commands, including commands within a single tick
-        #[arg(long, default_value_t = 1_000_000, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "parse_only")]
-        max_commands: u64,
+        #[arg(long, default_value_t = 1_000_000, value_parser = clap::value_parser!(u32).range(1..), conflicts_with = "parse_only")]
+        max_commands: u32,
     },
     /// Compile an MML source file into an MDX or VGM binary file
     Compile {

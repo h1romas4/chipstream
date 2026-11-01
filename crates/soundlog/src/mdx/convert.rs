@@ -2764,9 +2764,9 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
 #[derive(Debug, Clone, Copy)]
 pub struct MdxPlaybackCheckLimits {
     /// Maximum playback ticks, including ticks spent waiting for synchronization.
-    pub max_ticks: u64,
+    pub max_ticks: u32,
     /// Maximum MDX commands executed across all tracks and repeats.
-    pub max_commands: u64,
+    pub max_commands: u32,
 }
 
 impl Default for MdxPlaybackCheckLimits {
@@ -2912,8 +2912,8 @@ pub fn check_playback(
 #[derive(Default)]
 struct PlaybackCheckState {
     limits: Option<MdxPlaybackCheckLimits>,
-    ticks: u64,
-    commands: u64,
+    ticks: u32,
+    commands: u32,
     position: Option<(usize, usize)>,
     limit_hit: Option<&'static str>,
 }
@@ -3576,7 +3576,7 @@ mod tests {
         timing.tempo = 216;
         let (microseconds, _) = timing.advance_tick();
         assert_eq!(MdxToVgmOptions::default().max_ticks, Some(100_000));
-        assert_eq!(u64::from(microseconds) * 100_000, 1_024_000_000);
+        assert_eq!(u32::from(microseconds) * 100_000, 1_024_000_000);
     }
 
     #[test]

@@ -37,10 +37,10 @@ impl OkiAdpcmState {
     pub(crate) fn zero_pair(&self) -> u8 {
         let score = |byte| {
             let mut state = self.clone();
-            let mut accumulated = 0_i64;
+            let mut accumulated = 0_i32;
             for _ in 0..32 {
                 state.decode_byte(byte);
-                accumulated += i64::from(state.signal.abs());
+                accumulated += state.signal.abs();
             }
             (accumulated, state.signal.abs(), state.step)
         };

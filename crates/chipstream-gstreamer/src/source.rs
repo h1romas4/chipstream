@@ -1144,7 +1144,8 @@ fn load_sequencer_with_ndsif(
                 options,
                 settings.fadeout_samples,
             )
-            .map_err(|error| format!("failed to measure MDX duration: {error}"))?;
+            .map_err(|error| format!("failed to measure MDX duration: {error}"))?
+            .map(u64::from);
             let player = MdxSequencer::with_options_and_fadeout_with_factories(
                 package,
                 settings.sample_rate,
@@ -1175,7 +1176,8 @@ fn load_sequencer_with_ndsif(
                 play_count,
                 settings.fadeout_samples,
             )
-            .map_err(|error| format!("failed to measure VGM duration: {error}"))?;
+            .map_err(|error| format!("failed to measure VGM duration: {error}"))?
+            .map(u64::from);
             let (metadata, warning) = match probe_vgm_bytes(&bytes) {
                 Ok(metadata) => (metadata, None),
                 Err(error @ MetadataError::InvalidGd3(_)) => {
@@ -1769,7 +1771,7 @@ mod tests {
             measure_vgm_duration_frames(&data, DEFAULT_SAMPLE_RATE, Some(1), None)
                 .unwrap()
                 .unwrap();
-        let expected = checked_frame_time(expected_frames, DEFAULT_SAMPLE_RATE).unwrap();
+        let expected = checked_frame_time(u64::from(expected_frames), DEFAULT_SAMPLE_RATE).unwrap();
         let source = glib::Object::builder::<ChipstreamSrc>()
             .property("location", path.to_string_lossy().as_ref())
             .property("play-count", 1_u32)

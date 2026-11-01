@@ -12,7 +12,7 @@ use crate::fixed::divide_ratio;
 
 use super::{MdxSequencerError, VgmSequencerError};
 
-const MAX_DURATION_COMMANDS: u64 = 10_000_000;
+const MAX_DURATION_COMMANDS: u32 = 10_000_000;
 
 /// Measure finite VGM playback in output frames without rendering audio.
 ///
@@ -25,7 +25,7 @@ pub fn measure_vgm_duration_frames(
     output_rate: u32,
     play_count: Option<u32>,
     fadeout_samples: Option<u32>,
-) -> Result<Option<u64>, VgmSequencerError> {
+) -> Result<Option<u32>, VgmSequencerError> {
     let header = VgmHeader::from_bytes(data)?;
     let mut stream = VgmStream::from_vgm(data.to_vec())?;
     let command_start = VgmHeader::command_start(header.version, header.data_offset);
@@ -57,7 +57,7 @@ pub fn measure_mdx_duration_frames(
     output_rate: u32,
     options: MdxToVgmOptions,
     fadeout_samples: Option<u32>,
-) -> Result<Option<u64>, MdxSequencerError> {
+) -> Result<Option<u32>, MdxSequencerError> {
     if options.loop_count.is_none() {
         return Ok(None);
     }
@@ -87,14 +87,14 @@ fn measure_stream_frames(
     output_rate: u32,
     marker: Option<MdxLoopMarker>,
     fadeout_samples: Option<u32>,
-) -> Result<Option<u64>, VgmSequencerError> {
+) -> Result<Option<u32>, VgmSequencerError> {
     if output_rate == 0 {
         return Err(VgmSequencerError::InvalidSampleRate);
     }
     let (whole, fraction) =
         divide_ratio(output_rate, VGM_SAMPLE_RATE, 1).ok_or(VgmSequencerError::DurationOverflow)?;
     let mut phase = 1 << 31;
-    let mut total_frames = 0_u64;
+    let mut total_frames = 0_u32;
     let mut fade_remaining = None;
 
     for _ in 0..MAX_DURATION_COMMANDS {
@@ -109,12 +109,11 @@ fn measure_stream_frames(
             StreamResult::EndOfStream => return Ok(Some(total_frames)),
             StreamResult::NeedsMoreData => return Err(VgmSequencerError::UnexpectedEnd),
             StreamResult::Command(VgmCommand::WaitSamples(wait)) => {
-                let wait = u64::from(wait.0);
-                let elapsed =
-                    fade_remaining.map_or(wait, |remaining| wait.min(u64::from(remaining)));
+                let wait = u32::from(wait.0);
+                let elapsed = fade_remaining.map_or(wait, |remaining| wait.min(remaining));
                 advance_frames(elapsed, whole, fraction, &mut phase, &mut total_frames)?;
                 if let Some(remaining) = &mut fade_remaining {
-                    *remaining -= elapsed as u32;
+                    *remaining -= elapsed;
                     if *remaining == 0 {
                         return Ok(Some(total_frames));
                     }
@@ -128,20 +127,43 @@ fn measure_stream_frames(
 }
 
 fn advance_frames(
-    samples: u64,
+    samples: u32,
     whole: u32,
     fraction: u32,
     phase: &mut u32,
-    total_frames: &mut u64,
+    total_frames: &mut u32,
 ) -> Result<(), VgmSequencerError> {
-    let fractional_total = u128::from(*phase) + u128::from(samples) * u128::from(fraction);
-    let frames = u128::from(samples) * u128::from(whole) + (fractional_total >> 32);
-    let frames = u64::try_from(frames).map_err(|_| VgmSequencerError::DurationOverflow)?;
+    let (fractional_frames, fractional_phase) = multiply_u32_wide(samples, fraction);
+    let (fractional_phase, carry) = fractional_phase.overflowing_add(*phase);
+    let fractional_frames = fractional_frames
+        .checked_add(u32::from(carry))
+        .ok_or(VgmSequencerError::DurationOverflow)?;
+    let frames = samples
+        .checked_mul(whole)
+        .and_then(|frames| frames.checked_add(fractional_frames))
+        .ok_or(VgmSequencerError::DurationOverflow)?;
     *total_frames = total_frames
         .checked_add(frames)
         .ok_or(VgmSequencerError::DurationOverflow)?;
-    *phase = fractional_total as u32;
+    *phase = fractional_phase;
     Ok(())
+}
+
+fn multiply_u32_wide(a: u32, b: u32) -> (u32, u32) {
+    let a_low = a & 0xffff;
+    let a_high = a >> 16;
+    let b_low = b & 0xffff;
+    let b_high = b >> 16;
+
+    let product = a_low * b_low;
+    let low_low = product & 0xffff;
+    let product = a_high * b_low + (product >> 16);
+    let middle_low = product & 0xffff;
+    let high = product >> 16;
+    let product = a_low * b_high + middle_low;
+    let high = a_high * b_high + high + (product >> 16);
+    let low = (product << 16) | low_low;
+    (high, low)
 }
 
 #[cfg(test)]
@@ -154,12 +176,39 @@ mod tests {
     use crate::audio::StereoBlock;
     use crate::sequencer::{MdxSequencer, MdxSequencerOptions, VgmSequencer};
 
+    #[test]
+    fn u32_multiplication_keeps_the_high_and_low_words() {
+        assert_eq!(
+            super::multiply_u32_wide(u32::MAX, u32::MAX),
+            (u32::MAX - 1, 1)
+        );
+        assert_eq!(super::multiply_u32_wide(0x8000_0000, 2), (1, 0));
+        assert_eq!(
+            super::multiply_u32_wide(u32::MAX, 0x1_0000),
+            (0xffff, 0xffff_0000)
+        );
+    }
+
+    #[test]
+    fn duration_overflow_is_reported_at_the_u32_limit() {
+        let mut builder = VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(u16::MAX));
+        let bytes: Vec<u8> = builder.finalize().into();
+
+        assert!(matches!(
+            measure_vgm_duration_frames(&bytes, u32::MAX, Some(1), None),
+            Err(super::VgmSequencerError::DurationOverflow)
+        ));
+    }
+
     fn rendered_frames<E: std::fmt::Debug>(
         mut render: impl FnMut() -> Result<Option<StereoBlock>, E>,
-    ) -> u64 {
-        let mut frames = 0_u64;
+    ) -> u32 {
+        let mut frames = 0_u32;
         while let Some(block) = render().unwrap() {
-            frames += block.frames().len() as u64;
+            frames = frames
+                .checked_add(u32::try_from(block.frames().len()).unwrap())
+                .unwrap();
         }
         frames
     }
