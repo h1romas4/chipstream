@@ -989,7 +989,7 @@ impl AppView {
                     .child(
                         div()
                             .flex()
-                            .gap_2()
+                            .gap(px(16.))
                             .min_w_0()
                             .when(path.is_some(), |row| {
                                 row.child(
