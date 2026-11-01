@@ -20,6 +20,7 @@ use crate::routing::PlaybackPlan;
 
 const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
+const FADEOUT_SAMPLES: u32 = 2 * 44_100;
 
 pub enum Event {
     Finished(u64),
@@ -215,7 +216,7 @@ impl Sequencer {
                 .transpose()?;
             let package = MdxPackage::parse_owned(normalized.into_owned(), pdx)?;
             let options = MdxSequencerOptions {
-                loop_count: if looped { None } else { Some(1) },
+                loop_count: if looped { None } else { Some(2) },
                 max_ticks: if looped {
                     None
                 } else {
@@ -223,17 +224,25 @@ impl Sequencer {
                 },
                 ..MdxSequencerOptions::default()
             };
-            Ok(Self::Mdx(MdxSequencer::with_options_with_factories(
-                package,
-                rate,
-                CHUNK_FRAMES,
-                options,
-                factories,
-            )?))
+            Ok(Self::Mdx(
+                MdxSequencer::with_options_and_fadeout_with_factories(
+                    package,
+                    rate,
+                    CHUNK_FRAMES,
+                    options,
+                    (!looped).then_some(FADEOUT_SAMPLES),
+                    factories,
+                )?,
+            ))
         } else {
             let mut sequencer =
                 VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
-            sequencer.set_loop_count(if looped { None } else { Some(1) });
+            sequencer.set_loop_count(if looped { None } else { Some(2) });
+            if !looped {
+                sequencer.set_loop_base(0);
+                sequencer.set_loop_modifier(0x10);
+                sequencer.set_fadeout_samples(Some(FADEOUT_SAMPLES))?;
+            }
             Ok(Self::Vgm(sequencer))
         }
     }
@@ -908,55 +917,131 @@ mod tests {
 
     #[test]
     fn loop_toggle_follows_vgm_and_mdx_song_loops() {
+        use chipstream::sequencer::measure_mdx_duration_frames;
         use soundlog::vgm::command::WaitSamples;
+
+        fn render_frames(player: &mut Sequencer) -> usize {
+            let mut frames = 0;
+            while let Some(block) = player.render().unwrap() {
+                frames += block.frames().len();
+                assert!(frames < 44_100 * 300, "playback did not end");
+            }
+            frames
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let vgm = dir.path().join("loop.vgm");
         let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.set_version(0x171);
         builder.add_vgm_command(WaitSamples(1_000));
         builder.add_vgm_command(WaitSamples(3_000));
         builder.set_loop_index(1);
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        let mut vgm_bytes = Vec::<u8>::from(builder.finalize());
+        vgm_bytes[0x7e] = 1;
+        vgm_bytes[0x7f] = 0x20;
+        std::fs::write(&vgm, vgm_bytes).unwrap();
         let mdx = dir.path().join("loop.mdx");
-        std::fs::write(
-            &mdx,
-            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("mdx_fm_loop.pdx"),
-            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
-        )
-        .unwrap();
-        for path in [vgm, mdx] {
-            let mut once = Sequencer::new(&path, 44_100, false).unwrap();
-            let mut count = 0;
-            while once.render().unwrap().is_some() {
-                count += 1;
-                assert!(count < 1000, "{} did not end", path.display());
-            }
-            assert!(count > 0);
-            let mut looped = Sequencer::new(&path, 44_100, true).unwrap();
-            for _ in 0..(count * 2 + 5) {
-                assert!(
-                    looped.render().unwrap().is_some(),
-                    "{} stopped while looping",
-                    path.display()
-                );
-            }
-        }
+        let mdx_bytes = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+        let pdx_bytes = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
+        std::fs::write(&mdx, mdx_bytes).unwrap();
+        std::fs::write(dir.path().join("mdx_fm_loop.pdx"), pdx_bytes).unwrap();
         let no_loop = dir.path().join("no-loop.vgm");
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1_000));
         std::fs::write(&no_loop, Vec::<u8>::from(builder.finalize())).unwrap();
-        let mut player = Sequencer::new(&no_loop, 44_100, true).unwrap();
-        let mut ended = false;
-        for _ in 0..10 {
-            if player.render().unwrap().is_none() {
-                ended = true;
-                break;
+        let no_loop_mdx = dir.path().join("no-loop.mdx");
+        let mut builder = soundlog::mdx::document::MdxBuilder::new();
+        builder.add_mdx_command(0, soundlog::mdx::command::MdxRest { ticks: 8 });
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        std::fs::write(&no_loop_mdx, package.to_mdx_bytes().unwrap()).unwrap();
+
+        for rate in [44_100_u32, 48_000] {
+            let mut finite_vgm = Sequencer::new(&vgm, rate, false).unwrap();
+            let expected = ((7_000 + FADEOUT_SAMPLES) as u64 * u64::from(rate) + 22_050) / 44_100;
+            assert_eq!(render_frames(&mut finite_vgm), expected as usize);
+
+            let package = MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap();
+            let options = MdxSequencerOptions {
+                loop_count: Some(2),
+                ..MdxSequencerOptions::default()
+            };
+            let expected =
+                measure_mdx_duration_frames(package, rate, options, Some(FADEOUT_SAMPLES))
+                    .unwrap()
+                    .unwrap();
+            let mut finite_mdx = Sequencer::new(&mdx, rate, false).unwrap();
+            assert_eq!(render_frames(&mut finite_mdx), expected as usize);
+
+            for path in [&vgm, &mdx] {
+                let mut looped = Sequencer::new(path, rate, true).unwrap();
+                for _ in 0..(expected as usize / CHUNK_FRAMES + 10) {
+                    assert!(
+                        looped.render().unwrap().is_some(),
+                        "{} stopped while looping",
+                        path.display()
+                    );
+                }
+            }
+            for looped in [false, true] {
+                let mut player = Sequencer::new(&no_loop, rate, looped).unwrap();
+                let expected = (1_000_u64 * u64::from(rate) + 22_050) / 44_100;
+                assert_eq!(render_frames(&mut player), expected as usize);
+            }
+            let mut finite = Sequencer::new(&no_loop_mdx, rate, false).unwrap();
+            let mut infinite = Sequencer::new(&no_loop_mdx, rate, true).unwrap();
+            assert_eq!(render_frames(&mut finite), render_frames(&mut infinite));
+        }
+    }
+
+    #[test]
+    fn finite_vgm_fades_linearly_after_two_traversals() {
+        use soundlog::chip::{Chip, PsgSpec};
+        use soundlog::vgm::command::{Instance, WaitSamples};
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("loop.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+        for value in [0x80, 0x20, 0x90] {
+            builder.add_chip_write(Instance::Primary, PsgSpec { value });
+        }
+        builder.set_loop_index(3);
+        builder.add_vgm_command(WaitSamples(3_000));
+        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let mut finite = Sequencer::new(&vgm, 44_100, false).unwrap();
+        let mut samples = Vec::new();
+        while let Some(block) = finite.render().unwrap() {
+            samples.extend_from_slice(block.frames());
+            assert!(samples.len() < 44_100 * 300, "playback did not end");
+        }
+        let fade_start = samples.len() - FADEOUT_SAMPLES as usize;
+        let mut infinite = Sequencer::new(&vgm, 44_100, true).unwrap();
+        let mut reference = Vec::new();
+        while reference.len() < samples.len() {
+            reference.extend_from_slice(infinite.render().unwrap().unwrap().frames());
+        }
+        let mut audible = 0;
+        for (index, (actual, original)) in samples.iter().zip(&reference).enumerate() {
+            let gain = if index < fade_start {
+                1.0
+            } else {
+                1.0 - (index - fade_start) as f32 / (FADEOUT_SAMPLES - 1) as f32
+            };
+            for channel in 0..2 {
+                if original[channel].abs() > 0.001 && index >= fade_start {
+                    audible += 1;
+                }
+                assert!(
+                    (actual[channel] - original[channel] * gain).abs() < 0.0001,
+                    "frame {index}, channel {channel}, gain {gain}"
+                );
             }
         }
-        assert!(ended, "a file without a loop point should still end");
+        assert!(audible > 100, "fade test must contain audible samples");
     }
 
     #[test]

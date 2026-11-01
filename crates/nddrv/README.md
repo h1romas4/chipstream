@@ -46,9 +46,12 @@ stop, and play the previous or next item. Navigation does not wrap at either
 end and starts the chosen item even when playback was paused. The transport
 shows the current game and track, scrolling long titles, as well as elapsed
 audio time and output volume.
-Enable loop before playback to follow VGM or MDX song loop points indefinitely;
-files without loop points still end normally. Subsequent playlist entries play in
-order after a track ends.
+With loop disabled, VGM and MDX songs play twice through their song loop, then
+continue for a two-second software fade. VGM loop-count modifiers in the file
+are ignored for this policy. Enable loop before playback to follow song loop
+points indefinitely. Files without loop points end normally; MDX files with an
+embedded fade or natural ending may end earlier. Subsequent playlist entries
+play in order after a track ends.
 Music results are ordered by directory and then by filename, rather than
 track metadata. In Music and Playlist, when game metadata is present, titles are shown as
 `Game - Track`; otherwise the track title or filename is shown. Drag the
@@ -97,7 +100,9 @@ and started against the same estimated time. This is best-effort, not
 sample-accurate: serial bandwidth, device
 latency, OS scheduling, and independent clock drift can cause timing
 differences. Physical output comes from each NanoDrive and must be mixed
-externally; the software volume control does not adjust it. Pause is disabled
+externally; neither the software volume control nor the two-second software
+fade adjusts NanoDrive output. Hardware playback ends after the fade interval
+but its sound is not gradually faded. Pause is disabled
 when a hardware route is active. Stop and track changes cancel the workers and
 reset the devices before reuse.
 

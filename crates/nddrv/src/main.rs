@@ -1097,7 +1097,11 @@ impl AppView {
                     .child(
                         Button::new("transport-loop")
                             .icon(assets::IconName::Repeat2)
-                            .tooltip(if self.looped { "Loop on" } else { "Loop off" })
+                            .tooltip(if self.looped {
+                                "Loop indefinitely"
+                            } else {
+                                "Play twice, then fade out for 2 seconds"
+                            })
                             .accessibility_label("Follow song loop points")
                             .toggled(self.looped)
                             .when(self.looped, |button| button.custom(accent))
