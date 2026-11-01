@@ -403,8 +403,13 @@ impl Voice {
         } else {
             None
         };
-        if let Some(write) = pending_write {
+        if let Some(write) = pending_write
+            && context.callbacks.accepts(&write, state_events.as_deref())
+        {
             if context.events.len() >= event::MAX_PENDING_EVENTS {
+                if context.callbacks.drop_overflowing_state(&write) {
+                    return Ok(());
+                }
                 return Err(VgmSequencerError::EventQueueFull {
                     limit: event::MAX_PENDING_EVENTS,
                 });
@@ -1227,7 +1232,35 @@ impl<'a> VgmSequencer<'a> {
         C: event::VgmWriteCallbackTarget,
         F: FnMut(Instance, C, usize, Option<Vec<soundlog::chip::event::StateEvent>>) + 'a,
     {
-        self.callbacks.register::<C, F>(callback);
+        self.callbacks.register::<C, F>(callback, false);
+    }
+
+    /// Register a callback only for writes that produced tracked state changes.
+    ///
+    /// Enable the corresponding tracker before rendering. Like [`Self::on_write`],
+    /// this replaces any existing callback for the same write type. If the
+    /// event buffer fills, state-only events are dropped without stopping
+    /// playback; check [`Self::take_state_event_overflow`] after rendering.
+    pub fn on_state_change<C, F>(&mut self, mut callback: F)
+    where
+        C: event::VgmWriteCallbackTarget,
+        F: FnMut(Instance, usize, Vec<soundlog::chip::event::StateEvent>) + 'a,
+    {
+        self.callbacks.register::<C, _>(
+            move |instance, _, frame, events| {
+                if let Some(events) = events {
+                    callback(instance, frame, events);
+                }
+            },
+            true,
+        );
+    }
+
+    /// Report and clear whether any state-only events were dropped.
+    ///
+    /// After an overflow, a consumer's reconstructed state may be incomplete.
+    pub fn take_state_event_overflow(&mut self) -> bool {
+        self.callbacks.take_state_overflow()
     }
 
     /// Enable state tracking for a chip type and instance.
@@ -1242,6 +1275,21 @@ impl<'a> VgmSequencer<'a> {
         for voice in &mut self.voices {
             if voice.chip == chip && voice.instance == instance {
                 voice.tracker = Some(event::tracker(S::KIND, clock));
+            }
+        }
+    }
+
+    /// Enable state tracking using the effective clock of each matching voice.
+    ///
+    /// This includes per-instance clock overrides from the VGM extra header.
+    pub fn track_state_with_voice_clocks<S>(&mut self)
+    where
+        S: VgmStateTracker,
+    {
+        let chip = event::tracker_chip(S::KIND);
+        for voice in &mut self.voices {
+            if voice.chip == chip {
+                voice.tracker = Some(event::tracker(S::KIND, voice.clock as f32));
             }
         }
     }

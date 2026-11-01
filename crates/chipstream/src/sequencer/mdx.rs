@@ -317,12 +317,39 @@ impl<'a> MdxSequencer<'a> {
         self.player.on_write(callback);
     }
 
+    /// Register a callback only for writes that produced tracked state changes.
+    ///
+    /// Enable the corresponding tracker before rendering. This replaces any
+    /// existing callback for the same write type. When its bounded event
+    /// buffer fills, events are dropped without stopping playback; check
+    /// [`Self::take_state_event_overflow`] after rendering.
+    pub fn on_state_change<C, F>(&mut self, callback: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, usize, Vec<StateEvent>) + 'a,
+    {
+        self.player.on_state_change::<C, F>(callback);
+    }
+
+    /// Report and clear whether any state-only events were dropped.
+    pub fn take_state_event_overflow(&mut self) -> bool {
+        self.player.take_state_event_overflow()
+    }
+
     /// Enable state tracking for a chip type and instance.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: VgmStateTracker,
     {
         self.player.track_state::<S>(instance, clock);
+    }
+
+    /// Enable state tracking using the effective clock of each matching voice.
+    pub fn track_state_with_voice_clocks<S>(&mut self)
+    where
+        S: VgmStateTracker,
+    {
+        self.player.track_state_with_voice_clocks::<S>();
     }
 
     /// Return the current command-stream position in 44.1 kHz samples.

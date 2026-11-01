@@ -4,6 +4,7 @@ mod library;
 mod patchbay;
 mod playback;
 mod routing;
+mod visualizer;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -45,6 +46,7 @@ fn chip_colors(ymfm: bool) -> (u32, u32) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Library,
+    Piano,
     Devices,
 }
 
@@ -116,6 +118,7 @@ struct AppView {
     config_path: Option<PathBuf>,
     config: Config,
     page: Page,
+    roll_mode: visualizer::RollMode,
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
     device_port: Entity<SelectState<SearchableVec<String>>>,
@@ -274,6 +277,7 @@ impl AppView {
             config_path,
             config,
             page: Page::Library,
+            roll_mode: visualizer::RollMode::default(),
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
             device_port,
@@ -2975,6 +2979,9 @@ mod tests {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == Page::Piano && self.playing.is_some() && !self.paused {
+            window.request_animation_frame();
+        }
         let show_title_bar = !cfg!(target_os = "linux")
             || matches!(window.window_decorations(), Decorations::Client { .. });
         let playlist_width = self.config.playlist_width.unwrap_or_else(|| {
@@ -3034,6 +3041,32 @@ impl Render for AppView {
                                     })),
                             )
                             .child(
+                                div()
+                                    .relative()
+                                    .child(
+                                        Button::new("piano-icon")
+                                            .icon(assets::IconName::Piano)
+                                            .tooltip("Piano roll")
+                                            .accessibility_label("Piano roll")
+                                            .toggled(self.page == Page::Piano)
+                                            .on_click(cx.listener(|view, _, _, cx| {
+                                                view.page = Page::Piano;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(self.playing.is_some(), |node| {
+                                        node.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .size(px(8.))
+                                                .rounded_full()
+                                                .bg(rgb(ACCENT_COLOR)),
+                                        )
+                                    }),
+                            )
+                            .child(
                                 Button::new("devices-icon")
                                     .icon(assets::IconName::Cable)
                                     .on_click(cx.listener(|view, _, _, cx| {
@@ -3047,6 +3080,76 @@ impl Render for AppView {
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            .when(self.page == Page::Piano, |container| {
+                                let snapshot = if self.playing.is_some() {
+                                    self.player
+                                        .visual_snapshot(self.roll_mode)
+                                        .map_err(|error| error.to_string())
+                                } else {
+                                    Ok(visualizer::Snapshot::default())
+                                };
+                                if self.paused
+                                    && snapshot.as_ref().is_ok_and(|snapshot| snapshot.scanning)
+                                {
+                                    window.request_animation_frame();
+                                }
+                                container.child(
+                                    div()
+                                        .relative()
+                                        .size_full()
+                                        .child(visualizer::view(
+                                            self.now_playing_title(),
+                                            self.playing.is_some(),
+                                            self.paused,
+                                            self.roll_mode,
+                                            snapshot,
+                                        ))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top(px(24.))
+                                                .right(px(28.))
+                                                .flex()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new("piano-incoming")
+                                                        .label("Incoming")
+                                                        .when(
+                                                            self.roll_mode
+                                                                == visualizer::RollMode::Incoming,
+                                                            |button| button.primary(),
+                                                        )
+                                                        .toggled(
+                                                            self.roll_mode
+                                                                == visualizer::RollMode::Incoming,
+                                                        )
+                                                        .on_click(cx.listener(|view, _, _, cx| {
+                                                            view.roll_mode =
+                                                                visualizer::RollMode::Incoming;
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new("piano-trail")
+                                                        .label("Trail")
+                                                        .when(
+                                                            self.roll_mode
+                                                                == visualizer::RollMode::Trail,
+                                                            |button| button.primary(),
+                                                        )
+                                                        .toggled(
+                                                            self.roll_mode
+                                                                == visualizer::RollMode::Trail,
+                                                        )
+                                                        .on_click(cx.listener(|view, _, _, cx| {
+                                                            view.roll_mode =
+                                                                visualizer::RollMode::Trail;
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        ),
+                                )
+                            })
                             .when(self.page == Page::Library, |container| {
                                 container.child(
                             h_resizable("main-panels")

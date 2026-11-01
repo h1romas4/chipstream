@@ -10,6 +10,43 @@ use soundlog::vgm::command::WaitSamples;
 
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
 
+#[test]
+fn state_callbacks_work_with_external_chip_factories() {
+    use chipstream::sequencer::StateEvent;
+    use soundlog::chip::state::Ym2151State;
+
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let mut factories = ChipFactoryRegistry::new();
+    let fake_writes = Arc::clone(&writes);
+    factories.register(Chip::Ym2151, move |config| {
+        Ok(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::clone(&fake_writes),
+        )))
+    });
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+        builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(100));
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    player.track_state_with_voice_clocks::<Ym2151State>();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::clone(&events);
+    player.on_state_change::<Ym2151Spec, _>(move |instance, frame, changes| {
+        output.lock().unwrap().push((instance, frame, changes));
+    });
+    while player.render().unwrap().is_some() {}
+    assert_eq!(writes.lock().unwrap().len(), 3);
+    assert!(matches!(
+        events.lock().unwrap()[0].2.as_slice(),
+        [StateEvent::KeyOn { channel: 0, .. }]
+    ));
+}
+
 struct FakeChip {
     chip: Chip,
     clock: u32,

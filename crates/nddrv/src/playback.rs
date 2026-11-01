@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
@@ -10,13 +12,16 @@ use chipstream::sequencer::{ChipFactoryRegistry, MdxSequencer, MdxSequencerOptio
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain};
+use soundlog::chip::event::StateEvent;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::vgm::command::Instance;
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::library::{extension, read_track};
 use crate::routing::PlaybackPlan;
+use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
 const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
@@ -63,6 +68,9 @@ struct PlaybackControl {
     paused: AtomicBool,
     frames: AtomicU64,
     sample_rate: AtomicU32,
+    visual_clock: PresentationClock,
+    visualizer: Mutex<PianoRoll>,
+    preview: Mutex<PreviewState>,
     volume: Arc<NdsifOutputGain>,
     volume_mode: AtomicU8,
     first_presentation: OnceLock<Instant>,
@@ -76,6 +84,9 @@ impl PlaybackControl {
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
             sample_rate: AtomicU32::new(0),
+            visual_clock: PresentationClock::new(),
+            visualizer: Mutex::new(PianoRoll::default()),
+            preview: Mutex::new(PreviewState::default()),
             volume,
             volume_mode: AtomicU8::new(VolumeMode::Master as u8),
             first_presentation: OnceLock::new(),
@@ -90,6 +101,76 @@ impl PlaybackControl {
         } else {
             self.frames.load(Ordering::Relaxed) / u64::from(rate)
         }
+    }
+}
+
+struct PresentationClock {
+    epoch: Instant,
+    sequence: AtomicU64,
+    start_frame: AtomicU64,
+    end_frame: AtomicU64,
+    start_nanos: AtomicU64,
+}
+
+impl PresentationClock {
+    fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            sequence: AtomicU64::new(0),
+            start_frame: AtomicU64::new(0),
+            end_frame: AtomicU64::new(0),
+            start_nanos: AtomicU64::new(0),
+        }
+    }
+
+    fn publish(&self, start: u64, count: u64, presentation: Instant) -> Result<()> {
+        let nanos = u64::try_from(
+            presentation
+                .saturating_duration_since(self.epoch)
+                .as_nanos(),
+        )
+        .context("audio presentation time overflow")?;
+        let end = start
+            .checked_add(count)
+            .context("audio frame count overflow")?;
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.start_frame.store(start, Ordering::Relaxed);
+        self.end_frame.store(end, Ordering::Relaxed);
+        self.start_nanos.store(nanos, Ordering::Relaxed);
+        self.sequence.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    fn position(&self, now: Instant, rate: u32) -> Result<u64> {
+        if rate == 0 {
+            return Ok(0);
+        }
+        for _ in 0..8 {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before == 0 {
+                return Ok(0);
+            }
+            if before % 2 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let start = self.start_frame.load(Ordering::Relaxed);
+            let end = self.end_frame.load(Ordering::Relaxed);
+            let at = self.start_nanos.load(Ordering::Relaxed);
+            if before != self.sequence.load(Ordering::Acquire) {
+                continue;
+            }
+            let now = now.saturating_duration_since(self.epoch).as_nanos();
+            let at = u128::from(at);
+            let distance = now.abs_diff(at) * u128::from(rate) / 1_000_000_000;
+            let distance = u64::try_from(distance).unwrap_or(u64::MAX);
+            return Ok(if now < at {
+                start.saturating_sub(distance)
+            } else {
+                start.saturating_add(distance).min(end)
+            });
+        }
+        bail!("piano roll presentation clock is busy")
     }
 }
 
@@ -195,6 +276,70 @@ impl Playback {
         self.control.elapsed_seconds()
     }
 
+    pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
+        self.visual_snapshot_at(Instant::now(), mode)
+    }
+
+    fn visual_snapshot_at(&self, now: Instant, mode: RollMode) -> Result<Snapshot> {
+        let rate = self.control.sample_rate.load(Ordering::Relaxed);
+        let position = self.control.visual_clock.position(now, rate)?;
+        let started = self
+            .control
+            .first_presentation
+            .get()
+            .is_some_and(|presentation| now >= *presentation);
+        let (notes, scanned, incomplete, preparing, scanning) = match mode {
+            RollMode::Trail => {
+                let mut visualizer = self
+                    .control
+                    .visualizer
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("piano roll state is unavailable"))?;
+                let incomplete = visualizer.incomplete();
+                let notes = if started {
+                    visualizer.snapshot(position, rate, mode)
+                } else {
+                    Vec::new()
+                };
+                (notes, position, incomplete, false, false)
+            }
+            RollMode::Incoming => {
+                let mut preview = self
+                    .control
+                    .preview
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("piano roll preview is unavailable"))?;
+                if let Some(error) = &preview.error {
+                    bail!("piano roll preview: {error}");
+                }
+                let incomplete = preview.roll.incomplete();
+                let preparing = !preview.done
+                    && (rate == 0 || preview.scanned < position.saturating_add(u64::from(rate)));
+                let scanning = !preview.done
+                    && (rate == 0
+                        || preview.scanned
+                            < position.saturating_add(u64::from(rate) * WINDOW_SECONDS));
+                (
+                    preview.roll.snapshot(position, rate, mode),
+                    preview.scanned,
+                    incomplete,
+                    preparing,
+                    scanning,
+                )
+            }
+        };
+        Ok(Snapshot {
+            position,
+            rate,
+            notes,
+            scanned,
+            incomplete,
+            started,
+            preparing,
+            scanning,
+        })
+    }
+
     pub fn is_current(&self, generation: u64) -> bool {
         self.generation == generation
     }
@@ -213,6 +358,146 @@ impl Drop for Playback {
 enum Sequencer {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+}
+
+type VisualEvents = Rc<RefCell<Vec<(u8, Instance, usize, Vec<StateEvent>)>>>;
+
+#[derive(Default)]
+struct PreviewState {
+    roll: PianoRoll,
+    scanned: u64,
+    done: bool,
+    error: Option<String>,
+}
+
+struct PreviewWorker {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+struct PreviewPanicGuard(Arc<PlaybackControl>);
+
+impl Drop for PreviewPanicGuard {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            match self.0.preview.lock() {
+                Ok(mut preview) => preview.error = Some("preview worker panicked".into()),
+                Err(_) => eprintln!("Piano roll preview worker panicked"),
+            }
+        }
+    }
+}
+
+impl PreviewWorker {
+    fn start(path: &Path, rate: u32, looped: bool, control: &Arc<PlaybackControl>) -> Result<Self> {
+        let path = path.to_owned();
+        let control = Arc::clone(control);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = thread::Builder::new()
+            .name("piano-roll-preview".into())
+            .spawn(move || {
+                let _panic_guard = PreviewPanicGuard(Arc::clone(&control));
+                if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop) {
+                    match control.preview.lock() {
+                        Ok(mut preview) => preview.error = Some(format!("{error:#}")),
+                        Err(_) => eprintln!("Piano roll preview failed: {error:#}"),
+                    }
+                }
+            })
+            .context("start piano roll preview worker")?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for PreviewWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            eprintln!("Piano roll preview worker panicked");
+        }
+    }
+}
+
+fn run_preview(
+    path: &Path,
+    rate: u32,
+    looped: bool,
+    control: &PlaybackControl,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let mut sequencer = Sequencer::new(path, rate, looped)?;
+    let events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
+    sequencer.track_visual_events(Rc::clone(&events));
+    let mut scanned = 0_u64;
+    while !stop.load(Ordering::Acquire) && !control.cancel.load(Ordering::Acquire) {
+        let position = control.visual_clock.position(Instant::now(), rate)?;
+        let target = position.saturating_add(u64::from(rate) * WINDOW_SECONDS);
+        if scanned >= target {
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        let block = sequencer.render()?;
+        let overflow = sequencer.take_visual_overflow();
+        let mut preview = control
+            .preview
+            .lock()
+            .map_err(|_| anyhow::anyhow!("piano roll preview state is unavailable"))?;
+        let mut pending = events.borrow_mut();
+        if overflow {
+            pending.clear();
+            preview.roll.report_overflow();
+        } else {
+            for (chip, instance, frame, events) in pending.drain(..) {
+                preview.roll.apply(chip, instance, frame, events);
+            }
+        }
+        match block {
+            Some(block) if !block.frames().is_empty() => {
+                scanned = scanned
+                    .checked_add(block.frames().len() as u64)
+                    .context("piano roll preview frame count overflow")?;
+                preview.scanned = scanned;
+            }
+            Some(_) => bail!("piano roll preview produced an empty block"),
+            None => {
+                preview.roll.finish(scanned);
+                preview.done = true;
+                break;
+            }
+        }
+        preview.roll.prune(position, rate);
+    }
+    Ok(())
+}
+
+fn flush_visual_events(
+    control: &PlaybackControl,
+    pending: &VisualEvents,
+    overflow: bool,
+) -> Result<()> {
+    let mut pending = pending.borrow_mut();
+    if pending.is_empty() && !overflow {
+        return Ok(());
+    }
+    let mut visualizer = control
+        .visualizer
+        .lock()
+        .map_err(|_| anyhow::anyhow!("piano roll state is unavailable"))?;
+    if overflow {
+        pending.clear();
+        visualizer.report_overflow();
+    } else {
+        for (chip, instance, frame, events) in pending.drain(..) {
+            visualizer.apply(chip, instance, frame, events);
+        }
+    }
+    Ok(())
 }
 
 impl Sequencer {
@@ -275,6 +560,52 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => Ok(player.render()?),
             Self::Mdx(player) => Ok(player.render()?),
+        }
+    }
+
+    fn track_visual_events(&mut self, pending: VisualEvents) {
+        macro_rules! register {
+            ($player:expr, $chip:expr, $spec:ty, $state:ty) => {{
+                $player.track_state_with_voice_clocks::<$state>();
+                let pending = Rc::clone(&pending);
+                $player.on_state_change::<$spec, _>(move |instance, frame, events| {
+                    pending.borrow_mut().push(($chip, instance, frame, events));
+                });
+            }};
+        }
+        macro_rules! configure {
+            ($player:expr) => {{
+                use soundlog::chip::state::{
+                    Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
+                    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+                };
+                use soundlog::chip::{
+                    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
+                    Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+                };
+                register!($player, 0, Ym2151Spec, Ym2151State);
+                register!($player, 1, Ym2203Spec, Ym2203State);
+                register!($player, 2, Ym2413Spec, Ym2413State);
+                register!($player, 3, Ym2608Spec, Ym2608State);
+                register!($player, 4, Ym2610Spec, Ym2610bState);
+                register!($player, 5, Ym2612Spec, Ym2612State);
+                register!($player, 6, Ym3526Spec, Ym3526State);
+                register!($player, 7, Y8950Spec, Y8950State);
+                register!($player, 8, Ym3812Spec, Ym3812State);
+                register!($player, 9, Ymf262Spec, Ymf262State);
+                register!($player, 10, Ymf278bSpec, Ymf278bState);
+            }};
+        }
+        match self {
+            Self::Vgm(player) => configure!(player),
+            Self::Mdx(player) => configure!(player),
+        }
+    }
+
+    fn take_visual_overflow(&mut self) -> bool {
+        match self {
+            Self::Vgm(player) => player.take_state_event_overflow(),
+            Self::Mdx(player) => player.take_state_event_overflow(),
         }
     }
 
@@ -449,7 +780,17 @@ impl AudioConsumer {
                 }
             }
         }
-        self.control.frames.fetch_add(played, Ordering::Relaxed);
+        let start = self.control.frames.fetch_add(played, Ordering::Relaxed);
+        if played > 0 {
+            let result = callback_time
+                .checked_add(latency)
+                .context("audio presentation time overflow")
+                .and_then(|time| self.control.visual_clock.publish(start, played, time));
+            if let Err(error) = result {
+                self.ended = true;
+                let _ = self.events.send(Err(error));
+            }
+        }
     }
 }
 
@@ -568,6 +909,8 @@ fn run_inner(
     } else {
         (Sequencer::new(path, config.sample_rate, looped)?, None)
     };
+    let visual_events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
+    sequencer.track_visual_events(Rc::clone(&visual_events));
     control
         .sample_rate
         .store(config.sample_rate, Ordering::Relaxed);
@@ -591,6 +934,7 @@ fn run_inner(
     let mut prebuffered_frames = 0_usize;
     for _ in 0..4 {
         let block = sequencer.render()?;
+        flush_visual_events(&control, &visual_events, sequencer.take_visual_overflow())?;
         sequencer.schedule_hardware_fade(
             &control,
             config.sample_rate,
@@ -626,6 +970,17 @@ fn run_inner(
         return Ok(());
     }
     stream.play()?;
+    let _preview_worker = match PreviewWorker::start(path, config.sample_rate, looped, &control) {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            let mut preview = control
+                .preview
+                .lock()
+                .map_err(|_| anyhow::anyhow!("piano roll preview is unavailable"))?;
+            preview.error = Some(format!("{error:#}"));
+            None
+        }
+    };
     'playback: while !control.cancel.load(Ordering::Relaxed) {
         if let Some((_, workers)) = &hardware
             && let Err(error) = workers.check()
@@ -645,6 +1000,7 @@ fn run_inner(
         }
         if !exhausted {
             let rendered = sequencer.render()?;
+            flush_visual_events(&control, &visual_events, sequencer.take_visual_overflow())?;
             sequencer.schedule_hardware_fade(
                 &control,
                 config.sample_rate,
@@ -764,6 +1120,76 @@ mod tests {
         assert_eq!(
             control.first_presentation.get(),
             Some(&(first_callback + latency))
+        );
+    }
+
+    #[test]
+    fn visual_clock_tracks_presentation_and_freezes_at_buffer_end() {
+        let clock = PresentationClock::new();
+        let origin = clock.epoch + Duration::from_secs(1);
+        assert_eq!(clock.position(origin, 100).unwrap(), 0);
+        clock.publish(100, 50, origin).unwrap();
+        assert_eq!(
+            clock
+                .position(origin - Duration::from_millis(500), 100)
+                .unwrap(),
+            50
+        );
+        assert_eq!(clock.position(origin, 100).unwrap(), 100);
+        assert_eq!(
+            clock
+                .position(origin + Duration::from_millis(250), 100)
+                .unwrap(),
+            125
+        );
+        assert_eq!(
+            clock
+                .position(origin + Duration::from_secs(2), 100)
+                .unwrap(),
+            150
+        );
+    }
+
+    #[test]
+    fn visual_notes_wait_for_first_presentation() {
+        use soundlog::chip::event::{StateEvent, ToneInfo};
+        use soundlog::vgm::command::Instance;
+
+        let player = Playback::new();
+        let origin = Instant::now() + Duration::from_secs(1);
+        player.control.sample_rate.store(100, Ordering::Relaxed);
+        player.control.visualizer.lock().unwrap().apply(
+            1,
+            Instance::Primary,
+            0,
+            vec![StateEvent::KeyOn {
+                channel: 0,
+                tone: ToneInfo::new(0, 0, Some(440.0)),
+            }],
+        );
+        assert!(
+            player
+                .visual_snapshot_at(origin, RollMode::Trail)
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        assert!(player.control.first_presentation.set(origin).is_ok());
+        player.control.visual_clock.publish(0, 10, origin).unwrap();
+        assert!(
+            player
+                .visual_snapshot_at(origin - Duration::from_millis(1), RollMode::Trail)
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        assert_eq!(
+            player
+                .visual_snapshot_at(origin, RollMode::Trail)
+                .unwrap()
+                .notes
+                .len(),
+            1
         );
     }
 
@@ -1227,6 +1653,181 @@ mod tests {
             }
             assert!(audible > 100, "fade test must contain audible samples");
         }
+    }
+
+    #[test]
+    fn visualization_tracks_vgm_and_mdx_without_changing_pcm() {
+        use soundlog::chip::{Chip, Ym2151Spec};
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("track.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+            builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x08,
+                value: 0,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(44_100));
+        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        let mdx = dir.path().join("track.mdx");
+        std::fs::write(
+            &mdx,
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mdx_fm_loop.pdx"),
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
+        )
+        .unwrap();
+
+        for path in [&vgm, &mdx] {
+            let mut plain = Sequencer::new(path, 44_100, false).unwrap();
+            let mut tracked = Sequencer::new(path, 44_100, false).unwrap();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            tracked.track_visual_events(Rc::clone(&events));
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            let mut position = 0;
+            let mut observed = false;
+            for _ in 0..180 {
+                let expected = plain.render().unwrap();
+                let actual = tracked.render().unwrap();
+                assert_eq!(actual, expected, "PCM changed for {}", path.display());
+                flush_visual_events(&control, &events, tracked.take_visual_overflow()).unwrap();
+                let Some(block) = actual else {
+                    break;
+                };
+                position += block.frames().len() as u64;
+                observed |= !control
+                    .visualizer
+                    .lock()
+                    .unwrap()
+                    .snapshot(position, 44_100, RollMode::Trail)
+                    .is_empty();
+            }
+            assert!(observed, "no notes captured for {}", path.display());
+        }
+    }
+
+    #[test]
+    fn preview_reads_upcoming_vgm_and_mdx_notes_and_follows_position() {
+        use soundlog::chip::{Chip, Ym2151Spec};
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("preview.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.set_loop_index(0);
+        builder.add_vgm_command(WaitSamples(44_100));
+        for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+            builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x08,
+                value: 0,
+            },
+        );
+        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        let mdx = dir.path().join("preview.mdx");
+        std::fs::write(
+            &mdx,
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mdx_fm_loop.pdx"),
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
+        )
+        .unwrap();
+
+        let rate = 8_000;
+        for path in [&vgm, &mdx] {
+            let control = Arc::new(PlaybackControl::new(Arc::new(NdsifOutputGain::new())));
+            let worker = PreviewWorker::start(path, rate, true, &control).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let mut preview = control.preview.lock().unwrap();
+                assert!(preview.error.is_none(), "{:?}", preview.error);
+                if preview.scanned >= u64::from(rate) * WINDOW_SECONDS {
+                    let notes = preview.roll.snapshot(0, rate, RollMode::Incoming);
+                    assert!(
+                        notes.iter().any(|note| note.start > 0),
+                        "no upcoming notes for {}",
+                        path.display()
+                    );
+                    if path == &vgm {
+                        assert!(
+                            notes.iter().any(|note| {
+                                (8_000..=8_010).contains(&note.start)
+                                    && note.end.is_some_and(|end| (16_000..=16_010).contains(&end))
+                            }),
+                            "first delayed note missing or mistimed: {notes:?}"
+                        );
+                        assert!(
+                            notes.iter().any(|note| note.start >= 24_000),
+                            "looped notes missing: {notes:?}"
+                        );
+                    }
+                    break;
+                }
+                drop(preview);
+                assert!(
+                    Instant::now() < deadline,
+                    "preview timed out for {}",
+                    path.display()
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            control
+                .visual_clock
+                .publish(24_000, 1, Instant::now())
+                .unwrap();
+            loop {
+                let preview = control.preview.lock().unwrap();
+                assert!(preview.error.is_none(), "{:?}", preview.error);
+                if preview.scanned >= 24_000 + u64::from(rate) * WINDOW_SECONDS {
+                    break;
+                }
+                drop(preview);
+                assert!(Instant::now() < deadline, "preview did not advance");
+                thread::sleep(Duration::from_millis(10));
+            }
+            drop(worker);
+        }
+    }
+
+    #[test]
+    fn preview_errors_do_not_cancel_playback() {
+        let control = Arc::new(PlaybackControl::new(Arc::new(NdsifOutputGain::new())));
+        let worker = PreviewWorker::start(
+            Path::new("/nonexistent/nddrv-preview.vgm"),
+            8_000,
+            false,
+            &control,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if control.preview.lock().unwrap().error.is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "preview error not reported");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!control.cancel.load(Ordering::Acquire));
+        drop(worker);
     }
 
     #[test]

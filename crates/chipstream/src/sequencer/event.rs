@@ -1,6 +1,7 @@
 //! Typed register-write callbacks and state tracking during sequencer playback.
 
 use std::any::TypeId;
+use std::cell::Cell;
 
 use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
@@ -128,6 +129,7 @@ pub(super) struct PendingWriteEvent {
 trait WriteCallback {
     fn target_type_id(&self) -> TypeId;
     fn matches(&self, write: &ChipRegisterWrite) -> bool;
+    fn state_only(&self) -> bool;
     fn call(
         &mut self,
         instance: Instance,
@@ -139,6 +141,7 @@ trait WriteCallback {
 
 struct TypedWriteCallback<C, F> {
     callback: F,
+    state_only: bool,
     _target: std::marker::PhantomData<fn() -> C>,
 }
 
@@ -153,6 +156,10 @@ where
 
     fn matches(&self, write: &ChipRegisterWrite) -> bool {
         C::matches(write)
+    }
+
+    fn state_only(&self) -> bool {
+        self.state_only
     }
 
     fn call(
@@ -170,12 +177,14 @@ where
 
 pub(super) struct CallbackRegistry<'a> {
     callbacks: Vec<Box<dyn WriteCallback + 'a>>,
+    state_overflow: Cell<bool>,
 }
 
 impl Default for CallbackRegistry<'_> {
     fn default() -> Self {
         Self {
             callbacks: Vec::new(),
+            state_overflow: Cell::new(false),
         }
     }
 }
@@ -186,6 +195,31 @@ impl<'a> CallbackRegistry<'a> {
         self.callbacks
             .iter()
             .any(|callback| callback.matches(write))
+    }
+
+    pub(super) fn accepts(&self, write: &ChipRegisterWrite, events: Option<&[StateEvent]>) -> bool {
+        self.callbacks
+            .iter()
+            .find(|callback| callback.matches(write))
+            .is_some_and(|callback| {
+                !callback.state_only() || events.is_some_and(|events| !events.is_empty())
+            })
+    }
+
+    pub(super) fn drop_overflowing_state(&self, write: &ChipRegisterWrite) -> bool {
+        let state_only = self
+            .callbacks
+            .iter()
+            .find(|callback| callback.matches(write))
+            .is_some_and(|callback| callback.state_only());
+        if state_only {
+            self.state_overflow.set(true);
+        }
+        state_only
+    }
+
+    pub(super) fn take_state_overflow(&self) -> bool {
+        self.state_overflow.replace(false)
     }
 
     /// Deliver an event to the matching callback at its output-frame position.
@@ -200,7 +234,7 @@ impl<'a> CallbackRegistry<'a> {
     }
 
     /// Install a callback, replacing any previous callback for the same type.
-    pub(super) fn register<C, F>(&mut self, callback: F)
+    pub(super) fn register<C, F>(&mut self, callback: F, state_only: bool)
     where
         C: VgmWriteCallbackTarget,
         F: FnMut(Instance, C, usize, Option<Vec<StateEvent>>) + 'a,
@@ -209,6 +243,7 @@ impl<'a> CallbackRegistry<'a> {
             .retain(|registered| registered.target_type_id() != TypeId::of::<C>());
         self.callbacks.push(Box::new(TypedWriteCallback::<C, F> {
             callback,
+            state_only,
             _target: std::marker::PhantomData,
         }));
     }

@@ -81,6 +81,21 @@ tags use purple.
 Hover over the tags to see the full chip list when it does not fit.
 Folders and playlist entries are saved in the platform configuration directory.
 
+The piano icon between Library and Routing opens a full-window piano roll; its
+indicator is lit while a playlist track is playing or paused. Select **Incoming**
+to see up to six seconds of upcoming notes approach the 88-key keyboard, or
+**Trail** to see the previous six seconds recede. A separate, bounded
+sequencer prepares incoming events without sending them to NanoDrive or
+altering playback. Preparing or catching up may take time for complex tracks;
+preview errors are shown in the view without stopping playback. Colors identify
+chip voices. The view tracks YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
+YM3526, Y8950, YM3812, YMF262, and YMF278B state for both software and
+NanoDrive routes. Pitch changes are shown as semitone steps. PCM, noise, and
+other sounds without a tracked pitch are not displayed. The view follows the
+estimated audio presentation time; device latency and clock drift can cause
+differences from physical NanoDrive output. If the bounded event or note buffer
+fills, playback continues and the piano roll reports that notes were skipped.
+
 The cable icon opens the routing page. At the top, create or select a named
 routing profile. Below it, search for serial ports and select one to add a
 NanoDrive device. Connect queries its model name and advertised chip

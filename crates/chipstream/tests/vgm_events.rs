@@ -213,6 +213,79 @@ fn state_tracking_uses_requested_clock_and_is_instance_specific() {
 }
 
 #[test]
+fn state_only_callbacks_use_effective_voice_clock_and_skip_unrelated_writes() {
+    use soundlog::vgm::header::{ChipClock, ChipId, VgmExtraHeader};
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.set_extra_header(VgmExtraHeader {
+        chip_clocks: vec![ChipClock::new(ChipId::Ym2151, Instance::Primary, 2_000_000)],
+        ..Default::default()
+    });
+    for _ in 0..5000 {
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+    }
+    for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+        builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(10));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    player.track_state_with_voice_clocks::<Ym2151State>();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let output = Rc::clone(&events);
+    player.on_state_change::<Ym2151Spec, _>(move |instance, frame, changes| {
+        output.borrow_mut().push((instance, frame, changes));
+    });
+    while player.render().unwrap().is_some() {}
+    let events = events.borrow();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, Instance::Primary);
+    let mut expected = Ym2151State::new(2_000_000.0);
+    expected.on_register_write(0x28, 0x4c);
+    expected.on_register_write(0x30, 0);
+    assert_eq!(events[0].2, expected.on_register_write(0x08, 0x78).unwrap());
+}
+
+#[test]
+fn state_only_overflow_is_reported_without_stopping_playback() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2151Spec {
+            register: 0x28,
+            value: 0x4c,
+        },
+    );
+    for index in 0..5000 {
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 0x08,
+                value: if index % 2 == 0 { 0x78 } else { 0 },
+            },
+        );
+    }
+    builder.add_vgm_command(WaitSamples(10));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    player.track_state_with_voice_clocks::<Ym2151State>();
+    player.on_state_change::<Ym2151Spec, _>(|_, _, _| {});
+    let mut overflow = false;
+    while player.render().unwrap().is_some() {
+        overflow |= player.take_state_event_overflow();
+    }
+    overflow |= player.take_state_event_overflow();
+    assert!(overflow);
+    assert!(!player.take_state_event_overflow());
+}
+
+#[test]
 fn state_tracking_reports_optional_events_for_filtered_writes() {
     let mut player = VgmSequencer::new(document(), 44_100, 40).unwrap();
     player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
