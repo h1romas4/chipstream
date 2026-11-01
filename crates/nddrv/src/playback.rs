@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
-use chipstream::sequencer::{ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, VgmSequencer};
+use chipstream::sequencer::{
+    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, VgmSequencer,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain};
@@ -19,7 +21,7 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::command::Instance;
 
 use crate::device::{DeviceHandle, DeviceLease};
-use crate::library::{extension, read_track};
+use crate::library::{extension, read_bounded, read_track};
 use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
@@ -27,6 +29,7 @@ const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
 const FADEOUT_SECONDS: u32 = 2;
 const FADEOUT_SAMPLES: u32 = FADEOUT_SECONDS * 44_100;
+const YM2608_RHYTHM_ROM: &str = "ym2608_adpcm_rom.bin";
 
 pub enum Event {
     Finished(u64),
@@ -511,6 +514,27 @@ impl Sequencer {
         looped: bool,
         factories: ChipFactoryRegistry,
     ) -> Result<Self> {
+        Self::create(path, rate, looped, factories, None)
+    }
+
+    fn for_playback(
+        path: &Path,
+        rate: u32,
+        looped: bool,
+        factories: ChipFactoryRegistry,
+        rom_directory: &Path,
+        routes: &[ndsif_transport::NdsifRoute],
+    ) -> Result<Self> {
+        Self::create(path, rate, looped, factories, Some((rom_directory, routes)))
+    }
+
+    fn create(
+        path: &Path,
+        rate: u32,
+        looped: bool,
+        factories: ChipFactoryRegistry,
+        rom: Option<(&Path, &[ndsif_transport::NdsifRoute])>,
+    ) -> Result<Self> {
         let bytes = read_track(path)?;
         if extension(path) == "mdx" {
             let normalized = normalize_mdx_for_playback(&bytes).map_err(anyhow::Error::msg)?;
@@ -544,8 +568,16 @@ impl Sequencer {
                 )?,
             ))
         } else {
+            let ym2608_clock = if rom.is_some() {
+                soundlog::vgm::VgmHeader::from_bytes(&bytes)?.ym2608_clock
+            } else {
+                0
+            };
             let mut sequencer =
                 VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
+            if let Some((directory, routes)) = rom {
+                Self::configure_ym2608_rhythm_rom(&mut sequencer, ym2608_clock, directory, routes)?;
+            }
             sequencer.set_loop_count(if looped { None } else { Some(2) });
             if !looped {
                 sequencer.set_loop_base(0);
@@ -554,6 +586,69 @@ impl Sequencer {
             }
             Ok(Self::Vgm(sequencer))
         }
+    }
+
+    fn configure_ym2608_rhythm_rom(
+        sequencer: &mut VgmSequencer<'_>,
+        clock: u32,
+        directory: &Path,
+        routes: &[ndsif_transport::NdsifRoute],
+    ) -> Result<()> {
+        if clock & 0x3fff_ffff == 0 {
+            return Ok(());
+        }
+        let instances: Vec<_> = [Instance::Primary, Instance::Secondary]
+            .into_iter()
+            .filter(|instance| {
+                (*instance == Instance::Primary || clock & 0x4000_0000 != 0)
+                    && !routes
+                        .iter()
+                        .any(|route| route.chip == Chip::Ym2608 && route.source == *instance)
+            })
+            .collect();
+        if instances.is_empty() {
+            return Ok(());
+        }
+        let path = directory.join(YM2608_RHYTHM_ROM);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => bail!("YM2608 rhythm ROM is not a file: {}", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()));
+            }
+        }
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("open YM2608 rhythm ROM {}", path.display()));
+            }
+        };
+        if !file
+            .metadata()
+            .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()))?
+            .is_file()
+        {
+            bail!("YM2608 rhythm ROM is not a file: {}", path.display());
+        }
+        let data = read_bounded(file)
+            .with_context(|| format!("read YM2608 rhythm ROM {}", path.display()))?;
+        if data.is_empty() {
+            bail!("YM2608 rhythm ROM is empty: {}", path.display());
+        }
+        for instance in instances {
+            sequencer
+                .set_ym2608_rhythm_rom(instance, &data)
+                .with_context(|| {
+                    format!(
+                        "configure YM2608 {instance:?} rhythm ROM {}",
+                        path.display()
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     fn render(&mut self) -> Result<Option<StereoBlock>> {
@@ -903,11 +998,28 @@ fn run_inner(
         let recorders = crate::hardware::recorders(lease)?;
         let factories =
             ndsif_transport::create_routed_transport_factories(&recorders, &plan.routes)?;
-        let sequencer = Sequencer::with_factories(path, config.sample_rate, looped, factories)?;
+        let sequencer = Sequencer::for_playback(
+            path,
+            config.sample_rate,
+            looped,
+            factories,
+            Path::new("."),
+            &plan.routes,
+        )?;
         let workers = crate::hardware::HardwareWorkers::start(lease, &recorders, timeline)?;
         (sequencer, Some((recorders, workers)))
     } else {
-        (Sequencer::new(path, config.sample_rate, looped)?, None)
+        (
+            Sequencer::for_playback(
+                path,
+                config.sample_rate,
+                looped,
+                ChipFactoryRegistry::new(),
+                Path::new("."),
+                &[],
+            )?,
+            None,
+        )
     };
     let visual_events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
     sequencer.track_visual_events(Rc::clone(&visual_events));
@@ -1082,6 +1194,168 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rhythm_vgm(instance: Instance) -> Vec<u8> {
+        use soundlog::chip::Ym2608Spec;
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2608, Instance::Primary, 8_000_000);
+        if instance == Instance::Secondary {
+            builder.register_chip(Chip::Ym2608, Instance::Secondary, 8_000_000);
+        }
+        for (register, value) in [(0x11, 0x3f), (0x18, 0xdf), (0x10, 0x01)] {
+            builder.add_chip_write(
+                instance,
+                Ym2608Spec {
+                    port: 0,
+                    register,
+                    value,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(4410));
+        builder.finalize().into()
+    }
+
+    fn rhythm_audio(
+        track: &Path,
+        rom_dir: &Path,
+        routes: &[ndsif_transport::NdsifRoute],
+    ) -> Vec<[f32; 2]> {
+        let mut player = Sequencer::for_playback(
+            track,
+            44_100,
+            false,
+            ChipFactoryRegistry::new(),
+            rom_dir,
+            routes,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            output.extend_from_slice(block.frames());
+        }
+        output
+    }
+
+    #[test]
+    fn ym2608_rhythm_rom_loads_for_software_primary_secondary_and_vgz() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let rom_dir = dir.path().join("working");
+        let song_dir = dir.path().join("music");
+        std::fs::create_dir(&rom_dir).unwrap();
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join(YM2608_RHYTHM_ROM), []).unwrap();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            for compressed in [false, true] {
+                let track = song_dir.join(if compressed { "track.vgz" } else { "track.vgm" });
+                let source = rhythm_vgm(instance);
+                let bytes = if compressed {
+                    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                    encoder.write_all(&source).unwrap();
+                    encoder.finish().unwrap()
+                } else {
+                    source
+                };
+                std::fs::write(&track, bytes).unwrap();
+                let absent = rhythm_audio(&track, &rom_dir, &[]);
+                std::fs::write(rom_dir.join(YM2608_RHYTHM_ROM), [0x77; 8192]).unwrap();
+                let loaded = rhythm_audio(&track, &rom_dir, &[]);
+                assert!(loaded.iter().flatten().any(|sample| sample.abs() > 0.001));
+                let mut reference =
+                    VgmSequencer::from_vgm(read_track(&track).unwrap(), 44_100, CHUNK_FRAMES)
+                        .unwrap();
+                reference.set_loop_count(Some(2));
+                reference.set_loop_base(0);
+                reference.set_loop_modifier(0x10);
+                reference
+                    .set_fadeout_samples(Some(FADEOUT_SAMPLES))
+                    .unwrap();
+                reference
+                    .set_ym2608_rhythm_rom(instance, &[0x77; 8192])
+                    .unwrap();
+                let mut expected = Vec::new();
+                while let Some(block) = reference.render().unwrap() {
+                    expected.extend_from_slice(block.frames());
+                }
+                assert_eq!(loaded, expected);
+                assert_ne!(loaded, absent);
+                if instance == Instance::Secondary {
+                    let route = ndsif_transport::NdsifRoute {
+                        chip: Chip::Ym2608,
+                        source: Instance::Primary,
+                        device: 0,
+                        target: Instance::Primary,
+                    };
+                    assert_eq!(rhythm_audio(&track, &rom_dir, &[route]), loaded);
+                }
+                let route = ndsif_transport::NdsifRoute {
+                    chip: Chip::Ym2608,
+                    source: instance,
+                    device: 0,
+                    target: Instance::Primary,
+                };
+                assert_eq!(rhythm_audio(&track, &rom_dir, &[route]), absent);
+                std::fs::remove_file(rom_dir.join(YM2608_RHYTHM_ROM)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn ym2608_rom_errors_only_affect_relevant_software_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = dir.path().join("track.vgm");
+        std::fs::write(&track, rhythm_vgm(Instance::Primary)).unwrap();
+        let rom = dir.path().join(YM2608_RHYTHM_ROM);
+        std::fs::write(&rom, []).unwrap();
+        let make = |routes: &[ndsif_transport::NdsifRoute]| {
+            Sequencer::for_playback(
+                &track,
+                44_100,
+                false,
+                ChipFactoryRegistry::new(),
+                dir.path(),
+                routes,
+            )
+        };
+        assert!(format!("{:#}", make(&[]).err().unwrap()).contains("empty"));
+        let route = ndsif_transport::NdsifRoute {
+            chip: Chip::Ym2608,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        assert!(make(&[route]).is_ok());
+        std::fs::remove_file(&rom).unwrap();
+        std::fs::create_dir(&rom).unwrap();
+        assert!(format!("{:#}", make(&[]).err().unwrap()).contains("not a file"));
+        std::fs::remove_dir(&rom).unwrap();
+        let file = std::fs::File::create(&rom).unwrap();
+        file.set_len(64 * 1024 * 1024 + 1).unwrap();
+        assert!(format!("{:#}", make(&[]).err().unwrap()).contains("exceeds"));
+        let other_track = dir.path().join("other.vgm");
+        std::fs::write(
+            &other_track,
+            Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize()),
+        )
+        .unwrap();
+        assert!(
+            Sequencer::for_playback(
+                &other_track,
+                44_100,
+                false,
+                ChipFactoryRegistry::new(),
+                dir.path(),
+                &[],
+            )
+            .is_ok()
+        );
+        assert!(Sequencer::new(&track, 44_100, false).is_ok());
+    }
 
     #[test]
     fn first_presentation_uses_the_first_played_frame_and_device_latency() {
