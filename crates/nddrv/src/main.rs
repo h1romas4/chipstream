@@ -48,6 +48,12 @@ enum Page {
     Devices,
 }
 
+#[derive(Clone, Copy)]
+enum DetailsSelection {
+    Music,
+    Playlist,
+}
+
 enum DeviceStatus {
     Connecting,
     Connected(Vec<ndsif::CapabilityEntry>),
@@ -126,6 +132,8 @@ struct AppView {
     track_anchor: Option<PathBuf>,
     track_selection_order: Vec<PathBuf>,
     queue_anchor: Option<usize>,
+    queue_selection_order: Vec<usize>,
+    details_selection: DetailsSelection,
     track_focus: FocusHandle,
     queue_focus: FocusHandle,
     playlist_metadata: HashMap<PathBuf, TrackMetadata>,
@@ -282,6 +290,8 @@ impl AppView {
             track_anchor: None,
             track_selection_order: Vec::new(),
             queue_anchor: None,
+            queue_selection_order: Vec::new(),
+            details_selection: DetailsSelection::Music,
             track_focus: cx.focus_handle(),
             queue_focus: cx.focus_handle(),
             playlist_metadata: HashMap::new(),
@@ -512,6 +522,7 @@ impl AppView {
         let (playing, stopped) =
             remove_playlist_entries(&mut self.config.playlist, &removed, self.playing);
         self.selected_queue.clear();
+        self.queue_selection_order.clear();
         self.queue_anchor = None;
         let remaining: HashSet<_> = self.config.playlist.iter().collect();
         self.playlist_metadata
@@ -895,6 +906,8 @@ impl AppView {
             self.playing,
             &self.config.playlist,
             &self.track_selection_order,
+            &self.queue_selection_order,
+            self.details_selection,
         )
         .cloned();
         if target == self.details_path {
@@ -2168,9 +2181,10 @@ impl AppView {
             &self.selected_tracks,
             self.filtered_tracks
                 .iter()
-                .map(|&index| &self.tracks[index].path),
+                .map(|&index| self.tracks[index].path.clone()),
             touched,
         );
+        self.details_selection = DetailsSelection::Music;
     }
 
     fn select_all_queue(&mut self) {
@@ -2182,6 +2196,17 @@ impl AppView {
         if self.queue_anchor.is_none() && !self.config.playlist.is_empty() {
             self.queue_anchor = Some(0);
         }
+        self.update_queue_selection_order(None);
+    }
+
+    fn update_queue_selection_order(&mut self, touched: Option<usize>) {
+        update_selection_order(
+            &mut self.queue_selection_order,
+            &self.selected_queue,
+            0..self.config.playlist.len(),
+            touched.as_ref(),
+        );
+        self.details_selection = DetailsSelection::Playlist;
     }
 
     fn queue_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -2241,6 +2266,7 @@ impl AppView {
                                 select_item(&mut view.selected_queue, index, toggle);
                                 view.queue_anchor = Some(index);
                             }
+                            view.update_queue_selection_order(Some(index));
                             cx.notify();
                         }
                     }))
@@ -2272,6 +2298,7 @@ impl AppView {
                             if select_for_context(&mut view.selected_queue, index) {
                                 view.queue_anchor = Some(index);
                             }
+                            view.update_queue_selection_order(Some(index));
                             cx.notify();
                         });
                         let selected_view = view.clone();
@@ -2329,18 +2356,25 @@ fn unique_device_name(model: &str, id: u64, devices: &[routing::Device]) -> Stri
 fn details_target<'a>(
     playing: Option<usize>,
     playlist: &'a [PathBuf],
-    selected: &'a [PathBuf],
+    selected_music: &'a [PathBuf],
+    selected_queue: &[usize],
+    selection: DetailsSelection,
 ) -> Option<&'a PathBuf> {
+    let music = || selected_music.last();
+    let queue = || selected_queue.last().and_then(|index| playlist.get(*index));
     playing
         .and_then(|index| playlist.get(index))
-        .or_else(|| selected.last())
+        .or_else(|| match selection {
+            DetailsSelection::Music => music().or_else(queue),
+            DetailsSelection::Playlist => queue().or_else(music),
+        })
 }
 
-fn update_selection_order<'a>(
-    order: &mut Vec<PathBuf>,
-    selected: &HashSet<PathBuf>,
-    visible: impl IntoIterator<Item = &'a PathBuf>,
-    touched: Option<&PathBuf>,
+fn update_selection_order<T: Clone + Eq + Hash>(
+    order: &mut Vec<T>,
+    selected: &HashSet<T>,
+    visible: impl IntoIterator<Item = T>,
+    touched: Option<&T>,
 ) {
     order.retain(|path| selected.contains(path));
     let mut seen: HashSet<_> = order.iter().cloned().collect();
@@ -2352,8 +2386,8 @@ fn update_selection_order<'a>(
             order.push(path.clone());
         } else {
             for path in visible {
-                if selected.contains(path) && seen.insert(path.clone()) {
-                    order.push(path.clone());
+                if selected.contains(&path) && seen.insert(path.clone()) {
+                    order.push(path);
                 }
             }
         }
@@ -2572,10 +2606,10 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, adjacent_track, capability_labels, chip_colors, chip_suggestions,
-        details_target, inclusive_range, is_select_all, profile_choices, remove_playlist_entries,
-        search_terms, select_for_context, select_item, select_range, unique_device_name,
-        update_selection_order,
+        ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
+        chip_suggestions, details_target, inclusive_range, is_select_all, profile_choices,
+        remove_playlist_entries, search_terms, select_for_context, select_item, select_range,
+        unique_device_name, update_selection_order,
     };
 
     #[test]
@@ -2596,24 +2630,127 @@ mod tests {
         ];
         let mut selected = HashSet::from([visible[0].clone(), visible[1].clone()]);
         let mut order = Vec::new();
-        update_selection_order(&mut order, &selected, &visible, Some(&visible[0]));
-        assert_eq!(details_target(None, &playlist, &order), Some(&visible[0]));
+        update_selection_order(
+            &mut order,
+            &selected,
+            visible.iter().cloned(),
+            Some(&visible[0]),
+        );
+        let target = |playing, order: &[PathBuf]| {
+            details_target(playing, &playlist, order, &[], DetailsSelection::Music).cloned()
+        };
+        assert_eq!(target(None, &order), Some(visible[0].clone()));
+        assert_eq!(target(Some(1), &order), Some(playlist[1].clone()));
+        selected.remove(&visible[0]);
+        update_selection_order(
+            &mut order,
+            &selected,
+            visible.iter().cloned(),
+            Some(&visible[0]),
+        );
+        assert_eq!(target(None, &order), Some(visible[1].clone()));
+        selected.insert(visible[2].clone());
+        update_selection_order(
+            &mut order,
+            &selected,
+            visible.iter().cloned(),
+            Some(&visible[2]),
+        );
+        assert_eq!(target(None, &order), Some(visible[2].clone()));
+        selected.clear();
+        update_selection_order(&mut order, &selected, visible.iter().cloned(), None);
+        assert_eq!(target(None, &order), None);
+        assert_eq!(target(Some(0), &order), Some(playlist[0].clone()));
+    }
+
+    #[test]
+    fn track_details_follow_latest_selection_in_either_list() {
+        let playlist = [
+            PathBuf::from("first.vgm"),
+            PathBuf::from("second.vgm"),
+            PathBuf::from("first.vgm"),
+        ];
+        let music = [PathBuf::from("music.vgm")];
+        let mut selected_queue = HashSet::new();
+        let mut queue_order = Vec::new();
+        let update_queue = |order: &mut Vec<usize>, selected: &HashSet<usize>, touched| {
+            update_selection_order(order, selected, 0..playlist.len(), touched);
+        };
+
+        select_item(&mut selected_queue, 2, false);
+        update_queue(&mut queue_order, &selected_queue, Some(&2));
         assert_eq!(
-            details_target(Some(1), &playlist, &order),
+            details_target(
+                None,
+                &playlist,
+                &music,
+                &queue_order,
+                DetailsSelection::Playlist
+            ),
+            Some(&playlist[2])
+        );
+        assert_eq!(
+            details_target(
+                None,
+                &playlist,
+                &music,
+                &queue_order,
+                DetailsSelection::Music
+            ),
+            Some(&music[0])
+        );
+        assert_eq!(
+            details_target(None, &playlist, &[], &queue_order, DetailsSelection::Music),
+            Some(&playlist[2])
+        );
+        assert_eq!(
+            details_target(
+                Some(1),
+                &playlist,
+                &music,
+                &queue_order,
+                DetailsSelection::Music
+            ),
             Some(&playlist[1])
         );
-        selected.remove(&visible[0]);
-        update_selection_order(&mut order, &selected, &visible, Some(&visible[0]));
-        assert_eq!(details_target(None, &playlist, &order), Some(&visible[1]));
-        selected.insert(visible[2].clone());
-        update_selection_order(&mut order, &selected, &visible, Some(&visible[2]));
-        assert_eq!(details_target(None, &playlist, &order), Some(&visible[2]));
-        selected.clear();
-        update_selection_order(&mut order, &selected, &visible, None);
-        assert_eq!(details_target(None, &playlist, &order), None);
+
+        select_range(&mut selected_queue, 0..=2, false);
+        update_queue(&mut queue_order, &selected_queue, Some(&0));
+        assert_eq!(queue_order.last(), Some(&0));
+        select_item(&mut selected_queue, 0, true);
+        update_queue(&mut queue_order, &selected_queue, Some(&0));
+        assert_eq!(queue_order.last(), Some(&1));
         assert_eq!(
-            details_target(Some(0), &playlist, &order),
-            Some(&playlist[0])
+            details_target(
+                None,
+                &playlist,
+                &music,
+                &queue_order,
+                DetailsSelection::Playlist
+            ),
+            Some(&playlist[1])
+        );
+        selected_queue.clear();
+        update_queue(&mut queue_order, &selected_queue, None);
+        assert_eq!(
+            details_target(
+                None,
+                &playlist,
+                &music,
+                &queue_order,
+                DetailsSelection::Playlist
+            ),
+            Some(&music[0])
+        );
+        assert_eq!(
+            details_target(
+                None,
+                &playlist,
+                &[],
+                &queue_order,
+                DetailsSelection::Playlist
+            ),
+            None
         );
     }
 

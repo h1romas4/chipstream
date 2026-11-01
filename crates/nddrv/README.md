@@ -48,7 +48,9 @@ end and starts the chosen item even when playback was paused. The transport
 shows the current game and track, scrolling long titles, as well as elapsed
 audio time and output volume.
 The Track Info panel below the playlist shows the current playlist track while
-playing; otherwise it shows the most recently selected Music track. It displays
+playing or paused; otherwise it shows the most recently selected Music or
+Playlist track. If that selection is cleared, it falls back to the remaining
+selection in the other list. It displays
 the track, game, composer and notes when available. Artwork is chosen from
 image files in the same directory: `cover`, `folder`, then `front` are preferred
 (case-insensitive), followed by filename order. Subdirectories and symbolic
