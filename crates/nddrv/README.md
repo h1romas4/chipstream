@@ -88,7 +88,9 @@ to see up to six seconds of upcoming notes approach the 88-key keyboard, or
 sequencer prepares incoming events without sending them to NanoDrive or
 altering playback. Preparing or catching up may take time for complex tracks;
 preview errors are shown in the view without stopping playback. Colors identify
-chip voices. The view tracks YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
+chip voices, and a playing key uses the color of its note. When several voices
+share a key, the most recently started note determines its color. The view tracks
+YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
 YM3526, Y8950, YM3812, YMF262, and YMF278B state for both software and
 NanoDrive routes. Pitch changes are shown as semitone steps. PCM, noise, and
 other sounds without a tracked pitch are not displayed. The view follows the

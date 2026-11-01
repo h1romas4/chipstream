@@ -7,6 +7,9 @@ use soundlog::vgm::command::Instance;
 
 const MAX_NOTES: usize = 8192;
 pub const WINDOW_SECONDS: u64 = 6;
+const NOTE_COLORS: [u32; 6] = [
+    0x50ccbdff, 0x6990ccff, 0xc283ccff, 0xccab70ff, 0x78cc9eff, 0xcc7e9bff,
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RollMode {
@@ -185,6 +188,31 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
     ))
 }
 
+fn note_color(note: &Note) -> u32 {
+    NOTE_COLORS[(usize::from(note.chip) + usize::from(note.channel)) % NOTE_COLORS.len()]
+}
+
+fn ordered_notes(notes: &[Note]) -> Vec<&Note> {
+    let mut ordered: Vec<_> = notes.iter().collect();
+    ordered.sort_by_key(|note| (note.start, note.chip, note.channel));
+    ordered
+}
+
+fn active_key_colors(notes: &[&Note], position: u64, started: bool) -> [Option<u32>; 128] {
+    let mut active = [None; 128];
+    if started {
+        for note in notes {
+            if (21..=108).contains(&note.pitch)
+                && note.start <= position
+                && note.end.is_none_or(|end| end > position)
+            {
+                active[usize::from(note.pitch)] = Some(note_color(note));
+            }
+        }
+    }
+    active
+}
+
 fn polygon(window: &mut Window, points: &[(f32, f32)], color: Rgba) {
     if points.len() < 3 {
         return;
@@ -255,6 +283,25 @@ fn note_depths(
     Some((near, far.max(near + 0.004).min(1.0)))
 }
 
+struct RollProjection {
+    left: f32,
+    right: f32,
+    keyboard_y: f32,
+    horizon: f32,
+}
+
+impl RollProjection {
+    fn project(&self, key: f32, depth: f32) -> (f32, f32) {
+        let depth = depth.clamp(0.0, 1.0).powf(0.7);
+        let center = (self.left + self.right) * 0.5;
+        let scale = 1.0 - depth * 0.68;
+        (
+            center + (self.left + key * (self.right - self.left) - center) * scale,
+            self.keyboard_y - (self.keyboard_y - self.horizon) * depth,
+        )
+    }
+}
+
 fn paint_roll(
     window: &mut Window,
     bounds: Bounds<Pixels>,
@@ -274,18 +321,16 @@ fn paint_roll(
     }
     let left = x + width * 0.04;
     let right = x + width * 0.96;
-    let center = (left + right) * 0.5;
     let keyboard_y = y + height * 0.78;
     let horizon = y + height * 0.19;
     let keyboard_h = (height * 0.12).clamp(20.0, 100.0);
-    let project = |key: f32, depth: f32| {
-        let depth = depth.clamp(0.0, 1.0);
-        let scale = 1.0 - depth * 0.68;
-        (
-            center + (left + key * (right - left) - center) * scale,
-            keyboard_y - (keyboard_y - horizon) * depth.powf(0.7),
-        )
+    let projection = RollProjection {
+        left,
+        right,
+        keyboard_y,
+        horizon,
     };
+    let project = |key, depth| projection.project(key, depth);
 
     polygon(
         window,
@@ -319,39 +364,26 @@ fn paint_roll(
         );
     }
 
-    let palette = [
-        (0x46ffe044, 0x64ffecdd),
-        (0x6199ff44, 0x83b4ffdd),
-        (0xee6eff44, 0xf3a4ffdd),
-        (0xffb35d44, 0xffd68cdd),
-        (0x57fda244, 0x96ffc5dd),
-        (0xff649c44, 0xff9ec2dd),
-    ];
-    let mut ordered: Vec<_> = notes.iter().collect();
-    ordered.sort_by_key(|note| note.start);
-    let mut active = [false; 128];
+    let ordered = ordered_notes(notes);
+    let active = active_key_colors(&ordered, position, started);
     for note in ordered {
         let Some((key, key_width)) = key_position(note.pitch) else {
             continue;
         };
-        if started && note.start <= position && note.end.is_none_or(|end| end > position) {
-            active[note.pitch as usize] = true;
-        }
         let Some((near, far)) = note_depths(note, position, rate, mode, scanned) else {
             continue;
         };
-        let (glow, core) =
-            palette[(usize::from(note.chip) + usize::from(note.channel)) % palette.len()];
-        let shape = |half: f32| {
-            [
+        let half = key_width * 0.42;
+        polygon(
+            window,
+            &[
                 project(key - half, far),
                 project(key + half, far),
                 project(key + half, near),
                 project(key - half, near),
-            ]
-        };
-        polygon(window, &shape(key_width * 0.8), rgba(glow));
-        polygon(window, &shape(key_width * 0.42), rgba(core));
+            ],
+            rgba(note_color(note)),
+        );
     }
 
     for pitch in 21..=108 {
@@ -361,11 +393,7 @@ fn paint_roll(
         let (key, key_width) = key_position(pitch).expect("piano key in range");
         let left_key = left + (key - key_width * 0.5) * (right - left);
         let right_key = left + (key + key_width * 0.5) * (right - left);
-        let color = if active[pitch as usize] {
-            0x9ffff4ff
-        } else {
-            0xd8f3f5ff
-        };
+        let color = active[pitch as usize].unwrap_or(0xd8f3f5ff);
         polygon(
             window,
             &[
@@ -384,11 +412,7 @@ fn paint_roll(
         let (key, key_width) = key_position(pitch).expect("piano key in range");
         let left_key = left + (key - key_width * 0.5) * (right - left);
         let right_key = left + (key + key_width * 0.5) * (right - left);
-        let color = if active[pitch as usize] {
-            0x39e5d7ff
-        } else {
-            0x142737ff
-        };
+        let color = active[pitch as usize].unwrap_or(0x142737ff);
         polygon(
             window,
             &[
@@ -504,13 +528,139 @@ pub fn view(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_NOTES, Note, PianoRoll, RollMode, frequency_to_pitch, note_depths};
+    use super::{
+        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, active_key_colors,
+        frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
+    };
     use soundlog::chip::event::StateEvent;
     use soundlog::chip::event::ToneInfo;
     use soundlog::vgm::command::Instance;
 
     fn tone(frequency: f32) -> ToneInfo {
         ToneInfo::new(0, 0, Some(frequency))
+    }
+
+    #[test]
+    fn active_keys_match_note_colors_and_resolve_overlaps() {
+        let notes = vec![
+            Note {
+                pitch: 60,
+                chip: 2,
+                channel: 0,
+                start: 20,
+                end: Some(40),
+            },
+            Note {
+                pitch: 61,
+                chip: 1,
+                channel: 0,
+                start: 10,
+                end: None,
+            },
+            Note {
+                pitch: 60,
+                chip: 0,
+                channel: 0,
+                start: 10,
+                end: Some(50),
+            },
+            Note {
+                pitch: 60,
+                chip: 3,
+                channel: 0,
+                start: 30,
+                end: None,
+            },
+            Note {
+                pitch: 130,
+                chip: 1,
+                channel: 0,
+                start: 0,
+                end: None,
+            },
+        ];
+        let ordered = ordered_notes(&notes);
+        assert!(
+            active_key_colors(&ordered, 25, false)
+                .iter()
+                .all(Option::is_none)
+        );
+        let active = active_key_colors(&ordered, 25, true);
+        assert_eq!(active[60], Some(note_color(&notes[0])));
+        assert_eq!(active[61], Some(note_color(&notes[1])));
+        assert_ne!(active[60], active[61]);
+        let active = active_key_colors(&ordered, 40, true);
+        assert_eq!(active[60], Some(note_color(&notes[3])));
+        assert!(note_color(&notes[0]) & 0xff == 0xff);
+
+        let reversed: Vec<_> = notes.iter().rev().cloned().collect();
+        assert_eq!(
+            active_key_colors(&ordered_notes(&reversed), 25, true),
+            active_key_colors(&ordered, 25, true)
+        );
+
+        let tied = vec![
+            Note {
+                pitch: 60,
+                chip: 2,
+                channel: 0,
+                start: 10,
+                end: Some(20),
+            },
+            Note {
+                pitch: 60,
+                chip: 0,
+                channel: 0,
+                start: 10,
+                end: None,
+            },
+        ];
+        let ordered = ordered_notes(&tied);
+        assert_eq!(
+            active_key_colors(&ordered, 15, true)[60],
+            Some(note_color(&tied[0]))
+        );
+        assert_eq!(
+            active_key_colors(&ordered, 20, true)[60],
+            Some(note_color(&tied[1]))
+        );
+        assert_eq!(active_key_colors(&ordered, 9, true)[60], None);
+    }
+
+    #[test]
+    fn note_lanes_align_with_perspective_grid_at_every_depth() {
+        for projection in [
+            RollProjection {
+                left: 100.0,
+                right: 1200.0,
+                keyboard_y: 650.0,
+                horizon: 150.0,
+            },
+            RollProjection {
+                left: 70.0,
+                right: 430.0,
+                keyboard_y: 310.0,
+                horizon: 110.0,
+            },
+        ] {
+            for pitch in 21..=108 {
+                let (key, width) = key_position(pitch).unwrap();
+                for lane in [key - width * 0.8, key, key + width * 0.8] {
+                    let near = projection.project(lane, 0.0);
+                    let far = projection.project(lane, 1.0);
+                    for depth in [0.01, 0.125, 0.25, 0.5, 0.75, 0.99] {
+                        let point = projection.project(lane, depth);
+                        let fraction = (near.1 - point.1) / (near.1 - far.1);
+                        let expected_x = near.0 + fraction * (far.0 - near.0);
+                        assert!(
+                            (point.0 - expected_x).abs() < 0.0002,
+                            "pitch {pitch}, depth {depth}: {} vs {expected_x}",
+                            point.0
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
