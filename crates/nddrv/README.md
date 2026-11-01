@@ -64,8 +64,9 @@ points indefinitely. Files without loop points end normally; MDX files with an
 embedded fade or natural ending may end earlier. Subsequent playlist entries
 play in order after a track ends.
 For VGM/VGZ playback using YM2608 emulation, NDDRV loads the optional
-`ym2608_adpcm_rom.bin` from the process's current working directory for its
-built-in rhythm instruments. The ROM is not bundled. If it is absent, playback
+`ym2608_adpcm_rom.bin` from the track's directory, or from the process's current
+working directory if it is not beside the track, for its built-in rhythm
+instruments. The ROM is not bundled. If it is absent, playback
 continues without it; an unreadable, empty, or oversized file is reported as an
 error. NanoDrive-routed YM2608 instances do not use this file.
 Music results are ordered by directory and then by filename, rather than

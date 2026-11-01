@@ -576,7 +576,13 @@ impl Sequencer {
             let mut sequencer =
                 VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
             if let Some((directory, routes)) = rom {
-                Self::configure_ym2608_rhythm_rom(&mut sequencer, ym2608_clock, directory, routes)?;
+                Self::configure_ym2608_rhythm_rom(
+                    &mut sequencer,
+                    ym2608_clock,
+                    path,
+                    directory,
+                    routes,
+                )?;
             }
             sequencer.set_loop_count(if looped { None } else { Some(2) });
             if !looped {
@@ -591,6 +597,7 @@ impl Sequencer {
     fn configure_ym2608_rhythm_rom(
         sequencer: &mut VgmSequencer<'_>,
         clock: u32,
+        track: &Path,
         directory: &Path,
         routes: &[ndsif_transport::NdsifRoute],
     ) -> Result<()> {
@@ -609,44 +616,44 @@ impl Sequencer {
         if instances.is_empty() {
             return Ok(());
         }
-        let path = directory.join(YM2608_RHYTHM_ROM);
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => bail!("YM2608 rhythm ROM is not a file: {}", path.display()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()));
+        for path in [
+            track.with_file_name(YM2608_RHYTHM_ROM),
+            directory.join(YM2608_RHYTHM_ROM),
+        ] {
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => {}
+                Ok(_) => bail!("YM2608 rhythm ROM is not a file: {}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()));
+                }
             }
-        }
-        let file = match std::fs::File::open(&path) {
-            Ok(file) => file,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("open YM2608 rhythm ROM {}", path.display()));
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("open YM2608 rhythm ROM {}", path.display()))?;
+            if !file
+                .metadata()
+                .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()))?
+                .is_file()
+            {
+                bail!("YM2608 rhythm ROM is not a file: {}", path.display());
             }
-        };
-        if !file
-            .metadata()
-            .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()))?
-            .is_file()
-        {
-            bail!("YM2608 rhythm ROM is not a file: {}", path.display());
-        }
-        let data = read_bounded(file)
-            .with_context(|| format!("read YM2608 rhythm ROM {}", path.display()))?;
-        if data.is_empty() {
-            bail!("YM2608 rhythm ROM is empty: {}", path.display());
-        }
-        for instance in instances {
-            sequencer
-                .set_ym2608_rhythm_rom(instance, &data)
-                .with_context(|| {
-                    format!(
-                        "configure YM2608 {instance:?} rhythm ROM {}",
-                        path.display()
-                    )
-                })?;
+            let data = read_bounded(file)
+                .with_context(|| format!("read YM2608 rhythm ROM {}", path.display()))?;
+            if data.is_empty() {
+                bail!("YM2608 rhythm ROM is empty: {}", path.display());
+            }
+            for instance in instances {
+                sequencer
+                    .set_ym2608_rhythm_rom(instance, &data)
+                    .with_context(|| {
+                        format!(
+                            "configure YM2608 {instance:?} rhythm ROM {}",
+                            path.display()
+                        )
+                    })?;
+            }
+            break;
         }
         Ok(())
     }
@@ -1249,7 +1256,6 @@ mod tests {
         let song_dir = dir.path().join("music");
         std::fs::create_dir(&rom_dir).unwrap();
         std::fs::create_dir(&song_dir).unwrap();
-        std::fs::write(song_dir.join(YM2608_RHYTHM_ROM), []).unwrap();
         for instance in [Instance::Primary, Instance::Secondary] {
             for compressed in [false, true] {
                 let track = song_dir.join(if compressed { "track.vgz" } else { "track.vgm" });
@@ -1284,6 +1290,30 @@ mod tests {
                 }
                 assert_eq!(loaded, expected);
                 assert_ne!(loaded, absent);
+                std::fs::write(song_dir.join(YM2608_RHYTHM_ROM), [0x11; 8192]).unwrap();
+                let adjacent = rhythm_audio(&track, &rom_dir, &[]);
+                assert_ne!(adjacent, loaded);
+                std::fs::remove_file(rom_dir.join(YM2608_RHYTHM_ROM)).unwrap();
+                assert_eq!(rhythm_audio(&track, &rom_dir, &[]), adjacent);
+                std::fs::write(rom_dir.join(YM2608_RHYTHM_ROM), [0x77; 8192]).unwrap();
+                std::fs::write(song_dir.join(YM2608_RHYTHM_ROM), []).unwrap();
+                assert!(
+                    format!(
+                        "{:#}",
+                        Sequencer::for_playback(
+                            &track,
+                            44_100,
+                            false,
+                            ChipFactoryRegistry::new(),
+                            &rom_dir,
+                            &[],
+                        )
+                        .err()
+                        .unwrap()
+                    )
+                    .contains("empty")
+                );
+                std::fs::remove_file(song_dir.join(YM2608_RHYTHM_ROM)).unwrap();
                 if instance == Instance::Secondary {
                     let route = ndsif_transport::NdsifRoute {
                         chip: Chip::Ym2608,
