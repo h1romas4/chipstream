@@ -29,10 +29,17 @@ enum Work {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeviceTiming {
+    Host,
+    Audio,
+    Dac,
+}
+
 struct DeviceWorker {
     id: u64,
     sender: mpsc::SyncSender<Work>,
-    audio: bool,
+    timing: DeviceTiming,
 }
 
 pub fn recorders(lease: &DeviceLease<NdsifSerialTransport>) -> Result<Vec<Recorder>> {
@@ -82,7 +89,18 @@ impl HardwareWorkers {
                 .try_borrow_mut()
                 .map_err(|_| anyhow!("NanoDrive recorder {id} is already borrowed"))?
                 .take_batch()?;
-            let audio = setup.configures_audio_stream();
+            let timing = if setup.configures_audio_stream() {
+                DeviceTiming::Audio
+            } else if setup.configures_primary_ym2612()
+                && device
+                    .lock()
+                    .map_err(|_| anyhow!("NanoDrive device {id} worker failed"))?
+                    .supports_timed_dac()
+            {
+                DeviceTiming::Dac
+            } else {
+                DeviceTiming::Host
+            };
             let (sender, receiver) = mpsc::sync_channel::<Work>(QUEUE_BLOCKS);
             let device = Arc::clone(device);
             let timeline = Arc::clone(&workers.timeline);
@@ -96,7 +114,7 @@ impl HardwareWorkers {
                         let mut device = device
                             .lock()
                             .map_err(|_| "device lock poisoned".to_owned())?;
-                        if !audio {
+                        if timing == DeviceTiming::Host {
                             device
                                 .set_host_timeline(Arc::clone(&timeline))
                                 .map_err(|error| error.to_string())?;
@@ -104,8 +122,10 @@ impl HardwareWorkers {
                         setup
                             .replay(&mut *device)
                             .map_err(|error| error.to_string())?;
-                        if audio {
-                            device.defer_audio_stream_start_with_cancellation(Arc::clone(&timeline))?;
+                        match timing {
+                            DeviceTiming::Audio => device.defer_audio_stream_start_with_cancellation(Arc::clone(&timeline))?,
+                            DeviceTiming::Dac => device.defer_timed_dac_start_with_cancellation(Arc::clone(&timeline))?,
+                            DeviceTiming::Host => {}
                         }
                         Ok::<(), String>(())
                     })();
@@ -135,7 +155,11 @@ impl HardwareWorkers {
                                     Work::PrepareAudio { frames, rate, ready } => {
                                         let result = device.lock()
                                             .map_err(|_| "device lock poisoned".to_owned())
-                                            .and_then(|mut device| device.prepare_audio_stream_start_for_frames(frames, rate));
+                                            .and_then(|mut device| match timing {
+                                                DeviceTiming::Audio => device.prepare_audio_stream_start_for_frames(frames, rate),
+                                                DeviceTiming::Dac => device.prepare_timed_dac_start_for_frames(frames, rate),
+                                                DeviceTiming::Host => unreachable!("host workers do not prepare streams"),
+                                            });
                                         match result {
                                             Ok(()) => {
                                                 if ready.send(Ok(())).is_err() {
@@ -147,7 +171,11 @@ impl HardwareWorkers {
                                                         }
                                                         device.lock()
                                                             .map_err(|_| "device lock poisoned".to_owned())
-                                                            .and_then(|mut device| device.start_prepared_audio_stream())
+                                                            .and_then(|mut device| match timing {
+                                                                DeviceTiming::Audio => device.start_prepared_audio_stream(),
+                                                                DeviceTiming::Dac => device.start_prepared_timed_dac(),
+                                                                DeviceTiming::Host => unreachable!("host workers do not start streams"),
+                                                            })
                                                     })
                                                 }
                                             }
@@ -176,7 +204,7 @@ impl HardwareWorkers {
                     }
                 })
                 .context("start NanoDrive device worker")?;
-            workers.senders.push(DeviceWorker { id, sender, audio });
+            workers.senders.push(DeviceWorker { id, sender, timing });
             workers.threads.push(handle);
         }
         drop(ready_tx);
@@ -247,7 +275,11 @@ impl HardwareWorkers {
 
     /// Wait until each device-timed stream has accepted the initial PCM span.
     pub fn prepare_audio(&self, frames: usize, rate: u32, cancelled: &AtomicBool) -> Result<()> {
-        for worker in self.senders.iter().filter(|worker| worker.audio) {
+        for worker in self
+            .senders
+            .iter()
+            .filter(|worker| worker.timing != DeviceTiming::Host)
+        {
             let (ready, result) = mpsc::channel();
             self.send(
                 worker,
@@ -329,6 +361,247 @@ mod tests {
     use serialport::SerialPort;
     use std::io::{Read, Write};
     use std::time::Instant;
+
+    fn fake_dac_device(
+        starts: mpsc::Sender<Instant>,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
+        let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+        fake.set_timeout(Duration::from_secs(3)).unwrap();
+        let device = Device {
+            id: 1,
+            name: "Test DAC".into(),
+            port: port.name().unwrap(),
+            baud_rate: crate::device::BAUD_RATE,
+        };
+        let (release, wait) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let mut decoder = Decoder::new();
+            let mut accepted = 0_u32;
+            let mut tick = 0_u64;
+            let mut running = false;
+            let mut sealed = false;
+            let mut reset = false;
+            let mut events = 0_u32;
+            loop {
+                let mut frame = None;
+                while frame.is_none() {
+                    let mut byte = [0];
+                    fake.read_exact(&mut byte).unwrap();
+                    decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                }
+                let frame = frame.unwrap();
+                let reply = match Request::decode(&frame).unwrap() {
+                    Request::Ping(bytes) => Some(Reply::Ping(bytes)),
+                    Request::GetCapabilities { offset: 0 } => Some(Reply::Capabilities(
+                        Capabilities::new(
+                            256,
+                            0,
+                            0,
+                            ndsif::CONTROL_FEATURE_DAC_PROFILE,
+                            u16::MAX,
+                            &[0x52, 0, 0, 4, 2, 0, 0, 0, 0],
+                        )
+                        .unwrap(),
+                    )),
+                    Request::GetDacCapabilities => {
+                        Some(Reply::DacCapabilities(ndsif::DacCapabilities {
+                            profile: ndsif::DAC_PROFILE_YM2612,
+                            revision: 40,
+                            ticks_per_second: ndsif::DAC_TICKS_PER_SECOND,
+                            record_capacity: 64,
+                            event_capacity: 32,
+                            max_records: 8,
+                            record_bytes: 4,
+                            max_dac_late_us: 0,
+                        }))
+                    }
+                    Request::GetInfo => Some(Reply::Info(ndsif::DeviceInfo {
+                        model: "Test DAC",
+                        firmware: "test",
+                    })),
+                    Request::SetChipClock { .. } => Some(Reply::Complete),
+                    Request::DacData {
+                        sequence,
+                        position,
+                        records,
+                        ..
+                    } => {
+                        assert_eq!((sequence, position), (accepted, tick));
+                        for record in records.iter() {
+                            tick += u64::from(record.wait_ticks);
+                            accepted += 1;
+                        }
+                        None
+                    }
+                    Request::DacRegisterEvent { writes, .. } => {
+                        assert_eq!(writes, &[0x22, 0x08]);
+                        events += 1;
+                        None
+                    }
+                    Request::DacEnd {
+                        next_sequence,
+                        end_tick,
+                        ..
+                    } => {
+                        assert_eq!((next_sequence, end_tick), (accepted, tick));
+                        sealed = true;
+                        None
+                    }
+                    Request::DacStart { .. } => {
+                        running = true;
+                        starts.send(Instant::now()).unwrap();
+                        Some(Reply::Complete)
+                    }
+                    Request::DacStatus { .. } => {
+                        let done = running && sealed;
+                        let status = ndsif::DacStatus {
+                            profile: ndsif::DAC_PROFILE_YM2612,
+                            state: if done {
+                                2
+                            } else if running {
+                                1
+                            } else {
+                                0
+                            },
+                            fault: 0,
+                            sealed,
+                            accepted,
+                            consumed: if done { accepted } else { 0 },
+                            queued: if done { 0 } else { accepted },
+                            free: if done { 64 } else { 64 - accepted },
+                            event_queued: if done { 0 } else { events },
+                            event_consumed: if done { events } else { 0 },
+                            underflows: 0,
+                            overflows: 0,
+                            rejected: 0,
+                            late_dac: 0,
+                            max_late_us: 0,
+                            accepted_tick: tick,
+                            played_tick: if done { tick } else { 0 },
+                            executed_tick: if done { tick } else { 0 },
+                        };
+                        Some(Reply::DacStatus(status))
+                    }
+                    Request::Reset => {
+                        accepted = 0;
+                        tick = 0;
+                        running = false;
+                        sealed = false;
+                        events = 0;
+                        reset = true;
+                        Some(Reply::Complete)
+                    }
+                    request => panic!("unexpected DAC request: {request:?}"),
+                };
+                let stop =
+                    reset && matches!(Request::decode(&frame).unwrap(), Request::DacStatus { .. });
+                if let Some(reply) = reply {
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake.write_all(response.as_bytes()).unwrap();
+                }
+                if stop {
+                    break;
+                }
+            }
+            wait.recv().unwrap();
+        });
+        (device, port, release, thread)
+    }
+
+    #[test]
+    fn timed_dac_worker_starts_at_presentation_and_returns_device() {
+        let (starts, started) = mpsc::channel();
+        let (device, port, release, fake) = fake_dac_device(starts);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        {
+            let mut recorder = recorders[0].borrow_mut();
+            for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(address, value),
+                        sample_frame: 0,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            recorder.flush_scheduled_until(441, 44_100).unwrap();
+            recorder.finish_dac_stream(441, 44_100).unwrap();
+        }
+        let cancelled = AtomicBool::new(false);
+        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.prepare_audio(441, 44_100, &cancelled).unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
+        let origin = Instant::now() + Duration::from_millis(50);
+        timeline.start(origin).unwrap();
+        assert!(started.recv_timeout(Duration::from_secs(1)).unwrap() >= origin);
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn timed_dac_worker_cancelled_before_presentation_does_not_start() {
+        let (starts, started) = mpsc::channel();
+        let (device, port, release, fake) = fake_dac_device(starts);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .flush_scheduled_until(441, 44_100)
+            .unwrap();
+        let cancelled = AtomicBool::new(false);
+        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.prepare_audio(441, 44_100, &cancelled).unwrap();
+        timeline.cancel();
+        workers.finish().unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
 
     fn fake_device(
         id: u64,

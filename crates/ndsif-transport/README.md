@@ -20,6 +20,7 @@ Emulated chips continue to produce host PCM normally.
 | `NdsifSerialTransport::device_info` | Query the model and firmware identifiers. |
 | `NdsifSerialTransport::reset_for_reuse` | Reset playback state while retaining the serial connection. |
 | `NdsifSerialTransport::{defer_audio_stream_start, prepare_audio_stream_start, start_prepared_audio_stream}` | Prebuffer an OKIM6258 stream and explicitly control its start. |
+| `NdsifSerialTransport::{defer_timed_dac_start_with_cancellation, prepare_timed_dac_start_for_frames, start_prepared_timed_dac}` | Prebuffer and synchronize a supported YM2612 timed DAC stream. |
 | `NdsifHostTimeline`, `NdsifSerialTransport::set_host_timeline` | Share a cancellable host-pacing origin for untimed writes. |
 | `NdsifSerialTransport::supports_clock` | Check cached chip and clock capabilities. |
 | `NdsifSerialTransport::supports_audio_stream` | Check cached OKIM6258 stream support. |
@@ -282,6 +283,10 @@ error. Recording does not itself synchronize host audio or device-timed streams.
   positioned events. The transport targets 80 ms of prebuffering and
   seals/drains the profile at end of playback. Without this profile, normal
   scheduled writes are used.
+- Applications can defer a timed DAC stream, verify its buffered PCM span and
+  complete the preparation ping before starting it on their presentation
+  timeline. A stream sealed before starting is drained after it starts.
+  Cancellation interrupts capacity and drain waits, but not serial I/O.
 - Without an audio or timed DAC stream, the transport paces configured chip
   writes against a host wall clock, sending events at their scheduled frame
   positions and batching only writes at the same position. This is best-effort

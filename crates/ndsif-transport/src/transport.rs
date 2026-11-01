@@ -228,6 +228,11 @@ impl NdsifSerialTransport {
         &self.capabilities
     }
 
+    /// Return whether the device advertises a supported primary YM2612 DAC profile.
+    pub fn supports_timed_dac(&self) -> bool {
+        self.timed_dac_capabilities.is_some()
+    }
+
     /// Set a shared playback origin before any host-paced flush.
     ///
     /// This only controls untimed writes. Device-timed OKIM6258 and DAC streams

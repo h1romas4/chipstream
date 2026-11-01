@@ -1,5 +1,6 @@
 //! Timed DAC stream bookkeeping and device operations.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chipstream::chip::{NdsifRegisterEvent, NdsifTransport};
@@ -9,11 +10,19 @@ use ndsif::{
 };
 
 use super::{
-    DAC_DRAIN_TIMEOUT, NdsifSerialTransport, NdsifTransportError, PendingEvent,
+    DAC_DRAIN_TIMEOUT, NdsifHostTimeline, NdsifSerialTransport, NdsifTransportError, PendingEvent,
     STATUS_POLL_INTERVAL,
 };
 
 const DAC_PREBUFFER_MILLISECONDS: u64 = 80;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DacStartMode {
+    Automatic,
+    Deferred,
+    Prepared,
+    Attempted,
+}
 
 /// Convert an output frame to a bounded device tick position.
 pub(super) fn ticks_for_frame(
@@ -79,6 +88,8 @@ pub(super) struct TimedDacStream {
     pub(super) sealed: bool,
     pub(super) finished: bool,
     pub(super) last_status_check: Option<Instant>,
+    start_mode: DacStartMode,
+    cancellation: Option<Arc<NdsifHostTimeline>>,
 }
 
 impl TimedDacStream {
@@ -96,6 +107,8 @@ impl TimedDacStream {
             sealed: false,
             finished: false,
             last_status_check: None,
+            start_mode: DacStartMode::Automatic,
+            cancellation: None,
         }
     }
 
@@ -139,9 +152,13 @@ impl NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        self.check_timed_dac_cancellation()?;
         let Some(stream) = self.timed_dac_stream.as_mut() else {
             return Err("NDSIF timed DAC stream is not configured".to_owned());
         };
+        if stream.start_mode == DacStartMode::Attempted && !stream.started {
+            return Err("NDSIF timed DAC start failed; reset or close the device".into());
+        }
         if stream
             .output_rate
             .is_some_and(|configured_rate| configured_rate != output_rate)
@@ -324,6 +341,7 @@ impl NdsifSerialTransport {
     fn ensure_timed_dac_record_capacity(&mut self, incoming: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            self.check_timed_dac_cancellation()?;
             let Some((capacity, queued, started)) = self.timed_dac_stream.as_ref().map(|stream| {
                 (
                     stream.capabilities.record_capacity,
@@ -364,6 +382,7 @@ impl NdsifSerialTransport {
     fn ensure_timed_dac_event_capacity(&mut self, incoming: usize) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            self.check_timed_dac_cancellation()?;
             let Some((capacity, queued, started)) = self.timed_dac_stream.as_ref().map(|stream| {
                 (
                     stream.capabilities.event_capacity,
@@ -499,7 +518,8 @@ impl NdsifSerialTransport {
     pub(super) fn start_timed_dac_if_ready(&mut self, force: bool) -> Result<(), String> {
         let Some((ready, minimum_lead_ticks)) = self.timed_dac_stream.as_ref().map(|stream| {
             (
-                !stream.started
+                stream.start_mode == DacStartMode::Automatic
+                    && !stream.started
                     && stream.next_sequence > 0
                     && (force || stream.accepted_tick >= u64::from(stream.minimum_lead_ticks())),
                 stream.minimum_lead_ticks(),
@@ -511,6 +531,10 @@ impl NdsifSerialTransport {
             return Ok(());
         }
         self.request(Command::Ping(b"chipstream-dac-start"))?;
+        self.start_timed_dac_after_ping(minimum_lead_ticks)
+    }
+
+    fn start_timed_dac_after_ping(&mut self, minimum_lead_ticks: u32) -> Result<(), String> {
         self.request(Command::DacStart {
             profile: DAC_PROFILE_YM2612,
             minimum_lead_ticks,
@@ -534,6 +558,106 @@ impl NdsifSerialTransport {
             .expect("stream was checked above");
         stream.started = true;
         stream.last_status_check = Some(Instant::now());
+        Ok(())
+    }
+
+    fn check_timed_dac_cancellation(&self) -> Result<(), String> {
+        if self.timed_dac_stream.as_ref().is_some_and(|stream| {
+            stream
+                .cancellation
+                .as_ref()
+                .is_some_and(|timeline| timeline.is_cancelled())
+        }) {
+            return Err("NDSIF timed DAC stream was cancelled".into());
+        }
+        Ok(())
+    }
+
+    /// Defer the timed DAC clock and associate it with playback cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the stream is absent or has already buffered or started.
+    pub fn defer_timed_dac_start_with_cancellation(
+        &mut self,
+        timeline: Arc<NdsifHostTimeline>,
+    ) -> Result<(), String> {
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?;
+        if stream.start_mode != DacStartMode::Automatic
+            || stream.next_sequence != 0
+            || stream.queued_events != 0
+            || stream.started
+        {
+            return Err(
+                "NDSIF timed DAC stream cannot be deferred after buffering or starting".into(),
+            );
+        }
+        stream.start_mode = DacStartMode::Deferred;
+        stream.cancellation = Some(timeline);
+        Ok(())
+    }
+
+    /// Verify that buffered DAC ticks cover the specified PCM frames and ping the device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the stream is not deferred, the lead is insufficient, or the ping fails.
+    pub fn prepare_timed_dac_start_for_frames(
+        &mut self,
+        frames: usize,
+        rate: u32,
+    ) -> Result<(), String> {
+        self.check_timed_dac_cancellation()?;
+        let stream = self
+            .timed_dac_stream
+            .as_ref()
+            .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?;
+        if stream.start_mode != DacStartMode::Deferred || stream.started {
+            return Err("NDSIF timed DAC stream is not awaiting preparation".into());
+        }
+        if stream.output_rate != Some(rate) {
+            return Err("NDSIF timed DAC prebuffer rate differs from output rate".into());
+        }
+        let ticks = ticks_for_frame(frames, rate, stream.capabilities.ticks_per_second)?;
+        if ticks == 0 || stream.accepted_tick < ticks || stream.next_sequence == 0 {
+            return Err(format!(
+                "NDSIF timed DAC prebuffer is insufficient (buffered={}, required={ticks})",
+                stream.accepted_tick
+            ));
+        }
+        self.request(Command::Ping(b"chipstream-dac-start"))?;
+        self.timed_dac_stream
+            .as_mut()
+            .expect("stream was checked above")
+            .start_mode = DacStartMode::Prepared;
+        Ok(())
+    }
+
+    /// Start a prepared timed DAC stream and drain it if it was sealed before starting.
+    ///
+    /// # Errors
+    ///
+    /// Fails on cancellation, invalid state, or device errors.
+    pub fn start_prepared_timed_dac(&mut self) -> Result<(), String> {
+        self.check_timed_dac_cancellation()?;
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .filter(|stream| stream.start_mode == DacStartMode::Prepared && !stream.started)
+            .ok_or_else(|| "NDSIF timed DAC stream is not prepared for starting".to_owned())?;
+        let minimum = u64::from(stream.minimum_lead_ticks()).min(stream.accepted_tick) as u32;
+        stream.start_mode = DacStartMode::Attempted;
+        self.start_timed_dac_after_ping(minimum)?;
+        if self
+            .timed_dac_stream
+            .as_ref()
+            .is_some_and(|stream| stream.sealed)
+        {
+            self.drain_timed_dac()?;
+        }
         Ok(())
     }
 
@@ -562,6 +686,15 @@ impl NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        if let Some(stream) = self.timed_dac_stream.as_ref()
+            && stream.sealed
+        {
+            return if stream.finished || !stream.started {
+                Ok(())
+            } else {
+                self.drain_timed_dac()
+            };
+        }
         self.flush_scheduled_until(sample_frame, output_rate)?;
         let Some((finished, has_records, has_events)) =
             self.timed_dac_stream.as_ref().map(|stream| {
@@ -601,10 +734,21 @@ impl NdsifSerialTransport {
             .as_mut()
             .expect("stream was checked above")
             .sealed = true;
+        if self.timed_dac_stream.as_ref().is_some_and(|stream| {
+            stream.start_mode == DacStartMode::Deferred
+                || stream.start_mode == DacStartMode::Prepared
+        }) {
+            return Ok(());
+        }
         self.start_timed_dac_if_ready(true)?;
 
+        self.drain_timed_dac()
+    }
+
+    fn drain_timed_dac(&mut self) -> Result<(), String> {
         let deadline = Instant::now() + DAC_DRAIN_TIMEOUT;
         loop {
+            self.check_timed_dac_cancellation()?;
             let status = self.query_timed_dac_status()?;
             self.update_timed_dac_progress(status)?;
             if status.state == 2 {

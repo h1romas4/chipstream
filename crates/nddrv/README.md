@@ -91,18 +91,18 @@ The same profile selector is also available in the Playlist transport; profile
 selection and editing are disabled during playback. Devices used by a profile
 cannot be removed until the routes or profiles are removed.
 Hardware playback sends untimed register writes from separate device workers
-against the system audio's estimated presentation time. OKIM6258 streams are
-prebuffered before the PCM stream begins and started against the same estimated
-time. This is best-effort, not sample-accurate: serial bandwidth, device
+against the system audio's estimated presentation time. OKIM6258 streams and
+supported YM2612 timed DAC streams are prebuffered before the PCM stream begins
+and started against the same estimated time. This is best-effort, not
+sample-accurate: serial bandwidth, device
 latency, OS scheduling, and independent clock drift can cause timing
 differences. Physical output comes from each NanoDrive and must be mixed
 externally; the software volume control does not adjust it. Pause is disabled
 when a hardware route is active. Stop and track changes cancel the workers and
 reset the devices before reuse.
 
-YM2612 on devices advertising the timed DAC profile and OKIM6258 dynamic clock
-or divider changes are not yet supported in this synchronized mode. Device
-buffer limits, unavailable devices, unsupported clocks, and device errors stop
+OKIM6258 dynamic clock or divider changes are not yet supported in this
+synchronized mode. Device buffer limits, unavailable devices, unsupported clocks, and device errors stop
 playback with a notification; explicit hardware routes never silently fall back
 to emulation. Cable editing uses clicks, not dragging.
 

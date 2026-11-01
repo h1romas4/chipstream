@@ -1161,6 +1161,204 @@ fn cancelling_timeline_interrupts_audio_capacity_waits() {
 
 #[cfg(unix)]
 #[test]
+fn cancelling_timeline_interrupts_timed_dac_capacity_waits() {
+    for data_wait in [true, false] {
+        let (mut transport, mut device) = test_transport();
+        transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
+            profile: DAC_PROFILE_YM2612,
+            revision: 40,
+            ticks_per_second: DAC_TICKS_PER_SECOND,
+            record_capacity: 1,
+            event_capacity: 1,
+            max_records: 1,
+            record_bytes: 4,
+            max_dac_late_us: 0,
+        }));
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        transport
+            .defer_timed_dac_start_with_cancellation(Arc::clone(&timeline))
+            .unwrap();
+        let stream = transport.timed_dac_stream.as_mut().unwrap();
+        stream.started = true;
+        stream.next_sequence = 1;
+        stream.queued_records = 1;
+        stream.queued_events = 1;
+        let status = DacStatus {
+            profile: DAC_PROFILE_YM2612,
+            state: 1,
+            fault: 0,
+            sealed: false,
+            accepted: 1,
+            consumed: 0,
+            queued: 1,
+            free: 0,
+            event_queued: 1,
+            event_consumed: 0,
+            underflows: 0,
+            overflows: 0,
+            rejected: 0,
+            late_dac: 0,
+            max_late_us: 0,
+            accepted_tick: 0,
+            played_tick: 0,
+            executed_tick: 0,
+        };
+        transport
+            .schedule_register_write(NdsifRegisterEvent {
+                chip: Chip::Ym2612,
+                write_id: WriteId::YM2612,
+                instance: 0,
+                page: 0,
+                write: ndsif::RegisterWrite::new(if data_wait { 0x2a } else { 0x22 }, 0x80),
+                sample_frame: 0,
+                sample_rate: 44_100,
+            })
+            .unwrap();
+        let (queried, query_rx) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let fake = std::thread::spawn(move || {
+            let frame = read_device_frame(&mut device, &mut ndsif::Decoder::new());
+            assert!(matches!(
+                ndsif::Request::decode(&frame).unwrap(),
+                ndsif::Request::DacStatus { .. }
+            ));
+            reply_to_device_frame(&mut device, &frame, Reply::DacStatus(status));
+            queried.send(()).unwrap();
+            wait.recv().unwrap();
+        });
+        let (done, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done.send(transport.flush_scheduled_until(1, 44_100))
+                .unwrap();
+        });
+        query_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        timeline.cancel();
+        assert!(
+            done_rx
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap()
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        worker.join().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn deferred_timed_dac_seals_before_presentation_and_drains_after_start() {
+    let (mut transport, mut device) = test_transport();
+    transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
+        profile: DAC_PROFILE_YM2612,
+        revision: 40,
+        ticks_per_second: DAC_TICKS_PER_SECOND,
+        record_capacity: 16,
+        event_capacity: 8,
+        max_records: 8,
+        record_bytes: 4,
+        max_dac_late_us: 0,
+    }));
+    let timeline = Arc::new(NdsifHostTimeline::pending());
+    transport
+        .defer_timed_dac_start_with_cancellation(Arc::clone(&timeline))
+        .unwrap();
+    let (observed, received) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        for index in 0..6 {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match (index, ndsif::Request::decode(&frame).unwrap()) {
+                (
+                    0,
+                    ndsif::Request::DacData {
+                        sequence, position, ..
+                    },
+                ) => {
+                    assert_eq!((sequence, position), (0, 0));
+                }
+                (
+                    1,
+                    ndsif::Request::DacEnd {
+                        next_sequence,
+                        end_tick,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((next_sequence, end_tick), (1, 441));
+                }
+                (2, ndsif::Request::Ping(bytes)) => {
+                    reply_to_device_frame(&mut device, &frame, Reply::Ping(bytes));
+                }
+                (
+                    3,
+                    ndsif::Request::DacStart {
+                        minimum_lead_ticks, ..
+                    },
+                ) => {
+                    assert_eq!(minimum_lead_ticks, 441);
+                    reply_to_device_frame(&mut device, &frame, Reply::Complete);
+                }
+                (4 | 5, ndsif::Request::DacStatus { .. }) => {
+                    let drained = index == 5;
+                    reply_to_device_frame(
+                        &mut device,
+                        &frame,
+                        Reply::DacStatus(DacStatus {
+                            profile: DAC_PROFILE_YM2612,
+                            state: if drained { 2 } else { 1 },
+                            fault: 0,
+                            sealed: true,
+                            accepted: 1,
+                            consumed: u32::from(drained),
+                            queued: u32::from(!drained),
+                            free: if drained { 16 } else { 15 },
+                            event_queued: 0,
+                            event_consumed: 0,
+                            underflows: 0,
+                            overflows: 0,
+                            rejected: 0,
+                            late_dac: 0,
+                            max_late_us: 0,
+                            accepted_tick: 441,
+                            played_tick: if drained { 441 } else { 0 },
+                            executed_tick: if drained { 441 } else { 0 },
+                        }),
+                    );
+                }
+                (_, request) => panic!("unexpected DAC request {index}: {request:?}"),
+            }
+            observed.send(index).unwrap();
+        }
+        wait.recv().unwrap();
+    });
+    transport.flush_scheduled_until(441, 44_100).unwrap();
+    transport.finish_dac_stream(441, 44_100).unwrap();
+    transport.finish_dac_stream(441, 44_100).unwrap();
+    assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), 0);
+    assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+    assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+    transport
+        .prepare_timed_dac_start_for_frames(441, 44_100)
+        .unwrap();
+    assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+    assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+    transport.start_prepared_timed_dac().unwrap();
+    for index in 3..6 {
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            index
+        );
+    }
+    assert!(transport.timed_dac_stream.as_ref().unwrap().finished);
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn timed_dac_events_start_and_drain_keep_their_device_order() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();

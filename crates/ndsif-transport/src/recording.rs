@@ -174,6 +174,13 @@ impl NdsifCommandBatch {
             .any(|operation| matches!(operation, Operation::ConfigureAudio(..)))
     }
 
+    /// Return whether this batch configures the primary YM2612 target.
+    pub fn configures_primary_ym2612(&self) -> bool {
+        self.operations.iter().any(|operation| {
+            matches!(operation, Operation::ConfigureChip(id, 0, _) if *id == WriteId::YM2612)
+        })
+    }
+
     /// Apply this batch to its corresponding target in call order.
     ///
     /// # Errors
