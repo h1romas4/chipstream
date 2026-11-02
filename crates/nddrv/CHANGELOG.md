@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0
 
 - Filter Music by MDX or VGM format using search tags.
 - Show format tags and right-align chip tags in Music.
