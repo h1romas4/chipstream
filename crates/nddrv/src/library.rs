@@ -48,6 +48,14 @@ impl ChipTag {
         YMFM_CHIPS.iter().any(|chip| Track::chip_name(chip) == name)
     }
 
+    pub fn software_supported(&self) -> bool {
+        self.ymfm
+            || matches!(
+                self.name,
+                "SN76489" | "Sega PCM" | "C140" | "PWM" | "OKIM6258" | "OKIM6295"
+            )
+    }
+
     pub fn label(&self) -> String {
         if self.instances > 1 {
             format!("{}x{}", self.name, self.instances)
@@ -372,13 +380,16 @@ pub fn read_track(path: &Path) -> Result<Vec<u8>> {
     }
 }
 
-pub fn read_metadata(path: &Path) -> Result<TrackMetadata> {
+pub fn read_track_info(path: &Path) -> Result<Track> {
     let bytes = read_track(path)?;
-    if extension(path) == "mdx" {
+    let is_mdx = extension(path) == "mdx";
+    let metadata = if is_mdx {
         probe_mdx_bytes(&bytes).context("invalid MDX")
     } else {
         probe_vgm_bytes(&bytes).context("invalid VGM")
-    }
+    }?;
+    let chips = Track::track_chips(&bytes, is_mdx)?;
+    Ok(Track::new(path.to_path_buf(), metadata, chips))
 }
 
 /// Find artwork in the track's directory without scanning subdirectories.
@@ -557,16 +568,7 @@ pub fn scan_with_progress(
                 continue;
             }
             files += 1;
-            let result = read_track(&path).and_then(|bytes| {
-                let is_mdx = extension(&path) == "mdx";
-                let metadata = if is_mdx {
-                    probe_mdx_bytes(&bytes).context("invalid MDX")
-                } else {
-                    probe_vgm_bytes(&bytes).context("invalid VGM")
-                }?;
-                let chips = Track::track_chips(&bytes, is_mdx)?;
-                Ok(Track::new(path.clone(), metadata, chips))
-            });
+            let result = read_track_info(&path);
             match result {
                 Ok(track) => tracks.push(track),
                 Err(error) => errors.push(format!("{}: {error:#}", path.display())),
@@ -950,6 +952,71 @@ mod tests {
     }
 
     #[test]
+    fn chip_tags_identify_software_backend_support() {
+        for chip in YMFM_CHIPS.into_iter().chain([
+            Chip::Sn76489,
+            Chip::SegaPcm,
+            Chip::C140,
+            Chip::Pwm,
+            Chip::Okim6258,
+            Chip::Okim6295,
+        ]) {
+            assert!(ChipTag::new(&chip).software_supported(), "{chip:?}");
+        }
+        for chip in [Chip::Pokey, Chip::Ay8910, Chip::Ymf271, Chip::Ymz280b] {
+            assert!(!ChipTag::new(&chip).software_supported(), "{chip:?}");
+        }
+    }
+
+    #[test]
+    fn vgm_header_marks_unsupported_chips_in_mixed_tracks() {
+        use soundlog::vgm::command::Instance;
+
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.register_chip(Chip::Pokey, Instance::Primary, 1_789_790);
+        let tags = Track::track_chips(&Vec::<u8>::from(builder.finalize()), false).unwrap();
+        let unsupported: Vec<_> = tags
+            .iter()
+            .filter(|tag| !tag.software_supported())
+            .map(|tag| tag.name)
+            .collect();
+        assert_eq!(unsupported, ["POKEY"]);
+    }
+
+    #[test]
+    fn playlist_track_info_loads_chip_support_from_vgm_and_vgz() {
+        use flate2::{Compression, write::GzEncoder};
+        use soundlog::vgm::command::Instance;
+
+        let directory = tempfile::tempdir().unwrap();
+        for (extension, unsupported) in [("vgm", false), ("vgz", true)] {
+            let mut builder = soundlog::vgm::VgmBuilder::new();
+            builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+            if unsupported {
+                builder.register_chip(Chip::Pokey, Instance::Primary, 1_789_790);
+            }
+            let bytes = Vec::<u8>::from(builder.finalize());
+            let path = directory.path().join(format!("track.{extension}"));
+            if extension == "vgz" {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&bytes).unwrap();
+                fs::write(&path, encoder.finish().unwrap()).unwrap();
+            } else {
+                fs::write(&path, bytes).unwrap();
+            }
+            let track = read_track_info(&path).unwrap();
+            let labels: Vec<_> = track
+                .chips
+                .iter()
+                .filter(|chip| !chip.software_supported())
+                .map(ChipTag::label)
+                .collect();
+            assert_eq!(labels, if unsupported { vec!["POKEY"] } else { vec![] });
+        }
+    }
+
+    #[test]
     fn chip_labels_cover_vgm_instances_and_mdx_pdx_declarations() {
         use soundlog::vgm::command::Instance;
 
@@ -1036,7 +1103,10 @@ mod tests {
         let ScanResult { tracks, errors, .. } = scan(&[dir.path().to_path_buf(), nested]);
         assert!(errors.is_empty());
         assert_eq!(tracks.len(), 1);
-        assert_eq!(read_metadata(&tracks[0].path).unwrap(), tracks[0].metadata);
+        assert_eq!(
+            read_track_info(&tracks[0].path).unwrap().metadata,
+            tracks[0].metadata
+        );
         assert_eq!(tracks[0].display_title(), "Test game - Test song");
         assert_eq!(filter_indices(&tracks, "composer", None), vec![0]);
         assert!(filter_indices(&tracks, "not found", None).is_empty());
@@ -1063,7 +1133,7 @@ mod tests {
         let ScanResult { tracks, errors, .. } = scan(&[dir.path().to_path_buf()]);
         assert!(tracks.is_empty());
         assert_eq!(errors.len(), 1);
-        assert!(read_metadata(&dir.path().join("bad.vgz")).is_err());
+        assert!(read_track_info(&dir.path().join("bad.vgz")).is_err());
     }
 
     #[test]
@@ -1124,7 +1194,10 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(tracks.len(), 2);
         for track in &tracks {
-            assert_eq!(read_metadata(&track.path).unwrap(), track.metadata);
+            assert_eq!(
+                read_track_info(&track.path).unwrap().metadata,
+                track.metadata
+            );
         }
         assert_eq!(
             tracks

@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chipstream::metadata::TrackMetadata;
 use gpui_kit::component::ElementExt;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
@@ -160,7 +159,7 @@ struct AppView {
     details_selection: DetailsSelection,
     track_focus: FocusHandle,
     queue_focus: FocusHandle,
-    playlist_metadata: HashMap<PathBuf, TrackMetadata>,
+    playlist_tracks: HashMap<PathBuf, Track>,
     details_path: Option<PathBuf>,
     details_artwork: Option<PathBuf>,
     details_artwork_loading: bool,
@@ -327,7 +326,7 @@ impl AppView {
             details_selection: DetailsSelection::Music,
             track_focus: cx.focus_handle(),
             queue_focus: cx.focus_handle(),
-            playlist_metadata: HashMap::new(),
+            playlist_tracks: HashMap::new(),
             details_path: None,
             details_artwork: None,
             details_artwork_loading: false,
@@ -572,7 +571,7 @@ impl AppView {
         self.queue_selection_order.clear();
         self.queue_anchor = None;
         let remaining: HashSet<_> = self.config.playlist.iter().collect();
-        self.playlist_metadata
+        self.playlist_tracks
             .retain(|path, _| remaining.contains(path));
         self.playing = playing;
         if stopped {
@@ -591,7 +590,7 @@ impl AppView {
     }
 
     fn load_playlist_metadata(&mut self, cx: &mut Context<Self>) {
-        self.playlist_metadata.clear();
+        self.playlist_tracks.clear();
         let paths: HashSet<_> = self
             .config
             .playlist
@@ -609,7 +608,7 @@ impl AppView {
                     paths
                         .into_iter()
                         .map(|path| {
-                            let metadata = library::read_metadata(&path);
+                            let metadata = library::read_track_info(&path);
                             (path, metadata)
                         })
                         .collect::<Vec<_>>()
@@ -626,8 +625,8 @@ impl AppView {
                         continue;
                     }
                     match result {
-                        Ok(metadata) => {
-                            view.playlist_metadata.insert(path, metadata);
+                        Ok(track) => {
+                            view.playlist_tracks.insert(path, track);
                         }
                         Err(error) => errors.push(format!("{}: {error:#}", path.display())),
                     }
@@ -779,15 +778,15 @@ impl AppView {
                 cx.spawn(async move |this, cx| {
                     let load_path = path.clone();
                     let result = cx
-                        .background_spawn(async move { library::read_metadata(&load_path) })
+                        .background_spawn(async move { library::read_track_info(&load_path) })
                         .await;
                     let _ = this.update(cx, |view, cx| {
                         if view.playing.is_some() && view.player.is_current(generation) {
                             match result {
-                                Ok(metadata) => {
+                                Ok(track) => {
                                     view.playing_title =
-                                        Track::format_display_title(&path, &metadata);
-                                    view.playlist_metadata.insert(path.clone(), metadata);
+                                        Track::format_display_title(&path, &track.metadata);
+                                    view.playlist_tracks.insert(path.clone(), track);
                                 }
                                 Err(error) => view.pending_errors.push(error_notification(
                                     "Metadata error",
@@ -998,7 +997,7 @@ impl AppView {
             self.track_by_path
                 .get(path)
                 .map(|&index| &self.tracks[index].metadata)
-                .or_else(|| self.playlist_metadata.get(path))
+                .or_else(|| self.playlist_tracks.get(path).map(|track| &track.metadata))
         });
         let title = path.map(|path| {
             metadata
@@ -2088,6 +2087,14 @@ impl AppView {
                 let view = cx.weak_entity();
                 let title = track.display_title();
                 let artist = track.metadata.artist.as_deref().unwrap_or_default();
+                let unsupported: Vec<_> = track
+                    .chips
+                    .iter()
+                    .filter(|chip| !chip.software_supported())
+                    .map(|chip| chip.label())
+                    .collect();
+                let dimmed = !unsupported.is_empty();
+                let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
                 let chip_list = track
                     .chips
                     .iter()
@@ -2107,6 +2114,11 @@ impl AppView {
                     .border_color(rgb(0x303b45))
                     .when(selected, |row| row.bg(rgb(0x304755)))
                     .hover(|style| style.bg(rgb(0x293a47)))
+                    .when(dimmed, |row| {
+                        row.tooltip(move |window, cx| {
+                            Tooltip::new(unsupported_tooltip.clone()).build(window, cx)
+                        })
+                    })
                     .on_click(cx.listener(move |view, event: &ClickEvent, _, cx| {
                         if event.click_count() == 2 {
                             view.config.playlist.push(click_path.clone());
@@ -2158,6 +2170,7 @@ impl AppView {
                                             .overflow_hidden()
                                             .text_ellipsis()
                                             .whitespace_nowrap()
+                                            .when(dimmed, |label| label.text_color(rgb(0x82919b)))
                                             .child(title),
                                     )
                                     .when(!track.chips.is_empty(), |row| {
@@ -2175,8 +2188,15 @@ impl AppView {
                                                         .build(window, cx)
                                                 })
                                                 .children(track.chips.iter().map(|chip| {
-                                                    let (background, foreground) =
-                                                        chip_colors(chip.ymfm);
+                                                    let (background, foreground) = if dimmed {
+                                                        if chip.ymfm {
+                                                            (0x244744, 0x9abdb8)
+                                                        } else {
+                                                            (0x403047, 0xc1adca)
+                                                        }
+                                                    } else {
+                                                        chip_colors(chip.ymfm)
+                                                    };
                                                     div()
                                                         .flex_shrink_0()
                                                         .px_2()
@@ -2196,7 +2216,7 @@ impl AppView {
                                     .text_ellipsis()
                                     .whitespace_nowrap()
                                     .text_sm()
-                                    .text_color(rgb(0xa6b6c3))
+                                    .text_color(rgb(if dimmed { 0x778893 } else { 0xa6b6c3 }))
                                     .child(artist.to_owned()),
                             ),
                     )
@@ -2275,11 +2295,23 @@ impl AppView {
         range
             .map(|index| {
                 let path = &self.config.playlist[index];
-                let metadata = self
+                let track = self
                     .track_by_path
                     .get(path)
-                    .map(|&track_index| &self.tracks[track_index].metadata)
-                    .or_else(|| self.playlist_metadata.get(path));
+                    .map(|&track_index| &self.tracks[track_index])
+                    .or_else(|| self.playlist_tracks.get(path));
+                let metadata = track.map(|track| &track.metadata);
+                let unsupported = track
+                    .map(|track| {
+                        track
+                            .chips
+                            .iter()
+                            .filter(|chip| !chip.software_supported())
+                            .map(ChipTag::label)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
                 let title = metadata
                     .map(|metadata| Track::format_display_title(path, metadata))
                     .unwrap_or_else(|| {
@@ -2340,10 +2372,40 @@ impl AppView {
                             .min_w_0()
                             .child(
                                 div()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(format!("{marker}{title}")),
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .min_w_0()
+                                    .when(!unsupported.is_empty(), |row| {
+                                        row.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "queue-warning-{index}"
+                                                )))
+                                                .size(px(16.))
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded_full()
+                                                .bg(rgb(0xc94343))
+                                                .text_color(rgb(0xffffff))
+                                                .text_xs()
+                                                .child("!")
+                                                .tooltip(move |window, cx| {
+                                                    Tooltip::new(unsupported_tooltip.clone())
+                                                        .build(window, cx)
+                                                }),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(format!("{marker}{title}")),
+                                    ),
                             )
                             .child(
                                 div()

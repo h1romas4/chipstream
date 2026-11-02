@@ -73,6 +73,12 @@ base chip name. In both the list and the search input, chips implemented by the
 ymfm backend use the same teal color as the volume control, while other chip
 tags use purple.
 Hover over the tags to see the full chip list when it does not fit.
+Music rows are dimmed when the declared chips include a chip not emulated by
+chipstream. Hover over the row to see which chips are unsupported. This is
+based on the file header and does not check device availability or all other
+playback requirements.
+Playlist entries with unsupported chips show a red warning before the title;
+hover over it to see the chip names. The warning does not prevent playback.
 
 ### Selection
 
