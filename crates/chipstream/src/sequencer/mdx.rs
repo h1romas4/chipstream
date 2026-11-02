@@ -304,6 +304,18 @@ impl<'a> MdxSequencer<'a> {
             .map_err(MdxSequencerError::Playback)
     }
 
+    /// Transform a typed chip write immediately before it reaches its chip.
+    ///
+    /// See [`VgmSequencer::filter_write`] for timing, observer, and checkpoint
+    /// semantics. Registering another filter for the same type replaces it.
+    pub fn filter_write<C, F>(&mut self, filter: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize) -> C + 'a,
+    {
+        self.player.filter_write(filter);
+    }
+
     /// Register a typed chip-write callback.
     ///
     /// The callback receives the instance, typed write, absolute output-frame

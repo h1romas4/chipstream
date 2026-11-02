@@ -58,6 +58,41 @@ fn collect(player: &mut VgmSequencer<'_>) -> (Vec<[f32; 2]>, Vec<Ym2151Event>) {
 }
 
 #[test]
+fn identity_write_filter_preserves_audio_and_observer_timing() {
+    let mut reference = VgmSequencer::new(document(), 48_000, 31).unwrap();
+    let mut filtered = VgmSequencer::new(document(), 48_000, 31).unwrap();
+    for player in [&mut reference, &mut filtered] {
+        player.set_loop_count(Some(2));
+        player.track_state_with_voice_clocks::<Ym2151State>();
+    }
+    filtered.filter_write(|_, spec: Ym2151Spec, _| spec);
+    assert_eq!(collect(&mut filtered), collect(&mut reference));
+}
+
+#[test]
+fn filters_preserve_original_observer_and_tracker_events() {
+    let mut reference = VgmSequencer::new(document(), 44_100, 31).unwrap();
+    let mut filtered = VgmSequencer::new(document(), 44_100, 31).unwrap();
+    for player in [&mut reference, &mut filtered] {
+        player.track_state_with_voice_clocks::<Ym2151State>();
+    }
+    filtered.filter_write(|_, mut spec: Ym2151Spec, _| {
+        if spec.register == 0x08 {
+            spec.value &= 0x07;
+        }
+        spec
+    });
+    let (_, original_events) = collect(&mut reference);
+    let (_, filtered_events) = collect(&mut filtered);
+    assert_eq!(filtered_events, original_events);
+    assert!(
+        filtered_events
+            .iter()
+            .any(|(_, _, _, events)| matches!(events.as_deref(), Some([StateEvent::KeyOn { .. }])))
+    );
+}
+
+#[test]
 fn callback_timing_is_chunk_invariant_across_loops_and_fadeout() {
     let mut small = VgmSequencer::new(document(), 44_100, 31).unwrap();
     let mut large = VgmSequencer::new(document(), 44_100, 512).unwrap();

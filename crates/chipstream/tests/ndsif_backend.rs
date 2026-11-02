@@ -100,6 +100,86 @@ impl NdsifTransport for FakeTransport {
 }
 
 #[test]
+fn write_filters_patch_timed_hardware_writes_but_preserve_observers() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.register_chip(Chip::Ym2151, Instance::Secondary, 4_000_000);
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.add_chip_write(
+            instance,
+            Ym2151Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+    }
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 2,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(441));
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_ymfm_factories(&mut factories, Rc::clone(&transport)).unwrap();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    player.filter_write(|_, mut spec: Ym2151Spec, _| {
+        spec.value = 0xff;
+        spec
+    });
+    let positions = Rc::new(RefCell::new(Vec::new()));
+    let filtered_positions = Rc::clone(&positions);
+    player.filter_write(move |instance, mut spec: Ym2151Spec, frame| {
+        filtered_positions.borrow_mut().push((instance, frame));
+        if instance == Instance::Primary {
+            spec.value &= 0x3f;
+        }
+        spec
+    });
+    player.filter_write(|_, mut spec: Okim6258Spec, _| {
+        if spec.register == 2 {
+            spec.value = 3;
+        }
+        spec
+    });
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let observer = Rc::clone(&observed);
+    player.on_write(move |instance, spec: Ym2151Spec, frame, _| {
+        observer.borrow_mut().push((instance, spec.value, frame));
+    });
+    while player.render().unwrap().is_some() {}
+    let device = transport.borrow();
+    assert_eq!(device.events.len(), 2);
+    for event in &device.events {
+        let expected = if event.instance == 0 { 0x07 } else { 0xc7 };
+        assert_eq!(event.write, RegisterWrite::new(0x20, expected));
+        let source = if event.instance == 0 {
+            Instance::Primary
+        } else {
+            Instance::Secondary
+        };
+        assert!(positions.borrow().contains(&(source, event.sample_frame)));
+        assert!(
+            observed
+                .borrow()
+                .contains(&(source, 0xc7, event.sample_frame))
+        );
+    }
+    assert!(
+        device
+            .audio_controls
+            .iter()
+            .any(|event| matches!(event.control, NdsifAudioControl::Pan(ndsif::Pan::Off)))
+    );
+}
+
+#[test]
 fn target_instance_can_differ_from_source_for_each_ndsif_adapter() {
     let mut builder = VgmBuilder::new();
     for chip in [Chip::Ym2151, Chip::Sn76489, Chip::Okim6258] {

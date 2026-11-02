@@ -1,7 +1,7 @@
 //! Typed register-write callbacks and state tracking during sequencer playback.
 
 use std::any::TypeId;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
@@ -32,6 +32,9 @@ pub trait VgmWriteCallbackTarget: private::WriteCallbackSealed + Sized + 'static
 
     #[doc(hidden)]
     fn from_write(write: &ChipRegisterWrite) -> Option<Self>;
+
+    #[doc(hidden)]
+    fn into_write(self) -> ChipRegisterWrite;
 }
 
 macro_rules! impl_write_callback_target {
@@ -48,6 +51,10 @@ macro_rules! impl_write_callback_target {
                     ChipRegisterWrite::$variant(spec) => Some(spec.clone()),
                     _ => None,
                 }
+            }
+
+            fn into_write(self) -> ChipRegisterWrite {
+                ChipRegisterWrite::$variant(self)
             }
         }
     };
@@ -145,6 +152,50 @@ struct TypedWriteCallback<C, F> {
     _target: std::marker::PhantomData<fn() -> C>,
 }
 
+trait WriteFilter {
+    fn target_type_id(&self) -> TypeId;
+    fn matches(&self, write: &ChipRegisterWrite) -> bool;
+    fn apply(
+        &mut self,
+        instance: Instance,
+        write: &ChipRegisterWrite,
+        frame: usize,
+    ) -> ChipRegisterWrite;
+}
+
+struct TypedWriteFilter<C, F> {
+    filter: F,
+    _target: std::marker::PhantomData<fn() -> C>,
+}
+
+impl<C, F> WriteFilter for TypedWriteFilter<C, F>
+where
+    C: VgmWriteCallbackTarget,
+    F: FnMut(Instance, C, usize) -> C,
+{
+    fn target_type_id(&self) -> TypeId {
+        TypeId::of::<C>()
+    }
+
+    fn matches(&self, write: &ChipRegisterWrite) -> bool {
+        C::matches(write)
+    }
+
+    fn apply(
+        &mut self,
+        instance: Instance,
+        write: &ChipRegisterWrite,
+        frame: usize,
+    ) -> ChipRegisterWrite {
+        (self.filter)(
+            instance,
+            C::from_write(write).expect("matching write type"),
+            frame,
+        )
+        .into_write()
+    }
+}
+
 impl<C, F> WriteCallback for TypedWriteCallback<C, F>
 where
     C: VgmWriteCallbackTarget,
@@ -177,6 +228,7 @@ where
 
 pub(super) struct CallbackRegistry<'a> {
     callbacks: Vec<Box<dyn WriteCallback + 'a>>,
+    filters: RefCell<Vec<Box<dyn WriteFilter + 'a>>>,
     state_overflow: Cell<bool>,
 }
 
@@ -184,12 +236,43 @@ impl Default for CallbackRegistry<'_> {
     fn default() -> Self {
         Self {
             callbacks: Vec::new(),
+            filters: RefCell::new(Vec::new()),
             state_overflow: Cell::new(false),
         }
     }
 }
 
 impl<'a> CallbackRegistry<'a> {
+    pub(super) fn filter_write(
+        &self,
+        instance: Instance,
+        write: ChipRegisterWrite,
+        frame: usize,
+    ) -> ChipRegisterWrite {
+        match self
+            .filters
+            .borrow_mut()
+            .iter_mut()
+            .find(|filter| filter.matches(&write))
+        {
+            Some(filter) => filter.apply(instance, &write, frame),
+            None => write,
+        }
+    }
+
+    pub(super) fn register_filter<C, F>(&mut self, filter: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize) -> C + 'a,
+    {
+        let filters = self.filters.get_mut();
+        filters.retain(|registered| registered.target_type_id() != TypeId::of::<C>());
+        filters.push(Box::new(TypedWriteFilter::<C, F> {
+            filter,
+            _target: std::marker::PhantomData,
+        }));
+    }
+
     /// Check whether a typed callback is registered for this write.
     pub(super) fn has_callback(&self, write: &ChipRegisterWrite) -> bool {
         self.callbacks

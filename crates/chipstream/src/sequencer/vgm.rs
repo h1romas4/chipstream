@@ -387,6 +387,9 @@ impl Voice {
             .callbacks
             .has_callback(&write)
             .then(|| write.clone());
+        let write = context
+            .callbacks
+            .filter_write(self.instance, write, sample_frame);
         self.route
             .chip_mut()
             .apply_register_write_at(write, sample_frame, output_rate)?;
@@ -1219,6 +1222,26 @@ impl<'a> VgmSequencer<'a> {
         }
         self.pwm_compatibility = enabled.then_some([PwmCompatibility::default(); 2]);
         Ok(())
+    }
+
+    /// Transform a typed chip write immediately before it reaches its chip.
+    ///
+    /// The filter receives the source instance and absolute output-frame position.
+    /// It returns one write of the same type; it cannot add or suppress writes.
+    /// Registering another filter for the same type replaces the previous one.
+    /// Observers and state trackers receive the original write. Filter calls may
+    /// occur ahead of returned audio and are not globally ordered across voices;
+    /// they do not imply that a hardware device has played the write. Changes
+    /// do not affect already generated audio or scheduled hardware writes.
+    /// Filter closure state is not captured or restored by checkpoints. The
+    /// caller must restore its state consistently before restoring or seeking;
+    /// seeking invokes the filter while advancing from the checkpoint.
+    pub fn filter_write<C, F>(&mut self, filter: F)
+    where
+        C: event::VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize) -> C + 'a,
+    {
+        self.callbacks.register_filter::<C, F>(filter);
     }
 
     /// Register a typed chip-write callback.

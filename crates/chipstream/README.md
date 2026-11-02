@@ -116,6 +116,35 @@ absolute output-frame position at the sequencer's sample rate, and optional
 state changes. They run synchronously during `render`; rendering may allocate
 and is not guaranteed real-time safe. Output is not clipped.
 
+Both sequencers also provide `filter_write` to transform a typed register write
+before it reaches the chip, including external chip backends:
+
+```rust,no_run
+use chipstream::sequencer::{Instance, VgmSequencer};
+use soundlog::chip::Ym2151Spec;
+
+let bytes = std::fs::read("song.vgm")?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+player.filter_write(|instance, mut write: Ym2151Spec, _frame| {
+    if instance == Instance::Primary && write.register == 0x20 {
+        write.value &= 0x3f;
+    }
+    write
+});
+while let Some(block) = player.render()? {
+    // Send block.frames() to the host.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A filter returns one write of the same type. Registering another filter for
+that type replaces it; filters and observers are independent. `on_write` and
+state trackers see original writes. Filters run when a write is applied and
+may execute ahead of returned audio, without global ordering across voices.
+They cannot change already generated audio or queued hardware events. Filter
+closure state is not part of sequencer checkpoints: callers must restore it
+before restoring or seeking, and seeking calls the filter while advancing.
+
 ## Chips
 
 Use soundlog's chip-specific `*Spec` values with `SoundChip::write`:

@@ -213,6 +213,27 @@ fn mdx_constructor_loop_defaults_are_explicit() {
 }
 
 #[test]
+fn mdx_filter_write_mutes_ym2151_pan() {
+    let original = render_mdx(&mut MdxSequencer::new(fm_package(), 48_000, 128).unwrap());
+    assert!(
+        original
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.0001)
+    );
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
+    player.filter_write(|_, mut spec: Ym2151Spec, _| {
+        if (0x20..=0x27).contains(&spec.register) {
+            spec.value &= 0x3f;
+        }
+        spec
+    });
+    let frames = render_mdx(&mut player);
+    assert_eq!(frames.len(), original.len());
+    assert!(frames.iter().flatten().all(|sample| *sample == 0.0));
+}
+
+#[test]
 fn events_and_gain_are_available_for_mdx() {
     let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
     player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);

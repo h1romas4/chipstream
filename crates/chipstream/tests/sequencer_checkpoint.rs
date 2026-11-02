@@ -4,6 +4,39 @@ use soundlog::vgm::VgmBuilder;
 use soundlog::vgm::command::WaitSamples;
 
 #[test]
+fn filter_state_is_caller_owned_and_seek_runs_filters() {
+    use soundlog::chip::{Chip, Ym2151Spec};
+    use soundlog::vgm::command::Instance;
+    use std::{cell::Cell, rc::Rc};
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.add_vgm_command(WaitSamples(256));
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2151Spec {
+            register: 0x20,
+            value: 0xc7,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(256));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64).unwrap();
+    let calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&calls);
+    player.filter_write(move |_, spec: Ym2151Spec, _| {
+        observed.set(observed.get() + 1);
+        spec
+    });
+    let checkpoint = player.checkpoint().unwrap();
+    player.seek_to_frame(&checkpoint, 300).unwrap();
+    assert_eq!(calls.get(), 1);
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(calls.get(), 1);
+    player.seek_to_frame(&checkpoint, 300).unwrap();
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
 fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(
