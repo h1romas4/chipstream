@@ -207,6 +207,12 @@ itself route that hardware's audio into the host PCM output. Implement
 `save_state()` and `restore_state()` to support checkpoint seeking. Backend
 errors can be returned as `ChipError::External`.
 
+The VGM sequencer applies backend output balancing to built-in and custom
+backends alike: SN76489 is multiplied by 0.5, YM2203 SSG by 0.25, and
+YM2608/YM2610(B) SSG by 0.375. When the VGM declares a YM2612, other chips
+are additionally multiplied by 2/3 while the YM2612 level remains unchanged.
+VGM header volume settings and `set_gain` multiply these levels.
+
 ### NDSIF scheduled output
 
 Enable the `ndsif` feature and provide an `NdsifTransport` to route a chip to

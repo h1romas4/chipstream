@@ -7,7 +7,14 @@ use soundlog::vgm::command::{Ay8910StereoMask, Instance, VgmCommand, WaitSamples
 use soundlog::vgm::header::{ChipId, ChipVolume, VgmExtraHeader};
 
 fn render(document: VgmDocument) -> Vec<[f32; 2]> {
+    render_with_muted(document, None)
+}
+
+fn render_with_muted(document: VgmDocument, muted: Option<Chip>) -> Vec<[f32; 2]> {
     let mut player = VgmSequencer::new(document, 48_000, 256).unwrap();
+    if let Some(chip) = muted {
+        player.set_gain(chip, Instance::Primary, 0.0).unwrap();
+    }
     let mut samples = Vec::new();
     while let Some(block) = player.render().unwrap() {
         samples.extend_from_slice(block.frames());
@@ -28,6 +35,113 @@ fn assert_scaled(actual: &[[f32; 2]], original: &[[f32; 2]], left: f32, right: f
             );
         }
     }
+}
+
+fn centered_rms(audio: &[[f32; 2]]) -> f32 {
+    let frames = &audio[..19_200];
+    let mean = frames.iter().map(|frame| frame[0]).sum::<f32>() / frames.len() as f32;
+    (frames
+        .iter()
+        .map(|frame| (frame[0] - mean).powi(2))
+        .sum::<f32>()
+        / frames.len() as f32)
+        .sqrt()
+}
+
+#[test]
+fn opn_ssg_and_fm_balance_matches_reference_ranges() {
+    let cases: &[(&[u8], &[u8], f32, f32)] = &[
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            0.32,
+            0.38,
+        ),
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            0.65,
+            0.77,
+        ),
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            0.65,
+            0.77,
+        ),
+    ];
+    for (fm, ssg, min, max) in cases {
+        let mut fm = VgmDocument::try_from(*fm).unwrap();
+        let mut ssg = VgmDocument::try_from(*ssg).unwrap();
+        fm.header.ym2610b_clock &= !0x4000_0000;
+        ssg.header.ym2610b_clock &= !0x4000_0000;
+        let ratio = centered_rms(&render(ssg)) / centered_rms(&render(fm));
+        assert!(
+            (*min..=*max).contains(&ratio),
+            "unexpected SSG/FM ratio: {ratio}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "sn76496")]
+fn sn76489_ym2612_balance_and_headroom() {
+    let mut psg =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm")[..])
+            .unwrap();
+    let mut fm =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2612_a4.vgm")[..])
+            .unwrap();
+    let psg_alone = render(psg.clone());
+    let fm_alone = render(fm.clone());
+    psg.header.ym2612_clock = fm.header.ym2612_clock;
+    fm.header.sn76489_clock = psg.header.sn76489_clock;
+    let psg_mixed = render_with_muted(psg, Some(Chip::Ym2612));
+    let fm_mixed = render_with_muted(fm, Some(Chip::Sn76489));
+    assert_scaled(&psg_mixed, &psg_alone, 2.0 / 3.0, 2.0 / 3.0);
+    assert_scaled(&fm_mixed, &fm_alone, 1.0, 1.0);
+    let ratio = centered_rms(&psg_mixed) / centered_rms(&fm_mixed);
+    assert!(
+        (0.32..=0.38).contains(&ratio),
+        "unexpected PSG/FM ratio: {ratio}"
+    );
+}
+
+#[test]
+fn ym2612_headroom_preserves_ssg_stereo_mask() {
+    let mut document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    document.commands.insert(
+        0,
+        VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0110_1010)),
+    );
+    let baseline = render(document.clone());
+    document.header.ym2612_clock = 7_670_454;
+    let mixed = render_with_muted(document, Some(Chip::Ym2612));
+    assert_scaled(&mixed, &baseline, 2.0 / 3.0, 2.0 / 3.0);
+    assert!(mixed.iter().all(|frame| frame[0] == 0.0));
+    assert!(mixed.iter().any(|frame| frame[1].abs() > 0.001));
+}
+
+#[test]
+#[cfg(feature = "sn76496")]
+fn sn76489_ym2151_balance_matches_reference_range() {
+    let mut psg =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm")[..])
+            .unwrap();
+    let mut fm =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm")[..])
+            .unwrap();
+    psg.header.ym2151_clock = fm.header.ym2151_clock;
+    fm.header.sn76489_clock = psg.header.sn76489_clock;
+    let psg_audio = render_with_muted(psg, Some(Chip::Ym2151));
+    let fm_audio = render_with_muted(fm, Some(Chip::Sn76489));
+    let ratio = centered_rms(&psg_audio) / centered_rms(&fm_audio);
+    assert!(
+        (0.32..=0.38).contains(&ratio),
+        "unexpected PSG/FM ratio: {ratio}"
+    );
 }
 
 fn extra(volumes: Vec<ChipVolume>) -> VgmExtraHeader {

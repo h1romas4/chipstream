@@ -572,6 +572,10 @@ impl Voice {
 /// reference levels are `0x200` for YM2413, `0x1c0` for OKIM6258, `0x180`
 /// for SegaPCM, `0xe0` for PWM, `0x80` for SN76489, YM2608 and YM2610(B)
 /// and their SSG, `0x80` for YM2203 SSG, and `0x100` for other outputs.
+/// Backend output balancing applies gains of 0.5 to SN76489, 0.25 to YM2203
+/// SSG, and 0.375 to YM2608/YM2610(B) SSG. When YM2612 is present, all
+/// other chip outputs are further attenuated by 2/3 to preserve headroom
+/// while balancing against YM2612. These gains also apply to custom backends.
 ///
 /// PCM is not clipped or normalized. Rendering can allocate and is not
 /// guaranteed real-time safe. After a rendering error, create a new sequencer.
@@ -944,8 +948,20 @@ impl<'a> VgmSequencer<'a> {
             };
         let global = volume::global_gain(header.volume_modifier);
         let id = Self::chip_id(&chip);
-        let main = SCALE * global * volume::chip_gain(extra, &chip, id, instance, false, dual);
-        let paired = SCALE * global * volume::chip_gain(extra, &chip, id, instance, true, dual);
+        let has_ym2612 = header
+            .misc()
+            .use_ym2413_clock_for_ym2612
+            .unwrap_or(header.ym2612_clock)
+            & 0x3fff_ffff
+            != 0;
+        let main = SCALE
+            * global
+            * volume::mix_gain(&chip, false, has_ym2612)
+            * volume::chip_gain(extra, &chip, id, instance, false, dual);
+        let paired = SCALE
+            * global
+            * volume::mix_gain(&chip, true, has_ym2612)
+            * volume::chip_gain(extra, &chip, id, instance, true, dual);
         let coefficients = match chip {
             Chip::Ym2203 => vec![
                 [main, main],
