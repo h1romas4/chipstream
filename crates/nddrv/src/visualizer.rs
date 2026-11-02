@@ -526,6 +526,7 @@ pub fn view(
                 } else {
                     "Select a track and start playback"
                 }))
+                .child(playback_buttons)
                 .when_some(error, |view, error| {
                     view.child(
                         div()
@@ -548,8 +549,7 @@ pub fn view(
                             .text_color(rgb(0x82a8bb))
                             .child("Preparing upcoming notes..."),
                     )
-                })
-                .child(playback_buttons),
+                }),
         )
         .child(
             div()
