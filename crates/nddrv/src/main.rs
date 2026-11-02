@@ -142,6 +142,7 @@ struct AppView {
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
     device_port: Entity<SelectState<SearchableVec<String>>>,
+    _device_port_subscription: Subscription,
     scanning_ports: bool,
     profile_select: Entity<SelectState<SearchableVec<ProfileChoice>>>,
     profile_name: Entity<InputState>,
@@ -234,6 +235,11 @@ impl AppView {
             SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx)
                 .searchable(true)
         });
+        let device_port_subscription = cx.subscribe(&device_port, |_: &mut Self, _, event, cx| {
+            if matches!(event, SelectEvent::Confirm(_)) {
+                cx.notify();
+            }
+        });
         let volume_subscription = cx.subscribe(&volume, |view: &mut Self, _, event, cx| {
             if let SliderEvent::Change(SliderValue::Single(value)) = event {
                 if let Err(error) = view.player.set_volume(*value / 100.) {
@@ -303,6 +309,7 @@ impl AppView {
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
             device_port,
+            _device_port_subscription: device_port_subscription,
             scanning_ports: false,
             profile_select,
             profile_name,
@@ -2023,7 +2030,9 @@ impl AppView {
                 .child(Button::new("scan-ports").label(if self.scanning_ports { "Searching..." } else { "Search ports" })
                     .disabled(self.scanning_ports)
                     .on_click(cx.listener(|view, _, _, cx| view.refresh_ports(cx))))
-                .child(Button::new("add-device").label("Add device").on_click(cx.listener(|view, _, _, cx| view.add_device(cx)))))
+                .child(Button::new("add-device").label("Add device")
+                    .disabled(self.device_port.read(cx).selected_value().is_none())
+                    .on_click(cx.listener(|view, _, _, cx| view.add_device(cx)))))
             .child(div().flex().flex_wrap().gap_3().children(
                         self.config.routing.devices.iter().map(|device| {
                             let id = device.id;
