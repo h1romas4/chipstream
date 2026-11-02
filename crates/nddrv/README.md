@@ -177,12 +177,11 @@ to see up to six seconds of upcoming notes approach the 88-key keyboard, or
 The playback controls below the track information operate the playlist.
 
 The upper-right **Chip Gain** panel adjusts software-emulated chips from 0% to
-200%. YM2203, YM2608, and YM2610(B) also have separate FM/ADPCM and SSG
+100%. YM2203, YM2608, and YM2610(B) also have separate FM/ADPCM and SSG
 controls; those multiply the chip control. Multiple instances of a chip share
 the same settings. Values persist while NDDRV is running, including across
 tracks, and return to 100% on application restart. Changes take effect after
-the existing audio buffer. Gains above 100%, including combined chip and
-FM/SSG gains, can cause clipping. NanoDrive outputs are marked and are not
+the existing audio buffer. NanoDrive outputs are marked and are not
 affected by these controls, including when a chip has both hardware and
 software instances.
 

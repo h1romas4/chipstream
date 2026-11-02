@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add per-chip and FM/SSG software gain controls to the Piano Roll.
+- Add per-chip and FM/SSG software gain controls (0-100%) to the Piano Roll.
 - Rebalance emulated SN76489 and YM2203/YM2608/YM2610 SSG output against FM.
 - Prepare Piano Roll previews with soundlog without rendering audio.
 - Add keyboard navigation to Music and Playlist, with Enter to add tracks and Delete to remove entries.

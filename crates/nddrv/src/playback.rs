@@ -305,8 +305,8 @@ impl Playback {
     }
 
     pub fn set_chip_gain(&self, chip: Chip, part: GainPart, gain: f32) -> Result<()> {
-        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
-            bail!("chip gain must be between 0% and 200%");
+        if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
+            bail!("chip gain must be between 0% and 100%");
         }
         let mut values = self
             .gains
@@ -1475,6 +1475,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chip_gain_accepts_only_zero_to_one_hundred_percent() {
+        let player = Playback::new();
+        for part in [GainPart::Chip, GainPart::Fm, GainPart::Ssg] {
+            for gain in [0.0, 0.5, 1.0] {
+                player.set_chip_gain(Chip::Ym2203, part, gain).unwrap();
+            }
+            for gain in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+                assert!(player.set_chip_gain(Chip::Ym2203, part, gain).is_err());
+                assert_eq!(
+                    player.gains.values.lock().unwrap()[&(Chip::Ym2203, part)],
+                    1.0
+                );
+            }
+        }
+    }
+
+    #[test]
     fn chip_gains_persist_across_playback_controls_and_skip_hardware() {
         let directory = tempfile::tempdir().unwrap();
         let track = directory.path().join("psg.vgm");
@@ -1485,14 +1502,14 @@ mod tests {
         .unwrap();
         let player = Playback::new();
         player
-            .set_chip_gain(Chip::Ym2203, GainPart::Chip, 2.0)
+            .set_chip_gain(Chip::Ym2203, GainPart::Chip, 1.0)
             .unwrap();
         player
             .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 0.0)
             .unwrap();
         assert!(
             player
-                .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 2.01)
+                .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 1.01)
                 .is_err()
         );
         let source = GainSource {

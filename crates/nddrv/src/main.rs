@@ -1109,7 +1109,7 @@ impl AppView {
                                     continue;
                                 }
                                 let slider =
-                                    cx.new(|_| SliderState::new().max(200.).default_value(100.));
+                                    cx.new(|_| SliderState::new().max(100.).default_value(100.));
                                 let chip = source.chip.clone();
                                 let subscription =
                                     cx.subscribe(&slider, move |view: &mut Self, _, event, cx| {
