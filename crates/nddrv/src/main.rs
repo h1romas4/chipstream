@@ -34,6 +34,16 @@ use playback::{Event, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
+const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1200.), px(768.));
+
+fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
+    let window_size = INITIAL_WINDOW_SIZE.min(&visible.size);
+    let origin = point(
+        visible.origin.x + (visible.size.width - window_size.width) / 2.,
+        visible.origin.y + (visible.size.height - window_size.height) / 2.,
+    );
+    Bounds::new(origin, window_size)
+}
 
 fn chip_colors(ymfm: bool) -> (u32, u32) {
     if ymfm {
@@ -2613,10 +2623,24 @@ mod tests {
 
     use super::{
         ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
-        chip_suggestions, details_target, inclusive_range, is_select_all, profile_choices,
-        remove_playlist_entries, search_terms, select_for_context, select_item, select_range,
-        unique_device_name, update_selection_order,
+        chip_suggestions, details_target, inclusive_range, initial_window_bounds, is_select_all,
+        profile_choices, remove_playlist_entries, search_terms, select_for_context, select_item,
+        select_range, unique_device_name, update_selection_order,
     };
+
+    #[test]
+    fn initial_window_fits_and_centers_in_visible_area() {
+        use gpui_kit::{Bounds, point, px, size};
+
+        let visible = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1040.)));
+        let bounds = initial_window_bounds(visible);
+        assert_eq!(bounds.size, size(px(1200.), px(768.)));
+        assert_eq!(bounds.origin, point(px(360.), px(136.)));
+
+        let visible = Bounds::new(point(px(10.), px(20.)), size(px(1100.), px(680.)));
+        let bounds = initial_window_bounds(visible);
+        assert_eq!(bounds, visible);
+    }
 
     #[test]
     fn default_profile_uses_chipstream_emulation_label() {
@@ -3456,18 +3480,12 @@ fn main() {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
-        let default_size = size(px(1536.), px(800.));
-        let bounds = cx.primary_display().map(|display| {
-            let visible = display.visible_bounds();
-            let window_size = default_size.min(&visible.size);
-            let origin = point(
-                visible.origin.x + (visible.size.width - window_size.width) / 2.,
-                visible.origin.y + (visible.size.height - window_size.height) / 2.,
-            );
-            Bounds::new(origin, window_size)
-        });
+        let bounds = cx
+            .primary_display()
+            .map(|display| initial_window_bounds(display.visible_bounds()))
+            .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), INITIAL_WINDOW_SIZE));
         let options = WindowOptions {
-            window_bounds: bounds.map(WindowBounds::Windowed),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_decorations: Some(WindowDecorations::Client),
             ..TitleBar::window_options()
         };
