@@ -3456,7 +3456,18 @@ fn main() {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
+        let default_size = size(px(1536.), px(800.));
+        let bounds = cx.primary_display().map(|display| {
+            let visible = display.visible_bounds();
+            let window_size = default_size.min(&visible.size);
+            let origin = point(
+                visible.origin.x + (visible.size.width - window_size.width) / 2.,
+                visible.origin.y + (visible.size.height - window_size.height) / 2.,
+            );
+            Bounds::new(origin, window_size)
+        });
         let options = WindowOptions {
+            window_bounds: bounds.map(WindowBounds::Windowed),
             window_decorations: Some(WindowDecorations::Client),
             ..TitleBar::window_options()
         };
