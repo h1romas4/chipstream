@@ -34,7 +34,7 @@ use playback::{Event, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
-const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1200.), px(768.));
+const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 
 fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
     let window_size = INITIAL_WINDOW_SIZE.min(&visible.size);
@@ -2634,8 +2634,8 @@ mod tests {
 
         let visible = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1040.)));
         let bounds = initial_window_bounds(visible);
-        assert_eq!(bounds.size, size(px(1200.), px(768.)));
-        assert_eq!(bounds.origin, point(px(360.), px(136.)));
+        assert_eq!(bounds.size, size(px(1600.), px(900.)));
+        assert_eq!(bounds.origin, point(px(160.), px(70.)));
 
         let visible = Bounds::new(point(px(10.), px(20.)), size(px(1100.), px(680.)));
         let bounds = initial_window_bounds(visible);
