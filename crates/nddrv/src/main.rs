@@ -1798,8 +1798,9 @@ impl AppView {
                     div()
                         .px_3()
                         .py_2()
+                        .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("chipstream"),
+                        .child("Emulation (chipstream)"),
                 )
                 .into_any_element(),
         ];
