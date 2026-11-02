@@ -2337,6 +2337,23 @@ impl AppView {
         self.update_track_selection_order(None);
     }
 
+    fn move_track_selection(&mut self, down: bool) {
+        let current = self.track_selection_order.last().and_then(|path| {
+            self.filtered_tracks
+                .iter()
+                .position(|&index| &self.tracks[index].path == path)
+        });
+        let Some(index) = list_selection_step(current, self.filtered_tracks.len(), down) else {
+            return;
+        };
+        let path = self.tracks[self.filtered_tracks[index]].path.clone();
+        select_item(&mut self.selected_tracks, path.clone(), false);
+        self.track_anchor = Some(path.clone());
+        self.update_track_selection_order(Some(&path));
+        self.library_scroll
+            .scroll_to_item(index, ScrollStrategy::Nearest);
+    }
+
     fn update_track_selection_order(&mut self, touched: Option<&PathBuf>) {
         update_selection_order(
             &mut self.track_selection_order,
@@ -2359,6 +2376,32 @@ impl AppView {
             self.queue_anchor = Some(0);
         }
         self.update_queue_selection_order(None);
+    }
+
+    fn move_queue_selection(&mut self, down: bool) {
+        let current = self.queue_selection_order.last().copied();
+        let Some(index) = list_selection_step(current, self.config.playlist.len(), down) else {
+            return;
+        };
+        self.select_queue_row(index);
+    }
+
+    fn select_queue_row(&mut self, index: usize) {
+        select_item(&mut self.selected_queue, index, false);
+        self.queue_anchor = Some(index);
+        self.update_queue_selection_order(Some(index));
+        self.queue_scroll
+            .scroll_to_item(index, ScrollStrategy::Nearest);
+    }
+
+    fn delete_queue_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.selected_queue.iter().min().copied() else {
+            return;
+        };
+        self.remove_queue_selection(false, cx);
+        if !self.config.playlist.is_empty() {
+            self.select_queue_row(index.min(self.config.playlist.len() - 1));
+        }
     }
 
     fn update_queue_selection_order(&mut self, touched: Option<usize>) {
@@ -2752,6 +2795,49 @@ fn is_select_all(keystroke: &Keystroke) -> bool {
         && !modifiers.function
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ListKey {
+    SelectAll,
+    Up,
+    Down,
+    Add,
+    Delete,
+}
+
+fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
+    if is_select_all(keystroke) {
+        return Some(ListKey::SelectAll);
+    }
+    let modifiers = keystroke.modifiers;
+    if modifiers.control
+        || modifiers.platform
+        || modifiers.alt
+        || modifiers.shift
+        || modifiers.function
+    {
+        return None;
+    }
+    match (keystroke.key.as_str(), list) {
+        ("up", _) => Some(ListKey::Up),
+        ("down", _) => Some(ListKey::Down),
+        ("enter", DetailsSelection::Music) => Some(ListKey::Add),
+        ("delete", DetailsSelection::Playlist) => Some(ListKey::Delete),
+        _ => None,
+    }
+}
+
+fn list_selection_step(current: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    match current.filter(|&index| index < len) {
+        Some(index) if down => Some(index.saturating_add(1).min(len - 1)),
+        Some(index) => Some(index.saturating_sub(1)),
+        None if down => Some(0),
+        None => Some(len - 1),
+    }
+}
+
 fn select_range<T: Eq + Hash>(
     selection: &mut HashSet<T>,
     items: impl IntoIterator<Item = T>,
@@ -2814,12 +2900,44 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
+        ACCENT_COLOR, DetailsSelection, ListKey, adjacent_track, capability_labels, chip_colors,
         chip_suggestions, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_select_all, music_format, profile_choices,
-        remove_playlist_entries, search_terms, select_for_context, select_item, select_range,
-        selection_status, unique_device_name, update_selection_order,
+        initial_window_bounds, is_select_all, list_key, list_selection_step, music_format,
+        profile_choices, remove_playlist_entries, search_terms, select_for_context, select_item,
+        select_range, selection_status, unique_device_name, update_selection_order,
     };
+
+    #[test]
+    fn list_shortcuts_are_scoped_to_the_focused_list_and_ignore_modifiers() {
+        let key = |value: &'static str, list| list_key(&Keystroke::parse(value).unwrap(), list);
+        for list in [DetailsSelection::Music, DetailsSelection::Playlist] {
+            assert_eq!(key("up", list), Some(ListKey::Up));
+            assert_eq!(key("down", list), Some(ListKey::Down));
+            assert_eq!(key("ctrl-a", list), Some(ListKey::SelectAll));
+            for modified in ["shift-up", "ctrl-down", "alt-enter", "cmd-delete"] {
+                assert_eq!(key(modified, list), None);
+            }
+        }
+        assert_eq!(key("enter", DetailsSelection::Music), Some(ListKey::Add));
+        assert_eq!(key("delete", DetailsSelection::Music), None);
+        assert_eq!(key("enter", DetailsSelection::Playlist), None);
+        assert_eq!(
+            key("delete", DetailsSelection::Playlist),
+            Some(ListKey::Delete)
+        );
+    }
+
+    #[test]
+    fn list_selection_navigation_handles_empty_and_boundaries() {
+        assert_eq!(list_selection_step(None, 0, true), None);
+        assert_eq!(list_selection_step(None, 3, true), Some(0));
+        assert_eq!(list_selection_step(None, 3, false), Some(2));
+        assert_eq!(list_selection_step(Some(1), 3, true), Some(2));
+        assert_eq!(list_selection_step(Some(1), 3, false), Some(0));
+        assert_eq!(list_selection_step(Some(2), 3, true), Some(2));
+        assert_eq!(list_selection_step(Some(0), 3, false), Some(0));
+        assert_eq!(list_selection_step(Some(3), 3, true), Some(0));
+    }
 
     #[test]
     fn music_folder_separator_uses_next_visible_track() {
@@ -3611,12 +3729,19 @@ impl Render for AppView {
                                                         }),
                                                     )
                                                     .on_key_down(cx.listener(
-                                                        |view, event: &KeyDownEvent, _, cx| {
-                                                            if is_select_all(&event.keystroke) {
-                                                                view.select_all_tracks();
-                                                                cx.stop_propagation();
-                                                                cx.notify();
+                                                        |view, event: &KeyDownEvent, window, cx| {
+                                                            if !view.track_focus.is_focused(window) {
+                                                                return;
                                                             }
+                                                            match list_key(&event.keystroke, DetailsSelection::Music) {
+                                                                Some(ListKey::SelectAll) => view.select_all_tracks(),
+                                                                Some(ListKey::Up) => view.move_track_selection(false),
+                                                                Some(ListKey::Down) => view.move_track_selection(true),
+                                                                Some(ListKey::Add) if !view.selected_tracks.is_empty() => view.add_selected_tracks(cx),
+                                                                _ => return,
+                                                            }
+                                                            cx.stop_propagation();
+                                                            cx.notify();
                                                         },
                                                     ))
                                                     .flex()
@@ -3672,12 +3797,19 @@ impl Render for AppView {
                                                             }),
                                                         )
                                                         .on_key_down(cx.listener(
-                                                            |view, event: &KeyDownEvent, _, cx| {
-                                                                if is_select_all(&event.keystroke) {
-                                                                    view.select_all_queue();
-                                                                    cx.stop_propagation();
-                                                                    cx.notify();
+                                                            |view, event: &KeyDownEvent, window, cx| {
+                                                                if !view.queue_focus.is_focused(window) {
+                                                                    return;
                                                                 }
+                                                                match list_key(&event.keystroke, DetailsSelection::Playlist) {
+                                                                    Some(ListKey::SelectAll) => view.select_all_queue(),
+                                                                    Some(ListKey::Up) => view.move_queue_selection(false),
+                                                                    Some(ListKey::Down) => view.move_queue_selection(true),
+                                                                    Some(ListKey::Delete) => view.delete_queue_selection(cx),
+                                                                    _ => return,
+                                                                }
+                                                                cx.stop_propagation();
+                                                                cx.notify();
                                                             },
                                                         ))
                                                         .flex()

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Prepare Piano Roll previews with soundlog without rendering audio.
+- Add keyboard navigation to Music and Playlist, with Enter to add tracks and Delete to remove entries.
+
 ## v0.2.0
 
 - Filter Music by MDX or VGM format using search tags.
