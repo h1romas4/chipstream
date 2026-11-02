@@ -1003,14 +1003,11 @@ impl AppView {
         let mut rows = Vec::new();
         if let Some(sources) = self.piano_sources() {
             for source in sources {
-                let (Some(index), Some(fm_count), Some(total)) = (
-                    fm_mute::chip_index(&source.chip),
-                    fm_mute::fm_channels(&source.chip),
-                    fm_mute::tracked_channels(&source.chip),
-                ) else {
+                let Some((index, total)) = visualizer::tracked_chip(&source.chip) else {
                     continue;
                 };
-                let chip_id = visualizer::source_color_index(index as u8, source.instance as u8);
+                let fm_count = fm_mute::fm_channels(&source.chip).unwrap_or(0);
+                let chip_id = visualizer::source_color_index(index, source.instance as u8);
                 let title = format!(
                     "{} #{}{}",
                     Track::chip_name(&source.chip),
@@ -1062,7 +1059,9 @@ impl AppView {
                                 })),
                         );
                     }
-                    let label = if channel >= fm_count {
+                    let label = if source.chip == Chip::Sn76489 {
+                        format!("Tone {}", channel + 1)
+                    } else if channel >= fm_count {
                         format!("SSG {}", channel - fm_count + 1)
                     } else if let Some(other) = paired {
                         format!("FM {}+{}", channel + 1, other + 1)

@@ -47,6 +47,8 @@ pub struct Sn76489State {
     current_latch: Option<(u8, bool)>, // (channel, is_volume)
     /// Master clock frequency in Hz (used for frequency calculation)
     master_clock_hz: f32,
+    divider_8: bool,
+    frequency_zero_is_1024: bool,
     /// Global register storage for all written registers
     registers: Sn76489Storage,
 }
@@ -72,10 +74,25 @@ impl Sn76489State {
     /// let state = Sn76489State::new(3_579_545.0f32);
     /// ```
     pub fn new(master_clock_hz: f32) -> Self {
+        Self::with_config(master_clock_hz, true, false)
+    }
+
+    /// Create a tracker with the chip's clock-divider and zero-period settings.
+    ///
+    /// When `divider_8` is false the tone generator runs eight times faster.
+    /// When `frequency_zero_is_1024` is true, a zero period represents 1024;
+    /// otherwise it does not produce a tracked pitch.
+    pub fn with_config(
+        master_clock_hz: f32,
+        divider_8: bool,
+        frequency_zero_is_1024: bool,
+    ) -> Self {
         Self {
             channels: array::from_fn(|_| ChannelState::new()),
             current_latch: None,
             master_clock_hz,
+            divider_8,
+            frequency_zero_is_1024,
             registers: Sn76489Storage::default(),
         }
     }
@@ -116,13 +133,6 @@ impl Sn76489State {
     ///
     /// Some(ToneInfo) if frequency has been set, None otherwise
     ///
-    /// # TODO: Frequency calculation
-    ///
-    /// The SN76489 frequency calculation is:
-    /// freq_hz = master_clock / (32 * freq_value)
-    /// where freq_value is a 10-bit value (0-1023)
-    ///
-    /// For now, we store the raw freq_value as fnum and use block=0.
     fn extract_tone(&self, channel: usize) -> Option<ToneInfo> {
         if channel >= NOISE_CHANNEL {
             return None; // Noise channel doesn't have traditional tone
@@ -133,19 +143,19 @@ impl Sn76489State {
         // - register 0: frequency low 4 bits
         // - register 1: frequency high 6 bits
         let base_reg = (channel * 2) as u8;
-        let freq_low = self.registers.read(base_reg)?;
+        let freq_low = self.registers.read(base_reg).unwrap_or(0);
         let freq_high = self.registers.read(base_reg + 1).unwrap_or(0);
 
         // Combine to 10-bit frequency value
         let freq_value = ((freq_high as u16) << 4) | (freq_low as u16);
 
-        if freq_value == 0 {
-            return None; // Division by zero protection
-        }
-
-        // Calculate actual frequency
-        // Formula: f = master_clock / (32 * freq_value)
-        let freq_hz = Some(self.master_clock_hz / (32.0f32 * freq_value as f32));
+        let period = if freq_value == 0 && self.frequency_zero_is_1024 {
+            1024
+        } else {
+            freq_value
+        };
+        let divisor = if self.divider_8 { 32.0 } else { 4.0 };
+        let freq_hz = (period != 0).then(|| self.master_clock_hz / (divisor * period as f32));
 
         // Store freq_value as fnum, use block=0 for PSG
         Some(ToneInfo::new(freq_value, 0, freq_hz))
@@ -180,6 +190,7 @@ impl Sn76489State {
                 if channel < SN76489_CHANNELS {
                     let base_reg = (channel * 2) as u8;
                     self.registers.write(base_reg, data);
+                    return self.handle_frequency_change(channel);
                 }
             }
         } else {
@@ -193,7 +204,7 @@ impl Sn76489State {
                     } else {
                         // Frequency high 6 bits
                         let base_reg = (channel * 2) as u8;
-                        self.registers.write(base_reg + 1, value);
+                        self.registers.write(base_reg + 1, value & 0x3f);
                         return self.handle_frequency_change(channel);
                     }
                 }
@@ -414,5 +425,42 @@ mod tests {
 
         assert_eq!(state.channel(0).unwrap().key_state, KeyState::On);
         assert_eq!(state.channel(1).unwrap().key_state, KeyState::On);
+    }
+
+    #[test]
+    fn latch_only_and_data_writes_update_the_playing_pitch() {
+        let mut state = Sn76489State::new(3_579_545.0);
+        state.on_register_write(0, 0x80);
+        state.on_register_write(0, 0x0f);
+        state.on_register_write(0, 0x90);
+        let event = state.on_register_write(0, 0x8f).unwrap();
+        assert!(
+            matches!(event[0], StateEvent::ToneChange { channel: 0, tone } if tone.fnum == 255)
+        );
+        let event = state.on_register_write(0, 0x4f).unwrap();
+        assert!(
+            matches!(event[0], StateEvent::ToneChange { channel: 0, tone } if tone.fnum == 255)
+        );
+    }
+
+    #[test]
+    fn divider_and_zero_period_follow_chip_configuration() {
+        let mut normal = Sn76489State::with_config(3_579_545.0, true, true);
+        let mut fast = Sn76489State::with_config(3_579_545.0, false, true);
+        let normal_event = normal.on_register_write(0, 0x90).unwrap();
+        let fast_event = fast.on_register_write(0, 0x90).unwrap();
+        let (StateEvent::KeyOn { tone: a, .. }, StateEvent::KeyOn { tone: b, .. }) =
+            (&normal_event[0], &fast_event[0])
+        else {
+            panic!("expected key-on events");
+        };
+        assert!((a.freq_hz.unwrap() - 3_579_545.0 / (32.0 * 1024.0)).abs() < 0.001);
+        assert_eq!(b.freq_hz.unwrap(), a.freq_hz.unwrap() * 8.0);
+
+        let mut sega = Sn76489State::with_config(3_579_545.0, true, false);
+        sega.on_register_write(0, 0x81);
+        sega.on_register_write(0, 0x90);
+        let event = sega.on_register_write(0, 0x80).unwrap();
+        assert!(matches!(event[0], StateEvent::ToneChange { tone, .. } if tone.freq_hz.is_none()));
     }
 }

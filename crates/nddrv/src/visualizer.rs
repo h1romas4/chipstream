@@ -7,6 +7,7 @@ use soundlog::vgm::command::Instance;
 
 const MAX_NOTES: usize = 8192;
 pub const WINDOW_SECONDS: u64 = 6;
+pub const SN76489_INDEX: u8 = crate::fm_mute::CHIP_COUNT as u8;
 const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
@@ -198,7 +199,22 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
 }
 
 pub fn source_color_index(chip: u8, instance: u8) -> u8 {
-    chip + instance * crate::fm_mute::CHIP_COUNT as u8
+    if chip == SN76489_INDEX {
+        2 * SN76489_INDEX + instance
+    } else {
+        chip + instance * SN76489_INDEX
+    }
+}
+
+pub fn tracked_chip(chip: &chipstream::sequencer::Chip) -> Option<(u8, u8)> {
+    if matches!(chip, chipstream::sequencer::Chip::Sn76489) {
+        Some((SN76489_INDEX, 3))
+    } else {
+        Some((
+            crate::fm_mute::chip_index(chip)? as u8,
+            crate::fm_mute::tracked_channels(chip)?,
+        ))
+    }
 }
 
 pub fn channel_color(source: u8, channel: u8) -> u32 {
@@ -590,8 +606,9 @@ pub fn view(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, active_key_colors, channel_color,
-        frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
+        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, SN76489_INDEX, active_key_colors,
+        channel_color, frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
+        source_color_index, tracked_chip,
     };
     use soundlog::chip::event::StateEvent;
     use soundlog::chip::event::ToneInfo;
@@ -614,10 +631,16 @@ mod tests {
                 end: None,
             })
             .collect();
-        let colors: HashSet<_> = (0..22)
+        let colors: HashSet<_> = (0..24)
             .flat_map(|chip| (0..18).map(move |channel| channel_color(chip, channel)))
             .collect();
-        assert_eq!(colors.len(), 22 * 18);
+        assert_eq!(colors.len(), 24 * 18);
+        assert_eq!(
+            tracked_chip(&chipstream::sequencer::Chip::Sn76489),
+            Some((SN76489_INDEX, 3))
+        );
+        assert_eq!(source_color_index(SN76489_INDEX, 0), 22);
+        assert_eq!(source_color_index(SN76489_INDEX, 1), 23);
 
         let mut hidden = HashSet::from([(0, 6), (0, 7)]);
         let filtered = ordered_notes(&notes, &hidden);
@@ -634,6 +657,57 @@ mod tests {
         );
         hidden.clear();
         assert_eq!(ordered_notes(&notes, &hidden).len(), 9);
+
+        let psg_notes = vec![
+            Note {
+                pitch: 69,
+                chip: SN76489_INDEX,
+                instance: 0,
+                channel: 0,
+                start: 0,
+                end: None,
+            },
+            Note {
+                pitch: 69,
+                chip: SN76489_INDEX,
+                instance: 1,
+                channel: 0,
+                start: 0,
+                end: None,
+            },
+        ];
+        let hidden = HashSet::from([(source_color_index(SN76489_INDEX, 0), 0)]);
+        let filtered = ordered_notes(&psg_notes, &hidden);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].instance, 1);
+        assert_eq!(
+            active_key_colors(&filtered, 0, true)[69],
+            Some(note_color(&psg_notes[1]))
+        );
+        let mute = crate::fm_mute::FmMute::default();
+        assert!(mute.set_soloed(
+            &chipstream::sequencer::Chip::Ym2151,
+            Instance::Primary,
+            0,
+            true
+        ));
+        assert!(!mute.is_effectively_muted(
+            &chipstream::sequencer::Chip::Sn76489,
+            Instance::Primary,
+            0
+        ));
+        assert!(!mute.set_muted(
+            &chipstream::sequencer::Chip::Sn76489,
+            Instance::Primary,
+            0,
+            true
+        ));
+        assert!(!mute.set_soloed(
+            &chipstream::sequencer::Chip::Sn76489,
+            Instance::Primary,
+            0,
+            true
+        ));
     }
 
     #[test]

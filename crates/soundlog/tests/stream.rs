@@ -6497,6 +6497,99 @@ fn test_callback_stream_seek_suppresses_user_callbacks() {
 }
 
 #[test]
+fn callback_sn76489_configuration_survives_seek() {
+    use soundlog::chip::{PsgSpec, event::StateEvent, state::Sn76489State};
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(soundlog::chip::Chip::Sn76489, Instance::Primary, 3_579_545);
+    builder.register_chip(
+        soundlog::chip::Chip::Sn76489,
+        Instance::Secondary,
+        3_579_545,
+    );
+    builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
+    builder.add_chip_write(Instance::Secondary, PsgSpec { value: 0x90 });
+    builder.add_vgm_command(WaitSamples(100));
+    let raw: Vec<u8> = builder.finalize().into();
+    let mut stream = VgmCallbackStream::from_vgm(raw).unwrap();
+    stream.track_state::<Sn76489State>(Instance::Primary, 3_579_545.0);
+    stream.track_state_with(
+        Instance::Primary,
+        Sn76489State::with_config(3_579_545.0, false, true),
+    );
+    stream.track_state_with(Instance::Secondary, Sn76489State::new(3_579_545.0));
+    let frequencies = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&frequencies);
+    stream.on_write(move |instance, _: PsgSpec, _, events| {
+        if let Some(events) = events {
+            for event in events {
+                if let StateEvent::KeyOn { tone, .. } = event {
+                    captured.borrow_mut().push((instance, tone.freq_hz));
+                }
+            }
+        }
+    });
+    while frequencies.borrow().len() < 2 {
+        stream.next().unwrap().unwrap();
+    }
+    stream.seek_to_sample(0).unwrap();
+    for result in &mut stream {
+        result.unwrap();
+    }
+    let frequencies = frequencies.borrow();
+    assert_eq!(frequencies.len(), 4);
+    assert_eq!(&frequencies[..2], &frequencies[2..]);
+    assert_eq!(frequencies[0].0, Instance::Primary);
+    assert!((frequencies[0].1.unwrap() - 3_579_545.0 / (4.0 * 1024.0)).abs() < 0.001);
+    assert_eq!(frequencies[1], (Instance::Secondary, None));
+}
+
+#[test]
+fn callback_configured_ym_state_preserves_initial_registers_on_seek() {
+    use soundlog::chip::{
+        Ym2151Spec,
+        event::StateEvent,
+        state::{ChipState, Ym2151State},
+    };
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(soundlog::chip::Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2151Spec {
+            register: 8,
+            value: 0x78,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(100));
+    let raw: Vec<u8> = builder.finalize().into();
+    let mut stream = VgmCallbackStream::from_vgm(raw).unwrap();
+    let mut state = Ym2151State::new(4_000_000.0);
+    state.on_register_write(0x28, 0x4c);
+    state.on_register_write(0x30, 0);
+    stream.track_state_with(Instance::Primary, state);
+
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&events);
+    stream.on_write(move |_, _: Ym2151Spec, _, changes| {
+        if let Some(changes) = changes {
+            captured.borrow_mut().extend(changes);
+        }
+    });
+    while events.borrow().is_empty() {
+        stream.next().unwrap().unwrap();
+    }
+    stream.seek_to_sample(0).unwrap();
+    for result in &mut stream {
+        result.unwrap();
+    }
+    let events = events.borrow();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0], events[1]);
+    assert!(matches!(events[0], StateEvent::KeyOn { channel: 0, tone } if tone.freq_hz.is_some()));
+}
+
+#[test]
 fn test_callback_stream_seek_maintains_chip_state() {
     use soundlog::chip::Ym2612Spec;
     use soundlog::chip::event::StateEvent;

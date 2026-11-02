@@ -6,8 +6,8 @@ use std::cell::{Cell, RefCell};
 use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
 use soundlog::chip::state::{
-    ChipState, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
-    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+    ChipState, Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State,
+    Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
 };
 use soundlog::chip::{
     C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec, SegaPcmSpec,
@@ -83,6 +83,7 @@ impl_write_callback_target!(Ymf278bSpec, Ymf278b);
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VgmStateTrackerKind {
+    Sn76489,
     Ym2151,
     Ym2203,
     Ym2413,
@@ -112,6 +113,7 @@ macro_rules! impl_state_tracker {
     };
 }
 
+impl_state_tracker!(Sn76489State, Sn76489);
 impl_state_tracker!(Ym2151State, Ym2151);
 impl_state_tracker!(Ym2203State, Ym2203);
 impl_state_tracker!(Ym2413State, Ym2413);
@@ -334,6 +336,7 @@ impl<'a> CallbackRegistry<'a> {
 
 #[derive(Clone)]
 pub(super) enum Tracker {
+    Sn76489(Sn76489State),
     Ym2151(Ym2151State),
     Ym2203(Ym2203State),
     Ym2413(Ym2413State),
@@ -356,6 +359,8 @@ impl Tracker {
         value: u8,
     ) -> Option<Vec<StateEvent>> {
         match self {
+            Self::Sn76489(state) if register == 0 => state.on_register_write(register, value),
+            Self::Sn76489(_) => None,
             Self::Ym2151(state) => state.on_register_write(register, value),
             Self::Ym2203(state) => state.on_register_write(register, value),
             Self::Ym2413(state) => state.on_register_write(register, value),
@@ -389,6 +394,7 @@ impl Tracker {
 /// Map a tracker kind to the chip instance it observes.
 pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
     match kind {
+        VgmStateTrackerKind::Sn76489 => Chip::Sn76489,
         VgmStateTrackerKind::Ym2151 => Chip::Ym2151,
         VgmStateTrackerKind::Ym2203 => Chip::Ym2203,
         VgmStateTrackerKind::Ym2413 => Chip::Ym2413,
@@ -404,8 +410,17 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
 }
 
 /// Create a chip-specific state tracker at the given clock.
-pub(super) fn tracker(kind: VgmStateTrackerKind, clock: f32) -> Tracker {
+pub(super) fn tracker(
+    kind: VgmStateTrackerKind,
+    clock: f32,
+    sn_flags: soundlog::vgm::header::Sn76489Flags,
+) -> Tracker {
     match kind {
+        VgmStateTrackerKind::Sn76489 => Tracker::Sn76489(Sn76489State::with_config(
+            clock,
+            sn_flags.clock_divider_8,
+            sn_flags.frequency_0_is_400,
+        )),
         VgmStateTrackerKind::Ym2151 => Tracker::Ym2151(Ym2151State::new(clock)),
         VgmStateTrackerKind::Ym2203 => Tracker::Ym2203(Ym2203State::new(clock)),
         VgmStateTrackerKind::Ym2413 => Tracker::Ym2413(Ym2413State::new(clock)),

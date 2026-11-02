@@ -321,6 +321,7 @@ struct Voice {
     chip: Chip,
     instance: Instance,
     clock: u32,
+    sn_flags: soundlog::vgm::header::Sn76489Flags,
     tracker: Option<event::Tracker>,
     route: ChipRoute<Box<dyn SoundChip>>,
     matrix: StereoMatrix,
@@ -1015,6 +1016,7 @@ impl<'a> VgmSequencer<'a> {
             chip,
             instance,
             clock,
+            sn_flags: header.sn76489_flags,
             tracker: None,
             route: ChipRoute::new(backend),
             matrix,
@@ -1328,7 +1330,7 @@ impl<'a> VgmSequencer<'a> {
 
     /// Enable state tracking for a chip type and instance.
     ///
-    /// State tracking is available for YM2151, YM2203, YM2413, YM2608, YM2610B,
+    /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
     /// YM2612, YM3526, Y8950, YM3812, YMF262, and YMF278B.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
@@ -1337,7 +1339,7 @@ impl<'a> VgmSequencer<'a> {
         let chip = event::tracker_chip(S::KIND);
         for voice in &mut self.voices {
             if voice.chip == chip && voice.instance == instance {
-                voice.tracker = Some(event::tracker(S::KIND, clock));
+                voice.tracker = Some(event::tracker(S::KIND, clock, voice.sn_flags));
             }
         }
     }
@@ -1352,7 +1354,7 @@ impl<'a> VgmSequencer<'a> {
         let chip = event::tracker_chip(S::KIND);
         for voice in &mut self.voices {
             if voice.chip == chip {
-                voice.tracker = Some(event::tracker(S::KIND, voice.clock as f32));
+                voice.tracker = Some(event::tracker(S::KIND, voice.clock as f32, voice.sn_flags));
             }
         }
     }

@@ -476,6 +476,15 @@ let mut callback_stream = VgmCallbackStream::from_document(doc);
 // Useful when a VGM contains multiple chip instances.
 callback_stream.track_chips(&instances);
 
+// For chip-specific settings, track_state_with accepts a configured state.
+// For example, after track_chips, override an SN76489 instance with its
+// effective clock and the header's clock-divider and zero-period flags:
+// callback_stream.track_state_with(
+//     Instance::Primary,
+//     soundlog::chip::state::Sn76489State::with_config(3_579_545.0, true, true),
+// );
+// track_chips alone uses the default SN76489 settings.
+
 // If you prefer to enable tracking for a single chip instance manually,
 // Enable state tracking for YM2612 at NTSC Genesis clock
 // callback_stream.track_state::<soundlog::chip::state::Ym2612State>(

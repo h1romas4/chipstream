@@ -119,6 +119,9 @@ Callbacks receive the instance, a chip-specific write specification, the
 absolute output-frame position at the sequencer's sample rate, and optional
 state changes. They run synchronously during `render`; rendering may allocate
 and is not guaranteed real-time safe. Output is not clipped.
+SN76489 state tracking uses the VGM header's clock-divider and zero-period
+settings. `track_state_with_voice_clocks` also accounts for per-instance
+extra-header clock overrides.
 
 Both sequencers also provide `filter_write` to transform a typed register write
 before it reaches the chip, including external chip backends:

@@ -136,6 +136,12 @@ pub trait StateTracker: sealed::SealedState + 'static {
     /// Initialize the state tracker for this chip type.
     #[doc(hidden)]
     fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f32);
+
+    /// Install a supplied state for this chip type.
+    #[doc(hidden)]
+    fn install_tracker(trackers: &mut StateTrackers, instance: Instance, state: Self)
+    where
+        Self: Sized;
 }
 
 // Seal the traits to prevent external implementations
@@ -255,6 +261,10 @@ macro_rules! impl_callback_and_state {
 
             fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f32) {
                 trackers.$tracker_field[instance as usize] = Some(<$state_type>::new(clock));
+            }
+
+            fn install_tracker(trackers: &mut StateTrackers, instance: Instance, state: Self) {
+                trackers.$tracker_field[instance as usize] = Some(state);
             }
         }
     };
@@ -532,7 +542,7 @@ pub struct VgmCallbackStream<'a> {
     /// Registered callbacks
     callbacks: Callbacks<'a>,
     /// Stored tracker configurations so state can be re-initialized after a seek.
-    /// Each entry re-creates one tracker with its original instance and clock.
+    /// Each entry re-creates one tracker with its original instance and initial state.
     tracker_initializers: Vec<TrackerInitializer>,
 }
 
@@ -1084,6 +1094,34 @@ impl<'a> VgmCallbackStream<'a> {
         // Store the initializer so seek_to_sample can rebuild the tracker after rewinding.
         self.tracker_initializers.push(Box::new(move |trackers| {
             S::init_tracker(trackers, instance, clock)
+        }));
+    }
+
+    /// Enable tracking with a caller-provided chip state.
+    ///
+    /// The state replaces any existing tracker for the same chip and instance.
+    /// A clone of the supplied state, including any existing register values, is
+    /// saved and restored when seeking rebuilds the trackers. Configure tracking
+    /// before consuming the stream.
+    ///
+    /// ```
+    /// use soundlog::chip::state::Sn76489State;
+    /// use soundlog::vgm::{VgmCallbackStream, command::Instance};
+    ///
+    /// # let mut doc = soundlog::VgmDocument::default();
+    /// # doc.commands.push(soundlog::vgm::command::VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
+    /// let mut stream = VgmCallbackStream::from_document(doc);
+    /// let state = Sn76489State::with_config(3_579_545.0, false, true);
+    /// stream.track_state_with(Instance::Primary, state);
+    /// ```
+    pub fn track_state_with<S>(&mut self, instance: Instance, state: S)
+    where
+        S: StateTracker + Clone,
+    {
+        let initial_state = state.clone();
+        S::install_tracker(&mut self.state_trackers, instance, state);
+        self.tracker_initializers.push(Box::new(move |trackers| {
+            S::install_tracker(trackers, instance, initial_state.clone());
         }));
     }
 

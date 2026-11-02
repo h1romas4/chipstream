@@ -682,6 +682,7 @@ fn run_preview(
             use soundlog::vgm::header::ChipId;
             for (instance, chip, clock) in &mut instances.0 {
                 let id = match chip {
+                    Chip::Sn76489 => ChipId::Sn76489,
                     Chip::Ym2151 => ChipId::Ym2151,
                     Chip::Ym2203 => ChipId::Ym2203,
                     Chip::Ym2413 => ChipId::Ym2413,
@@ -706,6 +707,18 @@ fn run_preview(
         }
         let mut stream = VgmCallbackStream::from_vgm(bytes)?;
         stream.track_chips(&instances);
+        for (instance, chip, clock) in &instances.0 {
+            if *chip == Chip::Sn76489 {
+                stream.track_state_with(
+                    *instance,
+                    soundlog::chip::state::Sn76489State::with_config(
+                        *clock,
+                        header.sn76489_flags.clock_divider_8,
+                        header.sn76489_flags.frequency_0_is_400,
+                    ),
+                );
+            }
+        }
         stream.set_loop_count(if looped { None } else { Some(2) });
         if !looped {
             stream.set_loop_base(0);
@@ -736,7 +749,7 @@ fn run_preview(
         }};
     }
     use soundlog::chip::{
-        Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
+        PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
         Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
     };
     register!(0, Ym2151Spec);
@@ -773,6 +786,7 @@ fn run_preview(
     register_opl!(9, Ymf262Spec, Chip::Ymf262, |write: &Ymf262Spec| write.port);
     register_opl!(10, Ymf278bSpec, Chip::Ymf278b, |write: &Ymf278bSpec| write
         .port);
+    register!(crate::visualizer::SN76489_INDEX, PsgSpec);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -1205,11 +1219,11 @@ impl Sequencer {
         macro_rules! configure {
             ($player:expr) => {{
                 use soundlog::chip::state::{
-                    Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
-                    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+                    Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State,
+                    Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
                 };
                 use soundlog::chip::{
-                    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
+                    PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
                     Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
                 };
                 register!($player, 0, Ym2151Spec, Ym2151State);
@@ -1223,6 +1237,12 @@ impl Sequencer {
                 register!($player, 8, Ym3812Spec, Ym3812State);
                 register!($player, 9, Ymf262Spec, Ymf262State);
                 register!($player, 10, Ymf278bSpec, Ymf278bState);
+                register!(
+                    $player,
+                    crate::visualizer::SN76489_INDEX,
+                    PsgSpec,
+                    Sn76489State
+                );
             }};
         }
         match self {
@@ -3532,6 +3552,282 @@ mod tests {
                     .all(|note| note.end == Some(u64::from(rate) / 5))
             );
         }
+    }
+
+    #[test]
+    fn sn76489_preview_and_playback_track_tones_per_instance() {
+        use soundlog::chip::{GameGearPsgSpec, PsgSpec};
+        use soundlog::vgm::command::WaitSamples;
+        use soundlog::vgm::header::{ChipClock, ChipId, VgmExtraHeader};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("psg.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.register_chip(Chip::Sn76489, instance, 3_579_545);
+        }
+        builder.set_extra_header(VgmExtraHeader {
+            chip_clocks: vec![ChipClock::new(
+                ChipId::Sn76489,
+                Instance::Secondary,
+                1_789_772,
+            )],
+            ..Default::default()
+        });
+        for (instance, channel) in [
+            (Instance::Primary, 0),
+            (Instance::Primary, 1),
+            (Instance::Primary, 2),
+            (Instance::Secondary, 0),
+        ] {
+            for value in [0x80 | (channel << 5), 0x0f, 0x90 | (channel << 5)] {
+                builder.add_chip_write(instance, PsgSpec { value });
+            }
+        }
+        builder.add_chip_write(Instance::Primary, PsgSpec { value: 0xe0 });
+        builder.add_chip_write(Instance::Primary, PsgSpec { value: 0xf0 });
+        builder.add_vgm_command(WaitSamples(4_410));
+        builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x9f });
+        for (instance, channel) in [
+            (Instance::Primary, 0),
+            (Instance::Primary, 1),
+            (Instance::Primary, 2),
+            (Instance::Secondary, 0),
+        ] {
+            builder.add_chip_write(
+                instance,
+                PsgSpec {
+                    value: 0x8f | (channel << 5),
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        for (instance, channel) in [
+            (Instance::Primary, 0),
+            (Instance::Primary, 1),
+            (Instance::Primary, 2),
+            (Instance::Secondary, 0),
+        ] {
+            builder.add_chip_write(
+                instance,
+                PsgSpec {
+                    value: 0x9f | (channel << 5),
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        run_preview(
+            &path,
+            44_100,
+            false,
+            &preview_control,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+        let mut preview = preview_control.preview.lock().unwrap();
+        let mut preview_notes = preview.roll.snapshot(0, 44_100, RollMode::Incoming);
+        drop(preview);
+
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let pending = Rc::new(RefCell::new(Vec::new()));
+        let mut player = Sequencer::new(&path, 44_100, false).unwrap();
+        player.track_visual_events(Rc::clone(&pending));
+        while player.render().unwrap().is_some() {
+            flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+        }
+        let mut playback_notes =
+            control
+                .visualizer
+                .lock()
+                .unwrap()
+                .snapshot(0, 44_100, RollMode::Incoming);
+        let key = |note: &crate::visualizer::Note| (note.instance, note.channel, note.start);
+        preview_notes.sort_by_key(key);
+        playback_notes.sort_by_key(key);
+        assert_eq!(preview_notes.len(), 8);
+        assert_eq!(
+            preview_notes
+                .iter()
+                .map(|n| (n.chip, n.instance, n.channel, n.pitch, n.start, n.end))
+                .collect::<Vec<_>>(),
+            playback_notes
+                .iter()
+                .map(|n| (n.chip, n.instance, n.channel, n.pitch, n.start, n.end))
+                .collect::<Vec<_>>()
+        );
+        for note in preview_notes {
+            assert_eq!(note.chip, crate::visualizer::SN76489_INDEX);
+            assert!(note.channel < 3);
+            assert_eq!(
+                note.pitch,
+                if note.instance == 0 {
+                    if note.start == 0 { 70 } else { 69 }
+                } else if note.start == 0 {
+                    58
+                } else {
+                    57
+                }
+            );
+            assert_eq!(
+                (note.start, note.end),
+                if note.start == 0 {
+                    (0, Some(4_410))
+                } else {
+                    (4_410, Some(8_820))
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn sn76489_preview_and_playback_honor_header_frequency_flags() {
+        use soundlog::chip::PsgSpec;
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        for (zero_is_1024, divider_8, expected_pitch) in [
+            (false, true, None),
+            (true, true, Some(45)),
+            (true, false, Some(81)),
+        ] {
+            let path = dir.path().join(format!("{zero_is_1024}-{divider_8}.vgm"));
+            let mut builder = soundlog::vgm::VgmBuilder::new();
+            builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+            for value in [0x80, 0x00, 0x90] {
+                builder.add_chip_write(Instance::Primary, PsgSpec { value });
+            }
+            builder.add_vgm_command(WaitSamples(4_410));
+            builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x9f });
+            builder.add_vgm_command(WaitSamples(100));
+            let mut document = builder.finalize();
+            document.header.sn76489_flags.frequency_0_is_400 = zero_is_1024;
+            document.header.sn76489_flags.clock_divider_8 = divider_8;
+            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            run_preview(
+                &path,
+                44_100,
+                false,
+                &control,
+                &AtomicBool::new(false),
+                None,
+            )
+            .unwrap();
+            let notes =
+                control
+                    .preview
+                    .lock()
+                    .unwrap()
+                    .roll
+                    .snapshot(0, 44_100, RollMode::Incoming);
+            assert_eq!(notes.first().map(|note| note.pitch), expected_pitch);
+
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            let pending = Rc::new(RefCell::new(Vec::new()));
+            let mut player = Sequencer::new(&path, 44_100, false).unwrap();
+            let mut plain = Sequencer::new(&path, 44_100, false).unwrap();
+            player.track_visual_events(Rc::clone(&pending));
+            loop {
+                let tracked = player.render().unwrap();
+                let untracked = plain.render().unwrap();
+                assert_eq!(
+                    tracked.as_ref().map(|block| block.frames()),
+                    untracked.as_ref().map(|block| block.frames())
+                );
+                flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+                if tracked.is_none() {
+                    break;
+                }
+            }
+            let notes = control
+                .visualizer
+                .lock()
+                .unwrap()
+                .snapshot(0, 44_100, RollMode::Incoming);
+            assert_eq!(notes.first().map(|note| note.pitch), expected_pitch);
+        }
+    }
+
+    #[test]
+    fn sn76489_hardware_writes_produce_piano_notes() {
+        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifTransport};
+        use soundlog::chip::PsgSpec;
+        use soundlog::vgm::command::WaitSamples;
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifPsgEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, _: NdsifRegisterEvent) -> Result<(), String> {
+                Err("unexpected register write".into())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hardware.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+        for value in [0x8e, 0x0f, 0x90] {
+            builder.add_chip_write(Instance::Primary, PsgSpec { value });
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x9f });
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let transport = Rc::new(RefCell::new(Recorder::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        let target = Rc::clone(&transport);
+        factories.register(Chip::Sn76489, move |config| {
+            Ok(Box::new(NdsifSn76489::with_target_instance(
+                config,
+                Instance::Secondary,
+                Rc::clone(&target),
+            )?))
+        });
+        let mut player = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let pending = Rc::new(RefCell::new(Vec::new()));
+        player.track_visual_events(Rc::clone(&pending));
+        while player.render().unwrap().is_some() {
+            flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+        }
+        let notes = control
+            .visualizer
+            .lock()
+            .unwrap()
+            .snapshot(0, 44_100, RollMode::Incoming);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            (
+                notes[0].chip,
+                notes[0].instance,
+                notes[0].channel,
+                notes[0].pitch
+            ),
+            (crate::visualizer::SN76489_INDEX, 0, 0, 69)
+        );
+        assert!(notes[0].end.is_some());
+        assert_eq!(
+            transport
+                .borrow()
+                .0
+                .iter()
+                .map(|event| event.value)
+                .collect::<Vec<_>>(),
+            vec![0x8e, 0x0f, 0x90, 0x9f]
+        );
     }
 
     #[test]

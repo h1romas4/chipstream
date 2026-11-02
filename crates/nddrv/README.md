@@ -224,10 +224,12 @@ even while FM solo is active.
 The existing pitch tracker may still show notes from the secondary register
 channel of a 4-operator pair; the mute control applies to the pair as a whole.
 
-The view tracks YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
-YM3526, Y8950, YM3812, YMF262, and YMF278B state for both software and
-NanoDrive routes. Pitch changes are shown as semitone steps. PCM, noise, and
-other sounds without a tracked pitch are not displayed.
+The view tracks the three SN76489 tone channels and YM2151, YM2203, YM2413,
+YM2608, YM2610B, YM2612, YM3526, Y8950, YM3812, YMF262, and YMF278B state
+for both software and NanoDrive routes. SN76489 tone activity is inferred from
+attenuation; its channels have visibility controls but no mute or solo. Pitch
+changes are shown as semitone steps. PCM, noise, and other sounds without a
+tracked pitch are not displayed.
 
 The view follows the estimated audio presentation time; device latency and clock drift can cause
 differences from physical NanoDrive output. Incoming notes use command times and
