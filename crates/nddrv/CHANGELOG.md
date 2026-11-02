@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0
 
 - Show an Add directory hint when the library has no registered folders.
 - Show SN76489 tone channels in the Piano Roll.
