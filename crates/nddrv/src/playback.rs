@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -16,9 +16,11 @@ use cpal::{FromSample, SampleFormat, SizedSample};
 use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain};
 use soundlog::chip::event::StateEvent;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
+use soundlog::mdx::convert::{to_vgm_stream_generator, to_vgm_stream_generator_with_loop_marker};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
-use soundlog::vgm::command::Instance;
+use soundlog::vgm::command::{Instance, VgmCommand};
+use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::library::{extension, read_bounded, read_track};
@@ -427,6 +429,32 @@ impl Drop for PreviewWorker {
     }
 }
 
+fn mdx_package(path: &Path, bytes: Vec<u8>) -> Result<MdxPackage> {
+    let normalized = normalize_mdx_for_playback(&bytes).map_err(anyhow::Error::msg)?;
+    let mdx = MdxDocument::parse(normalized.as_ref()).context("parse MDX")?;
+    let pdx = mdx
+        .header
+        .pdx_name
+        .as_deref()
+        .map(|name| resolve_pdx(path, name))
+        .transpose()?
+        .map(|path| read_track(&path))
+        .transpose()?;
+    Ok(MdxPackage::parse_owned(normalized.into_owned(), pdx)?)
+}
+
+fn mdx_options(looped: bool) -> MdxSequencerOptions {
+    MdxSequencerOptions {
+        loop_count: if looped { None } else { Some(2) },
+        max_ticks: if looped {
+            None
+        } else {
+            MdxSequencerOptions::default().max_ticks
+        },
+        ..MdxSequencerOptions::default()
+    }
+}
+
 fn run_preview(
     path: &Path,
     rate: u32,
@@ -434,10 +462,100 @@ fn run_preview(
     control: &PlaybackControl,
     stop: &AtomicBool,
 ) -> Result<()> {
-    let mut sequencer = Sequencer::new(path, rate, looped)?;
+    if rate == 0 {
+        bail!("piano roll preview sample rate must be nonzero");
+    }
+    let bytes = read_track(path)?;
+    let (mut stream, marker) = if extension(path) == "mdx" {
+        let package = mdx_package(path, bytes)?;
+        let options = mdx_options(looped);
+        let (generator, marker) = if looped {
+            (to_vgm_stream_generator(package, options)?, None)
+        } else {
+            let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)?;
+            (generator, Some(marker))
+        };
+        let mut stream = VgmCallbackStream::from_generator(generator);
+        stream.track_state::<soundlog::chip::state::Ym2151State>(
+            Instance::Primary,
+            options.ym2151_clock as f32,
+        );
+        (stream, marker)
+    } else {
+        let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
+        let extra = header.extra_header_from_bytes(&bytes)?;
+        let mut instances = header.chip_instances();
+        if let Some(extra) = extra {
+            use soundlog::vgm::header::ChipId;
+            for (instance, chip, clock) in &mut instances.0 {
+                let id = match chip {
+                    Chip::Ym2151 => ChipId::Ym2151,
+                    Chip::Ym2203 => ChipId::Ym2203,
+                    Chip::Ym2413 => ChipId::Ym2413,
+                    Chip::Ym2608 => ChipId::Ym2608,
+                    Chip::Ym2610b => ChipId::Ym2610,
+                    Chip::Ym2612 => ChipId::Ym2612,
+                    Chip::Ym3526 => ChipId::Ym3526,
+                    Chip::Y8950 => ChipId::Y8950,
+                    Chip::Ym3812 => ChipId::Ym3812,
+                    Chip::Ymf262 => ChipId::Ymf262,
+                    Chip::Ymf278b => ChipId::Ymf278b,
+                    _ => continue,
+                };
+                if let Some(entry) = extra
+                    .chip_clocks
+                    .iter()
+                    .find(|entry| entry.chip_id == id && entry.instance == *instance)
+                {
+                    *clock = (entry.clock & 0x3fff_ffff) as f32;
+                }
+            }
+        }
+        let mut stream = VgmCallbackStream::from_vgm(bytes)?;
+        stream.track_chips(&instances);
+        stream.set_loop_count(if looped { None } else { Some(2) });
+        if !looped {
+            stream.set_loop_base(0);
+            stream.set_loop_modifier(0x10);
+            stream.set_fadeout_samples(Some(FADEOUT_SAMPLES as usize));
+        }
+        (stream, None)
+    };
     let events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
-    sequencer.track_visual_events(Rc::clone(&events));
+    let frame = Rc::new(Cell::new(0_usize));
+    macro_rules! register {
+        ($chip:expr, $spec:ty) => {{
+            let events = Rc::clone(&events);
+            let frame = Rc::clone(&frame);
+            stream.on_write(move |instance, _: $spec, _, changes| {
+                if let Some(changes) = changes {
+                    events
+                        .borrow_mut()
+                        .push(($chip, instance, frame.get(), changes));
+                }
+            });
+        }};
+    }
+    use soundlog::chip::{
+        Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
+        Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+    };
+    register!(0, Ym2151Spec);
+    register!(1, Ym2203Spec);
+    register!(2, Ym2413Spec);
+    register!(3, Ym2608Spec);
+    register!(4, Ym2610Spec);
+    register!(5, Ym2612Spec);
+    register!(6, Ym3526Spec);
+    register!(7, Y8950Spec);
+    register!(8, Ym3812Spec);
+    register!(9, Ymf262Spec);
+    register!(10, Ymf278bSpec);
+
+    let mut samples = 0_u64;
     let mut scanned = 0_u64;
+    let mut wait = 0_u64;
+    let mut fade_end = None;
     while !stop.load(Ordering::Acquire) && !control.cancel.load(Ordering::Acquire) {
         let position = control.visual_clock.position(Instant::now(), rate)?;
         let target = position.saturating_add(u64::from(rate) * WINDOW_SECONDS);
@@ -445,34 +563,64 @@ fn run_preview(
             thread::sleep(Duration::from_millis(10));
             continue;
         }
-        let block = sequencer.render()?;
-        let overflow = sequencer.take_visual_overflow();
+        let mut finished = false;
+        for _ in 0..256 {
+            if fade_end.is_some_and(|end| samples >= end) {
+                finished = true;
+                break;
+            }
+            if wait > 0 {
+                let step = wait
+                    .min(1024)
+                    .min(fade_end.map_or(u64::MAX, |end| end - samples));
+                samples = samples
+                    .checked_add(step)
+                    .context("piano roll preview sample overflow")?;
+                wait -= step;
+                scanned = u64::try_from(
+                    (u128::from(samples) * u128::from(rate) + u128::from(VGM_SAMPLE_RATE / 2))
+                        / u128::from(VGM_SAMPLE_RATE),
+                )
+                .context("piano roll preview frame overflow")?;
+                frame.set(usize::try_from(scanned).context("piano roll preview frame overflow")?);
+                if scanned >= target {
+                    break;
+                }
+                continue;
+            }
+            let result = stream.next().transpose()?;
+            if fade_end.is_none() && marker.as_ref().is_some_and(|marker| marker.reached()) {
+                fade_end = Some(
+                    samples
+                        .checked_add(u64::from(FADEOUT_SAMPLES))
+                        .context("piano roll preview sample overflow")?,
+                );
+            }
+            match result {
+                Some(StreamResult::Command(VgmCommand::WaitSamples(duration))) => {
+                    wait = u64::from(duration.0)
+                }
+                Some(StreamResult::Command(_)) => {}
+                Some(StreamResult::NeedsMoreData) => bail!("incomplete piano roll preview stream"),
+                Some(StreamResult::EndOfStream) | None => {
+                    finished = true;
+                    break;
+                }
+            }
+        }
         let mut preview = control
             .preview
             .lock()
             .map_err(|_| anyhow::anyhow!("piano roll preview state is unavailable"))?;
         let mut pending = events.borrow_mut();
-        if overflow {
-            pending.clear();
-            preview.roll.report_overflow();
-        } else {
-            for (chip, instance, frame, events) in pending.drain(..) {
-                preview.roll.apply(chip, instance, frame, events);
-            }
+        for (chip, instance, frame, events) in pending.drain(..) {
+            preview.roll.apply(chip, instance, frame, events);
         }
-        match block {
-            Some(block) if !block.frames().is_empty() => {
-                scanned = scanned
-                    .checked_add(block.frames().len() as u64)
-                    .context("piano roll preview frame count overflow")?;
-                preview.scanned = scanned;
-            }
-            Some(_) => bail!("piano roll preview produced an empty block"),
-            None => {
-                preview.roll.finish(scanned);
-                preview.done = true;
-                break;
-            }
+        preview.scanned = scanned;
+        if finished {
+            preview.roll.finish(scanned);
+            preview.done = true;
+            break;
         }
         preview.roll.prune(position, rate);
     }
@@ -504,10 +652,12 @@ fn flush_visual_events(
 }
 
 impl Sequencer {
+    #[cfg(test)]
     fn new(path: &Path, rate: u32, looped: bool) -> Result<Self> {
         Self::with_factories(path, rate, looped, ChipFactoryRegistry::new())
     }
 
+    #[cfg(test)]
     fn with_factories(
         path: &Path,
         rate: u32,
@@ -537,26 +687,8 @@ impl Sequencer {
     ) -> Result<Self> {
         let bytes = read_track(path)?;
         if extension(path) == "mdx" {
-            let normalized = normalize_mdx_for_playback(&bytes).map_err(anyhow::Error::msg)?;
-            let mdx = MdxDocument::parse(normalized.as_ref()).context("parse MDX")?;
-            let pdx = mdx
-                .header
-                .pdx_name
-                .as_deref()
-                .map(|name| resolve_pdx(path, name))
-                .transpose()?
-                .map(|path| read_track(&path))
-                .transpose()?;
-            let package = MdxPackage::parse_owned(normalized.into_owned(), pdx)?;
-            let options = MdxSequencerOptions {
-                loop_count: if looped { None } else { Some(2) },
-                max_ticks: if looped {
-                    None
-                } else {
-                    MdxSequencerOptions::default().max_ticks
-                },
-                ..MdxSequencerOptions::default()
-            };
+            let package = mdx_package(path, bytes)?;
+            let options = mdx_options(looped);
             Ok(Self::Mdx(
                 MdxSequencer::with_options_and_fadeout_with_factories(
                     package,
@@ -2022,6 +2154,38 @@ mod tests {
     }
 
     #[test]
+    fn preview_stream_waits_accumulate_across_loops() {
+        use soundlog::chip::{Chip, Ym2151Spec};
+        use soundlog::vgm::command::WaitSamples;
+        use std::cell::Cell;
+
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.set_loop_index(0);
+        builder.add_vgm_command(WaitSamples(441));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2151Spec {
+                register: 8,
+                value: 0x78,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(882));
+        let mut stream = soundlog::vgm::VgmCallbackStream::from_document(builder.finalize());
+        stream.set_loop_count(None);
+        let position = Rc::new(Cell::new(0_u64));
+        let waiting = Rc::clone(&position);
+        stream.on_wait(move |wait, _, _| waiting.set(waiting.get() + u64::from(wait.0)));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&writes);
+        stream.on_write(move |_, _: Ym2151Spec, _, _| recorded.borrow_mut().push(position.get()));
+        while writes.borrow().len() < 2 {
+            stream.next().unwrap().unwrap();
+        }
+        assert_eq!(*writes.borrow(), [441, 1764]);
+    }
+
+    #[test]
     fn preview_reads_upcoming_vgm_and_mdx_notes_and_follows_position() {
         use soundlog::chip::{Chip, Ym2151Spec};
         use soundlog::vgm::command::WaitSamples;
@@ -2067,9 +2231,9 @@ mod tests {
                 if preview.scanned >= u64::from(rate) * WINDOW_SECONDS {
                     let notes = preview.roll.snapshot(0, rate, RollMode::Incoming);
                     assert!(
-                        notes.iter().any(|note| note.start > 0),
-                        "no upcoming notes for {}",
-                        path.display()
+                        !notes.is_empty(),
+                        "no notes for {}: {notes:?}",
+                        path.display(),
                     );
                     if path == &vgm {
                         assert!(
@@ -2109,6 +2273,95 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
             drop(worker);
+        }
+    }
+
+    #[test]
+    fn preview_uses_per_instance_extra_header_clocks() {
+        use soundlog::chip::Ym2151Spec;
+        use soundlog::vgm::command::WaitSamples;
+        use soundlog::vgm::header::{ChipClock, ChipId, VgmExtraHeader};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clocks.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        builder.register_chip(Chip::Ym2151, Instance::Secondary, 4_000_000);
+        builder.set_extra_header(VgmExtraHeader {
+            chip_clocks: vec![ChipClock::new(
+                ChipId::Ym2151,
+                Instance::Secondary,
+                2_000_000,
+            )],
+            ..Default::default()
+        });
+        builder.add_vgm_command(WaitSamples(4_410));
+        for instance in [Instance::Primary, Instance::Secondary] {
+            for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+                builder.add_chip_write(instance, Ym2151Spec { register, value });
+            }
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        for rate in [8_000, 44_100, 48_000] {
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            run_preview(&path, rate, false, &control, &AtomicBool::new(false)).unwrap();
+            let mut preview = control.preview.lock().unwrap();
+            let mut notes = preview.roll.snapshot(0, rate, RollMode::Incoming);
+            notes.sort_by_key(|note| note.pitch);
+            assert_eq!(notes.len(), 2);
+            assert_eq!(notes[1].pitch - notes[0].pitch, 12);
+            assert!(notes.iter().all(|note| note.start == u64::from(rate) / 10));
+            assert!(
+                notes
+                    .iter()
+                    .all(|note| note.end == Some(u64::from(rate) / 5))
+            );
+        }
+    }
+
+    #[test]
+    fn finite_preview_matches_playback_duration() {
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("finite.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(1_000));
+        builder.set_loop_index(1);
+        builder.add_vgm_command(WaitSamples(3_000));
+        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        let mdx = dir.path().join("finite.mdx");
+        std::fs::write(
+            &mdx,
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mdx_fm_loop.pdx"),
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
+        )
+        .unwrap();
+
+        for rate in [8_000, 44_100, 48_000] {
+            for path in [&vgm, &mdx] {
+                let mut player = Sequencer::new(path, rate, false).unwrap();
+                let mut expected = 0_u64;
+                while let Some(block) = player.render().unwrap() {
+                    expected += block.frames().len() as u64;
+                    assert!(expected < u64::from(rate) * 300);
+                }
+                let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+                control
+                    .visual_clock
+                    .publish(u64::from(rate) * 300, 1, Instant::now())
+                    .unwrap();
+                run_preview(path, rate, false, &control, &AtomicBool::new(false)).unwrap();
+                let preview = control.preview.lock().unwrap();
+                assert!(preview.done);
+                assert_eq!(preview.scanned, expected, "{} at {rate} Hz", path.display());
+            }
         }
     }
 
