@@ -58,6 +58,10 @@ fn music_format(path: &Path) -> &'static str {
     library::track_format(path)
 }
 
+fn ends_folder_group(path: &Path, next: Option<&Path>) -> bool {
+    next.is_some_and(|next| path.parent() != next.parent())
+}
+
 fn track_title(
     id: SharedString,
     path: &Path,
@@ -2151,6 +2155,11 @@ impl AppView {
                 } else {
                     title
                 };
+                let next_path = self
+                    .filtered_tracks
+                    .get(index + 1)
+                    .map(|&next| self.tracks[next].path.as_path());
+                let folder_boundary = ends_folder_group(&track.path, next_path);
                 let chip_list = track
                     .chips
                     .iter()
@@ -2167,7 +2176,7 @@ impl AppView {
                     .gap_2()
                     .p_2()
                     .border_b_1()
-                    .border_color(rgb(0x303b45))
+                    .border_color(rgb(if folder_boundary { 0x718c9a } else { 0x303b45 }))
                     .when(selected, |row| row.bg(rgb(0x304755)))
                     .hover(|style| style.bg(rgb(0x293a47)))
                     .when(dimmed, |row| {
@@ -2806,10 +2815,25 @@ mod tests {
 
     use super::{
         ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
-        chip_suggestions, details_target, inclusive_range, initial_window_bounds, is_select_all,
-        music_format, profile_choices, remove_playlist_entries, search_terms, select_for_context,
-        select_item, select_range, selection_status, unique_device_name, update_selection_order,
+        chip_suggestions, details_target, ends_folder_group, inclusive_range,
+        initial_window_bounds, is_select_all, music_format, profile_choices,
+        remove_playlist_entries, search_terms, select_for_context, select_item, select_range,
+        selection_status, unique_device_name, update_selection_order,
     };
+
+    #[test]
+    fn music_folder_separator_uses_next_visible_track() {
+        use std::path::Path;
+
+        let first = Path::new("/music/game/a.vgm");
+        let same_folder = Path::new("/music/game/c.vgm");
+        let nested_folder = Path::new("/music/game/other/d.vgm");
+        let other_folder = Path::new("/music/other/e.vgm");
+        assert!(!ends_folder_group(first, Some(same_folder)));
+        assert!(ends_folder_group(same_folder, Some(nested_folder)));
+        assert!(ends_folder_group(nested_folder, Some(other_folder)));
+        assert!(!ends_folder_group(other_folder, None));
+    }
 
     #[test]
     fn music_format_labels_vgm_vgz_and_mdx() {
