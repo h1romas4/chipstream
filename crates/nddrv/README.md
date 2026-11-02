@@ -172,9 +172,17 @@ Folders, playlist entries, panel widths, and routing settings are saved in
 
 The piano icon between Library and Routing opens a full-window piano roll; its
 indicator is lit while a playlist track is playing or paused. Select **Incoming**
-to see up to six seconds of upcoming notes approach the 88-key keyboard, or
-**Trail** to see the previous six seconds recede.
+at the lower right to see up to six seconds of upcoming notes approach the
+88-key keyboard, or **Trail** to see the previous six seconds recede.
 The playback controls below the track information operate the playlist.
+
+When playback is stopped and the playlist is not empty, Piano Roll previews
+the first track, which is the track the Play button will start. Incoming shows
+the first six seconds of notes; Trail remains empty because there is no
+playback history. Chip Gain and Channels can be adjusted before playback:
+FM mute and solo selections carry over when that track starts. Changing the
+first playlist entry prepares a new preview and resets its FM selections. The
+preview remains visible while playback prepares its own Piano Roll data.
 
 The upper-right **Chip Gain** panel adjusts software-emulated chips from 0% to
 100%. YM2203, YM2608, and YM2610(B) also have separate FM/ADPCM and SSG
@@ -190,12 +198,28 @@ audio, sending writes to NanoDrive, or altering playback. Preparing or catching
 up may take time for complex tracks; preview errors are shown in the view
 without stopping playback.
 
-Colors identify chip voices using eight colors, and a playing key uses the
-color of its note. Use the color buttons on the right to show or hide notes and
-key highlights of each color in either
-view; this affects the visualization only, not sound. Colors are shared by
-multiple voices. When several visible voices share a key, the most recently
-started note determines its color.
+The **Channels** panel below Chip Gain identifies each tracked voice by chip, instance and
+channel, with a distinct color. Select a color square to show or hide that
+voice's notes and key highlights; this does not change the sound. When several
+visible voices share a key, the most recently started note determines its color.
+
+FM channels also have mute (speaker) and solo (headphones) controls, for both
+ymfm software playback and NanoDrive routes. Multiple FM channels can be soloed
+across chips and instances; while any solo is active, only soloed FM channels
+can sound, regardless of their individual mute settings. Turning off all solos
+restores those mute settings. Muting suppresses subsequent FM key-on writes;
+unmuting allows subsequent key-ons. An already sounding note is not immediately muted
+or restored, and release envelopes and queued audio or hardware writes can
+delay the audible change. The piano roll continues to show the original notes.
+Mute and solo settings reset when playback switches tracks, except for the
+selections made in the stopped preview of the track being started. OPL3/OPL4 channels in
+4-operator mode are controlled as a pair. In OPLL/OPL rhythm mode, the
+percussion channels are marked **Rhythm** and cannot be controlled by these FM
+controls. Their solo selections are suspended while rhythm mode is active and
+resume if it ends. SSG, DAC, PCM, ADPCM, and rhythm sounds are not muted,
+even while FM solo is active.
+The existing pitch tracker may still show notes from the secondary register
+channel of a 4-operator pair; the mute control applies to the pair as a whole.
 
 The view tracks YM2151, YM2203, YM2413, YM2608, YM2610B, YM2612,
 YM3526, Y8950, YM3812, YMF262, and YMF278B state for both software and

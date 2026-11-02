@@ -24,6 +24,7 @@ use soundlog::vgm::command::{Instance, VgmCommand};
 use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 
 use crate::device::{DeviceHandle, DeviceLease};
+use crate::fm_mute::FmMute;
 use crate::library::{extension, read_bounded, read_track};
 use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
@@ -100,6 +101,7 @@ struct PlaybackControl {
     preview: Mutex<PreviewState>,
     volume: Arc<NdsifOutputGain>,
     gains: Arc<GainState>,
+    fm_mute: Arc<FmMute>,
     gain_sources: Mutex<Option<Vec<GainSource>>>,
     volume_mode: AtomicU8,
     first_presentation: OnceLock<Instant>,
@@ -123,6 +125,7 @@ impl PlaybackControl {
             preview: Mutex::new(PreviewState::default()),
             volume,
             gains,
+            fm_mute: Arc::new(FmMute::default()),
             gain_sources: Mutex::new(None),
             volume_mode: AtomicU8::new(VolumeMode::Master as u8),
             first_presentation: OnceLock::new(),
@@ -227,8 +230,8 @@ impl Playback {
         }
     }
 
-    pub fn play(&mut self, path: PathBuf, looped: bool) {
-        self.start(path, looped, None);
+    pub fn play(&mut self, path: PathBuf, looped: bool, preview_mute: Option<&FmMute>) {
+        self.start(path, looped, None, preview_mute);
     }
 
     pub fn play_hardware(
@@ -237,8 +240,9 @@ impl Playback {
         looped: bool,
         devices: DeviceHandle<ndsif_transport::NdsifSerialTransport>,
         plan: PlaybackPlan,
+        preview_mute: Option<&FmMute>,
     ) {
-        self.start(path, looped, Some((devices, plan)));
+        self.start(path, looped, Some((devices, plan)), preview_mute);
     }
 
     fn start(
@@ -249,12 +253,16 @@ impl Playback {
             DeviceHandle<ndsif_transport::NdsifSerialTransport>,
             PlaybackPlan,
         )>,
+        preview_mute: Option<&FmMute>,
     ) {
         self.stop();
         self.control = Arc::new(PlaybackControl::with_gains(
             self.volume.clone(),
             self.gains.clone(),
         ));
+        if let Some(preview_mute) = preview_mute {
+            self.control.fm_mute.copy_selections_from(preview_mute);
+        }
         if hardware.is_some() {
             self.control
                 .volume_mode
@@ -318,6 +326,10 @@ impl Playback {
         Ok(())
     }
 
+    pub fn fm_mute(&self) -> &FmMute {
+        &self.control.fm_mute
+    }
+
     pub fn gain_sources(&self) -> Result<Option<Vec<GainSource>>> {
         self.control
             .gain_sources
@@ -341,6 +353,21 @@ impl Playback {
 
     pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
         self.visual_snapshot_at(Instant::now(), mode)
+    }
+
+    pub fn visual_snapshot_with_preview(
+        &self,
+        mode: RollMode,
+        preview: Option<&IdlePreview>,
+    ) -> Result<Snapshot> {
+        let live = self.visual_snapshot(mode)?;
+        if mode == RollMode::Incoming
+            && (live.rate == 0 || live.preparing)
+            && let Some(preview) = preview
+        {
+            return preview.visual_snapshot_for_playback(&live);
+        }
+        Ok(live)
     }
 
     fn visual_snapshot_at(&self, now: Instant, mode: RollMode) -> Result<Snapshot> {
@@ -433,6 +460,113 @@ struct PreviewState {
     error: Option<String>,
 }
 
+pub struct IdlePreview {
+    control: Arc<PlaybackControl>,
+}
+
+impl IdlePreview {
+    pub fn start(path: PathBuf, looped: bool, plan: Option<&PlaybackPlan>) -> Result<Self> {
+        let control = Arc::new(PlaybackControl::with_gains(
+            Arc::new(NdsifOutputGain::new()),
+            Arc::new(GainState::default()),
+        ));
+        let rate = VGM_SAMPLE_RATE;
+        control.sample_rate.store(rate, Ordering::Release);
+        let routes = plan.map_or_else(Vec::new, |plan| plan.routes.clone());
+        let state = Arc::clone(&control);
+        thread::Builder::new()
+            .name("piano-roll-idle-preview".into())
+            .spawn(move || {
+                let _guard = PreviewPanicGuard(Arc::clone(&state));
+                let result = (|| {
+                    let sequencer =
+                        Sequencer::with_factories(&path, rate, looped, ChipFactoryRegistry::new())?;
+                    if state.cancel.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    let sources = Sequencer::gain_sources(&sequencer, &routes);
+                    run_preview(&path, rate, looped, &state, &state.cancel, Some(sources))
+                })();
+                if let Err(error) = result {
+                    match state.preview.lock() {
+                        Ok(mut preview) => preview.error = Some(format!("{error:#}")),
+                        Err(_) => eprintln!("Piano roll preview failed: {error:#}"),
+                    }
+                }
+            })
+            .context("start piano roll preview worker")?;
+        Ok(Self { control })
+    }
+
+    pub fn gain_sources(&self) -> Result<Option<Vec<GainSource>>> {
+        self.control
+            .gain_sources
+            .lock()
+            .map(|sources| sources.clone())
+            .map_err(|_| anyhow::anyhow!("chip gain sources are unavailable"))
+    }
+
+    pub fn fm_mute(&self) -> &FmMute {
+        &self.control.fm_mute
+    }
+
+    pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
+        self.snapshot_at(mode, 0, false)
+    }
+
+    fn visual_snapshot_for_playback(&self, live: &Snapshot) -> Result<Snapshot> {
+        let rate = self.control.sample_rate.load(Ordering::Acquire);
+        let position = if live.rate == 0 {
+            0
+        } else {
+            u64::try_from(u128::from(live.position) * u128::from(rate) / u128::from(live.rate))
+                .context("piano roll preview position overflow")?
+        };
+        self.snapshot_at(RollMode::Incoming, position, live.started)
+    }
+
+    fn snapshot_at(&self, mode: RollMode, position: u64, started: bool) -> Result<Snapshot> {
+        let mut preview = self
+            .control
+            .preview
+            .lock()
+            .map_err(|_| anyhow::anyhow!("piano roll preview is unavailable"))?;
+        if let Some(error) = &preview.error {
+            bail!("piano roll preview: {error}");
+        }
+        let rate = self.control.sample_rate.load(Ordering::Acquire);
+        let scanning = !preview.done
+            && preview.scanned < position.saturating_add(u64::from(rate) * WINDOW_SECONDS);
+        let preparing = mode == RollMode::Incoming
+            && !preview.done
+            && preview.scanned < position.saturating_add(u64::from(rate));
+        let scanned = preview.scanned;
+        let incomplete = preview.roll.incomplete();
+        let notes = if mode == RollMode::Incoming {
+            preview.roll.snapshot(position, rate, mode)
+        } else {
+            Vec::new()
+        };
+        Ok(Snapshot {
+            rate,
+            position,
+            started,
+            notes,
+            scanned,
+            incomplete,
+            preparing,
+            scanning,
+            ..Snapshot::default()
+        })
+    }
+}
+
+impl Drop for IdlePreview {
+    fn drop(&mut self) {
+        self.control.cancel.store(true, Ordering::Release);
+    }
+}
+
 struct PreviewWorker {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
@@ -461,7 +595,7 @@ impl PreviewWorker {
             .name("piano-roll-preview".into())
             .spawn(move || {
                 let _panic_guard = PreviewPanicGuard(Arc::clone(&control));
-                if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop) {
+                if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop, None) {
                     match control.preview.lock() {
                         Ok(mut preview) => preview.error = Some(format!("{error:#}")),
                         Err(_) => eprintln!("Piano roll preview failed: {error:#}"),
@@ -519,6 +653,7 @@ fn run_preview(
     looped: bool,
     control: &PlaybackControl,
     stop: &AtomicBool,
+    mut initial_sources: Option<Vec<GainSource>>,
 ) -> Result<()> {
     if rate == 0 {
         bail!("piano roll preview sample rate must be nonzero");
@@ -579,13 +714,19 @@ fn run_preview(
         }
         (stream, None)
     };
+    let initial_modes = initial_sources.is_some();
     let events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
     let frame = Rc::new(Cell::new(0_usize));
     macro_rules! register {
-        ($chip:expr, $spec:ty) => {{
+        ($chip:expr, $spec:ty) => {
+            register!($chip, $spec, |_, _: &$spec, _| {});
+        };
+        ($chip:expr, $spec:ty, $observe:expr) => {{
+            let observe = $observe;
             let events = Rc::clone(&events);
             let frame = Rc::clone(&frame);
-            stream.on_write(move |instance, _: $spec, _, changes| {
+            stream.on_write(move |instance, write: $spec, _, changes| {
+                observe(instance, &write, frame.get());
                 if let Some(changes) = changes {
                     events
                         .borrow_mut()
@@ -600,15 +741,38 @@ fn run_preview(
     };
     register!(0, Ym2151Spec);
     register!(1, Ym2203Spec);
-    register!(2, Ym2413Spec);
+    {
+        let state = Arc::clone(&control.fm_mute);
+        register!(2, Ym2413Spec, move |instance, write: &Ym2413Spec, frame| {
+            if initial_modes && frame == 0 && write.register == 0x0e {
+                state.opll_write(instance, write.register, write.value);
+            }
+        });
+    }
     register!(3, Ym2608Spec);
     register!(4, Ym2610Spec);
     register!(5, Ym2612Spec);
-    register!(6, Ym3526Spec);
-    register!(7, Y8950Spec);
-    register!(8, Ym3812Spec);
-    register!(9, Ymf262Spec);
-    register!(10, Ymf278bSpec);
+    macro_rules! register_opl {
+        ($index:expr, $spec:ty, $chip:expr, $port:expr) => {{
+            let state = Arc::clone(&control.fm_mute);
+            register!($index, $spec, move |instance, write: &$spec, frame| {
+                let port = ($port)(write);
+                if initial_modes
+                    && frame == 0
+                    && ((port == 0 && write.register == 0xbd)
+                        || (port == 1 && write.register == 0x04))
+                {
+                    state.opl_write(&$chip, instance, port, write.register, write.value);
+                }
+            });
+        }};
+    }
+    register_opl!(6, Ym3526Spec, Chip::Ym3526, |_: &Ym3526Spec| 0);
+    register_opl!(7, Y8950Spec, Chip::Y8950, |_: &Y8950Spec| 0);
+    register_opl!(8, Ym3812Spec, Chip::Ym3812, |_: &Ym3812Spec| 0);
+    register_opl!(9, Ymf262Spec, Chip::Ymf262, |write: &Ymf262Spec| write.port);
+    register_opl!(10, Ymf278bSpec, Chip::Ymf278b, |write: &Ymf278bSpec| write
+        .port);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -618,6 +782,9 @@ fn run_preview(
         let position = control.visual_clock.position(Instant::now(), rate)?;
         let target = position.saturating_add(u64::from(rate) * WINDOW_SECONDS);
         if scanned >= target {
+            if initial_modes {
+                break;
+            }
             thread::sleep(Duration::from_millis(10));
             continue;
         }
@@ -678,9 +845,22 @@ fn run_preview(
         if finished {
             preview.roll.finish(scanned);
             preview.done = true;
+        } else {
+            preview.roll.prune(position, rate);
+        }
+        drop(pending);
+        drop(preview);
+        if (scanned > 0 || finished)
+            && let Some(sources) = initial_sources.take()
+        {
+            *control
+                .gain_sources
+                .lock()
+                .map_err(|_| anyhow::anyhow!("chip gain sources are unavailable"))? = Some(sources);
+        }
+        if finished {
             break;
         }
-        preview.roll.prune(position, rate);
     }
     Ok(())
 }
@@ -710,6 +890,106 @@ fn flush_visual_events(
 }
 
 impl Sequencer {
+    fn filter_fm_mutes(&mut self, mute: Arc<FmMute>) {
+        macro_rules! register {
+            ($player:expr) => {{
+                use soundlog::chip::{
+                    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
+                    Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+                };
+                let state = Arc::clone(&mute);
+                $player.filter_write(move |instance, mut write: Ym2151Spec, _| {
+                    if write.register == 0x08
+                        && state.is_effectively_muted(&Chip::Ym2151, instance, write.value & 7)
+                    {
+                        write.value &= 7;
+                    }
+                    write
+                });
+                let state = Arc::clone(&mute);
+                $player.filter_write(move |instance, mut write: Ym2203Spec, _| {
+                    write.value =
+                        state.opn_write(&Chip::Ym2203, instance, 0, write.register, write.value);
+                    write
+                });
+                let state = Arc::clone(&mute);
+                $player.filter_write(move |instance, mut write: Ym2413Spec, _| {
+                    write.value = state.opll_write(instance, write.register, write.value);
+                    write
+                });
+                macro_rules! opn {
+                    ($spec:ty, $chip:expr) => {{
+                        let state = Arc::clone(&mute);
+                        $player.filter_write(move |instance, mut write: $spec, _| {
+                            write.value = state.opn_write(
+                                &$chip,
+                                instance,
+                                write.port,
+                                write.register,
+                                write.value,
+                            );
+                            write
+                        });
+                    }};
+                }
+                opn!(Ym2608Spec, Chip::Ym2608);
+                opn!(Ym2610Spec, Chip::Ym2610b);
+                opn!(Ym2612Spec, Chip::Ym2612);
+                macro_rules! opl {
+                    ($spec:ty, $chip:expr) => {{
+                        let state = Arc::clone(&mute);
+                        $player.filter_write(move |instance, mut write: $spec, _| {
+                            write.value =
+                                state.opl_write(&$chip, instance, 0, write.register, write.value);
+                            write
+                        });
+                    }};
+                }
+                opl!(Ym3526Spec, Chip::Ym3526);
+                opl!(Y8950Spec, Chip::Y8950);
+                opl!(Ym3812Spec, Chip::Ym3812);
+                macro_rules! opl_banked {
+                    ($spec:ty, $chip:expr) => {{
+                        let state = Arc::clone(&mute);
+                        $player.filter_write(move |instance, mut write: $spec, _| {
+                            write.value = state.opl_write(
+                                &$chip,
+                                instance,
+                                write.port,
+                                write.register,
+                                write.value,
+                            );
+                            write
+                        });
+                    }};
+                }
+                opl_banked!(Ymf262Spec, Chip::Ymf262);
+                opl_banked!(Ymf278bSpec, Chip::Ymf278b);
+            }};
+        }
+        match self {
+            Self::Vgm(player) => register!(player),
+            Self::Mdx(player) => register!(player),
+        }
+    }
+
+    fn gain_sources(
+        sequencer: &Sequencer,
+        routes: &[ndsif_transport::NdsifRoute],
+    ) -> Vec<GainSource> {
+        sequencer
+            .chip_instances()
+            .into_iter()
+            .map(|(chip, instance)| GainSource {
+                hardware: routes
+                    .iter()
+                    .any(|route| route.chip == chip && route.source == instance),
+                chip,
+                instance,
+            })
+            .collect()
+    }
+
     fn chip_instances(&self) -> Vec<(Chip, Instance)> {
         match self {
             Self::Vgm(player) => player.chip_instances().collect(),
@@ -773,7 +1053,6 @@ impl Sequencer {
         Ok(())
     }
 
-    #[cfg(test)]
     fn with_factories(
         path: &Path,
         rate: u32,
@@ -1277,17 +1556,8 @@ fn run_inner(
             None,
         )
     };
-    let sources: Vec<_> = sequencer
-        .chip_instances()
-        .into_iter()
-        .map(|(chip, instance)| GainSource {
-            hardware: routes
-                .iter()
-                .any(|route| route.chip == chip && route.source == instance),
-            chip,
-            instance,
-        })
-        .collect();
+    let sources = Sequencer::gain_sources(&sequencer, routes);
+    sequencer.filter_fm_mutes(Arc::clone(&control.fm_mute));
     *control
         .gain_sources
         .lock()
@@ -1473,6 +1743,466 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fm_mute_filters_live_vgm_hardware_writes_per_instance() {
+        use chipstream::chip::{
+            NdsifRegisterEvent, NdsifTransport, ndsif::register_ymfm_factories,
+        };
+        use soundlog::chip::Ym2151Spec;
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.vgm");
+        let mut builder = VgmBuilder::new();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.register_chip(Chip::Ym2151, instance, 4_000_000);
+            builder.add_chip_write(
+                instance,
+                Ym2151Spec {
+                    register: 8,
+                    value: 0x78,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.add_chip_write(
+                instance,
+                Ym2151Spec {
+                    register: 8,
+                    value: 0x78,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.add_chip_write(
+                instance,
+                Ym2151Spec {
+                    register: 8,
+                    value: 0x78,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(1_000));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let recorder = Rc::new(RefCell::new(Recorder::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        register_ymfm_factories(&mut factories, Rc::clone(&recorder)).unwrap();
+        let mut player = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
+        let mute = Arc::new(FmMute::default());
+        assert!(mute.set_muted(&Chip::Ym2151, Instance::Primary, 0, true));
+        player.filter_fm_mutes(Arc::clone(&mute));
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        if let Sequencer::Vgm(vgm) = &mut player {
+            let observed = Rc::clone(&observed);
+            vgm.on_write(move |instance, write: Ym2151Spec, _, _| {
+                observed.borrow_mut().push((instance, write.value));
+            });
+        }
+        player.render().unwrap().unwrap();
+        assert!(mute.set_muted(&Chip::Ym2151, Instance::Primary, 0, false));
+        assert!(mute.set_soloed(&Chip::Ym2151, Instance::Secondary, 0, true));
+        while recorder.borrow().0.len() < 4 {
+            player.render().unwrap().unwrap();
+        }
+        assert!(mute.set_soloed(&Chip::Ym2151, Instance::Secondary, 0, false));
+        while player.render().unwrap().is_some() {}
+        let events = &recorder.borrow().0;
+        let writes: Vec<_> = events
+            .iter()
+            .map(|event| (event.instance, event.write))
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                (0, ndsif::RegisterWrite::new(8, 0)),
+                (1, ndsif::RegisterWrite::new(8, 0x78)),
+                (0, ndsif::RegisterWrite::new(8, 0)),
+                (1, ndsif::RegisterWrite::new(8, 0x78)),
+                (0, ndsif::RegisterWrite::new(8, 0x78)),
+                (1, ndsif::RegisterWrite::new(8, 0x78)),
+            ]
+        );
+        assert!(observed.borrow().iter().all(|(_, value)| *value == 0x78));
+        assert_eq!(observed.borrow().len(), 6);
+    }
+
+    #[test]
+    fn fm_mute_register_filters_cover_all_tracked_ymfm_chips() {
+        use chipstream::chip::{
+            NdsifRegisterEvent, NdsifTransport, ndsif::register_ymfm_factories,
+        };
+        use soundlog::chip::{
+            Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
+            Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+        };
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chip.vgm");
+        for chip in [
+            Chip::Ym2151,
+            Chip::Ym2203,
+            Chip::Ym2413,
+            Chip::Ym2608,
+            Chip::Ym2610b,
+            Chip::Ym2612,
+            Chip::Ym3526,
+            Chip::Y8950,
+            Chip::Ym3812,
+            Chip::Ymf262,
+            Chip::Ymf278b,
+        ] {
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(chip.clone(), Instance::Primary, 8_000_000);
+            let (register, value, expected) = match chip {
+                Chip::Ym2151 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2151Spec {
+                            register: 8,
+                            value: 0x78,
+                        },
+                    );
+                    (8, 0x78, 0)
+                }
+                Chip::Ym2203 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2203Spec {
+                            register: 0x28,
+                            value: 0xf0,
+                        },
+                    );
+                    (0x28, 0xf0, 0)
+                }
+                Chip::Ym2413 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2413Spec {
+                            register: 0x20,
+                            value: 0x1f,
+                        },
+                    );
+                    (0x20, 0x1f, 0x0f)
+                }
+                Chip::Ym2608 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2608Spec {
+                            port: 0,
+                            register: 0x28,
+                            value: 0xf0,
+                        },
+                    );
+                    (0x28, 0xf0, 0)
+                }
+                Chip::Ym2610b => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2610Spec {
+                            port: 0,
+                            register: 0x28,
+                            value: 0xf0,
+                        },
+                    );
+                    (0x28, 0xf0, 0)
+                }
+                Chip::Ym2612 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym2612Spec {
+                            port: 0,
+                            register: 0x28,
+                            value: 0xf0,
+                        },
+                    );
+                    (0x28, 0xf0, 0)
+                }
+                Chip::Ym3526 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym3526Spec {
+                            register: 0xb0,
+                            value: 0x3f,
+                        },
+                    );
+                    (0xb0, 0x3f, 0x1f)
+                }
+                Chip::Y8950 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Y8950Spec {
+                            register: 0xb0,
+                            value: 0x3f,
+                        },
+                    );
+                    (0xb0, 0x3f, 0x1f)
+                }
+                Chip::Ym3812 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ym3812Spec {
+                            register: 0xb0,
+                            value: 0x3f,
+                        },
+                    );
+                    (0xb0, 0x3f, 0x1f)
+                }
+                Chip::Ymf262 => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ymf262Spec {
+                            port: 0,
+                            register: 0xb0,
+                            value: 0x3f,
+                        },
+                    );
+                    (0xb0, 0x3f, 0x1f)
+                }
+                Chip::Ymf278b => {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        Ymf278bSpec {
+                            port: 0,
+                            register: 0xb0,
+                            value: 0x3f,
+                        },
+                    );
+                    (0xb0, 0x3f, 0x1f)
+                }
+                _ => unreachable!(),
+            };
+            builder.add_vgm_command(WaitSamples(441));
+            std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+            let recorder = Rc::new(RefCell::new(Recorder::default()));
+            let mut factories = ChipFactoryRegistry::new();
+            register_ymfm_factories(&mut factories, Rc::clone(&recorder)).unwrap();
+            let mut player = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
+            let mute = Arc::new(FmMute::default());
+            assert!(mute.set_muted(&chip, Instance::Primary, 0, true));
+            player.filter_fm_mutes(mute);
+            while player.render().unwrap().is_some() {}
+            let writes = &recorder.borrow().0;
+            assert!(
+                writes
+                    .iter()
+                    .any(|event| event.write == ndsif::RegisterWrite::new(register, expected)),
+                "{chip:?}: expected {expected:#x} instead of {value:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn fm_mute_silences_mdx_without_affecting_original_track() {
+        use soundlog::mdx::command::{MdxNote, MdxPan, MdxVoiceOrPcmBank};
+        use soundlog::mdx::document::MdxBuilder;
+        use soundlog::mdx::tone::{MdxOperator, MdxTone};
+
+        let mut builder = MdxBuilder::new();
+        builder
+            .append_tone(MdxTone {
+                voice_number: 0,
+                con: 7,
+                fl: 0,
+                op: 0x78,
+                operators: [MdxOperator {
+                    ar: 31,
+                    rr: 15,
+                    ml: 1,
+                    ..Default::default()
+                }; 4],
+            })
+            .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+            .add_mdx_command(0, MdxPan::Center)
+            .add_mdx_command(
+                0,
+                MdxNote {
+                    note: 0x98,
+                    length: 32,
+                },
+            )
+            .add_mdx_command(1, MdxVoiceOrPcmBank { value: 0 })
+            .add_mdx_command(1, MdxPan::Center)
+            .add_mdx_command(
+                1,
+                MdxNote {
+                    note: 0x9c,
+                    length: 32,
+                },
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let render = |muted: [bool; 2], soloed: [bool; 2]| {
+            let player = MdxSequencer::new(package.clone(), 44_100, 1024).unwrap();
+            let mut player = Sequencer::Mdx(player);
+            let mute = Arc::new(FmMute::default());
+            for (channel, muted) in muted.into_iter().enumerate() {
+                assert!(mute.set_muted(&Chip::Ym2151, Instance::Primary, channel as u8, muted));
+            }
+            for (channel, soloed) in soloed.into_iter().enumerate() {
+                assert!(mute.set_soloed(&Chip::Ym2151, Instance::Primary, channel as u8, soloed));
+            }
+            player.filter_fm_mutes(mute);
+            let mut peak = 0.0_f32;
+            while let Some(block) = player.render().unwrap() {
+                for sample in block.frames().iter().flatten() {
+                    peak = peak.max(sample.abs());
+                }
+            }
+            peak
+        };
+        assert!(render([false, false], [false, false]) > 0.001);
+        assert!(render([true, false], [false, false]) > 0.001);
+        assert!(render([false, true], [false, false]) > 0.001);
+        assert_eq!(render([true, true], [false, false]), 0.0);
+        assert_eq!(
+            render([true, false], [false, false]),
+            render([false, false], [false, true])
+        );
+        assert_eq!(
+            render([false, true], [false, false]),
+            render([true, true], [true, false])
+        );
+    }
+
+    #[test]
+    fn fm_mute_silences_ymfm_fixtures_without_muting_ssg() {
+        let fixtures: &[(Chip, &[u8])] = &[
+            (
+                Chip::Ym2151,
+                include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
+            ),
+            (
+                Chip::Ym2203,
+                include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ym2413,
+                include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ym2608,
+                include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ym2610b,
+                include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ym2612,
+                include_bytes!("../../soundlog/assets/vgm/ym2612_a4.vgm"),
+            ),
+            (
+                Chip::Ym3526,
+                include_bytes!("../../soundlog/assets/vgm/ym3526_fm_a4.vgm"),
+            ),
+            (
+                Chip::Y8950,
+                include_bytes!("../../soundlog/assets/vgm/y8950_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ym3812,
+                include_bytes!("../../soundlog/assets/vgm/ym3812_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ymf262,
+                include_bytes!("../../soundlog/assets/vgm/ymf262_fm_a4.vgm"),
+            ),
+            (
+                Chip::Ymf278b,
+                include_bytes!("../../soundlog/assets/vgm/ymf278b_fm_a4.vgm"),
+            ),
+        ];
+        let render = |chip: &Chip, data: &[u8], muted: Option<bool>| {
+            let mut player = Sequencer::Vgm(VgmSequencer::from_vgm(data, 44_100, 1024).unwrap());
+            if let Some(muted) = muted {
+                let mute = Arc::new(FmMute::default());
+                for channel in 0..crate::fm_mute::fm_channels(chip).unwrap() {
+                    assert!(mute.set_muted(chip, Instance::Primary, channel, muted));
+                }
+                player.filter_fm_mutes(mute);
+            }
+            let mut frames = Vec::new();
+            while let Some(block) = player.render().unwrap() {
+                frames.extend_from_slice(block.frames());
+                assert!(frames.len() < 44_100 * 10);
+            }
+            frames
+        };
+        for (chip, data) in fixtures {
+            let original = render(chip, data, None);
+            let unmuted = render(chip, data, Some(false));
+            let muted = render(chip, data, Some(true));
+            assert_eq!(original.len(), muted.len());
+            assert_eq!(original, unmuted, "{chip:?}");
+            // YM2612's modeled DAC ladder has a nonzero idle output.
+            let idle_limit: f32 = if *chip == Chip::Ym2612 { 0.02 } else { 0.00001 };
+            assert!(
+                original
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > (idle_limit * 2.0).max(0.001)),
+                "{chip:?}"
+            );
+            assert!(
+                muted
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() < idle_limit),
+                "{chip:?}"
+            );
+        }
+        for (chip, data) in [
+            (
+                Chip::Ym2203,
+                &include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..],
+            ),
+            (
+                Chip::Ym2608,
+                &include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm")[..],
+            ),
+            (
+                Chip::Ym2610b,
+                &include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm")[..],
+            ),
+        ] {
+            let original = render(&chip, data, None);
+            assert!(
+                original.iter().flatten().any(|sample| sample.abs() > 0.001),
+                "{chip:?}"
+            );
+            assert_eq!(original, render(&chip, data, Some(true)), "{chip:?}");
+        }
+    }
 
     #[test]
     fn chip_gain_accepts_only_zero_to_one_hundred_percent() {
@@ -2036,17 +2766,40 @@ mod tests {
         player
             .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 0.6)
             .unwrap();
-        player.play(PathBuf::from("first.vgm"), true);
+        let preview_mute = FmMute::default();
+        assert!(preview_mute.set_muted(&Chip::Ym2151, Instance::Primary, 0, true));
+        assert!(preview_mute.set_soloed(&Chip::Ym2151, Instance::Primary, 1, true));
+        player.play(PathBuf::from("first.vgm"), true, Some(&preview_mute));
         let first_generation = player.generation;
         let (looped, first) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(looped);
+        assert!(first.fm_mute.is_muted(&Chip::Ym2151, Instance::Primary, 0));
+        assert!(first.fm_mute.is_soloed(&Chip::Ym2151, Instance::Primary, 1));
+        assert!(
+            player
+                .fm_mute()
+                .set_muted(&Chip::Ym2151, Instance::Primary, 0, true)
+        );
+        assert!(
+            player
+                .fm_mute()
+                .set_soloed(&Chip::Ym2151, Instance::Primary, 1, true)
+        );
         player.set_paused(true);
         assert!(first.paused.load(Ordering::Relaxed));
-        player.play(PathBuf::from("second.vgm"), false);
+        player.play(PathBuf::from("second.vgm"), false, None);
         let (looped, second) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(!looped);
         assert!(first.cancel.load(Ordering::Relaxed));
         assert!(!second.paused.load(Ordering::Relaxed));
+        assert!(!second.fm_mute.is_muted(&Chip::Ym2151, Instance::Primary, 0));
+        assert!(first.fm_mute.is_muted(&Chip::Ym2151, Instance::Primary, 0));
+        assert!(
+            !second
+                .fm_mute
+                .is_soloed(&Chip::Ym2151, Instance::Primary, 1)
+        );
+        assert!(first.fm_mute.is_soloed(&Chip::Ym2151, Instance::Primary, 1));
         assert_eq!(second.volume.get(), 0.25);
         assert!(Arc::ptr_eq(&first.gains, &second.gains));
         assert_eq!(
@@ -2097,12 +2850,12 @@ mod tests {
             started: started_tx,
             release: Mutex::new(release_rx),
         });
-        player.play(PathBuf::from("first"), false);
+        player.play(PathBuf::from("first"), false, None);
         assert_eq!(
             started_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             "first"
         );
-        player.play(PathBuf::from("second"), false);
+        player.play(PathBuf::from("second"), false, None);
         assert!(started_rx.recv_timeout(Duration::from_millis(50)).is_err());
         release_tx.send(()).unwrap();
         assert_eq!(
@@ -2447,6 +3200,205 @@ mod tests {
     }
 
     #[test]
+    fn playback_keeps_idle_preview_until_live_preview_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.vgm");
+        std::fs::write(
+            &path,
+            include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
+        )
+        .unwrap();
+        let preview = IdlePreview::start(path, false, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while preview
+            .visual_snapshot(RollMode::Incoming)
+            .unwrap()
+            .scanning
+        {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let player = Playback::new();
+        let idle = preview.visual_snapshot(RollMode::Incoming).unwrap();
+        assert!(!idle.notes.is_empty());
+        let initial = player
+            .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+            .unwrap();
+        assert_eq!(initial.notes.len(), idle.notes.len());
+        assert_eq!(initial.position, 0);
+        assert!(!initial.started);
+        assert!(
+            player
+                .visual_snapshot_with_preview(RollMode::Trail, Some(&preview))
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+
+        player.control.sample_rate.store(48_000, Ordering::Release);
+        let now = Instant::now();
+        player.control.visual_clock.publish(24_000, 0, now).unwrap();
+        assert!(player.control.first_presentation.set(now).is_ok());
+        let advancing = player
+            .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+            .unwrap();
+        assert_eq!(advancing.position, 22_050);
+        assert_eq!(advancing.rate, 44_100);
+        assert!(advancing.started);
+
+        player.control.preview.lock().unwrap().done = true;
+        let live = player
+            .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+            .unwrap();
+        assert_eq!(live.rate, 48_000);
+        assert_eq!(live.position, 24_000);
+        assert!(live.notes.is_empty());
+
+        player.control.preview.lock().unwrap().error = Some("test failure".into());
+        assert!(
+            player
+                .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+                .err()
+                .expect("live preview error must be shown")
+                .to_string()
+                .contains("test failure")
+        );
+    }
+
+    #[test]
+    fn idle_preview_reads_vgm_and_mdx_without_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let vgm = dir.path().join("notes.vgm");
+        let mdx = dir.path().join("notes.mdx");
+        std::fs::write(
+            &vgm,
+            include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
+        )
+        .unwrap();
+        std::fs::write(
+            &mdx,
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mdx_fm_loop.pdx"),
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx"),
+        )
+        .unwrap();
+        let plan = PlaybackPlan {
+            device_ids: vec![1],
+            routes: vec![ndsif_transport::NdsifRoute {
+                chip: Chip::Ym2151,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            }],
+        };
+        for path in [vgm, mdx] {
+            let preview = IdlePreview::start(path.clone(), false, Some(&plan)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let snapshot = preview.visual_snapshot(RollMode::Incoming).unwrap();
+                let sources = preview.gain_sources().unwrap();
+                if !snapshot.scanning && sources.is_some() {
+                    assert!(!snapshot.notes.is_empty(), "{}", path.display());
+                    assert_eq!(snapshot.position, 0);
+                    assert!(!snapshot.started);
+                    assert!(sources.unwrap().iter().any(|source| {
+                        source.chip == Chip::Ym2151
+                            && source.instance == Instance::Primary
+                            && source.hardware
+                    }));
+                    let trail = preview.visual_snapshot(RollMode::Trail).unwrap();
+                    assert!(trail.notes.is_empty());
+                    assert!(!trail.preparing);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{}", path.display());
+                thread::sleep(Duration::from_millis(10));
+            }
+            let control = Arc::clone(&preview.control);
+            drop(preview);
+            assert!(control.cancel.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn idle_preview_uses_initial_opl_mode_not_future_mode() {
+        use soundlog::chip::Ymf262Spec;
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opl3.vgm");
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ymf262, Instance::Primary, 14_318_180);
+        builder.add_chip_write(
+            Instance::Primary,
+            Ymf262Spec {
+                port: 1,
+                register: 4,
+                value: 1,
+            },
+        );
+        builder.add_chip_write(
+            Instance::Primary,
+            Ymf262Spec {
+                port: 0,
+                register: 0xbd,
+                value: 0x20,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(44_100));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ymf262Spec {
+                port: 1,
+                register: 4,
+                value: 0,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(44_100));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        let preview = IdlePreview::start(path, false, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while preview.gain_sources().unwrap().is_none() {
+            preview.visual_snapshot(RollMode::Incoming).unwrap();
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            preview
+                .fm_mute()
+                .paired_channel(&Chip::Ymf262, Instance::Primary, 0),
+            Some(3)
+        );
+        assert!(
+            preview
+                .fm_mute()
+                .rhythm_channel(&Chip::Ymf262, Instance::Primary, 6)
+        );
+    }
+
+    #[test]
+    fn idle_preview_reports_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let preview = IdlePreview::start(dir.path().join("missing.vgm"), false, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match preview.visual_snapshot(RollMode::Incoming) {
+                Err(error) => {
+                    assert!(format!("{error:#}").contains("missing.vgm"));
+                    break;
+                }
+                Ok(_) => {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn preview_reads_upcoming_vgm_and_mdx_notes_and_follows_position() {
         use soundlog::chip::{Chip, Ym2151Spec};
         use soundlog::vgm::command::WaitSamples;
@@ -2567,7 +3519,7 @@ mod tests {
 
         for rate in [8_000, 44_100, 48_000] {
             let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
-            run_preview(&path, rate, false, &control, &AtomicBool::new(false)).unwrap();
+            run_preview(&path, rate, false, &control, &AtomicBool::new(false), None).unwrap();
             let mut preview = control.preview.lock().unwrap();
             let mut notes = preview.roll.snapshot(0, rate, RollMode::Incoming);
             notes.sort_by_key(|note| note.pitch);
@@ -2618,7 +3570,7 @@ mod tests {
                     .visual_clock
                     .publish(u64::from(rate) * 300, 1, Instant::now())
                     .unwrap();
-                run_preview(path, rate, false, &control, &AtomicBool::new(false)).unwrap();
+                run_preview(path, rate, false, &control, &AtomicBool::new(false), None).unwrap();
                 let preview = control.preview.lock().unwrap();
                 assert!(preview.done);
                 assert_eq!(preview.scanned, expected, "{} at {rate} Hz", path.display());

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preview the first playlist track and its Piano Roll controls before playback.
+- Add per-instance FM channel mute/solo controls and distinct Piano Roll voice colors.
 - Add per-chip and FM/SSG software gain controls (0-100%) to the Piano Roll.
 - Rebalance emulated SN76489 and YM2203/YM2608/YM2610 SSG output against FM.
 - Prepare Piano Roll previews with soundlog without rendering audio.

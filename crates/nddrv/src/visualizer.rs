@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -7,7 +7,7 @@ use soundlog::vgm::command::Instance;
 
 const MAX_NOTES: usize = 8192;
 pub const WINDOW_SECONDS: u64 = 6;
-pub const NOTE_COLORS: [(u32, &str); 8] = [
+const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
     (0xc283ccff, "Purple"),
@@ -36,6 +36,7 @@ struct Voice {
 pub struct Note {
     pub pitch: u8,
     pub chip: u8,
+    pub instance: u8,
     pub channel: u8,
     pub start: u64,
     pub end: Option<u64>,
@@ -101,6 +102,7 @@ impl PianoRoll {
             Note {
                 pitch,
                 chip: voice.chip,
+                instance: voice.instance,
                 channel: voice.channel,
                 start: frame,
                 end: None,
@@ -195,20 +197,40 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
     ))
 }
 
-fn note_color_index(note: &Note) -> usize {
-    (usize::from(note.chip) + usize::from(note.channel)) % NOTE_COLORS.len()
+pub fn source_color_index(chip: u8, instance: u8) -> u8 {
+    chip + instance * crate::fm_mute::CHIP_COUNT as u8
+}
+
+pub fn channel_color(source: u8, channel: u8) -> u32 {
+    let index = usize::from(source) * 18 + usize::from(channel);
+    if index < NOTE_COLORS.len() {
+        return NOTE_COLORS[index].0;
+    }
+    let hue = ((index - NOTE_COLORS.len()) * 137) % 1530;
+    let part = (hue % 255) as u32;
+    let (r, g, b) = match hue / 255 {
+        0 => (255, part, 0),
+        1 => (255 - part, 255, 0),
+        2 => (0, 255, part),
+        3 => (0, 255 - part, 255),
+        4 => (part, 0, 255),
+        _ => (255, 0, 255 - part),
+    };
+    (r << 24) | (g << 16) | (b << 8) | 0xff
 }
 
 fn note_color(note: &Note) -> u32 {
-    NOTE_COLORS[note_color_index(note)].0
+    channel_color(source_color_index(note.chip, note.instance), note.channel)
 }
 
-fn ordered_notes<'a>(notes: &'a [Note], visible: &[bool; NOTE_COLORS.len()]) -> Vec<&'a Note> {
+fn ordered_notes<'a>(notes: &'a [Note], hidden: &HashSet<(u8, u8)>) -> Vec<&'a Note> {
     let mut ordered: Vec<_> = notes
         .iter()
-        .filter(|note| visible[note_color_index(note)])
+        .filter(|note| {
+            !hidden.contains(&(source_color_index(note.chip, note.instance), note.channel))
+        })
         .collect();
-    ordered.sort_by_key(|note| (note.start, note.chip, note.channel));
+    ordered.sort_by_key(|note| (note.start, note.chip, note.instance, note.channel));
     ordered
 }
 
@@ -325,7 +347,7 @@ fn paint_roll(
     mode: RollMode,
     started: bool,
     scanned: u64,
-    visible_colors: &[bool; NOTE_COLORS.len()],
+    hidden_channels: &HashSet<(u8, u8)>,
 ) {
     let x = bounds.origin.x.as_f32();
     let y = bounds.origin.y.as_f32();
@@ -379,7 +401,7 @@ fn paint_roll(
         );
     }
 
-    let ordered = ordered_notes(notes, visible_colors);
+    let ordered = ordered_notes(notes, hidden_channels);
     let active = active_key_colors(&ordered, position, started);
     for note in ordered {
         let Some((key, key_width)) = key_position(note.pitch) else {
@@ -450,9 +472,10 @@ fn paint_roll(
 pub fn view(
     title: String,
     playing: bool,
+    previewing: bool,
     paused: bool,
     mode: RollMode,
-    visible_colors: [bool; NOTE_COLORS.len()],
+    hidden_channels: HashSet<(u8, u8)>,
     snapshot: Result<Snapshot, String>,
     playback_buttons: Div,
 ) -> Div {
@@ -488,7 +511,7 @@ pub fn view(
                         mode,
                         started,
                         scanned,
-                        &visible_colors,
+                        &hidden_channels,
                     )
                 },
             )
@@ -509,7 +532,7 @@ pub fn view(
                     RollMode::Trail => "NDDRV  /  LIVE PIANO ROLL",
                 }))
                 .child(
-                    div().pr(px(200.)).min_w_0().child(
+                    div().pr(px(268.)).min_w_0().child(
                         div()
                             .text_xl()
                             .text_color(rgb(0xe4ffff))
@@ -523,6 +546,8 @@ pub fn view(
                     "PAUSED"
                 } else if playing {
                     "LIVE  ·  TRACKED CHIP VOICES"
+                } else if previewing {
+                    "READY  ·  PLAYLIST PREVIEW"
                 } else {
                     "Select a track and start playback"
                 }))
@@ -565,47 +590,37 @@ pub fn view(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NOTES, NOTE_COLORS, Note, PianoRoll, RollMode, RollProjection, active_key_colors,
-        frequency_to_pitch, key_position, note_color, note_color_index, note_depths, ordered_notes,
+        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, active_key_colors, channel_color,
+        frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
     };
     use soundlog::chip::event::StateEvent;
     use soundlog::chip::event::ToneInfo;
     use soundlog::vgm::command::Instance;
+    use std::collections::HashSet;
 
     fn tone(frequency: f32) -> ToneInfo {
         ToneInfo::new(0, 0, Some(frequency))
     }
 
     #[test]
-    fn eight_channels_have_distinct_colors_and_independent_filters() {
+    fn channels_and_instances_have_distinct_colors_and_independent_filters() {
         let notes: Vec<_> = (0..=8)
             .map(|channel| Note {
                 pitch: 60 + channel,
                 chip: 0,
+                instance: 0,
                 channel,
                 start: 0,
                 end: None,
             })
             .collect();
-        let colors: std::collections::HashSet<_> = notes[..8].iter().map(note_color).collect();
-        assert_eq!(colors.len(), 8);
-        assert_eq!(note_color(&notes[8]), note_color(&notes[0]));
-        for chip in 0..=10 {
-            let indices: std::collections::HashSet<_> = notes[..8]
-                .iter()
-                .map(|note| {
-                    let mut note = note.clone();
-                    note.chip = chip;
-                    note_color_index(&note)
-                })
-                .collect();
-            assert_eq!(indices.len(), 8);
-        }
+        let colors: HashSet<_> = (0..22)
+            .flat_map(|chip| (0..18).map(move |channel| channel_color(chip, channel)))
+            .collect();
+        assert_eq!(colors.len(), 22 * 18);
 
-        let mut visible = [true; NOTE_COLORS.len()];
-        visible[6] = false;
-        visible[7] = false;
-        let filtered = ordered_notes(&notes, &visible);
+        let mut hidden = HashSet::from([(0, 6), (0, 7)]);
+        let filtered = ordered_notes(&notes, &hidden);
         assert_eq!(filtered.len(), 7);
         assert!(
             filtered
@@ -617,9 +632,8 @@ mod tests {
                 .iter()
                 .all(Option::is_none)
         );
-        visible[6] = true;
-        visible[7] = true;
-        assert_eq!(ordered_notes(&notes, &visible).len(), 9);
+        hidden.clear();
+        assert_eq!(ordered_notes(&notes, &hidden).len(), 9);
     }
 
     #[test]
@@ -628,6 +642,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 2,
+                instance: 0,
                 channel: 0,
                 start: 20,
                 end: Some(40),
@@ -635,6 +650,7 @@ mod tests {
             Note {
                 pitch: 61,
                 chip: 1,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: None,
@@ -642,6 +658,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 0,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: Some(50),
@@ -649,6 +666,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 3,
+                instance: 0,
                 channel: 0,
                 start: 30,
                 end: None,
@@ -656,12 +674,13 @@ mod tests {
             Note {
                 pitch: 130,
                 chip: 1,
+                instance: 0,
                 channel: 0,
                 start: 0,
                 end: None,
             },
         ];
-        let visible = [true; NOTE_COLORS.len()];
+        let visible = HashSet::new();
         let ordered = ordered_notes(&notes, &visible);
         assert!(
             active_key_colors(&ordered, 25, false)
@@ -686,6 +705,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 2,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: Some(20),
@@ -693,6 +713,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 0,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: None,
@@ -716,6 +737,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 0,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: None,
@@ -723,6 +745,7 @@ mod tests {
             Note {
                 pitch: 60,
                 chip: 1,
+                instance: 0,
                 channel: 0,
                 start: 20,
                 end: None,
@@ -730,6 +753,7 @@ mod tests {
             Note {
                 pitch: 61,
                 chip: 8,
+                instance: 0,
                 channel: 0,
                 start: 10,
                 end: None,
@@ -737,12 +761,13 @@ mod tests {
             Note {
                 pitch: 62,
                 chip: 2,
+                instance: 0,
                 channel: 0,
                 start: 30,
                 end: None,
             },
         ];
-        let mut visible = [true; NOTE_COLORS.len()];
+        let mut visible = HashSet::new();
         let all = ordered_notes(&notes, &visible);
         assert_eq!(all.len(), 4);
         assert_eq!(
@@ -750,7 +775,7 @@ mod tests {
             Some(note_color(&notes[1]))
         );
 
-        visible[1] = false;
+        visible.insert((1, 0));
         let filtered = ordered_notes(&notes, &visible);
         assert_eq!(filtered.len(), 3);
         assert_eq!(
@@ -763,15 +788,16 @@ mod tests {
         );
         assert_eq!(active_key_colors(&filtered, 25, true)[62], None);
 
-        visible[0] = false;
+        visible.insert((0, 0));
+        visible.insert((8, 0));
         let filtered = ordered_notes(&notes, &visible);
         assert_eq!(filtered.len(), 1);
         assert_eq!(active_key_colors(&filtered, 25, true)[60], None);
         assert_eq!(active_key_colors(&filtered, 25, true)[61], None);
 
-        visible.fill(false);
+        visible.insert((2, 0));
         assert!(ordered_notes(&notes, &visible).is_empty());
-        visible.fill(true);
+        visible.clear();
         assert_eq!(ordered_notes(&notes, &visible).len(), 4);
     }
 
@@ -848,6 +874,13 @@ mod tests {
             vec![StateEvent::KeyOff { channel: 0 }],
         );
         let notes = roll.snapshot(40, 100, RollMode::Trail);
+        let primary = notes.iter().find(|note| note.pitch == 69).unwrap();
+        let secondary = notes.iter().find(|note| note.pitch == 57).unwrap();
+        assert_eq!(primary.chip, 1);
+        assert_eq!(secondary.chip, 1);
+        assert_eq!(primary.instance, 0);
+        assert_eq!(secondary.instance, 1);
+        assert_ne!(note_color(primary), note_color(secondary));
         assert!(
             notes
                 .iter()
@@ -896,6 +929,7 @@ mod tests {
         let note = Note {
             pitch: 69,
             chip: 0,
+            instance: 0,
             channel: 0,
             start: 200,
             end: Some(300),

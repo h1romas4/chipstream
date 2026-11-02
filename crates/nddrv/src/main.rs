@@ -1,4 +1,5 @@
 mod device;
+mod fm_mute;
 mod hardware;
 mod library;
 mod patchbay;
@@ -32,7 +33,7 @@ use gpui_kit::component::{Disableable, IndexPath, Theme, ThemeMode, TitleBar, Wi
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use library::{ChipTag, Config, DirectoryEntry, ScanProgress, Track};
-use playback::{Event, GainPart, GainSource, Playback, VolumeMode};
+use playback::{Event, GainPart, GainSource, IdlePreview, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
@@ -61,6 +62,15 @@ fn music_format(path: &Path) -> &'static str {
 
 fn ends_folder_group(path: &Path, next: Option<&Path>) -> bool {
     next.is_some_and(|next| path.parent() != next.parent())
+}
+
+fn keep_preview_sources(
+    playing: bool,
+    transitioning: bool,
+    current: Option<&[GainSource]>,
+    playback: Option<&[GainSource]>,
+) -> bool {
+    playing && transitioning && current.is_some() && playback.is_none()
 }
 
 fn track_title(
@@ -192,7 +202,7 @@ struct AppView {
     config: Config,
     page: Page,
     roll_mode: visualizer::RollMode,
-    roll_visible_colors: [bool; visualizer::NOTE_COLORS.len()],
+    roll_hidden_channels: HashSet<(u8, u8)>,
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
     device_port: Entity<SelectState<SearchableVec<String>>>,
@@ -239,6 +249,10 @@ struct AppView {
     gain_sources: Option<Vec<GainSource>>,
     gain_sources_failed: bool,
     player: Playback,
+    idle_target: Option<IdlePreviewTarget>,
+    idle_preview: Option<IdlePreview>,
+    idle_preview_error: Option<String>,
+    transition_preview: Option<IdlePreview>,
     playing: Option<usize>,
     playing_hardware: bool,
     displayed_volume_mode: VolumeMode,
@@ -259,6 +273,13 @@ struct AppView {
     scan_progress_updated_at: Option<Instant>,
     completed_scan_notification: Option<(usize, Vec<String>)>,
     _poll: Task<()>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct IdlePreviewTarget {
+    path: PathBuf,
+    routing: routing::RoutingConfig,
+    looped: bool,
 }
 
 impl AppView {
@@ -362,7 +383,7 @@ impl AppView {
             config,
             page: Page::Library,
             roll_mode: visualizer::RollMode::default(),
-            roll_visible_colors: [true; visualizer::NOTE_COLORS.len()],
+            roll_hidden_channels: HashSet::new(),
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
             device_port,
@@ -409,6 +430,10 @@ impl AppView {
             gain_sources: None,
             gain_sources_failed: false,
             player: Playback::new(),
+            idle_target: None,
+            idle_preview: None,
+            idle_preview_error: None,
+            transition_preview: None,
             playing: None,
             playing_hardware: false,
             displayed_volume_mode: VolumeMode::Master,
@@ -646,6 +671,12 @@ impl AppView {
             self.paused = false;
             self.elapsed = 0;
         }
+        if self.playing.is_none() && removed.contains(&0) {
+            self.idle_preview = None;
+            self.idle_target = None;
+            self.idle_preview_error = None;
+            self.gain_sources = None;
+        }
         self.status = format!("Removed {count} tracks from playlist");
         self.save();
         cx.notify();
@@ -820,9 +851,24 @@ impl AppView {
             }
         };
         if let Some(path) = self.config.playlist.get(index).cloned() {
+            let use_transition =
+                self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
+            let preview_mute = if self.playing.is_none()
+                && index == 0
+                && self
+                    .idle_target
+                    .as_ref()
+                    .is_some_and(|target| target.path == path)
+            {
+                self.idle_preview.as_ref().map(IdlePreview::fm_mute)
+            } else {
+                None
+            };
             self.status = format!("Playing: {}", path.display());
             self.playing = Some(index);
-            self.gain_sources = None;
+            if !use_transition {
+                self.gain_sources = None;
+            }
             self.gain_sources_failed = false;
             self.playing_hardware = plan.is_some();
             self.paused = false;
@@ -830,6 +876,7 @@ impl AppView {
             let indexed = self.track_by_path.get(&path).copied();
             self.playing_title = indexed
                 .map(|index| self.tracks[index].display_title())
+                .or_else(|| self.playlist_tracks.get(&path).map(Track::display_title))
                 .unwrap_or_else(|| Track::format_display_title(&path, &Default::default()));
             if let Some(plan) = plan {
                 self.player.play_hardware(
@@ -837,10 +884,19 @@ impl AppView {
                     self.looped,
                     self.device_service.playback_handle(),
                     plan,
+                    preview_mute,
                 );
             } else {
-                self.player.play(path.clone(), self.looped);
+                self.player.play(path.clone(), self.looped, preview_mute);
             }
+            self.transition_preview = if use_transition {
+                self.idle_preview.take()
+            } else {
+                self.idle_preview = None;
+                None
+            };
+            self.idle_target = None;
+            self.idle_preview_error = None;
             self.displayed_volume_mode = self.player.volume_mode();
             if indexed.is_none() {
                 let generation = self.player.generation();
@@ -874,12 +930,286 @@ impl AppView {
         }
     }
 
+    fn idle_preview_target(&self) -> Option<IdlePreviewTarget> {
+        self.config.playlist.first().map(|path| IdlePreviewTarget {
+            path: path.clone(),
+            routing: self.config.routing.clone(),
+            looped: self.looped,
+        })
+    }
+
+    fn current_idle_preview(&self) -> Option<&IdlePreview> {
+        (self.playing.is_none()
+            && self.idle_target.is_some()
+            && self.idle_target == self.idle_preview_target())
+        .then_some(self.idle_preview.as_ref())
+        .flatten()
+    }
+
+    fn piano_fm_mute(&self) -> &fm_mute::FmMute {
+        self.current_idle_preview()
+            .map_or_else(|| self.player.fm_mute(), IdlePreview::fm_mute)
+    }
+
+    fn piano_sources(&self) -> Option<&Vec<GainSource>> {
+        if self.playing.is_some() || self.current_idle_preview().is_some() {
+            self.gain_sources.as_ref()
+        } else {
+            None
+        }
+    }
+
+    fn sync_idle_preview(&mut self, cx: &mut Context<Self>) {
+        if self.playing.is_some() || self.page != Page::Piano {
+            return;
+        }
+        let target = self.idle_preview_target();
+        if self.idle_target == target && (target.is_some() || self.gain_sources.is_none()) {
+            return;
+        }
+        let previous = self.idle_preview.take();
+        let same_track = self
+            .idle_target
+            .as_ref()
+            .zip(target.as_ref())
+            .is_some_and(|(old, new)| old.path == new.path);
+        self.idle_target = target;
+        self.idle_preview_error = None;
+        self.gain_sources = None;
+        self.gain_sources_failed = false;
+        if let Some(target) = &self.idle_target {
+            let result = target.routing.playback_plan().and_then(|plan| {
+                IdlePreview::start(target.path.clone(), target.looped, plan.as_ref())
+            });
+            match result {
+                Ok(preview) => {
+                    if same_track && let Some(previous) = &previous {
+                        preview.fm_mute().copy_selections_from(previous.fm_mute());
+                    }
+                    self.idle_preview = Some(preview);
+                }
+                Err(error) => self.idle_preview_error = Some(format!("{error:#}")),
+            }
+        }
+        cx.notify();
+    }
+
+    fn piano_channel_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let mut rows = Vec::new();
+        if let Some(sources) = self.piano_sources() {
+            for source in sources {
+                let (Some(index), Some(fm_count), Some(total)) = (
+                    fm_mute::chip_index(&source.chip),
+                    fm_mute::fm_channels(&source.chip),
+                    fm_mute::tracked_channels(&source.chip),
+                ) else {
+                    continue;
+                };
+                let chip_id = visualizer::source_color_index(index as u8, source.instance as u8);
+                let title = format!(
+                    "{} #{}{}",
+                    Track::chip_name(&source.chip),
+                    source.instance as u8 + 1,
+                    if source.hardware { " (ND)" } else { "" }
+                );
+                rows.push(div().text_xs().text_color(rgb(0xb9e9e7)).child(title));
+                for channel in 0..total {
+                    let paired =
+                        self.piano_fm_mute()
+                            .paired_channel(&source.chip, source.instance, channel);
+                    if paired.is_some_and(|other| other < channel) {
+                        continue;
+                    }
+                    let mut colors = vec![channel];
+                    if let Some(other) = paired {
+                        colors.push(other);
+                    }
+                    let mut swatches = Vec::new();
+                    for color_channel in colors {
+                        let hidden = self
+                            .roll_hidden_channels
+                            .contains(&(chip_id, color_channel));
+                        let color = visualizer::channel_color(chip_id, color_channel);
+                        swatches.push(
+                            Button::new(format!("piano-visible-{chip_id}-{color_channel}"))
+                                .w(px(25.))
+                                .h(px(25.))
+                                .p_0()
+                                .tooltip(if hidden { "Show notes" } else { "Hide notes" })
+                                .accessibility_label(format!(
+                                    "{} instance {} channel {} notes",
+                                    Track::chip_name(&source.chip),
+                                    source.instance as u8 + 1,
+                                    color_channel + 1
+                                ))
+                                .toggled(!hidden)
+                                .child(div().size(px(16.)).rounded_none().bg(rgba(if hidden {
+                                    (color & 0xffffff00) | 0x55
+                                } else {
+                                    color
+                                })))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    if !view.roll_hidden_channels.remove(&(chip_id, color_channel))
+                                    {
+                                        view.roll_hidden_channels.insert((chip_id, color_channel));
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    let label = if channel >= fm_count {
+                        format!("SSG {}", channel - fm_count + 1)
+                    } else if let Some(other) = paired {
+                        format!("FM {}+{}", channel + 1, other + 1)
+                    } else {
+                        format!("FM {}", channel + 1)
+                    };
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .children(swatches)
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(rgb(0x82a8bb))
+                                .child(label),
+                        );
+                    if channel < fm_count {
+                        let chip = source.chip.clone();
+                        let instance = source.instance;
+                        let muted = self.piano_fm_mute().is_muted(&chip, instance, channel);
+                        let soloed = self.piano_fm_mute().is_soloed(&chip, instance, channel);
+                        let rhythm = self
+                            .piano_fm_mute()
+                            .rhythm_channel(&chip, instance, channel);
+                        let solo_chip = chip.clone();
+                        let channel_name = if let Some(other) = paired {
+                            format!("FM {} and {}", channel + 1, other + 1)
+                        } else {
+                            format!("FM {}", channel + 1)
+                        };
+                        row = row
+                            .child(
+                                Button::new(format!("piano-mute-{chip_id}-{channel}"))
+                                    .icon(assets::IconName::VolumeX)
+                                    .w(px(25.))
+                                    .h(px(25.))
+                                    .p_0()
+                                    .tooltip(if rhythm {
+                                        "Rhythm mode is not controlled by FM mute or solo"
+                                    } else {
+                                        "Toggle FM mute (effective on the next key-on)"
+                                    })
+                                    .accessibility_label(format!(
+                                        "{} instance {} {} mute",
+                                        Track::chip_name(&source.chip),
+                                        instance as u8 + 1,
+                                        channel_name
+                                    ))
+                                    .when(muted, |button| button.primary())
+                                    .toggled(muted)
+                                    .disabled(rhythm)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        let state = view.piano_fm_mute();
+                                        let muted = state.is_muted(&chip, instance, channel);
+                                        if !state.set_muted(&chip, instance, channel, !muted) {
+                                            view.pending_errors.push(error_notification(
+                                                "FM mute error",
+                                                "Invalid FM channel",
+                                            ));
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new(format!("piano-solo-{chip_id}-{channel}"))
+                                    .icon(assets::IconName::Headphones)
+                                    .w(px(25.))
+                                    .h(px(25.))
+                                    .p_0()
+                                    .tooltip(if rhythm {
+                                        "Rhythm mode is not controlled by FM mute or solo"
+                                    } else {
+                                        "Toggle FM solo (effective on the next key-on)"
+                                    })
+                                    .accessibility_label(format!(
+                                        "{} instance {} {} solo",
+                                        Track::chip_name(&source.chip),
+                                        instance as u8 + 1,
+                                        channel_name
+                                    ))
+                                    .when(soloed, |button| button.primary())
+                                    .toggled(soloed)
+                                    .disabled(rhythm)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        let state = view.piano_fm_mute();
+                                        let soloed = state.is_soloed(&solo_chip, instance, channel);
+                                        if !state.set_soloed(&solo_chip, instance, channel, !soloed)
+                                        {
+                                            view.pending_errors.push(error_notification(
+                                                "FM solo error",
+                                                "Invalid FM channel",
+                                            ));
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(rhythm, |row| {
+                                row.child(div().text_xs().text_color(rgb(0xd0a76e)).child("Rhythm"))
+                            });
+                    }
+                    rows.push(row);
+                }
+            }
+        }
+        let empty = if self.playing.is_none() && self.config.playlist.is_empty() {
+            "Add a track to view channels"
+        } else if self.idle_preview_error.is_some() {
+            "Channel preview unavailable"
+        } else if self.piano_sources().is_none() {
+            "Preparing channel controls..."
+        } else {
+            "No tracked channels"
+        };
+        let height = if rows.is_empty() {
+            76.
+        } else {
+            rows.len() as f32 * 29. + 44.
+        };
+        div()
+            .id("piano-channels")
+            .w_full()
+            .h(px(height))
+            .flex_shrink(1.)
+            .min_h_0()
+            .overflow_hidden()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(0x284452))
+            .bg(rgba(0x0b1623ed))
+            .child(
+                div()
+                    .id("piano-channels-scroll")
+                    .size_full()
+                    .overflow_y_scrollbar()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("CHANNELS"))
+                    .when(rows.is_empty(), |panel| {
+                        panel.child(div().text_xs().text_color(rgb(0x82a8bb)).child(empty))
+                    })
+                    .children(rows),
+            )
+    }
+
     fn piano_gain_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         let mut rows = Vec::new();
         let mut seen = HashSet::new();
-        if self.playing.is_some()
-            && let Some(sources) = &self.gain_sources
-        {
+        if let Some(sources) = self.piano_sources() {
             for source in sources {
                 if !seen.insert(source.chip.clone()) {
                     continue;
@@ -958,28 +1288,32 @@ impl AppView {
                 }
             }
         }
-        let empty = if self.playing.is_none() {
-            "Start playback to adjust chip gains"
-        } else if self.gain_sources.is_none() {
+        let empty = if self.playing.is_none() && self.config.playlist.is_empty() {
+            "Add a track to adjust chip gains"
+        } else if self.idle_preview_error.is_some() {
+            "Chip preview unavailable"
+        } else if self.piano_sources().is_none() {
             "Preparing chip controls..."
         } else {
             "No playable chip outputs"
         };
+        let height = (rows.len() as f32 * 31. + 92.).min(400.);
         div()
-            .absolute()
-            .top(px(70.))
-            .right(px(28.))
-            .w(px(260.))
+            .id("piano-chip-gains")
+            .w_full()
+            .h(px(height))
+            .max_h(relative(0.45))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(0x284452))
+            .bg(rgba(0x0b1623ed))
             .child(
                 div()
-                    .id("piano-chip-gains")
-                    .w_full()
-                    .max_h(px(400.))
+                    .id("piano-chip-gains-scroll")
+                    .size_full()
                     .overflow_y_scrollbar()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(rgb(0x284452))
-                    .bg(rgba(0x0b1623ed))
                     .p_3()
                     .flex()
                     .flex_col()
@@ -993,7 +1327,7 @@ impl AppView {
                         div()
                             .text_xs()
                             .text_color(rgb(0x82a8bb))
-                            .child("Software only · Above 100% may clip"),
+                            .child("Software only"),
                     ),
             )
     }
@@ -1093,8 +1427,21 @@ impl AppView {
                 );
             }
         }
-        if self.playing.is_some() {
-            match self.player.gain_sources() {
+        self.sync_idle_preview(cx);
+        let sources = if self.playing.is_some() {
+            Some(self.player.gain_sources())
+        } else {
+            self.current_idle_preview().map(IdlePreview::gain_sources)
+        };
+        if let Some(sources) = sources {
+            match sources {
+                Ok(sources)
+                    if keep_preview_sources(
+                        self.playing.is_some(),
+                        self.transition_preview.is_some(),
+                        self.gain_sources.as_deref(),
+                        sources.as_deref(),
+                    ) => {}
                 Ok(sources) if self.gain_sources != sources => {
                     self.gain_sources_failed = false;
                     if let Some(sources) = &sources {
@@ -1150,6 +1497,8 @@ impl AppView {
                 }
                 Err(_) => {}
             }
+        }
+        if self.playing.is_some() {
             let mode = self.player.volume_mode();
             if mode != self.displayed_volume_mode {
                 self.displayed_volume_mode = mode;
@@ -1188,6 +1537,27 @@ impl AppView {
                     cx.notify();
                 }
                 _ => {}
+            }
+        }
+        if self.transition_preview.is_some() {
+            let finished = if self.playing.is_none() {
+                true
+            } else {
+                match self.player.visual_snapshot(visualizer::RollMode::Incoming) {
+                    Ok(snapshot) => {
+                        snapshot.rate != 0
+                            && !snapshot.preparing
+                            && self
+                                .player
+                                .gain_sources()
+                                .is_ok_and(|sources| sources.is_some())
+                    }
+                    Err(_) => true,
+                }
+            };
+            if finished {
+                self.transition_preview = None;
+                cx.notify();
             }
         }
         self.refresh_details(cx);
@@ -1370,6 +1740,20 @@ impl AppView {
         } else {
             "No track playing".into()
         }
+    }
+
+    fn piano_title(&self) -> String {
+        if self.playing.is_some() {
+            return self.now_playing_title();
+        }
+        let Some(path) = self.config.playlist.first() else {
+            return "No track playing".into();
+        };
+        self.track_by_path
+            .get(path)
+            .map(|&index| self.tracks[index].display_title())
+            .or_else(|| self.playlist_tracks.get(path).map(Track::display_title))
+            .unwrap_or_else(|| Track::format_display_title(path, &Default::default()))
     }
 
     fn playback_buttons(&self, cx: &mut Context<Self>) -> Div {
@@ -3096,10 +3480,20 @@ mod tests {
     use super::{
         ACCENT_COLOR, DetailsSelection, ListKey, adjacent_track, capability_labels, chip_colors,
         chip_suggestions, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_select_all, list_key, list_selection_step, music_format,
-        profile_choices, remove_playlist_entries, search_terms, select_for_context, select_item,
-        select_range, selection_status, unique_device_name, update_selection_order,
+        initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
+        music_format, profile_choices, remove_playlist_entries, search_terms, select_for_context,
+        select_item, select_range, selection_status, unique_device_name, update_selection_order,
     };
+
+    #[test]
+    fn preview_sources_remain_visible_only_until_playback_sources_arrive() {
+        let current: &[super::GainSource] = &[];
+        assert!(keep_preview_sources(true, true, Some(current), None));
+        assert!(!keep_preview_sources(true, true, Some(current), Some(&[])));
+        assert!(!keep_preview_sources(true, true, None, None));
+        assert!(!keep_preview_sources(true, false, Some(current), None));
+        assert!(!keep_preview_sources(false, true, Some(current), None));
+    }
 
     #[test]
     fn list_shortcuts_are_scoped_to_the_focused_list_and_ignore_modifiers() {
@@ -3669,12 +4063,18 @@ impl Render for AppView {
                             .when(self.page == Page::Piano, |container| {
                                 let snapshot = if self.playing.is_some() {
                                     self.player
+                                        .visual_snapshot_with_preview(self.roll_mode, self.transition_preview.as_ref())
+                                        .map_err(|error| error.to_string())
+                                } else if let Some(error) = &self.idle_preview_error {
+                                    Err(format!("piano roll preview: {error}"))
+                                } else if let Some(preview) = self.current_idle_preview() {
+                                    preview
                                         .visual_snapshot(self.roll_mode)
                                         .map_err(|error| error.to_string())
                                 } else {
                                     Ok(visualizer::Snapshot::default())
                                 };
-                                if self.paused
+                                if (self.paused || self.playing.is_none())
                                     && snapshot.as_ref().is_ok_and(|snapshot| snapshot.scanning)
                                 {
                                     window.request_animation_frame();
@@ -3691,18 +4091,19 @@ impl Render for AppView {
                                                 .min_w_0()
                                                 .h_full()
                                                 .child(visualizer::view(
-                                                    self.now_playing_title(),
+                                                    self.piano_title(),
                                                     self.playing.is_some(),
+                                                    self.playing.is_none() && !self.config.playlist.is_empty(),
                                                     self.paused,
                                                     self.roll_mode,
-                                                    self.roll_visible_colors,
+                                                    self.roll_hidden_channels.clone(),
                                                     snapshot,
                                                     self.playback_buttons(cx),
                                                 ))
                                                 .child(
                                                     div()
                                                         .absolute()
-                                                        .top(px(24.))
+                                                        .bottom(px(16.))
                                                         .right(px(28.))
                                                         .flex()
                                                         .gap_2()
@@ -3733,60 +4134,21 @@ impl Render for AppView {
                                                                 })),
                                                         ),
                                                 )
-                                                .child(self.piano_gain_panel(cx))
-                                        )
-                                        .child(
-                                            div()
-                                                .id("piano-colors")
-                                                .w(px(64.))
-                                                .h_full()
-                                                .flex()
-                                                .flex_col()
-                                                .items_center()
-                                                .gap_2()
-                                                .pt(px(72.))
-                                                .pb_2()
-                                                .overflow_y_scrollbar()
-                                                .bg(rgb(0x0b1623))
                                                 .child(
                                                     div()
-                                                        .text_xs()
-                                                        .text_color(rgb(0x82a8bb))
-                                                        .child("COLOR"),
+                                                        .absolute()
+                                                        .top(px(24.))
+                                                        .right(px(28.))
+                                                        .bottom(px(64.))
+                                                        .w(px(260.))
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap_2()
+                                                        .child(self.piano_gain_panel(cx))
+                                                        .child(self.piano_channel_panel(cx)),
                                                 )
-                                                .children(visualizer::NOTE_COLORS.iter().enumerate().map(|(index, (color, name))| {
-                                                    let enabled = self.roll_visible_colors[index];
-                                                    let label = format!("{name} notes");
-                                                    let tooltip = format!(
-                                                        "{} {name} notes",
-                                                        if enabled { "Hide" } else { "Show" }
-                                                    );
-                                                    Button::new(("piano-color", index))
-                                                        .w(px(36.))
-                                                        .h(px(36.))
-                                                        .p_0()
-                                                        .tooltip(tooltip)
-                                                        .accessibility_label(label)
-                                                        .toggled(enabled)
-                                                        .child(
-                                                            div()
-                                                                .size(px(20.))
-                                                                .flex_shrink_0()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .rounded_none()
-                                                                .bg(rgba(if enabled { *color } else { (*color & 0xffffff00) | 0x55 }))
-                                                                .text_color(rgb(if enabled { 0x0b1623 } else { 0xb9c7d0 }))
-                                                                .text_sm()
-                                                                .child(if enabled { "✓" } else { "×" }),
-                                                        )
-                                                        .on_click(cx.listener(move |view, _, _, cx| {
-                                                            view.roll_visible_colors[index] = !view.roll_visible_colors[index];
-                                                            cx.notify();
-                                                        }))
-                                                })),
-                                        ),
+                                        )
+                                        ,
                                 )
                             })
                             .when(self.page == Page::Library, |container| {
