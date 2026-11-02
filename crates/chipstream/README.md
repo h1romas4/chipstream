@@ -180,22 +180,42 @@ errors can be returned as `ChipError::External`.
 
 ### NDSIF scheduled output
 
-The optional `ndsif` feature provides `NdsifSoundChip` for YMFM replacements
-and `NdsifOkim6258` for hardware ADPCM streams through `chip::ndsif`. Both use
-an injected `NdsifTransport`; their host PCM output is silent, and audible
-audio must come from the physical device's output path. The OKIM6258 adapter
-tracks its decoder state and supplies state-matched ADPCM silence for timing
-gaps and stream termination. Transport implementations must queue events at
-their absolute output-frame positions and accept events arriving out of
-chronological order during rendering.
+Enable the `ndsif` feature and provide an `NdsifTransport` to route a chip to
+hardware. For example, register YM2151 with an application-supplied transport:
 
-The `ndsif` crate is a protocol codec, not a serial transport or playback
-scheduler. The application supplies the transport and is responsible for
-sending events in protocol order and mapping output-frame positions to the
-device's timing model, including NDSIF's ADPCM-byte-position event format.
-Device clock and chip support remain transport/device responsibilities.
-The NDSIF adapters' `with_target_instance` constructors allow source and
-physical instance numbers to differ.
+```rust,no_run
+# #[cfg(feature = "ndsif")]
+# mod example {
+use std::{cell::RefCell, rc::Rc};
+use chipstream::chip::{NdsifTransport, ndsif::register_ymfm_factory};
+use chipstream::sequencer::{Chip, ChipFactoryRegistry, VgmSequencer};
+
+fn play<T: NdsifTransport + 'static>(
+    transport: Rc<RefCell<T>>,
+    vgm: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut factories = ChipFactoryRegistry::new();
+    register_ymfm_factory(&mut factories, Chip::Ym2151, transport)?;
+    let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+    while let Some(block) = player.render()? {
+        // Send block.frames() to the host for any software-emulated chips.
+    }
+    Ok(())
+}
+# }
+```
+
+`NdsifSoundChip` supports YMFM replacements; `NdsifOkim6258` supports hardware
+ADPCM streams with state-matched silence for gaps and termination. Both output
+silence to host PCM: audible hardware audio must be mixed from the device.
+Their `with_target_instance` constructors can select a different physical
+instance from the source.
+
+The `ndsif` crate is a protocol codec, not a transport or scheduler. The
+application must queue events at absolute output-frame positions, accept
+out-of-order arrivals, and send them in protocol order using the device's
+timing model, including ADPCM-byte positions. Device clock and chip support are
+also transport/device responsibilities.
 
 ## Audio processing
 
