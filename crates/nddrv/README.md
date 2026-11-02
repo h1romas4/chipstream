@@ -44,8 +44,7 @@ cargo run --release -p nddrv
 
 Use **Add directory** to register folders. Files are scanned recursively
 without following directory symlinks. **Rescan** refreshes metadata.
-Folders without tracks in their descendants are hidden from the tree. Use
-**Remove directory** to remove a registered folder, including a hidden one.
+Folders without tracks in their descendants are hidden from the tree.
 
 Expand the directory tree and select a folder to show tracks in it and its
 descendants. Select **All tracks** to clear the directory filter. Music results
