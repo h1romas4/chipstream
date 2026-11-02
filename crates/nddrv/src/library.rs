@@ -583,6 +583,16 @@ pub fn scan_with_progress(
             .cmp(&b.path.parent())
             .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
     });
+    let track_directories: HashSet<_> = tracks
+        .iter()
+        .flat_map(|track| track.path.ancestors().skip(1))
+        .collect();
+    tree.retain(|entry| track_directories.contains(entry.path.as_path()));
+    for index in 0..tree.len() {
+        tree[index].has_children = tree
+            .get(index + 1)
+            .is_some_and(|next| next.depth > tree[index].depth);
+    }
     ScanResult {
         tracks,
         directories: tree,
@@ -699,6 +709,7 @@ mod tests {
         for path in [&nested, &sibling, &empty] {
             fs::create_dir_all(path).unwrap();
         }
+        fs::create_dir(sibling.join("empty-child")).unwrap();
         let bytes = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
         for path in [
             root.join("root.vgm"),
@@ -711,12 +722,13 @@ mod tests {
         let result = scan(&[root.clone(), nested.clone()]);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
         assert_eq!(result.tracks.len(), 4);
-        assert_eq!(result.directories.len(), 6);
+        assert_eq!(result.directories.len(), 5);
+        assert!(!result.directories.iter().any(|entry| entry.path == empty));
         assert!(
             result
                 .directories
                 .iter()
-                .any(|entry| entry.path == empty && !entry.has_children)
+                .any(|entry| { entry.path == sibling && !entry.has_children })
         );
         let selected: Vec<_> = filter_indices(&result.tracks, "", Some(&album))
             .into_iter()
@@ -739,27 +751,40 @@ mod tests {
             .iter()
             .map(|&index| &result.directories[index].path)
             .collect();
-        assert_eq!(paths, [&root, &album, &sibling, &empty, &nested]);
+        assert_eq!(paths, [&root, &album, &sibling, &nested]);
         expanded.get_mut(&root).unwrap().insert(album.clone());
         let visible = visible_directories(&result.directories, &expanded);
         let paths: Vec<_> = visible
             .iter()
             .map(|&index| &result.directories[index].path)
             .collect();
-        assert_eq!(paths, [&root, &album, &nested, &sibling, &empty, &nested]);
+        assert_eq!(paths, [&root, &album, &nested, &sibling, &nested]);
     }
 
     #[test]
-    fn missing_or_non_directory_roots_remain_visible_with_errors() {
+    fn empty_root_and_invalid_tracks_are_not_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        let invalid = dir.path().join("invalid");
+        fs::create_dir_all(empty.join("nested")).unwrap();
+        fs::create_dir(&invalid).unwrap();
+        fs::write(invalid.join("broken.vgm"), b"not a vgm").unwrap();
+
+        let result = scan(&[empty, invalid]);
+        assert!(result.tracks.is_empty());
+        assert!(result.directories.is_empty());
+        assert_eq!(result.errors.len(), 1);
+    }
+
+    #[test]
+    fn missing_or_non_directory_roots_report_errors_without_tree_entries() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         let file = dir.path().join("file");
         fs::write(&file, b"data").unwrap();
         let result = scan(&[missing.clone(), file.clone()]);
         assert_eq!(result.errors.len(), 2);
-        assert_eq!(result.directories.len(), 2);
-        assert_eq!(result.directories[0].root, missing);
-        assert_eq!(result.directories[1].root, file);
+        assert!(result.directories.is_empty());
         assert!(result.tracks.is_empty());
     }
 
@@ -811,8 +836,7 @@ mod tests {
         let result = scan(&[root]);
         assert!(result.errors.is_empty());
         assert!(result.tracks.is_empty());
-        assert_eq!(result.directories.len(), 1);
-        assert!(!result.directories[0].has_children);
+        assert!(result.directories.is_empty());
     }
 
     #[test]

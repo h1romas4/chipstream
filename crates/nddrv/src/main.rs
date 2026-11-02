@@ -20,7 +20,7 @@ use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
     InlineToken, InlineTokenSpan, Input, InputEvent, InputState, InputToken,
 };
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarHandle, ScrollbarMode};
@@ -1473,29 +1473,32 @@ impl AppView {
                                 .label("×")
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     cx.stop_propagation();
-                                    view.config
-                                        .directories
-                                        .retain(|directory| directory != &root);
-                                    view.expanded_directories.remove(&root);
-                                    view.directories.retain(|directory| directory.root != root);
-                                    if view.selected_directory.as_ref().is_some_and(|selected| {
-                                        !view
-                                            .directories
-                                            .iter()
-                                            .any(|entry| &entry.path == selected)
-                                    }) {
-                                        view.selected_directory = None;
-                                    }
-                                    view.update_directory_tree();
-                                    view.update_filter(cx);
-                                    view.save();
-                                    view.scan(cx);
+                                    view.remove_directory(&root, cx);
                                 })),
                         )
                     })
                     .into_any_element()
             })
             .collect()
+    }
+
+    fn remove_directory(&mut self, root: &PathBuf, cx: &mut Context<Self>) {
+        self.config
+            .directories
+            .retain(|directory| directory != root);
+        self.expanded_directories.remove(root);
+        self.directories.retain(|directory| &directory.root != root);
+        if self
+            .selected_directory
+            .as_ref()
+            .is_some_and(|selected| !self.directories.iter().any(|entry| &entry.path == selected))
+        {
+            self.selected_directory = None;
+        }
+        self.update_directory_tree();
+        self.update_filter(cx);
+        self.save();
+        self.scan(cx);
     }
 
     fn refresh_ports(&mut self, cx: &mut Context<Self>) {
@@ -3342,6 +3345,29 @@ impl Render for AppView {
                                                             view.add_directory(cx)
                                                         })),
                                                 )
+                                                .when(!self.config.directories.is_empty(), |panel| {
+                                                    let directories = self.config.directories.clone();
+                                                    let view = cx.weak_entity();
+                                                    panel.child(
+                                                        Button::new("remove-directory")
+                                                            .label("Remove directory")
+                                                            .dropdown_menu(move |mut menu, _, _| {
+                                                                for directory in &directories {
+                                                                    let root = directory.clone();
+                                                                    let view = view.clone();
+                                                                    menu = menu.item(
+                                                                        PopupMenuItem::new(directory.display().to_string())
+                                                                            .on_click(move |_, _, cx| {
+                                                                                let _ = view.update(cx, |view, cx| {
+                                                                                    view.remove_directory(&root, cx);
+                                                                                });
+                                                                            }),
+                                                                    );
+                                                                }
+                                                                menu
+                                                            }),
+                                                    )
+                                                })
                                                 .child(
                                                     Button::new("rescan")
                                                         .label(if self.scanning {
