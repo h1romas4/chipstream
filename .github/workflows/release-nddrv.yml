@@ -29,7 +29,7 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: tar -czf 'nddrv-${{ matrix.name }}.tar.gz' -C package .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nddrv-${{ matrix.name }}
           path: nddrv-${{ matrix.name }}.*
@@ -86,7 +86,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: nddrv-*
           path: dist
