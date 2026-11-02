@@ -1109,18 +1109,8 @@ impl AppView {
         }
     }
 
-    fn transport(&self, cx: &mut Context<Self>) -> Div {
+    fn playback_buttons(&self, cx: &mut Context<Self>) -> Div {
         let active = self.playing.is_some();
-        let volume_mode = if active {
-            self.displayed_volume_mode
-        } else {
-            VolumeMode::Master
-        };
-        let volume_label = match volume_mode {
-            VolumeMode::Master => "Master volume",
-            VolumeMode::SoftwareOnly => "Software volume (NanoDrive fixed)",
-            VolumeMode::Preparing => "Checking NanoDrive volume",
-        };
         let play_label = if active && self.playing_hardware {
             "Pause unavailable during NanoDrive playback"
         } else if !active {
@@ -1135,13 +1125,6 @@ impl AppView {
         } else {
             assets::IconName::Play
         };
-        let state = if !active {
-            "Stopped"
-        } else if self.paused {
-            "Paused"
-        } else {
-            "Playing"
-        };
         let accent = ButtonCustomVariant::new(cx)
             .color(rgb(ACCENT_COLOR).into())
             .foreground(rgb(0xffffff).into())
@@ -1149,6 +1132,114 @@ impl AppView {
             .active(rgb(0x208b84).into());
         let previous = adjacent_track(self.playing, self.config.playlist.len(), false);
         let next = adjacent_track(self.playing, self.config.playlist.len(), true);
+        div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                Button::new("transport-previous")
+                    .icon(assets::IconName::SkipBack)
+                    .tooltip("Previous track")
+                    .accessibility_label("Previous track")
+                    .disabled(previous.is_none())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        if let Some(index) = previous {
+                            view.play(index, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("transport-play")
+                    .icon(play_icon)
+                    .tooltip(play_label)
+                    .accessibility_label(play_label)
+                    .custom(accent)
+                    .disabled(
+                        (!active && self.config.playlist.is_empty())
+                            || (active && self.playing_hardware),
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if view.playing.is_some() && !view.playing_hardware {
+                            view.paused = !view.paused;
+                            view.player.set_paused(view.paused);
+                            view.status = if view.paused {
+                                "Paused".into()
+                            } else {
+                                "Playing".into()
+                            };
+                            cx.notify();
+                        } else if view.playing.is_none() && !view.config.playlist.is_empty() {
+                            view.play(0, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("transport-next")
+                    .icon(assets::IconName::SkipForward)
+                    .tooltip("Next track")
+                    .accessibility_label("Next track")
+                    .disabled(next.is_none())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        if let Some(index) = next {
+                            view.play(index, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("transport-stop")
+                    .icon(assets::IconName::Square)
+                    .tooltip("Stop")
+                    .accessibility_label("Stop")
+                    .custom(accent)
+                    .disabled(!active)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.player.stop();
+                        view.playing = None;
+                        view.paused = false;
+                        view.elapsed = 0;
+                        view.status = "Stopped".into();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("transport-loop")
+                    .icon(assets::IconName::Repeat2)
+                    .tooltip(if self.looped {
+                        "Loop indefinitely"
+                    } else {
+                        "Play twice, then fade out for 2 seconds"
+                    })
+                    .accessibility_label("Follow song loop points")
+                    .toggled(self.looped)
+                    .when(self.looped, |button| button.custom(accent))
+                    .disabled(active)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.looped = !view.looped;
+                        cx.notify();
+                    })),
+            )
+    }
+
+    fn transport(&self, cx: &mut Context<Self>) -> Div {
+        let active = self.playing.is_some();
+        let volume_mode = if active {
+            self.displayed_volume_mode
+        } else {
+            VolumeMode::Master
+        };
+        let volume_label = match volume_mode {
+            VolumeMode::Master => "Master volume",
+            VolumeMode::SoftwareOnly => "Software volume (NanoDrive fixed)",
+            VolumeMode::Preparing => "Checking NanoDrive volume",
+        };
+        let state = if !active {
+            "Stopped"
+        } else if self.paused {
+            "Paused"
+        } else {
+            "Playing"
+        };
         let title = self.now_playing_title();
         let title_width = self
             .measured_title
@@ -1275,89 +1366,7 @@ impl AppView {
                     .items_center()
                     .flex_wrap()
                     .gap_2()
-                    .child(
-                        Button::new("transport-previous")
-                            .icon(assets::IconName::SkipBack)
-                            .tooltip("Previous track")
-                            .accessibility_label("Previous track")
-                            .disabled(previous.is_none())
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if let Some(index) = previous {
-                                    view.play(index, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("transport-play")
-                            .icon(play_icon)
-                            .tooltip(play_label)
-                            .accessibility_label(play_label)
-                            .custom(accent)
-                            .disabled(
-                                (!active && self.config.playlist.is_empty())
-                                    || (active && self.playing_hardware),
-                            )
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                if view.playing.is_some() && !view.playing_hardware {
-                                    view.paused = !view.paused;
-                                    view.player.set_paused(view.paused);
-                                    view.status = if view.paused {
-                                        "Paused".into()
-                                    } else {
-                                        "Playing".into()
-                                    };
-                                    cx.notify();
-                                } else if view.playing.is_none() && !view.config.playlist.is_empty()
-                                {
-                                    view.play(0, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("transport-next")
-                            .icon(assets::IconName::SkipForward)
-                            .tooltip("Next track")
-                            .accessibility_label("Next track")
-                            .disabled(next.is_none())
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if let Some(index) = next {
-                                    view.play(index, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("transport-stop")
-                            .icon(assets::IconName::Square)
-                            .tooltip("Stop")
-                            .accessibility_label("Stop")
-                            .custom(accent)
-                            .disabled(!active)
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.player.stop();
-                                view.playing = None;
-                                view.paused = false;
-                                view.elapsed = 0;
-                                view.status = "Stopped".into();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("transport-loop")
-                            .icon(assets::IconName::Repeat2)
-                            .tooltip(if self.looped {
-                                "Loop indefinitely"
-                            } else {
-                                "Play twice, then fade out for 2 seconds"
-                            })
-                            .accessibility_label("Follow song loop points")
-                            .toggled(self.looped)
-                            .when(self.looped, |button| button.custom(accent))
-                            .disabled(active)
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.looped = !view.looped;
-                                cx.notify();
-                            })),
-                    )
+                    .child(self.playback_buttons(cx))
                     .child(
                         div()
                             .flex()
@@ -3156,6 +3165,7 @@ impl Render for AppView {
                                                     self.roll_mode,
                                                     self.roll_visible_colors,
                                                     snapshot,
+                                                    self.playback_buttons(cx),
                                                 ))
                                                 .child(
                                                     div()

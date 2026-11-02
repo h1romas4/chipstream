@@ -154,6 +154,7 @@ The piano icon between Library and Routing opens a full-window piano roll; its
 indicator is lit while a playlist track is playing or paused. Select **Incoming**
 to see up to six seconds of upcoming notes approach the 88-key keyboard, or
 **Trail** to see the previous six seconds recede.
+The playback controls below the track information operate the playlist.
 
 A separate, bounded sequencer prepares incoming events without sending them to NanoDrive or
 altering playback. Preparing or catching up may take time for complex tracks;

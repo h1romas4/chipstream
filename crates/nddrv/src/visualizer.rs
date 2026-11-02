@@ -454,6 +454,7 @@ pub fn view(
     mode: RollMode,
     visible_colors: [bool; NOTE_COLORS.len()],
     snapshot: Result<Snapshot, String>,
+    playback_buttons: Div,
 ) -> Div {
     let (snapshot, error) = match snapshot {
         Ok(snapshot) => (snapshot, None),
@@ -507,7 +508,17 @@ pub fn view(
                     RollMode::Incoming => "NDDRV  /  INCOMING PIANO ROLL",
                     RollMode::Trail => "NDDRV  /  LIVE PIANO ROLL",
                 }))
-                .child(div().text_xl().text_color(rgb(0xe4ffff)).child(title))
+                .child(
+                    div().pr(px(200.)).min_w_0().child(
+                        div()
+                            .text_xl()
+                            .text_color(rgb(0xe4ffff))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(title),
+                    ),
+                )
                 .child(div().text_sm().text_color(rgb(0x82a8bb)).child(if paused {
                     "PAUSED"
                 } else if playing {
@@ -537,7 +548,8 @@ pub fn view(
                             .text_color(rgb(0x82a8bb))
                             .child("Preparing upcoming notes..."),
                     )
-                }),
+                })
+                .child(playback_buttons),
         )
         .child(
             div()
