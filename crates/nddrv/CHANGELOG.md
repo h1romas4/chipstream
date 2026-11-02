@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Increase Track Info artwork to up to 192 x 192 pixels.
+- Improve the quality of Track Info artwork downscaling.
 - Preview the first playlist track and its Piano Roll controls before playback.
 - Add per-instance FM channel mute/solo controls and distinct Piano Roll voice colors.
 - Add per-chip and FM/SSG software gain controls (0-100%) to the Piano Roll.

@@ -1,3 +1,4 @@
+mod artwork;
 mod device;
 mod fm_mute;
 mod hardware;
@@ -226,8 +227,10 @@ struct AppView {
     queue_focus: FocusHandle,
     playlist_tracks: HashMap<PathBuf, Track>,
     details_path: Option<PathBuf>,
-    details_artwork: Option<PathBuf>,
+    details_artwork: Option<Arc<RenderImage>>,
     details_artwork_loading: bool,
+    details_artwork_error: bool,
+    details_artwork_size: u32,
     details_request: u64,
     directories: Vec<DirectoryEntry>,
     visible_directories: Vec<usize>,
@@ -409,6 +412,8 @@ impl AppView {
             details_path: None,
             details_artwork: None,
             details_artwork_loading: false,
+            details_artwork_error: false,
+            details_artwork_size: 0,
             details_request: 0,
             directories: Vec::new(),
             visible_directories: Vec::new(),
@@ -1560,13 +1565,13 @@ impl AppView {
                 cx.notify();
             }
         }
-        self.refresh_details(cx);
+        self.refresh_details(window, cx);
         for error in std::mem::take(&mut self.pending_errors) {
             window.push_notification(error, cx);
         }
     }
 
-    fn refresh_details(&mut self, cx: &mut Context<Self>) {
+    fn refresh_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = details_target(
             self.playing,
             &self.config.playlist,
@@ -1575,13 +1580,20 @@ impl AppView {
             self.details_selection,
         )
         .cloned();
-        if target == self.details_path {
+        let artwork_size = artwork::target_size(window.scale_factor());
+        if target == self.details_path && artwork_size == self.details_artwork_size {
             return;
         }
         self.details_request = self.details_request.wrapping_add(1);
         let request = self.details_request;
-        self.details_path = target.clone();
-        self.details_artwork = None;
+        if target != self.details_path {
+            if let Some(image) = self.details_artwork.take() {
+                cx.drop_image(image, Some(window));
+            }
+            self.details_path = target.clone();
+        }
+        self.details_artwork_size = artwork_size;
+        self.details_artwork_error = false;
         self.details_artwork_loading = target.is_some();
         cx.notify();
         let Some(path) = target else {
@@ -1589,20 +1601,60 @@ impl AppView {
         };
         cx.spawn(async move |this, cx| {
             let search_path = path.clone();
-            let result = cx
+            let search = cx
                 .background_spawn(async move { library::find_artwork(&search_path) })
                 .await;
+            let result = match search {
+                Ok(Some(artwork_path)) => {
+                    let load = this.update(cx, |view, cx| {
+                        if view.details_request != request {
+                            return None;
+                        }
+                        let future: std::pin::Pin<
+                            Box<dyn std::future::Future<Output = _> + Send + 'static>,
+                        > = Box::pin(ImgResourceLoader::load(artwork_path.into(), cx));
+                        Some(future)
+                    });
+                    match load {
+                        Ok(Some(load)) => {
+                            let decoded = cx.background_spawn(load).await;
+                            match decoded {
+                                Ok(image) => cx
+                                    .background_spawn(async move {
+                                        artwork::resize(image, artwork_size)
+                                    })
+                                    .await
+                                    .map(Some)
+                                    .map_err(|error| (false, error.to_string())),
+                                Err(error) => Err((false, error.to_string())),
+                            }
+                        }
+                        _ => return,
+                    }
+                }
+                Ok(None) => Ok(None),
+                Err(error) => Err((true, format!("{error:#}"))),
+            };
             let _ = this.update(cx, |view, cx| {
                 if view.details_request != request || view.details_path.as_ref() != Some(&path) {
                     return;
                 }
                 view.details_artwork_loading = false;
                 match result {
-                    Ok(artwork) => view.details_artwork = artwork,
-                    Err(error) => view.pending_errors.push(error_notification(
-                        "Artwork error",
-                        format!("{}: {error:#}", path.display()),
-                    )),
+                    Ok(artwork) => {
+                        if let Some(old) = std::mem::replace(&mut view.details_artwork, artwork) {
+                            cx.drop_image(old, None);
+                        }
+                    }
+                    Err((directory_error, error)) => {
+                        view.details_artwork_error = true;
+                        if directory_error || view.details_artwork.is_some() {
+                            view.pending_errors.push(error_notification(
+                                "Artwork error",
+                                format!("{}: {error}", path.display()),
+                            ));
+                        }
+                    }
                 }
                 cx.notify();
             });
@@ -1648,9 +1700,9 @@ impl AppView {
         div()
             .flex()
             .flex_col()
-            .h(relative(0.28))
+            .h(relative(0.4))
             .min_h(px(80.))
-            .max_h(px(190.))
+            .max_h(px(260.))
             .flex_shrink_0()
             .min_w_0()
             .gap_1()
@@ -1667,13 +1719,16 @@ impl AppView {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
+                            .items_start()
                             .gap(px(16.))
                             .min_w_0()
                             .when(path.is_some(), |row| {
                                 row.child(
                                     div()
-                                        .w(px(96.))
-                                        .h(px(96.))
+                                        .w(px(artwork::ARTWORK_SIZE))
+                                        .max_w(relative(1.))
+                                        .aspect_square()
                                         .flex_shrink_0()
                                         .flex()
                                         .items_center()
@@ -1681,20 +1736,28 @@ impl AppView {
                                         .bg(rgb(0x243441))
                                         .when_some(artwork, |node, artwork| {
                                             node.child(
-                                                img(artwork).w_full().h_full().with_fallback(
-                                                    || {
+                                                img(artwork)
+                                                    .id("track-artwork")
+                                                    .w_full()
+                                                    .h_full()
+                                                    .with_fallback(|| {
                                                         div()
                                                             .text_xs()
                                                             .child("Image error")
                                                             .into_any_element()
-                                                    },
-                                                ),
+                                                    }),
                                             )
                                         })
                                         .when(self.details_artwork.is_none(), |node| {
                                             node.child(
                                                 div().text_xs().text_color(rgb(0xa6b6c3)).child(
-                                                    if loading { "Loading..." } else { "No image" },
+                                                    if loading {
+                                                        "Loading..."
+                                                    } else if self.details_artwork_error {
+                                                        "Image error"
+                                                    } else {
+                                                        "No image"
+                                                    },
                                                 ),
                                             )
                                         }),
@@ -1705,7 +1768,7 @@ impl AppView {
                                     .flex()
                                     .flex_col()
                                     .flex_1()
-                                    .min_w_0()
+                                    .min_w(px(120.))
                                     .gap_1()
                                     .when(path.is_none(), |node| {
                                         node.child(

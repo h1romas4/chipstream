@@ -4883,6 +4883,7 @@ dependencies = [
  "directories",
  "flate2",
  "gpui-kit",
+ "image",
  "ndsif",
  "ndsif-transport",
  "rfd",

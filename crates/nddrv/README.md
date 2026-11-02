@@ -143,6 +143,9 @@ when available.
 
 Artwork is chosen from image files in the same directory: `cover`, `folder`,
 then `front` are preferred (case-insensitive), followed by filename order.
+The artwork is displayed at up to 192 x 192 logical pixels, scaling down in
+narrow playlist panels. Large images are resampled for the display's pixel
+density before rendering; animated artwork retains its frames and timing.
 Subdirectories and symbolic links are not searched. Supported formats are
 PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, TGA, DDS, EXR, farbfeld, HDR, PNM and
 QOI. An unreadable image is indicated in the panel; directory access errors
