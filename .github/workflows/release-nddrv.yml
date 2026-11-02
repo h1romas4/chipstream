@@ -1,0 +1,104 @@
+name: Release nddrv
+
+on:
+  push:
+    tags:
+      - 'nddrv-*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: linux-x86_64
+            runner: ubuntu-26.04
+            target: x86_64-unknown-linux-gnu
+          - name: macos-aarch64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: ${{ matrix.target }}
+
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          build-essential pkg-config libasound2-dev libfontconfig-dev
+          libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Build nddrv
+        run: cargo build --release --locked -p nddrv --target ${{ matrix.target }}
+
+      - name: Prepare distribution
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p package
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp "target/$TARGET/release/nddrv.exe" package/
+          else
+            cp "target/$TARGET/release/nddrv" package/
+          fi
+          cp crates/nddrv/README.md package/README.md
+          cp crates/nddrv/CHANGELOG.md package/CHANGELOG.md
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path 'package/*' -DestinationPath 'nddrv-${{ matrix.name }}.zip'
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czf 'nddrv-${{ matrix.name }}.tar.gz' -C package .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nddrv-${{ matrix.name }}
+          path: nddrv-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nddrv-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/nddrv-windows-x86_64.zip
+            dist/nddrv-linux-x86_64.tar.gz
+            dist/nddrv-macos-aarch64.tar.gz
+            dist/nddrv-macos-x86_64.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true

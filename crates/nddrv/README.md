@@ -4,6 +4,18 @@
 It uses chipstream's software emulation and the system's default audio output,
 and supports experimental host-paced routing to NanoDrive hardware.
 
+## Downloads
+
+Prebuilt binaries are published on [GitHub Releases](https://github.com/h1romas4/chipstream/releases)
+under `nddrv-` tags. Linux binaries are built for Ubuntu 26.04 x86-64; Windows
+x86-64 and macOS Apple Silicon and Intel binaries are also available. The macOS
+downloads are executable files, not `.app` bundles.
+
+The Windows and macOS binaries are not code-signed or notarized. Windows
+SmartScreen or macOS Gatekeeper may warn about or block them. Linux binaries
+also require compatible system libraries, including ALSA and the GPUI platform
+dependencies.
+
 ## Requirements and Launch
 
 Install Rust and the platform prerequisites in the
@@ -248,3 +260,7 @@ The scanner and player limit each input and decompressed VGZ to 64 MiB.
 The current implementation uses the default audio device. Some VGM chips or
 assets may not be supported by chipstream; playback errors are shown in
 notifications.
+
+## License
+
+BSD-3-Clause License
