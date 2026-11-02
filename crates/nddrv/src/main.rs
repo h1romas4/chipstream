@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 use chipstream::metadata::TrackMetadata;
 use chipstream::sequencer::Chip;
 use gpui_kit::component::ElementExt;
+use gpui_kit::component::Icon;
+use gpui_kit::component::bubble::{Bubble, BubbleContent};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
     InlineToken, InlineTokenSpan, Input, InputEvent, InputState, InputToken,
@@ -4281,29 +4283,64 @@ impl Render for AppView {
                                                 .child(
                                                     div()
                                                         .flex()
+                                                        .flex_col()
                                                         .flex_1()
                                                         .min_h_0()
-                                                        .child(
-                                                            uniform_list(
-                                                                "directories",
-                                                                self.visible_directories.len(),
-                                                                cx.processor(
-                                                                    |view, range, _, cx| {
-                                                                        view.directory_rows(
-                                                                            range, cx,
-                                                                        )
-                                                                    },
-                                                                ),
+                                                        .overflow_hidden()
+                                                        .when(self.config.directories.is_empty(), |area| {
+                                                            area.justify_end().child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .items_center()
+                                                                    .flex_shrink_0()
+                                                                    .child(
+                                                                        Bubble::new()
+                                                                            .content(
+                                                                                BubbleContent::new()
+                                                                                    .bg(rgb(0x674080))
+                                                                                    .text_color(rgb(0xffffff)),
+                                                                            )
+                                                                            .w_full()
+                                                                            .max_w_full()
+                                                                            .child("Add a music folder."),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .text_color(rgb(0xc792ea))
+                                                                            .child(Icon::new(assets::IconName::ArrowDown).size_4()),
+                                                                    ),
                                                             )
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .h_full()
-                                                            .track_scroll(&self.directory_scroll),
-                                                        )
-                                                        .child(scrollbar(
-                                                            "directory-scrollbar",
-                                                            &self.directory_scroll,
-                                                        )),
+                                                        })
+                                                        .when(!self.config.directories.is_empty(), |area| {
+                                                            area.child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_1()
+                                                                    .min_h_0()
+                                                                    .child(
+                                                                        uniform_list(
+                                                                            "directories",
+                                                                            self.visible_directories.len(),
+                                                                            cx.processor(
+                                                                                |view, range, _, cx| {
+                                                                                    view.directory_rows(
+                                                                                        range, cx,
+                                                                                    )
+                                                                                },
+                                                                            ),
+                                                                        )
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .h_full()
+                                                                        .track_scroll(&self.directory_scroll),
+                                                                    )
+                                                                    .child(scrollbar(
+                                                                        "directory-scrollbar",
+                                                                        &self.directory_scroll,
+                                                                    )),
+                                                            )
+                                                        }),
                                                 )
                                                 .child(
                                                     Button::new("add-folder")

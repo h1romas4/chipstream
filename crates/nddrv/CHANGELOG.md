@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show an Add directory hint when the library has no registered folders.
 - Show SN76489 tone channels in the Piano Roll.
 - Increase Track Info artwork to up to 192 x 192 pixels.
 - Improve the quality of Track Info artwork downscaling.
