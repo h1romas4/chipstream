@@ -262,7 +262,11 @@ pub fn filter_indices_with_tags(
         .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM"));
     let mut indices = filter_indices_with_chips(tracks, query, directory, &chips);
     if !formats.is_empty() {
-        indices.retain(|&index| formats.iter().any(|format| format == track_format(&tracks[index].path)));
+        indices.retain(|&index| {
+            formats
+                .iter()
+                .any(|format| format == track_format(&tracks[index].path))
+        });
     }
     indices
 }
@@ -974,19 +978,39 @@ mod tests {
         .map(|(path, title, chip)| {
             Track::new(
                 PathBuf::from(path),
-                TrackMetadata { title: Some(title.into()), ..Default::default() },
+                TrackMetadata {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
                 vec![ChipTag::new(&chip)],
             )
         })
         .collect();
-        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["VGM".into()]), [0, 1]);
-        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["MDX".into()]), [2, 3]);
-        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "MDX".into()]), [0, 1, 2, 3]);
         assert_eq!(
-            filter_indices_with_tags(&tracks, "opening", Some(Path::new("/music/one")), &["MDX".into(), "YM2151".into()]),
+            filter_indices_with_tags(&tracks, "", None, &["VGM".into()]),
+            [0, 1]
+        );
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "", None, &["MDX".into()]),
+            [2, 3]
+        );
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "MDX".into()]),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            filter_indices_with_tags(
+                &tracks,
+                "opening",
+                Some(Path::new("/music/one")),
+                &["MDX".into(), "YM2151".into()]
+            ),
             [2]
         );
-        assert!(filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "OKIM6258".into()]).is_empty());
+        assert!(
+            filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "OKIM6258".into()])
+                .is_empty()
+        );
     }
 
     #[test]

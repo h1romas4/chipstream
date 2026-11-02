@@ -71,24 +71,22 @@ fn track_title(
         .flex()
         .items_center()
         .min_w_0()
+        .overflow_hidden()
+        .font_weight(FontWeight::SEMIBOLD)
+        .when(dimmed, |label| label.text_color(rgb(0x82919b)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .when_some(game, |row, game| {
             row.child(
                 div()
                     .min_w_0()
-                    .max_w(relative(0.45))
+                    .max_w(relative(1.0))
+                    .flex_shrink_0()
                     .overflow_hidden()
                     .text_ellipsis()
                     .whitespace_nowrap()
-                    .text_color(rgb(if dimmed { 0x778893 } else { 0xa6b6c3 }))
                     .child(game.to_owned()),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(rgb(if dimmed { 0x778893 } else { 0x718895 }))
-                    .child(" / "),
-            )
+            .child(div().flex_shrink_0().child(" / "))
         })
         .child(
             div()
@@ -96,8 +94,6 @@ fn track_title(
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
-                .font_weight(FontWeight::SEMIBOLD)
-                .when(dimmed, |label| label.text_color(rgb(0x82919b)))
                 .child(title),
         )
 }
@@ -254,9 +250,8 @@ struct AppView {
 
 impl AppView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter text, chip or format")
-        });
+        let query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter text, chip or format"));
         let subscription =
             cx.subscribe_in(&query, window, |view: &mut Self, _, event, window, cx| {
                 match event {
@@ -3088,12 +3083,21 @@ mod tests {
             None
         );
         assert_eq!(chip_suggestions("音", 1, &[], &chips), None);
-        assert_eq!(chip_suggestions("vg", 2, &[], &chips), Some((0..2, vec!["VGM"])));
-        assert_eq!(chip_suggestions("md", 2, &[], &chips), Some((0..2, vec!["MDX"])));
+        assert_eq!(
+            chip_suggestions("vg", 2, &[], &chips),
+            Some((0..2, vec!["VGM"]))
+        );
+        assert_eq!(
+            chip_suggestions("md", 2, &[], &chips),
+            Some((0..2, vec!["MDX"]))
+        );
         let content = InputContent::new("VGMvg")
             .with_token(0..3, InlineToken::new("VGM", "VGM"))
             .unwrap();
-        assert_eq!(chip_suggestions(content.text(), 5, content.tokens(), &chips), None);
+        assert_eq!(
+            chip_suggestions(content.text(), 5, content.tokens(), &chips),
+            None
+        );
     }
 
     #[test]
