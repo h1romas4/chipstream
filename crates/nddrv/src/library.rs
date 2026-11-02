@@ -242,6 +242,31 @@ pub fn filter_indices_with_chips(
     indices
 }
 
+pub fn track_format(path: &Path) -> &'static str {
+    if extension(path) == "mdx" {
+        "MDX"
+    } else {
+        "VGM"
+    }
+}
+
+pub fn filter_indices_with_tags(
+    tracks: &[Track],
+    query: &str,
+    directory: Option<&Path>,
+    tags: &[String],
+) -> Vec<usize> {
+    let (formats, chips): (Vec<_>, Vec<_>) = tags
+        .iter()
+        .cloned()
+        .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM"));
+    let mut indices = filter_indices_with_chips(tracks, query, directory, &chips);
+    if !formats.is_empty() {
+        indices.retain(|&index| formats.iter().any(|format| format == track_format(&tracks[index].path)));
+    }
+    indices
+}
+
 #[derive(Debug)]
 pub struct DirectoryEntry {
     pub path: PathBuf,
@@ -935,6 +960,33 @@ mod tests {
             vec![2]
         );
         assert!(filter_indices_with_chips(&tracks, "", None, &["YM2612".into()]).is_empty());
+    }
+
+    #[test]
+    fn format_filters_combine_with_chips_text_and_directory() {
+        let tracks: Vec<_> = [
+            ("/music/one/a.vgm", "Opening", Chip::Ym2151),
+            ("/music/one/b.VGZ", "Opening", Chip::Ym2151),
+            ("/music/one/c.MDX", "Opening", Chip::Ym2151),
+            ("/music/two/d.mdx", "Ending", Chip::Okim6258),
+        ]
+        .into_iter()
+        .map(|(path, title, chip)| {
+            Track::new(
+                PathBuf::from(path),
+                TrackMetadata { title: Some(title.into()), ..Default::default() },
+                vec![ChipTag::new(&chip)],
+            )
+        })
+        .collect();
+        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["VGM".into()]), [0, 1]);
+        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["MDX".into()]), [2, 3]);
+        assert_eq!(filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "MDX".into()]), [0, 1, 2, 3]);
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "opening", Some(Path::new("/music/one")), &["MDX".into(), "YM2151".into()]),
+            [2]
+        );
+        assert!(filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "OKIM6258".into()]).is_empty());
     }
 
     #[test]

@@ -55,11 +55,7 @@ fn chip_colors(ymfm: bool) -> (u32, u32) {
 }
 
 fn music_format(path: &Path) -> &'static str {
-    if library::extension(path) == "mdx" {
-        "MDX"
-    } else {
-        "VGM"
-    }
+    library::track_format(path)
 }
 
 fn track_title(
@@ -258,8 +254,9 @@ struct AppView {
 
 impl AppView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter text or type a chip name"));
+        let query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter text, chip or format")
+        });
         let subscription =
             cx.subscribe_in(&query, window, |view: &mut Self, _, event, window, cx| {
                 match event {
@@ -456,7 +453,7 @@ impl AppView {
     fn update_filter(&mut self, cx: &mut Context<Self>) {
         let input = self.query.read(cx);
         let (query, chips) = search_terms(&input.value(), input.tokens());
-        self.filtered_tracks = library::filter_indices_with_chips(
+        self.filtered_tracks = library::filter_indices_with_tags(
             &self.tracks,
             &query,
             self.selected_directory.as_deref(),
@@ -514,7 +511,7 @@ impl AppView {
         });
         if let Err(error) = result {
             self.pending_errors.push(error_notification(
-                "Could not add chip filter",
+                "Could not add filter",
                 format!("{error:?}"),
             ));
         } else {
@@ -552,15 +549,21 @@ impl AppView {
                 cx.notify();
             }))
             .child(Input::new(&self.query).token(|token, _, _| {
-                let ymfm = ChipTag::is_ymfm_name(token.token().id().as_ref());
-                let (background, foreground) = chip_colors(ymfm);
+                let id = token.token().id();
+                let ymfm = ChipTag::is_ymfm_name(id.as_ref());
+                let format = matches!(id.as_ref(), "MDX" | "VGM");
+                let (background, foreground) = if format {
+                    (0x4a606d, 0xe7f1f3)
+                } else {
+                    chip_colors(ymfm)
+                };
                 div()
                     .max_w(token.available_width())
                     .pr(px(4.))
                     .child(InputToken::new(token).when(!token.is_selected(), |tag| {
                         tag.bg(rgb(background))
                             .text_color(rgb(foreground))
-                            .border_color(rgb(if ymfm { background } else { 0xb77ad4 }))
+                            .border_color(rgb(if format || ymfm { background } else { 0xb77ad4 }))
                     }))
             }))
             .when_some(suggestions, |input, chips| {
@@ -2229,21 +2232,6 @@ impl AppView {
                                         dimmed,
                                         title_tooltip,
                                     )))
-                                    .child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .px_2()
-                                            .rounded_md()
-                                            .bg(rgb(if dimmed { 0x303d48 } else { 0x4a606d }))
-                                            .text_color(rgb(if dimmed {
-                                                0x8c9ca6
-                                            } else {
-                                                0xe7f1f3
-                                            }))
-                                            .text_xs()
-                                            .whitespace_nowrap()
-                                            .child(music_format(&track.path)),
-                                    )
                                     .when(!track.chips.is_empty(), |row| {
                                         row.child(
                                             div()
@@ -2279,7 +2267,24 @@ impl AppView {
                                                         .child(chip.label())
                                                 })),
                                         )
-                                    }),
+                                    })
+                                    .child(
+                                        div()
+                                            .w(px(48.))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .justify_center()
+                                            .rounded_md()
+                                            .bg(rgb(if dimmed { 0x303d48 } else { 0x4a606d }))
+                                            .text_color(rgb(if dimmed {
+                                                0x8c9ca6
+                                            } else {
+                                                0xe7f1f3
+                                            }))
+                                            .text_xs()
+                                            .whitespace_nowrap()
+                                            .child(music_format(&track.path)),
+                                    ),
                             )
                             .child(
                                 div()
@@ -2682,9 +2687,9 @@ fn chip_suggestions(
             continue;
         }
         let fragment = fragment.to_lowercase();
-        let matches: Vec<_> = chips
-            .iter()
-            .copied()
+        let matches: Vec<_> = ["MDX", "VGM"]
+            .into_iter()
+            .chain(chips.iter().copied())
             .filter(|chip| {
                 chip.to_lowercase().starts_with(&fragment)
                     && !tokens
@@ -3083,6 +3088,12 @@ mod tests {
             None
         );
         assert_eq!(chip_suggestions("音", 1, &[], &chips), None);
+        assert_eq!(chip_suggestions("vg", 2, &[], &chips), Some((0..2, vec!["VGM"])));
+        assert_eq!(chip_suggestions("md", 2, &[], &chips), Some((0..2, vec!["MDX"])));
+        let content = InputContent::new("VGMvg")
+            .with_token(0..3, InlineToken::new("VGM", "VGM"))
+            .unwrap();
+        assert_eq!(chip_suggestions(content.text(), 5, content.tokens(), &chips), None);
     }
 
     #[test]

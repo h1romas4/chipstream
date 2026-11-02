@@ -65,6 +65,10 @@ Backspace or Delete. Multiple chip tags require all of those chips and are
 combined with the text and directory filters. Suggestions use chips found in
 the scanned library.
 
+Type `MDX` or `VGM` to add a format tag; VGM includes VGZ files. Format tags
+combine with the text, directory, and chip filters. Selecting both formats
+matches either format.
+
 Music shows a format tag (VGM, including VGZ, or MDX) alongside right-aligned
 chip tags. The library shows chip tags from VGM/VGZ header clocks. MDX tags
 show YM2151 and, when the MDX names a PDX sample bank, OKIM6258. These tags describe
