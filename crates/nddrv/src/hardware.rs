@@ -1,24 +1,24 @@
-//! Bounded device workers for hardware playback.
-
-use std::cell::RefCell;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::{Arc, atomic::AtomicBool};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use ndsif_transport::{
-    NdsifCommandBatch, NdsifHostTimeline, NdsifRecordingTransport, NdsifSerialTransport,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport,
 };
 
 use crate::device::DeviceLease;
 
+#[cfg(all(test, unix))]
+use std::{
+    sync::mpsc,
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
 const QUEUE_BLOCKS: usize = 8;
 const MAX_OPERATIONS_PER_BLOCK: usize = 16_384;
 
-pub type Recorder = Rc<RefCell<NdsifRecordingTransport>>;
+type Recorder = NdsifRecorder;
 
 pub fn supports_master_volume(lease: &DeviceLease<NdsifSerialTransport>) -> Result<bool> {
     lease
@@ -32,51 +32,14 @@ pub fn supports_master_volume(lease: &DeviceLease<NdsifSerialTransport>) -> Resu
         })
 }
 
-enum Work {
-    Batch(NdsifCommandBatch),
-    PrepareAudio {
-        frames: usize,
-        rate: u32,
-        ready: mpsc::Sender<Result<(), String>>,
-    },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DeviceTiming {
-    Host,
-    Audio,
-    Dac,
-}
-
-struct DeviceWorker {
-    id: u64,
-    sender: mpsc::SyncSender<Work>,
-    timing: DeviceTiming,
-}
-
 pub fn recorders(lease: &DeviceLease<NdsifSerialTransport>) -> Result<Vec<Recorder>> {
-    lease
-        .devices()
-        .iter()
-        .map(|(id, device)| {
-            let device = device
-                .lock()
-                .map_err(|_| anyhow!("NanoDrive device {id} worker failed"))?;
-            Ok(Rc::new(RefCell::new(NdsifRecordingTransport::new(
-                &device,
-                NonZeroUsize::new(MAX_OPERATIONS_PER_BLOCK).expect("nonzero operation limit"),
-            ))))
-        })
-        .collect()
+    Ok(ndsif_transport::create_recorders(
+        lease.devices(),
+        NonZeroUsize::new(MAX_OPERATIONS_PER_BLOCK).expect("nonzero operation limit"),
+    )?)
 }
 
-pub struct HardwareWorkers {
-    senders: Vec<DeviceWorker>,
-    threads: Vec<JoinHandle<Result<(), String>>>,
-    errors: mpsc::Receiver<String>,
-    timeline: Arc<NdsifHostTimeline>,
-    joined: bool,
-}
+pub struct HardwareWorkers(NdsifHardwareWorkers);
 
 impl HardwareWorkers {
     pub fn start(
@@ -84,287 +47,28 @@ impl HardwareWorkers {
         recorders: &[Recorder],
         timeline: Arc<NdsifHostTimeline>,
     ) -> Result<Self> {
-        if lease.devices().len() != recorders.len() {
-            bail!("NanoDrive recorder and device counts do not match");
-        }
-        let (errors_tx, errors) = mpsc::channel();
-        let (ready_tx, ready) = mpsc::channel();
-        let mut workers = Self {
-            senders: Vec::new(),
-            threads: Vec::new(),
-            errors,
+        Ok(Self(NdsifHardwareWorkers::start(
+            lease.devices(),
+            recorders,
             timeline,
-            joined: false,
-        };
-        for ((id, device), recorder) in lease.devices().iter().zip(recorders) {
-            let setup = recorder
-                .try_borrow_mut()
-                .map_err(|_| anyhow!("NanoDrive recorder {id} is already borrowed"))?
-                .take_batch()?;
-            let timing = if setup.configures_audio_stream() {
-                DeviceTiming::Audio
-            } else if setup.configures_primary_ym2612()
-                && device
-                    .lock()
-                    .map_err(|_| anyhow!("NanoDrive device {id} worker failed"))?
-                    .supports_timed_dac()
-            {
-                DeviceTiming::Dac
-            } else {
-                DeviceTiming::Host
-            };
-            let (sender, receiver) = mpsc::sync_channel::<Work>(QUEUE_BLOCKS);
-            let device = Arc::clone(device);
-            let timeline = Arc::clone(&workers.timeline);
-            let ready_tx = ready_tx.clone();
-            let errors_tx = errors_tx.clone();
-            let id = *id;
-            let handle = thread::Builder::new()
-                .name(format!("nanodrive-{id}"))
-                .spawn(move || {
-                    let setup_result = (|| {
-                        let mut device = device
-                            .lock()
-                            .map_err(|_| "device lock poisoned".to_owned())?;
-                        device.set_output_fade_timeline(Arc::clone(&timeline))?;
-                        device.initialize_output_volume()?;
-                        if timing == DeviceTiming::Host {
-                            device
-                                .set_host_timeline(Arc::clone(&timeline))
-                                .map_err(|error| error.to_string())?;
-                        }
-                        setup
-                            .replay(&mut *device)
-                            .map_err(|error| error.to_string())?;
-                        match timing {
-                            DeviceTiming::Audio => device.defer_audio_stream_start_with_cancellation(Arc::clone(&timeline))?,
-                            DeviceTiming::Dac => device.defer_timed_dac_start_with_cancellation(Arc::clone(&timeline))?,
-                            DeviceTiming::Host => {}
-                        }
-                        Ok::<(), String>(())
-                    })();
-                    if let Err(error) = &setup_result {
-                        let _ = ready_tx.send(Err(format!("NanoDrive device {id}: {error}")));
-                        timeline.cancel();
-                        return Err(error.clone());
-                    }
-                    if ready_tx.send(Ok(())).is_err() {
-                        timeline.cancel();
-                        return Err("playback worker stopped during device setup".into());
-                    }
-                    drop(ready_tx);
-                    loop {
-                        if timeline.is_cancelled() {
-                            return Ok(());
-                        }
-                        let result = match receiver.recv_timeout(Duration::from_millis(10)) {
-                            Ok(work) => match work {
-                                    Work::Batch(batch) => device
-                                        .lock()
-                                        .map_err(|_| "device lock poisoned".to_owned())
-                                        .and_then(|mut device| {
-                                            batch.replay(&mut *device).map_err(|error| error.to_string())
-                                        }),
-                                    Work::PrepareAudio { frames, rate, ready } => {
-                                        let result = device.lock()
-                                            .map_err(|_| "device lock poisoned".to_owned())
-                                            .and_then(|mut device| match timing {
-                                                DeviceTiming::Audio => device.prepare_audio_stream_start_for_frames(frames, rate),
-                                                DeviceTiming::Dac => device.prepare_timed_dac_start_for_frames(frames, rate),
-                                                DeviceTiming::Host => unreachable!("host workers do not prepare streams"),
-                                            });
-                                        match result {
-                                            Ok(()) => {
-                                                if ready.send(Ok(())).is_err() {
-                                                    Err("playback worker stopped during audio preparation".into())
-                                                } else {
-                                                    timeline.wait_until_presentation().and_then(|()| {
-                                                        if timeline.is_cancelled() {
-                                                            return Err("NDSIF host pacing was cancelled".into());
-                                                        }
-                                                        device.lock()
-                                                            .map_err(|_| "device lock poisoned".to_owned())
-                                                            .and_then(|mut device| {
-                                                                device.synchronize_output_volume()?;
-                                                                match timing {
-                                                                    DeviceTiming::Audio => device.start_prepared_audio_stream(),
-                                                                    DeviceTiming::Dac => device.start_prepared_timed_dac(),
-                                                                    DeviceTiming::Host => unreachable!("host workers do not start streams"),
-                                                                }
-                                                            })
-                                                    })
-                                                }
-                                            }
-                                            Err(error) => {
-                                                let _ = ready.send(Err(error.clone()));
-                                                Err(error)
-                                            }
-                                        }
-                                    }
-                            },
-                            Err(mpsc::RecvTimeoutError::Timeout) => device
-                                .lock()
-                                .map_err(|_| "device lock poisoned".to_owned())
-                                .and_then(|mut device| device.update_output_fade()),
-                            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                        };
-                        if let Err(error) = result {
-                            if timeline.is_cancelled() {
-                                return Ok(());
-                            }
-                            let message = format!("NanoDrive device {id}: {error}");
-                            if errors_tx.send(message.clone()).is_err() {
-                                eprintln!("{message}");
-                            }
-                            timeline.cancel();
-                            return Err(message);
-                        }
-                    }
-                })
-                .context("start NanoDrive device worker")?;
-            workers.senders.push(DeviceWorker { id, sender, timing });
-            workers.threads.push(handle);
-        }
-        drop(ready_tx);
-        drop(errors_tx);
-        for _ in 0..workers.threads.len() {
-            ready
-                .recv()
-                .context("NanoDrive worker stopped during setup")?
-                .map_err(|error| anyhow!(error))?;
-        }
-        Ok(workers)
+            NonZeroUsize::new(QUEUE_BLOCKS).expect("nonzero queue size"),
+        )?))
     }
 
     pub fn check(&self) -> Result<()> {
-        match self.errors.try_recv() {
-            Ok(error) => bail!("{error}"),
-            Err(mpsc::TryRecvError::Empty) => Ok(()),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                bail!("NanoDrive workers stopped unexpectedly")
-            }
-        }
+        Ok(self.0.check()?)
     }
 
     pub fn enqueue(&self, recorders: &[Recorder], cancelled: &AtomicBool) -> Result<()> {
-        if recorders.len() != self.senders.len() {
-            bail!("NanoDrive recorder and worker counts do not match");
-        }
-        for (recorder, worker) in recorders.iter().zip(&self.senders) {
-            let batch = recorder
-                .try_borrow_mut()
-                .map_err(|_| anyhow!("NanoDrive recorder is already borrowed"))?
-                .take_batch()?;
-            if batch.is_empty() {
-                continue;
-            }
-            self.send(worker, Work::Batch(batch), cancelled)?;
-        }
-        Ok(())
+        Ok(self.0.enqueue(recorders, cancelled)?)
     }
 
-    fn send(&self, worker: &DeviceWorker, mut work: Work, cancelled: &AtomicBool) -> Result<()> {
-        loop {
-            if cancelled.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            if let Err(error) = self.check() {
-                if cancelled.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                return Err(error);
-            }
-            match worker.sender.try_send(work) {
-                Ok(()) => return Ok(()),
-                Err(mpsc::TrySendError::Full(pending)) => {
-                    work = pending;
-                    thread::sleep(Duration::from_millis(2));
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    self.check()?;
-                    bail!("NanoDrive device {} worker disconnected", worker.id);
-                }
-            }
-        }
-    }
-
-    /// Wait until each device-timed stream has accepted the initial PCM span.
     pub fn prepare_audio(&self, frames: usize, rate: u32, cancelled: &AtomicBool) -> Result<()> {
-        for worker in self
-            .senders
-            .iter()
-            .filter(|worker| worker.timing != DeviceTiming::Host)
-        {
-            let (ready, result) = mpsc::channel();
-            self.send(
-                worker,
-                Work::PrepareAudio {
-                    frames,
-                    rate,
-                    ready,
-                },
-                cancelled,
-            )?;
-            loop {
-                if cancelled.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                match result.recv_timeout(Duration::from_millis(5)) {
-                    Ok(result) => {
-                        result
-                            .map_err(|error| anyhow!("NanoDrive device {}: {error}", worker.id))?;
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => self.check()?,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        self.check()?;
-                        bail!(
-                            "NanoDrive device {} stopped during audio preparation",
-                            worker.id
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
+        Ok(self.0.prepare_audio(frames, rate, cancelled)?)
     }
 
-    pub fn finish(mut self) -> Result<()> {
-        self.senders.clear();
-        let result = self.join();
-        self.joined = true;
-        result
-    }
-
-    fn join(&mut self) -> Result<()> {
-        let mut failures = Vec::new();
-        for worker in self.threads.drain(..) {
-            match worker.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => failures.push(error),
-                Err(_) => failures.push("NanoDrive worker panicked".into()),
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            bail!("{}", failures.join("; "))
-        }
-    }
-}
-
-impl Drop for HardwareWorkers {
-    fn drop(&mut self) {
-        if !self.joined {
-            self.timeline.cancel();
-            self.senders.clear();
-            if let Err(error) = self.join() {
-                eprintln!("NanoDrive worker cleanup failed: {error:#}");
-            }
-        }
+    pub fn finish(self) -> Result<()> {
+        Ok(self.0.finish()?)
     }
 }
 
@@ -378,6 +82,7 @@ mod tests {
     use ndsif::{Capabilities, Decoder, Reply, Request, Response, WriteId};
     use serialport::SerialPort;
     use std::io::{Read, Write};
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
 
     fn fake_dac_device(
@@ -558,6 +263,62 @@ mod tests {
             wait.recv().unwrap();
         });
         (device, port, release, thread)
+    }
+
+    #[test]
+    fn workers_reject_duplicate_devices_and_recorders() {
+        let (starts, _) = mpsc::channel();
+        let (first, first_port, first_release, first_fake) = fake_dac_device(starts.clone());
+        let (mut second, second_port, second_release, second_fake) = fake_dac_device(starts);
+        second.id = 2;
+        let service = DeviceService::new();
+        service.connect(first).unwrap();
+        service.connect(second).unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+                DeviceEvent::Connected(_, _, _)
+            ));
+        }
+        let lease = service.playback_handle().acquire(vec![1, 2]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        let queue_blocks = NonZeroUsize::new(1).unwrap();
+        let start = |devices: &[ndsif_transport::NdsifSharedDevice], recorders: &[Recorder]| {
+            NdsifHardwareWorkers::start(
+                devices,
+                recorders,
+                Arc::new(NdsifHostTimeline::pending()),
+                queue_blocks,
+            )
+        };
+        {
+            let mut devices = lease.devices().to_vec();
+            devices[1].0 = devices[0].0;
+            assert!(
+                matches!(start(&devices, &recorders), Err(error) if error.to_string().contains("unique IDs"))
+            );
+            devices[1].0 = 2;
+            devices[1].1 = Arc::clone(&devices[0].1);
+            assert!(
+                matches!(start(&devices, &recorders), Err(error) if error.to_string().contains("unique IDs"))
+            );
+        }
+        {
+            let duplicates = vec![recorders[0].clone(), recorders[0].clone()];
+            assert!(
+                matches!(start(lease.devices(), &duplicates), Err(error) if error.to_string().contains("recorders must be unique"))
+            );
+        }
+        assert!(
+            matches!(start(lease.devices(), &recorders[..1]), Err(error) if error.to_string().contains("counts do not match"))
+        );
+        drop(recorders);
+        lease.release().unwrap();
+        first_release.send(()).unwrap();
+        second_release.send(()).unwrap();
+        first_fake.join().unwrap();
+        second_fake.join().unwrap();
+        drop((first_port, second_port));
     }
 
     #[test]

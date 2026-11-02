@@ -29,6 +29,7 @@ Emulated chips continue to produce host PCM normally.
 | `NdsifRoute`, `create_routed_chip_factories` | Route individual source instances to explicitly selected open devices. |
 | `create_shared_routed_chip_factories` | Route through shared transport handles that the caller can later recover. |
 | `NdsifRecordingTransport`, `NdsifCommandBatch` | Record bounded batches without serial I/O and replay them on a device worker. |
+| `create_recorders`, `NdsifHardwareWorkers` | Record and replay bounded batches on synchronized device workers. |
 | `NdsifRoutingTransport`, `create_routed_transport_factories` | Route through a custom scheduled transport, including a recorder. |
 | `NdsifRoutingError` | Invalid or conflicting explicit route. |
 | `NdsifTransportError` | Typed configuration and initialization errors. |
@@ -36,6 +37,25 @@ Emulated chips continue to produce host PCM normally.
 `NdsifSerialTransport` also implements `chipstream::chip::NdsifTransport` for
 lower-level scheduling. Most players should use `create_chip_factories` and
 let the sequencer manage scheduling.
+
+### Synchronized device workers
+
+For host audio synchronized with multiple devices, the application can retain
+its connections as `NdsifSharedDevice` handles and use `create_recorders` to
+create one recorder per device. Pass the recorders and explicit routes to
+`create_routed_transport_factories`, then construct the sequencer. Start
+`NdsifHardwareWorkers` with the same devices and recorders in the same order;
+its setup drains the configuration recorded during sequencer construction.
+
+After each render, call `enqueue` to deliver the recorded batches. Before
+starting the shared `NdsifHostTimeline`, call `prepare_audio` with the number
+of host frames already buffered and the output rate. Start the timeline at the
+estimated audio presentation time. Check worker errors while playing and call
+`finish` after the final batch; start or cancel the timeline before finishing.
+Dropping the workers cancels the timeline and joins them. Drop all sequencers,
+recorders, and worker handles before resetting or reclaiming the connections.
+Device IDs, handles, and recorders must be unique. The caller owns audio output,
+connection management, and cancellation; hardware audio is not part of host PCM.
 
 ## Configuration and device selection
 

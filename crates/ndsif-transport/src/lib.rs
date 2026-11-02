@@ -8,6 +8,7 @@ mod recording;
 mod routing;
 mod session;
 mod transport;
+mod worker;
 
 pub use error::NdsifTransportError;
 pub use factory::{NdsifSerialConfig, create_chip_factories};
@@ -19,3 +20,6 @@ pub use routing::{
     create_routed_transport_factories, create_shared_routed_chip_factories,
 };
 pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
+pub use worker::{
+    NdsifHardwareWorkers, NdsifRecorder, NdsifSharedDevice, NdsifWorkerError, create_recorders,
+};
