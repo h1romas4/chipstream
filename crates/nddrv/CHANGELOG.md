@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve Music and Playlist title hierarchy and show playlist positions.
 - Show a warning on Playlist entries with chips not emulated by chipstream.
 - Dim Music entries that declare chips unsupported by chipstream.
 - Disable Add device until a serial port is selected.

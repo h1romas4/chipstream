@@ -181,19 +181,27 @@ impl Track {
         Self::format_display_title(&self.path, &self.metadata)
     }
 
-    pub fn format_display_title(path: &Path, metadata: &TrackMetadata) -> String {
+    pub fn display_title_parts<'a>(
+        path: &Path,
+        metadata: &'a TrackMetadata,
+    ) -> (Option<&'a str>, String) {
         let title = metadata.title.clone().unwrap_or_else(|| {
             path.file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
         });
-        match metadata
+        let game = metadata
             .album
             .as_deref()
             .map(str::trim)
-            .filter(|game| !game.is_empty())
-        {
+            .filter(|game| !game.is_empty());
+        (game, title)
+    }
+
+    pub fn format_display_title(path: &Path, metadata: &TrackMetadata) -> String {
+        let (game, title) = Self::display_title_parts(path, metadata);
+        match game {
             Some(game) => format!("{game} - {title}"),
             None => title,
         }
@@ -619,6 +627,10 @@ mod tests {
             vec![],
         );
         assert_eq!(track.display_title(), "Sonic - Metal Zone");
+        assert_eq!(
+            Track::display_title_parts(&path, &track.metadata),
+            (Some("Sonic"), "Metal Zone".into())
+        );
         let missing_title = Track::new(
             path.clone(),
             TrackMetadata {
@@ -628,6 +640,10 @@ mod tests {
             vec![],
         );
         assert_eq!(missing_title.display_title(), "Sonic - song.vgm");
+        assert_eq!(
+            Track::display_title_parts(&path, &missing_title.metadata),
+            (Some("Sonic"), "song.vgm".into())
+        );
         let missing_game = Track::new(
             path,
             TrackMetadata {
@@ -638,6 +654,10 @@ mod tests {
             vec![],
         );
         assert_eq!(missing_game.display_title(), "Metal Zone");
+        assert_eq!(
+            Track::display_title_parts(&missing_game.path, &missing_game.metadata),
+            (None, "Metal Zone".into())
+        );
     }
 
     #[test]

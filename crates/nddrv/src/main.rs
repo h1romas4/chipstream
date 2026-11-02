@@ -10,10 +10,11 @@ mod visualizer;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use chipstream::metadata::TrackMetadata;
 use gpui_kit::component::ElementExt;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
@@ -51,6 +52,50 @@ fn chip_colors(ymfm: bool) -> (u32, u32) {
     } else {
         (0x71418e, 0xffedff)
     }
+}
+
+fn track_title(
+    id: SharedString,
+    path: &Path,
+    metadata: &TrackMetadata,
+    dimmed: bool,
+    tooltip: String,
+) -> Stateful<Div> {
+    let (game, title) = Track::display_title_parts(path, metadata);
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .min_w_0()
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .when_some(game, |row, game| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .max_w(relative(0.45))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(rgb(if dimmed { 0x778893 } else { 0xa6b6c3 }))
+                    .child(game.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(if dimmed { 0x778893 } else { 0x718895 }))
+                    .child(" / "),
+            )
+        })
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(dimmed, |label| label.text_color(rgb(0x82919b)))
+                .child(title),
+        )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2095,6 +2140,11 @@ impl AppView {
                     .collect();
                 let dimmed = !unsupported.is_empty();
                 let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
+                let title_tooltip = if dimmed {
+                    format!("{title}\n{unsupported_tooltip}")
+                } else {
+                    title
+                };
                 let chip_list = track
                     .chips
                     .iter()
@@ -2164,22 +2214,20 @@ impl AppView {
                                     .items_center()
                                     .gap_2()
                                     .min_w_0()
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .when(dimmed, |label| label.text_color(rgb(0x82919b)))
-                                            .child(title),
-                                    )
+                                    .child(track_title(
+                                        SharedString::from(format!("track-title-{index}")),
+                                        &track.path,
+                                        &track.metadata,
+                                        dimmed,
+                                        title_tooltip,
+                                    ))
                                     .when(!track.chips.is_empty(), |row| {
                                         row.child(
                                             div()
                                                 .id(SharedString::from(format!("chips-{index}")))
                                                 .flex()
                                                 .flex_shrink_0()
-                                                .max_w(relative(0.65))
+                                                .max_w(relative(0.35))
                                                 .overflow_hidden()
                                                 .items_center()
                                                 .gap_1()
@@ -2300,7 +2348,8 @@ impl AppView {
                     .get(path)
                     .map(|&track_index| &self.tracks[track_index])
                     .or_else(|| self.playlist_tracks.get(path));
-                let metadata = track.map(|track| &track.metadata);
+                let fallback_metadata = TrackMetadata::default();
+                let metadata = track.map_or(&fallback_metadata, |track| &track.metadata);
                 let unsupported = track
                     .map(|track| {
                         track
@@ -2312,23 +2361,9 @@ impl AppView {
                     })
                     .unwrap_or_default();
                 let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
-                let title = metadata
-                    .map(|metadata| Track::format_display_title(path, metadata))
-                    .unwrap_or_else(|| {
-                        path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    });
-                let artist = metadata
-                    .and_then(|metadata| metadata.artist.as_deref())
-                    .unwrap_or_default()
-                    .to_owned();
-                let marker = if self.playing == Some(index) {
-                    "▶ "
-                } else {
-                    ""
-                };
+                let title = Track::format_display_title(path, metadata);
+                let artist = metadata.artist.as_deref().unwrap_or_default().to_owned();
+                let playing = self.playing == Some(index);
                 let selected = self.selected_queue.contains(&index);
                 let view = cx.weak_entity();
                 div()
@@ -2340,6 +2375,9 @@ impl AppView {
                     .justify_between()
                     .gap_2()
                     .p_2()
+                    .border_l_2()
+                    .border_color(rgb(if playing { ACCENT_COLOR } else { 0x17212b }))
+                    .when(playing, |row| row.bg(rgb(0x223e40)))
                     .when(selected, |row| row.bg(rgb(0x304755)))
                     .hover(|style| style.bg(rgb(0x293a47)))
                     .on_click(cx.listener(move |view, event: &ClickEvent, _, cx| {
@@ -2366,6 +2404,21 @@ impl AppView {
                     }))
                     .child(
                         div()
+                            .w(px(40.))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .text_color(rgb(if playing { 0x7de0d6 } else { 0x8195a3 }))
+                            .when(playing, |marker| {
+                                marker
+                                    .child(gpui_kit::component::Icon::from(assets::IconName::Play))
+                            })
+                            .when(!playing, |marker| marker.child(format!("{:02}", index + 1))),
+                    )
+                    .child(
+                        div()
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -2376,14 +2429,13 @@ impl AppView {
                                     .items_center()
                                     .gap_1()
                                     .min_w_0()
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .child(format!("{marker}{title}")),
-                                    )
+                                    .child(track_title(
+                                        SharedString::from(format!("queue-title-{index}")),
+                                        path,
+                                        metadata,
+                                        false,
+                                        title,
+                                    ))
                                     .when(!unsupported.is_empty(), |row| {
                                         row.child(
                                             div()
