@@ -77,7 +77,7 @@ Music rows are dimmed when the declared chips include a chip not emulated by
 chipstream. Hover over the row to see which chips are unsupported. This is
 based on the file header and does not check device availability or all other
 playback requirements.
-Playlist entries with unsupported chips show a red warning before the title;
+Playlist entries with unsupported chips show a red warning after the title;
 hover over it to see the chip names. The warning does not prevent playback.
 
 ### Selection

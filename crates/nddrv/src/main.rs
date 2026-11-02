@@ -2376,6 +2376,14 @@ impl AppView {
                                     .items_center()
                                     .gap_1()
                                     .min_w_0()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(format!("{marker}{title}")),
+                                    )
                                     .when(!unsupported.is_empty(), |row| {
                                         row.child(
                                             div()
@@ -2397,15 +2405,7 @@ impl AppView {
                                                         .build(window, cx)
                                                 }),
                                         )
-                                    })
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .child(format!("{marker}{title}")),
-                                    ),
+                                    }),
                             )
                             .child(
                                 div()
