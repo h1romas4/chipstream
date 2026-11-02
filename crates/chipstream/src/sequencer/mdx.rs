@@ -304,6 +304,11 @@ impl<'a> MdxSequencer<'a> {
             .map_err(MdxSequencerError::Playback)
     }
 
+    /// Return the playable chip instances in this sequencer.
+    pub fn chip_instances(&self) -> impl Iterator<Item = (Chip, Instance)> + '_ {
+        self.player.chip_instances()
+    }
+
     /// Transform a typed chip write immediately before it reaches its chip.
     ///
     /// See [`VgmSequencer::filter_write`] for timing, observer, and checkpoint

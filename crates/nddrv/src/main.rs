@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chipstream::metadata::TrackMetadata;
+use chipstream::sequencer::Chip;
 use gpui_kit::component::ElementExt;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
@@ -31,7 +32,7 @@ use gpui_kit::component::{Disableable, IndexPath, Theme, ThemeMode, TitleBar, Wi
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use library::{ChipTag, Config, DirectoryEntry, ScanProgress, Track};
-use playback::{Event, Playback, VolumeMode};
+use playback::{Event, GainPart, GainSource, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
@@ -161,6 +162,11 @@ fn profile_choices(config: &routing::RoutingConfig) -> Vec<ProfileChoice> {
 
 struct LibraryScanNotification;
 
+struct GainControl {
+    slider: Entity<SliderState>,
+    _subscription: Subscription,
+}
+
 fn error_notification(title: &'static str, message: impl Into<SharedString>) -> Notification {
     Notification::error(message).title(title).autohide(false)
 }
@@ -229,6 +235,9 @@ struct AppView {
     _subscription: Subscription,
     volume: Entity<SliderState>,
     _volume_subscription: Subscription,
+    gain_controls: HashMap<(Chip, GainPart), GainControl>,
+    gain_sources: Option<Vec<GainSource>>,
+    gain_sources_failed: bool,
     player: Playback,
     playing: Option<usize>,
     playing_hardware: bool,
@@ -396,6 +405,9 @@ impl AppView {
             _subscription: subscription,
             volume,
             _volume_subscription: volume_subscription,
+            gain_controls: HashMap::new(),
+            gain_sources: None,
+            gain_sources_failed: false,
             player: Playback::new(),
             playing: None,
             playing_hardware: false,
@@ -810,6 +822,8 @@ impl AppView {
         if let Some(path) = self.config.playlist.get(index).cloned() {
             self.status = format!("Playing: {}", path.display());
             self.playing = Some(index);
+            self.gain_sources = None;
+            self.gain_sources_failed = false;
             self.playing_hardware = plan.is_some();
             self.paused = false;
             self.elapsed = 0;
@@ -858,6 +872,130 @@ impl AppView {
                 .scroll_to_item(index, ScrollStrategy::Nearest);
             cx.notify();
         }
+    }
+
+    fn piano_gain_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        if self.playing.is_some()
+            && let Some(sources) = &self.gain_sources
+        {
+            for source in sources {
+                if !seen.insert(source.chip.clone()) {
+                    continue;
+                }
+                let software = sources
+                    .iter()
+                    .any(|other| other.chip == source.chip && !other.hardware);
+                let hardware = sources
+                    .iter()
+                    .any(|other| other.chip == source.chip && other.hardware);
+                let name = Track::chip_name(&source.chip);
+                rows.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(rgb(0xb9e9e7))
+                        .child(name)
+                        .when(hardware, |row| {
+                            row.child(div().text_color(rgb(0xd0a76e)).child(if software {
+                                "ND fixed"
+                            } else {
+                                "NanoDrive"
+                            }))
+                        }),
+                );
+                if !software {
+                    continue;
+                }
+                let mut parts = vec![(GainPart::Chip, "Chip")];
+                if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
+                    let main = if source.chip == Chip::Ym2203 {
+                        "FM"
+                    } else {
+                        "FM / ADPCM"
+                    };
+                    parts.extend([(GainPart::Fm, main), (GainPart::Ssg, "SSG")]);
+                }
+                for (part, label) in parts {
+                    if let Some(control) = self.gain_controls.get(&(source.chip.clone(), part)) {
+                        let value = match control.slider.read(cx).value() {
+                            SliderValue::Single(value) => value,
+                            SliderValue::Range(_, _) => {
+                                unreachable!("chip gain is a single slider")
+                            }
+                        };
+                        rows.push(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(78.))
+                                        .text_xs()
+                                        .text_color(rgb(0x82a8bb))
+                                        .child(label),
+                                )
+                                .child(
+                                    Slider::new(&control.slider)
+                                        .accessibility_label(format!("{name} {label} gain"))
+                                        .bg(rgb(ACCENT_COLOR))
+                                        .flex_1(),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(38.))
+                                        .text_right()
+                                        .text_xs()
+                                        .text_color(rgb(0xd3eeee))
+                                        .child(format!("{value:.0}%")),
+                                ),
+                        );
+                    }
+                }
+            }
+        }
+        let empty = if self.playing.is_none() {
+            "Start playback to adjust chip gains"
+        } else if self.gain_sources.is_none() {
+            "Preparing chip controls..."
+        } else {
+            "No playable chip outputs"
+        };
+        div()
+            .absolute()
+            .top(px(70.))
+            .right(px(28.))
+            .w(px(260.))
+            .child(
+                div()
+                    .id("piano-chip-gains")
+                    .w_full()
+                    .max_h(px(400.))
+                    .overflow_y_scrollbar()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(rgb(0x284452))
+                    .bg(rgba(0x0b1623ed))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("CHIP GAIN"))
+                    .when(rows.is_empty(), |panel| {
+                        panel.child(div().text_xs().text_color(rgb(0x82a8bb)).child(empty))
+                    })
+                    .children(rows)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x82a8bb))
+                            .child("Software only · Above 100% may clip"),
+                    ),
+            )
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -956,6 +1094,62 @@ impl AppView {
             }
         }
         if self.playing.is_some() {
+            match self.player.gain_sources() {
+                Ok(sources) if self.gain_sources != sources => {
+                    self.gain_sources_failed = false;
+                    if let Some(sources) = &sources {
+                        for source in sources.iter().filter(|source| !source.hardware) {
+                            let mut parts = vec![GainPart::Chip];
+                            if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
+                                parts.extend([GainPart::Fm, GainPart::Ssg]);
+                            }
+                            for part in parts {
+                                let key = (source.chip.clone(), part);
+                                if self.gain_controls.contains_key(&key) {
+                                    continue;
+                                }
+                                let slider =
+                                    cx.new(|_| SliderState::new().max(200.).default_value(100.));
+                                let chip = source.chip.clone();
+                                let subscription =
+                                    cx.subscribe(&slider, move |view: &mut Self, _, event, cx| {
+                                        if let SliderEvent::Change(SliderValue::Single(value)) =
+                                            event
+                                        {
+                                            if let Err(error) = view.player.set_chip_gain(
+                                                chip.clone(),
+                                                part,
+                                                *value / 100.,
+                                            ) {
+                                                view.pending_errors.push(error_notification(
+                                                    "Chip gain error",
+                                                    error.to_string(),
+                                                ));
+                                            }
+                                            cx.notify();
+                                        }
+                                    });
+                                self.gain_controls.insert(
+                                    key,
+                                    GainControl {
+                                        slider,
+                                        _subscription: subscription,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    self.gain_sources = sources;
+                    cx.notify();
+                }
+                Ok(_) => self.gain_sources_failed = false,
+                Err(error) if !self.gain_sources_failed => {
+                    self.gain_sources_failed = true;
+                    self.pending_errors
+                        .push(error_notification("Chip gain error", error.to_string()));
+                }
+                Err(_) => {}
+            }
             let mode = self.player.volume_mode();
             if mode != self.displayed_volume_mode {
                 self.displayed_volume_mode = mode;
@@ -3539,6 +3733,7 @@ impl Render for AppView {
                                                                 })),
                                                         ),
                                                 )
+                                                .child(self.piano_gain_panel(cx))
                                         )
                                         .child(
                                             div()

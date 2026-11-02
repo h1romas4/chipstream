@@ -85,6 +85,8 @@ pub enum VgmSequencerError {
     InvalidSampleRate,
     /// A gain is negative or non-finite.
     InvalidGain,
+    /// The chip does not provide separately controllable FM/ADPCM and SSG outputs.
+    UnsupportedOpnGains(Chip),
     /// The requested chip instance is not playable.
     ChipNotFound {
         /// Requested chip type.
@@ -165,6 +167,12 @@ impl fmt::Display for VgmSequencerError {
             Self::InvalidChunkSize => write!(f, "output chunk size must be nonzero"),
             Self::InvalidSampleRate => write!(f, "output sample rate must be nonzero"),
             Self::InvalidGain => write!(f, "gain must be finite and nonnegative"),
+            Self::UnsupportedOpnGains(chip) => {
+                write!(
+                    f,
+                    "{chip:?} does not have separately controllable FM/ADPCM and SSG outputs"
+                )
+            }
             Self::ChipNotFound { chip, instance } => {
                 write!(f, "no playable {chip:?} {instance:?} chip")
             }
@@ -323,6 +331,7 @@ struct Voice {
     phase_step: u32,
     queue: VecDeque<[f32; 2]>,
     gain: f32,
+    opn_gains: [f32; 2],
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -523,7 +532,20 @@ impl Voice {
             .ok_or(VgmSequencerError::DurationOverflow)?;
         let mut raw = vec![0; samples];
         let native = self.route.capture(&mut raw)?;
-        let stereo = self.matrix.convert(&native)?;
+        let gains = match self.chip {
+            Chip::Ym2203 => Some([
+                self.opn_gains[0],
+                self.opn_gains[1],
+                self.opn_gains[1],
+                self.opn_gains[1],
+            ]),
+            Chip::Ym2608 | Chip::Ym2610b => {
+                Some([self.opn_gains[0], self.opn_gains[0], self.opn_gains[1], 1.0])
+            }
+            _ => None,
+        };
+        let gains = gains.as_ref().map(|gains| &gains[..native.channels()]);
+        let stereo = self.matrix.convert_with_gains(&native, gains)?;
         self.queue
             .extend(self.resampler.process(&stereo)?.frames().iter().copied());
         Ok(())
@@ -648,6 +670,7 @@ struct VoiceCheckpoint {
     phase_step: u32,
     queue: VecDeque<[f32; 2]>,
     gain: f32,
+    opn_gains: [f32; 2],
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -1002,6 +1025,7 @@ impl<'a> VgmSequencer<'a> {
             phase_step: 0,
             queue: VecDeque::new(),
             gain: 1.0,
+            opn_gains: [1.0; 2],
             main_coefficient: main,
             paired_coefficient: paired,
             paced_writes: profile.write_interval.map(|_| VecDeque::new()),
@@ -1384,6 +1408,40 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Return the playable chip instances in this sequencer.
+    pub fn chip_instances(&self) -> impl Iterator<Item = (Chip, Instance)> + '_ {
+        self.voices
+            .iter()
+            .map(|voice| (voice.chip.clone(), voice.instance))
+    }
+
+    /// Set independent gains for an OPN chip's FM/ADPCM and SSG outputs.
+    ///
+    /// Supports YM2203, YM2608, and YM2610(B). Both gains multiply the chip
+    /// gain and header levels. Changes apply to newly captured PCM; already
+    /// buffered audio and resampler history retain their previous levels.
+    pub fn set_opn_gains(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        fm_adpcm: f32,
+        ssg: f32,
+    ) -> Result<(), VgmSequencerError> {
+        if !fm_adpcm.is_finite() || fm_adpcm < 0.0 || !ssg.is_finite() || ssg < 0.0 {
+            return Err(VgmSequencerError::InvalidGain);
+        }
+        if !matches!(chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
+            return Err(VgmSequencerError::UnsupportedOpnGains(chip));
+        }
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        voice.opn_gains = [fm_adpcm, ssg];
+        Ok(())
+    }
+
     /// Supply the unbundled YM2608 rhythm ROM before rendering.
     ///
     /// Without it, the internal rhythm instruments cannot play as intended.
@@ -1452,6 +1510,7 @@ impl<'a> VgmSequencer<'a> {
                 phase_step: voice.phase_step,
                 queue: voice.queue.clone(),
                 gain: voice.gain,
+                opn_gains: voice.opn_gains,
                 main_coefficient: voice.main_coefficient,
                 paired_coefficient: voice.paired_coefficient,
                 paced_writes: voice.paced_writes.clone(),
@@ -1555,6 +1614,7 @@ impl<'a> VgmSequencer<'a> {
             voice.phase_step = saved.phase_step;
             voice.queue.clone_from(&saved.queue);
             voice.gain = saved.gain;
+            voice.opn_gains = saved.opn_gains;
             voice.main_coefficient = saved.main_coefficient;
             voice.paired_coefficient = saved.paired_coefficient;
             voice.paced_writes.clone_from(&saved.paced_writes);

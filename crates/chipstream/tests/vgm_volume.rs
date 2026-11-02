@@ -151,6 +151,119 @@ fn extra(volumes: Vec<ChipVolume>) -> VgmExtraHeader {
     }
 }
 
+#[test]
+fn opn_gains_control_fm_and_ssg_independently() {
+    let cases: &[(&[u8], &[u8], Chip)] = &[
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            Chip::Ym2203,
+        ),
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            Chip::Ym2608,
+        ),
+        (
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            Chip::Ym2610b,
+        ),
+    ];
+    for (fm, ssg, chip) in cases {
+        for (bytes, is_ssg) in [(*fm, false), (*ssg, true)] {
+            let document = VgmDocument::try_from(bytes).unwrap();
+            let baseline = render(document.clone());
+            let run = |fm, ssg, chip_gain| {
+                let mut player = VgmSequencer::new(document.clone(), 48_000, 256).unwrap();
+                player
+                    .set_opn_gains(chip.clone(), Instance::Primary, fm, ssg)
+                    .unwrap();
+                player
+                    .set_gain(chip.clone(), Instance::Primary, chip_gain)
+                    .unwrap();
+                let mut audio = Vec::new();
+                while let Some(block) = player.render().unwrap() {
+                    audio.extend_from_slice(block.frames());
+                }
+                audio
+            };
+            assert_scaled(
+                &run(0.0, 1.0, 1.0),
+                &baseline,
+                if is_ssg { 1.0 } else { 0.0 },
+                if is_ssg { 1.0 } else { 0.0 },
+            );
+            assert_scaled(
+                &run(1.0, 0.0, 1.0),
+                &baseline,
+                if is_ssg { 0.0 } else { 1.0 },
+                if is_ssg { 0.0 } else { 1.0 },
+            );
+            assert_scaled(&run(2.0, 2.0, 0.5), &baseline, 1.0, 1.0);
+        }
+    }
+}
+
+#[test]
+fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256).unwrap();
+    assert_eq!(
+        player.chip_instances().collect::<Vec<_>>(),
+        vec![(Chip::Ym2203, Instance::Primary)]
+    );
+    player.render().unwrap();
+    player
+        .set_opn_gains(Chip::Ym2203, Instance::Primary, 1.0, 0.0)
+        .unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    let muted = (0..20)
+        .map(|_| player.render().unwrap().unwrap().frames().to_vec())
+        .collect::<Vec<_>>();
+    assert!(
+        muted
+            .last()
+            .unwrap()
+            .iter()
+            .all(|frame| frame[0].abs() < 0.00001)
+    );
+    player
+        .set_opn_gains(Chip::Ym2203, Instance::Primary, 1.0, 1.0)
+        .unwrap();
+    let resumed = (0..20)
+        .map(|_| player.render().unwrap().unwrap().frames().to_vec())
+        .collect::<Vec<_>>();
+    assert!(
+        resumed
+            .last()
+            .unwrap()
+            .iter()
+            .any(|frame| frame[0].abs() > 0.001)
+    );
+    player.restore_checkpoint(&checkpoint).unwrap();
+    for expected in muted {
+        assert_eq!(player.render().unwrap().unwrap().frames(), expected);
+    }
+    assert!(
+        player
+            .set_opn_gains(Chip::Ym2203, Instance::Primary, f32::NAN, 1.0)
+            .is_err()
+    );
+    assert!(
+        player
+            .set_opn_gains(Chip::Ym2151, Instance::Primary, 1.0, 1.0)
+            .is_err()
+    );
+    assert!(
+        player
+            .set_opn_gains(Chip::Ym2203, Instance::Secondary, 1.0, 1.0)
+            .is_err()
+    );
+}
+
 fn oki_builder(dual: bool) -> VgmBuilder {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);

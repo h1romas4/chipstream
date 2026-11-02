@@ -104,7 +104,7 @@ impl Track {
         }
     }
 
-    fn chip_name(chip: &Chip) -> &'static str {
+    pub(crate) fn chip_name(chip: &Chip) -> &'static str {
         match chip {
             Chip::Sn76489 => "SN76489",
             Chip::Ym2413 => "YM2413",

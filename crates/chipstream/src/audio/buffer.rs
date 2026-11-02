@@ -183,19 +183,39 @@ impl StereoMatrix {
     /// The coefficients define the native channel layout and numeric scaling;
     /// no chip-specific channel layout or normalization is guessed.
     pub fn convert(&self, input: &NativeBlock<'_>) -> Result<StereoBlock, AudioError> {
+        self.convert_with_gains(input, None)
+    }
+
+    pub(crate) fn convert_with_gains(
+        &self,
+        input: &NativeBlock<'_>,
+        gains: Option<&[f32]>,
+    ) -> Result<StereoBlock, AudioError> {
         if input.channels() != self.coefficients.len() {
             return Err(AudioError::ChannelMismatch {
                 expected: self.coefficients.len(),
                 actual: input.channels(),
             });
         }
+        if let Some(gains) = gains {
+            if gains.len() != input.channels() {
+                return Err(AudioError::ChannelMismatch {
+                    expected: input.channels(),
+                    actual: gains.len(),
+                });
+            }
+            if gains.iter().any(|gain| !gain.is_finite() || *gain < 0.0) {
+                return Err(AudioError::InvalidGain);
+            }
+        }
         let mute = input.stereo_mute();
         let mut frames = Vec::with_capacity(input.frames());
         for input_frame in input.samples().chunks_exact(input.channels()) {
             let mut output = [0.0_f32; 2];
-            for (sample, coeff) in input_frame.iter().zip(&self.coefficients) {
-                output[0] += *sample as f32 * coeff[0];
-                output[1] += *sample as f32 * coeff[1];
+            for (index, (sample, coeff)) in input_frame.iter().zip(&self.coefficients).enumerate() {
+                let gain = gains.map_or(1.0, |gains| gains[index]);
+                output[0] += *sample as f32 * coeff[0] * gain;
+                output[1] += *sample as f32 * coeff[1] * gain;
             }
             if let Some(mute) = mute {
                 if mute.left {

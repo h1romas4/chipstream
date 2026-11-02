@@ -86,7 +86,11 @@ PDX lookup is the caller's responsibility, and omitting PDX disables the PCM
 path even when the MDX names a PDX.
 
 `set_gain` applies a linear gain to a chip instance and returns an error if it
-is absent. Both sequencers support typed write callbacks. Register callbacks
+is absent. `VgmSequencer::set_opn_gains` independently adjusts the FM/ADPCM and
+SSG outputs of YM2203, YM2608, and YM2610(B), multiplying the chip gain. Its
+changes apply to newly captured samples; already buffered audio and resampler
+history retain their previous levels. Both sequencers expose `chip_instances`
+and support typed write callbacks. Register callbacks
 with `on_write` and state tracking with `track_state` before rendering:
 
 ```rust,no_run

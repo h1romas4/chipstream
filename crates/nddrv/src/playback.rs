@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -49,6 +50,7 @@ pub enum VolumeMode {
 pub struct Playback {
     control: Arc<PlaybackControl>,
     volume: Arc<NdsifOutputGain>,
+    gains: Arc<GainState>,
     generation: u64,
     backend: Arc<dyn PlaybackBackend>,
     worker_gate: Arc<Mutex<()>>,
@@ -68,6 +70,26 @@ impl PlaybackBackend for EmulationBackend {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum GainPart {
+    Chip,
+    Fm,
+    Ssg,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GainSource {
+    pub chip: Chip,
+    pub instance: Instance,
+    pub hardware: bool,
+}
+
+#[derive(Default)]
+struct GainState {
+    values: Mutex<HashMap<(Chip, GainPart), f32>>,
+    revision: AtomicU64,
+}
+
 struct PlaybackControl {
     cancel: AtomicBool,
     paused: AtomicBool,
@@ -77,13 +99,20 @@ struct PlaybackControl {
     visualizer: Mutex<PianoRoll>,
     preview: Mutex<PreviewState>,
     volume: Arc<NdsifOutputGain>,
+    gains: Arc<GainState>,
+    gain_sources: Mutex<Option<Vec<GainSource>>>,
     volume_mode: AtomicU8,
     first_presentation: OnceLock<Instant>,
     hardware_timeline: OnceLock<Arc<NdsifHostTimeline>>,
 }
 
 impl PlaybackControl {
+    #[cfg(test)]
     fn new(volume: Arc<NdsifOutputGain>) -> Self {
+        Self::with_gains(volume, Arc::new(GainState::default()))
+    }
+
+    fn with_gains(volume: Arc<NdsifOutputGain>, gains: Arc<GainState>) -> Self {
         Self {
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -93,6 +122,8 @@ impl PlaybackControl {
             visualizer: Mutex::new(PianoRoll::default()),
             preview: Mutex::new(PreviewState::default()),
             volume,
+            gains,
+            gain_sources: Mutex::new(None),
             volume_mode: AtomicU8::new(VolumeMode::Master as u8),
             first_presentation: OnceLock::new(),
             hardware_timeline: OnceLock::new(),
@@ -183,9 +214,11 @@ impl Playback {
     pub fn new() -> Self {
         let (sender, events) = mpsc::channel();
         let volume = Arc::new(NdsifOutputGain::new());
+        let gains = Arc::new(GainState::default());
         Self {
-            control: Arc::new(PlaybackControl::new(volume.clone())),
+            control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
             volume,
+            gains,
             generation: 0,
             backend: Arc::new(EmulationBackend),
             worker_gate: Arc::new(Mutex::new(())),
@@ -218,7 +251,10 @@ impl Playback {
         )>,
     ) {
         self.stop();
-        self.control = Arc::new(PlaybackControl::new(self.volume.clone()));
+        self.control = Arc::new(PlaybackControl::with_gains(
+            self.volume.clone(),
+            self.gains.clone(),
+        ));
         if hardware.is_some() {
             self.control
                 .volume_mode
@@ -266,6 +302,28 @@ impl Playback {
 
     pub fn set_volume(&self, volume: f32) -> Result<()> {
         self.volume.set(volume).map_err(anyhow::Error::msg)
+    }
+
+    pub fn set_chip_gain(&self, chip: Chip, part: GainPart, gain: f32) -> Result<()> {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            bail!("chip gain must be between 0% and 200%");
+        }
+        let mut values = self
+            .gains
+            .values
+            .lock()
+            .map_err(|_| anyhow::anyhow!("chip gain state is unavailable"))?;
+        values.insert((chip, part), gain);
+        self.gains.revision.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn gain_sources(&self) -> Result<Option<Vec<GainSource>>> {
+        self.control
+            .gain_sources
+            .lock()
+            .map(|sources| sources.clone())
+            .map_err(|_| anyhow::anyhow!("chip gain sources are unavailable"))
     }
 
     pub fn volume_mode(&self) -> VolumeMode {
@@ -652,9 +710,67 @@ fn flush_visual_events(
 }
 
 impl Sequencer {
+    fn chip_instances(&self) -> Vec<(Chip, Instance)> {
+        match self {
+            Self::Vgm(player) => player.chip_instances().collect(),
+            Self::Mdx(player) => player.chip_instances().collect(),
+        }
+    }
+
+    fn set_gain(&mut self, chip: Chip, instance: Instance, gain: f32) -> Result<()> {
+        match self {
+            Self::Vgm(player) => player.set_gain(chip, instance, gain)?,
+            Self::Mdx(player) => player.set_gain(chip, instance, gain)?,
+        }
+        Ok(())
+    }
+
+    fn set_opn_gains(&mut self, chip: Chip, instance: Instance, fm: f32, ssg: f32) -> Result<()> {
+        match self {
+            Self::Vgm(player) => player.set_opn_gains(chip, instance, fm, ssg)?,
+            Self::Mdx(_) => bail!("MDX does not support OPN chip gains"),
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn new(path: &Path, rate: u32, looped: bool) -> Result<Self> {
         Self::with_factories(path, rate, looped, ChipFactoryRegistry::new())
+    }
+
+    fn apply_chip_gains(
+        sequencer: &mut Sequencer,
+        sources: &[GainSource],
+        gains: &GainState,
+        applied_revision: &mut Option<u64>,
+    ) -> Result<()> {
+        let revision = gains.revision.load(Ordering::Acquire);
+        if *applied_revision == Some(revision) {
+            return Ok(());
+        }
+        let values = gains
+            .values
+            .lock()
+            .map_err(|_| anyhow::anyhow!("chip gain state is unavailable"))?;
+        for source in sources.iter().filter(|source| !source.hardware) {
+            let value = |part| {
+                values
+                    .get(&(source.chip.clone(), part))
+                    .copied()
+                    .unwrap_or(1.0)
+            };
+            sequencer.set_gain(source.chip.clone(), source.instance, value(GainPart::Chip))?;
+            if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
+                sequencer.set_opn_gains(
+                    source.chip.clone(),
+                    source.instance,
+                    value(GainPart::Fm),
+                    value(GainPart::Ssg),
+                )?;
+            }
+        }
+        *applied_revision = Some(revision);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1119,6 +1235,7 @@ fn run_inner(
         .default_output_config()
         .context("no default audio configuration")?;
     let config = supported.config();
+    let routes = hardware.map_or(&[][..], |(_, plan)| plan.routes.as_slice());
     let (mut sequencer, hardware) = if let Some((lease, plan)) = hardware {
         let timeline = Arc::new(NdsifHostTimeline::pending());
         if control.volume_mode.load(Ordering::Acquire) == VolumeMode::Master as u8 {
@@ -1160,6 +1277,22 @@ fn run_inner(
             None,
         )
     };
+    let sources: Vec<_> = sequencer
+        .chip_instances()
+        .into_iter()
+        .map(|(chip, instance)| GainSource {
+            hardware: routes
+                .iter()
+                .any(|route| route.chip == chip && route.source == instance),
+            chip,
+            instance,
+        })
+        .collect();
+    *control
+        .gain_sources
+        .lock()
+        .map_err(|_| anyhow::anyhow!("chip gain sources are unavailable"))? = Some(sources.clone());
+    let mut gain_revision = None;
     let visual_events: VisualEvents = Rc::new(RefCell::new(Vec::new()));
     sequencer.track_visual_events(Rc::clone(&visual_events));
     control
@@ -1184,6 +1317,7 @@ fn run_inner(
     let mut hardware_fade_scheduled = false;
     let mut prebuffered_frames = 0_usize;
     for _ in 0..4 {
+        Sequencer::apply_chip_gains(&mut sequencer, &sources, &control.gains, &mut gain_revision)?;
         let block = sequencer.render()?;
         flush_visual_events(&control, &visual_events, sequencer.take_visual_overflow())?;
         sequencer.schedule_hardware_fade(
@@ -1250,6 +1384,12 @@ fn run_inner(
             break 'playback;
         }
         if !exhausted {
+            Sequencer::apply_chip_gains(
+                &mut sequencer,
+                &sources,
+                &control.gains,
+                &mut gain_revision,
+            )?;
             let rendered = sequencer.render()?;
             flush_visual_events(&control, &visual_events, sequencer.take_visual_overflow())?;
             sequencer.schedule_hardware_fade(
@@ -1333,6 +1473,97 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chip_gains_persist_across_playback_controls_and_skip_hardware() {
+        let directory = tempfile::tempdir().unwrap();
+        let track = directory.path().join("psg.vgm");
+        std::fs::write(
+            &track,
+            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+        )
+        .unwrap();
+        let player = Playback::new();
+        player
+            .set_chip_gain(Chip::Ym2203, GainPart::Chip, 2.0)
+            .unwrap();
+        player
+            .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 0.0)
+            .unwrap();
+        assert!(
+            player
+                .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 2.01)
+                .is_err()
+        );
+        let source = GainSource {
+            chip: Chip::Ym2203,
+            instance: Instance::Primary,
+            hardware: false,
+        };
+        let render = |hardware| {
+            let control =
+                PlaybackControl::with_gains(Arc::clone(&player.volume), Arc::clone(&player.gains));
+            let mut sequencer = Sequencer::new(&track, 44_100, false).unwrap();
+            let mut revision = None;
+            Sequencer::apply_chip_gains(
+                &mut sequencer,
+                &[GainSource {
+                    hardware,
+                    ..source.clone()
+                }],
+                &control.gains,
+                &mut revision,
+            )
+            .unwrap();
+            sequencer.render().unwrap().unwrap().frames().to_vec()
+        };
+        let muted_first = render(false);
+        let muted_next = render(false);
+        let hardware = render(true);
+        assert_eq!(muted_first, muted_next);
+        assert!(muted_first.iter().all(|frame| frame[0].abs() < 0.00001));
+        assert!(hardware.iter().any(|frame| frame[0].abs() > 0.001));
+        let mut live = Sequencer::new(&track, 44_100, false).unwrap();
+        let mut revision = None;
+        Sequencer::apply_chip_gains(
+            &mut live,
+            std::slice::from_ref(&source),
+            &player.gains,
+            &mut revision,
+        )
+        .unwrap();
+        assert!(
+            live.render()
+                .unwrap()
+                .unwrap()
+                .frames()
+                .iter()
+                .all(|frame| frame[0].abs() < 0.00001)
+        );
+        player
+            .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 1.0)
+            .unwrap();
+        Sequencer::apply_chip_gains(
+            &mut live,
+            std::slice::from_ref(&source),
+            &player.gains,
+            &mut revision,
+        )
+        .unwrap();
+        let mut live_audible = false;
+        for _ in 0..4 {
+            live_audible |= live
+                .render()
+                .unwrap()
+                .unwrap()
+                .frames()
+                .iter()
+                .any(|frame| frame[0].abs() > 0.001);
+        }
+        assert!(live_audible);
+        let audible = render(false);
+        assert!(audible.iter().any(|frame| frame[0].abs() > 0.001));
+    }
 
     fn rhythm_vgm(instance: Instance) -> Vec<u8> {
         use soundlog::chip::Ym2608Spec;
@@ -1785,6 +2016,9 @@ mod tests {
         let mut player = Playback::new();
         player.backend = Arc::new(TestBackend(tx));
         player.set_volume(0.25).unwrap();
+        player
+            .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 0.6)
+            .unwrap();
         player.play(PathBuf::from("first.vgm"), true);
         let first_generation = player.generation;
         let (looped, first) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1797,6 +2031,16 @@ mod tests {
         assert!(first.cancel.load(Ordering::Relaxed));
         assert!(!second.paused.load(Ordering::Relaxed));
         assert_eq!(second.volume.get(), 0.25);
+        assert!(Arc::ptr_eq(&first.gains, &second.gains));
+        assert_eq!(
+            second
+                .gains
+                .values
+                .lock()
+                .unwrap()
+                .get(&(Chip::Ym2203, GainPart::Ssg)),
+            Some(&0.6)
+        );
         assert!(!player.is_current(first_generation));
         player.stop();
         assert!(second.cancel.load(Ordering::Relaxed));
