@@ -65,8 +65,9 @@ Backspace or Delete. Multiple chip tags require all of those chips and are
 combined with the text and directory filters. Suggestions use chips found in
 the scanned library.
 
-The library shows chip tags from VGM/VGZ header clocks. MDX tags show YM2151
-and, when the MDX names a PDX sample bank, OKIM6258. These tags describe
+Music shows a format tag (VGM, including VGZ, or MDX) alongside right-aligned
+chip tags. The library shows chip tags from VGM/VGZ header clocks. MDX tags
+show YM2151 and, when the MDX names a PDX sample bank, OKIM6258. These tags describe
 declared or inferred hardware, not whether a chip is supported for playback.
 Multiple instances are shown as, for example, `YM2203x2`; searching uses the
 base chip name. In both the list and the search input, chips implemented by the

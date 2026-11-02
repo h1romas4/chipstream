@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show format tags and right-align chip tags in Music.
 - Improve Music and Playlist title hierarchy and show playlist positions.
 - Show a warning on Playlist entries with chips not emulated by chipstream.
 - Dim Music entries that declare chips unsupported by chipstream.

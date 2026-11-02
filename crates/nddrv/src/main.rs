@@ -54,6 +54,14 @@ fn chip_colors(ymfm: bool) -> (u32, u32) {
     }
 }
 
+fn music_format(path: &Path) -> &'static str {
+    if library::extension(path) == "mdx" {
+        "MDX"
+    } else {
+        "VGM"
+    }
+}
+
 fn track_title(
     id: SharedString,
     path: &Path,
@@ -2214,13 +2222,28 @@ impl AppView {
                                     .items_center()
                                     .gap_2()
                                     .min_w_0()
-                                    .child(track_title(
+                                    .child(div().flex_1().min_w_0().child(track_title(
                                         SharedString::from(format!("track-title-{index}")),
                                         &track.path,
                                         &track.metadata,
                                         dimmed,
                                         title_tooltip,
-                                    ))
+                                    )))
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .px_2()
+                                            .rounded_md()
+                                            .bg(rgb(if dimmed { 0x303d48 } else { 0x4a606d }))
+                                            .text_color(rgb(if dimmed {
+                                                0x8c9ca6
+                                            } else {
+                                                0xe7f1f3
+                                            }))
+                                            .text_xs()
+                                            .whitespace_nowrap()
+                                            .child(music_format(&track.path)),
+                                    )
                                     .when(!track.chips.is_empty(), |row| {
                                         row.child(
                                             div()
@@ -2784,9 +2807,21 @@ mod tests {
     use super::{
         ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
         chip_suggestions, details_target, inclusive_range, initial_window_bounds, is_select_all,
-        profile_choices, remove_playlist_entries, search_terms, select_for_context, select_item,
-        select_range, selection_status, unique_device_name, update_selection_order,
+        music_format, profile_choices, remove_playlist_entries, search_terms, select_for_context,
+        select_item, select_range, selection_status, unique_device_name, update_selection_order,
     };
+
+    #[test]
+    fn music_format_labels_vgm_vgz_and_mdx() {
+        for (file, expected) in [
+            ("song.vgm", "VGM"),
+            ("song.VGZ", "VGM"),
+            ("song.mdx", "MDX"),
+            ("song.MDX", "MDX"),
+        ] {
+            assert_eq!(music_format(&PathBuf::from(file)), expected);
+        }
+    }
 
     #[test]
     fn initial_window_fits_and_centers_in_visible_area() {
