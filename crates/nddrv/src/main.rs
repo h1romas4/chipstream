@@ -67,6 +67,14 @@ enum DetailsSelection {
     Playlist,
 }
 
+fn selection_status(selection: DetailsSelection, music: usize, playlist: usize) -> Option<String> {
+    let (label, count) = match selection {
+        DetailsSelection::Music => ("Music", music),
+        DetailsSelection::Playlist => ("Playlist", playlist),
+    };
+    (count > 1).then(|| format!("{label}: {count} selected"))
+}
+
 enum DeviceStatus {
     Connecting,
     Connected(Vec<ndsif::CapabilityEntry>),
@@ -2653,7 +2661,7 @@ mod tests {
         ACCENT_COLOR, DetailsSelection, adjacent_track, capability_labels, chip_colors,
         chip_suggestions, details_target, inclusive_range, initial_window_bounds, is_select_all,
         profile_choices, remove_playlist_entries, search_terms, select_for_context, select_item,
-        select_range, unique_device_name, update_selection_order,
+        select_range, selection_status, unique_device_name, update_selection_order,
     };
 
     #[test]
@@ -2810,6 +2818,20 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn selection_status_follows_latest_list_and_requires_multiple_tracks() {
+        assert_eq!(
+            selection_status(DetailsSelection::Music, 3, 5).as_deref(),
+            Some("Music: 3 selected")
+        );
+        assert_eq!(
+            selection_status(DetailsSelection::Playlist, 3, 5).as_deref(),
+            Some("Playlist: 5 selected")
+        );
+        assert_eq!(selection_status(DetailsSelection::Music, 1, 5), None);
+        assert_eq!(selection_status(DetailsSelection::Playlist, 3, 0), None);
     }
 
     #[test]
@@ -3509,6 +3531,16 @@ impl Render for AppView {
                             .min_w_0()
                             .overflow_hidden()
                             .child(self.status.clone()),
+                    )
+                    .when_some(
+                        selection_status(
+                            self.details_selection,
+                            self.selected_tracks.len(),
+                            self.selected_queue.len(),
+                        ),
+                        |bar, status| {
+                            bar.child(div().flex_shrink_0().text_color(rgb(0xa6b6c3)).child(status))
+                        },
                     )
                     .child(
                         div()

@@ -87,6 +87,8 @@ Music and Playlist rows share these selection controls:
 | Select all visible Music results or Playlist entries | Focus the list and press Ctrl+A (Command+A on macOS) |
 
 Changing the Music filter clears selections that are no longer visible.
+The status bar shows the number of selected tracks when multiple Music or
+Playlist entries are selected, using the most recently operated list.
 Right-click selected Music rows to add them to the playlist, or double-click a
 track to add it. Right-click selected Playlist rows to remove them or clear the
 playlist.
