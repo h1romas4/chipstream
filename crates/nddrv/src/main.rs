@@ -4,6 +4,7 @@ mod library;
 mod patchbay;
 mod playback;
 mod routing;
+mod update;
 mod visualizer;
 
 use std::collections::{HashMap, HashSet};
@@ -182,6 +183,7 @@ struct AppView {
     title_viewport_width: Pixels,
     measured_title: Option<(String, Pixels)>,
     status: String,
+    update_available: Option<semver::Version>,
     persistence_error: Option<String>,
     pending_errors: Vec<Notification>,
     scanning: bool,
@@ -342,6 +344,7 @@ impl AppView {
             title_viewport_width: px(0.),
             measured_title: None,
             status: "Ready".into(),
+            update_available: None,
             persistence_error,
             pending_errors,
             scanning: false,
@@ -352,6 +355,19 @@ impl AppView {
             completed_scan_notification: None,
             _poll: poll,
         }
+    }
+
+    fn check_for_updates(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async { update::check() }).await;
+            if let Ok(Some(version)) = result {
+                let _ = this.update(cx, |view, cx| {
+                    view.update_available = Some(version);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn save(&mut self) {
@@ -3466,11 +3482,43 @@ impl Render for AppView {
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
                     .px_3()
                     .py_2()
                     .bg(rgb(0x243441))
                     .text_sm()
-                    .child(self.status.clone()),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(self.status.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(rgb(0xa6b6c3))
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                    )
+                    .when_some(self.update_available.clone(), |bar, version| {
+                        let url = format!(
+                            "https://github.com/h1romas4/chipstream/releases/tag/nddrv-v{version}"
+                        );
+                        let blue = ButtonCustomVariant::new(cx)
+                            .color(rgb(0x007acc).into())
+                            .foreground(rgb(0xffffff).into())
+                            .hover(rgb(0x006bb3).into())
+                            .active(rgb(0x005a99).into());
+                        bar.child(
+                            Button::new("update-available")
+                                .label(format!("Update available: v{version}"))
+                                .custom(blue)
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        )
+                    }),
             )
     }
 }
@@ -3493,6 +3541,7 @@ fn main() {
             window.set_window_title(APP_TITLE);
             cx.new(|cx| {
                 let mut app = AppView::new(window, cx);
+                app.check_for_updates(cx);
                 if !app.config.directories.is_empty() {
                     app.scan(cx);
                 } else {

@@ -11,6 +11,10 @@ under `nddrv-` tags. Linux binaries are built for Ubuntu 26.04 x86-64; Windows
 x86-64 and macOS Apple Silicon and Intel binaries are also available. The macOS
 downloads are executable files, not `.app` bundles.
 
+At startup, nddrv checks GitHub Releases for newer stable versions. When an
+update is available, a button in the status bar opens its release page. The
+check requires an internet connection and does not download or install updates.
+
 The Windows and macOS binaries are not code-signed or notarized. Windows
 SmartScreen or macOS Gatekeeper may warn about or block them. Linux binaries
 also require compatible system libraries, including ALSA and the GPUI platform
