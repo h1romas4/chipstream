@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
 
 - Publish an icon-bearing portable Windows executable and macOS DMG bundles,
   alongside the existing archives.
