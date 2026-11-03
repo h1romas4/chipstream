@@ -849,7 +849,20 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
 
     fn render_until(&mut self, sample_frame: usize, sample_rate: u32) -> Result<(), ChipError> {
         let target = self.position_for_frame(sample_frame, sample_rate)?.get();
+        let index = self
+            .timeline
+            .partition_point(|segment| segment.frame() <= sample_frame)
+            .saturating_sub(1);
         while self.next_byte_position < target {
+            let completed_position = self
+                .next_byte_position
+                .checked_add(1)
+                .ok_or_else(|| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
+            let due_frame = self.timeline[index]
+                .first_frame_for_position(BytePosition::new(completed_position))
+                .map_err(|error| {
+                    external_error(&Chip::Okim6258, format!("invalid ADPCM frame: {error}"))
+                })?;
             let samples = if self.source_playing {
                 if let Some(value) = self.source_data.pop_front() {
                     self.source_decoder.decode_pair(value)
@@ -860,7 +873,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
                 [0; 2]
             };
             let value = self.output_decoder.encode_pair(samples);
-            self.schedule_data(sample_frame, sample_rate, value)?;
+            self.schedule_data(due_frame, sample_rate, value)?;
         }
         Ok(())
     }

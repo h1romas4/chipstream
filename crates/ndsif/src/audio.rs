@@ -69,6 +69,29 @@ impl AudioPositionClock {
             .map_err(|_| Error::InvalidArgument)
     }
 
+    /// Return the first frame at which `position` is reached, assuming this
+    /// segment's timing remains in effect.
+    ///
+    /// Positions already reached at the beginning of the segment map to the
+    /// segment's first frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame position overflows.
+    pub fn first_frame_for_position(&self, position: BytePosition) -> Result<usize, Error> {
+        let target = u128::from(position.get())
+            .checked_mul(self.denominator())
+            .ok_or(Error::InvalidArgument)?;
+        let remaining = target.saturating_sub(self.numerator);
+        let weight =
+            u128::from(self.timing.clock() as u32) * (DIVIDER_LCM / self.timing.divider() as u128);
+        let elapsed = remaining.div_ceil(weight);
+        let elapsed = usize::try_from(elapsed).map_err(|_| Error::InvalidArgument)?;
+        self.frame
+            .checked_add(elapsed)
+            .ok_or(Error::InvalidArgument)
+    }
+
     /// Produce the next timeline segment at a byte-positioned clock change.
     ///
     /// # Errors
@@ -285,6 +308,48 @@ mod tests {
         assert!(
             AudioPositionClock::new(AudioTiming::new(OkiClock::Mhz4, Divider::Div1024), 0).is_err()
         );
+    }
+
+    #[test]
+    fn first_frame_for_position_matches_forward_timeline() {
+        for rate in [44_100, 48_000, 96_000] {
+            for clock in [OkiClock::Mhz4, OkiClock::Mhz8] {
+                for divider in [Divider::Div512, Divider::Div768, Divider::Div1024] {
+                    let initial =
+                        AudioPositionClock::new(AudioTiming::new(clock, divider), rate).unwrap();
+                    let position = initial.position_for_frame(4410, rate).unwrap();
+                    let changed = initial
+                        .change_at(
+                            4410,
+                            rate,
+                            position,
+                            AudioTiming::new(clock, Divider::Div768),
+                        )
+                        .unwrap();
+                    for segment in [initial, changed] {
+                        let start = segment
+                            .position_for_frame(segment.frame(), rate)
+                            .unwrap()
+                            .get();
+                        for offset in [0, 1, 2, 101, 100_000] {
+                            let position = BytePosition::new(start + offset);
+                            let frame = segment.first_frame_for_position(position).unwrap();
+                            assert!(frame >= segment.frame());
+                            assert!(
+                                segment.position_for_frame(frame, rate).unwrap().get()
+                                    >= position.get()
+                            );
+                            if frame > segment.frame() {
+                                assert!(
+                                    segment.position_for_frame(frame - 1, rate).unwrap().get()
+                                        < position.get()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

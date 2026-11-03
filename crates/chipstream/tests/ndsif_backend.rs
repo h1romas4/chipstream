@@ -594,7 +594,39 @@ fn okim6258_divider_changes_remain_monotonic_during_loops() {
     let mut player =
         VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
     player.set_loop_count(Some(50));
-    while player.render().unwrap().is_some() {}
+    while player.render().unwrap().is_some() {
+        let frame = player.position_frames();
+        let transport = transport.borrow();
+        let mut timeline = ndsif::AudioPositionClock::new(
+            ndsif::AudioTiming::new(ndsif::OkiClock::Mhz4, Divider::Div1024),
+            44_100,
+        )
+        .unwrap();
+        for event in &transport.audio_controls {
+            if let NdsifAudioControl::Clock { clock_hz, divider } = event.control
+                && event.sample_frame <= frame
+            {
+                timeline = timeline
+                    .change_at(
+                        event.sample_frame,
+                        44_100,
+                        event.position,
+                        ndsif::AudioTiming::new(
+                            ndsif::OkiClock::try_from(clock_hz).unwrap(),
+                            divider,
+                        ),
+                    )
+                    .unwrap();
+            }
+        }
+        let required = timeline.position_for_frame(frame, 44_100).unwrap().get() as usize;
+        let due = transport
+            .adpcm_events
+            .iter()
+            .filter(|event| event.sample_frame <= frame)
+            .count();
+        assert_eq!(due, required, "frame {frame}");
+    }
     let transport = transport.borrow();
     let changes: Vec<_> = transport
         .audio_controls
@@ -781,6 +813,76 @@ fn okim6258_alternating_stream_frequency_preserves_source_timing() {
             mismatch.is_none(),
             "ADPCM diverged at {output_rate} Hz: {mismatch:?}"
         );
+    }
+}
+
+#[test]
+fn okim6258_prebuffer_contains_all_bytes_due_through_each_output_block() {
+    use soundlog::vgm::{
+        command::{
+            DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+            StartStreamFastCall, StartStreamFastCallFlags,
+        },
+        detail::{StreamChipType, UncompressedStream},
+        header::ChipId,
+    };
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Okim6258Adpcm,
+        data: vec![0x77; 8_000],
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+        write_port: 0,
+        write_command: 1,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 4,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 7_813,
+    });
+    builder.add_vgm_command(StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(44_100));
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 2;
+    for rate in [44_100, 48_000, 96_000] {
+        let transport = Rc::new(RefCell::new(FakeTransport::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        register_okim6258_factory(&mut factories, Rc::clone(&transport));
+        let mut player =
+            VgmSequencer::new_with_factories(document.clone(), rate, 1024, factories).unwrap();
+        let timeline = ndsif::AudioPositionClock::new(
+            ndsif::AudioTiming::new(ndsif::OkiClock::Mhz8, Divider::Div512),
+            rate,
+        )
+        .unwrap();
+        for _ in 0..4 {
+            player.render().unwrap().unwrap();
+            let frame = player.position_frames();
+            let required = timeline.position_for_frame(frame, rate).unwrap().get() as usize;
+            let transport = transport.borrow();
+            let due = transport
+                .adpcm_events
+                .iter()
+                .filter(|event| event.sample_frame <= frame)
+                .count();
+            assert_eq!(due, required, "frame {frame} at {rate} Hz");
+        }
     }
 }
 

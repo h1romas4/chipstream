@@ -1533,6 +1533,124 @@ fn audio_data_events_and_start_keep_their_device_order() {
 
 #[cfg(unix)]
 #[test]
+fn rendered_audio_prebuffer_is_complete_at_pcm_block_boundary() {
+    use chipstream::{
+        chip::{NdsifTransport, ndsif::register_okim6258_factory},
+        sequencer::{ChipFactoryRegistry, Instance, VgmSequencer},
+    };
+    use soundlog::{
+        chip::Okim6258Spec,
+        vgm::{VgmBuilder, command::WaitSamples},
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    #[derive(Default)]
+    struct Capture(Vec<NdsifAdpcmEvent>);
+    impl NdsifTransport for Capture {
+        fn configure_chip(&mut self, _: WriteId, _: u8, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn configure_audio_stream(
+            &mut self,
+            _: u8,
+            _: u32,
+            _: Divider,
+            _: u32,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn schedule_register_write(&mut self, _: NdsifRegisterEvent) -> Result<(), String> {
+            Ok(())
+        }
+        fn schedule_audio_control(&mut self, _: NdsifAudioControlEvent) -> Result<(), String> {
+            Ok(())
+        }
+        fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
+            self.0.push(event);
+            Ok(())
+        }
+    }
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    for _ in 0..800 {
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 1,
+                value: 0x77,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(6));
+    }
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 2;
+    let capture = Rc::new(RefCell::new(Capture::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&capture));
+    let mut player = VgmSequencer::new_with_factories(document, 48_000, 1024, factories).unwrap();
+    for _ in 0..4 {
+        player.render().unwrap().unwrap();
+    }
+
+    let (mut transport, mut device) = test_transport();
+    let (release, wait) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let mut accepted = 0;
+        loop {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match ndsif::Request::decode(&frame).unwrap() {
+                ndsif::Request::AudioData {
+                    position, adpcm, ..
+                } => {
+                    assert_eq!(position.get(), accepted);
+                    accepted += adpcm.len() as u32;
+                }
+                ndsif::Request::Ping(bytes) => {
+                    assert_eq!(accepted, 666);
+                    reply_to_device_frame(&mut device, &frame, Reply::Ping(bytes));
+                    break;
+                }
+                request => panic!("unexpected request: {request:?}"),
+            }
+        }
+        wait.recv().unwrap();
+    });
+    transport
+        .configure_audio_stream(0, 8_000_000, Divider::Div512, 48_000)
+        .unwrap();
+    transport.defer_audio_stream_start().unwrap();
+    for event in &capture.borrow().0 {
+        transport.schedule_adpcm_data(*event).unwrap();
+    }
+    transport.flush_scheduled_until(4096, 48_000).unwrap();
+    assert_eq!(
+        transport
+            .audio_stream
+            .as_ref()
+            .unwrap()
+            .state
+            .accepted()
+            .get(),
+        666
+    );
+    transport
+        .prepare_audio_stream_start_for_frames(4096, 48_000)
+        .unwrap();
+    release.send(()).unwrap();
+    worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn deferred_audio_prebuffers_and_prepares_before_explicit_start() {
     let (mut transport, mut device) = test_transport();
     let (observed_tx, observed_rx) = std::sync::mpsc::channel();
