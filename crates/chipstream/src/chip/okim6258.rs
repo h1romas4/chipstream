@@ -63,7 +63,8 @@ pub enum OutputBits {
 /// 3-bit ADPCM decoding is not implemented.
 ///
 /// Register 0 is control, 1 is data, 2 is the VGM pan mask, `0x08..=0x0b`
-/// are little-endian clock bytes, and `0x0c` selects the divider. Pan is
+/// are little-endian clock bytes, and `0x0c` selects the divider. Writes to
+/// `0x10..=0x17` are ignored for VGMMAME compatibility. Pan is
 /// exposed for a stereo mixer rather than applied to mono output. Clock and
 /// divider writes can change the native rate; an update producing zero rate is
 /// rejected without changing configuration. Reset stops decoding but retains
@@ -296,6 +297,7 @@ impl SoundChip for Okim6258 {
                 };
                 self.set_divider(divider)?;
             }
+            0x10..=0x17 => {}
             _ => {
                 return Err(ChipError::InvalidRegister {
                     chip: Chip::Okim6258,

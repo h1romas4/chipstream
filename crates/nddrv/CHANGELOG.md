@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ignore OKIM6258 writes to `0x10`–`0x17` emitted by VGMMAME.
 - Increase the Playlist playback title and elapsed time text sizes.
 - Show a concise playback status without the file path.
 - Show chip tags in Track Info.

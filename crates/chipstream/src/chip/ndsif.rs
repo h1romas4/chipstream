@@ -526,7 +526,7 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
 /// supplies silence to host PCM; the device's OKIM6258 produces the audible
 /// output. Clock-byte writes at the same frame are combined into one change.
 /// NDSIF supports 4 MHz and 8 MHz clocks and positions changes at ADPCM byte
-/// boundaries.
+/// boundaries. Writes to `0x10..=0x17` are ignored for VGMMAME compatibility.
 pub struct NdsifOkim6258<T> {
     instance: u8,
     clock: u32,
@@ -639,6 +639,9 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
                 actual: write.chip(),
             });
         };
+        if (0x10..=0x17).contains(&register) {
+            return Ok(());
+        }
         let timing_write = matches!(register, 0x08..=0x0c);
         if self.pending_timing.as_ref().is_some_and(|pending| {
             pending.frame != sample_frame || pending.rate != sample_rate || !timing_write

@@ -1,6 +1,7 @@
 #![cfg(feature = "okim6258")]
 
 use chipstream::chip::{ChipError, ClockDivider, Okim6258, OutputBits, SoundChip};
+use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::mdx::pcm::decode_adpcm;
 use soundlog::vgm::command::{Instance, VgmCommand};
@@ -199,4 +200,59 @@ fn soundlog_commands_drive_the_chip() {
     let mut samples = [0; 2];
     chip.generate(&mut samples).unwrap();
     assert_eq!(samples, [64, 224]);
+}
+
+#[test]
+fn vgmmame_registers_do_not_change_okim6258_audio() {
+    let render = |include_ignored| {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 0,
+                value: 2,
+            },
+        );
+        for index in 0..8 {
+            if include_ignored {
+                builder.add_chip_write(
+                    Instance::Primary,
+                    Okim6258Spec {
+                        register: 0x10 + index,
+                        value: 0xff - index,
+                    },
+                );
+            }
+            builder.add_chip_write(
+                Instance::Primary,
+                Okim6258Spec {
+                    register: 1,
+                    value: 0x21,
+                },
+            );
+            builder.add_vgm_command(soundlog::vgm::command::WaitSamples(12));
+        }
+        let bytes = Vec::<u8>::from(builder.finalize());
+        let mut player = VgmSequencer::from_vgm(bytes, 44_100, 64).unwrap();
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let baseline = render(false);
+    assert!(baseline.iter().any(|frame| *frame != [0.0, 0.0]));
+    assert_eq!(render(true), baseline);
+
+    let mut chip = Okim6258::new(8_000_000).unwrap();
+    for register in [0x0f, 0x18] {
+        assert_eq!(
+            chip.write(Okim6258Spec { register, value: 0 }),
+            Err(ChipError::InvalidRegister {
+                chip: Chip::Okim6258,
+                register,
+            })
+        );
+    }
 }
