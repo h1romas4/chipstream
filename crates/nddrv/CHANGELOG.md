@@ -12,6 +12,12 @@
 - Group NanoDrive 6/6.1 YM2612 page 1 with its primary chip in Routing.
 - Allow hardware SN76489 playback when the header enables Game Gear stereo
   but the track does not use non-default stereo masks.
+- Adapt the timed DAC startup lead to the device's record and event capacities.
+- Bound unanswered timed DAC traffic and collapse consecutive identical DAC
+  writes at tick zero to avoid overloading NanoDrive during initialization.
+- Pack DAC sample waits into data records to reduce streaming bandwidth.
+- Retry delayed read-only timed DAC status queries to recover from incomplete
+  NanoDrive serial responses without replaying writes.
 
 ## v0.3.0
 

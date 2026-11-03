@@ -299,7 +299,10 @@ outputs still need external mixing and their synchronization is best-effort.
 Hardware playback sends untimed register writes from separate device workers
 against the system audio's estimated presentation time. OKIM6258 streams and
 supported YM2612 timed DAC streams are prebuffered before the PCM stream begins
-and started against the same estimated time. This is best-effort, not
+and started against the same estimated time. Timed DAC playback prebuffers up
+to four PCM blocks, preparing earlier if the next block could exceed a device's
+record or event queue capacity. A single block that exceeds the device's
+capacity is still rejected. This is best-effort, not
 sample-accurate: serial bandwidth, device latency, OS scheduling, and independent
 clock drift can cause timing
 differences. Physical output comes from each NanoDrive and must be mixed

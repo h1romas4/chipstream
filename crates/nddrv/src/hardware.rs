@@ -63,6 +63,18 @@ impl HardwareWorkers {
         Ok(self.0.enqueue(recorders, cancelled)?)
     }
 
+    pub fn enqueue_prebuffer(
+        &self,
+        recorders: &[Recorder],
+        frames: usize,
+        rate: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<bool> {
+        Ok(self
+            .0
+            .enqueue_prebuffer(recorders, frames, rate, cancelled)?)
+    }
+
     pub fn prepare_audio(&self, frames: usize, rate: u32, cancelled: &AtomicBool) -> Result<()> {
         Ok(self.0.prepare_audio(frames, rate, cancelled)?)
     }
@@ -105,6 +117,22 @@ mod tests {
         mpsc::Sender<()>,
         JoinHandle<()>,
     ) {
+        fake_dac_device_with_capacity(starts, volumes, 64, 32, false, None)
+    }
+
+    fn fake_dac_device_with_capacity(
+        starts: mpsc::Sender<Instant>,
+        volumes: Option<mpsc::Sender<(u8, Instant)>>,
+        record_capacity: u32,
+        event_capacity: u16,
+        consume_events_while_running: bool,
+        observed_events: Option<mpsc::Sender<usize>>,
+    ) -> (
+        Device,
+        serialport::TTYPort,
+        mpsc::Sender<()>,
+        JoinHandle<()>,
+    ) {
         let (mut fake, port) = serialport::TTYPort::pair().unwrap();
         fake.set_timeout(Duration::from_secs(3)).unwrap();
         let device = Device {
@@ -122,6 +150,7 @@ mod tests {
             let mut sealed = false;
             let mut reset = false;
             let mut events = 0_u32;
+            let mut consumed_events = 0_u32;
             loop {
                 let mut frame = None;
                 while frame.is_none() {
@@ -153,8 +182,8 @@ mod tests {
                             profile: ndsif::DAC_PROFILE_YM2612,
                             revision: 40,
                             ticks_per_second: ndsif::DAC_TICKS_PER_SECOND,
-                            record_capacity: 64,
-                            event_capacity: 32,
+                            record_capacity,
+                            event_capacity,
                             max_records: 8,
                             record_bytes: 4,
                             max_dac_late_us: 0,
@@ -187,8 +216,12 @@ mod tests {
                         None
                     }
                     Request::DacRegisterEvent { writes, .. } => {
-                        assert_eq!(writes, &[0x22, 0x08]);
-                        events += 1;
+                        assert!(writes.chunks_exact(2).all(|write| write == [0x22, 0x08]));
+                        events += (writes.len() / 2) as u32;
+                        assert!(events - consumed_events <= u32::from(event_capacity));
+                        if let Some(observed) = &observed_events {
+                            observed.send(writes.len() / 2).unwrap();
+                        }
                         None
                     }
                     Request::DacEnd {
@@ -207,6 +240,9 @@ mod tests {
                     }
                     Request::DacStatus { .. } => {
                         let done = running && sealed;
+                        if done || (running && consume_events_while_running) {
+                            consumed_events = events;
+                        }
                         let status = ndsif::DacStatus {
                             profile: ndsif::DAC_PROFILE_YM2612,
                             state: if done {
@@ -221,9 +257,13 @@ mod tests {
                             accepted,
                             consumed: if done { accepted } else { 0 },
                             queued: if done { 0 } else { accepted },
-                            free: if done { 64 } else { 64 - accepted },
-                            event_queued: if done { 0 } else { events },
-                            event_consumed: if done { events } else { 0 },
+                            free: if done {
+                                record_capacity
+                            } else {
+                                record_capacity - accepted
+                            },
+                            event_queued: events - consumed_events,
+                            event_consumed: consumed_events,
                             underflows: 0,
                             overflows: 0,
                             rejected: 0,
@@ -241,6 +281,7 @@ mod tests {
                         running = false;
                         sealed = false;
                         events = 0;
+                        consumed_events = 0;
                         reset = true;
                         Some(Reply::Complete)
                     }
@@ -364,6 +405,273 @@ mod tests {
         let origin = Instant::now() + Duration::from_millis(50);
         timeline.start(origin).unwrap();
         assert!(started.recv_timeout(Duration::from_secs(1)).unwrap() >= origin);
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn timed_dac_dense_start_prepares_when_next_block_would_exceed_capacity() {
+        let (starts, started) = mpsc::channel();
+        let (events, observed) = mpsc::channel();
+        let (device, port, release, fake) =
+            fake_dac_device_with_capacity(starts, None, 64, 512, true, Some(events));
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut prepared = false;
+        for block in 0..4 {
+            let mut recorder = recorders[0].borrow_mut();
+            if block == 0 {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x2a, 0x80),
+                        sample_frame: 0,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            for _ in 0..if block == 0 { 506 } else { 3 } {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x22, 0x08),
+                        sample_frame: block * 1024,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            recorder
+                .flush_scheduled_until((block + 1) * 1024, 44_100)
+                .unwrap();
+            drop(recorder);
+            prepared = workers
+                .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                .unwrap();
+            assert_eq!(prepared, block == 3);
+        }
+        assert!(prepared);
+        assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
+        timeline
+            .start(Instant::now() + Duration::from_millis(20))
+            .unwrap();
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        workers.finish().unwrap();
+        let mut total = 0;
+        while total < 515 {
+            total += observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert_eq!(total, 515);
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn timed_dac_sparse_start_can_prebuffer_four_blocks() {
+        let (starts, started) = mpsc::channel();
+        let (device, port, release, fake) = fake_dac_device(starts);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for block in 0..4 {
+            let mut recorder = recorders[0].borrow_mut();
+            for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(address, value),
+                        sample_frame: block * 1024,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            recorder
+                .flush_scheduled_until((block + 1) * 1024, 44_100)
+                .unwrap();
+            drop(recorder);
+            assert!(
+                !workers
+                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .unwrap()
+            );
+        }
+        workers.prepare_audio(4096, 44_100, &cancelled).unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
+        timeline
+            .start(Instant::now() + Duration::from_millis(20))
+            .unwrap();
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn timed_dac_sample_stream_prebuffers_four_blocks_with_nd6_capacity() {
+        let (starts, started) = mpsc::channel();
+        let (device, port, release, fake) =
+            fake_dac_device_with_capacity(starts, None, 8192, 512, false, None);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for (block, (dac_writes, event_writes)) in [(336, 167), (302, 4), (302, 8), (302, 4)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut recorder = recorders[0].borrow_mut();
+            for index in 0..dac_writes {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x2a, index as u8),
+                        sample_frame: block * 1024 + index * 3,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            for _ in 0..event_writes {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x22, 0x08),
+                        sample_frame: block * 1024,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            recorder
+                .flush_scheduled_until((block + 1) * 1024, 44_100)
+                .unwrap();
+            drop(recorder);
+            assert!(
+                !workers
+                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .unwrap()
+            );
+        }
+        workers.prepare_audio(4096, 44_100, &cancelled).unwrap();
+        timeline
+            .start(Instant::now() + Duration::from_millis(20))
+            .unwrap();
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        workers.finish().unwrap();
+        drop(recorders);
+        lease.release().unwrap();
+        release.send(()).unwrap();
+        fake.join().unwrap();
+        drop(port);
+    }
+
+    #[test]
+    fn timed_dac_record_capacity_can_trigger_early_preparation() {
+        let (starts, started) = mpsc::channel();
+        let (device, port, release, fake) = fake_dac_device(starts);
+        let service = DeviceService::new();
+        service.connect(device).unwrap();
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            DeviceEvent::Connected(_, _, _)
+        ));
+        let lease = service.playback_handle().acquire(vec![1]).unwrap();
+        let recorders = recorders(&lease).unwrap();
+        recorders[0]
+            .borrow_mut()
+            .configure_chip(WriteId::YM2612, 0, 7_670_454)
+            .unwrap();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for block in 0..2 {
+            let mut recorder = recorders[0].borrow_mut();
+            for index in 0..20 {
+                recorder
+                    .schedule_register_write(NdsifRegisterEvent {
+                        chip: Chip::Ym2612,
+                        write_id: WriteId::YM2612,
+                        instance: 0,
+                        page: 0,
+                        write: ndsif::RegisterWrite::new(0x2a, index as u8),
+                        sample_frame: block * 1024 + index,
+                        sample_rate: 44_100,
+                    })
+                    .unwrap();
+            }
+            recorder
+                .flush_scheduled_until((block + 1) * 1024, 44_100)
+                .unwrap();
+            drop(recorder);
+            assert_eq!(
+                workers
+                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .unwrap(),
+                block == 1
+            );
+        }
+        timeline
+            .start(Instant::now() + Duration::from_millis(20))
+            .unwrap();
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
         workers.finish().unwrap();
         drop(recorders);
         lease.release().unwrap();

@@ -10,7 +10,7 @@ use ndsif::{CapabilityEntry, Divider, WriteId};
 
 use crate::NdsifSerialTransport;
 use crate::routing::NdsifRoutingTransport;
-use crate::transport::{supports_cached_audio, supports_cached_clock};
+use crate::transport::{is_timed_dac_data_register, supports_cached_audio, supports_cached_clock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Operation {
@@ -82,6 +82,48 @@ impl NdsifRecordingTransport {
             operations: std::mem::take(&mut self.operations),
         })
     }
+
+    /// Conservatively bound timed DAC records and events in the pending batch.
+    pub(crate) fn timed_dac_prebuffer_usage(&self, ticks_per_second: u32) -> (usize, usize) {
+        timed_dac_prebuffer_usage(&self.operations, ticks_per_second)
+    }
+}
+
+fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) -> (usize, usize) {
+    let mut dac_writes = 0_usize;
+    let mut events = 0_usize;
+    let mut flushes = 0_usize;
+    let mut max_tick = 0_u128;
+    for operation in operations {
+        match operation {
+            Operation::Register(event) => {
+                if is_timed_dac_data_register(event) {
+                    dac_writes = dac_writes.saturating_add(1);
+                } else {
+                    events = events.saturating_add(1);
+                }
+            }
+            Operation::Psg(_) => events = events.saturating_add(1),
+            Operation::Flush(frame, rate) | Operation::FinishDac(frame, rate) => {
+                flushes = flushes.saturating_add(1);
+                let tick = if *rate == 0 {
+                    u128::MAX
+                } else {
+                    (*frame as u128) * u128::from(ticks_per_second) / u128::from(*rate)
+                };
+                max_tick = max_tick.max(tick);
+            }
+            _ => {}
+        }
+    }
+    let long_waits = usize::try_from(max_tick / u128::from(u16::MAX)).unwrap_or(usize::MAX);
+    (
+        dac_writes
+            .saturating_mul(2)
+            .saturating_add(flushes)
+            .saturating_add(long_waits),
+        events,
+    )
 }
 
 impl NdsifRoutingTransport for NdsifRecordingTransport {
@@ -157,6 +199,10 @@ pub struct NdsifCommandBatch {
 }
 
 impl NdsifCommandBatch {
+    pub(crate) fn timed_dac_prebuffer_usage(&self, ticks_per_second: u32) -> (usize, usize) {
+        timed_dac_prebuffer_usage(&self.operations, ticks_per_second)
+    }
+
     /// Return the number of operations in this batch.
     pub fn len(&self) -> usize {
         self.operations.len()

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -67,6 +67,12 @@ struct DeviceWorker {
     id: u64,
     sender: mpsc::SyncSender<Work>,
     timing: DeviceTiming,
+    dac_prebuffer: Option<DacPrebuffer>,
+}
+
+struct DacPrebuffer {
+    capabilities: ndsif::DacCapabilities,
+    usage: Cell<(usize, usize)>,
 }
 
 /// Bounded device workers that replay recorded batches against a shared timeline.
@@ -76,9 +82,17 @@ pub struct NdsifHardwareWorkers {
     errors: mpsc::Receiver<String>,
     timeline: Arc<NdsifHostTimeline>,
     joined: bool,
+    prebuffer_prepared: Cell<bool>,
 }
 
 impl NdsifHardwareWorkers {
+    /// Return whether any worker uses the device-timed YM2612 DAC profile.
+    pub fn has_timed_dac(&self) -> bool {
+        self.senders
+            .iter()
+            .any(|worker| worker.timing == DeviceTiming::Dac)
+    }
+
     /// Start one worker per device, replaying each recorder's setup batch.
     ///
     /// Recorders must correspond to the devices in the same order used by
@@ -124,6 +138,7 @@ impl NdsifHardwareWorkers {
             errors,
             timeline,
             joined: false,
+            prebuffer_prepared: Cell::new(false),
         };
         for ((id, device), recorder) in devices.iter().zip(recorders) {
             let setup = recorder
@@ -133,18 +148,27 @@ impl NdsifHardwareWorkers {
                 })?
                 .take_batch()
                 .map_err(|error| NdsifWorkerError(error.to_string()))?;
-            let timing = if setup.configures_audio_stream() {
-                DeviceTiming::Audio
-            } else if setup.configures_primary_ym2612()
-                && device
+            let dac_capabilities = if !setup.configures_audio_stream()
+                && setup.configures_primary_ym2612()
+            {
+                device
                     .lock()
                     .map_err(|_| NdsifWorkerError(format!("NanoDrive device {id} worker failed")))?
-                    .supports_timed_dac()
-            {
+                    .timed_dac_capabilities()
+            } else {
+                None
+            };
+            let timing = if setup.configures_audio_stream() {
+                DeviceTiming::Audio
+            } else if dac_capabilities.is_some() {
                 DeviceTiming::Dac
             } else {
                 DeviceTiming::Host
             };
+            let dac_prebuffer = dac_capabilities.map(|capabilities| DacPrebuffer {
+                usage: Cell::new(setup.timed_dac_prebuffer_usage(capabilities.ticks_per_second)),
+                capabilities,
+            });
             let (sender, receiver) = mpsc::sync_channel::<Work>(queue_blocks.get());
             let device = Arc::clone(device);
             let timeline = Arc::clone(&workers.timeline);
@@ -280,7 +304,12 @@ impl NdsifHardwareWorkers {
                 .map_err(|error| {
                     NdsifWorkerError(format!("start NanoDrive device worker: {error}"))
                 })?;
-            workers.senders.push(DeviceWorker { id, sender, timing });
+            workers.senders.push(DeviceWorker {
+                id,
+                sender,
+                timing,
+                dac_prebuffer,
+            });
             workers.threads.push(handle);
         }
         drop(ready_tx);
@@ -327,6 +356,71 @@ impl NdsifHardwareWorkers {
             }
         }
         Ok(())
+    }
+
+    /// Enqueue a startup batch, preparing streams first if a DAC queue would fill.
+    ///
+    /// `buffered_frames` is the PCM span already enqueued to the workers,
+    /// excluding the current recorder batches. Returns `true` when preparation
+    /// was performed; thereafter use [`Self::enqueue`] for subsequent batches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the recorders do not match or preparation fails.
+    /// The first batch is always submitted; an oversized batch is reported by
+    /// the device transport.
+    pub fn enqueue_prebuffer(
+        &self,
+        recorders: &[NdsifRecorder],
+        buffered_frames: usize,
+        rate: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<bool, NdsifWorkerError> {
+        if self.prebuffer_prepared.get() {
+            return Err(NdsifWorkerError(
+                "NanoDrive prebuffer is already prepared".into(),
+            ));
+        }
+        if recorders.len() != self.senders.len() {
+            return Err(NdsifWorkerError(
+                "NanoDrive recorder and worker counts do not match".into(),
+            ));
+        }
+        let mut estimates = Vec::with_capacity(recorders.len());
+        let mut would_overflow = false;
+        for (recorder, worker) in recorders.iter().zip(&self.senders) {
+            let estimate = if let Some(buffer) = &worker.dac_prebuffer {
+                let additional = recorder
+                    .try_borrow()
+                    .map_err(|_| NdsifWorkerError("NanoDrive recorder is already borrowed".into()))?
+                    .timed_dac_prebuffer_usage(buffer.capabilities.ticks_per_second);
+                let (records, events) = buffer.usage.get();
+                let total = (
+                    records.saturating_add(additional.0),
+                    events.saturating_add(additional.1),
+                );
+                would_overflow |= total.0 > buffer.capabilities.record_capacity as usize
+                    || total.1 > usize::from(buffer.capabilities.event_capacity);
+                Some(total)
+            } else {
+                None
+            };
+            estimates.push(estimate);
+        }
+        let prepare = would_overflow && buffered_frames > 0;
+        if prepare {
+            self.prepare_audio(buffered_frames, rate, cancelled)?;
+            self.prebuffer_prepared.set(true);
+        }
+        self.enqueue(recorders, cancelled)?;
+        if !prepare {
+            for (worker, estimate) in self.senders.iter().zip(estimates) {
+                if let (Some(buffer), Some(usage)) = (&worker.dac_prebuffer, estimate) {
+                    buffer.usage.set(usage);
+                }
+            }
+        }
+        Ok(prepare)
     }
 
     fn send(

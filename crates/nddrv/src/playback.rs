@@ -1612,6 +1612,7 @@ fn run_inner(
     let mut exhausted = false;
     let mut hardware_fade_scheduled = false;
     let mut prebuffered_frames = 0_usize;
+    let mut hardware_prepared = false;
     for _ in 0..4 {
         Sequencer::apply_chip_gains(&mut sequencer, &sources, &control.gains, &mut gain_revision)?;
         let block = sequencer.render()?;
@@ -1622,14 +1623,23 @@ fn run_inner(
             &mut hardware_fade_scheduled,
         )?;
         if let Some((recorders, workers)) = &hardware {
-            workers.enqueue(recorders, &control.cancel)?;
+            if hardware_prepared {
+                workers.enqueue(recorders, &control.cancel)?;
+            } else {
+                hardware_prepared = workers.enqueue_prebuffer(
+                    recorders,
+                    prebuffered_frames,
+                    config.sample_rate,
+                    &control.cancel,
+                )?;
+            }
         }
         match block {
             Some(block) if !block.frames().is_empty() => {
                 prebuffered_frames = prebuffered_frames
                     .checked_add(block.frames().len())
                     .context("audio prebuffer frame count overflow")?;
-                tx.send(Block::Audio(block.frames().to_vec()))?
+                tx.send(Block::Audio(block.frames().to_vec()))?;
             }
             Some(_) => bail!("sequencer produced an empty block"),
             None => {
@@ -1643,6 +1653,7 @@ fn run_inner(
         return Ok(());
     }
     if prebuffered_frames > 0
+        && !hardware_prepared
         && let Some((_, workers)) = &hardware
     {
         workers.prepare_audio(prebuffered_frames, config.sample_rate, &control.cancel)?;

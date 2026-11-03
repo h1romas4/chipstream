@@ -28,6 +28,7 @@ mod tests;
 
 use audio::{AudioStartMode, AudioStream, audio_prebuffer_bytes};
 use dac::TimedDacStream;
+pub(crate) use dac::is_timed_dac_data_register;
 
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -344,6 +345,10 @@ impl NdsifSerialTransport {
     /// Return whether the device advertises a supported primary YM2612 DAC profile.
     pub fn supports_timed_dac(&self) -> bool {
         self.timed_dac_capabilities.is_some()
+    }
+
+    pub(crate) fn timed_dac_capabilities(&self) -> Option<ndsif::DacCapabilities> {
+        self.timed_dac_capabilities
     }
 
     /// Return whether the device advertises output attenuation control.

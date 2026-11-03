@@ -15,6 +15,9 @@ use super::{
 };
 
 const DAC_PREBUFFER_MILLISECONDS: u64 = 80;
+const DAC_PRESTART_WINDOW_BYTES: usize = 2048;
+const DAC_RUNNING_WINDOW_BYTES: usize = 4096;
+const DAC_SYNC_RESERVE_BYTES: usize = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DacStartMode {
@@ -42,7 +45,7 @@ pub(super) fn ticks_for_frame(
     Ok(ticks)
 }
 
-/// Append bounded wait records to advance the DAC timeline to a target tick.
+/// Advance the DAC timeline, packing waits into the preceding record when possible.
 pub(super) fn append_dac_waits(
     records: &mut Vec<DacRecord>,
     current_tick: &mut u64,
@@ -53,6 +56,12 @@ pub(super) fn append_dac_waits(
             "NDSIF timed DAC event moves backward (current={}, target={target_tick})",
             *current_tick
         ));
+    }
+    if let Some(record) = records.last_mut() {
+        let available = u64::from(u16::MAX - record.wait_ticks);
+        let wait_ticks = (target_tick - *current_tick).min(available) as u16;
+        record.wait_ticks += wait_ticks;
+        *current_tick += u64::from(wait_ticks);
     }
     while *current_tick < target_tick {
         let wait_ticks = (target_tick - *current_tick).min(u64::from(u16::MAX)) as u16;
@@ -69,7 +78,7 @@ pub(super) fn append_dac_waits(
 }
 
 /// Identify YM2612 writes represented directly by timed DAC records.
-pub(super) fn is_timed_dac_data_register(event: &NdsifRegisterEvent) -> bool {
+pub(crate) fn is_timed_dac_data_register(event: &NdsifRegisterEvent) -> bool {
     event.write_id == WriteId::YM2612
         && event.instance == 0
         && event.page == 0
@@ -145,6 +154,46 @@ impl TimedDacStream {
 }
 
 impl NdsifSerialTransport {
+    /// Keep unanswered DAC traffic within the device's receive window.
+    fn request_timed_dac(&mut self, command: Command<'_>) -> Result<(), String> {
+        self.check_timed_dac_cancellation()?;
+        let started = self
+            .timed_dac_stream
+            .as_ref()
+            .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?
+            .started;
+        let window = if started {
+            DAC_RUNNING_WINDOW_BYTES
+        } else {
+            DAC_PRESTART_WINDOW_BYTES
+        };
+        let size = command
+            .to_frame(0)
+            .map_err(|error| error.to_string())?
+            .encode()
+            .as_bytes()
+            .len();
+        if size + DAC_SYNC_RESERVE_BYTES > window {
+            return Err("NDSIF timed DAC frame exceeds the transmit window".into());
+        }
+        if self
+            .session
+            .unconfirmed_bytes()
+            .saturating_add(size)
+            .saturating_add(DAC_SYNC_RESERVE_BYTES)
+            > window
+        {
+            if started {
+                let status = self.query_timed_dac_status()?;
+                self.update_timed_dac_progress(status)?;
+            } else {
+                self.request(Command::Ping(b"chipstream-dac-sync"))?;
+            }
+        }
+        self.request(command)?;
+        Ok(())
+    }
+
     /// Convert due events into timed DAC records and event batches.
     pub(super) fn flush_timed_dac_until(
         &mut self,
@@ -189,6 +238,17 @@ impl NdsifSerialTransport {
                     }
                     let tick = ticks_for_frame(first.sample_frame, output_rate, ticks_per_second)?;
                     append_dac_waits(&mut records, &mut record_tick, tick)?;
+                    if tick == 0
+                        && first.write.address == 0x2a
+                        && records.last().is_some_and(|record| {
+                            record.kind == DacRecordKind::Dac
+                                && record.wait_ticks == 0
+                                && record.value == first.write.value
+                        })
+                    {
+                        index += 1;
+                        continue;
+                    }
                     records.push(DacRecord {
                         kind: if first.write.address == 0x2a {
                             DacRecordKind::Dac
@@ -438,7 +498,7 @@ impl NdsifSerialTransport {
                 .as_ref()
                 .map(|stream| (stream.next_sequence, stream.accepted_tick))
                 .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?;
-            self.request(Command::DacData {
+            self.request_timed_dac(Command::DacData {
                 profile: DAC_PROFILE_YM2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
@@ -494,7 +554,7 @@ impl NdsifSerialTransport {
             ));
         }
         self.ensure_timed_dac_event_capacity(count)?;
-        self.request(Command::DacRegisterEvent {
+        self.request_timed_dac(Command::DacRegisterEvent {
             profile: DAC_PROFILE_YM2612,
             tick,
             write_id,
@@ -600,11 +660,13 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
-    /// Verify that buffered DAC ticks cover the specified PCM frames and ping the device.
+    /// Verify that buffered DAC ticks cover the specified PCM frames and synchronize
+    /// and validate the device's queued records and events.
     ///
     /// # Errors
     ///
-    /// Fails if the stream is not deferred, the lead is insufficient, or the ping fails.
+    /// Fails if the stream is not deferred, the lead is insufficient, device
+    /// progress does not match the host, or synchronization fails.
     pub fn prepare_timed_dac_start_for_frames(
         &mut self,
         frames: usize,
@@ -629,6 +691,25 @@ impl NdsifSerialTransport {
             ));
         }
         self.request(Command::Ping(b"chipstream-dac-start"))?;
+        let status = self.query_timed_dac_status()?;
+        let stream = self
+            .timed_dac_stream
+            .as_ref()
+            .expect("stream was checked above");
+        if status.state != 0
+            || status.queued != stream.queued_records
+            || status.event_queued != stream.queued_events
+        {
+            return Err(format!(
+                "NDSIF timed DAC prebuffer does not match device (state={}, records={}/{}, events={}/{})",
+                status.state,
+                status.queued,
+                stream.queued_records,
+                status.event_queued,
+                stream.queued_events
+            ));
+        }
+        self.update_timed_dac_progress(status)?;
         self.timed_dac_stream
             .as_mut()
             .expect("stream was checked above")
@@ -725,7 +806,7 @@ impl NdsifSerialTransport {
             .as_ref()
             .map(|stream| (stream.next_sequence, stream.accepted_tick))
             .expect("stream was checked above");
-        self.request(Command::DacEnd {
+        self.request_timed_dac(Command::DacEnd {
             profile: DAC_PROFILE_YM2612,
             next_sequence,
             end_tick,

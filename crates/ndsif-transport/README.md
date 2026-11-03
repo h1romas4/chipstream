@@ -49,7 +49,12 @@ its setup drains the configuration recorded during sequencer construction.
 
 After each render, call `enqueue` to deliver the recorded batches. Before
 starting the shared `NdsifHostTimeline`, call `prepare_audio` with the number
-of host frames already buffered and the output rate. Start the timeline at the
+of frames already queued to every device-timed stream and the output rate.
+For bounded startup, `enqueue_prebuffer` estimates timed DAC queue usage and
+prepares early if the next batch might exceed capacity. Once it reports that
+preparation occurred, use `enqueue` for later batches; otherwise call
+`prepare_audio` when the desired initial span is buffered. The first batch must
+fit on the device. Start the timeline at the
 estimated audio presentation time. Check worker errors while playing and call
 `finish` after the final batch; start or cancel the timeline before finishing.
 Dropping the workers cancels the timeline and joins them. Drop all sequencers,
@@ -309,11 +314,20 @@ error. Recording does not itself synchronize host audio or device-timed streams.
 - A device advertising the supported revision 40, profile 1 timed DAC
   capabilities uses that profile for primary YM2612. YM2612 `$2A` and `$2B`
   writes become DAC records; other supported FM and PSG writes become
-  positioned events. The transport targets 80 ms of prebuffering and
-  seals/drains the profile at end of playback. Without this profile, normal
-  scheduled writes are used.
+  positioned events. Consecutive identical DAC values at tick zero within a
+  flush are collapsed; later DAC values and intervening select writes are
+  preserved. Waits are packed into the preceding DAC or select record when
+  possible without changing their timing. Unanswered traffic is synchronized
+  within 2048 bytes before start and 4096 bytes while running. A delayed
+  DAC_STATUS response is retried up to twice with new transaction IDs, within
+  the configured response timeout; incomplete earlier responses are discarded
+  and complete earlier responses are checked. DAC data and state-changing
+  commands are never retried. Status queries still block the device worker, so
+  prolonged communication delays can exhaust the DAC buffer and remain errors.
+  The transport targets 80 ms of prebuffering and seals/drains the profile at
+  end of playback. Without this profile, normal scheduled writes are used.
 - Applications can defer a timed DAC stream, verify its buffered PCM span and
-  complete the preparation ping before starting it on their presentation
+  verify the device's queued records and events before starting it on their presentation
   timeline. A stream sealed before starting is drained after it starts.
   Cancellation interrupts capacity and drain waits, but not serial I/O.
 - Without an audio or timed DAC stream, the transport paces configured chip
