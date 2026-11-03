@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Draw a double separator between folders in Music.
+- Simplify the Piano Roll Chip Gain panel and spell out NanoDrive in chip labels.
 - Show an indeterminate progress meter in library scan notifications.
 - Update scan progress in place instead of repeatedly showing the notification.
 - Widen NanoDrive boxes to give serial port selectors more room.

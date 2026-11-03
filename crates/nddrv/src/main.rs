@@ -1168,7 +1168,7 @@ impl AppView {
                     "{} #{}{}",
                     Track::chip_name(&source.chip),
                     source.instance as u8 + 1,
-                    if source.hardware { " (ND)" } else { "" }
+                    if source.hardware { " (NanoDrive)" } else { "" }
                 );
                 rows.push(div().text_xs().text_color(rgb(0xb9e9e7)).child(title));
                 for channel in 0..total {
@@ -1391,7 +1391,7 @@ impl AppView {
                         .child(name)
                         .when(hardware, |row| {
                             row.child(div().text_color(rgb(0xd0a76e)).child(if software {
-                                "ND fixed"
+                                "NanoDrive fixed"
                             } else {
                                 "NanoDrive"
                             }))
@@ -1457,7 +1457,7 @@ impl AppView {
         } else {
             "No playable chip outputs"
         };
-        let height = (rows.len() as f32 * 31. + 92.).min(400.);
+        let height = (rows.len() as f32 * 31. + 72.).min(400.);
         div()
             .id("piano-chip-gains")
             .w_full()
@@ -1482,13 +1482,7 @@ impl AppView {
                     .when(rows.is_empty(), |panel| {
                         panel.child(div().text_xs().text_color(rgb(0x82a8bb)).child(empty))
                     })
-                    .children(rows)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x82a8bb))
-                            .child("Software only"),
-                    ),
+                    .children(rows),
             )
     }
 
@@ -3123,6 +3117,7 @@ impl AppView {
                     .join(", ");
                 div()
                     .id(SharedString::from(format!("track-row-{index}")))
+                    .relative()
                     .w_full()
                     .h(px(68.))
                     .flex()
@@ -3255,6 +3250,17 @@ impl AppView {
                                     .child(artist.to_owned()),
                             ),
                     )
+                    .when(folder_boundary, |row| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom(px(3.))
+                                .h(px(1.))
+                                .bg(rgb(0x718c9a)),
+                        )
+                    })
                     .context_menu(move |menu, _, cx| {
                         let _ = view.update(cx, |view, cx| {
                             if select_for_context(&mut view.selected_tracks, menu_path.clone()) {

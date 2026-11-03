@@ -217,7 +217,8 @@ up may take time for complex tracks; preview errors are shown in the view
 without stopping playback.
 
 The **Channels** panel below Chip Gain identifies each tracked voice by chip, instance and
-channel, with a distinct color. Select a color square to show or hide that
+channel, with a distinct color. NanoDrive instances are marked `(NanoDrive)`.
+Select a color square to show or hide that
 voice's notes and key highlights; this does not change the sound. When several
 visible voices share a key, the most recently started note determines its color.
 
