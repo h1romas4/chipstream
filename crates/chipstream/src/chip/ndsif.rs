@@ -4,7 +4,7 @@
 //! captured or played through the physical device. Transport events use
 //! absolute output-frame positions and can arrive out of chronological order.
 
-use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, num::NonZeroU32, rc::Rc};
 
 use ::ndsif::{
     AudioPositionClock, AudioTiming, BytePosition, Divider, OkiClock, Pan, RegisterWrite, WriteId,
@@ -54,14 +54,15 @@ pub struct NdsifPsgEvent {
     pub value: u8,
 }
 
-/// One source ADPCM byte for an NDSIF OKIM6258 stream.
+/// One encoded ADPCM byte for an NDSIF OKIM6258 stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NdsifAdpcmEvent {
     /// Audio stream instance.
     pub instance: u8,
     /// Absolute position in ADPCM bytes.
     pub position: BytePosition,
-    /// Absolute host output-frame position.
+    /// Host frame through which the byte was rendered and can be committed.
+    /// Playback timing is determined by `position`, not by this batch horizon.
     pub sample_frame: usize,
     /// Host output rate in frames per second.
     pub sample_rate: u32,
@@ -102,8 +103,10 @@ pub struct NdsifAudioControlEvent {
 
 /// Schedules chip writes on an NDSIF-capable device.
 ///
-/// Implementations must queue writes for `sample_frame`; they must not treat
-/// this call as an instruction to write to the device immediately. Sequencer
+/// Implementations must queue writes; they must not treat this call as an
+/// instruction to write to the device immediately. Register and PSG writes
+/// use `sample_frame`; audio data and control events use byte positions for
+/// playback timing. ADPCM data's frame is a commit horizon. Sequencer
 /// rendering is ahead of playback, and events from different chip instances
 /// may arrive out of chronological order.
 pub trait NdsifTransport {
@@ -522,9 +525,12 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
 
 /// NDSIF-backed OKIM6258 replacement.
 ///
-/// Register-1 ADPCM bytes are transferred to the device stream. `generate()`
-/// supplies silence to host PCM; the device's OKIM6258 produces the audible
-/// output. Clock-byte writes at the same frame are combined into one change.
+/// Register-1 ADPCM bytes are decoded as source audio and re-encoded for the
+/// continuous device stream. `generate()` supplies silence to host PCM; the
+/// device's OKIM6258 produces the audible output. Clock-byte writes at the
+/// same frame are combined into one change.
+/// The source and device predictors use 12-bit precision, matching the
+/// NanoDrive reference player; the VGM output-precision flag is not applied.
 /// NDSIF supports 4 MHz and 8 MHz clocks and positions changes at ADPCM byte
 /// boundaries. Writes to `0x10..=0x17` are ignored for VGMMAME compatibility.
 pub struct NdsifOkim6258<T> {
@@ -536,7 +542,10 @@ pub struct NdsifOkim6258<T> {
     next_byte_position: u32,
     timeline: Vec<AudioPositionClock>,
     pending_timing: Option<PendingOkiTiming>,
-    decoder: super::oki_adpcm::OkiAdpcmState,
+    source_decoder: super::oki_adpcm::OkiAdpcmState,
+    output_decoder: super::oki_adpcm::OkiAdpcmState,
+    source_playing: bool,
+    source_data: VecDeque<u8>,
     transport: Rc<RefCell<T>>,
 }
 
@@ -574,11 +583,6 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
                 minimum: divider as u32,
             });
         }
-        let output_bits = if config.header().okim6258_flags.output_12bit {
-            12
-        } else {
-            10
-        };
         let chip = Chip::Okim6258;
         let clock = OkiClock::try_from(config.clock()).map_err(|_| {
             external_error(
@@ -621,7 +625,10 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             next_byte_position: 0,
             timeline: vec![timeline],
             pending_timing: None,
-            decoder: super::oki_adpcm::OkiAdpcmState::new(output_bits),
+            source_decoder: super::oki_adpcm::OkiAdpcmState::new(12),
+            output_decoder: super::oki_adpcm::OkiAdpcmState::new(12),
+            source_playing: false,
+            source_data: VecDeque::new(),
             transport,
         })
     }
@@ -672,22 +679,39 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             }
             return Ok(());
         }
+        self.render_until(sample_frame, sample_rate)?;
         let position = self.position_for_frame(sample_frame, sample_rate)?;
         let event = match register {
-            0x00 => None,
-            0x01 => {
-                while self.next_byte_position < position.get() {
-                    let value = self.decoder.encode_zero_byte();
-                    self.schedule_data(sample_frame, sample_rate, value)?;
+            0x00 => {
+                if value & 4 != 0 {
+                    return Err(external_error(
+                        &Chip::Okim6258,
+                        "OKIM6258 recording is not supported",
+                    ));
                 }
-                self.decoder.decode_byte(value);
-                Some(Okim6258Event::Data(NdsifAdpcmEvent {
-                    instance: self.instance,
-                    position: BytePosition::new(self.next_byte_position),
-                    sample_frame,
-                    sample_rate,
-                    value,
-                }))
+                if value & 1 != 0 {
+                    self.source_playing = false;
+                    self.source_data.clear();
+                    self.source_decoder.reset();
+                } else if value & 2 != 0 && !self.source_playing {
+                    self.source_playing = true;
+                    self.source_data.clear();
+                    self.source_decoder.reset();
+                }
+                None
+            }
+            0x01 => {
+                if self.source_playing {
+                    const MAX_SOURCE_BYTES: usize = 65_536;
+                    if self.source_data.len() >= MAX_SOURCE_BYTES {
+                        return Err(external_error(
+                            &Chip::Okim6258,
+                            "OKIM6258 source queue capacity exceeded",
+                        ));
+                    }
+                    self.source_data.push_back(value);
+                }
+                None
             }
             0x02 => {
                 let pan = match value & 3 {
@@ -720,16 +744,6 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             .try_borrow_mut()
             .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?;
         match event {
-            Okim6258Event::Data(event) => {
-                transport
-                    .schedule_adpcm_data(event)
-                    .map_err(|error| external_error(&Chip::Okim6258, error))?;
-                self.next_byte_position = self
-                    .next_byte_position
-                    .checked_add(1)
-                    .ok_or_else(|| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
-                Ok(())
-            }
             Okim6258Event::Control(event) => transport
                 .schedule_audio_control(event)
                 .map_err(|error| external_error(&Chip::Okim6258, error)),
@@ -749,6 +763,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
                 format!("unsupported OKIM6258 clock {} Hz", pending.clock),
             )
         })?;
+        self.render_until(pending.frame, pending.rate)?;
         let position = self.position_for_frame(pending.frame, pending.rate)?;
         let timeline = self
             .timeline
@@ -831,10 +846,27 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             .ok_or_else(|| external_error(&Chip::Okim6258, "ADPCM position overflow"))?;
         Ok(())
     }
+
+    fn render_until(&mut self, sample_frame: usize, sample_rate: u32) -> Result<(), ChipError> {
+        let target = self.position_for_frame(sample_frame, sample_rate)?.get();
+        while self.next_byte_position < target {
+            let samples = if self.source_playing {
+                if let Some(value) = self.source_data.pop_front() {
+                    self.source_decoder.decode_pair(value)
+                } else {
+                    [self.source_decoder.signal(); 2]
+                }
+            } else {
+                [0; 2]
+            };
+            let value = self.output_decoder.encode_pair(samples);
+            self.schedule_data(sample_frame, sample_rate, value)?;
+        }
+        Ok(())
+    }
 }
 
 enum Okim6258Event {
-    Data(NdsifAdpcmEvent),
     Control(NdsifAudioControlEvent),
 }
 
@@ -876,6 +908,30 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         self.schedule_write(write, sample_frame, output_rate)
     }
 
+    fn set_dac_stream_playing_at(
+        &mut self,
+        playing: bool,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.schedule_write(
+            ChipRegisterWrite::Okim6258(Okim6258Spec {
+                register: 0,
+                value: if playing { 2 } else { 1 },
+            }),
+            sample_frame,
+            output_rate,
+        )
+    }
+
+    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
+        matches!(
+            write,
+            ChipRegisterWrite::Okim6258(Okim6258Spec { register: 0, value })
+                if value & 1 != 0
+        )
+    }
+
     fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
         self.commit_timing()
     }
@@ -886,11 +942,7 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         output_rate: u32,
     ) -> Result<(), ChipError> {
         self.commit_timing()?;
-        let target = self.position_for_frame(sample_frame, output_rate)?.get();
-        while self.next_byte_position < target {
-            let value = self.decoder.encode_zero_byte();
-            self.schedule_data(sample_frame, output_rate, value)?;
-        }
+        self.render_until(sample_frame, output_rate)?;
         self.transport
             .try_borrow_mut()
             .map_err(|_| external_error(&Chip::Okim6258, "NDSIF transport is already borrowed"))?
@@ -909,16 +961,12 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         if self.stream_finished {
             return Ok(());
         }
-        let target = self.position_for_frame(sample_frame, output_rate)?.get();
-        while self.next_byte_position < target {
-            let value = self.decoder.encode_zero_byte();
-            self.schedule_data(sample_frame, output_rate, value)?;
-        }
+        self.render_until(sample_frame, output_rate)?;
         for _ in 0..32 {
-            let value = self.decoder.encode_zero_byte();
+            let value = self.output_decoder.encode_zero_byte();
             self.schedule_data(sample_frame, output_rate, value)?;
         }
-        let pair = ZeroPair::try_from(self.decoder.zero_pair())
+        let pair = ZeroPair::try_from(self.output_decoder.zero_pair())
             .map_err(|error| external_error(&Chip::Okim6258, error.to_string()))?;
         {
             let mut transport = self.transport.try_borrow_mut().map_err(|_| {

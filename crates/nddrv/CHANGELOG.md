@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix NanoDrive 8 ADPCM source playback resets while keeping the device decoder continuous.
 - Add a Music context menu action to copy a track's full path.
 - Fix timing discontinuities when VGM DAC stream frequency changes during playback.
 

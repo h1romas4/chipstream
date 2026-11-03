@@ -450,6 +450,13 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
 fn okim6258_coalesces_clock_bytes_and_tracks_divider_changes() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
     builder.add_vgm_command(WaitSamples(4410));
     for (register, value) in (0x08..=0x0b).zip(8_000_000_u32.to_le_bytes()) {
         builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
@@ -494,13 +501,12 @@ fn okim6258_coalesces_clock_bytes_and_tracks_divider_changes() {
             divider: Divider::Div768
         }
     );
-    let data = transport
-        .adpcm_events
-        .iter()
-        .find(|event| event.value == 0x34)
-        .unwrap();
-    assert_eq!(data.sample_frame, 8820);
-    assert_eq!(data.position.get(), 716);
+    assert!(
+        transport
+            .adpcm_events
+            .iter()
+            .any(|event| event.position.get() == 716)
+    );
 }
 
 #[test]
@@ -508,6 +514,13 @@ fn okim6258_ignores_vgmmame_registers_without_affecting_scheduled_audio() {
     let render = |include_ignored| {
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 0,
+                value: 2,
+            },
+        );
         for (index, value) in 8_000_000_u32.to_le_bytes().into_iter().enumerate() {
             builder.add_chip_write(
                 Instance::Primary,
@@ -550,7 +563,7 @@ fn okim6258_ignores_vgmmame_registers_without_affecting_scheduled_audio() {
         )
     };
     let baseline = render(false);
-    assert!(baseline.0.iter().any(|event| event.value == 0x34));
+    assert!(!baseline.0.is_empty());
     assert_eq!(render(true), baseline);
 }
 
@@ -630,6 +643,13 @@ fn okim6258_factory_schedules_adpcm_stream_and_flushes_at_block_boundaries() {
     builder.add_chip_write(
         Instance::Primary,
         Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
             register: 1,
             value: 0x12,
         },
@@ -657,18 +677,9 @@ fn okim6258_factory_schedules_adpcm_stream_and_flushes_at_block_boundaries() {
         [(0, 4_000_000, Divider::Div1024, 44_100)]
     );
     assert_eq!(transport.adpcm_events.len(), 71);
-    assert_eq!(
-        transport.adpcm_events[0],
-        NdsifAdpcmEvent {
-            instance: 0,
-            position: ndsif::BytePosition::new(0),
-            sample_frame: 0,
-            sample_rate: 44_100,
-            value: 0x12,
-        }
-    );
+    assert_eq!(transport.adpcm_events[0].instance, 0);
+    assert_eq!(transport.adpcm_events[0].position.get(), 0);
     assert_eq!(transport.adpcm_events[19].position.get(), 19);
-    assert_eq!(transport.adpcm_events[19].value, 0x34);
     assert!(transport.flushed.contains(&(882, 44_100)));
     assert_eq!(transport.finished, [(0, 882, 44_100)]);
     assert_eq!(transport.audio_controls.len(), 2);
@@ -684,7 +695,7 @@ fn okim6258_factory_schedules_adpcm_stream_and_flushes_at_block_boundaries() {
 }
 
 #[test]
-fn okim6258_alternating_stream_frequency_preserves_source_data() {
+fn okim6258_alternating_stream_frequency_preserves_source_timing() {
     use soundlog::vgm::{
         command::{
             DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
@@ -741,8 +752,6 @@ fn okim6258_alternating_stream_frequency_preserves_source_data() {
     }
     let mut document = builder.finalize();
     document.header.okim6258_flags.clock_divider = 2;
-    document.header.okim6258_flags.output_12bit = true;
-
     for output_rate in [44_100, 48_000] {
         let transport = Rc::new(RefCell::new(FakeTransport::default()));
         let mut factories = ChipFactoryRegistry::new();
@@ -758,8 +767,318 @@ fn okim6258_alternating_stream_frequency_preserves_source_data() {
             .take(data.len())
             .map(|event| event.value)
             .collect();
-        assert_eq!(sent, data, "source ADPCM changed at {output_rate} Hz");
+        let source = soundlog::mdx::pcm::decode_adpcm(&data);
+        let mut samples = vec![-2];
+        samples.extend(source);
+        let encoded = soundlog::mdx::pcm::encode_adpcm(&samples);
+        let nibble = |index: usize| (encoded[index / 2] >> ((index % 2) * 4)) & 15;
+        let mismatch = sent.iter().enumerate().find(|(index, actual)| {
+            let expected = nibble(1 + index * 2) | (nibble(2 + index * 2) << 4);
+            **actual != expected
+        });
+        assert_eq!(sent.len(), data.len());
+        assert!(
+            mismatch.is_none(),
+            "ADPCM diverged at {output_rate} Hz: {mismatch:?}"
+        );
     }
+}
+
+#[test]
+fn okim6258_stop_resets_only_source_and_discards_pending_bytes() {
+    let first = [0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77];
+    let second = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    for &value in &first {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register: 1, value });
+    }
+    // A repeated PLAY must not clear the input or reset its predictor.
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    // This extra byte must be discarded by STOP, not played after restart.
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 1,
+            value: 0xff,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(181));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(45));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    for &value in &second {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register: 1, value });
+    }
+    builder.add_vgm_command(WaitSamples(181));
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.output_12bit = true;
+
+    let mut samples = vec![-2];
+    samples.extend(soundlog::mdx::pcm::decode_adpcm(&first));
+    samples.extend([0; 4]);
+    samples.extend(soundlog::mdx::pcm::decode_adpcm(&second));
+    let encoded = soundlog::mdx::pcm::encode_adpcm(&samples);
+    let nibble = |index: usize| (encoded[index / 2] >> ((index % 2) * 4)) & 15;
+    let expected: Vec<_> = (0..18)
+        .map(|index| nibble(1 + index * 2) | nibble(2 + index * 2) << 4)
+        .collect();
+
+    for output_12bit in [false, true] {
+        document.header.okim6258_flags.output_12bit = output_12bit;
+        for chunk_frames in [1, 64, 1024] {
+            let transport = Rc::new(RefCell::new(FakeTransport::default()));
+            let mut factories = ChipFactoryRegistry::new();
+            register_okim6258_factory(&mut factories, Rc::clone(&transport));
+            let mut player =
+                VgmSequencer::new_with_factories(document.clone(), 44_100, chunk_frames, factories)
+                    .unwrap();
+            while player.render().unwrap().is_some() {}
+            let actual: Vec<_> = transport
+                .borrow()
+                .adpcm_events
+                .iter()
+                .take(18)
+                .map(|event| event.value)
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "chunk size {chunk_frames}, 12-bit flag {output_12bit}"
+            );
+        }
+    }
+}
+
+#[test]
+fn okim6258_dac_stream_start_and_stop_control_source_state() {
+    use soundlog::vgm::{
+        command::{
+            DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+            StartStreamFastCall, StartStreamFastCallFlags, StopStream,
+        },
+        detail::{StreamChipType, UncompressedStream},
+        header::ChipId,
+    };
+
+    let data = [0x77, 0x77, 0x77, 0x77, 0x12, 0x34, 0x56, 0x78];
+    for stop_id in [0, 0xff] {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+        builder.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Okim6258Adpcm,
+            data: data.to_vec(),
+        });
+        builder.add_vgm_command(SetupStreamControl {
+            stream_id: 0,
+            chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+            write_port: 0,
+            write_command: 1,
+        });
+        builder.add_vgm_command(SetStreamData {
+            stream_id: 0,
+            data_bank_id: 4,
+            step_size: 1,
+            step_base: 0,
+        });
+        builder.add_vgm_command(SetStreamFrequency {
+            stream_id: 0,
+            frequency: 1_953,
+        });
+        let start = StartStreamFastCall {
+            stream_id: 0,
+            block_id: 0,
+            flags: StartStreamFastCallFlags {
+                reverse: false,
+                looped: false,
+            },
+        };
+        builder.add_vgm_command(start.clone());
+        builder.add_vgm_command(StopStream { stream_id: 99 });
+        builder.add_vgm_command(WaitSamples(181));
+        builder.add_vgm_command(StopStream { stream_id: stop_id });
+        builder.add_vgm_command(WaitSamples(45));
+        builder.add_vgm_command(start);
+        builder.add_vgm_command(WaitSamples(181));
+        let mut document = builder.finalize();
+        document.header.okim6258_flags.output_12bit = true;
+
+        let decoded = soundlog::mdx::pcm::decode_adpcm(&data);
+        let mut samples = vec![-2];
+        samples.extend_from_slice(&decoded);
+        samples.extend([0; 4]);
+        samples.extend_from_slice(&decoded);
+        let encoded = soundlog::mdx::pcm::encode_adpcm(&samples);
+        let nibble = |index: usize| (encoded[index / 2] >> ((index % 2) * 4)) & 15;
+        let expected: Vec<_> = (0..18)
+            .map(|index| nibble(1 + index * 2) | nibble(2 + index * 2) << 4)
+            .collect();
+
+        for output_rate in [44_100, 48_000] {
+            let transport = Rc::new(RefCell::new(FakeTransport::default()));
+            let mut factories = ChipFactoryRegistry::new();
+            register_okim6258_factory(&mut factories, Rc::clone(&transport));
+            let mut player =
+                VgmSequencer::new_with_factories(document.clone(), output_rate, 64, factories)
+                    .unwrap();
+            while player.render().unwrap().is_some() {}
+            let actual: Vec<_> = transport
+                .borrow()
+                .adpcm_events
+                .iter()
+                .take(18)
+                .map(|event| event.value)
+                .collect();
+            assert_eq!(actual, expected, "stop ID {stop_id} at {output_rate} Hz");
+        }
+    }
+}
+
+#[test]
+fn okim6258_register_stop_interrupts_dac_until_stream_restarts() {
+    use soundlog::vgm::{
+        command::{
+            DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+            StartStreamFastCall, StartStreamFastCallFlags,
+        },
+        detail::{StreamChipType, UncompressedStream},
+        header::ChipId,
+    };
+
+    let data = [0x77; 8];
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Okim6258Adpcm,
+        data: data.to_vec(),
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+        write_port: 0,
+        write_command: 1,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 4,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 1_953,
+    });
+    let start = StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: true,
+        },
+    };
+    builder.add_vgm_command(start.clone());
+    builder.add_vgm_command(WaitSamples(181));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(45));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(181));
+    builder.add_vgm_command(start);
+    builder.add_vgm_command(WaitSamples(181));
+    let document = builder.finalize();
+
+    let decoded = soundlog::mdx::pcm::decode_adpcm(&data);
+    let mut samples = vec![-2];
+    samples.extend_from_slice(&decoded);
+    samples.extend([0; 4]);
+    samples.extend([-2; 16]);
+    samples.extend_from_slice(&decoded);
+    let encoded = soundlog::mdx::pcm::encode_adpcm(&samples);
+    let nibble = |index: usize| (encoded[index / 2] >> ((index % 2) * 4)) & 15;
+    let expected: Vec<_> = (0..26)
+        .map(|index| nibble(1 + index * 2) | nibble(2 + index * 2) << 4)
+        .collect();
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player =
+        VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+    let actual: Vec<_> = transport
+        .borrow()
+        .adpcm_events
+        .iter()
+        .take(26)
+        .map(|event| event.value)
+        .collect();
+    assert_eq!(actual, expected);
+
+    let transport = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&transport));
+    let mut player = VgmSequencer::new_with_factories(document, 44_100, 64, factories).unwrap();
+    player.filter_write(|_, mut spec: Okim6258Spec, _| {
+        if spec.register == 0 && spec.value == 1 {
+            spec.value = 2;
+        }
+        spec
+    });
+    while player.render().unwrap().is_some() {}
+    let decoded = soundlog::mdx::pcm::decode_adpcm(&[0x77; 26]);
+    let mut samples = vec![-2];
+    samples.extend(decoded);
+    let encoded = soundlog::mdx::pcm::encode_adpcm(&samples);
+    let nibble = |index: usize| (encoded[index / 2] >> ((index % 2) * 4)) & 15;
+    let expected: Vec<_> = (0..26)
+        .map(|index| nibble(1 + index * 2) | nibble(2 + index * 2) << 4)
+        .collect();
+    let actual: Vec<_> = transport
+        .borrow()
+        .adpcm_events
+        .iter()
+        .take(26)
+        .map(|event| event.value)
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "a filtered STOP must not interrupt the stream"
+    );
 }
 
 #[test]

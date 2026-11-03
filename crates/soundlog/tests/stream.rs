@@ -93,6 +93,51 @@ fn dac_budget_document(frequency: u32, waits: &[VgmCommand]) -> VgmDocument {
 }
 
 #[test]
+fn dac_stream_controls_are_opt_in_and_expose_their_targets() {
+    use soundlog::vgm::command::StopStream;
+
+    let mut document = dac_budget_document(44_100, &[WaitSamples(1).into()]);
+    document.commands.insert(
+        document.commands.len() - 1,
+        StopStream { stream_id: 0 }.into(),
+    );
+    for enabled in [false, true] {
+        let mut stream = VgmStream::from_document(document.clone());
+        stream.set_emit_stream_controls(enabled);
+        let mut controls = Vec::new();
+        while let Some(result) = stream.next() {
+            match result.unwrap() {
+                StreamResult::Command(command) => match command {
+                    VgmCommand::StartStream(_) => {
+                        assert_eq!(
+                            stream.dac_stream_targets(0).collect::<Vec<_>>(),
+                            [(ChipId::Ym2612, Instance::Primary, 0, 0x2a)]
+                        );
+                        assert_eq!(
+                            stream.dac_stream_targets(0xff).collect::<Vec<_>>(),
+                            [(ChipId::Ym2612, Instance::Primary, 0, 0x2a)]
+                        );
+                        assert_eq!(stream.dac_stream_targets(1).count(), 0);
+                        controls.push("start");
+                    }
+                    VgmCommand::StopStream(_) => controls.push("stop"),
+                    _ => {}
+                },
+                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+            }
+        }
+        assert_eq!(
+            controls,
+            if enabled {
+                vec!["start", "stop"]
+            } else {
+                vec![]
+            }
+        );
+    }
+}
+
+#[test]
 fn dac_budget_stops_expansion_despite_sample_progress_for_every_source() {
     #[derive(Debug)]
     struct Commands(std::vec::IntoIter<VgmCommand>);

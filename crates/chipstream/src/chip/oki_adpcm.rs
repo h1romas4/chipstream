@@ -30,6 +30,52 @@ impl OkiAdpcmState {
         self.decode_nibble(value >> 4);
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.signal = -2;
+        self.step = 0;
+    }
+
+    pub(crate) fn signal(&self) -> i32 {
+        self.signal
+    }
+
+    pub(crate) fn decode_pair(&mut self, value: u8) -> [i32; 2] {
+        self.decode_nibble(value & 0x0f);
+        let low = self.signal;
+        self.decode_nibble(value >> 4);
+        [low, self.signal]
+    }
+
+    pub(crate) fn encode_pair(&mut self, samples: [i32; 2]) -> u8 {
+        let low = self.encode_nibble(samples[0]);
+        let high = self.encode_nibble(samples[1]);
+        low | (high << 4)
+    }
+
+    fn encode_nibble(&mut self, target: i32) -> u8 {
+        let target = target.clamp(-self.limit, self.limit - 1);
+        let mut difference = target - self.signal;
+        let mut nibble = 0;
+        if difference < 0 {
+            nibble = 8;
+            difference = -difference;
+        }
+        let step = STEPS[self.step];
+        if difference >= step {
+            nibble |= 4;
+            difference -= step;
+        }
+        if difference >= step / 2 {
+            nibble |= 2;
+            difference -= step / 2;
+        }
+        if difference >= step / 4 {
+            nibble |= 1;
+        }
+        self.decode_nibble(nibble);
+        nibble
+    }
+
     /// Encode two near-zero nibbles and advance the decoder state.
     pub(crate) fn encode_zero_byte(&mut self) -> u8 {
         let low = self.encode_zero_nibble();
@@ -78,12 +124,13 @@ impl OkiAdpcmState {
 }
 
 /// Build signed ADPCM predictor differences for each step and nibble.
+const STEPS: [i32; 49] = [
+    16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
+    143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+    876, 963, 1060, 1166, 1282, 1411, 1552,
+];
+
 pub(super) fn difference_table() -> [[i32; 16]; 49] {
-    const STEPS: [i32; 49] = [
-        16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
-        130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
-        724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552,
-    ];
     std::array::from_fn(|step| {
         let step_value = STEPS[step];
         std::array::from_fn(|nibble| {

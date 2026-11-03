@@ -851,6 +851,7 @@ pub struct VgmStream {
     pending_data_block: Option<DataBlock>,
     /// DAC stream states indexed by stream ID
     stream_states: HashMap<u8, StreamState>,
+    emit_stream_controls: bool,
     /// Current sample position (at 44100 Hz)
     current_sample: usize,
     /// Pending stream write commands to emit
@@ -946,6 +947,7 @@ impl VgmStream {
             loop_byte_offset: None,
             pending_data_block: None,
             stream_states: HashMap::new(),
+            emit_stream_controls: false,
             current_sample: 0,
             pending_stream_writes: Vec::new(),
             pending_wait: None,
@@ -1372,15 +1374,21 @@ impl VgmStream {
             }
             VgmCommand::StartStream(start) => {
                 self.handle_start_stream(start)?;
-                return Ok(None);
+                return Ok(self
+                    .emit_stream_controls
+                    .then_some(StreamResult::Command(command)));
             }
             VgmCommand::StopStream(stop) => {
                 self.handle_stop_stream(stop);
-                return Ok(None);
+                return Ok(self
+                    .emit_stream_controls
+                    .then_some(StreamResult::Command(command)));
             }
             VgmCommand::StartStreamFastCall(fast) => {
                 self.handle_start_stream_fast_call(fast)?;
-                return Ok(None);
+                return Ok(self
+                    .emit_stream_controls
+                    .then_some(StreamResult::Command(command)));
             }
             VgmCommand::WaitSamples(w) => {
                 return self.process_input_wait(w.0 as usize).map(Some);
@@ -1410,6 +1418,53 @@ impl VgmStream {
         }
 
         Ok(Some(StreamResult::Command(command)))
+    }
+
+    /// Also emit DAC stream start and stop commands after processing them.
+    ///
+    /// By default these commands are consumed internally, and only the
+    /// resulting chip writes are emitted. This option is useful to backends
+    /// that must track a stream's logical playback state separately.
+    pub fn set_emit_stream_controls(&mut self, enabled: bool) {
+        self.emit_stream_controls = enabled;
+    }
+
+    /// Return the configured chip targets for a DAC stream, or for all
+    /// streams when `stream_id` is `0xff`.
+    pub fn dac_stream_targets(
+        &self,
+        stream_id: u8,
+    ) -> impl Iterator<Item = (ChipId, Instance, u8, u8)> + '_ {
+        self.stream_states.iter().filter_map(move |(&id, state)| {
+            (stream_id == 0xff || stream_id == id).then_some((
+                state.chip_type,
+                state.instance,
+                state.write_port,
+                state.write_command,
+            ))
+        })
+    }
+
+    /// Stop DAC streams writing a specific chip register.
+    ///
+    /// This does not emit a stop command. A later stream start can resume
+    /// playback using the previously configured stream parameters.
+    pub fn stop_dac_streams_for_target(
+        &mut self,
+        chip: ChipId,
+        instance: Instance,
+        port: u8,
+        register: u8,
+    ) {
+        for state in self.stream_states.values_mut() {
+            if state.chip_type == chip
+                && state.instance == instance
+                && state.write_port == port
+                && state.write_command == register
+            {
+                state.active = false;
+            }
+        }
     }
 
     fn handle_ym2612_port0_address_2a_write_and_wait_n(

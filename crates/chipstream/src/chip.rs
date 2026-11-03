@@ -183,6 +183,29 @@ pub trait SoundChip {
         self.apply_register_write(write)
     }
 
+    /// Notify a backend of a DAC stream starting or stopping at an output frame.
+    ///
+    /// Ordinary chip emulators can ignore this notification; their playback
+    /// state is controlled by register writes.
+    fn set_dac_stream_playing_at(
+        &mut self,
+        _playing: bool,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Whether this applied OKIM6258 control write must stop its DAC streams.
+    ///
+    /// This is intended for backends whose source-playback model stops a DAC
+    /// stream when the chip receives STOP. Ordinary emulators return `false`.
+    /// Sequencer checkpoints are unavailable for backends that return `true`
+    /// for an OKIM6258 STOP write.
+    fn stops_dac_stream_on_write(&self, _write: &ChipRegisterWrite) -> bool {
+        false
+    }
+
     /// Prepare this voice's scheduled events before any shared transport is flushed.
     fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
         Ok(())
@@ -331,6 +354,19 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         output_rate: u32,
     ) -> Result<(), ChipError> {
         (**self).apply_register_write_at(write, sample_frame, output_rate)
+    }
+
+    fn set_dac_stream_playing_at(
+        &mut self,
+        playing: bool,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        (**self).set_dac_stream_playing_at(playing, sample_frame, output_rate)
+    }
+
+    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
+        (**self).stops_dac_stream_on_write(write)
     }
 
     fn prepare_scheduled(&mut self) -> Result<(), ChipError> {

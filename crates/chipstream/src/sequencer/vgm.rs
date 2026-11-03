@@ -400,7 +400,7 @@ impl Voice {
         sample_frame: usize,
         output_rate: u32,
         context: &mut EventContext<'_, '_>,
-    ) -> Result<(), VgmSequencerError> {
+    ) -> Result<bool, VgmSequencerError> {
         let (bank, register, value) = write.parts();
         let pending_write = context
             .callbacks
@@ -409,6 +409,7 @@ impl Voice {
         let write = context
             .callbacks
             .filter_write(self.instance, write, sample_frame);
+        let stop_stream = self.route.chip().stops_dac_stream_on_write(&write);
         self.route
             .chip_mut()
             .apply_register_write_at(write, sample_frame, output_rate)?;
@@ -430,7 +431,7 @@ impl Voice {
         {
             if context.events.len() >= event::MAX_PENDING_EVENTS {
                 if context.callbacks.drop_overflowing_state(&write) {
-                    return Ok(());
+                    return Ok(stop_stream);
                 }
                 return Err(VgmSequencerError::EventQueueFull {
                     limit: event::MAX_PENDING_EVENTS,
@@ -451,7 +452,7 @@ impl Voice {
                 ),
             );
         }
-        Ok(())
+        Ok(stop_stream)
     }
 
     /// Advance the chip timeline, pacing queued writes between native captures.
@@ -1240,12 +1241,13 @@ impl<'a> VgmSequencer<'a> {
 
     /// Initialize playback state from an existing stream and constructed voices.
     fn from_parts(
-        stream: VgmStream,
+        mut stream: VgmStream,
         stream_factory: StreamFactory,
         voices: Vec<Voice>,
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
+        stream.set_emit_stream_controls(true);
         Ok(Self {
             stream,
             stream_factory,
@@ -1556,6 +1558,19 @@ impl<'a> VgmSequencer<'a> {
 
         let mut voices = Vec::with_capacity(self.voices.len());
         for voice in &mut self.voices {
+            if voice.chip == Chip::Okim6258
+                && voice
+                    .route
+                    .chip()
+                    .stops_dac_stream_on_write(&ChipRegisterWrite::Okim6258(
+                        soundlog::chip::Okim6258Spec {
+                            register: 0,
+                            value: 1,
+                        },
+                    ))
+            {
+                return Err(ChipError::UnsupportedStateSnapshot(Chip::Okim6258).into());
+            }
             voices.push(VoiceCheckpoint {
                 chip: voice.chip.clone(),
                 instance: voice.instance,
@@ -1635,6 +1650,7 @@ impl<'a> VgmSequencer<'a> {
 
         let (mut stream, marker) =
             (self.stream_factory)().map_err(VgmSequencerError::StreamReconstruction)?;
+        stream.set_emit_stream_controls(true);
         let mut setting_index = 0;
         for step in 0..=checkpoint.stream_steps {
             while checkpoint
@@ -1985,6 +2001,15 @@ impl<'a> VgmSequencer<'a> {
         use VgmCommand::*;
         let write = ChipRegisterWrite::from_vgm_command(&command);
         match command {
+            StartStream(ref start) => {
+                self.notify_dac_stream(start.stream_id, true, sample_frame_origin)?;
+            }
+            StartStreamFastCall(ref start) => {
+                self.notify_dac_stream(start.stream_id, true, sample_frame_origin)?;
+            }
+            StopStream(ref stop) => {
+                self.notify_dac_stream(stop.stream_id, false, sample_frame_origin)?;
+            }
             PwmWrite(i, s) => {
                 let index = match i {
                     Instance::Primary => 0,
@@ -2057,6 +2082,36 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    fn notify_dac_stream(
+        &mut self,
+        stream_id: u8,
+        playing: bool,
+        sample_frame_origin: usize,
+    ) -> Result<(), VgmSequencerError> {
+        let instances: Vec<_> = self
+            .stream
+            .dac_stream_targets(stream_id)
+            .filter_map(|(chip, instance, port, register)| {
+                (chip == ChipId::Okim6258 && port == 0 && register == 1).then_some(instance)
+            })
+            .collect();
+        let sample_frame = sample_frame_origin
+            .checked_add(self.available)
+            .ok_or(VgmSequencerError::DurationOverflow)?;
+        for voice in &mut self.voices {
+            if voice.chip == Chip::Okim6258
+                && ((!playing && stream_id == 0xff) || instances.contains(&voice.instance))
+            {
+                voice.route.chip_mut().set_dac_stream_playing_at(
+                    playing,
+                    sample_frame,
+                    self.output_rate,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Route a write to its voice, queuing it when pacing is required.
     fn write_chip(
         &mut self,
@@ -2083,7 +2138,7 @@ impl<'a> VgmSequencer<'a> {
                 let sample_frame = sample_frame_origin
                     .checked_add(self.available)
                     .ok_or(VgmSequencerError::DurationOverflow)?;
-                voice.apply_write(
+                let stop_stream = voice.apply_write(
                     write,
                     self.available,
                     sample_frame,
@@ -2093,6 +2148,10 @@ impl<'a> VgmSequencer<'a> {
                         events: &mut self.events,
                     },
                 )?;
+                if stop_stream {
+                    self.stream
+                        .stop_dac_streams_for_target(ChipId::Okim6258, instance, 0, 1);
+                }
             }
         }
         Ok(())

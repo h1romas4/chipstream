@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Add: Optionally expose DAC stream start/stop commands and their configured chip targets.
 - [x] Fix: Preserve DAC stream timing and fractional phase across frequency changes.
 - [x] Fix: Track SN76489 latch-only pitch changes and allow clock-divider and zero-period settings to be configured.
 - [x] Add: Configure callback-stream tracking with a caller-provided state through `track_state_with`.

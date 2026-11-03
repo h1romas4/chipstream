@@ -49,8 +49,9 @@ opens each serial device, optionally resets it, and queries its capabilities.
 Chip instances route to the first configured device with matching chip and
 clock capabilities. NanoDrive 6 can receive YM2612 and SN76489 writes,
 NanoDrive 7 can receive the FM targets it advertises, and NanoDrive 8 can
-receive YM2151 and OKIM6258. The OKIM6258 path streams source ADPCM bytes and
-generates state-matched ADPCM silence for timing gaps and the track tail.
+receive YM2151 and OKIM6258. The OKIM6258 path re-encodes source ADPCM against
+the continuously running device decoder, preserving source PLAY/STOP state
+and generating state-matched silence for the track tail.
 Unsupported chips or instances continue through their emulator backends. The
 device produces the audible hardware output; NDSIF-backed chip voices are
 silent in the GStreamer PCM stream.
