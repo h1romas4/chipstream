@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show a concise playback status without the file path.
 - Show chip tags in Track Info.
 - Simplify the Piano Roll Chip Gain panel and spell out NanoDrive in chip labels.
 - Show an indeterminate progress meter in library scan notifications.

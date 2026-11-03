@@ -1047,7 +1047,7 @@ impl AppView {
             } else {
                 None
             };
-            self.status = format!("Playing: {}", path.display());
+            self.status = "Playing".into();
             self.playing = Some(index);
             if !use_transition {
                 self.gain_sources = None;
