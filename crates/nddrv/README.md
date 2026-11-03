@@ -65,6 +65,8 @@ files processed are shown; the total is not known in advance. Scans started by
 in persistent notifications with scrollable details. Startup and directory
 removal scans do not show error notifications; errors are logged to stderr.
 Playlist metadata errors follow the same policy when loaded after a scan.
+Use the copy icon on a notification to copy its title, message, and any
+scrollable error details.
 
 ### Search and Chip Tags
 

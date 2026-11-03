@@ -33,7 +33,7 @@ use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarHandle,
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable, IndexPath, Theme, ThemeMode, TitleBar, WindowExt};
+use gpui_kit::component::{Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use library::{ChipTag, Config, DirectoryEntry, ScanProgress, Track};
@@ -314,14 +314,12 @@ struct ScanProgressView {
 
 impl Render for ScanProgressView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let message = scan_progress_text(self.origin, self.progress);
+        let copy_text = notification_copy_text("Scanning library", &message, None).into();
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .text_sm()
-                    .child(scan_progress_text(self.origin, self.progress)),
-            )
+            .child(div().text_sm().child(message))
             .child(
                 div().mt_2().child(
                     Progress::new("library-scan-progress")
@@ -330,6 +328,7 @@ impl Render for ScanProgressView {
                         .accessibility_label("Library scan in progress"),
                 ),
             )
+            .child(notification_copy_row(copy_text))
     }
 }
 
@@ -363,7 +362,7 @@ struct GainControl {
 }
 
 fn error_notification(title: &'static str, message: impl Into<SharedString>) -> Notification {
-    Notification::error(message).title(title).autohide(false)
+    error_notification_with_details(title, message.into(), None)
 }
 
 fn error_details_notification(
@@ -371,15 +370,60 @@ fn error_details_notification(
     message: impl Into<SharedString>,
     errors: Vec<String>,
 ) -> Notification {
-    let details: SharedString = errors.join("\n").into();
-    error_notification(title, message).content(move |_, _, _| {
-        div()
-            .id("error-details")
-            .max_h(px(180.))
-            .overflow_y_scrollbar()
-            .child(div().text_sm().child(details.clone()))
-            .into_any_element()
-    })
+    error_notification_with_details(title, message.into(), Some(errors.join("\n")))
+}
+
+fn notification_copy_text(title: &str, message: &str, details: Option<&str>) -> String {
+    let mut text = format!("{title}\n{message}");
+    if let Some(details) = details.filter(|details| !details.is_empty()) {
+        text.push('\n');
+        text.push_str(details);
+    }
+    text
+}
+
+fn notification_copy_row(text: SharedString) -> Div {
+    div().flex().justify_end().child(
+        Button::new("copy-notification")
+            .icon(assets::IconName::Copy)
+            .ghost()
+            .xsmall()
+            .tooltip("Copy notification")
+            .accessibility_label("Copy notification")
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+            }),
+    )
+}
+
+fn error_notification_with_details(
+    title: &'static str,
+    message: SharedString,
+    details: Option<String>,
+) -> Notification {
+    let copy_text: SharedString =
+        notification_copy_text(title, &message, details.as_deref()).into();
+    let details: Option<SharedString> = details.map(Into::into);
+    Notification::error(message)
+        .title(title)
+        .autohide(false)
+        .content(move |_, _, _| {
+            div()
+                .flex()
+                .flex_col()
+                .when_some(details.clone(), |content, details| {
+                    content.child(
+                        div()
+                            .id("error-details")
+                            .max_h(px(180.))
+                            .overflow_y_scrollbar()
+                            .child(div().text_sm().child(details)),
+                    )
+                })
+                .child(notification_copy_row(copy_text.clone()))
+                .into_any_element()
+        })
 }
 
 struct AppView {
@@ -1639,8 +1683,14 @@ impl AppView {
         if let Some((count, errors)) = self.completed_scan_notification.take() {
             self.scan_notification_shown = false;
             let notification = if errors.is_empty() {
-                Notification::success(format!("{count} tracks found"))
+                let message = format!("{count} tracks found");
+                let copy_text: SharedString =
+                    notification_copy_text("Library scan complete", &message, None).into();
+                Notification::success(message)
                     .title("Library scan complete")
+                    .content(move |_, _, _| {
+                        notification_copy_row(copy_text.clone()).into_any_element()
+                    })
             } else {
                 let summary = format!("{count} tracks found; {} errors", errors.len());
                 error_details_notification("Library scan completed with errors", summary, errors)
@@ -3990,10 +4040,30 @@ mod tests {
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
-        scan_progress_text, search_terms, select_for_context, select_item, select_range,
-        selection_status, unsupported_chips, update_selection_order,
+        music_format, notification_copy_text, remove_playlist_entries, renumber_connected_devices,
+        reported_scan_errors, scan_progress_text, search_terms, select_for_context, select_item,
+        select_range, selection_status, unsupported_chips, update_selection_order,
     };
+
+    #[test]
+    fn notification_copy_text_includes_full_message_and_details() {
+        assert_eq!(
+            notification_copy_text(
+                "Playback error",
+                "NanoDrive device 1: error\n原因",
+                Some("first path\nsecond path")
+            ),
+            "Playback error\nNanoDrive device 1: error\n原因\nfirst path\nsecond path"
+        );
+        assert_eq!(
+            notification_copy_text("Library scan complete", "12 tracks found", None),
+            "Library scan complete\n12 tracks found"
+        );
+        assert_eq!(
+            notification_copy_text("Error", "message", Some("")),
+            "Error\nmessage"
+        );
+    }
 
     #[test]
     fn clipboard_track_path_preserves_absolute_unicode_paths() {
@@ -5246,10 +5316,10 @@ impl Render for AppView {
                             "https://github.com/h1romas4/chipstream/releases/tag/nddrv-v{version}"
                         );
                         let blue = ButtonCustomVariant::new(cx)
-                            .color(rgb(0x007acc).into())
+                            .color(rgb(0x0078d4).into())
                             .foreground(rgb(0xffffff).into())
-                            .hover(rgb(0x006bb3).into())
-                            .active(rgb(0x005a99).into());
+                            .hover(rgb(0x006cbe).into())
+                            .active(rgb(0x005a9e).into());
                         bar.child(
                             Button::new("update-available")
                                 .label(format!("Update available: v{version}"))

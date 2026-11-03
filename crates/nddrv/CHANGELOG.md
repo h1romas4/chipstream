@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a copy button to notifications, including full error details.
+- Match the update notification button's blue to the reference color.
 - Fix NanoDrive 8 startup prebuffer gaps caused by ADPCM render-ahead.
 - Fix NanoDrive 8 ADPCM source playback resets while keeping the device decoder continuous.
 - Add a Music context menu action to copy a track's full path.
