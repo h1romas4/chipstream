@@ -52,6 +52,14 @@ fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(origin, window_size)
 }
 
+fn clipboard_track_path(path: &Path) -> Result<&str, &'static str> {
+    if !path.is_absolute() {
+        return Err("The track path is not absolute.");
+    }
+    path.to_str()
+        .ok_or("The track path cannot be represented as text.")
+}
+
 fn chip_colors(ymfm: bool) -> (u32, u32) {
     if ymfm {
         (ACCENT_COLOR, 0x102e2d)
@@ -3291,12 +3299,36 @@ impl AppView {
                             view.update_track_selection_order(Some(&menu_path));
                             cx.notify();
                         });
-                        let view = view.clone();
+                        let add_view = view.clone();
+                        let copy_view = view.clone();
+                        let copy_path = menu_path.clone();
                         menu.item(PopupMenuItem::new("Add selected to playlist").on_click(
                             move |_, _, cx| {
-                                let _ = view.update(cx, |view, cx| view.add_selected_tracks(cx));
+                                let _ =
+                                    add_view.update(cx, |view, cx| view.add_selected_tracks(cx));
                             },
                         ))
+                        .item(
+                            PopupMenuItem::new("Copy full path").on_click(move |_, window, cx| {
+                                match clipboard_track_path(&copy_path) {
+                                    Ok(path) => {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            path.to_owned(),
+                                        ));
+                                        let _ = copy_view.update(cx, |view, cx| {
+                                            view.status = "Copied full path".into();
+                                            cx.notify();
+                                        });
+                                    }
+                                    Err(error) => {
+                                        window.push_notification(
+                                            error_notification("Cannot copy path", error),
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }),
+                        )
                     })
                     .into_any_element()
             })
@@ -3955,13 +3987,28 @@ mod tests {
 
     use super::{
         ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, ScanOrigin, adjacent_track,
-        can_remove_device, capability_labels, chip_colors, chip_suggestions, connection_action,
-        details_target, ends_folder_group, inclusive_range, initial_window_bounds, is_select_all,
-        keep_preview_sources, list_key, list_selection_step, music_format, remove_playlist_entries,
-        renumber_connected_devices, reported_scan_errors, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, unsupported_chips,
-        update_selection_order,
+        can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
+        connection_action, details_target, ends_folder_group, inclusive_range,
+        initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
+        music_format, remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
+        scan_progress_text, search_terms, select_for_context, select_item, select_range,
+        selection_status, unsupported_chips, update_selection_order,
     };
+
+    #[test]
+    fn clipboard_track_path_preserves_absolute_unicode_paths() {
+        let path = std::env::temp_dir().join("Music").join("曲.vgz");
+        assert_eq!(clipboard_track_path(&path), Ok(path.to_str().unwrap()));
+        assert!(clipboard_track_path(std::path::Path::new("Music/track.vgm")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_track_path_rejects_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/music/\xff.vgm"));
+        assert!(clipboard_track_path(path).is_err());
+    }
 
     #[test]
     fn connection_action_reflects_device_state() {

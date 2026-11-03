@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a Music context menu action to copy a track's full path.
 - Fix timing discontinuities when VGM DAC stream frequency changes during playback.
 
 ## v0.4.0

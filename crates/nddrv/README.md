@@ -130,9 +130,9 @@ Music and Playlist rows share these selection controls:
 Changing the Music filter clears selections that are no longer visible.
 The status bar shows the number of selected tracks when multiple Music or
 Playlist entries are selected, using the most recently operated list.
-Right-click selected Music rows to add them to the playlist, or double-click a
-track to add it. Right-click selected Playlist rows to remove them or clear the
-playlist.
+Right-click Music rows to add selected tracks to the playlist or copy the full
+path of the row under the pointer. Double-click a track to add it. Right-click
+selected Playlist rows to remove them or clear the playlist.
 Keyboard navigation selects one row; after deleting Playlist entries, the next
 remaining row is selected, or the previous row if the end was reached.
 
