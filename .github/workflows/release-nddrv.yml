@@ -49,6 +49,69 @@ jobs:
       - name: Build nddrv
         run: cargo build --release --locked -p nddrv --target ${{ matrix.target }}
 
+      - name: Verify Windows executable icon
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class IconResource {
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          $exe = Join-Path $PWD 'target/${{ matrix.target }}/release/nddrv.exe'
+          $module = [IconResource]::LoadLibraryEx($exe, [IntPtr]::Zero, 2)
+          if ($module -eq [IntPtr]::Zero) {
+            throw "Could not open executable resource: $exe"
+          }
+          try {
+            if ([IconResource]::FindResource($module, [IntPtr]1, [IntPtr]14) -eq [IntPtr]::Zero) {
+              throw "Executable is missing the application icon resource"
+            }
+          } finally {
+            [void][IconResource]::FreeLibrary($module)
+          }
+
+      - name: Install cargo-packager
+        if: runner.os == 'macOS'
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      - name: Package macOS app and disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.name }}
+        run: |
+          cargo packager --release --packages nddrv --target "$TARGET" --formats dmg
+          shopt -s nullglob
+          images=(target/"$TARGET"/release/NDDRV_*.dmg)
+          if [[ ${#images[@]} -ne 1 ]]; then
+            echo "Expected exactly one NDDRV disk image; found ${#images[@]}" >&2
+            exit 1
+          fi
+          mountpoint="$RUNNER_TEMP/nddrv-dmg"
+          mkdir -p "$mountpoint"
+          hdiutil attach "${images[0]}" -readonly -nobrowse -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          app="$mountpoint/NDDRV.app"
+          test -x "$app/Contents/MacOS/nddrv"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = io.github.h1romas4.nddrv
+          cmp crates/nddrv/assets/icon/nddrv-icon.icns "$app/Contents/Resources/nddrv-icon.icns"
+          case "$TARGET" in
+            aarch64-apple-darwin) arch=arm64 ;;
+            x86_64-apple-darwin) arch=x86_64 ;;
+            *) echo "Unexpected macOS target: $TARGET" >&2; exit 1 ;;
+          esac
+          lipo -verify_arch "$arch" "$app/Contents/MacOS/nddrv"
+          cp "${images[0]}" "nddrv-$PLATFORM.dmg"
+
       - name: Prepare distribution
         shell: bash
         env:
@@ -57,6 +120,7 @@ jobs:
           mkdir -p package
           if [[ "$RUNNER_OS" == Windows ]]; then
             cp "target/$TARGET/release/nddrv.exe" package/
+            cp "target/$TARGET/release/nddrv.exe" "nddrv-${{ matrix.name }}.exe"
           else
             cp "target/$TARGET/release/nddrv" package/
           fi
@@ -97,8 +161,11 @@ jobs:
         with:
           files: |
             dist/nddrv-windows-x86_64.zip
+            dist/nddrv-windows-x86_64.exe
             dist/nddrv-linux-x86_64.tar.gz
             dist/nddrv-macos-aarch64.tar.gz
+            dist/nddrv-macos-aarch64.dmg
             dist/nddrv-macos-x86_64.tar.gz
+            dist/nddrv-macos-x86_64.dmg
           fail_on_unmatched_files: true
           generate_release_notes: true

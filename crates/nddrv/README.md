@@ -9,7 +9,9 @@ and supports experimental host-paced routing to NanoDrive hardware.
 Prebuilt binaries are published on [GitHub Releases](https://github.com/h1romas4/chipstream/releases)
 under `nddrv-` tags. Linux binaries are built for Ubuntu 26.04 x86-64; Windows
 x86-64 and macOS Apple Silicon and Intel binaries are also available. The macOS
-downloads are executable files, not `.app` bundles.
+downloads include disk images containing `.app` bundles as well as the existing
+executable archives. Windows downloads include a standalone executable and
+the existing ZIP archive.
 
 At startup, nddrv checks GitHub Releases for newer stable versions. When an
 update is available, a button in the status bar opens its release page. The
@@ -19,6 +21,11 @@ The Windows and macOS binaries are not code-signed or notarized. Windows
 SmartScreen or macOS Gatekeeper may warn about or block them. Linux binaries
 also require compatible system libraries, including ALSA and the GPUI platform
 dependencies.
+
+Transparent application icon assets are available in [assets/icon](assets/icon):
+the source SVG, a 1024px PNG, a multi-size Windows ICO, and a multi-size macOS
+ICNS. The ICO is embedded in Windows builds, and the ICNS is used by macOS
+application bundles.
 
 ## Requirements and Launch
 

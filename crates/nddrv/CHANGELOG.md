@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Publish an icon-bearing portable Windows executable and macOS DMG bundles,
+  alongside the existing archives.
+- Prepare transparent multi-size Windows and macOS application icons.
 - Ignore OKIM6258 writes to `0x10`–`0x17` emitted by VGMMAME.
 - Increase the Playlist playback title and elapsed time text sizes.
 - Show a concise playback status without the file path.

@@ -6,6 +6,14 @@ description = "Desktop VGM and MDX library and player."
 license = "BSD-3-Clause"
 repository = "https://github.com/h1romas4/chipstream"
 
+[package.metadata.packager]
+product-name = "NDDRV"
+identifier = "io.github.h1romas4.nddrv"
+icons = ["assets/icon/nddrv-icon.icns"]
+
+[build-dependencies]
+winresource = { version = "0.1.34", default-features = false }
+
 [dependencies]
 anyhow = "1"
 chipstream = { path = "../chipstream", features = ["c140", "okim6258", "okim6295", "pwm", "segapcm", "sn76496"] }
