@@ -2292,7 +2292,7 @@ impl AppView {
                     .min_w_0()
                     .flex()
                     .overflow_hidden()
-                    .text_sm()
+                    .text_base()
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                     .on_prepaint(move |bounds, window, cx| {
                         let width = bounds.size.width;
@@ -2320,7 +2320,7 @@ impl AppView {
                     .gap_2()
                     .child(
                         div()
-                            .text_xl()
+                            .text_2xl()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("{}:{:02}", self.elapsed / 60, self.elapsed % 60)),
                     )
