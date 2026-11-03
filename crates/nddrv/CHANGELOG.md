@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Number only connected NanoDrives, keep the last box available, and place the
+  sequencer between emulation and NanoDrive routes.
 - Accept fixed NanoDrive clocks within 10 ppm of the track's requested clock.
 - Place NanoDrive connect and disconnect icons beside the port selector.
 - Suppress scan error notifications on startup and directory removal; show them

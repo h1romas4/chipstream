@@ -152,6 +152,17 @@ fn connection_action(status: Option<&DeviceStatus>) -> (assets::IconName, &'stat
     }
 }
 
+fn can_remove_device(
+    id: u64,
+    devices: &[routing::Device],
+    statuses: &HashMap<u64, DeviceStatus>,
+) -> bool {
+    devices.len() > 1
+        && devices.last().is_some_and(|device| device.id != id)
+        && devices.iter().any(|device| device.id == id)
+        && !statuses.contains_key(&id)
+}
+
 #[derive(Clone, Copy)]
 enum ScanOrigin {
     Background,
@@ -299,6 +310,7 @@ struct AppView {
     roll_hidden_channels: HashSet<(u8, u8)>,
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
+    device_models: HashMap<u64, String>,
     device_ports: HashMap<u64, DevicePort>,
     available_ports: Vec<String>,
     scanning_ports: bool,
@@ -466,6 +478,7 @@ impl AppView {
             roll_hidden_channels: HashSet::new(),
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
+            device_models: HashMap::new(),
             device_ports,
             available_ports: Vec::new(),
             scanning_ports: false,
@@ -1421,7 +1434,6 @@ impl AppView {
         while let Ok(event) = self.device_service.events.try_recv() {
             match event {
                 device::DeviceEvent::Connected(id, model, capabilities) => {
-                    let name = unique_device_name(&model, id, &self.config.routing.devices);
                     if let Some(device) = self
                         .config
                         .routing
@@ -1429,10 +1441,14 @@ impl AppView {
                         .iter_mut()
                         .find(|device| device.id == id)
                     {
-                        device.name = name;
                         device.baud_rate = device::BAUD_RATE;
-                        self.save();
                     }
+                    self.device_models.insert(id, model);
+                    renumber_connected_devices(
+                        &mut self.config.routing.devices,
+                        &self.device_models,
+                    );
+                    self.save();
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
                     self.refresh_routing(false);
@@ -1448,6 +1464,13 @@ impl AppView {
                 }
                 device::DeviceEvent::Disconnected(id) => {
                     self.device_status.remove(&id);
+                    self.device_models.remove(&id);
+                    if renumber_connected_devices(
+                        &mut self.config.routing.devices,
+                        &self.device_models,
+                    ) {
+                        self.save();
+                    }
                     self.refresh_routing(true);
                 }
                 device::DeviceEvent::Error(id, error) => {
@@ -1456,6 +1479,13 @@ impl AppView {
                         Some(DeviceStatus::Connected(_) | DeviceStatus::Disconnecting)
                     );
                     self.device_status.remove(&id);
+                    self.device_models.remove(&id);
+                    if renumber_connected_devices(
+                        &mut self.config.routing.devices,
+                        &self.device_models,
+                    ) {
+                        self.save();
+                    }
                     self.refresh_routing(was_connected);
                     let name = self
                         .config
@@ -2515,17 +2545,10 @@ impl AppView {
                 "Cannot remove NanoDrive",
                 "Disconnect the device first.",
             ));
-        } else if self.config.routing.devices.len() <= 1
-            || self
-                .config
-                .routing
-                .devices
-                .last()
-                .is_none_or(|device| device.id != id)
-        {
+        } else if !can_remove_device(id, &self.config.routing.devices, &self.device_status) {
             self.pending_errors.push(error_notification(
                 "Cannot remove NanoDrive",
-                "Only the last extra box can be removed.",
+                "The last NanoDrive box must be kept for new connections.",
             ));
         } else {
             self.config.routing.devices.retain(|device| device.id != id);
@@ -2639,15 +2662,20 @@ impl AppView {
             let mut source_node = div()
                 .id(SharedString::from(format!("source-{index}")))
                 .absolute()
-                .left(px(patchbay::SOURCE_X + 8.))
+                .left(px(patchbay::SOURCE_X - 4.))
                 .top(px(y))
-                .w(px(patchbay::SOURCE_WIDTH - 4.))
+                .w(px(patchbay::SOURCE_WIDTH + 8.))
                 .h(px(patchbay::ROW))
                 .flex()
                 .items_center()
                 .justify_between()
                 .rounded_sm()
                 .when(selected, |row| row.bg(rgb(0x304755)))
+                .child(div().size(px(8.)).rounded_full().bg(rgb(if selected {
+                    0x7de0d6
+                } else {
+                    0x6a8e9c
+                })))
                 .child(div().text_sm().child(source.label()))
                 .child(div().size(px(8.)).rounded_full().bg(rgb(if selected {
                     0x7de0d6
@@ -2676,21 +2704,21 @@ impl AppView {
             let mut target_node = div()
                 .id(SharedString::from(format!("emulator-{index}")))
                 .absolute()
-                .left(px(patchbay::TARGET_X - 4.))
+                .left(px(patchbay::TARGET_X + 8.))
                 .top(px(y))
-                .w(px(patchbay::TARGET_WIDTH))
+                .w(px(patchbay::TARGET_WIDTH - 4.))
                 .h(px(patchbay::ROW))
                 .flex()
                 .items_center()
-                .gap_2()
+                .justify_between()
                 .rounded_sm()
-                .child(div().size(px(8.)).rounded_full().bg(rgb(0x6a8e9c)))
                 .child(
                     div()
                         .text_sm()
                         .when(silent, |label| label.text_color(rgb(0x9aabb5)))
                         .child(target_label),
                 )
+                .child(div().size(px(8.)).rounded_full().bg(rgb(0x6a8e9c)))
                 .when(silent, |node| {
                     node.tooltip(|window, cx| {
                         Tooltip::new("AY8910 has no software emulation").build(window, cx)
@@ -2712,13 +2740,8 @@ impl AppView {
                 status,
                 Some(DeviceStatus::Connecting | DeviceStatus::Disconnecting)
             );
-            let can_remove = self.config.routing.devices.len() > 1
-                && self
-                    .config
-                    .routing
-                    .devices
-                    .last()
-                    .is_some_and(|last| last.id == id);
+            let can_remove =
+                can_remove_device(id, &self.config.routing.devices, &self.device_status);
             let port = &self
                 .device_ports
                 .get(&id)
@@ -2937,27 +2960,16 @@ impl AppView {
                         |_, _, _| {},
                         move |bounds, _, window, _| {
                             for cable in &cables {
-                                let start = point(bounds.origin.x + px(patchbay::SOURCE_X + patchbay::SOURCE_WIDTH),
+                                let start = point(bounds.origin.x + px(cable.source_x),
                                     bounds.origin.y + px(cable.source_y));
                                 let end = point(bounds.origin.x + px(cable.target_x),
                                     bounds.origin.y + px(cable.target_y));
                                 let mut path = PathBuilder::stroke(px(if cable.hardware { 2.5 } else { 1.5 }));
                                 if !cable.available { path = path.dash_array(&[px(6.), px(4.)]); }
                                 path.move_to(start);
-                                if cable.hardware {
-                                    let under_panel = point(
-                                        bounds.origin.x + px(patchbay::TARGET_X + 40.),
-                                        start.y - px(patchbay::ROW / 2.),
-                                    );
-                                    path.cubic_bezier_to(under_panel, point(start.x + px(70.), start.y),
-                                        point(under_panel.x - px(70.), under_panel.y));
-                                    path.cubic_bezier_to(end, point(under_panel.x + px(100.), under_panel.y),
-                                        point(end.x - px(70.), end.y));
-                                } else {
-                                    let control_offset = (end.x - start.x) * 0.45;
-                                    path.cubic_bezier_to(end, point(start.x + control_offset, start.y),
-                                        point(end.x - control_offset, end.y));
-                                }
+                                let control_offset = (end.x - start.x) * 0.45;
+                                path.cubic_bezier_to(end, point(start.x + control_offset, start.y),
+                                    point(end.x - control_offset, end.y));
                                 match path.build() {
                                     Ok(path) => window.paint_path(path, rgb(if !cable.available { 0xf2a968 }
                                         else if cable.hardware { ACCENT_COLOR } else { 0x466370 })),
@@ -3432,34 +3444,37 @@ impl AppView {
     }
 }
 
-fn unique_device_name(model: &str, id: u64, devices: &[routing::Device]) -> String {
-    let used = |name: &str| {
-        devices
-            .iter()
-            .any(|device| device.id != id && device.name == name)
-    };
-    if let Some(device) = devices.iter().find(|device| device.id == id) {
-        let same_model = device.name == model
-            || device
-                .name
-                .strip_prefix(model)
-                .and_then(|suffix| suffix.strip_prefix(" #"))
-                .and_then(|number| number.parse::<u64>().ok())
-                .is_some_and(|number| number >= 2);
-        if same_model && !used(&device.name) {
-            return device.name.clone();
+fn renumber_connected_devices(
+    devices: &mut [routing::Device],
+    models: &HashMap<u64, String>,
+) -> bool {
+    let mut counts = HashMap::<&str, usize>::new();
+    let mut used = HashSet::new();
+    let mut changed = false;
+    for device in devices {
+        if let Some(model) = models.get(&device.id) {
+            let count = counts.entry(model).or_default();
+            let name = loop {
+                *count += 1;
+                let candidate = if *count == 1 {
+                    model.clone()
+                } else {
+                    format!("{model} #{}", *count)
+                };
+                if !used.contains(&candidate)
+                    && (candidate == *model || !models.values().any(|other| other == &candidate))
+                {
+                    break candidate;
+                }
+            };
+            used.insert(name.clone());
+            if device.name != name {
+                device.name = name;
+                changed = true;
+            }
         }
     }
-    if !used(model) {
-        return model.to_owned();
-    }
-    for number in 2u64.. {
-        let name = format!("{model} #{number}");
-        if !used(&name) {
-            return name;
-        }
-    }
-    unreachable!("a finite list of devices cannot exhaust all names")
+    changed
 }
 
 fn details_target<'a>(
@@ -3799,11 +3814,11 @@ mod tests {
 
     use super::{
         ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, ScanOrigin, adjacent_track,
-        capability_labels, chip_colors, chip_suggestions, connection_action, details_target,
-        ends_folder_group, inclusive_range, initial_window_bounds, is_select_all,
+        can_remove_device, capability_labels, chip_colors, chip_suggestions, connection_action,
+        details_target, ends_folder_group, inclusive_range, initial_window_bounds, is_select_all,
         keep_preview_sources, list_key, list_selection_step, music_format, remove_playlist_entries,
-        reported_scan_errors, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, unique_device_name, unsupported_chips,
+        renumber_connected_devices, reported_scan_errors, scan_progress_text, search_terms,
+        select_for_context, select_item, select_range, selection_status, unsupported_chips,
         update_selection_order,
     };
 
@@ -4177,31 +4192,59 @@ mod tests {
     }
 
     #[test]
-    fn device_names_are_unique_and_stable_across_reconnections() {
+    fn device_names_number_only_connected_models_in_box_order() {
         let device = |id, name: &str| crate::routing::Device {
             id,
             name: name.into(),
             port: format!("port{id}"),
             baud_rate: 115_200,
         };
-        let devices = vec![
+        let mut devices = vec![
             device(1, "NanoDrive8"),
             device(2, "NanoDrive8 #2"),
             device(3, ""),
+            device(4, "NanoDrive6"),
         ];
-        assert_eq!(
-            unique_device_name("NanoDrive8", 3, &devices),
-            "NanoDrive8 #3"
-        );
-        assert_eq!(
-            unique_device_name("NanoDrive8", 2, &devices),
-            "NanoDrive8 #2"
-        );
-        assert_eq!(unique_device_name("NanoDrive6", 2, &devices), "NanoDrive6");
-        assert_eq!(
-            unique_device_name("NanoDrive8", 3, &devices[1..]),
-            "NanoDrive8"
-        );
+        let mut models = HashMap::from([(3, "NanoDrive8".to_string())]);
+        assert!(renumber_connected_devices(&mut devices, &models));
+        assert_eq!(devices[2].name, "NanoDrive8");
+        assert!(!renumber_connected_devices(&mut devices, &models));
+        models.insert(2, "NanoDrive8".into());
+        models.insert(4, "NanoDrive6".into());
+        assert!(renumber_connected_devices(&mut devices, &models));
+        assert_eq!(devices[1].name, "NanoDrive8");
+        assert_eq!(devices[2].name, "NanoDrive8 #2");
+        assert_eq!(devices[3].name, "NanoDrive6");
+        models.remove(&2);
+        assert!(renumber_connected_devices(&mut devices, &models));
+        assert_eq!(devices[2].name, "NanoDrive8");
+        models.insert(1, "NanoDrive8".into());
+        assert!(renumber_connected_devices(&mut devices, &models));
+        assert_eq!(devices[0].name, "NanoDrive8");
+        assert_eq!(devices[2].name, "NanoDrive8 #2");
+    }
+
+    #[test]
+    fn only_nonterminal_disconnected_boxes_can_be_removed() {
+        let device = |id| crate::routing::Device {
+            id,
+            name: String::new(),
+            port: String::new(),
+            baud_rate: 115_200,
+        };
+        let devices = vec![device(1), device(2), device(3)];
+        let mut statuses = HashMap::from([(1, DeviceStatus::Connected(vec![]))]);
+        assert!(!can_remove_device(1, &devices, &statuses));
+        assert!(can_remove_device(2, &devices, &statuses));
+        assert!(!can_remove_device(3, &devices, &statuses));
+        assert!(!can_remove_device(4, &devices, &statuses));
+        statuses.insert(2, DeviceStatus::Connecting);
+        assert!(!can_remove_device(2, &devices, &statuses));
+        assert!(!can_remove_device(1, &devices[..1], &HashMap::new()));
+        statuses.remove(&1);
+        assert!(can_remove_device(1, &devices, &statuses));
+        let remaining = vec![device(3)];
+        assert!(!can_remove_device(3, &remaining, &HashMap::new()));
     }
 
     #[test]

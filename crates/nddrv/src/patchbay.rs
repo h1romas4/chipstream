@@ -6,9 +6,9 @@ use crate::DeviceStatus;
 use crate::routing::{ChipInstance, Connection, Device, HardwareChip};
 
 pub const WIDTH: f32 = 866.;
-pub const SOURCE_X: f32 = 16.;
+pub const SOURCE_X: f32 = 336.;
 pub const SOURCE_WIDTH: f32 = 180.;
-pub const TARGET_X: f32 = 336.;
+pub const TARGET_X: f32 = 16.;
 pub const TARGET_WIDTH: f32 = 200.;
 pub const DEVICE_X: f32 = 620.;
 pub const DEVICE_WIDTH: f32 = 230.;
@@ -54,6 +54,7 @@ pub struct DeviceBox {
 
 #[derive(Debug)]
 pub struct Cable {
+    pub source_x: f32,
     pub source_y: f32,
     pub target_x: f32,
     pub target_y: f32,
@@ -72,6 +73,12 @@ pub struct Graph {
 
 pub fn row_y(index: usize) -> f32 {
     HEADER + ROW * index as f32
+}
+
+fn unnumbered_name(name: &str) -> &str {
+    name.rsplit_once(" #")
+        .filter(|(_, suffix)| suffix.parse::<usize>().is_ok_and(|number| number >= 2))
+        .map_or(name, |(model, _)| model)
 }
 
 pub fn build(
@@ -143,7 +150,11 @@ pub fn build(
                     device.port.clone()
                 }
             } else {
-                device.name.clone()
+                if connected {
+                    device.name.clone()
+                } else {
+                    unnumbered_name(&device.name).to_owned()
+                }
             },
             connected,
             top: next_top,
@@ -174,6 +185,7 @@ pub fn build(
                     })
                     .expect("validated routes have a device and retained endpoint");
                 Cable {
+                    source_x: SOURCE_X + SOURCE_WIDTH,
                     source_y: row_y(index) + ROW / 2.,
                     target_x: DEVICE_X,
                     target_y: endpoint.y + ROW / 2.,
@@ -182,8 +194,9 @@ pub fn build(
                 }
             } else {
                 Cable {
+                    source_x: SOURCE_X,
                     source_y: row_y(index) + ROW / 2.,
-                    target_x: TARGET_X,
+                    target_x: TARGET_X + TARGET_WIDTH,
                     target_y: row_y(index) + ROW / 2.,
                     hardware: false,
                     available: true,
@@ -206,6 +219,28 @@ mod tests {
     use crate::routing::{Connection, SessionRouting};
 
     #[test]
+    fn offline_device_names_do_not_show_stale_connection_numbers() {
+        let devices = vec![
+            Device {
+                id: 1,
+                name: "NanoDrive 7 #2".into(),
+                port: "port1".into(),
+                baud_rate: 115_200,
+            },
+            Device {
+                id: 2,
+                name: "NanoDrive 7 #2".into(),
+                port: "port2".into(),
+                baud_rate: 115_200,
+            },
+        ];
+        let statuses = HashMap::from([(2, DeviceStatus::Connected(vec![]))]);
+        let graph = build(&devices, &statuses, &[]);
+        assert_eq!(graph.devices[0].name, "NanoDrive 7");
+        assert_eq!(graph.devices[1].name, "NanoDrive 7 #2");
+    }
+
+    #[test]
     fn saved_offline_endpoints_and_default_cables_remain_visible() {
         let devices = vec![Device {
             id: 1,
@@ -226,6 +261,7 @@ mod tests {
         assert_eq!(graph.cables.iter().filter(|c| c.hardware).count(), 1);
         let cable = graph.cables.iter().find(|c| c.hardware).unwrap();
         assert!(!cable.available);
+        assert_eq!(cable.source_x, SOURCE_X + SOURCE_WIDTH);
         assert_eq!(cable.target_x, DEVICE_X);
         assert_eq!(cable.target_y, graph.devices[0].endpoints[0].y + ROW / 2.);
         assert_eq!(graph.devices[0].top, 0.);
@@ -235,7 +271,7 @@ mod tests {
                 .cables
                 .iter()
                 .filter(|c| !c.hardware)
-                .all(|c| c.target_x == TARGET_X)
+                .all(|c| c.source_x == SOURCE_X && c.target_x == TARGET_X + TARGET_WIDTH)
         );
     }
 
@@ -472,7 +508,8 @@ mod tests {
         let last = graph.devices.last().unwrap();
         assert!(graph.height > graph.emulator_height);
         assert_eq!(graph.height, last.top + last.height);
-        assert!(TARGET_X + TARGET_WIDTH < DEVICE_X);
+        assert!(TARGET_X + TARGET_WIDTH < SOURCE_X);
+        assert!(SOURCE_X + SOURCE_WIDTH < DEVICE_X);
         assert!(DEVICE_X + DEVICE_WIDTH <= WIDTH);
     }
 }

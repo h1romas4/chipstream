@@ -596,6 +596,55 @@ fn fixed_clock_route_and_configuration_accept_same_tolerance_without_clock_comma
 
 #[cfg(unix)]
 #[test]
+fn vgm_ym2413_routes_to_nearly_matching_fixed_clock() {
+    use crate::{NdsifRecordingTransport, NdsifRoute, create_routed_transport_factories};
+    use chipstream::sequencer::{Instance, VgmSequencer};
+    use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+    use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
+
+    for (clock, accepted) in [(3_579_545, true), (3_579_576, false)] {
+        let (mut transport, _device) = test_transport();
+        transport.capabilities.push(ndsif::CapabilityEntry {
+            write_id: 0x51,
+            instance: 0,
+            page: 0,
+            features: 0,
+            clock_mode: ClockMode::Fixed,
+            fixed_clock_hz: 3_579_540,
+        });
+        let recorder = Rc::new(RefCell::new(NdsifRecordingTransport::new(
+            &transport,
+            NonZeroUsize::new(1024).unwrap(),
+        )));
+        let routes = [NdsifRoute {
+            chip: Chip::Ym2413,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        }];
+        let factories =
+            create_routed_transport_factories(std::slice::from_ref(&recorder), &routes).unwrap();
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2413, Instance::Primary, clock);
+        builder.add_vgm_command(WaitSamples(441));
+        let result = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
+        if accepted {
+            let _player = result.unwrap();
+            recorder
+                .borrow_mut()
+                .take_batch()
+                .unwrap()
+                .replay(&mut transport)
+                .unwrap();
+            assert!(transport.configured_chip);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn device_info_queries_and_owns_model_and_firmware() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();

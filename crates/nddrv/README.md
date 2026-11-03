@@ -247,16 +247,18 @@ Hardware routing is experimental and host-paced. The cable icon opens the
 routing page. Select a serial port in the NanoDrive box and use the plug icon
 beside the selector to connect, or the unplug icon to disconnect. Use the
 refresh icon to search for ports again. Connecting queries the model name and
-advertised chip instances; duplicate model names get a numbered suffix. The
+advertised chip instances; connected devices with the same model get a numbered
+suffix in box order, with the first left unnumbered. Disconnected boxes do not
+reserve a number. The
 baud rate is fixed at 115,200. Unknown target IDs are shown explicitly.
 
 SN76489 can be routed to hardware when the track does not use a non-default
 Game Gear stereo mask. The header's stereo-capable flag alone does not prevent
 hardware playback. Tracks requiring per-channel stereo must use emulation.
 
-Connecting the last box adds a new empty box below it. The last extra box can
-be removed with its × button after disconnecting it. Use **Add NanoDrive** to
-restore an extra box if it was removed. Device and port settings are saved,
+Connecting the last box adds a new empty box below it. A disconnected box above
+the last box can be removed with its × button; the last box remains available
+for a new connection. Device and port settings are saved,
 but devices are not reconnected automatically. Existing device settings are
 retained when upgrading; old routing profiles are no longer used.
 
@@ -275,7 +277,8 @@ sequencer chip instance and then a highlighted matching device target or its
 chipstream emulation target. Cable editing uses clicks, not dragging. Manual
 choices are kept while connecting additional devices, and are reset to
 automatic routing after a device is disconnected or the application restarts.
-NanoDrive boxes are stacked to the right of chipstream; scroll horizontally
+The sequencer sits between the emulation targets on the left and the NanoDrive
+boxes on the right; scroll horizontally
 or vertically as needed. The Playlist shows the names of connected NanoDrives.
 Device connection and routing edits are disabled during playback.
 
