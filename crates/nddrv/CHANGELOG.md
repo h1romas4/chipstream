@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.5.0
+
 - Add a copy button to notifications, including full error details.
 - Match the update notification button's blue to the reference color.
 - Fix NanoDrive 8 startup prebuffer gaps caused by ADPCM render-ahead.
