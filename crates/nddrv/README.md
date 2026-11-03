@@ -92,6 +92,8 @@ base chip name. In both the list and the search input, chips implemented by the
 ymfm backend use the same teal color as the volume control, while other chip
 tags use purple.
 Hover over the tags to see the full chip list when it does not fit.
+Track Info also shows the selected or playing track's chip tags, including
+instance counts, when chip information is available.
 Music and Playlist show the game and track names together, with the artist
 below. Hover over the title to see the full names. Playlist rows show their
 position, or a play icon and accent when the track is playing.

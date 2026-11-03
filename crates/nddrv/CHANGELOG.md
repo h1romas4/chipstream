@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Draw a double separator between folders in Music.
+- Show chip tags in Track Info.
 - Simplify the Piano Roll Chip Gain panel and spell out NanoDrive in chip labels.
 - Show an indeterminate progress meter in library scan notifications.
 - Update scan progress in place instead of repeatedly showing the notification.

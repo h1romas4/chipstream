@@ -60,6 +60,27 @@ fn chip_colors(ymfm: bool) -> (u32, u32) {
     }
 }
 
+fn chip_tag(chip: &ChipTag, dimmed: bool) -> Div {
+    let (background, foreground) = if dimmed {
+        if chip.ymfm {
+            (0x244744, 0x9abdb8)
+        } else {
+            (0x403047, 0xc1adca)
+        }
+    } else {
+        chip_colors(chip.ymfm)
+    };
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .rounded_md()
+        .bg(rgb(background))
+        .text_color(rgb(foreground))
+        .text_xs()
+        .whitespace_nowrap()
+        .child(chip.label())
+}
+
 fn music_format(path: &Path) -> &'static str {
     library::track_format(path)
 }
@@ -1881,12 +1902,13 @@ impl AppView {
 
     fn track_details(&self) -> impl IntoElement {
         let path = self.details_path.as_ref();
-        let metadata = path.and_then(|path| {
+        let track = path.and_then(|path| {
             self.track_by_path
                 .get(path)
-                .map(|&index| &self.tracks[index].metadata)
-                .or_else(|| self.playlist_tracks.get(path).map(|track| &track.metadata))
+                .map(|&index| &self.tracks[index])
+                .or_else(|| self.playlist_tracks.get(path))
         });
+        let metadata = track.map(|track| &track.metadata);
         let title = path.map(|path| {
             metadata
                 .and_then(|metadata| metadata.title.clone())
@@ -2008,7 +2030,33 @@ impl AppView {
                                                     .child(name),
                                             )
                                             .child(div().whitespace_normal().child(value))
-                                    })),
+                                    }))
+                                    .when_some(
+                                        track.filter(|track| !track.chips.is_empty()),
+                                        |node, track| {
+                                            node.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .min_w_0()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(rgb(0xa6b6c3))
+                                                            .child("Chips"),
+                                                    )
+                                                    .child(
+                                                        div().flex().flex_wrap().gap_1().children(
+                                                            track
+                                                                .chips
+                                                                .iter()
+                                                                .map(|chip| chip_tag(chip, false)),
+                                                        ),
+                                                    ),
+                                            )
+                                        },
+                                    ),
                             ),
                     ),
             )
@@ -3117,7 +3165,6 @@ impl AppView {
                     .join(", ");
                 div()
                     .id(SharedString::from(format!("track-row-{index}")))
-                    .relative()
                     .w_full()
                     .h(px(68.))
                     .flex()
@@ -3200,26 +3247,12 @@ impl AppView {
                                                     Tooltip::new(chip_list.clone())
                                                         .build(window, cx)
                                                 })
-                                                .children(track.chips.iter().map(|chip| {
-                                                    let (background, foreground) = if dimmed {
-                                                        if chip.ymfm {
-                                                            (0x244744, 0x9abdb8)
-                                                        } else {
-                                                            (0x403047, 0xc1adca)
-                                                        }
-                                                    } else {
-                                                        chip_colors(chip.ymfm)
-                                                    };
-                                                    div()
-                                                        .flex_shrink_0()
-                                                        .px_2()
-                                                        .rounded_md()
-                                                        .bg(rgb(background))
-                                                        .text_color(rgb(foreground))
-                                                        .text_xs()
-                                                        .whitespace_nowrap()
-                                                        .child(chip.label())
-                                                })),
+                                                .children(
+                                                    track
+                                                        .chips
+                                                        .iter()
+                                                        .map(|chip| chip_tag(chip, dimmed)),
+                                                ),
                                         )
                                     })
                                     .child(
@@ -3250,17 +3283,6 @@ impl AppView {
                                     .child(artist.to_owned()),
                             ),
                     )
-                    .when(folder_boundary, |row| {
-                        row.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom(px(3.))
-                                .h(px(1.))
-                                .bg(rgb(0x718c9a)),
-                        )
-                    })
                     .context_menu(move |menu, _, cx| {
                         let _ = view.update(cx, |view, cx| {
                             if select_for_context(&mut view.selected_tracks, menu_path.clone()) {
