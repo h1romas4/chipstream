@@ -6,6 +6,8 @@
   reducing event FIFO pressure for dense initial register dumps.
 - Preserve DAC buffering when dense FM/PSG writes exceed the timed-event FIFO,
   with ordered host-paced fallback and asynchronous DAC status polling.
+- Restore normal STATUS polling after a successful retry so a lost response
+  cannot throttle DAC transfers until the buffer underruns.
 
 ## v0.5.0
 

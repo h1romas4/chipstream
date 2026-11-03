@@ -2093,6 +2093,93 @@ fn cancelling_timeline_interrupts_timed_dac_capacity_waits() {
 
 #[cfg(unix)]
 #[test]
+fn successful_retry_restores_normal_status_cadence_after_lost_reply() {
+    let (mut transport, mut device) = test_transport();
+    transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
+        profile: DAC_PROFILE_YM2612,
+        revision: 40,
+        ticks_per_second: DAC_TICKS_PER_SECOND,
+        record_capacity: 16,
+        event_capacity: 8,
+        max_records: 8,
+        record_bytes: 4,
+        max_dac_late_us: 0,
+    }));
+    transport.timed_dac_stream.as_mut().unwrap().started = true;
+    let (retry_sent, retry_received) = std::sync::mpsc::channel();
+    let (third_seen, third_received) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let first = read_device_frame(&mut device, &mut decoder);
+        let retry = read_device_frame(&mut device, &mut decoder);
+        let status = DacStatus {
+            profile: DAC_PROFILE_YM2612,
+            state: 1,
+            fault: 0,
+            sealed: false,
+            accepted: 0,
+            consumed: 0,
+            queued: 0,
+            free: 16,
+            event_queued: 0,
+            event_consumed: 0,
+            underflows: 0,
+            overflows: 0,
+            rejected: 0,
+            late_dac: 0,
+            max_late_us: 0,
+            accepted_tick: 0,
+            played_tick: 0,
+            executed_tick: 0,
+        };
+        reply_to_device_frame(&mut device, &retry, Reply::DacStatus(status));
+        retry_sent.send(()).unwrap();
+        let third = read_device_frame(&mut device, &mut decoder);
+        assert_ne!(third.transaction_id(), first.transaction_id());
+        reply_to_device_frame(&mut device, &first, Reply::DacStatus(status));
+        reply_to_device_frame(&mut device, &third, Reply::DacStatus(status));
+        third_seen.send(()).unwrap();
+        wait.recv().unwrap();
+    });
+    transport.check_timed_dac_status_if_due().unwrap();
+    transport
+        .timed_dac_stream
+        .as_mut()
+        .unwrap()
+        .last_status_check = Some(Instant::now() - Duration::from_millis(21));
+    transport.check_timed_dac_status_if_due().unwrap();
+    retry_received.recv_timeout(Duration::from_secs(1)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        transport.check_timed_dac_status_if_due().unwrap();
+        if transport.session.unconfirmed_bytes() == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    transport
+        .timed_dac_stream
+        .as_mut()
+        .unwrap()
+        .last_status_check = Some(Instant::now() - Duration::from_millis(6));
+    transport.check_timed_dac_status_if_due().unwrap();
+    third_received.recv_timeout(Duration::from_secs(1)).unwrap();
+    loop {
+        transport.check_timed_dac_status_if_due().unwrap();
+        if transport.session.unconfirmed_bytes() == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn async_timed_dac_status_rejects_mismatched_request_counters() {
     let (mut transport, mut device) = test_transport();
     transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {

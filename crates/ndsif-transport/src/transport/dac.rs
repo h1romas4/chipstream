@@ -1314,16 +1314,21 @@ impl NdsifSerialTransport {
         {
             return Err("timed out waiting for NDSIF DAC_STATUS".to_owned());
         }
-        let mut expired = Vec::new();
+        let mut retired = Vec::new();
+        let applied = stream.applied_status_ordinal;
+        let epoch = stream.status_epoch;
         stream.status_fences.retain(|fence| {
-            if fence.requested_at.elapsed() >= DAC_STATUS_TIMEOUT {
-                expired.push(fence.transaction_id);
+            if fence.epoch != epoch
+                || fence.ordinal < applied
+                || fence.requested_at.elapsed() >= DAC_STATUS_TIMEOUT
+            {
+                retired.push(fence.transaction_id);
                 false
             } else {
                 true
             }
         });
-        for id in expired {
+        for id in retired {
             self.session
                 .retire_dac_status(id)
                 .map_err(|error| error.to_string())?;
