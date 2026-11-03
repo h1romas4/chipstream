@@ -35,6 +35,8 @@ const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const PACING_CANCEL_INTERVAL: Duration = Duration::from_millis(2);
 const VOLUME_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+const FIXED_CLOCK_TOLERANCE_PPM: u64 = 10;
+const PARTS_PER_MILLION: u64 = 1_000_000;
 
 /// Thread-safe linear output gain shared by a player and its device workers.
 pub struct NdsifOutputGain(AtomicU32);
@@ -70,6 +72,12 @@ impl Default for NdsifOutputGain {
     }
 }
 
+fn fixed_clock_matches(fixed_hz: u32, requested_hz: u32) -> bool {
+    fixed_hz != 0
+        && u64::from(fixed_hz.abs_diff(requested_hz)) * PARTS_PER_MILLION
+            <= u64::from(fixed_hz) * FIXED_CLOCK_TOLERANCE_PPM
+}
+
 pub(crate) fn supports_cached_clock(
     capabilities: &[ndsif::CapabilityEntry],
     write_id: WriteId,
@@ -81,7 +89,7 @@ pub(crate) fn supports_cached_clock(
         .find(|entry| entry.write_id == write_id.get() && entry.instance == instance)
         .is_some_and(|entry| match entry.clock_mode {
             ClockMode::Variable => true,
-            ClockMode::Fixed => entry.fixed_clock_hz == clock_hz,
+            ClockMode::Fixed => fixed_clock_matches(entry.fixed_clock_hz, clock_hz),
             ClockMode::Unknown => false,
         })
 }
@@ -588,8 +596,9 @@ impl NdsifSerialTransport {
 
     /// Check cached capabilities for the chip instance and requested clock.
     ///
-    /// Variable-clock targets are accepted; fixed clocks must match exactly.
-    /// This does not set the device clock or perform I/O.
+    /// Variable-clock targets are accepted; fixed clocks may differ by at
+    /// most 10 parts per million from the advertised device clock. Unknown
+    /// clocks are rejected. This does not set the device clock or perform I/O.
     pub fn supports_clock(&self, write_id: WriteId, instance: u8, clock_hz: u32) -> bool {
         supports_cached_clock(&self.capabilities, write_id, instance, clock_hz)
     }
@@ -1054,10 +1063,10 @@ impl NdsifTransport for NdsifSerialTransport {
                     response: true,
                 })?;
             }
-            ClockMode::Fixed if capability.fixed_clock_hz == clock_hz => {}
+            ClockMode::Fixed if fixed_clock_matches(capability.fixed_clock_hz, clock_hz) => {}
             ClockMode::Fixed => {
                 return Err(format!(
-                    "NDSIF chip 0x{:02x} instance {instance} has fixed clock {} Hz, requested {clock_hz} Hz",
+                    "NDSIF chip 0x{:02x} instance {instance} has fixed clock {} Hz, requested {clock_hz} Hz (tolerance: {FIXED_CLOCK_TOLERANCE_PPM} ppm)",
                     write_id.get(),
                     capability.fixed_clock_hz
                 ));

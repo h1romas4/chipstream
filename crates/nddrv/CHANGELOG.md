@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept fixed NanoDrive clocks within 10 ppm of the track's requested clock.
 - Place NanoDrive connect and disconnect icons beside the port selector.
 - Suppress scan error notifications on startup and directory removal; show them
   for Add directory and Rescan.

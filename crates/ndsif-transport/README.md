@@ -126,9 +126,11 @@ can cause a `DeviceBusy` initialization error. Opening multiple devices is not
 transactional: earlier devices may already have been opened or reset when a
 later device fails.
 
-Variable-clock capabilities are accepted; fixed clocks must match exactly, and
-unknown clock modes do not match. `supports_clock` only checks cached
-capabilities: it performs no I/O and does not configure the clock.
+Variable-clock capabilities are accepted; fixed clocks may differ by at most
+10 parts per million from the device's advertised frequency, and unknown clock
+modes do not match. Fixed clocks are not changed: the hardware plays at its
+advertised frequency, so a small pitch difference remains. `supports_clock` only
+checks cached capabilities: it performs no I/O and does not configure the clock.
 `supports_audio_stream` checks the primary OKIM6258 instance, nonzero advertised
 capacities, and a supported OKIM6258 clock. It does **not** check the
 advertised chip clock mode; also call `supports_clock` when checking a clock.

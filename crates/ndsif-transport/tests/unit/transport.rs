@@ -513,6 +513,8 @@ fn recording_transport_snapshots_clock_and_audio_capabilities() {
     let recorder = NdsifRecordingTransport::new(&transport, NonZeroUsize::new(8).unwrap());
     for (id, instance, clock) in [
         (WriteId::YM2151, 0, 4_000_000),
+        (WriteId::YM2151, 0, 4_000_040),
+        (WriteId::YM2151, 0, 4_000_041),
         (WriteId::YM2151, 0, 3_000_000),
         (WriteId::YM2151, 1, 4_000_000),
         (WriteId::OKIM6258, 0, 4_000_000),
@@ -530,6 +532,66 @@ fn recording_transport_snapshots_clock_and_audio_capabilities() {
     }
     transport.capabilities.clear();
     assert!(recorder.supports_route_clock(WriteId::YM2151, 0, 4_000_000));
+}
+
+#[test]
+fn fixed_clock_tolerance_is_bounded_and_uses_device_frequency() {
+    for (fixed, requested, expected) in [
+        (3_579_540, 3_579_545, true),
+        (3_579_545, 3_579_540, true),
+        (4_000_000, 4_000_000, true),
+        (4_000_000, 3_999_960, true),
+        (4_000_000, 4_000_040, true),
+        (4_000_000, 3_999_959, false),
+        (4_000_000, 4_000_041, false),
+        (4_000_000, 0, false),
+        (0, 0, false),
+        (u32::MAX, u32::MAX, true),
+        (u32::MAX, 0, false),
+    ] {
+        assert_eq!(
+            fixed_clock_matches(fixed, requested),
+            expected,
+            "fixed={fixed}, requested={requested}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fixed_clock_route_and_configuration_accept_same_tolerance_without_clock_command() {
+    use crate::{NdsifRecordingTransport, NdsifRoutingTransport};
+    use serialport::SerialPort;
+    use std::{io::Read, num::NonZeroUsize};
+
+    let (mut transport, mut device) = test_transport();
+    let ym2413 = WriteId::try_from(0x51).unwrap();
+    transport.capabilities.push(ndsif::CapabilityEntry {
+        write_id: ym2413.get(),
+        instance: 0,
+        page: 0,
+        features: 0,
+        clock_mode: ClockMode::Fixed,
+        fixed_clock_hz: 3_579_540,
+    });
+    let mut recorder = NdsifRecordingTransport::new(&transport, NonZeroUsize::new(8).unwrap());
+    assert!(recorder.supports_route_clock(ym2413, 0, 3_579_545));
+    assert!(!recorder.supports_route_clock(ym2413, 0, 3_579_576));
+    recorder.configure_chip(ym2413, 0, 3_579_545).unwrap();
+    recorder
+        .take_batch()
+        .unwrap()
+        .replay(&mut transport)
+        .unwrap();
+    assert!(transport.configured_chip);
+    let error = transport.configure_chip(ym2413, 0, 3_579_576).unwrap_err();
+    assert!(error.contains("tolerance: 10 ppm"));
+    device.set_timeout(Duration::from_millis(20)).unwrap();
+    let error = device.read(&mut [0]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ));
 }
 
 #[cfg(unix)]
