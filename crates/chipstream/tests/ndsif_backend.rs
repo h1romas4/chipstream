@@ -342,6 +342,8 @@ fn factory_schedules_absolute_frames_and_protocol_registers() {
         transport.events[1].write_id,
         WriteId::try_from(0x53).unwrap()
     );
+    assert_eq!(transport.events[1].page, 1);
+    assert_eq!(transport.events[1].instance, 0);
     assert_eq!(transport.events[1].write, RegisterWrite::new(0x2a, 0x80));
     assert_eq!(transport.events[1].sample_frame, 441);
     let writes = transport

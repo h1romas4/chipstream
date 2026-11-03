@@ -9,6 +9,7 @@
 - Recognize NanoDrive 7 AY8910 and chip aliases, route AY to hardware, and
   reject conflicting shared chips or clocks before playback.
 - Account for connected hardware routes in Music and Playlist support indicators.
+- Group NanoDrive 6/6.1 YM2612 page 1 with its primary chip in Routing.
 
 ## v0.3.0
 

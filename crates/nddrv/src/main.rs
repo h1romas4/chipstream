@@ -3512,7 +3512,7 @@ fn capability_labels(entries: &[ndsif::CapabilityEntry]) -> Vec<String> {
             let name = match entry.write_id {
                 0x30 | 0x50 => "SN76489",
                 0x51 => "YM2413",
-                0x52 => "YM2612",
+                0x52 | 0x53 => "YM2612",
                 0x54 => "YM2151",
                 0x55 | 0xa5 => "YM2203",
                 0x56 => "YM2608",

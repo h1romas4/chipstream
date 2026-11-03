@@ -333,6 +333,55 @@ mod tests {
     }
 
     #[test]
+    fn nd6_ym2612_page_one_is_grouped_with_primary_endpoint() {
+        let device = Device {
+            id: 1,
+            name: "NanoDrive 6.1".into(),
+            port: "port".into(),
+            baud_rate: 115_200,
+        };
+        let page_zero = ndsif::CapabilityEntry {
+            write_id: 0x52,
+            instance: 0,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let page_one = ndsif::CapabilityEntry {
+            write_id: 0x53,
+            page: 1,
+            ..page_zero
+        };
+        let entries = vec![page_zero, page_one];
+        let mut routing = SessionRouting::default();
+        routing.refresh(
+            std::slice::from_ref(&device),
+            &HashMap::from([(1, entries.clone())]),
+        );
+        let graph = build(
+            std::slice::from_ref(&device),
+            &HashMap::from([(1, DeviceStatus::Connected(entries))]),
+            routing.connections(),
+        );
+        assert_eq!(graph.devices[0].endpoints.len(), 1);
+        assert_eq!(graph.devices[0].endpoints[0].chip, HardwareChip::Ym2612);
+        assert!(graph.devices[0].extra_labels.is_empty());
+        assert_eq!(
+            graph.cables.iter().filter(|cable| cable.hardware).count(),
+            1
+        );
+
+        let graph = build(
+            &[device],
+            &HashMap::from([(1, DeviceStatus::Connected(vec![page_one]))]),
+            &[],
+        );
+        assert!(graph.devices[0].endpoints.is_empty());
+        assert_eq!(graph.devices[0].extra_labels, ["YM2612 #1"]);
+    }
+
+    #[test]
     fn connected_device_shows_unrouteable_and_empty_capabilities() {
         let device = Device {
             id: 1,
