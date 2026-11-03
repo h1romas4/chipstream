@@ -390,8 +390,9 @@ struct IdlePreviewTarget {
 
 impl AppView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter text, chip or format"));
+        let query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive")
+        });
         let subscription =
             cx.subscribe_in(&query, window, |view: &mut Self, _, event, window, cx| {
                 match event {
@@ -582,11 +583,12 @@ impl AppView {
     fn update_filter(&mut self, cx: &mut Context<Self>) {
         let input = self.query.read(cx);
         let (query, chips) = search_terms(&input.value(), input.tokens());
-        self.filtered_tracks = library::filter_indices_with_tags(
+        self.filtered_tracks = library::filter_indices_for_music(
             &self.tracks,
             &query,
             self.selected_directory.as_deref(),
             &chips,
+            &nanodrive_chips(&self.device_status),
         );
         if !self.selected_tracks.is_empty() || self.track_anchor.is_some() {
             let visible: HashSet<_> = self
@@ -622,6 +624,7 @@ impl AppView {
             input.cursor(),
             input.tokens(),
             &self.available_chips,
+            has_connected_nanodrive(&self.device_status),
         )
     }
 
@@ -680,7 +683,7 @@ impl AppView {
             .child(Input::new(&self.query).token(|token, _, _| {
                 let id = token.token().id();
                 let ymfm = ChipTag::is_ymfm_name(id.as_ref());
-                let format = matches!(id.as_ref(), "MDX" | "VGM");
+                let format = matches!(id.as_ref(), "MDX" | "VGM" | "NanoDrive");
                 let (background, foreground) = if format {
                     (0x4a606d, 0xe7f1f3)
                 } else {
@@ -1452,6 +1455,8 @@ impl AppView {
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
                     self.refresh_routing(false);
+                    self.suggestion_index = 0;
+                    self.update_filter(cx);
                     if self
                         .config
                         .routing
@@ -1472,6 +1477,8 @@ impl AppView {
                         self.save();
                     }
                     self.refresh_routing(true);
+                    self.suggestion_index = 0;
+                    self.update_filter(cx);
                 }
                 device::DeviceEvent::Error(id, error) => {
                     let was_connected = matches!(
@@ -1487,6 +1494,8 @@ impl AppView {
                         self.save();
                     }
                     self.refresh_routing(was_connected);
+                    self.suggestion_index = 0;
+                    self.update_filter(cx);
                     let name = self
                         .config
                         .routing
@@ -1511,6 +1520,8 @@ impl AppView {
                 device::DeviceEvent::Busy(id, error, capabilities) => {
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
+                    self.suggestion_index = 0;
+                    self.update_filter(cx);
                     self.pending_errors
                         .push(error_notification("NanoDrive connection error", error));
                 }
@@ -2530,6 +2541,8 @@ impl AppView {
         match result {
             Ok(status) => {
                 self.device_status.insert(id, status);
+                self.suggestion_index = 0;
+                self.update_filter(cx);
             }
             Err(error) => self.pending_errors.push(error_notification(
                 "NanoDrive connection error",
@@ -3561,6 +3574,30 @@ fn unsupported_chips(
         .collect()
 }
 
+fn has_connected_nanodrive(statuses: &HashMap<u64, DeviceStatus>) -> bool {
+    statuses
+        .values()
+        .any(|status| matches!(status, DeviceStatus::Connected(_)))
+}
+
+fn nanodrive_chips(statuses: &HashMap<u64, DeviceStatus>) -> HashSet<&'static str> {
+    routing::HardwareChip::ALL
+        .into_iter()
+        .filter(|chip| {
+            statuses.values().any(|status| {
+                if let DeviceStatus::Connected(entries) = status {
+                    routing::ChipInstance::ALL
+                        .into_iter()
+                        .any(|instance| chip.advertised(instance, entries))
+                } else {
+                    false
+                }
+            })
+        })
+        .map(routing::HardwareChip::name)
+        .collect()
+}
+
 fn capability_labels(entries: &[ndsif::CapabilityEntry]) -> Vec<String> {
     let mut labels: Vec<_> = entries
         .iter()
@@ -3621,6 +3658,7 @@ fn chip_suggestions(
     cursor: usize,
     tokens: &[InlineTokenSpan],
     chips: &[&'static str],
+    nanodrive_connected: bool,
 ) -> Option<(Range<usize>, Vec<&'static str>)> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -3649,6 +3687,7 @@ fn chip_suggestions(
         let fragment = fragment.to_lowercase();
         let matches: Vec<_> = ["MDX", "VGM"]
             .into_iter()
+            .chain(nanodrive_connected.then_some("NanoDrive"))
             .chain(chips.iter().copied())
             .filter(|chip| {
                 chip.to_lowercase().starts_with(&fragment)
@@ -4286,44 +4325,95 @@ mod tests {
     fn chip_suggestions_match_at_the_cursor_and_skip_existing_tokens() {
         let chips = ["Sega PCM", "YM2151", "YM2612"];
         assert_eq!(
-            chip_suggestions("game ym", 7, &[], &chips),
+            chip_suggestions("game ym", 7, &[], &chips, false),
             Some((5..7, vec!["YM2151", "YM2612"]))
         );
         assert_eq!(
-            chip_suggestions("game Sega P", 11, &[], &chips),
+            chip_suggestions("game Sega P", 11, &[], &chips, false),
             Some((5..11, vec!["Sega PCM"]))
         );
         assert_eq!(
-            chip_suggestions("ym2612", 2, &[], &chips),
+            chip_suggestions("ym2612", 2, &[], &chips, false),
             Some((0..6, vec!["YM2151", "YM2612"]))
         );
         let content = InputContent::new("YM2151ym")
             .with_token(0..6, InlineToken::new("YM2151", "YM2151"))
             .unwrap();
         assert_eq!(
-            chip_suggestions(content.text(), 8, content.tokens(), &chips),
+            chip_suggestions(content.text(), 8, content.tokens(), &chips, false),
             Some((6..8, vec!["YM2612"]))
         );
         assert_eq!(
-            chip_suggestions(content.text(), 3, content.tokens(), &chips),
+            chip_suggestions(content.text(), 3, content.tokens(), &chips, false),
             None
         );
-        assert_eq!(chip_suggestions("音", 1, &[], &chips), None);
+        assert_eq!(chip_suggestions("音", 1, &[], &chips, false), None);
         assert_eq!(
-            chip_suggestions("vg", 2, &[], &chips),
+            chip_suggestions("vg", 2, &[], &chips, false),
             Some((0..2, vec!["VGM"]))
         );
         assert_eq!(
-            chip_suggestions("md", 2, &[], &chips),
+            chip_suggestions("md", 2, &[], &chips, false),
             Some((0..2, vec!["MDX"]))
         );
         let content = InputContent::new("VGMvg")
             .with_token(0..3, InlineToken::new("VGM", "VGM"))
             .unwrap();
         assert_eq!(
-            chip_suggestions(content.text(), 5, content.tokens(), &chips),
+            chip_suggestions(content.text(), 5, content.tokens(), &chips, false),
             None
         );
+        assert_eq!(chip_suggestions("nano", 4, &[], &chips, false), None);
+        assert_eq!(
+            chip_suggestions("nano", 4, &[], &chips, true),
+            Some((0..4, vec!["NanoDrive"]))
+        );
+        let content = InputContent::new("NanoDrivenano")
+            .with_token(0..9, InlineToken::new("NanoDrive", "NanoDrive"))
+            .unwrap();
+        assert_eq!(
+            chip_suggestions(content.text(), 13, content.tokens(), &chips, true),
+            None
+        );
+    }
+
+    #[test]
+    fn nanodrive_filter_uses_connected_advertised_chip_types() {
+        use super::{has_connected_nanodrive, nanodrive_chips};
+
+        let capability = ndsif::CapabilityEntry {
+            write_id: 0xa0,
+            instance: 1,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let mut statuses = HashMap::from([
+            (1, DeviceStatus::Connected(vec![capability])),
+            (
+                2,
+                DeviceStatus::Connected(vec![ndsif::CapabilityEntry {
+                    write_id: 0x54,
+                    instance: 0,
+                    ..capability
+                }]),
+            ),
+            (3, DeviceStatus::Connecting),
+        ]);
+        assert!(has_connected_nanodrive(&statuses));
+        assert_eq!(
+            nanodrive_chips(&statuses),
+            HashSet::from(["AY8910", "YM2151"])
+        );
+        statuses.insert(1, DeviceStatus::Disconnecting);
+        assert_eq!(nanodrive_chips(&statuses), HashSet::from(["YM2151"]));
+        statuses.remove(&2);
+        assert!(!has_connected_nanodrive(&statuses));
+        assert!(nanodrive_chips(&statuses).is_empty());
+        statuses.insert(1, DeviceStatus::Connected(vec![]));
+        assert!(has_connected_nanodrive(&statuses));
+        assert!(nanodrive_chips(&statuses).is_empty());
     }
 
     #[test]

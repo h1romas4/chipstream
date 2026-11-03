@@ -72,6 +72,15 @@ Type `MDX` or `VGM` to add a format tag; VGM includes VGZ files. Format tags
 combine with the text, directory, and chip filters. Selecting both formats
 matches either format.
 
+When a NanoDrive is connected, type `NanoDrive` to add its search tag. It
+matches tracks containing at least one chip type advertised by any connected
+NanoDrive, and combines with the other filters. It reflects device capabilities,
+not the current routing choices; it does not guarantee that the track's clocks,
+chip instances, or shared resources can all be played on hardware. If all
+NanoDrives disconnect, the tag is no longer suggested; an already selected tag
+remains in the input and matches no tracks until a device reconnects or the tag
+is removed.
+
 Music shows a format tag (VGM, including VGZ, or MDX) alongside right-aligned
 chip tags. The library shows chip tags from VGM/VGZ header clocks. MDX tags
 show YM2151 and, when the MDX names a PDX sample bank, OKIM6258. These tags describe

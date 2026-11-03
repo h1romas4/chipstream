@@ -271,6 +271,31 @@ pub fn filter_indices_with_tags(
     indices
 }
 
+pub fn filter_indices_for_music(
+    tracks: &[Track],
+    query: &str,
+    directory: Option<&Path>,
+    tags: &[String],
+    nanodrive_chips: &HashSet<&'static str>,
+) -> Vec<usize> {
+    let nanodrive = tags.iter().any(|tag| tag == "NanoDrive");
+    let other_tags: Vec<_> = tags
+        .iter()
+        .filter(|tag| tag.as_str() != "NanoDrive")
+        .cloned()
+        .collect();
+    let mut indices = filter_indices_with_tags(tracks, query, directory, &other_tags);
+    if nanodrive {
+        indices.retain(|&index| {
+            tracks[index]
+                .chips
+                .iter()
+                .any(|tag| tag.instances > 0 && nanodrive_chips.contains(tag.name))
+        });
+    }
+    indices
+}
+
 #[derive(Debug)]
 pub struct DirectoryEntry {
     pub path: PathBuf,
@@ -1010,6 +1035,57 @@ mod tests {
         assert!(
             filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "OKIM6258".into()])
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn nanodrive_filter_combines_with_existing_filters_and_matches_any_chip() {
+        let tracks: Vec<_> = [
+            (
+                "/music/one/a.vgm",
+                "Opening",
+                vec![Chip::Ym2151, Chip::Okim6258],
+            ),
+            ("/music/one/b.mdx", "Opening", vec![Chip::Ym2151]),
+            ("/music/two/c.vgm", "Ending", vec![Chip::Ay8910]),
+            ("/music/one/d.vgm", "Opening", vec![Chip::Okim6258]),
+        ]
+        .into_iter()
+        .map(|(path, title, chips)| {
+            Track::new(
+                PathBuf::from(path),
+                TrackMetadata {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
+                chips.iter().map(ChipTag::new).collect(),
+            )
+        })
+        .collect();
+        let supported = HashSet::from(["YM2151", "AY8910"]);
+        let tags = vec!["NanoDrive".into()];
+        assert_eq!(
+            filter_indices_for_music(&tracks, "", None, &tags, &supported),
+            [0, 1, 2]
+        );
+        assert!(filter_indices_for_music(&tracks, "", None, &tags, &HashSet::new()).is_empty());
+        assert_eq!(
+            filter_indices_for_music(
+                &tracks,
+                "opening",
+                Some(Path::new("/music/one")),
+                &["NanoDrive".into(), "VGM".into(), "OKIM6258".into()],
+                &supported
+            ),
+            [0]
+        );
+        assert_eq!(
+            filter_indices_for_music(&tracks, "", None, &["VGM".into()], &HashSet::new()),
+            [0, 2, 3]
+        );
+        assert_eq!(
+            filter_indices_for_music(&tracks, "", None, &tags, &HashSet::from(["AY8910"])),
+            [2]
         );
     }
 

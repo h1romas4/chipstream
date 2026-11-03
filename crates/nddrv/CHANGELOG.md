@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a NanoDrive Music search tag for chips advertised by connected devices.
 - Number only connected NanoDrives, keep the last box available, and place the
   sequencer between emulation and NanoDrive routes.
 - Accept fixed NanoDrive clocks within 10 ppm of the track's requested clock.
