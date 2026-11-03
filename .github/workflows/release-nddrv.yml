@@ -109,7 +109,7 @@ jobs:
             x86_64-apple-darwin) arch=x86_64 ;;
             *) echo "Unexpected macOS target: $TARGET" >&2; exit 1 ;;
           esac
-          lipo -verify_arch "$arch" "$app/Contents/MacOS/nddrv"
+          lipo "$app/Contents/MacOS/nddrv" -verify_arch "$arch"
           cp "${images[0]}" "nddrv-$PLATFORM.dmg"
 
       - name: Prepare distribution
