@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show an indeterminate progress meter in library scan notifications.
+- Update scan progress in place instead of repeatedly showing the notification.
+- Widen NanoDrive boxes to give serial port selectors more room.
 - Add a NanoDrive Music search tag for chips advertised by connected devices.
 - Number only connected NanoDrives, keep the last box available, and place the
   sequencer between emulation and NanoDrive routes.

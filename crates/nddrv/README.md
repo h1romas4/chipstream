@@ -52,7 +52,9 @@ descendants. Select **All tracks** to clear the directory filter. Music results
 are ordered by directory and then by filename, rather than track metadata.
 
 Scanning progress and completion are shown as notifications at the bottom right
-of the window. Scans started by **Add directory** or **Rescan** report errors
+of the window. While scanning, an animated indeterminate meter and the number of
+files processed are shown; the total is not known in advance. Scans started by
+**Add directory** or **Rescan** report errors
 in persistent notifications with scrollable details. Startup and directory
 removal scans do not show error notifications; errors are logged to stderr.
 Playlist metadata errors follow the same policy when loaded after a scan.

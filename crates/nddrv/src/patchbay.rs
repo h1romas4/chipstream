@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use crate::DeviceStatus;
 use crate::routing::{ChipInstance, Connection, Device, HardwareChip};
 
-pub const WIDTH: f32 = 866.;
+pub const WIDTH: f32 = DEVICE_X + DEVICE_WIDTH + 16.;
 pub const SOURCE_X: f32 = 336.;
 pub const SOURCE_WIDTH: f32 = 180.;
 pub const TARGET_X: f32 = 16.;
 pub const TARGET_WIDTH: f32 = 200.;
 pub const DEVICE_X: f32 = 620.;
-pub const DEVICE_WIDTH: f32 = 230.;
+pub const DEVICE_WIDTH: f32 = 300.;
 pub const HEADER: f32 = 40.;
 pub const DEVICE_HEADER: f32 = 112.;
 pub const ROW: f32 = 30.;
@@ -510,6 +510,6 @@ mod tests {
         assert_eq!(graph.height, last.top + last.height);
         assert!(TARGET_X + TARGET_WIDTH < SOURCE_X);
         assert!(SOURCE_X + SOURCE_WIDTH < DEVICE_X);
-        assert!(DEVICE_X + DEVICE_WIDTH <= WIDTH);
+        assert_eq!(DEVICE_X + DEVICE_WIDTH + 16., WIDTH);
     }
 }

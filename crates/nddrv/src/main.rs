@@ -26,7 +26,8 @@ use gpui_kit::component::input::{
     InlineToken, InlineTokenSpan, Input, InputEvent, InputState, InputToken,
 };
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::notification::Notification;
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarHandle, ScrollbarMode};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -277,6 +278,56 @@ fn device_port(
 
 struct LibraryScanNotification;
 
+struct ScanProgressView {
+    origin: ScanOrigin,
+    progress: ScanProgress,
+}
+
+impl Render for ScanProgressView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_sm()
+                    .child(scan_progress_text(self.origin, self.progress)),
+            )
+            .child(
+                div().mt_2().child(
+                    Progress::new("library-scan-progress")
+                        .loading(true)
+                        .color(rgb(ACCENT_COLOR))
+                        .accessibility_label("Library scan in progress"),
+                ),
+            )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScanProgressAction {
+    Show,
+    Update,
+    None,
+}
+
+fn scan_progress_action(
+    shown: bool,
+    previous: Option<ScanProgress>,
+    current: ScanProgress,
+    elapsed: Option<Duration>,
+) -> ScanProgressAction {
+    if !shown {
+        ScanProgressAction::Show
+    } else if previous != Some(current)
+        && elapsed.is_none_or(|elapsed| elapsed >= Duration::from_secs(1))
+    {
+        ScanProgressAction::Update
+    } else {
+        ScanProgressAction::None
+    }
+}
+
 struct GainControl {
     slider: Entity<SliderState>,
     _subscription: Subscription,
@@ -375,6 +426,8 @@ struct AppView {
     scanning: bool,
     scan_id: u64,
     scan_progress: Option<(Arc<Mutex<ScanProgress>>, ScanOrigin)>,
+    scan_progress_view: Entity<ScanProgressView>,
+    scan_notification_shown: bool,
     displayed_scan_progress: Option<ScanProgress>,
     scan_progress_updated_at: Option<Instant>,
     completed_scan_notification: Option<(usize, Vec<String>)>,
@@ -416,6 +469,10 @@ impl AppView {
                 cx.notify();
             });
         let volume = cx.new(|_| SliderState::new().default_value(100.));
+        let scan_progress_view = cx.new(|_| ScanProgressView {
+            origin: ScanOrigin::Background,
+            progress: ScanProgress::default(),
+        });
         let volume_subscription = cx.subscribe(&volume, |view: &mut Self, _, event, cx| {
             if let SliderEvent::Change(SliderValue::Single(value)) = event {
                 if let Err(error) = view.player.set_volume(*value / 100.) {
@@ -544,6 +601,8 @@ impl AppView {
             scanning: false,
             scan_id: 0,
             scan_progress: None,
+            scan_progress_view,
+            scan_notification_shown: false,
             displayed_scan_progress: None,
             scan_progress_updated_at: None,
             completed_scan_notification: None,
@@ -1555,6 +1614,7 @@ impl AppView {
             cx.notify();
         }
         if let Some((count, errors)) = self.completed_scan_notification.take() {
+            self.scan_notification_shown = false;
             let notification = if errors.is_empty() {
                 Notification::success(format!("{count} tracks found"))
                     .title("Library scan complete")
@@ -1565,18 +1625,32 @@ impl AppView {
             window.push_notification(notification.id::<LibraryScanNotification>(), cx);
         } else if let Some((progress, origin)) = &self.scan_progress {
             let progress = *progress.lock().expect("scan progress mutex poisoned");
-            if self.displayed_scan_progress != Some(progress)
-                && self
-                    .scan_progress_updated_at
-                    .is_none_or(|updated| updated.elapsed() >= Duration::from_secs(1))
-            {
+            let action = scan_progress_action(
+                self.scan_notification_shown,
+                self.displayed_scan_progress,
+                progress,
+                self.scan_progress_updated_at
+                    .map(|updated| updated.elapsed()),
+            );
+            if action != ScanProgressAction::None {
                 self.displayed_scan_progress = Some(progress);
                 self.scan_progress_updated_at = Some(Instant::now());
+                self.scan_progress_view.update(cx, |view, cx| {
+                    view.progress = progress;
+                    view.origin = *origin;
+                    cx.notify();
+                });
+            }
+            if action == ScanProgressAction::Show {
+                self.scan_notification_shown = true;
+                let progress_view = self.scan_progress_view.clone();
                 window.push_notification(
-                    Notification::info(scan_progress_text(*origin, progress))
+                    Notification::new()
+                        .with_type(NotificationType::Info)
                         .title("Scanning library")
                         .id::<LibraryScanNotification>()
-                        .autohide(false),
+                        .autohide(false)
+                        .content(move |_, _, _| progress_view.clone().into_any_element()),
                     cx,
                 );
             }
@@ -3903,6 +3977,42 @@ mod tests {
             );
             assert_eq!(reported_scan_errors(origin, "test", errors.clone()), errors);
         }
+    }
+
+    #[test]
+    fn scan_progress_is_shown_once_and_then_updated_in_place() {
+        use super::{ScanProgress, ScanProgressAction, scan_progress_action};
+        use std::time::Duration;
+
+        let initial = ScanProgress::default();
+        let next = ScanProgress {
+            files: 1,
+            errors: 0,
+        };
+        assert_eq!(
+            scan_progress_action(false, None, initial, None),
+            ScanProgressAction::Show
+        );
+        assert_eq!(
+            scan_progress_action(true, Some(initial), next, Some(Duration::from_millis(500))),
+            ScanProgressAction::None
+        );
+        assert_eq!(
+            scan_progress_action(true, Some(initial), next, Some(Duration::from_secs(1))),
+            ScanProgressAction::Update
+        );
+        assert_eq!(
+            scan_progress_action(true, Some(next), next, Some(Duration::from_secs(2))),
+            ScanProgressAction::None
+        );
+        assert_eq!(
+            scan_progress_action(true, None, initial, None),
+            ScanProgressAction::Update
+        );
+        assert_eq!(
+            scan_progress_action(false, None, initial, None),
+            ScanProgressAction::Show
+        );
     }
 
     #[test]
