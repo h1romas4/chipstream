@@ -52,8 +52,10 @@ descendants. Select **All tracks** to clear the directory filter. Music results
 are ordered by directory and then by filename, rather than track metadata.
 
 Scanning progress and completion are shown as notifications at the bottom right
-of the window. Errors are shown in persistent notifications; scan and playlist
-metadata errors include scrollable details.
+of the window. Scans started by **Add directory** or **Rescan** report errors
+in persistent notifications with scrollable details. Startup and directory
+removal scans do not show error notifications; errors are logged to stderr.
+Playlist metadata errors follow the same policy when loaded after a scan.
 
 ### Search and Chip Tags
 
@@ -242,8 +244,9 @@ notes were skipped.
 ## NanoDrive Routing
 
 Hardware routing is experimental and host-paced. The cable icon opens the
-routing page. Select a serial port in the NanoDrive box and click **Connect**;
-use the refresh icon beside the port selector to search again. Connect queries the model name and
+routing page. Select a serial port in the NanoDrive box and use the plug icon
+beside the selector to connect, or the unplug icon to disconnect. Use the
+refresh icon to search for ports again. Connecting queries the model name and
 advertised chip instances; duplicate model names get a numbered suffix. The
 baud rate is fixed at 115,200. Unknown target IDs are shown explicitly.
 

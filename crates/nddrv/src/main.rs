@@ -143,6 +143,50 @@ enum DeviceStatus {
     Disconnecting,
 }
 
+fn connection_action(status: Option<&DeviceStatus>) -> (assets::IconName, &'static str) {
+    match status {
+        Some(DeviceStatus::Connecting) => (assets::IconName::Plug, "Connecting..."),
+        Some(DeviceStatus::Connected(_)) => (assets::IconName::Unplug, "Disconnect"),
+        Some(DeviceStatus::Disconnecting) => (assets::IconName::Unplug, "Disconnecting..."),
+        None => (assets::IconName::Plug, "Connect"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScanOrigin {
+    Background,
+    Add,
+    Rescan,
+}
+
+impl ScanOrigin {
+    fn reports_errors(self) -> bool {
+        matches!(self, Self::Add | Self::Rescan)
+    }
+}
+
+fn reported_scan_errors(origin: ScanOrigin, context: &str, errors: Vec<String>) -> Vec<String> {
+    if origin.reports_errors() {
+        errors
+    } else {
+        for error in errors {
+            eprintln!("{context}: {error}");
+        }
+        Vec::new()
+    }
+}
+
+fn scan_progress_text(origin: ScanOrigin, progress: ScanProgress) -> String {
+    if origin.reports_errors() {
+        format!(
+            "{} files scanned; {} errors",
+            progress.files, progress.errors
+        )
+    } else {
+        format!("{} files scanned", progress.files)
+    }
+}
+
 struct DevicePort {
     select: Entity<SelectState<SearchableVec<String>>>,
     _subscription: Subscription,
@@ -318,7 +362,7 @@ struct AppView {
     pending_errors: Vec<Notification>,
     scanning: bool,
     scan_id: u64,
-    scan_progress: Option<Arc<Mutex<ScanProgress>>>,
+    scan_progress: Option<(Arc<Mutex<ScanProgress>>, ScanOrigin)>,
     displayed_scan_progress: Option<ScanProgress>,
     scan_progress_updated_at: Option<Instant>,
     completed_scan_notification: Option<(usize, Vec<String>)>,
@@ -723,7 +767,7 @@ impl AppView {
             library::visible_directories(&self.directories, &self.expanded_directories);
     }
 
-    fn load_playlist_metadata(&mut self, cx: &mut Context<Self>) {
+    fn load_playlist_metadata(&mut self, origin: ScanOrigin, cx: &mut Context<Self>) {
         self.playlist_tracks.clear();
         let paths: HashSet<_> = self
             .config
@@ -765,6 +809,7 @@ impl AppView {
                         Err(error) => errors.push(format!("{}: {error:#}", path.display())),
                     }
                 }
+                let errors = reported_scan_errors(origin, "Playlist metadata error", errors);
                 if !errors.is_empty() {
                     view.pending_errors.push(error_details_notification(
                         "Playlist metadata errors",
@@ -778,12 +823,12 @@ impl AppView {
         .detach();
     }
 
-    fn scan(&mut self, cx: &mut Context<Self>) {
+    fn scan(&mut self, origin: ScanOrigin, cx: &mut Context<Self>) {
         self.scan_id = self.scan_id.wrapping_add(1);
         let scan_id = self.scan_id;
         let dirs = self.config.directories.clone();
         let progress = Arc::new(Mutex::new(ScanProgress::default()));
-        self.scan_progress = Some(progress.clone());
+        self.scan_progress = Some((progress.clone(), origin));
         self.displayed_scan_progress = None;
         self.scan_progress_updated_at = None;
         self.completed_scan_notification = None;
@@ -836,8 +881,11 @@ impl AppView {
                 view.update_filter(cx);
                 view.status = format!("{} tracks found", view.tracks.len());
                 view.scan_progress = None;
-                view.completed_scan_notification = Some((view.tracks.len(), result.errors));
-                view.load_playlist_metadata(cx);
+                view.completed_scan_notification = Some((
+                    view.tracks.len(),
+                    reported_scan_errors(origin, "Library scan error", result.errors),
+                ));
+                view.load_playlist_metadata(origin, cx);
                 cx.notify();
             });
         })
@@ -856,7 +904,7 @@ impl AppView {
                 Ok(path) if !view.config.directories.contains(&path) => {
                     view.config.directories.push(path);
                     view.save();
-                    view.scan(cx);
+                    view.scan(ScanOrigin::Add, cx);
                 }
                 Ok(_) => {
                     view.status = "Directory is already registered".into();
@@ -1474,7 +1522,7 @@ impl AppView {
                 error_details_notification("Library scan completed with errors", summary, errors)
             };
             window.push_notification(notification.id::<LibraryScanNotification>(), cx);
-        } else if let Some(progress) = &self.scan_progress {
+        } else if let Some((progress, origin)) = &self.scan_progress {
             let progress = *progress.lock().expect("scan progress mutex poisoned");
             if self.displayed_scan_progress != Some(progress)
                 && self
@@ -1484,13 +1532,10 @@ impl AppView {
                 self.displayed_scan_progress = Some(progress);
                 self.scan_progress_updated_at = Some(Instant::now());
                 window.push_notification(
-                    Notification::info(format!(
-                        "{} files scanned; {} errors",
-                        progress.files, progress.errors
-                    ))
-                    .title("Scanning library")
-                    .id::<LibraryScanNotification>()
-                    .autohide(false),
+                    Notification::info(scan_progress_text(*origin, progress))
+                        .title("Scanning library")
+                        .id::<LibraryScanNotification>()
+                        .autohide(false),
                     cx,
                 );
             }
@@ -2312,7 +2357,7 @@ impl AppView {
         self.update_directory_tree();
         self.update_filter(cx);
         self.save();
-        self.scan(cx);
+        self.scan(ScanOrigin::Background, cx);
     }
 
     fn refresh_ports(&mut self, cx: &mut Context<Self>) {
@@ -2680,6 +2725,13 @@ impl AppView {
                 .expect("each device has a port selector")
                 .select;
             let selected_port = port.read(cx).selected_value().is_some();
+            let (connection_icon, connection_label) = connection_action(status);
+            let status_label = match status {
+                Some(DeviceStatus::Connecting) => "Connecting...",
+                Some(DeviceStatus::Connected(_)) => "Connected",
+                Some(DeviceStatus::Disconnecting) => "Disconnecting...",
+                None => "Disconnected",
+            };
             panels.push(
                 div()
                     .absolute()
@@ -2752,22 +2804,15 @@ impl AppView {
                                                     view.refresh_ports(cx)
                                                 }),
                                             ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
+                                    )
                                     .child(
                                         Button::new(("connect-device", id as usize))
-                                            .label(if device.connected {
-                                                "Disconnect"
-                                            } else if busy {
-                                                "Please wait..."
-                                            } else {
-                                                "Connect"
-                                            })
+                                            .icon(connection_icon)
+                                            .w(px(28.))
+                                            .h(px(28.))
+                                            .p_0()
+                                            .tooltip(connection_label)
+                                            .accessibility_label(connection_label)
                                             .disabled(
                                                 busy || !editable
                                                     || (!device.connected && !selected_port),
@@ -2775,21 +2820,17 @@ impl AppView {
                                             .on_click(cx.listener(move |view, _, _, cx| {
                                                 view.connect_device(id, cx)
                                             })),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(if device.connected {
-                                                0x81d88a
-                                            } else {
-                                                0xa6b6c3
-                                            }))
-                                            .child(if device.connected {
-                                                "Connected"
-                                            } else {
-                                                "Disconnected"
-                                            }),
                                     ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(if device.connected {
+                                        0x81d88a
+                                    } else {
+                                        0xa6b6c3
+                                    }))
+                                    .child(status_label),
                             ),
                     )
                     .into_any_element(),
@@ -3757,13 +3798,58 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, DetailsSelection, ListKey, adjacent_track, capability_labels, chip_colors,
-        chip_suggestions, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, remove_playlist_entries, search_terms, select_for_context, select_item,
+        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, ScanOrigin, adjacent_track,
+        capability_labels, chip_colors, chip_suggestions, connection_action, details_target,
+        ends_folder_group, inclusive_range, initial_window_bounds, is_select_all,
+        keep_preview_sources, list_key, list_selection_step, music_format, remove_playlist_entries,
+        reported_scan_errors, scan_progress_text, search_terms, select_for_context, select_item,
         select_range, selection_status, unique_device_name, unsupported_chips,
         update_selection_order,
     };
+
+    #[test]
+    fn connection_action_reflects_device_state() {
+        use gpui_kit::assets::IconName;
+
+        assert!(matches!(
+            connection_action(None),
+            (IconName::Plug, "Connect")
+        ));
+        assert!(matches!(
+            connection_action(Some(&DeviceStatus::Connecting)),
+            (IconName::Plug, "Connecting...")
+        ));
+        assert!(matches!(
+            connection_action(Some(&DeviceStatus::Connected(vec![]))),
+            (IconName::Unplug, "Disconnect")
+        ));
+        assert!(matches!(
+            connection_action(Some(&DeviceStatus::Disconnecting)),
+            (IconName::Unplug, "Disconnecting...")
+        ));
+    }
+
+    #[test]
+    fn scan_errors_are_not_notified_for_background_scans() {
+        let progress = super::ScanProgress {
+            files: 12,
+            errors: 2,
+            ..Default::default()
+        };
+        let errors = vec!["bad track".to_owned(), "missing directory".to_owned()];
+        assert_eq!(
+            scan_progress_text(ScanOrigin::Background, progress),
+            "12 files scanned"
+        );
+        assert!(reported_scan_errors(ScanOrigin::Background, "test", errors.clone()).is_empty());
+        for origin in [ScanOrigin::Add, ScanOrigin::Rescan] {
+            assert_eq!(
+                scan_progress_text(origin, progress),
+                "12 files scanned; 2 errors"
+            );
+            assert_eq!(reported_scan_errors(origin, "test", errors.clone()), errors);
+        }
+    }
 
     #[test]
     fn unsupported_chips_follow_connected_routes_and_required_instances() {
@@ -4660,7 +4746,7 @@ impl Render for AppView {
                                                             "Rescan"
                                                         })
                                                         .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.scan(cx)
+                                                            view.scan(ScanOrigin::Rescan, cx)
                                                         })),
                                                 ),
                                         ),
@@ -4877,9 +4963,9 @@ fn main() {
                 let mut app = AppView::new(window, cx);
                 app.check_for_updates(cx);
                 if !app.config.directories.is_empty() {
-                    app.scan(cx);
+                    app.scan(ScanOrigin::Background, cx);
                 } else {
-                    app.load_playlist_metadata(cx);
+                    app.load_playlist_metadata(ScanOrigin::Background, cx);
                 }
                 app
             })

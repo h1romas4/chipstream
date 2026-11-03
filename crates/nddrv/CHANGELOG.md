@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Place NanoDrive connect and disconnect icons beside the port selector.
+- Suppress scan error notifications on startup and directory removal; show them
+  for Add directory and Rescan.
 - Automatically route connected NanoDrive chips and replace routing profiles
   with connection boxes in the routing view.
 - Show connected NanoDrive names in the Playlist transport.
