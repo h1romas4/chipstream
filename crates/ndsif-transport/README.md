@@ -282,9 +282,11 @@ error. Recording does not itself synchronize host audio or device-timed streams.
 - Factory routing covers YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
   YM3526, Y8950, YM3812, YMF262, YMF278B, SN76489, and OKIM6258. Actual
   hardware selection depends on the device's advertised capabilities.
-- Game Gear stereo SN76489 uses emulation; T6W28 PSG is rejected. When a VGM
-  pairs YM2151 with OKIM6258, hardware selection for YM2151 also requires a
-  compatible primary OKIM6258 stream on that device.
+- Automatic routing uses emulation for SN76489 instances that use non-default
+  Game Gear stereo masks; explicit hardware routes reject them. A stereo-enabled
+  header alone does not prevent hardware playback. T6W28 PSG is rejected.
+  When a VGM pairs YM2151 with OKIM6258, hardware selection for YM2151 also
+  requires a compatible primary OKIM6258 stream on that device.
 - Only one primary OKIM6258 audio stream is supported per transport. It cannot
   share a transport with the timed DAC profile. Raw PSG writes cannot share an
   OKIM6258 audio stream.

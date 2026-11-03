@@ -310,11 +310,20 @@ impl Memory {
     }
 }
 
+fn observe_psg_stereo(stereo: &mut [bool; 2], command: &VgmCommand) {
+    if let VgmCommand::GameGearPsgWrite(instance, spec) = command
+        && spec.value != 0xff
+    {
+        stereo[*instance as usize] = true;
+    }
+}
+
 struct VoiceConfig {
     chip: Chip,
     instance: Instance,
     clock: u32,
     dual: bool,
+    sn76489_stereo_used: bool,
 }
 
 struct Voice {
@@ -726,8 +735,8 @@ impl<'a> VgmSequencer<'a> {
     /// may allocate separately. GD3 metadata is not parsed or validated.
     ///
     /// For OKIM6258/6295, construction scans commands to determine the
-    /// resampler's clock range and may report malformed commands earlier. The
-    /// scan skips data-block payloads without copying them.
+    /// resampler's clock range. This scan may report malformed commands earlier
+    /// and skips data-block payloads without copying them.
     pub fn from_vgm(
         data: impl Into<Vec<u8>>,
         output_rate: u32,
@@ -740,6 +749,10 @@ impl<'a> VgmSequencer<'a> {
     ///
     /// Factories replace the built-in backend only for registered chip types.
     /// They receive the parsed header, chip instance, and effective clock.
+    /// If an SN76489 factory is registered and the header enables Game Gear
+    /// stereo, commands are also scanned for non-default stereo masks. This
+    /// may report malformed commands during construction; data-block payloads
+    /// are skipped without copying them.
     pub fn from_vgm_with_factories(
         data: impl Into<Vec<u8>>,
         output_rate: u32,
@@ -751,15 +764,23 @@ impl<'a> VgmSequencer<'a> {
         let header = VgmHeader::from_bytes(&data)?;
         let extra = header.extra_header_from_bytes(&data)?;
         let mut timing = Timing::new(&Self::supported_clocks(&header));
-        if timing.needs_scan() {
+        let scan_psg = header.sn76489_clock & 0x3fff_ffff != 0
+            && header.sn76489_flags.gamegear_stereo
+            && factories.contains(&Chip::Sn76489);
+        let mut psg_stereo = [false; 2];
+        if timing.needs_scan() || scan_psg {
             visit_non_data_block_commands(&data, &header, |command| {
                 timing.observe(command);
+                if scan_psg {
+                    observe_psg_stereo(&mut psg_stereo, command);
+                }
             })?;
         }
         let voices = Self::make_voices(
             &header,
             extra.as_ref(),
             &timing,
+            psg_stereo,
             output_rate,
             &mut factories,
         )?;
@@ -845,6 +866,7 @@ impl<'a> VgmSequencer<'a> {
             instance,
             clock,
             dual,
+            sn76489_stereo_used,
         } = config;
         let profile = TimingProfile::for_chip(&chip);
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
@@ -857,8 +879,15 @@ impl<'a> VgmSequencer<'a> {
             clock
         };
         let memory = Rc::new(RefCell::new(Memory::default()));
-        let factory_config =
-            ChipFactoryConfig::new(chip.clone(), instance, clock, output_rate, header, extra);
+        let factory_config = ChipFactoryConfig::new(
+            chip.clone(),
+            instance,
+            clock,
+            output_rate,
+            header,
+            extra,
+            sn76489_stereo_used,
+        );
         let backend: Box<dyn SoundChip> =
             if let Some(backend) = factories.create(&factory_config)? {
                 backend
@@ -1080,15 +1109,27 @@ impl<'a> VgmSequencer<'a> {
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let mut timing = Timing::new(&Self::supported_clocks(&document.header));
-        if timing.needs_scan() {
+        let scan_psg = document.header.sn76489_clock & 0x3fff_ffff != 0
+            && document.header.sn76489_flags.gamegear_stereo
+            && factories.contains(&Chip::Sn76489);
+        let mut psg_stereo = [false; 2];
+        if timing.needs_scan() || scan_psg {
+            let mut psg_ended = false;
             for command in &document.commands {
                 timing.observe(command);
+                if matches!(command, VgmCommand::EndOfData(_)) {
+                    psg_ended = true;
+                }
+                if scan_psg && !psg_ended {
+                    observe_psg_stereo(&mut psg_stereo, command);
+                }
             }
         }
         let voices = Self::make_voices(
             &document.header,
             document.extra_header.as_ref(),
             &timing,
+            psg_stereo,
             output_rate,
             &mut factories,
         )?;
@@ -1128,7 +1169,14 @@ impl<'a> VgmSequencer<'a> {
                 timing.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
             }
         }
-        let voices = Self::make_voices(&header, None, &timing, output_rate, &mut factories)?;
+        let voices = Self::make_voices(
+            &header,
+            None,
+            &timing,
+            [false; 2],
+            output_rate,
+            &mut factories,
+        )?;
         Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
     }
 
@@ -1148,6 +1196,7 @@ impl<'a> VgmSequencer<'a> {
         header: &VgmHeader,
         extra: Option<&VgmExtraHeader>,
         timing: &Timing,
+        psg_stereo: [bool; 2],
         output_rate: u32,
         factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
@@ -1178,6 +1227,7 @@ impl<'a> VgmSequencer<'a> {
                         instance,
                         clock,
                         dual: raw & 0x4000_0000 != 0,
+                        sn76489_stereo_used: chip == Chip::Sn76489 && psg_stereo[instance as usize],
                     },
                     timing,
                     output_rate,

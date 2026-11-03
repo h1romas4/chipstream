@@ -273,11 +273,6 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
             }
             let backend: Box<dyn SoundChip> = match chip {
                 Chip::Sn76489 => {
-                    if config.header().misc().t6w28_detected == Some(true)
-                        || config.header().sn76489_flags.gamegear_stereo
-                    {
-                        return Err(invalid("NDSIF does not support this PSG format".into()));
-                    }
                     Box::new(NdsifSn76489::with_target_instance(
                         config,
                         route.target,
@@ -304,10 +299,13 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chipstream::chip::NdsifRegisterEvent;
+    use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent};
     use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
-    use soundlog::chip::{Ay8910Spec, Okim6258Spec, Ym2151Spec};
-    use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+    use soundlog::chip::{Ay8910Spec, GameGearPsgSpec, Okim6258Spec, PsgSpec, Ym2151Spec};
+    use soundlog::vgm::{
+        VgmBuilder,
+        command::{EndOfData, WaitSamples},
+    };
 
     #[derive(Default)]
     struct Device {
@@ -315,6 +313,7 @@ mod tests {
         audio_supported: bool,
         configured: Vec<(WriteId, u8, u32)>,
         events: Vec<NdsifRegisterEvent>,
+        psg_events: Vec<NdsifPsgEvent>,
     }
 
     impl NdsifTransport for Device {
@@ -325,6 +324,11 @@ mod tests {
 
         fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
             self.events.push(event);
+            Ok(())
+        }
+
+        fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+            self.psg_events.push(event);
             Ok(())
         }
     }
@@ -362,6 +366,189 @@ mod tests {
         }
         builder.add_vgm_command(WaitSamples(441));
         builder.finalize().into()
+    }
+
+    #[test]
+    fn psg_hardware_uses_actual_stereo_commands_instead_of_header_capability() {
+        let route = NdsifRoute {
+            chip: Chip::Sn76489,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        for (stereo_enabled, mask, succeeds) in [
+            (true, None, true),
+            (true, Some(0xff), true),
+            (true, Some(0x12), false),
+            (false, Some(0x12), true),
+        ] {
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+            if let Some(value) = mask {
+                builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value });
+            }
+            builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
+            builder.add_vgm_command(WaitSamples(441));
+            let mut document = builder.finalize();
+            document.header.sn76489_flags.gamegear_stereo = stereo_enabled;
+
+            for use_document in [false, true] {
+                let device = Rc::new(RefCell::new(Device {
+                    supported: true,
+                    ..Default::default()
+                }));
+                let factories =
+                    routed_factories(vec![Rc::clone(&device)], std::slice::from_ref(&route))
+                        .unwrap();
+                let result = if use_document {
+                    VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+                } else {
+                    VgmSequencer::from_vgm_with_factories(
+                        Vec::<u8>::from(document.clone()),
+                        44_100,
+                        256,
+                        factories,
+                    )
+                };
+                if succeeds {
+                    let mut sequencer = result.unwrap();
+                    while sequencer.render().unwrap().is_some() {}
+                    let device = device.borrow();
+                    assert_eq!(device.configured, [(WriteId::SN76489, 0, 3_579_545)]);
+                    assert_eq!(device.psg_events.len(), 1);
+                    assert_eq!(device.psg_events[0].value, 0x90);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
+                            chip: Chip::Sn76489,
+                            ..
+                        }))
+                    ));
+                    assert!(device.borrow().configured.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn psg_stereo_detection_is_per_instance() {
+        let mut builder = VgmBuilder::new();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.register_chip(Chip::Sn76489, instance, 3_579_545);
+            builder.add_chip_write(instance, PsgSpec { value: 0x90 });
+        }
+        builder.add_chip_write(Instance::Secondary, GameGearPsgSpec { value: 0x12 });
+        builder.add_vgm_command(WaitSamples(441));
+        let mut document = builder.finalize();
+        document.header.sn76489_flags.gamegear_stereo = true;
+        for use_document in [false, true] {
+            for source in [Instance::Primary, Instance::Secondary] {
+                let device = Rc::new(RefCell::new(Device {
+                    supported: true,
+                    ..Default::default()
+                }));
+                let route = NdsifRoute {
+                    chip: Chip::Sn76489,
+                    source,
+                    device: 0,
+                    target: Instance::Secondary,
+                };
+                let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
+                let result = if use_document {
+                    VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+                } else {
+                    VgmSequencer::from_vgm_with_factories(
+                        Vec::<u8>::from(document.clone()),
+                        44_100,
+                        256,
+                        factories,
+                    )
+                };
+                if source == Instance::Primary {
+                    let mut sequencer = result.unwrap();
+                    while sequencer.render().unwrap().is_some() {}
+                    let device = device.borrow();
+                    assert_eq!(device.configured, [(WriteId::SN76489_SECOND, 1, 3_579_545)]);
+                    assert_eq!(device.psg_events.len(), 1);
+                    assert_eq!(device.psg_events[0].instance, 1);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
+                            chip: Chip::Sn76489,
+                            ..
+                        }))
+                    ));
+                    assert!(device.borrow().configured.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn psg_hardware_rejects_t6w28_before_configuration() {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+        let mut document = builder.finalize();
+        document.header.sn76489_clock |= 0x8000_0000;
+        let device = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        let route = NdsifRoute {
+            chip: Chip::Sn76489,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
+        assert!(matches!(
+            VgmSequencer::new_with_factories(document, 44_100, 256, factories),
+            Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "T6W28 PSG is not supported",
+            }))
+        ));
+        assert!(device.borrow().configured.is_empty());
+    }
+
+    #[test]
+    fn psg_stereo_commands_after_end_of_data_are_ignored() {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+        builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
+        builder.add_vgm_command(WaitSamples(441));
+        builder.add_vgm_command(EndOfData);
+        builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x12 });
+        let mut document = builder.finalize();
+        document.header.sn76489_flags.gamegear_stereo = true;
+        for use_document in [false, true] {
+            let device = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let route = NdsifRoute {
+                chip: Chip::Sn76489,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            };
+            let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
+            let mut sequencer = if use_document {
+                VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+            } else {
+                VgmSequencer::from_vgm_with_factories(
+                    Vec::<u8>::from(document.clone()),
+                    44_100,
+                    256,
+                    factories,
+                )
+            }
+            .unwrap();
+            while sequencer.render().unwrap().is_some() {}
+            assert_eq!(device.borrow().psg_events.len(), 1);
+        }
     }
 
     fn dual_ay_vgm() -> Vec<u8> {

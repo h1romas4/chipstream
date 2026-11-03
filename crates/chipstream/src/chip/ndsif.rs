@@ -352,12 +352,15 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
 }
 
 /// NDSIF-backed SN76489 replacement that emits silence to the host PCM path.
+///
+/// T6W28 and tracks using non-default Game Gear stereo masks are rejected.
 pub struct NdsifSn76489<T> {
     instance: u8,
     write_id: WriteId,
     clock: u32,
     output_rate: u32,
     sample_rate: SampleRate,
+    stereo_enabled: bool,
     transport: Rc<RefCell<T>>,
 }
 
@@ -376,6 +379,18 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
+        if config.header().misc().t6w28_detected == Some(true) {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "T6W28 PSG is not supported",
+            });
+        }
+        if config.sn76489_stereo_used() {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "NDSIF SN76489 does not support Game Gear stereo masks",
+            });
+        }
         let instance = instance_id(target);
         let write_id = match target {
             Instance::Primary => WriteId::SN76489,
@@ -396,6 +411,7 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
                 config.clock(),
                 NonZeroU32::new(16).expect("SN76489 divider is nonzero"),
             ),
+            stereo_enabled: config.header().sn76489_flags.gamegear_stereo,
             transport,
         })
     }
@@ -407,6 +423,15 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         sample_frame: usize,
         sample_rate: u32,
     ) -> Result<(), ChipError> {
+        if let ChipRegisterWrite::GameGearPsg(spec) = &write {
+            if !self.stereo_enabled || spec.value == 0xff {
+                return Ok(());
+            }
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "NDSIF SN76489 does not support Game Gear stereo masks",
+            });
+        }
         let (page, register, value) = write.byte_parts_for(&Chip::Sn76489)?;
         if page != 0 {
             return Err(ChipError::InvalidRegisterBank {

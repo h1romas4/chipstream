@@ -247,6 +247,10 @@ use the refresh icon beside the port selector to search again. Connect queries t
 advertised chip instances; duplicate model names get a numbered suffix. The
 baud rate is fixed at 115,200. Unknown target IDs are shown explicitly.
 
+SN76489 can be routed to hardware when the track does not use a non-default
+Game Gear stereo mask. The header's stereo-capable flag alone does not prevent
+hardware playback. Tracks requiring per-channel stereo must use emulation.
+
 Connecting the last box adds a new empty box below it. The last extra box can
 be removed with its × button after disconnecting it. Use **Add NanoDrive** to
 restore an extra box if it was removed. Device and port settings are saved,

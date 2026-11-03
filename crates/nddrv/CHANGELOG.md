@@ -10,6 +10,8 @@
   reject conflicting shared chips or clocks before playback.
 - Account for connected hardware routes in Music and Playlist support indicators.
 - Group NanoDrive 6/6.1 YM2612 page 1 with its primary chip in Routing.
+- Allow hardware SN76489 playback when the header enables Game Gear stereo
+  but the track does not use non-default stereo masks.
 
 ## v0.3.0
 

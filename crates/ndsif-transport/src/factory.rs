@@ -32,7 +32,8 @@ pub struct NdsifSerialConfig {
 /// Each chip instance is routed to the first configured device advertising a
 /// compatible chip/clock capability. When no device matches, the normal
 /// emulated backend is retained, except AY8910 which has no emulated backend:
-/// when an AY device is present, an unroutable AY instance is an error. An
+/// when an AY device is present, an unroutable AY instance is an error.
+/// SN76489 instances that use Game Gear stereo masks use emulation. An
 /// empty list returns an empty registry. All
 /// configurations are validated before any device is opened or reset.
 ///
@@ -149,7 +150,7 @@ pub fn create_chip_factories(
             Instance::Secondary => WriteId::SN76489_SECOND,
         };
         let instance = instance_number(config.instance());
-        let transport = if flags.gamegear_stereo {
+        let transport = if config.sn76489_stereo_used() {
             None
         } else {
             find_transport(

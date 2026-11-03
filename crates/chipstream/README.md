@@ -252,6 +252,8 @@ fn play<T: NdsifTransport + 'static>(
 AY emulation. AY variants other than AY-3-8910, raw or discrete output and
 per-channel stereo masks are unsupported. Hardware sound may differ from
 original AY output, depending on the device.
+`NdsifSn76489` rejects T6W28 and SN76489 tracks using non-default Game Gear
+stereo masks; enabling stereo in the header alone is not a restriction.
 `NdsifOkim6258` supports hardware
 ADPCM streams with state-matched silence for gaps and termination. Both output
 silence to host PCM: audible hardware audio must be mixed from the device.

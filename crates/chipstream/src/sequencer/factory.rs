@@ -16,6 +16,7 @@ pub struct ChipFactoryConfig<'a> {
     output_rate: u32,
     header: &'a VgmHeader,
     extra_header: Option<&'a VgmExtraHeader>,
+    sn76489_stereo_used: bool,
 }
 
 impl<'a> ChipFactoryConfig<'a> {
@@ -27,6 +28,7 @@ impl<'a> ChipFactoryConfig<'a> {
         output_rate: u32,
         header: &'a VgmHeader,
         extra_header: Option<&'a VgmExtraHeader>,
+        sn76489_stereo_used: bool,
     ) -> Self {
         Self {
             chip,
@@ -35,6 +37,7 @@ impl<'a> ChipFactoryConfig<'a> {
             output_rate,
             header,
             extra_header,
+            sn76489_stereo_used,
         }
     }
 
@@ -66,6 +69,14 @@ impl<'a> ChipFactoryConfig<'a> {
     /// Optional VGM extra header.
     pub fn extra_header(&self) -> Option<&VgmExtraHeader> {
         self.extra_header
+    }
+
+    /// Whether this SN76489 instance uses a non-default Game Gear stereo mask.
+    ///
+    /// A non-default mask is any value other than `0xff` before end-of-data.
+    /// This is false for other chips and for VGM files with stereo disabled.
+    pub fn sn76489_stereo_used(&self) -> bool {
+        self.sn76489_stereo_used
     }
 }
 
