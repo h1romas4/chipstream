@@ -1023,6 +1023,10 @@ impl NdsifSerialTransport {
 }
 
 impl NdsifTransport for NdsifSerialTransport {
+    fn supports_vgm_initialization(&self) -> bool {
+        self.timed_dac_stream.is_some() && self.audio_stream.is_none()
+    }
+
     fn configure_chip(
         &mut self,
         write_id: WriteId,
@@ -1102,6 +1106,21 @@ impl NdsifTransport for NdsifSerialTransport {
     fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
         self.pending.push(PendingEvent::Psg(event));
         Ok(())
+    }
+
+    fn schedule_vgm_initial_register_write(
+        &mut self,
+        event: NdsifRegisterEvent,
+    ) -> Result<(), String> {
+        self.schedule_timed_dac_initial_event(PendingEvent::Register(event))
+    }
+
+    fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.schedule_timed_dac_initial_event(PendingEvent::Psg(event))
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), String> {
+        self.finish_timed_dac_initialization(true)
     }
 
     fn configure_audio_stream(

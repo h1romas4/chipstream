@@ -110,6 +110,11 @@ pub struct NdsifAudioControlEvent {
 /// rendering is ahead of playback, and events from different chip instances
 /// may arrive out of chronological order.
 pub trait NdsifTransport {
+    /// Whether this transport accepts source-timed VGM initialization.
+    fn supports_vgm_initialization(&self) -> bool {
+        false
+    }
+
     /// Configure a chip instance before playback.
     fn configure_chip(
         &mut self,
@@ -121,9 +126,27 @@ pub trait NdsifTransport {
     /// Queue a register write at its absolute output-frame position.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String>;
 
+    /// Queue a register write from before the first positive VGM wait.
+    fn schedule_vgm_initial_register_write(
+        &mut self,
+        event: NdsifRegisterEvent,
+    ) -> Result<(), String> {
+        self.schedule_register_write(event)
+    }
+
     /// Queue a raw PSG byte at its absolute output-frame position.
     fn schedule_psg_write(&mut self, _event: NdsifPsgEvent) -> Result<(), String> {
         Err("NDSIF transport does not support raw PSG writes".to_owned())
+    }
+
+    /// Queue a PSG write from before the first positive VGM wait.
+    fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.schedule_psg_write(event)
+    }
+
+    /// Mark the first positive VGM wait.
+    fn finish_vgm_initialization(&mut self) -> Result<(), String> {
+        Ok(())
     }
 
     /// Configure an OKIM6258 stream and its host timing.
@@ -260,6 +283,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         write: ChipRegisterWrite,
         sample_frame: usize,
         sample_rate: u32,
+        vgm_initial: bool,
     ) -> Result<(), ChipError> {
         let actual_chip = write.chip();
         if actual_chip != self.chip {
@@ -278,11 +302,16 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
             sample_frame,
             sample_rate,
         };
-        self.transport
+        let mut transport = self
+            .transport
             .try_borrow_mut()
-            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
-            .schedule_register_write(event)
-            .map_err(|error| external_error(&self.chip, error))
+            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?;
+        if vgm_initial {
+            transport.schedule_vgm_initial_register_write(event)
+        } else {
+            transport.schedule_register_write(event)
+        }
+        .map_err(|error| external_error(&self.chip, error))
     }
 }
 
@@ -308,7 +337,7 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
     }
 
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
-        self.schedule_write(write, 0, self.output_rate)
+        self.schedule_write(write, 0, self.output_rate, false)
     }
 
     fn apply_register_write_at(
@@ -317,7 +346,35 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), ChipError> {
-        self.schedule_write(write, sample_frame, output_rate)
+        self.schedule_write(write, sample_frame, output_rate, false)
+    }
+
+    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
+        if self.chip != Chip::Ym2612 {
+            return Ok(false);
+        }
+        Ok(self
+            .transport
+            .try_borrow()
+            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
+            .supports_vgm_initialization())
+    }
+
+    fn apply_vgm_initial_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        frame: usize,
+        rate: u32,
+    ) -> Result<(), ChipError> {
+        self.schedule_write(write, frame, rate, true)
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&self.chip, "NDSIF transport is already borrowed"))?
+            .finish_vgm_initialization()
+            .map_err(|error| external_error(&self.chip, error))
     }
 
     fn flush_scheduled_until(
@@ -425,6 +482,7 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         write: ChipRegisterWrite,
         sample_frame: usize,
         sample_rate: u32,
+        vgm_initial: bool,
     ) -> Result<(), ChipError> {
         if let ChipRegisterWrite::GameGearPsg(spec) = &write {
             if !self.stereo_enabled || spec.value == 0xff {
@@ -448,18 +506,24 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
                 register,
             });
         }
-        self.transport
+        let mut transport = self
+            .transport
             .try_borrow_mut()
-            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
-            .schedule_psg_write(NdsifPsgEvent {
-                write_id: self.write_id,
-                instance: self.instance,
-                page,
-                sample_frame,
-                sample_rate,
-                value,
-            })
-            .map_err(|error| external_error(&Chip::Sn76489, error))
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?;
+        let event = NdsifPsgEvent {
+            write_id: self.write_id,
+            instance: self.instance,
+            page,
+            sample_frame,
+            sample_rate,
+            value,
+        };
+        if vgm_initial {
+            transport.schedule_vgm_initial_psg_write(event)
+        } else {
+            transport.schedule_psg_write(event)
+        }
+        .map_err(|error| external_error(&Chip::Sn76489, error))
     }
 }
 
@@ -485,7 +549,7 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
     }
 
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
-        self.schedule_write(write, 0, self.output_rate)
+        self.schedule_write(write, 0, self.output_rate, false)
     }
 
     fn apply_register_write_at(
@@ -494,7 +558,32 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), ChipError> {
-        self.schedule_write(write, sample_frame, output_rate)
+        self.schedule_write(write, sample_frame, output_rate, false)
+    }
+
+    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
+        Ok(self
+            .transport
+            .try_borrow()
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
+            .supports_vgm_initialization())
+    }
+
+    fn apply_vgm_initial_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        frame: usize,
+        rate: u32,
+    ) -> Result<(), ChipError> {
+        self.schedule_write(write, frame, rate, true)
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
+        self.transport
+            .try_borrow_mut()
+            .map_err(|_| external_error(&Chip::Sn76489, "NDSIF transport is already borrowed"))?
+            .finish_vgm_initialization()
+            .map_err(|error| external_error(&Chip::Sn76489, error))
     }
 
     fn flush_scheduled_until(

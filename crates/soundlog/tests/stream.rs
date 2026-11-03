@@ -49,6 +49,69 @@ use std::collections::HashSet;
 use std::mem;
 use std::rc::Rc;
 
+#[test]
+fn initial_timestamp_ends_when_source_wait_begins_before_stream_writes() {
+    let document = dac_budget_document(44_100, &[WaitSamples(1).into()]);
+    let mut stream = VgmStream::from_document(document);
+    assert!(stream.is_initial_timestamp());
+    let event = stream.next().unwrap().unwrap();
+    assert!(matches!(
+        event,
+        StreamResult::Command(VgmCommand::Ym2612Write(_, _))
+    ));
+    assert!(!stream.is_initial_timestamp());
+    stream.reset();
+    assert!(stream.is_initial_timestamp());
+}
+
+#[test]
+fn zero_wait_does_not_end_initial_timestamp() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(0));
+    builder.add_vgm_command(WaitSamples(1));
+    let mut stream = VgmStream::from_document(builder.finalize());
+    assert!(matches!(
+        stream.next(),
+        Some(Ok(StreamResult::Command(VgmCommand::WaitSamples(
+            WaitSamples(0)
+        ))))
+    ));
+    assert!(stream.is_initial_timestamp());
+    assert!(matches!(
+        stream.next(),
+        Some(Ok(StreamResult::Command(VgmCommand::WaitSamples(
+            WaitSamples(1)
+        ))))
+    ));
+    assert!(!stream.is_initial_timestamp());
+}
+
+#[test]
+fn pcm_write_precedes_its_positive_wait_in_initial_timestamp() {
+    use soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN;
+    let mut builder = VgmBuilder::new();
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x40, 0x41],
+    });
+    builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0));
+    builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(1));
+    let mut stream = VgmStream::from_document(builder.finalize());
+    for expected in [0x40, 0x41] {
+        assert!(
+            matches!(stream.next(), Some(Ok(StreamResult::Command(VgmCommand::Ym2612Write(_, write)))) if write.value == expected)
+        );
+        assert!(stream.is_initial_timestamp());
+    }
+    assert!(matches!(
+        stream.next(),
+        Some(Ok(StreamResult::Command(VgmCommand::WaitSamples(
+            WaitSamples(1)
+        ))))
+    ));
+    assert!(!stream.is_initial_timestamp());
+}
+
 fn dac_budget_document(frequency: u32, waits: &[VgmCommand]) -> VgmDocument {
     use soundlog::vgm::command::{
         LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl, StartStream,

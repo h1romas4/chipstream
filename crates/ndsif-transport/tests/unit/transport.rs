@@ -2092,6 +2092,162 @@ fn cancelling_timeline_interrupts_timed_dac_capacity_waits() {
 
 #[cfg(unix)]
 #[test]
+fn timed_dac_vgm_initialization_without_wait_does_not_emit_keys_or_dac_values() {
+    let (mut transport, mut device) = test_transport();
+    transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
+        profile: DAC_PROFILE_YM2612,
+        revision: 40,
+        ticks_per_second: DAC_TICKS_PER_SECOND,
+        record_capacity: 32,
+        event_capacity: 8,
+        max_records: 16,
+        record_bytes: 4,
+        max_dac_late_us: 0,
+    }));
+    for (address, value) in [(0x22, 1), (0x28, 0xf0), (0x2a, 0x55), (0x2b, 0x80)] {
+        transport
+            .schedule_vgm_initial_register_write(NdsifRegisterEvent {
+                chip: Chip::Ym2612,
+                write_id: WriteId::YM2612,
+                instance: 0,
+                page: 0,
+                write: ndsif::RegisterWrite::new(address, value),
+                sample_frame: 0,
+                sample_rate: 44_100,
+            })
+            .unwrap();
+    }
+    transport.finish_timed_dac_initialization(false).unwrap();
+    let frame = read_device_frame(&mut device, &mut ndsif::Decoder::new());
+    match ndsif::Request::decode(&frame).unwrap() {
+        ndsif::Request::WriteRegisters { writes, .. } => {
+            assert_eq!(
+                writes.iter().collect::<Vec<_>>(),
+                [ndsif::RegisterWrite::new(0x22, 1)]
+            );
+        }
+        other => panic!("unexpected request: {other:?}"),
+    }
+    assert_eq!(transport.pending.len(), 1);
+    match &transport.pending[0] {
+        PendingEvent::Register(event) => assert_eq!(event.write.address, 0x2b),
+        _ => panic!("expected DAC select"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
+    let (mut transport, mut device) = test_transport();
+    transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
+        profile: DAC_PROFILE_YM2612,
+        revision: 40,
+        ticks_per_second: DAC_TICKS_PER_SECOND,
+        record_capacity: 32,
+        event_capacity: 8,
+        max_records: 16,
+        record_bytes: 4,
+        max_dac_late_us: 0,
+    }));
+    transport
+        .defer_timed_dac_start_with_cancellation(Arc::new(NdsifHostTimeline::pending()))
+        .unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let mut commands = Vec::new();
+        loop {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match ndsif::Request::decode(&frame).unwrap() {
+                ndsif::Request::WriteRegisters { writes, .. } => {
+                    commands.push((
+                        "write",
+                        writes
+                            .iter()
+                            .flat_map(|w| [w.address, w.value])
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                ndsif::Request::WriteBytes { bytes, .. } => commands.push(("psg", bytes.to_vec())),
+                ndsif::Request::DacRegisterEvent { writes, tick, .. } => {
+                    assert_eq!(tick, 0);
+                    commands.push(("event", writes.to_vec()));
+                }
+                ndsif::Request::DacData { records, .. } => {
+                    let records: Vec<_> = records
+                        .iter()
+                        .map(|r| (r.kind, r.value, r.wait_ticks))
+                        .collect();
+                    assert_eq!(
+                        records,
+                        [
+                            (DacRecordKind::Select, 0x80, 0),
+                            (DacRecordKind::Dac, 0x55, 1)
+                        ]
+                    );
+                    commands.push(("data", vec![]));
+                }
+                ndsif::Request::Ping(payload) => {
+                    reply_to_device_frame(&mut device, &frame, Reply::Ping(payload));
+                    break;
+                }
+                other => panic!("unexpected request: {other:?}"),
+            }
+        }
+        assert_eq!(
+            commands,
+            [
+                ("write", vec![0x22, 1]),
+                ("write", vec![0x22, 2]),
+                ("psg", vec![0x90]),
+                ("event", vec![0x28, 0xf1, 0x28, 0x00]),
+                ("data", vec![]),
+            ]
+        );
+        wait.recv().unwrap();
+    });
+    for (address, value) in [
+        (0x22, 1),
+        (0x28, 0xf0),
+        (0x28, 0xf1),
+        (0x28, 0),
+        (0x22, 2),
+        (0x2a, 0x33),
+        (0x2a, 0x55),
+        (0x2b, 0x80),
+    ] {
+        transport
+            .schedule_vgm_initial_register_write(NdsifRegisterEvent {
+                chip: Chip::Ym2612,
+                write_id: WriteId::YM2612,
+                instance: 0,
+                page: 0,
+                write: ndsif::RegisterWrite::new(address, value),
+                sample_frame: 0,
+                sample_rate: 44_100,
+            })
+            .unwrap();
+    }
+    transport
+        .schedule_vgm_initial_psg_write(NdsifPsgEvent {
+            write_id: WriteId::SN76489,
+            instance: 0,
+            page: 0,
+            sample_frame: 0,
+            sample_rate: 44_100,
+            value: 0x90,
+        })
+        .unwrap();
+    transport.finish_vgm_initialization().unwrap();
+    transport.finish_vgm_initialization().unwrap();
+    transport.flush_scheduled_until(1, 44_100).unwrap();
+    transport.request(Command::Ping(b"test-finish")).unwrap();
+    release.send(()).unwrap();
+    fake.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn timed_dac_collapses_only_identical_initial_dac_writes() {
     let (mut transport, mut device) = test_transport();
     transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {

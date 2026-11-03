@@ -183,6 +183,27 @@ pub trait SoundChip {
         self.apply_register_write(write)
     }
 
+    /// Whether this backend requests VGM writes preceding the first positive wait
+    /// without the sequencer's normal write pacing.
+    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
+        Ok(false)
+    }
+
+    /// Apply a VGM write that precedes the first positive source wait.
+    fn apply_vgm_initial_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        self.apply_register_write_at(write, sample_frame, output_rate)
+    }
+
+    /// Mark the end of VGM initialization when the first positive wait begins.
+    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
+        Ok(())
+    }
+
     /// Notify a backend of a DAC stream starting or stopping at an output frame.
     ///
     /// Ordinary chip emulators can ignore this notification; their playback
@@ -354,6 +375,23 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         output_rate: u32,
     ) -> Result<(), ChipError> {
         (**self).apply_register_write_at(write, sample_frame, output_rate)
+    }
+
+    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
+        (**self).wants_vgm_initialization()
+    }
+
+    fn apply_vgm_initial_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        sample_frame: usize,
+        output_rate: u32,
+    ) -> Result<(), ChipError> {
+        (**self).apply_vgm_initial_write(write, sample_frame, output_rate)
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
+        (**self).finish_vgm_initialization()
     }
 
     fn set_dac_stream_playing_at(

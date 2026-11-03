@@ -854,6 +854,8 @@ pub struct VgmStream {
     emit_stream_controls: bool,
     /// Current sample position (at 44100 Hz)
     current_sample: usize,
+    /// Whether a positive source wait has begun since the stream was reset.
+    initial_wait_started: bool,
     /// Pending stream write commands to emit
     pending_stream_writes: Vec<VgmCommand>,
     /// Pending wait time that hasn't been emitted yet (in samples)
@@ -949,6 +951,7 @@ impl VgmStream {
             stream_states: HashMap::new(),
             emit_stream_controls: false,
             current_sample: 0,
+            initial_wait_started: false,
             pending_stream_writes: Vec::new(),
             pending_wait: None,
             fadeout_samples: None,
@@ -1634,6 +1637,15 @@ impl VgmStream {
         self.current_sample
     }
 
+    /// Return whether no positive source wait has begun since construction or reset.
+    ///
+    /// Unlike [`Self::current_sample`], this remains false across loop rewinds.
+    /// A positive wait is considered begun before any DAC-stream writes
+    /// generated while processing that wait are emitted.
+    pub fn is_initial_timestamp(&self) -> bool {
+        !self.initial_wait_started
+    }
+
     /// Sets the raw-command budget between forward sample-time advances.
     ///
     /// The default is `Some(100_000)`. `None` disables the budget; `Some(0)`
@@ -1825,6 +1837,7 @@ impl VgmStream {
         self.pending_data_block = None;
         self.stream_states.clear();
         self.current_sample = 0;
+        self.initial_wait_started = false;
         self.pending_stream_writes.clear();
         self.pending_wait = None;
         self.fadeout_remaining_samples = None;
@@ -2544,6 +2557,9 @@ impl VgmStream {
         &mut self,
         wait_samples: usize,
     ) -> Result<StreamResult, ParseError> {
+        if wait_samples > 0 {
+            self.initial_wait_started = true;
+        }
         let wait_samples = self
             .fadeout_remaining_samples
             .map_or(wait_samples, |remaining| wait_samples.min(remaining));

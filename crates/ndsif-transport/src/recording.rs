@@ -17,6 +17,9 @@ enum Operation {
     ConfigureChip(WriteId, u8, u32),
     Register(NdsifRegisterEvent),
     Psg(NdsifPsgEvent),
+    InitialRegister(NdsifRegisterEvent),
+    InitialPsg(NdsifPsgEvent),
+    FinishVgmInitialization,
     ConfigureAudio(u8, u32, Divider, u32),
     Adpcm(NdsifAdpcmEvent),
     AudioControl(NdsifAudioControlEvent),
@@ -37,6 +40,10 @@ pub struct NdsifRecordingTransport {
     capabilities: Vec<CapabilityEntry>,
     data_capacity: u32,
     event_capacity: u16,
+    timed_dac_supported: bool,
+    primary_ym2612: bool,
+    audio_configured: bool,
+    vgm_initialization_finished: bool,
     limit: NonZeroUsize,
     operations: Vec<Operation>,
     failed: bool,
@@ -50,6 +57,10 @@ impl NdsifRecordingTransport {
             capabilities: device.capabilities().to_vec(),
             data_capacity,
             event_capacity,
+            timed_dac_supported: device.supports_timed_dac(),
+            primary_ym2612: false,
+            audio_configured: false,
+            vgm_initialization_finished: false,
             limit,
             operations: Vec::new(),
             failed: false,
@@ -103,6 +114,17 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
                     events = events.saturating_add(1);
                 }
             }
+            Operation::InitialRegister(event) => {
+                if is_timed_dac_data_register(event) {
+                    dac_writes = dac_writes.saturating_add(1);
+                } else if event.write_id == WriteId::YM2612
+                    && event.instance == 0
+                    && event.page == 0
+                    && event.write.address == 0x28
+                {
+                    events = events.saturating_add(1);
+                }
+            }
             Operation::Psg(_) => events = events.saturating_add(1),
             Operation::Flush(frame, rate) | Operation::FinishDac(frame, rate) => {
                 flushes = flushes.saturating_add(1);
@@ -143,8 +165,16 @@ impl NdsifRoutingTransport for NdsifRecordingTransport {
 }
 
 impl NdsifTransport for NdsifRecordingTransport {
+    fn supports_vgm_initialization(&self) -> bool {
+        self.timed_dac_supported && self.primary_ym2612 && !self.audio_configured
+    }
+
     fn configure_chip(&mut self, id: WriteId, instance: u8, clock: u32) -> Result<(), String> {
-        self.record(Operation::ConfigureChip(id, instance, clock))
+        self.record(Operation::ConfigureChip(id, instance, clock))?;
+        if id == WriteId::YM2612 && instance == 0 {
+            self.primary_ym2612 = true;
+        }
+        Ok(())
     }
 
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
@@ -155,6 +185,25 @@ impl NdsifTransport for NdsifRecordingTransport {
         self.record(Operation::Psg(event))
     }
 
+    fn schedule_vgm_initial_register_write(
+        &mut self,
+        event: NdsifRegisterEvent,
+    ) -> Result<(), String> {
+        self.record(Operation::InitialRegister(event))
+    }
+
+    fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.record(Operation::InitialPsg(event))
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), String> {
+        if !self.vgm_initialization_finished {
+            self.record(Operation::FinishVgmInitialization)?;
+            self.vgm_initialization_finished = true;
+        }
+        Ok(())
+    }
+
     fn configure_audio_stream(
         &mut self,
         instance: u8,
@@ -162,7 +211,9 @@ impl NdsifTransport for NdsifRecordingTransport {
         divider: Divider,
         rate: u32,
     ) -> Result<(), String> {
-        self.record(Operation::ConfigureAudio(instance, clock, divider, rate))
+        self.record(Operation::ConfigureAudio(instance, clock, divider, rate))?;
+        self.audio_configured = true;
+        Ok(())
     }
 
     fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
@@ -245,6 +296,11 @@ impl NdsifCommandBatch {
                 }
                 Operation::Register(event) => target.schedule_register_write(event),
                 Operation::Psg(event) => target.schedule_psg_write(event),
+                Operation::InitialRegister(event) => {
+                    target.schedule_vgm_initial_register_write(event)
+                }
+                Operation::InitialPsg(event) => target.schedule_vgm_initial_psg_write(event),
+                Operation::FinishVgmInitialization => target.finish_vgm_initialization(),
                 Operation::ConfigureAudio(instance, clock, divider, rate) => {
                     target.configure_audio_stream(instance, clock, divider, rate)
                 }
@@ -309,6 +365,10 @@ mod tests {
             capabilities: Vec::new(),
             data_capacity: 0,
             event_capacity: 0,
+            timed_dac_supported: false,
+            primary_ym2612: false,
+            audio_configured: false,
+            vgm_initialization_finished: false,
             limit: NonZeroUsize::new(limit).unwrap(),
             operations: Vec::new(),
             failed: false,

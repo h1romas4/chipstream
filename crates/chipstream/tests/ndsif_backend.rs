@@ -30,9 +30,28 @@ struct FakeTransport {
     flushed: Vec<(usize, u32)>,
     finished: Vec<(u8, usize, u32)>,
     fail_writes: bool,
+    vgm_initialization: bool,
+    initial_events: Vec<NdsifRegisterEvent>,
+    initialization_finishes: usize,
 }
 
 impl NdsifTransport for FakeTransport {
+    fn supports_vgm_initialization(&self) -> bool {
+        self.vgm_initialization
+    }
+
+    fn schedule_vgm_initial_register_write(
+        &mut self,
+        event: NdsifRegisterEvent,
+    ) -> Result<(), String> {
+        self.initial_events.push(event);
+        Ok(())
+    }
+
+    fn finish_vgm_initialization(&mut self) -> Result<(), String> {
+        self.initialization_finishes += 1;
+        Ok(())
+    }
     fn configure_chip(
         &mut self,
         write_id: WriteId,
@@ -97,6 +116,52 @@ impl NdsifTransport for FakeTransport {
         self.finished.push((instance, sample_frame, output_rate));
         Ok(())
     }
+}
+
+#[test]
+fn vgm_initialization_is_not_lost_to_paced_writes() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+    for value in 0..100 {
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2612Spec {
+                port: 0,
+                register: 0x22,
+                value,
+            },
+        );
+    }
+    builder.add_vgm_command(WaitSamples(1));
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x22,
+            value: 0xff,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(1024));
+    let transport = Rc::new(RefCell::new(FakeTransport {
+        vgm_initialization: true,
+        ..FakeTransport::default()
+    }));
+    let mut factories = ChipFactoryRegistry::new();
+    register_ymfm_factories(&mut factories, Rc::clone(&transport)).unwrap();
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    player.render().unwrap();
+    let capture = transport.borrow();
+    assert_eq!(capture.initial_events.len(), 100);
+    assert!(
+        capture
+            .initial_events
+            .iter()
+            .all(|event| event.sample_frame == 0)
+    );
+    assert_eq!(capture.initialization_finishes, 1);
+    assert_eq!(capture.events.len(), 1);
+    assert_eq!(capture.events[0].write.value, 0xff);
 }
 
 #[test]

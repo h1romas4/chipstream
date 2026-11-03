@@ -316,7 +316,14 @@ error. Recording does not itself synchronize host audio or device-timed streams.
 - A device advertising the supported revision 40, profile 1 timed DAC
   capabilities uses that profile for primary YM2612. YM2612 `$2A` and `$2B`
   writes become DAC records; other supported FM and PSG writes become
-  positioned events. Consecutive identical DAC values at tick zero within a
+  positioned events. For VGM playback, register and PSG configuration before
+  the first positive source wait is sent before the DAC clock starts. Initial
+  YM2612 key writes are reduced to the last value for each channel in
+  last-write order, and only the last initial `$2A` value is retained. A VGM
+  ending without a positive wait does not emit the held keys or DAC value.
+  This startup normalization applies only to a transport with a configured
+  primary YM2612 timed DAC stream; other backends retain their usual pacing.
+  Consecutive identical DAC values at tick zero within a
   flush are collapsed; later DAC values and intervening select writes are
   preserved. Waits are packed into the preceding DAC or select record when
   possible without changing their timing. Unanswered traffic is synchronized

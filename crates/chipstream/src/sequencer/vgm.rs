@@ -399,6 +399,7 @@ impl Voice {
         event_position: usize,
         sample_frame: usize,
         output_rate: u32,
+        vgm_initial: bool,
         context: &mut EventContext<'_, '_>,
     ) -> Result<bool, VgmSequencerError> {
         let (bank, register, value) = write.parts();
@@ -410,9 +411,15 @@ impl Voice {
             .callbacks
             .filter_write(self.instance, write, sample_frame);
         let stop_stream = self.route.chip().stops_dac_stream_on_write(&write);
-        self.route
-            .chip_mut()
-            .apply_register_write_at(write, sample_frame, output_rate)?;
+        if vgm_initial {
+            self.route
+                .chip_mut()
+                .apply_vgm_initial_write(write, sample_frame, output_rate)?;
+        } else {
+            self.route
+                .chip_mut()
+                .apply_register_write_at(write, sample_frame, output_rate)?;
+        }
         let state_events = if let Some(tracker) = self.tracker.as_mut() {
             let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
                 chip: self.chip.clone(),
@@ -524,7 +531,14 @@ impl Voice {
             } else {
                 0
             };
-            self.apply_write(write, event_position, sample_frame, output_rate, context)?;
+            self.apply_write(
+                write,
+                event_position,
+                sample_frame,
+                output_rate,
+                false,
+                context,
+            )?;
             self.write_cooldown = self.write_interval;
         }
         let remaining = frames - rendered;
@@ -1940,6 +1954,7 @@ impl<'a> VgmSequencer<'a> {
                 }
                 continue;
             }
+            let was_initial = self.stream.is_initial_timestamp();
             let result = self
                 .stream
                 .next()
@@ -1949,6 +1964,13 @@ impl<'a> VgmSequencer<'a> {
                 .checked_add(1)
                 .ok_or(VgmSequencerError::DurationOverflow)?;
             let result = result?;
+            if was_initial && !self.stream.is_initial_timestamp() {
+                for voice in &mut self.voices {
+                    if voice.route.chip().wants_vgm_initialization()? {
+                        voice.route.chip_mut().finish_vgm_initialization()?;
+                    }
+                }
+            }
             if self.fade_frames.is_none()
                 && (self.stream.is_fading_out()
                     || self
@@ -2120,12 +2142,14 @@ impl<'a> VgmSequencer<'a> {
         sample_frame_origin: usize,
     ) -> Result<(), VgmSequencerError> {
         let chip = write.chip();
+        let source_initial = self.stream.is_initial_timestamp();
         if let Some(voice) = self
             .voices
             .iter_mut()
             .find(|v| v.chip == chip && v.instance == instance)
         {
-            if let Some(queue) = &mut voice.paced_writes {
+            let vgm_initial = source_initial && voice.route.chip().wants_vgm_initialization()?;
+            if !vgm_initial && let Some(queue) = &mut voice.paced_writes {
                 if queue.len() == MAX_PENDING_WRITES {
                     return Err(VgmSequencerError::WriteQueueFull {
                         chip,
@@ -2143,6 +2167,7 @@ impl<'a> VgmSequencer<'a> {
                     self.available,
                     sample_frame,
                     self.output_rate,
+                    vgm_initial,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,
@@ -2169,6 +2194,7 @@ impl<'a> VgmSequencer<'a> {
                     self.available,
                     sample_frame,
                     self.output_rate,
+                    false,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,

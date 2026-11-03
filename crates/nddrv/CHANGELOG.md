@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Normalize NanoDrive 6/6.1 VGM startup writes before starting the timed DAC,
+  reducing event FIFO pressure for dense initial register dumps.
+
 ## v0.5.0
 
 - Add a copy button to notifications, including full error details.

@@ -97,6 +97,8 @@ pub(super) struct TimedDacStream {
     pub(super) sealed: bool,
     pub(super) finished: bool,
     pub(super) last_status_check: Option<Instant>,
+    initial_events: Vec<PendingEvent>,
+    initial_finished: bool,
     start_mode: DacStartMode,
     cancellation: Option<Arc<NdsifHostTimeline>>,
 }
@@ -116,6 +118,8 @@ impl TimedDacStream {
             sealed: false,
             finished: false,
             last_status_check: None,
+            initial_events: Vec::new(),
+            initial_finished: false,
             start_mode: DacStartMode::Automatic,
             cancellation: None,
         }
@@ -154,6 +158,122 @@ impl TimedDacStream {
 }
 
 impl NdsifSerialTransport {
+    pub(super) fn schedule_timed_dac_initial_event(
+        &mut self,
+        event: PendingEvent,
+    ) -> Result<(), String> {
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?;
+        if stream.initial_finished || stream.started {
+            return Err("NDSIF timed DAC initialization has already ended".into());
+        }
+        if stream.initial_events.len() >= 65_536 {
+            return Err("NDSIF timed DAC initialization exceeds its event limit".into());
+        }
+        stream.initial_events.push(event);
+        Ok(())
+    }
+
+    pub(super) fn finish_timed_dac_initialization(&mut self, has_wait: bool) -> Result<(), String> {
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?;
+        if stream.initial_finished {
+            return Ok(());
+        }
+        stream.initial_finished = true;
+        let events = std::mem::take(&mut stream.initial_events);
+        let mut keys: [Option<(usize, NdsifRegisterEvent)>; 8] = std::array::from_fn(|_| None);
+        let mut dac = None;
+        let mut index = 0;
+        while index < events.len() {
+            match &events[index] {
+                PendingEvent::Register(event) if is_timed_dac_data_register(event) => {
+                    if event.write.address == 0x2a {
+                        dac = Some(event.clone());
+                    } else {
+                        self.pending.push(events[index].clone());
+                    }
+                    index += 1;
+                }
+                PendingEvent::Register(event)
+                    if event.write_id == WriteId::YM2612
+                        && event.instance == 0
+                        && event.page == 0
+                        && event.write.address == 0x28 =>
+                {
+                    keys[usize::from(event.write.value & 7)] = Some((index, event.clone()));
+                    index += 1;
+                }
+                PendingEvent::Register(first) => {
+                    let mut writes = Vec::new();
+                    while index < events.len() && writes.len() < ndsif::MAX_REGISTER_WRITES {
+                        let PendingEvent::Register(next) = &events[index] else {
+                            break;
+                        };
+                        if is_timed_dac_data_register(next)
+                            || (next.write_id == WriteId::YM2612
+                                && next.instance == 0
+                                && next.page == 0
+                                && next.write.address == 0x28)
+                            || next.write_id != first.write_id
+                            || next.instance != first.instance
+                            || next.page != first.page
+                        {
+                            break;
+                        }
+                        writes.push(next.write);
+                        index += 1;
+                    }
+                    self.request_timed_dac(Command::WriteRegisters {
+                        write_id: first.write_id,
+                        instance: first.instance,
+                        page: first.page,
+                        writes: &writes,
+                    })?;
+                }
+                PendingEvent::Psg(first) => {
+                    let mut bytes = Vec::new();
+                    while index < events.len() && bytes.len() < ndsif::MAX_REGISTER_BYTES {
+                        let PendingEvent::Psg(next) = &events[index] else {
+                            break;
+                        };
+                        if next.write_id != first.write_id
+                            || next.instance != first.instance
+                            || next.page != first.page
+                        {
+                            break;
+                        }
+                        bytes.push(next.value);
+                        index += 1;
+                    }
+                    self.request_timed_dac(Command::WriteBytes {
+                        write_id: first.write_id,
+                        instance: first.instance,
+                        page: first.page,
+                        bytes: &bytes,
+                    })?;
+                }
+                _ => return Err("invalid NDSIF timed DAC initialization event".into()),
+            }
+        }
+        if has_wait {
+            let mut keys: Vec<_> = keys.into_iter().flatten().collect();
+            keys.sort_by_key(|(index, _)| *index);
+            self.pending.extend(
+                keys.into_iter()
+                    .map(|(_, event)| PendingEvent::Register(event)),
+            );
+            if let Some(event) = dac {
+                self.pending.push(PendingEvent::Register(event));
+            }
+        }
+        Ok(())
+    }
+
     /// Keep unanswered DAC traffic within the device's receive window.
     fn request_timed_dac(&mut self, command: Command<'_>) -> Result<(), String> {
         self.check_timed_dac_cancellation()?;
@@ -767,6 +887,13 @@ impl NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        if self
+            .timed_dac_stream
+            .as_ref()
+            .is_some_and(|stream| !stream.initial_finished && !stream.initial_events.is_empty())
+        {
+            self.finish_timed_dac_initialization(false)?;
+        }
         if let Some(stream) = self.timed_dac_stream.as_ref()
             && stream.sealed
         {
