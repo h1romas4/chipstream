@@ -1492,6 +1492,12 @@ fn run_hardware(
     devices: DeviceHandle<ndsif_transport::NdsifSerialTransport>,
     plan: PlaybackPlan,
 ) -> Result<()> {
+    if !plan.nd7_devices.is_empty() && extension(path) != "mdx" {
+        let bytes = read_track(path)?;
+        let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
+        let extra = header.extra_header_from_bytes(&bytes)?;
+        plan.validate_nd7(&header, extra.as_ref())?;
+    }
     let lease = devices.acquire(plan.device_ids.clone())?;
     let supports_master = crate::hardware::supports_master_volume(&lease)?;
     control.volume_mode.store(
@@ -3307,6 +3313,7 @@ mod tests {
         .unwrap();
         let plan = PlaybackPlan {
             device_ids: vec![1],
+            nd7_devices: vec![],
             routes: vec![ndsif_transport::NdsifRoute {
                 chip: Chip::Ym2151,
                 source: Instance::Primary,
@@ -4085,9 +4092,7 @@ mod tests {
     #[cfg(unix)]
     fn run_recorded_routing(reject_clock: bool) {
         use crate::device::{DeviceEvent, DeviceService};
-        use crate::routing::{
-            ChipInstance, Connection, Device, HardwareChip, Profile, RoutingConfig,
-        };
+        use crate::routing::Device;
         use chipstream::sequencer::{Chip, Instance};
         use ndsif::{Capabilities, Decoder, Reply, Request, Response};
         use ndsif_transport::{NdsifRecordingTransport, create_routed_transport_factories};
@@ -4160,27 +4165,18 @@ mod tests {
             port: path,
             baud_rate: crate::device::BAUD_RATE,
         };
-        let config = RoutingConfig {
-            devices: vec![device.clone()],
-            profiles: vec![Profile {
-                id: 3,
-                name: "Test".into(),
-                connections: vec![Connection {
-                    chip: HardwareChip::Ym2151,
-                    source: ChipInstance::Primary,
-                    device_id: device.id,
-                    target: ChipInstance::Primary,
-                }],
-            }],
-            selected_profile: Some(3),
-        };
-        let plan = config.playback_plan().unwrap().unwrap();
         let service = DeviceService::new();
-        service.connect(device).unwrap();
-        assert!(matches!(
-            service.events.recv_timeout(Duration::from_secs(2)).unwrap(),
-            DeviceEvent::Connected(7, _, _)
-        ));
+        service.connect(device.clone()).unwrap();
+        let capabilities = match service.events.recv_timeout(Duration::from_secs(2)).unwrap() {
+            DeviceEvent::Connected(7, _, capabilities) => capabilities,
+            _ => panic!("expected connected device"),
+        };
+        let mut routing = crate::routing::SessionRouting::default();
+        routing.refresh(
+            std::slice::from_ref(&device),
+            &std::collections::HashMap::from([(7, capabilities)]),
+        );
+        let plan = routing.playback_plan(&[device]).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let song = dir.path().join("song.vgm");
         let mut builder = VgmBuilder::new();

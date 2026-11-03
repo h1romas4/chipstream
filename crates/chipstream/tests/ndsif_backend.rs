@@ -351,7 +351,7 @@ fn factory_schedules_absolute_frames_and_protocol_registers() {
         .collect::<Vec<_>>();
     assert!(writes.contains(&(0x57, 0, RegisterWrite::new(0x08, 0x78))));
     assert!(writes.contains(&(0x59, 0, RegisterWrite::new(0x10, 0x34))));
-    assert!(writes.contains(&(0x5f, 0, RegisterWrite::new(0x20, 0x56))));
+    assert!(writes.contains(&(0x5f, 1, RegisterWrite::new(0x20, 0x56))));
     assert!(writes.contains(&(0xd0, 2, RegisterWrite::new(0x05, 0x67))));
     assert!(
         transport.events[1..]

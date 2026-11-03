@@ -29,7 +29,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarHandle, ScrollbarMode};
-use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IndexPath, Theme, ThemeMode, TitleBar, WindowExt};
@@ -143,34 +143,81 @@ enum DeviceStatus {
     Disconnecting,
 }
 
-#[derive(Clone)]
-struct ProfileChoice {
-    id: Option<u64>,
-    name: String,
+struct DevicePort {
+    select: Entity<SelectState<SearchableVec<String>>>,
+    _subscription: Subscription,
 }
 
-impl SelectItem for ProfileChoice {
-    type Value = Option<u64>;
-
-    fn title(&self) -> SharedString {
-        self.name.clone().into()
+fn device_port(
+    id: u64,
+    port: &str,
+    ports: &[String],
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> DevicePort {
+    let mut items = ports.to_vec();
+    if !port.is_empty() && !items.iter().any(|item| item == port) {
+        items.push(port.to_owned());
     }
-
-    fn value(&self) -> &Self::Value {
-        &self.id
+    let selected = items.iter().position(|item| item == port);
+    let select = cx.new(|cx| {
+        SelectState::new(
+            SearchableVec::new(items),
+            selected.map(IndexPath::new),
+            window,
+            cx,
+        )
+        .searchable(true)
+    });
+    let subscription = cx.subscribe_in(
+        &select,
+        window,
+        move |view: &mut AppView, select, event, window, cx| {
+            if let SelectEvent::Confirm(Some(port)) = event {
+                let previous = view
+                    .config
+                    .routing
+                    .devices
+                    .iter()
+                    .find(|device| device.id == id)
+                    .map(|device| device.port.clone());
+                if view
+                    .config
+                    .routing
+                    .devices
+                    .iter()
+                    .any(|device| device.id != id && device.port == *port)
+                {
+                    view.pending_errors.push(error_notification(
+                        "NanoDrive port error",
+                        "That serial port is already assigned to another box.",
+                    ));
+                    select.update(cx, |state, cx| match previous {
+                        Some(previous) if !previous.is_empty() => {
+                            state.set_selected_value(&previous, window, cx)
+                        }
+                        _ => state.set_selected_index(None, window, cx),
+                    });
+                } else if let Some(device) = view
+                    .config
+                    .routing
+                    .devices
+                    .iter_mut()
+                    .find(|device| device.id == id)
+                {
+                    if device.port != *port {
+                        device.port = port.clone();
+                        view.save();
+                    }
+                }
+            }
+            cx.notify();
+        },
+    );
+    DevicePort {
+        select,
+        _subscription: subscription,
     }
-}
-
-fn profile_choices(config: &routing::RoutingConfig) -> Vec<ProfileChoice> {
-    std::iter::once(ProfileChoice {
-        id: None,
-        name: "Emulation (chipstream)".into(),
-    })
-    .chain(config.profiles.iter().map(|profile| ProfileChoice {
-        id: Some(profile.id),
-        name: profile.name.clone(),
-    }))
-    .collect()
 }
 
 struct LibraryScanNotification;
@@ -208,13 +255,11 @@ struct AppView {
     roll_hidden_channels: HashSet<(u8, u8)>,
     device_service: device::DeviceService,
     device_status: HashMap<u64, DeviceStatus>,
-    device_port: Entity<SelectState<SearchableVec<String>>>,
-    _device_port_subscription: Subscription,
+    device_ports: HashMap<u64, DevicePort>,
+    available_ports: Vec<String>,
     scanning_ports: bool,
-    profile_select: Entity<SelectState<SearchableVec<ProfileChoice>>>,
-    profile_name: Entity<InputState>,
+    routing: routing::SessionRouting,
     selected_source: Option<(routing::HardwareChip, routing::ChipInstance)>,
-    _profile_subscription: Subscription,
     tracks: Vec<Track>,
     track_by_path: HashMap<PathBuf, usize>,
     filtered_tracks: Vec<usize>,
@@ -283,7 +328,7 @@ struct AppView {
 #[derive(Clone, PartialEq, Eq)]
 struct IdlePreviewTarget {
     path: PathBuf,
-    routing: routing::RoutingConfig,
+    plan: Option<routing::PlaybackPlan>,
     looped: bool,
 }
 
@@ -314,15 +359,6 @@ impl AppView {
                 cx.notify();
             });
         let volume = cx.new(|_| SliderState::new().default_value(100.));
-        let device_port = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx)
-                .searchable(true)
-        });
-        let device_port_subscription = cx.subscribe(&device_port, |_: &mut Self, _, event, cx| {
-            if matches!(event, SelectEvent::Confirm(_)) {
-                cx.notify();
-            }
-        });
         let volume_subscription = cx.subscribe(&volume, |view: &mut Self, _, event, cx| {
             if let SliderEvent::Change(SliderValue::Single(value)) = event {
                 if let Err(error) = view.player.set_volume(*value / 100.) {
@@ -332,37 +368,32 @@ impl AppView {
                 cx.notify();
             }
         });
-        let (config_path, config, config_error) = match library::config_path() {
+        let (config_path, mut config, config_error) = match library::config_path() {
             Ok(path) => match library::load_config(&path) {
                 Ok(config) => (Some(path), config, None),
                 Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
             },
             Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
         };
-        let choices = profile_choices(&config.routing);
-        let profile_index = choices
-            .iter()
-            .position(|choice| choice.id == config.routing.selected_profile);
-        let profile_select = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(choices),
-                profile_index.map(IndexPath::new),
-                window,
-                cx,
-            )
-        });
-        let profile_subscription =
-            cx.subscribe(&profile_select, |view: &mut Self, _, event, cx| {
-                if let SelectEvent::Confirm(Some(id)) = event
-                    && view.config.routing.selected_profile != *id
-                {
-                    view.config.routing.selected_profile = *id;
-                    view.selected_source = None;
-                    view.save();
-                    cx.notify();
-                }
+        if config.routing.devices.is_empty() {
+            config.routing.devices.push(routing::Device {
+                id: 1,
+                name: String::new(),
+                port: String::new(),
+                baud_rate: device::BAUD_RATE,
             });
-        let profile_name = cx.new(|cx| InputState::new(window, cx).placeholder("New profile name"));
+        }
+        let device_ports = config
+            .routing
+            .devices
+            .iter()
+            .map(|device| {
+                (
+                    device.id,
+                    device_port(device.id, &device.port, &[], window, cx),
+                )
+            })
+            .collect();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -391,13 +422,11 @@ impl AppView {
             roll_hidden_channels: HashSet::new(),
             device_service: device::DeviceService::new(),
             device_status: HashMap::new(),
-            device_port,
-            _device_port_subscription: device_port_subscription,
+            device_ports,
+            available_ports: Vec::new(),
             scanning_ports: false,
-            profile_select,
-            profile_name,
+            routing: routing::SessionRouting::default(),
             selected_source: None,
-            _profile_subscription: profile_subscription,
             tracks: Vec::new(),
             track_by_path: HashMap::new(),
             filtered_tracks: Vec::new(),
@@ -846,17 +875,20 @@ impl AppView {
     }
 
     fn play(&mut self, index: usize, cx: &mut Context<Self>) {
-        let plan = match self.config.routing.playback_plan() {
-            Ok(plan) => plan,
-            Err(error) => {
-                self.pending_errors.push(error_notification(
-                    "Routing configuration error",
-                    format!("{error:#}"),
-                ));
-                cx.notify();
-                return;
-            }
-        };
+        if self.device_status.values().any(|status| {
+            matches!(
+                status,
+                DeviceStatus::Connecting | DeviceStatus::Disconnecting
+            )
+        }) {
+            self.pending_errors.push(error_notification(
+                "NanoDrive connection in progress",
+                "Wait for the connection operation to finish before playback.",
+            ));
+            cx.notify();
+            return;
+        }
+        let plan = self.routing.playback_plan(&self.config.routing.devices);
         if let Some(path) = self.config.playlist.get(index).cloned() {
             let use_transition =
                 self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
@@ -940,7 +972,7 @@ impl AppView {
     fn idle_preview_target(&self) -> Option<IdlePreviewTarget> {
         self.config.playlist.first().map(|path| IdlePreviewTarget {
             path: path.clone(),
-            routing: self.config.routing.clone(),
+            plan: self.routing.playback_plan(&self.config.routing.devices),
             looped: self.looped,
         })
     }
@@ -985,9 +1017,8 @@ impl AppView {
         self.gain_sources = None;
         self.gain_sources_failed = false;
         if let Some(target) = &self.idle_target {
-            let result = target.routing.playback_plan().and_then(|plan| {
-                IdlePreview::start(target.path.clone(), target.looped, plan.as_ref())
-            });
+            let result =
+                IdlePreview::start(target.path.clone(), target.looped, target.plan.as_ref());
             match result {
                 Ok(preview) => {
                     if same_track && let Some(previous) = &previous {
@@ -1356,12 +1387,28 @@ impl AppView {
                     }
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
+                    self.refresh_routing(false);
+                    if self
+                        .config
+                        .routing
+                        .devices
+                        .last()
+                        .is_some_and(|device| device.id == id)
+                    {
+                        self.add_empty_device(window, cx);
+                    }
                 }
                 device::DeviceEvent::Disconnected(id) => {
                     self.device_status.remove(&id);
+                    self.refresh_routing(true);
                 }
                 device::DeviceEvent::Error(id, error) => {
+                    let was_connected = matches!(
+                        self.device_status.get(&id),
+                        Some(DeviceStatus::Connected(_) | DeviceStatus::Disconnecting)
+                    );
                     self.device_status.remove(&id);
+                    self.refresh_routing(was_connected);
                     let name = self
                         .config
                         .routing
@@ -1392,9 +1439,24 @@ impl AppView {
                 device::DeviceEvent::Ports(result) => {
                     self.scanning_ports = false;
                     match result {
-                        Ok(ports) => self.device_port.update(cx, |state, cx| {
-                            state.set_items(SearchableVec::new(ports), window, cx);
-                        }),
+                        Ok(ports) => {
+                            self.available_ports = ports;
+                            for port in self.device_ports.values() {
+                                port.select.update(cx, |state, cx| {
+                                    let selected = state.selected_value().cloned();
+                                    let mut items = self.available_ports.clone();
+                                    if let Some(selected) = &selected
+                                        && !items.contains(selected)
+                                    {
+                                        items.push(selected.clone());
+                                    }
+                                    state.set_items(SearchableVec::new(items), window, cx);
+                                    if let Some(selected) = selected {
+                                        state.set_selected_value(&selected, window, cx);
+                                    }
+                                });
+                            }
+                        }
                         Err(error) => self
                             .pending_errors
                             .push(error_notification("Serial port scan error", error)),
@@ -2106,10 +2168,42 @@ impl AppView {
                     .gap_2()
                     .child(div().text_sm().child("Routing"))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Select::new(&self.profile_select).w_full().disabled(active)),
+                        div().flex().flex_wrap().gap_1().children(
+                            self.config
+                                .routing
+                                .devices
+                                .iter()
+                                .filter(|device| {
+                                    matches!(
+                                        self.device_status.get(&device.id),
+                                        Some(DeviceStatus::Connected(_))
+                                    )
+                                })
+                                .map(|device| {
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .bg(rgb(0x244047))
+                                        .text_sm()
+                                        .text_color(rgb(0xb9e9e7))
+                                        .child(device.name.clone())
+                                }),
+                        ),
+                    )
+                    .when(
+                        !self
+                            .device_status
+                            .values()
+                            .any(|status| matches!(status, DeviceStatus::Connected(_))),
+                        |row| {
+                            row.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(0xa6b6c3))
+                                    .child("Emulation (chipstream)"),
+                            )
+                        },
                     ),
             )
     }
@@ -2235,51 +2329,71 @@ impl AppView {
         cx.notify();
     }
 
-    fn add_device(&mut self, cx: &mut Context<Self>) {
-        let port = self.device_port.read(cx).selected_value().cloned();
-        let result = (|| -> anyhow::Result<routing::Device> {
-            let port = port.ok_or_else(|| anyhow::anyhow!("Select a serial port"))?;
-            let id = self
-                .config
-                .routing
-                .devices
-                .iter()
-                .map(|device| device.id)
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("No more device IDs are available"))?;
-            let device = routing::Device {
-                id,
-                name: String::new(),
-                port,
-                baud_rate: device::BAUD_RATE,
-            };
-            let mut routing = self.config.routing.clone();
-            routing.devices.push(device.clone());
-            routing.validate()?;
-            Ok(device)
-        })();
-        match result {
-            Ok(device) => {
-                self.config.routing.devices.push(device);
-                self.save();
-            }
-            Err(error) => self.pending_errors.push(error_notification(
-                "Could not add NanoDrive",
-                format!("{error:#}"),
-            )),
+    fn available_devices(&self) -> HashMap<u64, Vec<ndsif::CapabilityEntry>> {
+        self.device_status
+            .iter()
+            .filter_map(|(&id, status)| match status {
+                DeviceStatus::Connected(entries) => Some((id, entries.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn refresh_routing(&mut self, reset: bool) {
+        let available = self.available_devices();
+        if reset {
+            self.routing.reset(&self.config.routing.devices, &available);
+        } else {
+            self.routing
+                .refresh(&self.config.routing.devices, &available);
         }
-        cx.notify();
+        self.selected_source = None;
+    }
+
+    fn add_empty_device(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .config
+            .routing
+            .devices
+            .iter()
+            .map(|device| device.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            self.pending_errors.push(error_notification(
+                "Could not add NanoDrive",
+                "No more device IDs are available",
+            ));
+            return;
+        };
+        self.config.routing.devices.push(routing::Device {
+            id,
+            name: String::new(),
+            port: String::new(),
+            baud_rate: device::BAUD_RATE,
+        });
+        self.device_ports
+            .insert(id, device_port(id, "", &self.available_ports, window, cx));
+        self.save();
     }
 
     fn connect_device(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.playing.is_some() {
+            self.pending_errors.push(error_notification(
+                "NanoDrive error",
+                "Stop playback before changing devices.",
+            ));
+            cx.notify();
+            return;
+        }
         let Some(device) = self
             .config
             .routing
             .devices
             .iter()
             .find(|device| device.id == id)
+            .cloned()
         else {
             self.pending_errors.push(error_notification(
                 "NanoDrive error",
@@ -2296,8 +2410,46 @@ impl AppView {
                 .disconnect(id)
                 .map(|_| DeviceStatus::Disconnecting)
         } else {
+            let Some(port) = self
+                .device_ports
+                .get(&id)
+                .and_then(|state| state.select.read(cx).selected_value().cloned())
+            else {
+                self.pending_errors.push(error_notification(
+                    "NanoDrive connection error",
+                    "Select a serial port.",
+                ));
+                cx.notify();
+                return;
+            };
+            if self
+                .config
+                .routing
+                .devices
+                .iter()
+                .any(|other| other.id != id && other.port == port)
+            {
+                self.pending_errors.push(error_notification(
+                    "NanoDrive connection error",
+                    "That serial port is already assigned to another box.",
+                ));
+                cx.notify();
+                return;
+            }
+            let mut device = device;
+            device.port = port;
+            if let Some(saved) = self
+                .config
+                .routing
+                .devices
+                .iter_mut()
+                .find(|saved| saved.id == id)
+            {
+                *saved = device.clone();
+            }
+            self.save();
             self.device_service
-                .connect(device.clone())
+                .connect(device)
                 .map(|_| DeviceStatus::Connecting)
         };
         match result {
@@ -2318,56 +2470,21 @@ impl AppView {
                 "Cannot remove NanoDrive",
                 "Disconnect the device first.",
             ));
-        } else if self.config.routing.profiles.iter().any(|profile| {
-            profile
-                .connections
-                .iter()
-                .any(|route| route.device_id == id)
-        }) {
+        } else if self.config.routing.devices.len() <= 1
+            || self
+                .config
+                .routing
+                .devices
+                .last()
+                .is_none_or(|device| device.id != id)
+        {
             self.pending_errors.push(error_notification(
                 "Cannot remove NanoDrive",
-                "The device is used by a saved routing profile.",
+                "Only the last extra box can be removed.",
             ));
         } else {
             self.config.routing.devices.retain(|device| device.id != id);
-            self.save();
-        }
-        cx.notify();
-    }
-
-    fn sync_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let choices = profile_choices(&self.config.routing);
-        let selected = self.config.routing.selected_profile;
-        self.profile_select.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(choices), window, cx);
-            state.set_selected_value(&selected, window, cx);
-        });
-    }
-
-    fn add_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.profile_name.read(cx).value();
-        match self.config.routing.add_profile(&name) {
-            Ok(_) => {
-                self.selected_source = None;
-                self.sync_profiles(window, cx);
-                self.save();
-            }
-            Err(error) => self.pending_errors.push(error_notification(
-                "Could not add routing profile",
-                format!("{error:#}"),
-            )),
-        }
-        cx.notify();
-    }
-
-    fn remove_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.config.routing.selected_profile.take() {
-            self.config
-                .routing
-                .profiles
-                .retain(|profile| profile.id != id);
-            self.selected_source = None;
-            self.sync_profiles(window, cx);
+            self.device_ports.remove(&id);
             self.save();
         }
         cx.notify();
@@ -2398,8 +2515,15 @@ impl AppView {
                 return;
             }
         }
-        match self.config.routing.set_route(chip, source, target) {
-            Ok(()) => self.save(),
+        let available = self.available_devices();
+        match self.routing.set_route(
+            chip,
+            source,
+            target,
+            &self.config.routing.devices,
+            &available,
+        ) {
+            Ok(()) => self.selected_source = None,
             Err(error) => self
                 .pending_errors
                 .push(error_notification("Routing error", format!("{error:#}"))),
@@ -2407,59 +2531,18 @@ impl AppView {
         cx.notify();
     }
 
-    fn profile_view(&self, cx: &mut Context<Self>) -> Div {
-        let editable = self.config.routing.selected_profile.is_some() && self.playing.is_none();
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(div().text_lg().child("ROUTING PROFILES"))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div().w(px(220.)).child(
-                            Select::new(&self.profile_select)
-                                .w_full()
-                                .disabled(self.playing.is_some()),
-                        ),
-                    )
-                    .child(div().w(px(180.)).child(Input::new(&self.profile_name)))
-                    .child(
-                        Button::new("add-profile")
-                            .label("New profile")
-                            .disabled(self.playing.is_some())
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.add_profile(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("delete-profile")
-                            .label("Delete profile")
-                            .disabled(!editable)
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.remove_profile(window, cx)),
-                            ),
-                    ),
-            )
-    }
-
     fn routing_view(&self, cx: &mut Context<Self>) -> Div {
-        let selected_profile = self.config.routing.selected_profile.and_then(|id| {
-            self.config
-                .routing
-                .profiles
-                .iter()
-                .find(|profile| profile.id == id)
-        });
-        let editable = selected_profile.is_some() && self.playing.is_none();
+        let editable = self.playing.is_none()
+            && !self.device_status.values().any(|status| {
+                matches!(
+                    status,
+                    DeviceStatus::Connecting | DeviceStatus::Disconnecting
+                )
+            });
         let graph = patchbay::build(
             &self.config.routing.devices,
             &self.device_status,
-            selected_profile,
+            self.routing.connections(),
         );
         let mut panels = vec![
             div()
@@ -2536,6 +2619,15 @@ impl AppView {
                     }));
             }
             nodes.push(source_node.into_any_element());
+            let silent = matches!(
+                source,
+                patchbay::Source::Hardware(routing::HardwareChip::Ay8910, _)
+            );
+            let target_label = if silent {
+                format!("{} (silent)", source.label())
+            } else {
+                source.label()
+            };
             let mut target_node = div()
                 .id(SharedString::from(format!("emulator-{index}")))
                 .absolute()
@@ -2548,7 +2640,17 @@ impl AppView {
                 .gap_2()
                 .rounded_sm()
                 .child(div().size(px(8.)).rounded_full().bg(rgb(0x6a8e9c)))
-                .child(div().text_sm().child(source.label()));
+                .child(
+                    div()
+                        .text_sm()
+                        .when(silent, |label| label.text_color(rgb(0x9aabb5)))
+                        .child(target_label),
+                )
+                .when(silent, |node| {
+                    node.tooltip(|window, cx| {
+                        Tooltip::new("AY8910 has no software emulation").build(window, cx)
+                    })
+                });
             if editable && selected {
                 target_node = target_node
                     .bg(rgb(0x244047))
@@ -2559,15 +2661,25 @@ impl AppView {
             nodes.push(target_node.into_any_element());
         }
         for device in &graph.devices {
-            let title = format!(
-                "{} · {}",
-                device.name,
-                if device.connected {
-                    "Connected"
-                } else {
-                    "Unavailable"
-                }
+            let id = device.id;
+            let status = self.device_status.get(&id);
+            let busy = matches!(
+                status,
+                Some(DeviceStatus::Connecting | DeviceStatus::Disconnecting)
             );
+            let can_remove = self.config.routing.devices.len() > 1
+                && self
+                    .config
+                    .routing
+                    .devices
+                    .last()
+                    .is_some_and(|last| last.id == id);
+            let port = &self
+                .device_ports
+                .get(&id)
+                .expect("each device has a port selector")
+                .select;
+            let selected_port = port.read(cx).selected_value().is_some();
             panels.push(
                 div()
                     .absolute()
@@ -2581,24 +2693,123 @@ impl AppView {
                     .bg(rgb(0x1b2933))
                     .child(
                         div()
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_ellipsis()
-                            .child(title),
+                            .p_2()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_ellipsis()
+                                            .child(device.name.clone()),
+                                    )
+                                    .when(can_remove, |row| {
+                                        row.child(
+                                            Button::new(("remove-device", id as usize))
+                                                .label("×")
+                                                .disabled(status.is_some() || !editable)
+                                                .on_click(cx.listener(move |view, _, _, cx| {
+                                                    view.remove_device(id, cx)
+                                                })),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div().flex_1().min_w_0().child(
+                                            Select::new(port)
+                                                .placeholder("Select serial port")
+                                                .w_full()
+                                                .disabled(device.connected || busy || !editable),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(("scan-ports", id as usize))
+                                            .icon(assets::IconName::RefreshCw)
+                                            .w(px(28.))
+                                            .h(px(28.))
+                                            .p_0()
+                                            .tooltip(if self.scanning_ports {
+                                                "Searching ports..."
+                                            } else {
+                                                "Search ports"
+                                            })
+                                            .accessibility_label("Search ports")
+                                            .disabled(self.scanning_ports)
+                                            .on_click(
+                                                cx.listener(|view, _, _, cx| {
+                                                    view.refresh_ports(cx)
+                                                }),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Button::new(("connect-device", id as usize))
+                                            .label(if device.connected {
+                                                "Disconnect"
+                                            } else if busy {
+                                                "Please wait..."
+                                            } else {
+                                                "Connect"
+                                            })
+                                            .disabled(
+                                                busy || !editable
+                                                    || (!device.connected && !selected_port),
+                                            )
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                view.connect_device(id, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(if device.connected {
+                                                0x81d88a
+                                            } else {
+                                                0xa6b6c3
+                                            }))
+                                            .child(if device.connected {
+                                                "Connected"
+                                            } else {
+                                                "Disconnected"
+                                            }),
+                                    ),
+                            ),
                     )
-                    .when(device.endpoints.is_empty(), |panel| {
-                        panel.child(
-                            div()
-                                .px_3()
-                                .text_sm()
-                                .text_color(rgb(0xa6b6c3))
-                                .child("No available targets"),
-                        )
-                    })
                     .into_any_element(),
             );
+            for (index, label) in device.extra_labels.iter().enumerate() {
+                nodes.push(
+                    div()
+                        .absolute()
+                        .left(px(patchbay::DEVICE_X + 8.))
+                        .top(px(device.top
+                            + patchbay::DEVICE_HEADER
+                            + patchbay::ROW * (device.endpoints.len() + index) as f32))
+                        .w(px(patchbay::DEVICE_WIDTH - 16.))
+                        .h(px(patchbay::ROW))
+                        .text_sm()
+                        .text_color(rgb(0xf2a968))
+                        .child(label.clone())
+                        .into_any_element(),
+                );
+            }
             for endpoint in &device.endpoints {
                 let id = device.id;
                 let chip = endpoint.chip;
@@ -2667,11 +2878,17 @@ impl AppView {
         }
         let cables = graph.cables;
         div().flex().flex_col().gap_3()
-            .child(div().text_lg().child("ROUTING CONNECTIONS"))
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_lg().child("ROUTING CONNECTIONS"))
+                .when(self.config.routing.devices.last().is_some_and(|device| matches!(self.device_status.get(&device.id), Some(DeviceStatus::Connected(_)))), |row| {
+                    row.child(Button::new("add-device-box").label("Add NanoDrive")
+                        .disabled(!editable)
+                        .on_click(cx.listener(|view, _, window, cx| view.add_empty_device(window, cx))))
+                }))
             .child(div().text_sm().text_color(rgb(0xa6b6c3)).child(
-                "Select a sequencer source, then a matching chipstream or connected NanoDrive target. Dashed orange cables are unavailable. Hardware timing is best-effort."))
+                "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."))
             .when(!editable, |view| view.child(div().text_sm().text_color(rgb(0xf2a968)).child(
-                if self.playing.is_some() { "Stop playback to edit connections." } else { "Create or select a profile to edit connections." }
+                if self.playing.is_some() { "Stop playback to edit connections." } else { "Wait for the connection operation to finish." }
             )))
             .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
                 .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))
@@ -2713,64 +2930,18 @@ impl AppView {
     }
 
     fn devices_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("device-list").size_full().overflow_y_scrollbar()
-          .child(div()
-            .flex().flex_col().p_4().gap_3()
-            .child(self.profile_view(cx))
-            .child(div().mt_2().text_lg().child("NANODRIVE DEVICES"))
-            .child(div().text_sm().text_color(rgb(0xa6b6c3))
-                .child("Connect devices to inspect their advertised chips. Hardware audio is output by the NanoDrive, not mixed into software audio."))
-            .child(div().flex().gap_2().items_center()
-                .child(div().w(px(280.)).flex_shrink_0().child(
-                    Select::new(&self.device_port).placeholder("Select serial port").w_full()
-                ))
-                .child(Button::new("scan-ports").label(if self.scanning_ports { "Searching..." } else { "Search ports" })
-                    .disabled(self.scanning_ports)
-                    .on_click(cx.listener(|view, _, _, cx| view.refresh_ports(cx))))
-                .child(Button::new("add-device").label("Add device")
-                    .disabled(self.device_port.read(cx).selected_value().is_none())
-                    .on_click(cx.listener(|view, _, _, cx| view.add_device(cx)))))
-            .child(div().flex().flex_wrap().gap_3().children(
-                        self.config.routing.devices.iter().map(|device| {
-                            let id = device.id;
-                            let status = self.device_status.get(&id);
-                            let busy = matches!(status, Some(DeviceStatus::Connecting | DeviceStatus::Disconnecting));
-                            let connected = matches!(status, Some(DeviceStatus::Connected(_)));
-                            let status_text = match status {
-                                None => "Disconnected",
-                                Some(DeviceStatus::Connecting) => "Connecting...",
-                                Some(DeviceStatus::Connected(_)) => "Connected",
-                                Some(DeviceStatus::Disconnecting) => "Disconnecting...",
-                            };
-                            let capabilities = match status {
-                                Some(DeviceStatus::Connected(entries)) if entries.is_empty() =>
-                                    vec!["No chips advertised".into()],
-                                Some(DeviceStatus::Connected(entries)) => capability_labels(entries),
-                                _ => Vec::new(),
-                            };
-                            div().w(px(300.)).p_3().rounded_md().border_1()
-                                .border_color(rgb(0x30414d)).bg(rgb(0x1b2933))
-                                .flex().flex_col().gap_2()
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child(if device.name.is_empty() { "Unknown device".to_owned() } else { device.name.clone() }))
-                                .child(div().text_sm().child(format!("{} · {} baud", device.port, device::BAUD_RATE)))
-                                .child(div().text_sm().text_color(if connected { rgb(0x81d88a) } else { rgb(0xa6b6c3) }).child(status_text))
-                                .when(connected, |node| node.child(
-                                    div().flex().flex_col().gap_1().children(
-                                        capabilities.into_iter().map(|label| div().text_sm().child(label))
-                                    )
-                                ))
-                                .child(div().flex().gap_2()
-                                    .child(Button::new(("connect-device", id as usize))
-                                        .label(if connected { "Disconnect" } else { "Connect" })
-                                        .disabled(busy)
-                                        .on_click(cx.listener(move |view, _, _, cx| view.connect_device(id, cx))))
-                                    .child(Button::new(("remove-device", id as usize))
-                                        .label("Remove").disabled(status.is_some())
-                                        .on_click(cx.listener(move |view, _, _, cx| view.remove_device(id, cx))))
-                                )
-                        })
-                    ))
-            .child(self.routing_view(cx)))
+        div()
+            .id("device-list")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .gap_3()
+                    .child(self.routing_view(cx)),
+            )
     }
 
     fn library_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -2784,14 +2955,16 @@ impl AppView {
                 let view = cx.weak_entity();
                 let title = track.display_title();
                 let artist = track.metadata.artist.as_deref().unwrap_or_default();
-                let unsupported: Vec<_> = track
-                    .chips
-                    .iter()
-                    .filter(|chip| !chip.software_supported())
-                    .map(|chip| chip.label())
-                    .collect();
+                let unsupported = unsupported_chips(
+                    &track.chips,
+                    self.routing.connections(),
+                    &self.device_status,
+                );
                 let dimmed = !unsupported.is_empty();
-                let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
+                let unsupported_tooltip = format!(
+                    "No software or routed hardware support: {}",
+                    unsupported.join(", ")
+                );
                 let title_tooltip = if dimmed {
                     format!("{title}\n{unsupported_tooltip}")
                 } else {
@@ -3069,15 +3242,17 @@ impl AppView {
                 let metadata = track.map_or(&fallback_metadata, |track| &track.metadata);
                 let unsupported = track
                     .map(|track| {
-                        track
-                            .chips
-                            .iter()
-                            .filter(|chip| !chip.software_supported())
-                            .map(ChipTag::label)
-                            .collect::<Vec<_>>()
+                        unsupported_chips(
+                            &track.chips,
+                            self.routing.connections(),
+                            &self.device_status,
+                        )
                     })
                     .unwrap_or_default();
-                let unsupported_tooltip = format!("Not emulated: {}", unsupported.join(", "));
+                let unsupported_tooltip = format!(
+                    "No software or routed hardware support: {}",
+                    unsupported.join(", ")
+                );
                 let title = Track::format_display_title(path, metadata);
                 let artist = metadata.artist.as_deref().unwrap_or_default().to_owned();
                 let playing = self.playing == Some(index);
@@ -3291,6 +3466,45 @@ fn update_selection_order<T: Clone + Eq + Hash>(
     }
 }
 
+fn unsupported_chips(
+    chips: &[ChipTag],
+    connections: &[routing::Connection],
+    statuses: &HashMap<u64, DeviceStatus>,
+) -> Vec<String> {
+    chips
+        .iter()
+        .filter(|tag| {
+            if tag.software_supported() {
+                return false;
+            }
+            let Some(chip) = routing::HardwareChip::ALL
+                .into_iter()
+                .find(|chip| chip.name() == tag.name)
+            else {
+                return true;
+            };
+            let Some(instances) = routing::ChipInstance::ALL.get(..tag.instances) else {
+                return true;
+            };
+            if instances.is_empty() {
+                return true;
+            }
+            !instances.iter().all(|source| {
+                connections.iter().any(|connection| {
+                    connection.chip == chip
+                        && connection.source == *source
+                        && matches!(
+                            statuses.get(&connection.device_id),
+                            Some(DeviceStatus::Connected(entries))
+                                if chip.advertised(connection.target, entries)
+                        )
+                })
+            })
+        })
+        .map(ChipTag::label)
+        .collect()
+}
+
 fn capability_labels(entries: &[ndsif::CapabilityEntry]) -> Vec<String> {
     let mut labels: Vec<_> = entries
         .iter()
@@ -3300,13 +3514,14 @@ fn capability_labels(entries: &[ndsif::CapabilityEntry]) -> Vec<String> {
                 0x51 => "YM2413",
                 0x52 => "YM2612",
                 0x54 => "YM2151",
-                0x55 => "YM2203",
+                0x55 | 0xa5 => "YM2203",
                 0x56 => "YM2608",
                 0x58 => "YM2610/B",
                 0x5a => "YM3812",
                 0x5b => "YM3526",
                 0x5c => "Y8950",
-                0x5e => "YMF262",
+                0x5e | 0x5f => "YMF262",
+                0xa0 => "AY8910",
                 0xd0 => "YMF278B",
                 0xb7 => "OKIM6258",
                 other => {
@@ -3535,7 +3750,7 @@ fn scrollbar(id: &'static str, handle: &(impl ScrollbarHandle + Clone)) -> impl 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
     use gpui_kit::Keystroke;
@@ -3545,9 +3760,105 @@ mod tests {
         ACCENT_COLOR, DetailsSelection, ListKey, adjacent_track, capability_labels, chip_colors,
         chip_suggestions, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, profile_choices, remove_playlist_entries, search_terms, select_for_context,
-        select_item, select_range, selection_status, unique_device_name, update_selection_order,
+        music_format, remove_playlist_entries, search_terms, select_for_context, select_item,
+        select_range, selection_status, unique_device_name, unsupported_chips,
+        update_selection_order,
     };
+
+    #[test]
+    fn unsupported_chips_follow_connected_routes_and_required_instances() {
+        use super::{ChipTag, DeviceStatus, routing};
+        use routing::{ChipInstance, Connection, HardwareChip};
+
+        let ay = ChipTag {
+            name: "AY8910",
+            instances: 1,
+            ymfm: false,
+        };
+        let dual_ay = ChipTag {
+            instances: 2,
+            ..ay.clone()
+        };
+        let pokey = ChipTag {
+            name: "POKEY",
+            instances: 1,
+            ymfm: false,
+        };
+        let ym = ChipTag {
+            name: "YM2151",
+            instances: 1,
+            ymfm: true,
+        };
+        let capability = ndsif::CapabilityEntry {
+            write_id: 0xa0,
+            instance: 1,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let first = Connection {
+            chip: HardwareChip::Ay8910,
+            source: ChipInstance::Primary,
+            device_id: 1,
+            target: ChipInstance::Secondary,
+        };
+        let mut statuses = HashMap::from([(1, DeviceStatus::Connected(vec![capability]))]);
+        assert_eq!(
+            unsupported_chips(&[ay.clone(), pokey.clone(), ym], &[], &statuses),
+            ["AY8910", "POKEY"]
+        );
+        assert_eq!(
+            unsupported_chips(
+                &[ay.clone(), pokey.clone()],
+                std::slice::from_ref(&first),
+                &statuses
+            ),
+            ["POKEY"]
+        );
+        assert_eq!(
+            unsupported_chips(
+                std::slice::from_ref(&dual_ay),
+                std::slice::from_ref(&first),
+                &statuses
+            ),
+            ["AY8910x2"]
+        );
+
+        let second = Connection {
+            source: ChipInstance::Secondary,
+            device_id: 2,
+            target: ChipInstance::Primary,
+            ..first.clone()
+        };
+        statuses.insert(
+            2,
+            DeviceStatus::Connected(vec![ndsif::CapabilityEntry {
+                instance: 0,
+                ..capability
+            }]),
+        );
+        assert!(
+            unsupported_chips(
+                std::slice::from_ref(&dual_ay),
+                &[first.clone(), second.clone()],
+                &statuses
+            )
+            .is_empty()
+        );
+        statuses.insert(2, DeviceStatus::Disconnecting);
+        assert_eq!(
+            unsupported_chips(
+                std::slice::from_ref(&dual_ay),
+                &[first.clone(), second],
+                &statuses
+            ),
+            ["AY8910x2"]
+        );
+        statuses.insert(1, DeviceStatus::Connected(vec![]));
+        assert_eq!(unsupported_chips(&[ay], &[first], &statuses), ["AY8910"]);
+        assert_eq!(unsupported_chips(&[pokey], &[], &statuses), ["POKEY"]);
+    }
 
     #[test]
     fn preview_sources_remain_visible_only_until_playback_sources_arrive() {
@@ -3629,14 +3940,6 @@ mod tests {
         let visible = Bounds::new(point(px(10.), px(20.)), size(px(1100.), px(680.)));
         let bounds = initial_window_bounds(visible);
         assert_eq!(bounds, visible);
-    }
-
-    #[test]
-    fn default_profile_uses_chipstream_emulation_label() {
-        let choices = profile_choices(&crate::routing::RoutingConfig::default());
-        assert_eq!(choices.len(), 1);
-        assert_eq!(choices[0].id, None);
-        assert_eq!(choices[0].name, "Emulation (chipstream)");
     }
 
     #[test]

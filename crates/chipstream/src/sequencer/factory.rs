@@ -88,6 +88,10 @@ impl ChipFactoryRegistry {
         Self::default()
     }
 
+    pub(super) fn contains(&self, chip: &Chip) -> bool {
+        self.factories.contains_key(chip)
+    }
+
     /// Register a replacement factory for one chip type.
     ///
     /// The factory is called once for each present instance of the selected

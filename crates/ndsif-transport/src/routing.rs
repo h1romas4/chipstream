@@ -11,7 +11,7 @@ use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
 
 use crate::NdsifSerialTransport;
-use crate::factory::{instance_number, ymfm_write_id};
+use crate::factory::{chip_write_id, instance_number};
 
 /// One source chip instance connected to a physical device instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +74,9 @@ impl std::error::Error for NdsifRoutingError {}
 
 /// Build factories for explicit routes using already-opened serial devices.
 ///
-/// Unrouted instances use their normal built-in backend. Routed instances
+/// Unrouted instances use their normal built-in backend, except AY8910, which
+/// has no built-in backend. If any AY instance is routed, an unrouted AY
+/// instance in the same track is an error. Routed instances
 /// never fall back: an unsupported clock, stream or device capability produces
 /// a chip error when the sequencer creates the instance. Devices are retained
 /// by the registry and its created chips.
@@ -160,7 +162,7 @@ fn route_write_id(chip: &Chip, target: Instance) -> Option<WriteId> {
             Instance::Secondary => WriteId::SN76489_SECOND,
         }),
         Chip::Okim6258 => Some(WriteId::OKIM6258),
-        _ => ymfm_write_id(chip),
+        _ => chip_write_id(chip),
     }
 }
 
@@ -304,7 +306,7 @@ mod tests {
     use super::*;
     use chipstream::chip::NdsifRegisterEvent;
     use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
-    use soundlog::chip::{Okim6258Spec, Ym2151Spec};
+    use soundlog::chip::{Ay8910Spec, Okim6258Spec, Ym2151Spec};
     use soundlog::vgm::{VgmBuilder, command::WaitSamples};
 
     #[derive(Default)]
@@ -362,6 +364,158 @@ mod tests {
         builder.finalize().into()
     }
 
+    fn dual_ay_vgm() -> Vec<u8> {
+        let mut builder = VgmBuilder::new();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.register_chip(Chip::Ay8910, instance, 2_000_000);
+            builder.add_chip_write(
+                instance,
+                Ay8910Spec {
+                    register: 7,
+                    value: 0x38,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(441));
+        builder.finalize().into()
+    }
+
+    #[test]
+    fn routes_ay_instances_and_remaps_target_instances() {
+        let device = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        let routes = [
+            NdsifRoute {
+                chip: Chip::Ay8910,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Secondary,
+            },
+            NdsifRoute {
+                chip: Chip::Ay8910,
+                source: Instance::Secondary,
+                device: 0,
+                target: Instance::Primary,
+            },
+        ];
+        let factories = routed_factories(vec![Rc::clone(&device)], &routes).unwrap();
+        let mut sequencer =
+            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories).unwrap();
+        while sequencer.render().unwrap().is_some() {}
+        let device = device.borrow();
+        let ay = WriteId::try_from(0xa0).unwrap();
+        assert_eq!(device.configured, [(ay, 1, 2_000_000), (ay, 0, 2_000_000)]);
+        assert_eq!(device.events.len(), 2);
+        assert_eq!(
+            (
+                device.events[0].write_id,
+                device.events[0].instance,
+                device.events[0].page,
+                device.events[0].write.address,
+                device.events[0].write.value
+            ),
+            (ay, 1, 0, 7, 0x38)
+        );
+        assert_eq!(
+            (
+                device.events[1].write_id,
+                device.events[1].instance,
+                device.events[1].page,
+                device.events[1].write.address,
+                device.events[1].write.value
+            ),
+            (ay, 0, 0, 7, 0x38)
+        );
+    }
+
+    #[test]
+    fn ay_without_factory_is_ignored_but_partial_or_incompatible_routes_fail() {
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            dual_ay_vgm(),
+            44_100,
+            256,
+            ChipFactoryRegistry::new(),
+        )
+        .unwrap();
+        while sequencer.render().unwrap().is_some() {}
+        let route = NdsifRoute {
+            chip: Chip::Ay8910,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        let supported = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        let factories = routed_factories(vec![supported], std::slice::from_ref(&route)).unwrap();
+        assert!(matches!(
+            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories),
+            Err(VgmSequencerError::Chip(ChipError::UnsupportedChip(
+                Chip::Ay8910
+            )))
+        ));
+        let unsupported = Rc::new(RefCell::new(Device::default()));
+        let factories = routed_factories(vec![unsupported], &[route]).unwrap();
+        assert!(matches!(
+            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories),
+            Err(VgmSequencerError::Chip(ChipError::External { .. }))
+        ));
+    }
+
+    #[test]
+    fn ay_rejects_unsupported_variants_flags_and_stereo_masks() {
+        let route = NdsifRoute {
+            chip: Chip::Ay8910,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        let device = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        for (offset, value) in [
+            (0x78, 0x10),
+            (0x79, 0x04),
+            (0x79, 0x08),
+            (0x79, 0x10),
+            (0x79, 0x20),
+        ] {
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+            builder.add_vgm_command(WaitSamples(441));
+            let mut bytes: Vec<u8> = builder.finalize().into();
+            bytes[offset] = value;
+            let factories =
+                routed_factories(vec![Rc::clone(&device)], std::slice::from_ref(&route)).unwrap();
+            assert!(matches!(
+                VgmSequencer::from_vgm_with_factories(bytes, 44_100, 256, factories),
+                Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
+                    chip: Chip::Ay8910,
+                    ..
+                }))
+            ));
+            assert!(device.borrow().configured.is_empty());
+        }
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+        builder.add_vgm_command(soundlog::vgm::command::Ay8910StereoMask::from_mask(1));
+        builder.add_vgm_command(WaitSamples(441));
+        let factories = routed_factories(vec![device], &[route]).unwrap();
+        let mut sequencer =
+            VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories)
+                .unwrap();
+        assert!(matches!(
+            sequencer.render(),
+            Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
+                chip: Chip::Ay8910,
+                ..
+            }))
+        ));
+    }
     #[test]
     fn routes_two_source_instances_to_distinct_devices() {
         let first = Rc::new(RefCell::new(Device {

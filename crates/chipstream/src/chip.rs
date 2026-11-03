@@ -31,7 +31,8 @@ pub use c140::{C140, C140Type};
 #[cfg(feature = "ndsif")]
 pub use ndsif::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifOkim6258, NdsifPsgEvent,
-    NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, register_okim6258_factory,
+    NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, register_ay8910_factory,
+    register_okim6258_factory,
 };
 #[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};

@@ -174,7 +174,7 @@ pub trait NdsifTransport {
     }
 }
 
-/// NDSIF-backed YMFM replacement that emits silence to the host PCM path.
+/// NDSIF-backed chip replacement that emits silence to the host PCM path.
 ///
 /// The physical chip produces the audible output. Register events are handed
 /// to the injected transport with absolute output-frame positions.
@@ -208,9 +208,21 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
         let chip = config.chip().clone();
-        let Some((divisor, channels, write_id)) = ymfm_config(&chip) else {
+        let Some((divisor, channels, write_id)) = ndsif_chip_config(&chip) else {
             return Err(ChipError::UnsupportedChip(chip));
         };
+        if chip == Chip::Ay8910
+            && (config.header().ay_chip_type != soundlog::vgm::header::Ay8910ChipType::Ay8910
+                || config.header().ay8910_flags.ym_pin26_low
+                || config.header().ay8910_flags.discrete_output
+                || config.header().ay8910_flags.raw_output
+                || config.header().ay8910_flags.reserved != 0)
+        {
+            return Err(ChipError::InvalidConfiguration {
+                chip,
+                reason: "NDSIF AY routing requires AY-3-8910 with mixed output and no YM clock-divider flags",
+            });
+        }
         if config.clock() < divisor {
             return Err(ChipError::InvalidClock {
                 clock: config.clock(),
@@ -930,9 +942,10 @@ pub fn register_ymfm_factory<T: NdsifTransport + 'static>(
     chip: Chip,
     transport: Rc<RefCell<T>>,
 ) -> Result<(), ChipError> {
-    if ymfm_config(&chip).is_none() {
+    if chip == Chip::Ay8910 || ndsif_chip_config(&chip).is_none() {
         return Err(ChipError::UnsupportedChip(chip));
     }
+
     registry.register(chip, move |config| {
         Ok(Box::new(NdsifSoundChip::new(
             config,
@@ -940,6 +953,19 @@ pub fn register_ymfm_factory<T: NdsifTransport + 'static>(
         )?))
     });
     Ok(())
+}
+
+/// Register an AY-3-8910 hardware replacement with an NDSIF transport.
+pub fn register_ay8910_factory<T: NdsifTransport + 'static>(
+    registry: &mut ChipFactoryRegistry,
+    transport: Rc<RefCell<T>>,
+) {
+    registry.register(Chip::Ay8910, move |config| {
+        Ok(Box::new(NdsifSoundChip::new(
+            config,
+            Rc::clone(&transport),
+        )?))
+    });
 }
 
 /// Register factories for all YMFM-backed chip types.
@@ -966,9 +992,10 @@ pub fn register_ymfm_factories<T: NdsifTransport + 'static>(
 }
 
 /// Return the native divider, channel count, and write ID for a YMFM chip.
-fn ymfm_config(chip: &Chip) -> Option<(u32, usize, u8)> {
+fn ndsif_chip_config(chip: &Chip) -> Option<(u32, usize, u8)> {
     Some(match chip {
         Chip::Ym2413 => (72, 2, 0x51),
+        Chip::Ay8910 => (8, 1, 0xa0),
         Chip::Ym2151 => (64, 2, 0x54),
         Chip::Ym2203 => (4, 4, 0x55),
         Chip::Ym2608 => (8, 3, 0x56),
@@ -983,7 +1010,7 @@ fn ymfm_config(chip: &Chip) -> Option<(u32, usize, u8)> {
     })
 }
 
-/// Convert a YMFM write to its NDSIF ID, page, address, and value.
+/// Convert a chip write to its NDSIF ID, page, address, and value.
 fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipError> {
     let chip = write.chip();
     let invalid_bank = |bank| ChipError::InvalidRegisterBank {
@@ -992,6 +1019,15 @@ fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipErr
     };
     Ok(match write {
         ChipRegisterWrite::Ym2413(spec) => (0x51, 0, spec.register, spec.value),
+        ChipRegisterWrite::Ay8910(spec) if spec.register <= 0x0f => {
+            (0xa0, 0, spec.register, spec.value)
+        }
+        ChipRegisterWrite::Ay8910(spec) => {
+            return Err(ChipError::InvalidRegister {
+                chip,
+                register: spec.register,
+            });
+        }
         ChipRegisterWrite::Ym2151(spec) => (0x54, 0, spec.register, spec.value),
         ChipRegisterWrite::Ym2203(spec) => (0x55, 0, spec.register, spec.value),
         ChipRegisterWrite::Ym2608(spec) => (
@@ -1033,7 +1069,7 @@ fn register_parts(write: &ChipRegisterWrite) -> Result<(u8, u8, u8, u8), ChipErr
                 1 => 0x5f,
                 bank => return Err(invalid_bank(bank)),
             },
-            0,
+            spec.port,
             spec.register,
             spec.value,
         ),
@@ -1181,7 +1217,7 @@ mod tests {
                     register: 1,
                     value: 2,
                 }),
-                (0x5f, 0),
+                (0x5f, 1),
             ),
             (
                 ChipRegisterWrite::Ymf278b(Ymf278bSpec {

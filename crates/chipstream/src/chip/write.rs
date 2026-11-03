@@ -1,9 +1,9 @@
 //! Typed chip register writes and conversions from soundlog VGM commands.
 
 use soundlog::chip::{
-    C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec, SegaPcmSpec,
-    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
-    Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+    Ay8910Spec, C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec,
+    SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
+    Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -114,6 +114,7 @@ define_writes! {
         (bank, register, u32::from(s.value))
     }),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
+    Ay8910(Ay8910Spec, Ay8910, |s| (0, s.register, u32::from(s.value))),
     Okim6258(Okim6258Spec, Okim6258, |s| (0, s.register, u32::from(s.value))),
     Okim6295(Okim6295Spec, Okim6295, |s| (0, s.register, u32::from(s.value))),
     Ym2413(Ym2413Spec, Ym2413, |s| (0, s.register, u32::from(s.value))),
@@ -139,6 +140,7 @@ impl ChipRegisterWrite {
             SegaPcmWrite(i, s) => (*i, Self::SegaPcm(s.clone())),
             C140Write(i, s) => (*i, Self::C140(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
+            Ay8910Write(i, s) => (*i, Self::Ay8910(s.clone())),
             Ym2413Write(i, s) => (*i, Self::Ym2413(s.clone())),
             Ym2612Write(i, s) => (*i, Self::Ym2612(s.clone())),
             Ym2151Write(i, s) => (*i, Self::Ym2151(s.clone())),

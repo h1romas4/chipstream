@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Automatically route connected NanoDrive chips and replace routing profiles
+  with connection boxes in the routing view.
+- Show connected NanoDrive names in the Playlist transport.
+- Refresh serial ports from the icon beside each port selector.
+- Recognize NanoDrive 7 AY8910 and chip aliases, route AY to hardware, and
+  reject conflicting shared chips or clocks before playback.
+- Account for connected hardware routes in Music and Playlist support indicators.
+
 ## v0.3.0
 
 - Show an Add directory hint when the library has no registered folders.

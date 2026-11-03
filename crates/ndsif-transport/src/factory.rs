@@ -31,7 +31,9 @@ pub struct NdsifSerialConfig {
 ///
 /// Each chip instance is routed to the first configured device advertising a
 /// compatible chip/clock capability. When no device matches, the normal
-/// emulated backend is retained. An empty list returns an empty registry. All
+/// emulated backend is retained, except AY8910 which has no emulated backend:
+/// when an AY device is present, an unroutable AY instance is an error. An
+/// empty list returns an empty registry. All
 /// configurations are validated before any device is opened or reset.
 ///
 /// # Errors
@@ -76,7 +78,7 @@ pub fn create_chip_factories(
         Chip::Ymf262,
         Chip::Ymf278b,
     ] {
-        let Some(write_id) = ymfm_write_id(&chip) else {
+        let Some(write_id) = chip_write_id(&chip) else {
             continue;
         };
         let registered_chip = chip.clone();
@@ -105,6 +107,31 @@ pub fn create_chip_factories(
                     config.clock(),
                 )?))
             }
+        });
+    }
+
+    if transports.iter().any(|transport| {
+        transport
+            .borrow()
+            .capabilities()
+            .iter()
+            .any(|capability| capability.write_id == 0xa0)
+    }) {
+        let ay_transports = Rc::clone(&transports);
+        factories.register(Chip::Ay8910, move |config| {
+            let transport = find_transport(
+                &ay_transports,
+                &Chip::Ay8910,
+                WriteId::try_from(0xa0).expect("AY8910 write ID"),
+                instance_number(config.instance()),
+                config.clock(),
+                None,
+            )?
+            .ok_or(ChipError::InvalidConfiguration {
+                chip: Chip::Ay8910,
+                reason: "no NDSIF AY8910 target supports this instance and clock",
+            })?;
+            Ok(Box::new(NdsifSoundChip::new(config, transport)?))
         });
     }
 
@@ -236,10 +263,11 @@ fn find_transport(
     Ok(None)
 }
 
-/// Map supported YMFM chip types to their NDSIF write identifiers.
-pub(super) fn ymfm_write_id(chip: &Chip) -> Option<WriteId> {
+/// Map supported chip types to their NDSIF write identifiers.
+pub(super) fn chip_write_id(chip: &Chip) -> Option<WriteId> {
     let write_id = match chip {
         Chip::Ym2413 => 0x51,
+        Chip::Ay8910 => 0xa0,
         Chip::Ym2151 => 0x54,
         Chip::Ym2203 => 0x55,
         Chip::Ym2608 => 0x56,
@@ -282,8 +310,8 @@ mod tests {
             (Chip::Ymf262, 0x5e),
             (Chip::Ymf278b, 0xd0),
         ] {
-            assert_eq!(ymfm_write_id(&chip).map(WriteId::get), Some(expected));
+            assert_eq!(chip_write_id(&chip).map(WriteId::get), Some(expected));
         }
-        assert_eq!(ymfm_write_id(&Chip::Sn76489), None);
+        assert_eq!(chip_write_id(&Chip::Sn76489), None);
     }
 }

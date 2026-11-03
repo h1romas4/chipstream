@@ -82,12 +82,13 @@ Hover over the tags to see the full chip list when it does not fit.
 Music and Playlist show the game and track names together, with the artist
 below. Hover over the title to see the full names. Playlist rows show their
 position, or a play icon and accent when the track is playing.
-Music rows are dimmed when the declared chips include a chip not emulated by
-chipstream. Hover over the row to see which chips are unsupported. This is
-based on the file header and does not check device availability or all other
-playback requirements.
-Playlist entries with unsupported chips show a red warning after the title;
-hover over it to see the chip names. The warning does not prevent playback.
+Music rows are dimmed when a declared chip instance has neither software
+emulation nor a route to a connected NanoDrive. Hover over the row to see the
+unsupported chips. Playlist entries show the same information as a red warning
+after the title. These indicators update when devices or routes change and do
+not prevent playback. They compare chip types and instance counts from the
+file header; they do not check chip variants, clock compatibility, shared
+hardware conflicts, or other playback requirements.
 
 ### Selection
 
@@ -169,7 +170,7 @@ Playlist share the remaining space equally. Side panel widths are retained when
 the window is resized, as space permits. Library and playlist rows are rendered
 on demand as you scroll.
 
-Folders, playlist entries, panel widths, and routing settings are saved in
+Folders, playlist entries, panel widths, and NanoDrive device settings are saved in
 `library.json` in the platform configuration directory.
 
 ## Piano Roll
@@ -240,20 +241,17 @@ notes were skipped.
 
 ## NanoDrive Routing
 
-Hardware routing is experimental and host-paced. Select **Emulation
-(chipstream)** to use software emulation without a hardware profile.
+Hardware routing is experimental and host-paced. The cable icon opens the
+routing page. Select a serial port in the NanoDrive box and click **Connect**;
+use the refresh icon beside the port selector to search again. Connect queries the model name and
+advertised chip instances; duplicate model names get a numbered suffix. The
+baud rate is fixed at 115,200. Unknown target IDs are shown explicitly.
 
-### Profiles and Devices
-
-The cable icon opens the routing page. At the top, create or select a named
-routing profile. Below it, search for serial ports and select one to add a
-NanoDrive device. Connect queries its model name and advertised chip
-instances; duplicate model names get a numbered suffix. The baud rate is fixed
-at 115,200. Unknown target IDs are shown explicitly.
-
-Device settings are saved, but connections are not restored automatically.
-Disconnect a device before removing it. Devices used by a profile cannot be
-removed until the routes or profiles are removed.
+Connecting the last box adds a new empty box below it. The last extra box can
+be removed with its × button after disconnecting it. Use **Add NanoDrive** to
+restore an extra box if it was removed. Device and port settings are saved,
+but devices are not reconnected automatically. Existing device settings are
+retained when upgrading; old routing profiles are no longer used.
 
 Connection status reflects the initial connection and is not a continuous
 physical-disconnection monitor. Devices are opened on a background worker,
@@ -263,17 +261,30 @@ returning them to the connection service.
 
 ### Connections
 
-In the routing connections section below the devices, click a sequencer chip
-instance, then click a highlighted matching device target or its chipstream
-emulation target. Cable editing uses clicks, not dragging. Cables show each
-connection; disconnected or unsupported targets and their cables are orange
-and dashed without removing the saved route.
-NanoDrive targets are to the right of chipstream, with hardware cables passing
-behind the chipstream panel. Additional devices are stacked in that column;
-scroll horizontally or vertically as needed.
+Connected NanoDrive targets are automatically assigned to matching sequencer
+chip instances, in box order. A target is used at most once; sources without a
+matching target use chipstream emulation where available. To change a connection, click a
+sequencer chip instance and then a highlighted matching device target or its
+chipstream emulation target. Cable editing uses clicks, not dragging. Manual
+choices are kept while connecting additional devices, and are reset to
+automatic routing after a device is disconnected or the application restarts.
+NanoDrive boxes are stacked to the right of chipstream; scroll horizontally
+or vertically as needed. The Playlist shows the names of connected NanoDrives.
+Device connection and routing edits are disabled during playback.
 
-The same profile selector is also available in the Playlist transport; profile
-selection and editing are disabled during playback.
+NanoDrive 7 exposes AY-3-8910 through the SSG of each YM2203. AY playback is
+hardware-only and is an approximation of AY-3-8910 output; other AY/YM variants,
+discrete or raw output, and per-channel stereo masks are not supported. Without
+an AY route, AY writes are ignored as before. If only some instances of a
+dual-AY track are routed, playback fails rather than silently dropping one.
+The Piano Roll does not currently visualize AY.
+
+NanoDrive 7 shares each AY instance with its corresponding YM2203, and all
+AY/YM2203 routes share one clock. Its YM3526, YM3812 and YMF262 routes also
+share a physical chip. If the track's active routes conflict, playback is
+stopped before the hardware is configured and the reason is shown. Routes on
+different devices do not conflict. Equivalent physical clock values are
+accepted after the device's documented clock normalization.
 
 For a track using YM2151 and OKIM6258, one temporary option is to route YM2151
 to NanoDrive and explicitly connect OKIM6258 to chipstream emulation. The two

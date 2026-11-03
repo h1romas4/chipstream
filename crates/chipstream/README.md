@@ -29,7 +29,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `pwm` | PWM |
 | `segapcm` | SegaPCM |
 | `sn76496` | SN76489 / SN76496 |
-| `ndsif` | Scheduled NDSIF adapters for YMFM chips and OKIM6258 |
+| `ndsif` | Scheduled NDSIF adapters for YMFM chips, AY8910, SN76489, and OKIM6258 |
 
 Enable the chips your application needs, for example:
 
@@ -247,7 +247,12 @@ fn play<T: NdsifTransport + 'static>(
 # }
 ```
 
-`NdsifSoundChip` supports YMFM replacements; `NdsifOkim6258` supports hardware
+`NdsifSoundChip` supports YMFM and AY-3-8910 replacements; use
+`register_ay8910_factory` to opt into AY hardware playback. There is no built-in
+AY emulation. AY variants other than AY-3-8910, raw or discrete output and
+per-channel stereo masks are unsupported. Hardware sound may differ from
+original AY output, depending on the device.
+`NdsifOkim6258` supports hardware
 ADPCM streams with state-matched silence for gaps and termination. Both output
 silence to host PCM: audible hardware audio must be mixed from the device.
 Their `with_target_instance` constructors can select a different physical

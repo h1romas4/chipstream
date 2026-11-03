@@ -1233,8 +1233,8 @@ mod tests {
     }
 
     #[test]
-    fn routing_configuration_is_saved_and_invalid_routes_are_reported() {
-        use crate::routing::{ChipInstance, Connection, Device, HardwareChip, Profile};
+    fn routing_configuration_is_saved_and_invalid_devices_are_reported() {
+        use crate::routing::Device;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.json");
         let mut config = Config::default();
@@ -1244,26 +1244,16 @@ mod tests {
             port: "serial-port".into(),
             baud_rate: 115_200,
         });
-        config.routing.profiles.push(Profile {
-            id: 2,
-            name: "Hardware".into(),
-            connections: vec![Connection {
-                chip: HardwareChip::Ym2151,
-                source: ChipInstance::Secondary,
-                device_id: 1,
-                target: ChipInstance::Primary,
-            }],
-        });
-        config.routing.selected_profile = Some(2);
         save_config(&path, &config).unwrap();
         assert_eq!(load_config(&path).unwrap().routing, config.routing);
-        config.routing.devices.clear();
-        assert!(
-            format!("{:#}", save_config(&path, &config).unwrap_err()).contains("unknown device")
-        );
+        config
+            .routing
+            .devices
+            .push(config.routing.devices[0].clone());
+        assert!(format!("{:#}", save_config(&path, &config).unwrap_err()).contains("duplicate"));
         assert_eq!(load_config(&path).unwrap().routing.devices.len(), 1);
         fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
-        assert!(format!("{:#}", load_config(&path).unwrap_err()).contains("unknown device"));
+        assert!(format!("{:#}", load_config(&path).unwrap_err()).contains("duplicate"));
     }
 
     #[test]

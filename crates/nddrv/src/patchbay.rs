@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::DeviceStatus;
-use crate::routing::{ChipInstance, Connection, Device, HardwareChip, Profile};
+use crate::routing::{ChipInstance, Connection, Device, HardwareChip};
 
 pub const WIDTH: f32 = 866.;
 pub const SOURCE_X: f32 = 16.;
@@ -13,6 +13,7 @@ pub const TARGET_WIDTH: f32 = 200.;
 pub const DEVICE_X: f32 = 620.;
 pub const DEVICE_WIDTH: f32 = 230.;
 pub const HEADER: f32 = 40.;
+pub const DEVICE_HEADER: f32 = 128.;
 pub const ROW: f32 = 30.;
 const GAP: f32 = 16.;
 
@@ -48,6 +49,7 @@ pub struct DeviceBox {
     pub top: f32,
     pub height: f32,
     pub endpoints: Vec<Endpoint>,
+    pub extra_labels: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -75,7 +77,7 @@ pub fn row_y(index: usize) -> f32 {
 pub fn build(
     devices: &[Device],
     statuses: &HashMap<u64, DeviceStatus>,
-    profile: Option<&Profile>,
+    routes: &[Connection],
 ) -> Graph {
     let sources: Vec<_> = HardwareChip::ALL
         .into_iter()
@@ -88,7 +90,6 @@ pub fn build(
                 }),
         )
         .collect();
-    let routes = profile.map_or(&[][..], |profile| profile.connections.as_slice());
     let emulator_height = HEADER + ROW * sources.len() as f32 + 8.;
     let mut next_top = 0.;
     let mut boxes = Vec::new();
@@ -112,15 +113,35 @@ pub fn build(
             .map(|(index, (chip, instance, available))| Endpoint {
                 chip,
                 instance,
-                y: next_top + row_y(index),
+                y: next_top + DEVICE_HEADER + ROW * index as f32,
                 available,
             })
             .collect();
-        let height = HEADER + ROW * endpoints.len().max(1) as f32 + 8.;
+        let mut extra_labels: Vec<_> = crate::capability_labels(entries)
+            .into_iter()
+            .filter(|label| {
+                !endpoints.iter().any(|endpoint| {
+                    *label
+                        == format!(
+                            "{} #{}",
+                            endpoint.chip.name(),
+                            u16::from(endpoint.instance.number()) + 1
+                        )
+                })
+            })
+            .collect();
+        if connected && entries.is_empty() {
+            extra_labels.push("No chips advertised".into());
+        }
+        let height = DEVICE_HEADER + ROW * (endpoints.len() + extra_labels.len()) as f32 + 8.;
         boxes.push(DeviceBox {
             id: device.id,
             name: if device.name.is_empty() {
-                device.port.clone()
+                if device.port.is_empty() {
+                    "NanoDrive".into()
+                } else {
+                    device.port.clone()
+                }
             } else {
                 device.name.clone()
             },
@@ -128,6 +149,7 @@ pub fn build(
             top: next_top,
             height,
             endpoints,
+            extra_labels,
         });
         next_top += height + GAP;
     }
@@ -181,7 +203,7 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routing::{Connection, RoutingConfig};
+    use crate::routing::{Connection, SessionRouting};
 
     #[test]
     fn saved_offline_endpoints_and_default_cables_remain_visible() {
@@ -191,25 +213,14 @@ mod tests {
             port: "port".into(),
             baud_rate: 115_200,
         }];
-        let profile = Profile {
-            id: 1,
-            name: "Test".into(),
-            connections: vec![Connection {
-                chip: HardwareChip::Ym2151,
-                source: ChipInstance::Secondary,
-                device_id: 1,
-                target: ChipInstance::Primary,
-            }],
-        };
-        RoutingConfig {
-            devices: devices.clone(),
-            profiles: vec![profile.clone()],
-            selected_profile: Some(1),
-        }
-        .validate()
-        .unwrap();
-        let graph = build(&devices, &HashMap::new(), Some(&profile));
-        assert_eq!(graph.sources.len(), 34);
+        let routes = vec![Connection {
+            chip: HardwareChip::Ym2151,
+            source: ChipInstance::Secondary,
+            device_id: 1,
+            target: ChipInstance::Primary,
+        }];
+        let graph = build(&devices, &HashMap::new(), &routes);
+        assert_eq!(graph.sources.len(), 36);
         assert_eq!(graph.devices[0].endpoints.len(), 1);
         assert!(!graph.devices[0].endpoints[0].available);
         assert_eq!(graph.cables.iter().filter(|c| c.hardware).count(), 1);
@@ -255,7 +266,7 @@ mod tests {
                 },
             ]),
         )]);
-        let graph = build(&[device], &statuses, None);
+        let graph = build(&[device], &statuses, &[]);
         assert_eq!(graph.devices[0].endpoints.len(), 2);
         assert!(
             graph.devices[0]
@@ -267,7 +278,92 @@ mod tests {
     }
 
     #[test]
-    fn two_independent_device_routes_survive_disconnect_and_restore_emulation() {
+    fn nd7_aliases_and_ay_are_not_shown_as_unknown_or_duplicates() {
+        let device = Device {
+            id: 1,
+            name: "NanoDrive 7".into(),
+            port: "port".into(),
+            baud_rate: 115_200,
+        };
+        let entry = ndsif::CapabilityEntry {
+            write_id: 0x55,
+            instance: 0,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let entries = vec![
+            entry,
+            ndsif::CapabilityEntry {
+                instance: 1,
+                ..entry
+            },
+            ndsif::CapabilityEntry {
+                write_id: 0xa5,
+                instance: 1,
+                ..entry
+            },
+            ndsif::CapabilityEntry {
+                write_id: 0x5e,
+                ..entry
+            },
+            ndsif::CapabilityEntry {
+                write_id: 0x5f,
+                page: 1,
+                ..entry
+            },
+            ndsif::CapabilityEntry {
+                write_id: 0xa0,
+                ..entry
+            },
+            ndsif::CapabilityEntry {
+                write_id: 0xa0,
+                instance: 1,
+                ..entry
+            },
+        ];
+        let graph = build(
+            &[device],
+            &HashMap::from([(1, DeviceStatus::Connected(entries))]),
+            &[],
+        );
+        assert_eq!(graph.devices[0].endpoints.len(), 5);
+        assert!(graph.devices[0].extra_labels.is_empty());
+    }
+
+    #[test]
+    fn connected_device_shows_unrouteable_and_empty_capabilities() {
+        let device = Device {
+            id: 1,
+            name: "Drive".into(),
+            port: "port".into(),
+            baud_rate: 115_200,
+        };
+        let entry = ndsif::CapabilityEntry {
+            write_id: 0xff,
+            instance: 0,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let graph = build(
+            std::slice::from_ref(&device),
+            &HashMap::from([(1, DeviceStatus::Connected(vec![entry]))]),
+            &[],
+        );
+        assert_eq!(graph.devices[0].extra_labels, ["Unknown target 0xff #1"]);
+        let graph = build(
+            &[device],
+            &HashMap::from([(1, DeviceStatus::Connected(vec![]))]),
+            &[],
+        );
+        assert_eq!(graph.devices[0].extra_labels, ["No chips advertised"]);
+    }
+
+    #[test]
+    fn two_device_routes_reassign_after_disconnect() {
         let devices = vec![
             Device {
                 id: 1,
@@ -294,26 +390,10 @@ mod tests {
             (1, DeviceStatus::Connected(vec![entry])),
             (2, DeviceStatus::Connected(vec![entry])),
         ]);
-        let mut config = RoutingConfig {
-            devices,
-            ..RoutingConfig::default()
-        };
-        config.add_profile("Both").unwrap();
-        config
-            .set_route(
-                HardwareChip::Ym2151,
-                ChipInstance::Primary,
-                Some((1, ChipInstance::Primary)),
-            )
-            .unwrap();
-        config
-            .set_route(
-                HardwareChip::Ym2151,
-                ChipInstance::Secondary,
-                Some((2, ChipInstance::Primary)),
-            )
-            .unwrap();
-        let graph = build(&config.devices, &statuses, config.profiles.first());
+        let mut routing = SessionRouting::default();
+        let available = HashMap::from([(1, vec![entry]), (2, vec![entry])]);
+        routing.refresh(&devices, &available);
+        let graph = build(&devices, &statuses, routing.connections());
         let hardware: Vec<_> = graph.cables.iter().filter(|c| c.hardware).collect();
         assert_eq!(hardware.len(), 2);
         assert!(hardware.iter().all(|c| c.available));
@@ -323,21 +403,10 @@ mod tests {
         assert_eq!(hardware[1].target_x, DEVICE_X);
         assert_ne!(hardware[0].target_y, hardware[1].target_y);
         statuses.remove(&1);
-        let offline = build(&config.devices, &statuses, config.profiles.first());
-        assert_eq!(
-            offline
-                .cables
-                .iter()
-                .filter(|c| c.hardware && !c.available)
-                .count(),
-            1
-        );
-        assert_eq!(config.profiles[0].connections.len(), 2);
-        config
-            .set_route(HardwareChip::Ym2151, ChipInstance::Primary, None)
-            .unwrap();
-        let restored = build(&config.devices, &statuses, config.profiles.first());
+        routing.reset(&devices, &HashMap::from([(2, vec![entry])]));
+        let restored = build(&devices, &statuses, routing.connections());
         assert_eq!(restored.cables.iter().filter(|c| c.hardware).count(), 1);
+        assert!(restored.cables.iter().all(|c| c.available));
     }
 
     #[test]
@@ -350,7 +419,7 @@ mod tests {
                 baud_rate: 115_200,
             })
             .collect();
-        let graph = build(&devices, &HashMap::new(), None);
+        let graph = build(&devices, &HashMap::new(), &[]);
         let last = graph.devices.last().unwrap();
         assert!(graph.height > graph.emulator_height);
         assert_eq!(graph.height, last.top + last.height);

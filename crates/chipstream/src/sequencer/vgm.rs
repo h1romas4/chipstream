@@ -774,12 +774,13 @@ impl<'a> VgmSequencer<'a> {
     }
 
     /// Extract clocks for supported chips, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 17] {
+    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 18] {
         let misc = header.misc();
         [
             (Chip::Sn76489, header.sn76489_clock),
             (Chip::SegaPcm, header.sega_pcm_clock),
             (Chip::Pwm, header.pwm_clock),
+            (Chip::Ay8910, header.ay8910_clock),
             (Chip::C140, header.c140_clock),
             (Chip::Ym2413, header.ym2413_clock),
             (
@@ -811,6 +812,7 @@ impl<'a> VgmSequencer<'a> {
             Chip::Sn76489 => ChipId::Sn76489,
             Chip::SegaPcm => ChipId::SegaPcm,
             Chip::Pwm => ChipId::Pwm,
+            Chip::Ay8910 => ChipId::Ay8910,
             Chip::C140 => ChipId::C140,
             Chip::Ym2413 => ChipId::Ym2413,
             Chip::Ym2612 => ChipId::Ym2612,
@@ -860,6 +862,8 @@ impl<'a> VgmSequencer<'a> {
         let backend: Box<dyn SoundChip> =
             if let Some(backend) = factories.create(&factory_config)? {
                 backend
+            } else if chip == Chip::Ay8910 {
+                return Err(ChipError::UnsupportedChip(chip).into());
             } else if chip == Chip::Sn76489 {
                 feature_backend!("sn76496", chip, {
                     if header.misc().t6w28_detected == Some(true) {
@@ -1150,6 +1154,9 @@ impl<'a> VgmSequencer<'a> {
         let mut voices = Vec::new();
         for (chip, raw) in Self::supported_clocks(header) {
             if raw & 0x3fff_ffff == 0 {
+                continue;
+            }
+            if chip == Chip::Ay8910 && !factories.contains(&chip) {
                 continue;
             }
             for instance in [Instance::Primary, Instance::Secondary] {
@@ -1972,6 +1979,22 @@ impl<'a> VgmSequencer<'a> {
                         coefficient(mask.left_ch3, mask.right_ch3),
                     ])?;
                 }
+            }
+            AY8910StereoMask(mask)
+                if self.voices.iter().any(|voice| {
+                    voice.chip == Chip::Ay8910 && voice.instance == mask.chip_instance
+                }) && !(mask.left_ch1
+                    && mask.right_ch1
+                    && mask.left_ch2
+                    && mask.right_ch2
+                    && mask.left_ch3
+                    && mask.right_ch3) =>
+            {
+                return Err(ChipError::InvalidConfiguration {
+                    chip: Chip::Ay8910,
+                    reason: "AY8910 per-channel stereo masks are not supported",
+                }
+                .into());
             }
             DataBlock(block) => {
                 self.load_block(*block)?;
