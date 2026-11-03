@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Preserve DAC stream timing and fractional phase across frequency changes.
 - [x] Fix: Track SN76489 latch-only pitch changes and allow clock-divider and zero-period settings to be configured.
 - [x] Add: Configure callback-stream tracking with a caller-provided state through `track_state_with`.
 - [x] Add: Expose VGM fadeout state and an MDX streaming loop-boundary marker for audio players.

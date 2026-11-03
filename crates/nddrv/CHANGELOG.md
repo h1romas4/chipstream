@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix timing discontinuities when VGM DAC stream frequency changes during playback.
+
 ## v0.4.0
 
 - Publish an icon-bearing portable Windows executable and macOS DMG bundles,

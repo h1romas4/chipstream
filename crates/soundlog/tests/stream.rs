@@ -5506,6 +5506,128 @@ fn collect_dac_writes(doc: VgmDocument) -> Vec<u8> {
     values
 }
 
+fn timed_dac_writes(doc: VgmDocument) -> Vec<(usize, u8)> {
+    let mut time = 0;
+    let mut writes = Vec::new();
+    for result in VgmStream::from_document(doc) {
+        match result.unwrap() {
+            StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(samples))) => {
+                time += usize::from(samples);
+            }
+            StreamResult::Command(VgmCommand::Ym2612Write(_, spec)) if spec.register == 0x2a => {
+                writes.push((time, spec.value));
+            }
+            StreamResult::EndOfStream => break,
+            _ => {}
+        }
+    }
+    writes
+}
+
+#[test]
+fn active_dac_frequency_changes_preserve_fractional_phase() {
+    use soundlog::vgm::command::{LengthMode, SetStreamFrequency, StartStream};
+
+    for (new_frequency, expected) in [
+        (44_100, vec![0, 2, 3, 4, 5, 6, 7, 8, 9]),
+        (11_025, vec![0, 2, 5, 9]),
+    ] {
+        let mut builder = build_dac_setup_builder((0..32).collect(), 22_050, 1, 0);
+        builder.add_vgm_command(StartStream {
+            stream_id: 0,
+            data_start_offset: 0,
+            length_mode: LengthMode::PlayUntilEnd {
+                reverse: false,
+                looped: false,
+            },
+            data_length: 0,
+        });
+        builder.add_vgm_command(WaitSamples(3));
+        builder.add_vgm_command(SetStreamFrequency {
+            stream_id: 0,
+            frequency: new_frequency,
+        });
+        builder.add_vgm_command(WaitSamples(6));
+        builder.add_vgm_command(EndOfData);
+        let writes = timed_dac_writes(builder.finalize());
+        assert_eq!(
+            writes.iter().map(|(time, _)| *time).collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            writes
+                .iter()
+                .enumerate()
+                .all(|(index, (_, value))| usize::from(*value) == index)
+        );
+    }
+}
+
+#[test]
+fn zero_dac_frequency_pauses_phase_until_resumed() {
+    use soundlog::vgm::command::{LengthMode, SetStreamFrequency, StartStream};
+
+    let mut builder = build_dac_setup_builder((0..32).collect(), 22_050, 1, 0);
+    builder.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    builder.add_vgm_command(WaitSamples(3));
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 0,
+    });
+    builder.add_vgm_command(WaitSamples(4));
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 22_050,
+    });
+    builder.add_vgm_command(WaitSamples(5));
+    builder.add_vgm_command(EndOfData);
+    assert_eq!(
+        timed_dac_writes(builder.finalize()),
+        vec![(0, 0), (2, 1), (8, 2), (10, 3), (12, 4)]
+    );
+}
+
+#[test]
+fn alternating_oki_stream_frequencies_keep_continuous_timing() {
+    use soundlog::vgm::command::{LengthMode, SetStreamFrequency, StartStream};
+
+    let mut builder = build_dac_setup_builder(vec![0x35; 80_000], 7_813, 1, 0);
+    builder.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::PlayUntilEnd {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 0,
+    });
+    for second in 0..10 {
+        if second != 0 {
+            builder.add_vgm_command(SetStreamFrequency {
+                stream_id: 0,
+                frequency: if second % 2 == 0 { 7_813 } else { 7_812 },
+            });
+        }
+        builder.add_vgm_command(WaitSamples(44_100));
+    }
+    builder.add_vgm_command(EndOfData);
+    let writes = timed_dac_writes(builder.finalize());
+    assert_eq!(writes.len(), 78_126);
+    assert_eq!(writes[0].0, 0);
+    assert!(writes.windows(2).all(|pair| {
+        let spacing = pair[1].0 - pair[0].0;
+        (5..=6).contains(&spacing)
+    }));
+}
+
 /// LengthMode::Milliseconds – stream stops exactly at the specified duration.
 ///
 /// Setup: freq=100 Hz, data_length=30 ms → stream_end_sample = 30*44100/1000 = 1323.

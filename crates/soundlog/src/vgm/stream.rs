@@ -126,12 +126,8 @@ enum VgmStreamSource {
 ///
 /// State of a DAC stream for stream control commands.
 ///
-/// This structure holds only the **static configuration** established by the
-/// VGM stream-control commands (0x90–0x95) plus two anchor values that are set
-/// when playback starts (`stream_start_sample` and `start_data_pos`).  All
-/// dynamic playback quantities — current data position, next write sample,
-/// remaining commands, etc. — are **derived on-demand** from these anchors by
-/// [`StreamSnapshot`] rather than being mutated step-by-step.
+/// Timing is anchored at the most recent frequency change, preserving the
+/// fractional stream position accumulated at earlier frequencies.
 ///
 /// ## `LengthMode::Ignore`
 ///
@@ -174,12 +170,12 @@ struct StreamState {
     /// Byte offset in the data bank where this stream's playback begins.
     /// Forward playback starts here; reverse playback uses this as its lower bound.
     start_data_pos: usize,
-    /// The value of `VgmStream::current_sample` at the moment this stream was started.
-    /// All timing calculations are relative to this anchor.
-    stream_start_sample: usize,
+    /// Sample position and accumulated stream phase at the last rate change.
+    timing_sample: usize,
+    timing_phase: u128,
     /// The step index (0-based) of the last byte that was emitted to the chip.
     /// `None` means no byte has been emitted yet since the stream was started.
-    /// Used by [`StreamCalc`] to determine which step is next without re-emitting
+    /// Used by [`StreamSnapshot`] to determine which step is next without re-emitting
     /// an already-written byte.
     last_emitted_step: Option<usize>,
 }
@@ -187,10 +183,7 @@ struct StreamState {
 /// Read-only computed view of a single active DAC stream for one `generate_stream_writes` call.
 ///
 /// Built from [`StreamState`] at the start of each call; all playback positions
-/// and write-sample numbers are derived from the static configuration and the
-/// `stream_start_sample` anchor rather than being stored as mutable state.
-/// The only value written back to [`StreamState`] is `active` (set to `false`
-/// when the stream reaches its natural end).
+/// and write-sample numbers are derived from the stream's timing anchor.
 struct StreamSnapshot {
     /// Stream frequency in Hz.
     freq: u32,
@@ -213,8 +206,9 @@ struct StreamSnapshot {
     data_length: u32,
     /// Total byte length of the data bank (pre-fetched to avoid re-borrowing).
     data_bank_end: usize,
-    /// `VgmStream::current_sample` when the stream was started.
-    stream_start_sample: usize,
+    /// Sample position and accumulated stream phase at the last rate change.
+    timing_sample: usize,
+    timing_phase: u128,
     /// Step index of the last byte already emitted (`None` = nothing emitted yet).
     last_emitted_step: Option<usize>,
 }
@@ -228,7 +222,7 @@ impl StreamSnapshot {
             return None;
         }
         // LengthMode::Ignore means "just change current data position" — no
-        // chip writes are generated, so there is nothing for StreamCalc to do.
+        // chip writes are generated, so there is nothing for the snapshot to do.
         if matches!(state.length_mode, LengthMode::Ignore { .. }) {
             return None;
         }
@@ -249,7 +243,8 @@ impl StreamSnapshot {
             start_data_pos: state.start_data_pos,
             data_length: state.data_length,
             data_bank_end,
-            stream_start_sample: state.stream_start_sample,
+            timing_sample: state.timing_sample,
+            timing_phase: state.timing_phase,
             last_emitted_step: state.last_emitted_step,
         })
     }
@@ -283,11 +278,14 @@ impl StreamSnapshot {
 
     /// Sample number at which write #`n` (0-based) should be emitted.
     ///
-    /// Uses the formula  `start + n * 44100 / freq`  (integer arithmetic) which
-    /// guarantees that every write lands at the nearest integer sample boundary
-    /// without floating-point accumulation error.
+    /// Phase uses units of 1/44100 of a stream step. Rounding down preserves
+    /// the existing placement of writes between VGM sample boundaries. A write
+    /// beyond the representable sample timeline is saturated at its end.
     fn write_sample_for_step(&self, n: usize) -> usize {
-        self.stream_start_sample + n * 44100 / self.freq as usize
+        let remaining = (n as u128 * 44_100).saturating_sub(self.timing_phase);
+        let samples = remaining / u128::from(self.freq);
+        self.timing_sample
+            .saturating_add(usize::try_from(samples).unwrap_or(usize::MAX))
     }
 
     /// Position computation
@@ -1966,7 +1964,8 @@ impl VgmStream {
 
         for state in self.stream_states.values_mut() {
             state.active = false;
-            state.stream_start_sample = 0;
+            state.timing_sample = 0;
+            state.timing_phase = 0;
             state.last_emitted_step = None;
         }
 
@@ -2208,7 +2207,8 @@ impl VgmStream {
                 block_end_pos: None,
                 active: false,
                 start_data_pos: 0,
-                stream_start_sample: 0,
+                timing_sample: 0,
+                timing_phase: 0,
                 last_emitted_step: None,
             });
 
@@ -2244,7 +2244,8 @@ impl VgmStream {
                 block_end_pos: None,
                 active: false,
                 start_data_pos: 0,
-                stream_start_sample: 0,
+                timing_sample: 0,
+                timing_phase: 0,
                 last_emitted_step: None,
             });
 
@@ -2256,6 +2257,11 @@ impl VgmStream {
     /// Handles SetStreamFrequency command (0x92).
     fn handle_set_stream_frequency(&mut self, freq: &SetStreamFrequency) {
         if let Some(state) = self.stream_states.get_mut(&freq.stream_id) {
+            if state.active {
+                let elapsed = self.current_sample - state.timing_sample;
+                state.timing_phase += elapsed as u128 * u128::from(state.frequency_hz.unwrap_or(0));
+                state.timing_sample = self.current_sample;
+            }
             state.frequency_hz = Some(freq.frequency);
         }
     }
@@ -2286,7 +2292,8 @@ impl VgmStream {
             state.block_end_pos = None; // StartStream doesn't use block boundaries
             state.active = true;
             state.start_data_pos = start_data_pos;
-            state.stream_start_sample = self.current_sample;
+            state.timing_sample = self.current_sample;
+            state.timing_phase = 0;
             state.last_emitted_step = None;
         }
         Ok(())
@@ -2324,7 +2331,8 @@ impl VgmStream {
             state.active = true;
             state.start_data_pos = start_data_pos;
             state.block_end_pos = Some(block_end);
-            state.stream_start_sample = self.current_sample;
+            state.timing_sample = self.current_sample;
+            state.timing_phase = 0;
             state.last_emitted_step = None;
             // FastCall always uses PlayUntilEnd
             state.length_mode = LengthMode::PlayUntilEnd {
@@ -2368,7 +2376,7 @@ impl VgmStream {
     /// scheduled write has been reached, the data-bank byte at the computed
     /// position is read, a chip-write command is emitted, and — if the stream
     /// has permanently ended — the `active` flag is cleared.  All playback
-    /// positions and timing are derived from [`StreamCalc`] rather than being
+    /// positions and timing are derived from [`StreamSnapshot`] rather than being
     /// stored as mutable per-step state.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
         self.stream_id_scratch.clear();
