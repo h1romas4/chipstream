@@ -217,7 +217,8 @@ impl NdsifHardwareWorkers {
                         if timeline.is_cancelled() {
                             return Ok(());
                         }
-                        let result = match receiver.recv_timeout(Duration::from_millis(10)) {
+                        let idle_poll = if timing == DeviceTiming::Dac { 5 } else { 10 };
+                        let result = match receiver.recv_timeout(Duration::from_millis(idle_poll)) {
                             Ok(Work::Batch(batch)) => device
                                 .lock()
                                 .map_err(|_| "device lock poisoned".to_owned())
@@ -285,7 +286,13 @@ impl NdsifHardwareWorkers {
                             Err(mpsc::RecvTimeoutError::Timeout) => device
                                 .lock()
                                 .map_err(|_| "device lock poisoned".to_owned())
-                                .and_then(|mut device| device.update_output_fade()),
+                                .and_then(|mut device| {
+                                    device.update_output_fade()?;
+                                    if timing == DeviceTiming::Dac {
+                                        device.service_timed_dac_host_events(false)?;
+                                    }
+                                    Ok(())
+                                }),
                             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
                         };
                         if let Err(error) = result {

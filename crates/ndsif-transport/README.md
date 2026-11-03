@@ -326,15 +326,25 @@ error. Recording does not itself synchronize host audio or device-timed streams.
   Consecutive identical DAC values at tick zero within a
   flush are collapsed; later DAC values and intervening select writes are
   preserved. Waits are packed into the preceding DAC or select record when
-  possible without changing their timing. Unanswered traffic is synchronized
-  within 2048 bytes before start and 4096 bytes while running. A delayed
-  DAC_STATUS response is retried up to twice with new transaction IDs, within
-  the configured response timeout; incomplete earlier responses are discarded
-  and complete earlier responses are checked. DAC data and state-changing
-  commands are never retried. Status queries still block the device worker, so
-  prolonged communication delays can exhaust the DAC buffer and remain errors.
-  The transport targets 80 ms of prebuffering and seals/drains the profile at
-  end of playback. Without this profile, normal scheduled writes are used.
+  possible without changing their timing. Active work is submitted in chunks
+  of approximately 5 ms or at most 59 DAC writes; longer silent gaps may be
+  represented by a single wait. If a chunk would exceed the event FIFO,
+  subsequent FM and PSG events permanently switch to a bounded host queue.
+  They wait for all previously submitted device events to be consumed; a
+  host-owned tick-zero prefix with no preceding device events is sent before
+  DAC start. Runtime host writes are paced best-effort and yield to DAC
+  buffering, so serial and operating-system latency can delay them.
+
+  Unanswered traffic is bounded to 2048 bytes before start and 1024 bytes while
+  running. Running DAC_STATUS requests are polled asynchronously, normally
+  every 5 ms, with read-only retries after 20 ms and a 500 ms timeout. Each
+  reply is validated against its request-time record, event and serial-byte
+  positions, including when newer writes have already been submitted.
+  Incomplete responses are discarded when retried; late replies are handled
+  without retrying DAC data or state-changing commands. Initial preparation,
+  start and final draining still use synchronous control exchanges. The
+  transport targets 80 ms of prebuffering and seals/drains the profile at end
+  of playback. Without this profile, normal scheduled writes are used.
 - Applications can defer a timed DAC stream, verify its buffered PCM span and
   verify the device's queued records and events before starting it on their presentation
   timeline. A stream sealed before starting is drained after it starts.

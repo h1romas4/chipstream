@@ -28,7 +28,7 @@ mod tests;
 
 use audio::{AudioStartMode, AudioStream, audio_prebuffer_bytes};
 use dac::TimedDacStream;
-pub(crate) use dac::is_timed_dac_data_register;
+pub(crate) use dac::{DAC_CHUNK_MILLISECONDS, is_timed_dac_data_register};
 
 const AUDIO_STREAM_ID: u8 = 0xb7;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -511,6 +511,7 @@ impl NdsifSerialTransport {
         }
         self.verify_audio_stream_idle()?;
         self.verify_timed_dac_idle()?;
+        self.session.clear_dac_status()?;
         self.pending.clear();
         self.audio_stream = None;
         self.timed_dac_stream = None;

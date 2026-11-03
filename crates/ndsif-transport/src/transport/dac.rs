@@ -1,5 +1,6 @@
 //! Timed DAC stream bookkeeping and device operations.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,13 +12,33 @@ use ndsif::{
 
 use super::{
     DAC_DRAIN_TIMEOUT, NdsifHostTimeline, NdsifSerialTransport, NdsifTransportError, PendingEvent,
-    STATUS_POLL_INTERVAL,
 };
 
 const DAC_PREBUFFER_MILLISECONDS: u64 = 80;
 const DAC_PRESTART_WINDOW_BYTES: usize = 2048;
-const DAC_RUNNING_WINDOW_BYTES: usize = 4096;
+const DAC_RUNNING_WINDOW_BYTES: usize = 1024;
 const DAC_SYNC_RESERVE_BYTES: usize = 64;
+const DAC_STATUS_INTERVAL: Duration = Duration::from_millis(5);
+const DAC_STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+const DAC_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const DAC_CHUNK_MILLISECONDS: u64 = 5;
+const DAC_CHUNK_SAMPLE_LIMIT: usize = 59;
+const DAC_HOST_QUEUE_LIMIT: usize = 65_536;
+const DAC_HOST_EVENT_BUDGET: usize = 128;
+const DAC_HOST_FRAME_OVERHEAD: usize = 32;
+const DAC_HOST_WINDOW_BYTES: u64 = 256;
+const DAC_HOST_MIN_LEAD_MILLISECONDS: u64 = 20;
+
+struct StatusFence {
+    transaction_id: u16,
+    sequence: u32,
+    tick: u64,
+    events: u32,
+    ordinal: u64,
+    epoch: u64,
+    host_bytes: u64,
+    requested_at: Instant,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DacStartMode {
@@ -85,6 +106,26 @@ pub(crate) fn is_timed_dac_data_register(event: &NdsifRegisterEvent) -> bool {
         && matches!(event.write.address, 0x2a | 0x2b)
 }
 
+fn check_timed_dac_fault(status: DacStatus) -> Result<(), String> {
+    if status.fault != 0 || status.state == 3 {
+        return Err(format!(
+            "NDSIF timed DAC stream faulted (state={}, fault={}, accepted={}, consumed={}, queued={}, event_queued={}, underflows={}, overflows={}, rejected={}, late_dac={}, max_late_us={})",
+            status.state,
+            status.fault,
+            status.accepted,
+            status.consumed,
+            status.queued,
+            status.event_queued,
+            status.underflows,
+            status.overflows,
+            status.rejected,
+            status.late_dac,
+            status.max_late_us
+        ));
+    }
+    Ok(())
+}
+
 pub(super) struct TimedDacStream {
     pub(super) capabilities: DacCapabilities,
     pub(super) output_rate: Option<u32>,
@@ -97,6 +138,19 @@ pub(super) struct TimedDacStream {
     pub(super) sealed: bool,
     pub(super) finished: bool,
     pub(super) last_status_check: Option<Instant>,
+    pub(super) events_sent: u32,
+    last_consumed: u32,
+    last_event_consumed: u32,
+    status_fences: Vec<StatusFence>,
+    status_ordinal: u64,
+    applied_status_ordinal: u64,
+    status_epoch: u64,
+    last_valid_status: Option<Instant>,
+    host_registers: bool,
+    pub(super) host_events: VecDeque<PendingEvent>,
+    pub(super) host_bytes_sent: u64,
+    host_bytes_confirmed: u64,
+    pub(super) started_at: Option<Instant>,
     initial_events: Vec<PendingEvent>,
     initial_finished: bool,
     start_mode: DacStartMode,
@@ -118,6 +172,19 @@ impl TimedDacStream {
             sealed: false,
             finished: false,
             last_status_check: None,
+            events_sent: 0,
+            last_consumed: 0,
+            last_event_consumed: 0,
+            status_fences: Vec::new(),
+            status_ordinal: 0,
+            applied_status_ordinal: 0,
+            status_epoch: 0,
+            last_valid_status: None,
+            host_registers: false,
+            host_events: VecDeque::new(),
+            host_bytes_sent: 0,
+            host_bytes_confirmed: 0,
+            started_at: None,
             initial_events: Vec::new(),
             initial_finished: false,
             start_mode: DacStartMode::Automatic,
@@ -153,6 +220,8 @@ impl TimedDacStream {
         }
         self.queued_records = status.queued;
         self.queued_events = status.event_queued;
+        self.last_consumed = status.consumed;
+        self.last_event_consumed = status.event_consumed;
         Ok(())
     }
 }
@@ -296,7 +365,7 @@ impl NdsifSerialTransport {
         if size + DAC_SYNC_RESERVE_BYTES > window {
             return Err("NDSIF timed DAC frame exceeds the transmit window".into());
         }
-        if self
+        while self
             .session
             .unconfirmed_bytes()
             .saturating_add(size)
@@ -304,8 +373,16 @@ impl NdsifSerialTransport {
             > window
         {
             if started {
-                let status = self.query_timed_dac_status()?;
-                self.update_timed_dac_progress(status)?;
+                self.check_timed_dac_status_if_due()?;
+                if self
+                    .session
+                    .unconfirmed_bytes()
+                    .saturating_add(size)
+                    .saturating_add(DAC_SYNC_RESERVE_BYTES)
+                    > window
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             } else {
                 self.request(Command::Ping(b"chipstream-dac-sync"))?;
             }
@@ -336,7 +413,7 @@ impl NdsifSerialTransport {
         }
         stream.output_rate = Some(output_rate);
         let ticks_per_second = stream.capabilities.ticks_per_second;
-        let mut record_tick = stream.accepted_tick;
+        let record_tick = stream.accepted_tick;
         let target_tick = ticks_for_frame(sample_frame, output_rate, ticks_per_second)?;
         if target_tick < record_tick {
             return Err(format!(
@@ -345,7 +422,97 @@ impl NdsifSerialTransport {
             ));
         }
 
-        let due = Self::order_events(events, None)?;
+        let mut due: VecDeque<_> = Self::order_events(events, None)?.into();
+        let chunk_ticks = (u64::from(ticks_per_second) * DAC_CHUNK_MILLISECONDS / 1000).max(1);
+        while !due.is_empty()
+            || self
+                .timed_dac_stream
+                .as_ref()
+                .expect("stream was checked above")
+                .accepted_tick
+                < target_tick
+        {
+            let current = self
+                .timed_dac_stream
+                .as_ref()
+                .expect("stream was checked above")
+                .accepted_tick;
+            let normal_end = current.saturating_add(chunk_ticks).min(target_tick);
+            let last_tick = due
+                .back()
+                .map(|event| ticks_for_frame(event.sample_frame(), output_rate, ticks_per_second))
+                .transpose()?;
+            let first_tick = due
+                .front()
+                .map(|event| ticks_for_frame(event.sample_frame(), output_rate, ticks_per_second))
+                .transpose()?;
+            let mut end_tick = if last_tick.is_none_or(|tick| tick < normal_end) {
+                target_tick
+            } else if first_tick.is_some_and(|tick| tick > normal_end) {
+                first_tick
+                    .expect("first tick was checked above")
+                    .min(target_tick)
+            } else {
+                normal_end
+            };
+            let mut chunk = Vec::new();
+            let mut samples = 0;
+            while let Some(event) = due.front() {
+                let tick = ticks_for_frame(event.sample_frame(), output_rate, ticks_per_second)?;
+                if tick > target_tick || tick < current {
+                    return Err("NDSIF timed DAC event falls outside its flush interval".to_owned());
+                }
+                if tick > end_tick || (tick == end_tick && end_tick < target_tick) {
+                    break;
+                }
+                let is_sample = matches!(event, PendingEvent::Register(register) if is_timed_dac_data_register(register));
+                if is_sample && samples == DAC_CHUNK_SAMPLE_LIMIT {
+                    end_tick = tick;
+                    break;
+                }
+                samples += usize::from(is_sample);
+                chunk.push(due.pop_front().expect("front was checked above"));
+            }
+            if chunk.is_empty() && end_tick == current {
+                return Err("NDSIF timed DAC chunk cannot advance".to_owned());
+            }
+            self.flush_timed_dac_chunk(chunk, end_tick, output_rate, ticks_per_second)?;
+            self.service_timed_dac_host_events(false)?;
+        }
+        Ok(())
+    }
+
+    fn flush_timed_dac_chunk(
+        &mut self,
+        due: Vec<PendingEvent>,
+        target_tick: u64,
+        output_rate: u32,
+        ticks_per_second: u32,
+    ) -> Result<(), String> {
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .expect("stream was checked above");
+        let mut record_tick = stream.accepted_tick;
+        let event_count = due
+            .iter()
+            .filter(|event| match event {
+                PendingEvent::Register(register) => !is_timed_dac_data_register(register),
+                PendingEvent::Psg(_) => true,
+                _ => false,
+            })
+            .count();
+        if !stream.host_registers
+            && u64::from(stream.queued_events) + event_count as u64
+                > u64::from(stream.capabilities.event_capacity)
+        {
+            stream.host_registers = true;
+        }
+        if stream.host_registers
+            && stream.host_events.len().saturating_add(event_count) > DAC_HOST_QUEUE_LIMIT
+        {
+            return Err("NDSIF timed DAC host event queue exceeds its limit".to_owned());
+        }
         let mut records = Vec::new();
         let mut index = 0;
         while index < due.len() {
@@ -390,6 +557,20 @@ impl NdsifSerialTransport {
                             "NDSIF timed DAC event rate differs from output rate".to_owned()
                         );
                     }
+                    if self
+                        .timed_dac_stream
+                        .as_ref()
+                        .expect("stream was checked above")
+                        .host_registers
+                    {
+                        self.timed_dac_stream
+                            .as_mut()
+                            .expect("stream was checked above")
+                            .host_events
+                            .push_back(due[index].clone());
+                        index += 1;
+                        continue;
+                    }
                     let tick = ticks_for_frame(first.sample_frame, output_rate, ticks_per_second)?;
                     let mut writes = Vec::new();
                     let mut end = index;
@@ -424,6 +605,20 @@ impl NdsifSerialTransport {
                         return Err(
                             "NDSIF timed DAC event rate differs from output rate".to_owned()
                         );
+                    }
+                    if self
+                        .timed_dac_stream
+                        .as_ref()
+                        .expect("stream was checked above")
+                        .host_registers
+                    {
+                        self.timed_dac_stream
+                            .as_mut()
+                            .expect("stream was checked above")
+                            .host_events
+                            .push_back(due[index].clone());
+                        index += 1;
+                        continue;
                     }
                     let tick = ticks_for_frame(first.sample_frame, output_rate, ticks_per_second)?;
                     let mut writes = Vec::new();
@@ -495,26 +690,22 @@ impl NdsifSerialTransport {
 
     /// Validate device DAC progress and update local queue counters.
     fn update_timed_dac_progress(&mut self, status: DacStatus) -> Result<(), String> {
-        if status.fault != 0 || status.state == 3 {
-            return Err(format!(
-                "NDSIF timed DAC stream faulted (state={}, fault={}, accepted={}, consumed={}, queued={}, event_queued={}, underflows={}, overflows={}, rejected={}, late_dac={}, max_late_us={})",
-                status.state,
-                status.fault,
-                status.accepted,
-                status.consumed,
-                status.queued,
-                status.event_queued,
-                status.underflows,
-                status.overflows,
-                status.rejected,
-                status.late_dac,
-                status.max_late_us
-            ));
-        }
+        check_timed_dac_fault(status)?;
         self.timed_dac_stream
             .as_mut()
             .ok_or_else(|| "NDSIF timed DAC stream is not configured".to_owned())?
-            .update_progress(status)
+            .update_progress(status)?;
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .expect("stream was checked above");
+        stream.status_epoch = stream
+            .status_epoch
+            .checked_add(1)
+            .ok_or_else(|| "NDSIF DAC status epoch overflow".to_owned())?;
+        stream.last_valid_status = Some(Instant::now());
+        stream.host_bytes_confirmed = stream.host_bytes_sent;
+        Ok(())
     }
 
     /// Wait for room in the device's timed DAC record queue.
@@ -539,8 +730,8 @@ impl NdsifSerialTransport {
                     "NDSIF timed DAC prebuffer exceeds device capacity (queued={queued}, incoming={incoming}, capacity={capacity})"
                 ));
             }
-            let status = self.query_timed_dac_status()?;
-            self.update_timed_dac_progress(status)?;
+            self.check_timed_dac_status_if_due()?;
+            self.service_timed_dac_host_events(false)?;
             let queued = self
                 .timed_dac_stream
                 .as_ref()
@@ -554,7 +745,7 @@ impl NdsifSerialTransport {
                     "timed out waiting for NDSIF DAC record capacity (queued={queued}, incoming={incoming}, capacity={capacity})"
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -580,8 +771,7 @@ impl NdsifSerialTransport {
                     "NDSIF timed DAC prebuffer exceeds event capacity (queued={queued}, incoming={incoming}, capacity={capacity})"
                 ));
             }
-            let status = self.query_timed_dac_status()?;
-            self.update_timed_dac_progress(status)?;
+            self.check_timed_dac_status_if_due()?;
             let queued = self
                 .timed_dac_stream
                 .as_ref()
@@ -595,7 +785,7 @@ impl NdsifSerialTransport {
                     "timed out waiting for NDSIF DAC event capacity (queued={queued}, incoming={incoming}, capacity={capacity})"
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -691,7 +881,173 @@ impl NdsifSerialTransport {
             .queued_events
             .checked_add(count as u32)
             .ok_or_else(|| "NDSIF queued DAC event count overflow".to_owned())?;
+        stream.events_sent = stream
+            .events_sent
+            .checked_add(count as u32)
+            .ok_or_else(|| "NDSIF DAC event count overflow".to_owned())?;
         Ok(())
+    }
+
+    /// Send due host-paced writes only after earlier device events have drained.
+    pub(crate) fn service_timed_dac_host_events(&mut self, startup: bool) -> Result<(), String> {
+        self.check_timed_dac_cancellation()?;
+        if !startup {
+            self.check_timed_dac_status_if_due()?;
+        }
+        let Some(stream) = self.timed_dac_stream.as_ref() else {
+            return Ok(());
+        };
+        if stream.host_events.is_empty()
+            || (startup && stream.events_sent != 0)
+            || (!startup && (!stream.started || stream.last_event_consumed != stream.events_sent))
+        {
+            return Ok(());
+        }
+        let ticks_per_second = stream.capabilities.ticks_per_second;
+        let now_tick = if startup {
+            0
+        } else {
+            let started = stream
+                .started_at
+                .ok_or_else(|| "NDSIF timed DAC host clock is not initialized".to_owned())?;
+            let tick = started.elapsed().as_nanos() * u128::from(ticks_per_second) / 1_000_000_000;
+            u64::try_from(tick).map_err(|_| "NDSIF timed DAC host clock overflow".to_owned())?
+        };
+        let lead = u64::from(ticks_per_second) * DAC_HOST_MIN_LEAD_MILLISECONDS / 1000;
+        if !startup && !stream.sealed && stream.accepted_tick < now_tick.saturating_add(lead) {
+            return Ok(());
+        }
+        let mut budget = DAC_HOST_EVENT_BUDGET;
+        while budget > 0 {
+            let stream = self
+                .timed_dac_stream
+                .as_ref()
+                .expect("stream was checked above");
+            let Some(first) = stream.host_events.front() else {
+                break;
+            };
+            let first_tick = ticks_for_frame(
+                first.sample_frame(),
+                stream
+                    .output_rate
+                    .ok_or_else(|| "NDSIF timed DAC output rate is not configured".to_owned())?,
+                ticks_per_second,
+            )?;
+            if first_tick > now_tick {
+                break;
+            }
+            let (write_id, instance, page, psg) = match first {
+                PendingEvent::Register(event) => {
+                    (event.write_id, event.instance, event.page, false)
+                }
+                PendingEvent::Psg(event) => (event.write_id, event.instance, event.page, true),
+                _ => return Err("invalid NDSIF timed DAC host event".to_owned()),
+            };
+            let available = if startup {
+                usize::MAX
+            } else {
+                let serial = DAC_RUNNING_WINDOW_BYTES
+                    .saturating_sub(self.session.unconfirmed_bytes())
+                    .saturating_sub(DAC_SYNC_RESERVE_BYTES + DAC_HOST_FRAME_OVERHEAD);
+                let fm = DAC_HOST_WINDOW_BYTES
+                    .saturating_sub(stream.host_bytes_sent - stream.host_bytes_confirmed)
+                    .saturating_sub(DAC_HOST_FRAME_OVERHEAD as u64);
+                serial.min(usize::try_from(fm).unwrap_or(usize::MAX))
+            };
+            let width = if psg { 1 } else { 2 };
+            if available < width {
+                break;
+            }
+            let mut writes = Vec::new();
+            let mut bytes = Vec::new();
+            let rate = stream.output_rate.expect("output rate was checked above");
+            for event in &stream.host_events {
+                if writes.len() + bytes.len() >= budget
+                    || (writes.len() * 2 + bytes.len() + width) > available
+                    || ticks_for_frame(event.sample_frame(), rate, ticks_per_second)? > now_tick
+                {
+                    break;
+                }
+                match event {
+                    PendingEvent::Register(event)
+                        if !psg
+                            && event.write_id == write_id
+                            && event.instance == instance
+                            && event.page == page
+                            && writes.len() < ndsif::MAX_REGISTER_WRITES =>
+                    {
+                        writes.push(event.write)
+                    }
+                    PendingEvent::Psg(event)
+                        if psg
+                            && event.write_id == write_id
+                            && event.instance == instance
+                            && event.page == page
+                            && bytes.len() < ndsif::MAX_REGISTER_BYTES =>
+                    {
+                        bytes.push(event.value)
+                    }
+                    _ => break,
+                }
+            }
+            let count = writes.len() + bytes.len();
+            if count == 0 {
+                return Err("NDSIF timed DAC host batch made no progress".to_owned());
+            }
+            if psg {
+                self.request_timed_dac(Command::WriteBytes {
+                    write_id,
+                    instance,
+                    page,
+                    bytes: &bytes,
+                })?;
+            } else {
+                self.request_timed_dac(Command::WriteRegisters {
+                    write_id,
+                    instance,
+                    page,
+                    writes: &writes,
+                })?;
+            }
+            let stream = self
+                .timed_dac_stream
+                .as_mut()
+                .expect("stream was checked above");
+            for _ in 0..count {
+                stream.host_events.pop_front();
+            }
+            if !startup {
+                stream.host_bytes_sent = stream
+                    .host_bytes_sent
+                    .checked_add((count * width + DAC_HOST_FRAME_OVERHEAD) as u64)
+                    .ok_or_else(|| "NDSIF timed DAC host byte count overflow".to_owned())?;
+            }
+            budget -= count;
+        }
+        Ok(())
+    }
+
+    fn prepare_timed_dac_host_startup(&mut self) -> Result<(), String> {
+        loop {
+            let Some(stream) = self.timed_dac_stream.as_ref() else {
+                return Ok(());
+            };
+            let Some(event) = stream.host_events.front() else {
+                return Ok(());
+            };
+            if stream.events_sent != 0
+                || ticks_for_frame(
+                    event.sample_frame(),
+                    stream.output_rate.ok_or_else(|| {
+                        "NDSIF timed DAC output rate is not configured".to_owned()
+                    })?,
+                    stream.capabilities.ticks_per_second,
+                )? != 0
+            {
+                return Ok(());
+            }
+            self.service_timed_dac_host_events(true)?;
+        }
     }
 
     /// Start the DAC profile when sufficiently buffered or explicitly forced.
@@ -710,6 +1066,7 @@ impl NdsifSerialTransport {
         if !ready {
             return Ok(());
         }
+        self.prepare_timed_dac_host_startup()?;
         self.request(Command::Ping(b"chipstream-dac-start"))?;
         self.start_timed_dac_after_ping(minimum_lead_ticks)
     }
@@ -719,6 +1076,10 @@ impl NdsifSerialTransport {
             profile: DAC_PROFILE_YM2612,
             minimum_lead_ticks,
         })?;
+        self.timed_dac_stream
+            .as_mut()
+            .expect("stream was checked above")
+            .started_at = Some(Instant::now());
         let status = self.query_timed_dac_status()?;
         if !matches!(status.state, 1 | 2) {
             return Err(format!(
@@ -810,6 +1171,7 @@ impl NdsifSerialTransport {
                 stream.accepted_tick
             ));
         }
+        self.prepare_timed_dac_host_startup()?;
         self.request(Command::Ping(b"chipstream-dac-start"))?;
         let status = self.query_timed_dac_status()?;
         let stream = self
@@ -863,20 +1225,141 @@ impl NdsifSerialTransport {
     }
 
     /// Poll and validate DAC progress when the status interval has elapsed.
-    pub(super) fn check_timed_dac_status_if_due(&mut self) -> Result<(), String> {
-        let due = self.timed_dac_stream.as_ref().is_some_and(|stream| {
-            stream.started
-                && stream
-                    .last_status_check
-                    .is_some_and(|last| last.elapsed() >= STATUS_POLL_INTERVAL)
-        });
-        if due {
-            let status = self.query_timed_dac_status()?;
-            self.update_timed_dac_progress(status)?;
-            self.timed_dac_stream
+    pub(crate) fn check_timed_dac_status_if_due(&mut self) -> Result<(), String> {
+        if !self
+            .timed_dac_stream
+            .as_ref()
+            .is_some_and(|stream| stream.started && !stream.finished)
+        {
+            return Ok(());
+        }
+        self.check_timed_dac_cancellation()?;
+        while let Some(frame) = self
+            .session
+            .poll_dac_status()
+            .map_err(|error| error.to_string())?
+        {
+            let response = Response::decode(&frame).map_err(|error| error.to_string())?;
+            let status = match response.reply {
+                Reply::DacStatus(status) if status.profile == DAC_PROFILE_YM2612 => status,
+                _ => return Err("unexpected NDSIF DAC_STATUS response".to_owned()),
+            };
+            let stream = self
+                .timed_dac_stream
                 .as_mut()
-                .expect("stream was checked above")
-                .last_status_check = Some(Instant::now());
+                .expect("stream was checked above");
+            let index = stream
+                .status_fences
+                .iter()
+                .position(|fence| fence.transaction_id == frame.transaction_id())
+                .ok_or_else(|| "NDSIF DAC_STATUS response has no request fence".to_owned())?;
+            let fence = stream.status_fences.remove(index);
+            check_timed_dac_fault(status)?;
+            if status.accepted != fence.sequence
+                || status.accepted_tick != fence.tick
+                || status.accepted.checked_sub(status.consumed) != Some(status.queued)
+                || status.queued.checked_add(status.free)
+                    != Some(stream.capabilities.record_capacity)
+                || status.event_consumed.checked_add(status.event_queued) != Some(fence.events)
+            {
+                return Err(
+                    "NDSIF asynchronous DAC_STATUS counters do not match the request fence"
+                        .to_owned(),
+                );
+            }
+            stream.host_bytes_confirmed = stream.host_bytes_confirmed.max(fence.host_bytes);
+            if fence.epoch == stream.status_epoch && fence.ordinal > stream.applied_status_ordinal {
+                if status.consumed < stream.last_consumed
+                    || status.event_consumed < stream.last_event_consumed
+                    || (status.state == 2 && !stream.sealed)
+                    || status.state == 0
+                {
+                    return Err(
+                        "NDSIF asynchronous DAC_STATUS moved backward or stopped unexpectedly"
+                            .to_owned(),
+                    );
+                }
+                let queued_records = stream
+                    .next_sequence
+                    .checked_sub(status.consumed)
+                    .ok_or_else(|| {
+                        "NDSIF asynchronous DAC record count exceeds the host sequence".to_owned()
+                    })?;
+                let queued_events = stream
+                    .events_sent
+                    .checked_sub(status.event_consumed)
+                    .ok_or_else(|| {
+                        "NDSIF asynchronous DAC event count exceeds host submissions".to_owned()
+                    })?;
+                if queued_records > stream.capabilities.record_capacity
+                    || queued_events > u32::from(stream.capabilities.event_capacity)
+                {
+                    return Err("NDSIF asynchronous DAC_STATUS exceeds queue capacity".to_owned());
+                }
+                stream.queued_records = queued_records;
+                stream.queued_events = queued_events;
+                stream.last_consumed = status.consumed;
+                stream.last_event_consumed = status.event_consumed;
+                stream.applied_status_ordinal = fence.ordinal;
+                stream.last_valid_status = Some(Instant::now());
+            }
+        }
+        let stream = self
+            .timed_dac_stream
+            .as_mut()
+            .expect("stream was checked above");
+        if stream
+            .last_valid_status
+            .is_some_and(|last| last.elapsed() >= DAC_STATUS_TIMEOUT)
+        {
+            return Err("timed out waiting for NDSIF DAC_STATUS".to_owned());
+        }
+        let mut expired = Vec::new();
+        stream.status_fences.retain(|fence| {
+            if fence.requested_at.elapsed() >= DAC_STATUS_TIMEOUT {
+                expired.push(fence.transaction_id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in expired {
+            self.session
+                .retire_dac_status(id)
+                .map_err(|error| error.to_string())?;
+        }
+        let interval = if stream.status_fences.is_empty() {
+            DAC_STATUS_INTERVAL
+        } else {
+            DAC_STATUS_RETRY_INTERVAL
+        };
+        if stream
+            .last_status_check
+            .is_none_or(|last| last.elapsed() >= interval)
+        {
+            if !stream.status_fences.is_empty() {
+                self.session.expire_partial_dac_status();
+            }
+            let transaction_id = self
+                .session
+                .begin_dac_status(DAC_PROFILE_YM2612)
+                .map_err(|error| error.to_string())?;
+            stream.status_ordinal = stream
+                .status_ordinal
+                .checked_add(1)
+                .ok_or_else(|| "NDSIF DAC status sequence overflow".to_owned())?;
+            let now = Instant::now();
+            stream.status_fences.push(StatusFence {
+                transaction_id,
+                sequence: stream.next_sequence,
+                tick: stream.accepted_tick,
+                events: stream.events_sent,
+                ordinal: stream.status_ordinal,
+                epoch: stream.status_epoch,
+                host_bytes: stream.host_bytes_sent,
+                requested_at: now,
+            });
+            stream.last_status_check = Some(now);
         }
         Ok(())
     }
@@ -904,18 +1387,36 @@ impl NdsifSerialTransport {
             };
         }
         self.flush_scheduled_until(sample_frame, output_rate)?;
-        let Some((finished, has_records, has_events)) =
+        let Some((finished, has_records, has_events, has_host_events)) =
             self.timed_dac_stream.as_ref().map(|stream| {
                 (
                     stream.finished,
                     stream.next_sequence > 0,
                     stream.queued_events > 0,
+                    !stream.host_events.is_empty(),
                 )
             })
         else {
             return Ok(());
         };
-        if finished || (!has_records && !has_events) {
+        if !has_records && !has_events && has_host_events {
+            self.prepare_timed_dac_host_startup()?;
+            if self
+                .timed_dac_stream
+                .as_ref()
+                .expect("stream was checked above")
+                .host_events
+                .is_empty()
+            {
+                self.request(Command::Ping(b"chipstream-dac-finish"))?;
+                self.timed_dac_stream
+                    .as_mut()
+                    .expect("stream was checked above")
+                    .finished = true;
+                return Ok(());
+            }
+        }
+        if finished || (!has_records && !has_events && !has_host_events) {
             if let Some(stream) = self.timed_dac_stream.as_mut() {
                 stream.finished = true;
             }
@@ -959,7 +1460,15 @@ impl NdsifSerialTransport {
             self.check_timed_dac_cancellation()?;
             let status = self.query_timed_dac_status()?;
             self.update_timed_dac_progress(status)?;
-            if status.state == 2 {
+            self.service_timed_dac_host_events(false)?;
+            if status.state == 2
+                && self
+                    .timed_dac_stream
+                    .as_ref()
+                    .expect("stream was checked above")
+                    .host_events
+                    .is_empty()
+            {
                 self.timed_dac_stream
                     .as_mut()
                     .expect("stream was checked above")

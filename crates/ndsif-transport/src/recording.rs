@@ -10,7 +10,10 @@ use ndsif::{CapabilityEntry, Divider, WriteId};
 
 use crate::NdsifSerialTransport;
 use crate::routing::NdsifRoutingTransport;
-use crate::transport::{is_timed_dac_data_register, supports_cached_audio, supports_cached_clock};
+use crate::transport::{
+    DAC_CHUNK_MILLISECONDS, is_timed_dac_data_register, supports_cached_audio,
+    supports_cached_clock,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Operation {
@@ -105,6 +108,17 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
     let mut events = 0_usize;
     let mut flushes = 0_usize;
     let mut max_tick = 0_u128;
+    let mut first_event_tick = None;
+    let mut last_event_tick = 0_u128;
+    let mut record_event_tick = |frame: usize, rate: u32| {
+        let tick = if rate == 0 {
+            u128::MAX
+        } else {
+            (frame as u128) * u128::from(ticks_per_second) / u128::from(rate)
+        };
+        first_event_tick = Some(first_event_tick.map_or(tick, |first: u128| first.min(tick)));
+        last_event_tick = last_event_tick.max(tick);
+    };
     for operation in operations {
         match operation {
             Operation::Register(event) => {
@@ -112,6 +126,7 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
                     dac_writes = dac_writes.saturating_add(1);
                 } else {
                     events = events.saturating_add(1);
+                    record_event_tick(event.sample_frame, event.sample_rate);
                 }
             }
             Operation::InitialRegister(event) => {
@@ -123,9 +138,13 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
                     && event.write.address == 0x28
                 {
                     events = events.saturating_add(1);
+                    record_event_tick(event.sample_frame, event.sample_rate);
                 }
             }
-            Operation::Psg(_) => events = events.saturating_add(1),
+            Operation::Psg(event) => {
+                events = events.saturating_add(1);
+                record_event_tick(event.sample_frame, event.sample_rate);
+            }
             Operation::Flush(frame, rate) | Operation::FinishDac(frame, rate) => {
                 flushes = flushes.saturating_add(1);
                 let tick = if *rate == 0 {
@@ -139,10 +158,18 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
         }
     }
     let long_waits = usize::try_from(max_tick / u128::from(u16::MAX)).unwrap_or(usize::MAX);
+    let chunk_ticks =
+        (u128::from(ticks_per_second) * u128::from(DAC_CHUNK_MILLISECONDS) / 1000).max(1);
+    let event_chunks = first_event_tick.map_or(0, |first| {
+        usize::try_from((last_event_tick.saturating_sub(first) / chunk_ticks).saturating_add(1))
+            .unwrap_or(usize::MAX)
+            .min(events)
+    });
     (
         dac_writes
             .saturating_mul(2)
             .saturating_add(flushes)
+            .saturating_add(event_chunks.saturating_mul(2))
             .saturating_add(long_waits),
         events,
     )
@@ -373,6 +400,26 @@ mod tests {
             operations: Vec::new(),
             failed: false,
         }
+    }
+
+    #[test]
+    fn timed_dac_prebuffer_estimates_event_chunk_waits() {
+        let mut recorder = recorder(8);
+        for frame in [0, 220, 440] {
+            recorder
+                .schedule_register_write(NdsifRegisterEvent {
+                    chip: chipstream::sequencer::Chip::Ym2612,
+                    write_id: WriteId::YM2612,
+                    instance: 0,
+                    page: 0,
+                    write: ndsif::RegisterWrite::new(0x22, 0),
+                    sample_frame: frame,
+                    sample_rate: 44_100,
+                })
+                .unwrap();
+        }
+        recorder.flush_scheduled_until(660, 44_100).unwrap();
+        assert_eq!(recorder.timed_dac_prebuffer_usage(44_100), (7, 3));
     }
 
     #[derive(Default)]
