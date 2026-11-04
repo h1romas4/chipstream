@@ -64,6 +64,49 @@ VGZ files must be decompressed before passing their VGM data to chipstream.
 For MDX playback, use `MdxPackage` with an optional PDX bank and pass the
 package to `MdxSequencer`.
 
+### Write registers without a sequencer
+
+For direct control, open `NdsifSerialTransport`, configure a supported chip,
+then queue register events through `NdsifTransport`. Scheduling a write does
+not send it immediately; call `flush_scheduled_until` to send queued events
+through the requested output frame. This example writes YM2151 register `0x1b`
+at frame 0:
+
+```rust,no_run
+use std::time::Duration;
+use chipstream::{
+    chip::{NdsifRegisterEvent, NdsifTransport},
+    sequencer::Chip,
+};
+use ndsif::{RegisterWrite, WriteId};
+use ndsif_transport::NdsifSerialTransport;
+
+let mut device = NdsifSerialTransport::open(
+    "/dev/ttyACM0",
+    115_200,
+    Duration::from_millis(500),
+    false,
+)?;
+let output_rate = 44_100;
+device.configure_chip(WriteId::YM2151, 0, 3_579_545)?;
+device.schedule_register_write(NdsifRegisterEvent {
+    chip: Chip::Ym2151,
+    write_id: WriteId::YM2151,
+    instance: 0,
+    page: 0,
+    write: RegisterWrite::new(0x1b, 0x00),
+    sample_frame: 0,
+    sample_rate: output_rate,
+})?;
+device.flush_scheduled_until(1, output_rate)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Add `chipstream` and `ndsif` as direct dependencies to use the event and
+register types. Choose a clock supported by the selected device. The caller
+must provide chip-specific initialization, schedule writes on a monotonically
+advancing absolute frame timeline, and manage playback and device lifetime.
+
 ## Explicit routing
 
 Use `NdsifRoute` when a saved configuration must select an exact source and
