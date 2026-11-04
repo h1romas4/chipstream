@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.8.0
 
 - Improve NanoDrive playback buffering and avoid processing silent hardware
   audio, helping prevent timed DAC playback interruptions on Windows.
