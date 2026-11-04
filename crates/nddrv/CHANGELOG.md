@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refine Routing labels and NanoDrive boxes, and update Playlist routing tags.
 - Fix volume LFO reset handling during MDX playback when an LFO delay is configured.
 - Prevent a console window from opening when launching the Windows MSVC build.
 - Stop writing application and NanoDrive cleanup errors to standard error.
