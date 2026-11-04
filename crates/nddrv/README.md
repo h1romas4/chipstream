@@ -62,8 +62,12 @@ Playlist tracks play in order. Previous and next do not wrap at either end.
 With loop disabled, VGM and MDX tracks play through their song loop twice and
 then fade out over two seconds by default. Use the settings button at the
 bottom right to change the play count (1-99) and fade-out duration (0-600
-seconds). Changes apply to the next track. Enable loop to repeat song loop
-points indefinitely, regardless of these settings.
+seconds), or select an audio output device for emulated audio. The device
+selection is saved and applies to the next track; **System default** follows
+the operating system's default output. When hardware routing is active, this
+device still plays the emulated chips, while NanoDrive audio is output
+separately. Enable loop to repeat song loop points indefinitely, regardless of
+the play count and fade-out settings.
 
 Track Info shows available track, game, composer, and notes metadata. Artwork
 is loaded from supported image files in the track's folder.

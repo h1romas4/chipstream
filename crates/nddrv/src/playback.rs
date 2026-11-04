@@ -51,6 +51,7 @@ pub enum VolumeMode {
 pub struct Playback {
     control: Arc<PlaybackControl>,
     settings: PlaybackSettings,
+    audio_output_device: Option<String>,
     volume: Arc<NdsifOutputGain>,
     gains: Arc<GainState>,
     generation: u64,
@@ -94,6 +95,7 @@ struct GainState {
 
 struct PlaybackControl {
     settings: PlaybackSettings,
+    audio_output_device: Option<String>,
     cancel: AtomicBool,
     paused: AtomicBool,
     frames: AtomicU64,
@@ -119,6 +121,7 @@ impl PlaybackControl {
     fn with_gains(volume: Arc<NdsifOutputGain>, gains: Arc<GainState>) -> Self {
         Self {
             settings: PlaybackSettings::default(),
+            audio_output_device: None,
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
@@ -224,6 +227,7 @@ impl Playback {
         Self {
             control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
             settings: PlaybackSettings::default(),
+            audio_output_device: None,
             volume,
             gains,
             generation: 0,
@@ -240,6 +244,10 @@ impl Playback {
 
     pub fn set_settings(&mut self, settings: PlaybackSettings) {
         self.settings = settings;
+    }
+
+    pub fn set_audio_output_device(&mut self, device_id: Option<String>) {
+        self.audio_output_device = device_id;
     }
 
     pub fn play_hardware(
@@ -266,6 +274,7 @@ impl Playback {
         self.stop();
         let mut control = PlaybackControl::with_gains(self.volume.clone(), self.gains.clone());
         control.settings = self.settings;
+        control.audio_output_device = self.audio_output_device.clone();
         self.control = Arc::new(control);
         if let Some(preview_mute) = preview_mute {
             self.control.fm_mute.copy_selections_from(preview_mute);
@@ -1552,6 +1561,38 @@ fn stream<T: SizedSample + FromSample<f32>>(
     )?)
 }
 
+pub fn audio_output_devices() -> Result<Vec<(String, String)>> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .context("could not enumerate audio output devices")?
+        .map(|device| {
+            let name = device.to_string();
+            let id = device
+                .id()
+                .context("could not read audio output device ID")?
+                .to_string();
+            Ok((id, name))
+        })
+        .collect()
+}
+
+fn audio_output_device(device_id: Option<&str>) -> Result<cpal::Device> {
+    match device_id {
+        Some(device_id) => {
+            let id = device_id
+                .parse::<cpal::DeviceId>()
+                .with_context(|| format!("invalid audio output device ID: {device_id}"))?;
+            let host = cpal::host_from_id(id.host())
+                .with_context(|| format!("audio host for device {device_id} is unavailable"))?;
+            host.device_by_id(&id)
+                .with_context(|| format!("audio output device is unavailable: {device_id}"))
+        }
+        None => cpal::default_host()
+            .default_output_device()
+            .context("no default audio output device"),
+    }
+}
+
 fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
     run_inner(path, control, looped, None)
 }
@@ -1604,9 +1645,7 @@ fn run_inner(
         &PlaybackPlan,
     )>,
 ) -> Result<()> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .context("no audio output device")?;
+    let device = audio_output_device(control.audio_output_device.as_deref())?;
     let supported = device
         .default_output_config()
         .context("no default audio configuration")?;

@@ -45,6 +45,7 @@ use playback::{Event, GainPart, GainSource, IdlePreview, Playback, VolumeMode};
 const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
 const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
+const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
 
 fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
     let window_size = INITIAL_WINDOW_SIZE.min(&visible.size);
@@ -517,6 +518,42 @@ struct IdlePreviewTarget {
 
 impl AppView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let output_devices = match playback::audio_output_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                self.pending_errors.push(error_notification(
+                    "Audio device error",
+                    format!("{error:#}"),
+                ));
+                cx.notify();
+                Vec::new()
+            }
+        };
+        let selected_output_device = self.config.audio_output_device.clone();
+        let mut output_name_counts = HashMap::new();
+        for (_, name) in &output_devices {
+            *output_name_counts.entry(name.clone()).or_insert(0usize) += 1;
+        }
+        let mut output_options: Vec<(SharedString, SharedString)> = vec![(
+            SYSTEM_DEFAULT_AUDIO_DEVICE.to_owned().into(),
+            "System default".to_owned().into(),
+        )];
+        for (id, name) in output_devices {
+            let label = if output_name_counts.get(&name).copied().unwrap_or(0) > 1 {
+                format!("{name} ({id})")
+            } else {
+                name
+            };
+            output_options.push((id.into(), label.into()));
+        }
+        if let Some(selected) = &selected_output_device
+            && !output_options.iter().any(|(value, _)| value.as_ref() == selected)
+        {
+            output_options.push((
+                selected.clone().into(),
+                format!("Unavailable ({selected})").into(),
+            ));
+        }
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let language_get = view.clone();
@@ -592,6 +629,34 @@ impl AppView {
                 },
             )
             .default_value(2.);
+            let output_get = view.clone();
+            let output_set = view.clone();
+            let output_field = SettingField::dropdown(
+                output_options.clone(),
+                move |cx| {
+                    output_get.upgrade().map_or_else(
+                        || SYSTEM_DEFAULT_AUDIO_DEVICE.into(),
+                        |view| {
+                            view.read(cx)
+                                .config
+                                .audio_output_device
+                                .clone()
+                                .unwrap_or_else(|| SYSTEM_DEFAULT_AUDIO_DEVICE.into())
+                                .into()
+                        },
+                    )
+                },
+                move |value, cx| {
+                    let _ = output_set.update(cx, |view, cx| {
+                        view.config.audio_output_device =
+                            (value.as_ref() != SYSTEM_DEFAULT_AUDIO_DEVICE)
+                                .then(|| value.to_string());
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE);
             dialog.title("Settings").width(px(760.)).centered().child(
                 div().h(px(400.)).w_full().child(
                     Settings::new("nddrv-settings")
@@ -611,6 +676,7 @@ impl AppView {
                                 .group(SettingGroup::new().items([
                                     SettingItem::new("Play count", loop_field),
                                     SettingItem::new("Fade out (seconds)", fade_field),
+                                    SettingItem::new("Emulation audio device", output_field),
                                 ])),
                         ),
                 ),
@@ -1190,6 +1256,8 @@ impl AppView {
         let plan = self.routing.playback_plan(&self.config.routing.devices);
         if let Some(path) = self.config.playlist.get(index).cloned() {
             self.player.set_settings(self.config.playback);
+            self.player
+                .set_audio_output_device(self.config.audio_output_device.clone());
             let use_transition =
                 self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
             let preview_mute = if self.playing.is_none()
