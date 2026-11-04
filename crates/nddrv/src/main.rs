@@ -39,7 +39,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use library::{ChipTag, Config, DirectoryEntry, MetadataLanguage, ScanProgress, Track};
+use library::{
+    ChipTag, Config, DirectoryEntry, MetadataLanguage, ScanProgress, Track, WindowSettings,
+};
 use playback::{Event, GainPart, GainSource, IdlePreview, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
@@ -48,13 +50,76 @@ const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
 const DEVICE_DEFAULT_SAMPLE_RATE: &str = "device-default";
 
-fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
-    let window_size = INITIAL_WINDOW_SIZE.min(&visible.size);
+fn initial_window_bounds(visible: Bounds<Pixels>, requested: Size<Pixels>) -> Bounds<Pixels> {
+    let window_size = requested.min(&visible.size);
     let origin = point(
         visible.origin.x + (visible.size.width - window_size.width) / 2.,
         visible.origin.y + (visible.size.height - window_size.height) / 2.,
     );
     Bounds::new(origin, window_size)
+}
+
+fn restored_window_bounds(
+    visible: Option<Bounds<Pixels>>,
+    settings: Option<WindowSettings>,
+) -> WindowBounds {
+    let requested = settings.map_or(INITIAL_WINDOW_SIZE, |settings| {
+        size(px(settings.width), px(settings.height))
+    });
+    let bounds = visible.map_or_else(
+        || Bounds::new(point(px(0.), px(0.)), requested),
+        |visible| initial_window_bounds(visible, requested),
+    );
+    if settings.is_some_and(|settings| settings.maximized) {
+        WindowBounds::Maximized(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    }
+}
+
+fn update_window_settings(settings: &mut WindowSettings, bounds: WindowBounds) -> bool {
+    let previous = *settings;
+    match bounds {
+        WindowBounds::Windowed(bounds) => {
+            let width = bounds.size.width.as_f32();
+            let height = bounds.size.height.as_f32();
+            if !width.is_finite()
+                || !height.is_finite()
+                || !(1.0..=65_536.0).contains(&width)
+                || !(1.0..=65_536.0).contains(&height)
+            {
+                return false;
+            }
+            settings.width = width;
+            settings.height = height;
+            settings.maximized = false;
+        }
+        WindowBounds::Maximized(_) => settings.maximized = true,
+        WindowBounds::Fullscreen(_) => return false,
+    }
+    *settings != previous
+}
+
+fn window_observation_ready(
+    visible: bool,
+    elapsed: Option<Duration>,
+    maximized_changed: bool,
+) -> bool {
+    visible
+        && match elapsed {
+            Some(elapsed) => elapsed >= Duration::from_millis(100),
+            None => maximized_changed,
+        }
+}
+
+fn load_app_config() -> (Option<PathBuf>, Config, Option<String>) {
+    match library::config_path() {
+        Ok(path) => match library::load_config(&path) {
+            Ok(config) => (Some(path), config, None),
+            Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
+        },
+        Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
+    }
 }
 
 fn clipboard_track_path(path: &Path) -> Result<&str, &'static str> {
@@ -431,6 +496,9 @@ fn error_notification_with_details(
 struct AppView {
     config_path: Option<PathBuf>,
     config: Config,
+    window_settings: WindowSettings,
+    window_save_pending: Option<Instant>,
+    window_observation_pending: Option<Instant>,
     page: Page,
     roll_mode: visualizer::RollMode,
     roll_hidden_channels: HashSet<(u8, u8)>,
@@ -773,7 +841,14 @@ impl AppView {
         });
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        config_path: Option<PathBuf>,
+        mut config: Config,
+        config_error: Option<String>,
+        window_settings: WindowSettings,
+    ) -> Self {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive")
         });
@@ -813,13 +888,6 @@ impl AppView {
                 cx.notify();
             }
         });
-        let (config_path, mut config, config_error) = match library::config_path() {
-            Ok(path) => match library::load_config(&path) {
-                Ok(config) => (Some(path), config, None),
-                Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
-            },
-            Err(error) => (None, Config::default(), Some(format!("{error:#}"))),
-        };
         if config.routing.devices.is_empty() {
             config.routing.devices.push(routing::Device {
                 id: 1,
@@ -862,6 +930,9 @@ impl AppView {
         Self {
             config_path,
             config,
+            window_settings,
+            window_save_pending: Some(Instant::now()),
+            window_observation_pending: None,
             page: Page::Library,
             roll_mode: visualizer::RollMode::default(),
             roll_hidden_channels: HashSet::new(),
@@ -964,10 +1035,34 @@ impl AppView {
         if error != self.persistence_error
             && let Some(message) = &error
         {
+            eprintln!("Configuration error: {message}");
             self.pending_errors
                 .push(error_notification("Configuration error", message.clone()));
         }
         self.persistence_error = error;
+    }
+
+    fn record_window_bounds(&mut self, bounds: WindowBounds) {
+        if update_window_settings(&mut self.window_settings, bounds) {
+            self.window_save_pending = Some(Instant::now());
+        }
+    }
+
+    fn save_window_settings(&mut self) {
+        if self.window_save_pending.take().is_some() {
+            self.config.window = Some(self.window_settings);
+            self.save();
+            if self.persistence_error.is_some() {
+                self.window_save_pending = Some(Instant::now());
+            }
+        }
+    }
+
+    fn capture_window_settings(&mut self, window: &Window) {
+        if window.is_visible() {
+            self.record_window_bounds(window.window_bounds());
+            self.window_observation_pending = None;
+        }
     }
 
     fn update_filter(&mut self, cx: &mut Context<Self>) {
@@ -1070,24 +1165,31 @@ impl AppView {
                 }
                 cx.notify();
             }))
-            .child(Input::new(&self.query).token(|token, _, _| {
-                let id = token.token().id();
-                let ymfm = ChipTag::is_ymfm_name(id.as_ref());
-                let format = matches!(id.as_ref(), "MDX" | "VGM" | "NanoDrive");
-                let (background, foreground) = if format {
-                    (0x4a606d, 0xe7f1f3)
-                } else {
-                    chip_colors(ymfm)
-                };
-                div()
-                    .max_w(token.available_width())
-                    .pr(px(4.))
-                    .child(InputToken::new(token).when(!token.is_selected(), |tag| {
-                        tag.bg(rgb(background))
-                            .text_color(rgb(foreground))
-                            .border_color(rgb(if format || ymfm { background } else { 0xb77ad4 }))
-                    }))
-            }))
+            .child(
+                Input::new(&self.query)
+                    .cleanable(true)
+                    .token(|token, _, _| {
+                        let id = token.token().id();
+                        let ymfm = ChipTag::is_ymfm_name(id.as_ref());
+                        let format = matches!(id.as_ref(), "MDX" | "VGM" | "NanoDrive");
+                        let (background, foreground) = if format {
+                            (0x4a606d, 0xe7f1f3)
+                        } else {
+                            chip_colors(ymfm)
+                        };
+                        div().max_w(token.available_width()).pr(px(4.)).child(
+                            InputToken::new(token).when(!token.is_selected(), |tag| {
+                                tag.bg(rgb(background))
+                                    .text_color(rgb(foreground))
+                                    .border_color(rgb(if format || ymfm {
+                                        background
+                                    } else {
+                                        0xb77ad4
+                                    }))
+                            }),
+                        )
+                    }),
+            )
             .when_some(suggestions, |input, chips| {
                 input.child(
                     div()
@@ -1835,6 +1937,21 @@ impl AppView {
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window_observation_ready(
+            window.is_visible(),
+            self.window_observation_pending
+                .map(|updated| updated.elapsed()),
+            window.is_maximized() != self.window_settings.maximized,
+        ) {
+            self.capture_window_settings(window);
+        }
+        if self
+            .window_save_pending
+            .is_some_and(|updated| updated.elapsed() >= Duration::from_millis(500))
+        {
+            self.save_window_settings();
+            cx.notify();
+        }
         while let Ok(event) = self.device_service.events.try_recv() {
             match event {
                 device::DeviceEvent::Connected(id, model, capabilities) => {
@@ -3428,17 +3545,21 @@ impl AppView {
         let cables = graph.cables;
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
-                .child(div().text_lg().child("ROUTING CONNECTIONS"))
+                .child(div().flex_shrink_0().text_lg().whitespace_nowrap().child("ROUTING CONNECTIONS"))
+                .when(self.playing.is_some(), |row| {
+                    let message = "Stop playback to edit connections.";
+                    row.child(div().id("routing-edit-warning").ml_4().min_w_0().text_sm()
+                        .text_color(rgb(0xf2a968)).overflow_hidden().text_ellipsis().whitespace_nowrap()
+                        .tooltip(move |window, cx| Tooltip::new(message).build(window, cx))
+                        .child(message))
+                })
                 .when(self.config.routing.devices.last().is_some_and(|device| matches!(self.device_status.get(&device.id), Some(DeviceStatus::Connected(_)))), |row| {
-                    row.child(Button::new("add-device-box").label("Add NanoDrive")
+                    row.child(div().flex_shrink_0().child(Button::new("add-device-box").label("Add NanoDrive")
                         .disabled(!editable)
-                        .on_click(cx.listener(|view, _, window, cx| view.add_empty_device(window, cx))))
+                        .on_click(cx.listener(|view, _, window, cx| view.add_empty_device(window, cx)))))
                 }))
             .child(div().text_sm().text_color(rgb(0xa6b6c3)).child(
                 "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."))
-            .when(!editable, |view| view.child(div().text_sm().text_color(rgb(0xf2a968)).child(
-                if self.playing.is_some() { "Stop playback to edit connections." } else { "Wait for the connection operation to finish." }
-            )))
             .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
                 .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))
                     .child(canvas(
@@ -4341,8 +4462,9 @@ mod tests {
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
         music_format, notification_copy_text, remove_playlist_entries, renumber_connected_devices,
-        reported_scan_errors, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, unsupported_chips, update_selection_order,
+        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
+        select_for_context, select_item, select_range, selection_status, unsupported_chips,
+        update_selection_order, update_window_settings,
     };
 
     #[test]
@@ -4625,16 +4747,154 @@ mod tests {
 
     #[test]
     fn initial_window_fits_and_centers_in_visible_area() {
-        use gpui_kit::{Bounds, point, px, size};
+        use crate::library::WindowSettings;
+        use gpui_kit::{Bounds, WindowBounds, point, px, size};
 
         let visible = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1040.)));
-        let bounds = initial_window_bounds(visible);
+        let bounds = initial_window_bounds(visible, size(px(1600.), px(900.)));
         assert_eq!(bounds.size, size(px(1600.), px(900.)));
         assert_eq!(bounds.origin, point(px(160.), px(70.)));
 
         let visible = Bounds::new(point(px(10.), px(20.)), size(px(1100.), px(680.)));
-        let bounds = initial_window_bounds(visible);
+        let bounds = initial_window_bounds(visible, size(px(1600.), px(900.)));
         assert_eq!(bounds, visible);
+        let settings = WindowSettings {
+            width: 1400.,
+            height: 800.,
+            maximized: true,
+        };
+        assert_eq!(
+            restored_window_bounds(Some(visible), Some(settings)),
+            WindowBounds::Maximized(visible)
+        );
+        assert_eq!(
+            restored_window_bounds(
+                Some(visible),
+                Some(WindowSettings {
+                    width: 600.,
+                    height: 400.,
+                    maximized: false,
+                })
+            ),
+            WindowBounds::Windowed(Bounds::new(
+                point(px(260.), px(160.)),
+                size(px(600.), px(400.))
+            ))
+        );
+    }
+
+    #[test]
+    fn restored_window_keeps_saved_size_without_primary_display() {
+        use crate::library::{self, Config, WindowSettings};
+        use gpui_kit::{Bounds, WindowBounds, point, px, size};
+
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(2200.), px(1200.)));
+        let mut settings = WindowSettings {
+            width: 2200.,
+            height: 1200.,
+            maximized: false,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library.json");
+        library::save_config(
+            &path,
+            &Config {
+                window: Some(settings),
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        let loaded = library::load_config(&path).unwrap();
+        assert_eq!(
+            restored_window_bounds(None, loaded.window),
+            WindowBounds::Windowed(bounds)
+        );
+        settings.maximized = true;
+        assert_eq!(
+            restored_window_bounds(None, Some(settings)),
+            WindowBounds::Maximized(bounds)
+        );
+        assert_eq!(
+            restored_window_bounds(None, None),
+            WindowBounds::Windowed(Bounds::new(
+                point(px(0.), px(0.)),
+                size(px(1600.), px(900.))
+            ))
+        );
+    }
+
+    #[test]
+    fn window_settings_preserve_normal_size_across_maximization() {
+        use crate::library::WindowSettings;
+        use gpui_kit::{Bounds, WindowBounds, point, px, size};
+
+        let mut settings = WindowSettings {
+            width: 800.,
+            height: 600.,
+            maximized: false,
+        };
+        let bounds =
+            |width, height| Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+        assert!(update_window_settings(
+            &mut settings,
+            WindowBounds::Windowed(bounds(1200., 700.))
+        ));
+        assert!(update_window_settings(
+            &mut settings,
+            WindowBounds::Maximized(bounds(1920., 1080.))
+        ));
+        assert_eq!(
+            settings,
+            WindowSettings {
+                width: 1200.,
+                height: 700.,
+                maximized: true,
+            }
+        );
+        assert!(!update_window_settings(
+            &mut settings,
+            WindowBounds::Fullscreen(bounds(1920., 1080.))
+        ));
+        assert!(!update_window_settings(
+            &mut settings,
+            WindowBounds::Windowed(bounds(0., 0.))
+        ));
+        assert!(update_window_settings(
+            &mut settings,
+            WindowBounds::Windowed(bounds(1000., 650.))
+        ));
+        assert_eq!(
+            settings,
+            WindowSettings {
+                width: 1000.,
+                height: 650.,
+                maximized: false,
+            }
+        );
+    }
+
+    #[test]
+    fn window_observation_waits_for_bounds_and_state_to_settle() {
+        use crate::window_observation_ready;
+        use std::time::Duration;
+
+        assert!(!window_observation_ready(
+            true,
+            Some(Duration::from_millis(99)),
+            true
+        ));
+        assert!(window_observation_ready(
+            true,
+            Some(Duration::from_millis(100)),
+            true
+        ));
+        assert!(!window_observation_ready(
+            false,
+            Some(Duration::from_secs(1)),
+            true
+        ));
+        assert!(window_observation_ready(true, None, true));
+        assert!(!window_observation_ready(true, None, false));
     }
 
     #[test]
@@ -5131,6 +5391,11 @@ impl Render for AppView {
                         .bg(rgb(0x1b2530))
                         .border_color(rgb(0x243441))
                         .text_color(rgb(0xe4edf2))
+                        .on_close_window(cx.listener(|view, _, window, _| {
+                            view.capture_window_settings(window);
+                            view.save_window_settings();
+                            window.remove_window();
+                        }))
                         .child(
                             div()
                                 .text_sm()
@@ -5645,19 +5910,56 @@ fn main() {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
-        let bounds = cx
-            .primary_display()
-            .map(|display| initial_window_bounds(display.visible_bounds()))
-            .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), INITIAL_WINDOW_SIZE));
+        let (config_path, config, config_error) = load_app_config();
+        let visible = cx.primary_display().map(|display| display.visible_bounds());
+        let bounds = restored_window_bounds(visible, config.window);
+        let initial_size = bounds.get_bounds().size;
+        let window_settings = config.window.unwrap_or(WindowSettings {
+            width: initial_size.width.as_f32(),
+            height: initial_size.height.as_f32(),
+            maximized: false,
+        });
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(bounds),
             window_decorations: Some(WindowDecorations::Client),
             ..TitleBar::window_options()
         };
         open_window(options, cx, |window, cx| {
             window.set_window_title(APP_TITLE);
             cx.new(|cx| {
-                let mut app = AppView::new(window, cx);
+                let mut app = AppView::new(
+                    window,
+                    cx,
+                    config_path,
+                    config,
+                    config_error,
+                    window_settings,
+                );
+                cx.observe_window_bounds(window, |view, _, _| {
+                    view.window_observation_pending = Some(Instant::now());
+                })
+                .detach();
+                let view = cx.weak_entity();
+                window.on_window_should_close(cx, move |window, cx| {
+                    let _ = view.update(cx, |view, _| {
+                        view.capture_window_settings(window);
+                        view.save_window_settings();
+                    });
+                    true
+                });
+                let handle = window.window_handle();
+                cx.on_app_quit(move |view, cx| {
+                    if let Ok(Some(bounds)) = handle.update(cx, |_, window, _| {
+                        window.is_visible().then(|| window.window_bounds())
+                    }) {
+                        view.record_window_bounds(bounds);
+                    }
+                    view.save_window_settings();
+                    async {}
+                })
+                .detach();
+                cx.on_release(|view, _| view.save_window_settings())
+                    .detach();
                 app.check_for_updates(cx);
                 if !app.config.directories.is_empty() {
                     app.scan(ScanOrigin::Background, cx);

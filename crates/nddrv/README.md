@@ -31,10 +31,16 @@ cargo run --release -p nddrv
 
 Use **Rescan** to refresh a registered folder after its contents change.
 
+NDDRV restores the previous window size and maximized state on startup. The
+window is centered and fitted to the primary display's available area when
+that information is available. Otherwise, placement is left to the window
+system.
+
 ## Library Reference
 
 The search field filters by title, artist, album, notes, or path. Add chip names
 or the `MDX` and `VGM` format tags to narrow results; `VGM` includes VGZ files.
+Use the clear button on the right to remove all search text and tags.
 
 For VGM/VGZ tracks, General settings select English or original-language
 metadata. English is the default, and missing fields fall back to the other

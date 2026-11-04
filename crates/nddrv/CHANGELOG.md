@@ -4,6 +4,12 @@
 
 - Improve NanoDrive playback buffering and avoid processing silent hardware
   audio, helping prevent timed DAC playback interruptions on Windows.
+- Place the Routing editing warning beside the title to keep the layout stable,
+  and remove the redundant connection-in-progress warning.
+- Reduce the gap between NanoDrive connection status and chip ports.
+- Add a button to clear Music search text and tags.
+- Restore the window size and maximized state on startup, including on Wayland
+  when the primary display is unavailable.
 
 ## v0.7.0
 

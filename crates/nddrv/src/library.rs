@@ -414,6 +414,26 @@ impl Default for PlaybackSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowSettings {
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+impl WindowSettings {
+    fn validate(self) -> Result<()> {
+        if !self.width.is_finite()
+            || !self.height.is_finite()
+            || !(1.0..=65_536.0).contains(&self.width)
+            || !(1.0..=65_536.0).contains(&self.height)
+        {
+            bail!("window width and height must be between 1 and 65536");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub directories: Vec<PathBuf>,
@@ -432,6 +452,8 @@ pub struct Config {
     pub audio_sample_rate: Option<u32>,
     #[serde(default)]
     pub general: GeneralSettings,
+    #[serde(default)]
+    pub window: Option<WindowSettings>,
 }
 
 impl Default for Config {
@@ -446,6 +468,7 @@ impl Default for Config {
             audio_output_device: None,
             audio_sample_rate: None,
             general: GeneralSettings::default(),
+            window: None,
         }
     }
 }
@@ -470,6 +493,9 @@ pub fn load_config(path: &Path) -> Result<Config> {
                 .playback
                 .validate()
                 .context("invalid playback configuration")?;
+            if let Some(window) = config.window {
+                window.validate().context("invalid window configuration")?;
+            }
             for (name, width) in [
                 ("library_width", Some(config.library_width)),
                 ("playlist_width", config.playlist_width),
@@ -497,6 +523,9 @@ pub fn save_config(path: &Path, config: &Config) -> Result<()> {
         .routing
         .validate()
         .context("invalid routing configuration")?;
+    if let Some(window) = config.window {
+        window.validate().context("invalid window configuration")?;
+    }
     let parent = path.parent().context("configuration path has no parent")?;
     fs::create_dir_all(parent).context("failed to create configuration directory")?;
     let bytes = serde_json::to_vec_pretty(config)?;
@@ -865,6 +894,7 @@ mod tests {
         assert_eq!(config.audio_output_device, None);
         assert_eq!(config.audio_sample_rate, None);
         assert_eq!(config.general, GeneralSettings::default());
+        assert_eq!(config.window, None);
         fs::write(
             &path,
             r#"{"directories":[],"playlist":[],"library_width":-1}"#,
@@ -876,6 +906,35 @@ mod tests {
                 .to_string()
                 .contains("library_width")
         );
+    }
+
+    #[test]
+    fn window_settings_round_trip_and_reject_invalid_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let mut config = Config {
+            window: Some(WindowSettings {
+                width: 1234.,
+                height: 765.,
+                maximized: true,
+            }),
+            ..Config::default()
+        };
+        save_config(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().window, config.window);
+        for (width, height) in [(0., 600.), (800., -1.), (65_537., 600.)] {
+            config.window = Some(WindowSettings {
+                width,
+                height,
+                maximized: false,
+            });
+            assert!(save_config(&path, &config).is_err());
+            fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            assert!(
+                format!("{:#}", load_config(&path).unwrap_err())
+                    .contains("invalid window configuration")
+            );
+        }
     }
 
     #[test]
@@ -1516,6 +1575,7 @@ mod tests {
             general: GeneralSettings {
                 vgm_metadata_language: MetadataLanguage::Original,
             },
+            window: None,
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();

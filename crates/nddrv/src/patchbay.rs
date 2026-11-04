@@ -13,7 +13,7 @@ pub const TARGET_WIDTH: f32 = 200.;
 pub const DEVICE_X: f32 = 620.;
 pub const DEVICE_WIDTH: f32 = 300.;
 pub const HEADER: f32 = 40.;
-pub const DEVICE_HEADER: f32 = 120.;
+pub const DEVICE_HEADER: f32 = 104.;
 pub const ROW: f32 = 30.;
 const GAP: f32 = 16.;
 
@@ -203,6 +203,61 @@ pub fn build(
 mod tests {
     use super::*;
     use crate::routing::{Connection, SessionRouting};
+
+    #[test]
+    fn compact_device_header_keeps_endpoints_and_cables_aligned() {
+        let devices = vec![
+            Device {
+                id: 1,
+                name: "NanoDrive 8".into(),
+                port: "port1".into(),
+                baud_rate: 115_200,
+            },
+            Device {
+                id: 2,
+                name: "NanoDrive 6.1".into(),
+                port: "port2".into(),
+                baud_rate: 115_200,
+            },
+        ];
+        let entry = ndsif::CapabilityEntry {
+            write_id: 0x54,
+            instance: 0,
+            page: 0,
+            features: 0,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let statuses = HashMap::from([
+            (
+                1,
+                DeviceStatus::Connected(vec![
+                    entry,
+                    ndsif::CapabilityEntry {
+                        write_id: 0xb7,
+                        ..entry
+                    },
+                ]),
+            ),
+            (2, DeviceStatus::Connected(vec![])),
+        ]);
+        let routes = [Connection {
+            chip: HardwareChip::Ym2151,
+            source: ChipInstance::Primary,
+            device_id: 1,
+            target: ChipInstance::Primary,
+        }];
+        let graph = build(&devices, &statuses, &routes);
+        let first = &graph.devices[0];
+        assert_eq!(first.endpoints.len(), 2);
+        assert_eq!(first.endpoints[0].y, 104.);
+        assert_eq!(first.endpoints[1].y, 134.);
+        assert_eq!(first.height, 172.);
+        assert_eq!(graph.devices[1].top, 188.);
+        assert_eq!(graph.devices[1].extra_labels, ["No chips advertised"]);
+        let cable = graph.cables.iter().find(|cable| cable.hardware).unwrap();
+        assert_eq!(cable.target_y, first.endpoints[0].y + ROW / 2.);
+    }
 
     #[test]
     fn offline_device_names_do_not_show_stale_models_or_ports() {
