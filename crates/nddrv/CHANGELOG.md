@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 (unreleased)
+## v0.7.0
 
 - Add a General setting to choose English or original VGM metadata.
 - Add Playback settings for play count and fade-out duration.
