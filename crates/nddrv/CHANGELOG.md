@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prevent a console window from opening when launching the Windows MSVC build.
 - Stop writing application and NanoDrive cleanup errors to standard error.
 
 ## v0.6.0
