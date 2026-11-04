@@ -233,7 +233,12 @@ mod tests {
         assert_eq!(graph.devices[2].name, "NanoDrive");
 
         let graph = build(&devices, &HashMap::new(), &[]);
-        assert!(graph.devices.iter().all(|device| device.name == "NanoDrive"));
+        assert!(
+            graph
+                .devices
+                .iter()
+                .all(|device| device.name == "NanoDrive")
+        );
     }
 
     #[test]

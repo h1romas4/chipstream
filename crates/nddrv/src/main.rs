@@ -2456,9 +2456,13 @@ impl AppView {
                         |row| {
                             row.child(
                                 div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .bg(rgb(0x244047))
                                     .text_sm()
-                                    .text_color(rgb(0xa6b6c3))
-                                    .child("Emulation (chipstream)"),
+                                    .text_color(rgb(0xb9e9e7))
+                                    .child("Emulation"),
                             )
                         },
                     ),
