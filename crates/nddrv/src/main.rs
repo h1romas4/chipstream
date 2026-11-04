@@ -39,7 +39,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use library::{ChipTag, Config, DirectoryEntry, ScanProgress, Track};
+use library::{ChipTag, Config, DirectoryEntry, MetadataLanguage, ScanProgress, Track};
 use playback::{Event, GainPart, GainSource, IdlePreview, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
@@ -519,6 +519,33 @@ impl AppView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, _| {
+            let language_get = view.clone();
+            let language_set = view.clone();
+            let language_field = SettingField::dropdown(
+                vec![
+                    ("english".into(), "English".into()),
+                    ("original".into(), "Original".into()),
+                ],
+                move |cx| match language_get
+                    .upgrade()
+                    .map(|view| view.read(cx).config.general.vgm_metadata_language)
+                    .unwrap_or_default()
+                {
+                    MetadataLanguage::English => "english".into(),
+                    MetadataLanguage::Original => "original".into(),
+                },
+                move |value, cx| {
+                    let _ = language_set.update(cx, |view, cx| {
+                        view.config.general.vgm_metadata_language = match value.as_ref() {
+                            "original" => MetadataLanguage::Original,
+                            _ => MetadataLanguage::English,
+                        };
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value("english");
             let loop_get = view.clone();
             let loop_set = view.clone();
             let fade_get = view.clone();
@@ -570,6 +597,14 @@ impl AppView {
                     Settings::new("nddrv-settings")
                         .sidebar_width(px(180.))
                         .sidebar_size_range(px(150.)..px(240.))
+                        .page(
+                            SettingPage::new("General")
+                                .icon(assets::IconName::Settings)
+                                .group(SettingGroup::new().item(SettingItem::new(
+                                    "VGM metadata language",
+                                    language_field,
+                                ))),
+                        )
                         .page(
                             SettingPage::new("Playback")
                                 .icon(assets::IconName::Play)
@@ -1179,8 +1214,14 @@ impl AppView {
             self.elapsed = 0;
             let indexed = self.track_by_path.get(&path).copied();
             self.playing_title = indexed
-                .map(|index| self.tracks[index].display_title())
-                .or_else(|| self.playlist_tracks.get(&path).map(Track::display_title))
+                .map(|index| {
+                    self.tracks[index].display_title_for(self.config.general.vgm_metadata_language)
+                })
+                .or_else(|| {
+                    self.playlist_tracks.get(&path).map(|track| {
+                        track.display_title_for(self.config.general.vgm_metadata_language)
+                    })
+                })
                 .unwrap_or_else(|| Track::format_display_title(&path, &Default::default()));
             if let Some(plan) = plan {
                 self.player.play_hardware(
@@ -1213,8 +1254,9 @@ impl AppView {
                         if view.playing.is_some() && view.player.is_current(generation) {
                             match result {
                                 Ok(track) => {
-                                    view.playing_title =
-                                        Track::format_display_title(&path, &track.metadata);
+                                    view.playing_title = track.display_title_for(
+                                        view.config.general.vgm_metadata_language,
+                                    );
                                     view.playlist_tracks.insert(path.clone(), track);
                                 }
                                 Err(error) => view.pending_errors.push(error_notification(
@@ -2040,7 +2082,8 @@ impl AppView {
                 .map(|&index| &self.tracks[index])
                 .or_else(|| self.playlist_tracks.get(path))
         });
-        let metadata = track.map(|track| &track.metadata);
+        let metadata =
+            track.map(|track| track.metadata_for(self.config.general.vgm_metadata_language));
         let title = path.map(|path| {
             metadata
                 .and_then(|metadata| metadata.title.clone())
@@ -2195,8 +2238,18 @@ impl AppView {
     }
 
     fn now_playing_title(&self) -> String {
-        if self.playing.is_some() {
-            self.playing_title.clone()
+        if let Some(index) = self.playing {
+            self.config
+                .playlist
+                .get(index)
+                .and_then(|path| {
+                    self.track_by_path
+                        .get(path)
+                        .map(|&index| &self.tracks[index])
+                        .or_else(|| self.playlist_tracks.get(path))
+                })
+                .map(|track| track.display_title_for(self.config.general.vgm_metadata_language))
+                .unwrap_or_else(|| self.playing_title.clone())
         } else {
             "No track playing".into()
         }
@@ -2211,8 +2264,14 @@ impl AppView {
         };
         self.track_by_path
             .get(path)
-            .map(|&index| self.tracks[index].display_title())
-            .or_else(|| self.playlist_tracks.get(path).map(Track::display_title))
+            .map(|&index| {
+                self.tracks[index].display_title_for(self.config.general.vgm_metadata_language)
+            })
+            .or_else(|| {
+                self.playlist_tracks
+                    .get(path)
+                    .map(|track| track.display_title_for(self.config.general.vgm_metadata_language))
+            })
             .unwrap_or_else(|| Track::format_display_title(path, &Default::default()))
     }
 
@@ -3272,8 +3331,9 @@ impl AppView {
                 let menu_path = path.clone();
                 let selected = self.selected_tracks.contains(&path);
                 let view = cx.weak_entity();
-                let title = track.display_title();
-                let artist = track.metadata.artist.as_deref().unwrap_or_default();
+                let metadata = track.metadata_for(self.config.general.vgm_metadata_language);
+                let title = track.display_title_for(self.config.general.vgm_metadata_language);
+                let artist = metadata.artist.as_deref().unwrap_or_default();
                 let unsupported = unsupported_chips(
                     &track.chips,
                     self.routing.connections(),
@@ -3366,7 +3426,7 @@ impl AppView {
                                     .child(div().flex_1().min_w_0().child(track_title(
                                         SharedString::from(format!("track-title-{index}")),
                                         &track.path,
-                                        &track.metadata,
+                                        metadata,
                                         dimmed,
                                         title_tooltip,
                                     )))
@@ -3568,7 +3628,9 @@ impl AppView {
                     .map(|&track_index| &self.tracks[track_index])
                     .or_else(|| self.playlist_tracks.get(path));
                 let fallback_metadata = TrackMetadata::default();
-                let metadata = track.map_or(&fallback_metadata, |track| &track.metadata);
+                let metadata = track.map_or(&fallback_metadata, |track| {
+                    track.metadata_for(self.config.general.vgm_metadata_language)
+                });
                 let unsupported = track
                     .map(|track| {
                         unsupported_chips(

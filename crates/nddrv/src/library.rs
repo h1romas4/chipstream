@@ -4,7 +4,10 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use chipstream::metadata::{TrackMetadata, probe_mdx_bytes, probe_vgm_bytes};
+use chipstream::metadata::{
+    TrackMetadata, VgmMetadataLanguage, probe_mdx_bytes, probe_vgm_bytes,
+    probe_vgm_bytes_with_language,
+};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use soundlog::chip::Chip;
@@ -69,8 +72,9 @@ impl ChipTag {
 pub struct Track {
     pub path: PathBuf,
     pub metadata: TrackMetadata,
+    original_metadata: Option<TrackMetadata>,
     pub chips: Vec<ChipTag>,
-    search_fields: [String; 5],
+    search_fields: Vec<String>,
 }
 
 impl Track {
@@ -81,7 +85,7 @@ impl Track {
                 .to_string_lossy()
                 .into_owned()
         });
-        let search_fields = [
+        let search_fields = vec![
             title.to_lowercase(),
             metadata
                 .artist
@@ -99,9 +103,31 @@ impl Track {
         Self {
             path,
             metadata,
+            original_metadata: None,
             chips,
             search_fields,
         }
+    }
+
+    fn with_original_metadata(mut self, metadata: TrackMetadata) -> Self {
+        for value in [&metadata.title, &metadata.artist, &metadata.album] {
+            if let Some(value) = value {
+                self.search_fields.push(value.to_lowercase());
+            }
+        }
+        self.original_metadata = Some(metadata);
+        self
+    }
+
+    pub fn metadata_for(&self, language: MetadataLanguage) -> &TrackMetadata {
+        match language {
+            MetadataLanguage::English => &self.metadata,
+            MetadataLanguage::Original => self.original_metadata.as_ref().unwrap_or(&self.metadata),
+        }
+    }
+
+    pub fn display_title_for(&self, language: MetadataLanguage) -> String {
+        Self::format_display_title(&self.path, self.metadata_for(language))
     }
 
     pub(crate) fn chip_name(chip: &Chip) -> &'static str {
@@ -177,6 +203,7 @@ impl Track {
         }
     }
 
+    #[cfg(test)]
     pub fn display_title(&self) -> String {
         Self::format_display_title(&self.path, &self.metadata)
     }
@@ -341,6 +368,20 @@ fn default_library_width() -> f32 {
     DEFAULT_LIBRARY_WIDTH
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataLanguage {
+    #[default]
+    English,
+    Original,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralSettings {
+    pub vgm_metadata_language: MetadataLanguage,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlaybackSettings {
@@ -385,6 +426,8 @@ pub struct Config {
     pub routing: crate::routing::RoutingConfig,
     #[serde(default)]
     pub playback: PlaybackSettings,
+    #[serde(default)]
+    pub general: GeneralSettings,
 }
 
 impl Default for Config {
@@ -396,6 +439,7 @@ impl Default for Config {
             playlist_width: None,
             routing: crate::routing::RoutingConfig::default(),
             playback: PlaybackSettings::default(),
+            general: GeneralSettings::default(),
         }
     }
 }
@@ -494,7 +538,14 @@ pub fn read_track_info(path: &Path) -> Result<Track> {
         probe_vgm_bytes(&bytes).context("invalid VGM")
     }?;
     let chips = Track::track_chips(&bytes, is_mdx)?;
-    Ok(Track::new(path.to_path_buf(), metadata, chips))
+    let track = Track::new(path.to_path_buf(), metadata, chips);
+    if is_mdx {
+        Ok(track)
+    } else {
+        let original = probe_vgm_bytes_with_language(&bytes, VgmMetadataLanguage::Original)
+            .context("invalid VGM")?;
+        Ok(track.with_original_metadata(original))
+    }
 }
 
 /// Find artwork in the track's directory without scanning subdirectories.
@@ -805,6 +856,7 @@ mod tests {
         assert_eq!(config.library_width, 312.);
         assert_eq!(config.playlist_width, None);
         assert_eq!(config.playback, PlaybackSettings::default());
+        assert_eq!(config.general, GeneralSettings::default());
         fs::write(
             &path,
             r#"{"directories":[],"playlist":[],"library_width":-1}"#,
@@ -1270,6 +1322,84 @@ mod tests {
     }
 
     #[test]
+    fn vgm_metadata_languages_are_available_for_display_and_search() {
+        use flate2::{Compression, write::GzEncoder};
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.set_gd3(soundlog::meta::Gd3 {
+            track_name_en: Some("English Title".into()),
+            track_name_origin: Some("Original Title".into()),
+            game_name_en: Some("English Game".into()),
+            game_name_origin: Some("Original Game".into()),
+            author_name_en: Some("English Composer".into()),
+            author_name_origin: Some("Original Composer".into()),
+            notes: Some("Notes".into()),
+            ..Default::default()
+        });
+        let bytes = Vec::<u8>::from(builder.finalize());
+        for extension in ["vgm", "vgz"] {
+            let path = directory.path().join(format!("track.{extension}"));
+            let data = if extension == "vgz" {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&bytes).unwrap();
+                encoder.finish().unwrap()
+            } else {
+                bytes.clone()
+            };
+            fs::write(&path, data).unwrap();
+            let track = read_track_info(&path).unwrap();
+            assert_eq!(
+                track.display_title_for(MetadataLanguage::English),
+                "English Game - English Title"
+            );
+            assert_eq!(
+                track.display_title_for(MetadataLanguage::Original),
+                "Original Game - Original Title"
+            );
+            assert_eq!(
+                track
+                    .metadata_for(MetadataLanguage::Original)
+                    .artist
+                    .as_deref(),
+                Some("Original Composer")
+            );
+            assert_eq!(
+                track
+                    .metadata_for(MetadataLanguage::Original)
+                    .comment
+                    .as_deref(),
+                Some("Notes")
+            );
+            for query in [
+                "english title",
+                "original title",
+                "original composer",
+                "original game",
+            ] {
+                assert_eq!(
+                    filter_indices(std::slice::from_ref(&track), query, None),
+                    vec![0]
+                );
+            }
+        }
+
+        let mut builder = soundlog::mdx::document::MdxBuilder::new();
+        builder.set_title("MDX Title");
+        let path = directory.path().join("track.mdx");
+        fs::write(&path, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+        let mdx = read_track_info(&path).unwrap();
+        assert_eq!(
+            mdx.display_title_for(MetadataLanguage::English),
+            "MDX Title"
+        );
+        assert_eq!(
+            mdx.display_title_for(MetadataLanguage::Original),
+            "MDX Title"
+        );
+    }
+
+    #[test]
     fn chip_labels_cover_vgm_instances_and_mdx_pdx_declarations() {
         use soundlog::vgm::command::Instance;
 
@@ -1373,6 +1503,9 @@ mod tests {
                 loop_count: 3,
                 fadeout_seconds: 5,
             },
+            general: GeneralSettings {
+                vgm_metadata_language: MetadataLanguage::Original,
+            },
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();
@@ -1382,6 +1515,7 @@ mod tests {
         assert_eq!(loaded.library_width, 410.);
         assert_eq!(loaded.playlist_width, Some(380.));
         assert_eq!(loaded.playback, config.playback);
+        assert_eq!(loaded.general, config.general);
     }
 
     #[test]

@@ -26,6 +26,16 @@ pub struct TrackMetadata {
     pub comment: Option<String>,
 }
 
+/// Preferred language for bilingual VGM GD3 metadata.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VgmMetadataLanguage {
+    /// Prefer English and fall back to the original language.
+    #[default]
+    English,
+    /// Prefer the original language and fall back to English.
+    Original,
+}
+
 /// Errors encountered while reading or parsing metadata.
 #[derive(Debug)]
 pub enum MetadataError {
@@ -58,6 +68,16 @@ impl Error for MetadataError {}
 ///
 /// Callers handling VGZ input should decompress it before calling this function.
 pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
+    probe_vgm_bytes_with_language(bytes, VgmMetadataLanguage::English)
+}
+
+/// Parse GD3 metadata, preferring the requested language for each field.
+///
+/// Callers handling VGZ input should decompress it before calling this function.
+pub fn probe_vgm_bytes_with_language(
+    bytes: &[u8],
+    language: VgmMetadataLanguage,
+) -> Result<TrackMetadata, MetadataError> {
     check_size(bytes, MAX_INPUT_BYTES)?;
     let header = VgmHeader::from_bytes(bytes)
         .map_err(|error| MetadataError::InvalidData(format!("invalid VGM header: {error}")))?;
@@ -76,10 +96,14 @@ pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     let gd3 =
         Gd3::try_from(gd3_bytes).map_err(|error| MetadataError::InvalidGd3(error.to_string()))?;
 
+    let choose = |english, original| match language {
+        VgmMetadataLanguage::English => first_nonempty(english, original),
+        VgmMetadataLanguage::Original => first_nonempty(original, english),
+    };
     Ok(TrackMetadata {
-        title: first_nonempty(gd3.track_name_en, gd3.track_name_origin),
-        artist: first_nonempty(gd3.author_name_en, gd3.author_name_origin),
-        album: first_nonempty(gd3.game_name_en, gd3.game_name_origin),
+        title: choose(gd3.track_name_en, gd3.track_name_origin),
+        artist: choose(gd3.author_name_en, gd3.author_name_origin),
+        album: choose(gd3.game_name_en, gd3.game_name_origin),
         comment: nonempty(gd3.notes.unwrap_or_default()),
     })
 }
@@ -125,7 +149,10 @@ mod tests {
     use soundlog::meta::Gd3;
     use soundlog::vgm::VgmBuilder;
 
-    use super::{TrackMetadata, probe_mdx_bytes, probe_vgm_bytes};
+    use super::{
+        TrackMetadata, VgmMetadataLanguage, probe_mdx_bytes, probe_vgm_bytes,
+        probe_vgm_bytes_with_language,
+    };
 
     #[test]
     fn vgm_probe_prefers_english_tags_and_falls_back_to_original() {
@@ -149,6 +176,25 @@ mod tests {
                 comment: Some("Notes".to_owned()),
             }
         );
+    }
+
+    #[test]
+    fn vgm_probe_can_prefer_original_and_fall_back_to_english() {
+        let mut builder = VgmBuilder::new();
+        builder.set_gd3(Gd3 {
+            track_name_en: Some("English Title".into()),
+            track_name_origin: Some(" Original Title ".into()),
+            game_name_en: Some("English Game".into()),
+            game_name_origin: Some("  ".into()),
+            author_name_origin: Some("Composer".into()),
+            ..Gd3::default()
+        });
+        let bytes: Vec<u8> = builder.finalize().into();
+        let metadata =
+            probe_vgm_bytes_with_language(&bytes, VgmMetadataLanguage::Original).unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("Original Title"));
+        assert_eq!(metadata.album.as_deref(), Some("English Game"));
+        assert_eq!(metadata.artist.as_deref(), Some("Composer"));
     }
 
     #[test]
