@@ -429,6 +429,8 @@ pub struct Config {
     #[serde(default)]
     pub audio_output_device: Option<String>,
     #[serde(default)]
+    pub audio_sample_rate: Option<u32>,
+    #[serde(default)]
     pub general: GeneralSettings,
 }
 
@@ -442,6 +444,7 @@ impl Default for Config {
             routing: crate::routing::RoutingConfig::default(),
             playback: PlaybackSettings::default(),
             audio_output_device: None,
+            audio_sample_rate: None,
             general: GeneralSettings::default(),
         }
     }
@@ -860,6 +863,7 @@ mod tests {
         assert_eq!(config.playlist_width, None);
         assert_eq!(config.playback, PlaybackSettings::default());
         assert_eq!(config.audio_output_device, None);
+        assert_eq!(config.audio_sample_rate, None);
         assert_eq!(config.general, GeneralSettings::default());
         fs::write(
             &path,
@@ -1508,6 +1512,7 @@ mod tests {
                 fadeout_seconds: 5,
             },
             audio_output_device: Some("alsa:device-test".into()),
+            audio_sample_rate: Some(44_100),
             general: GeneralSettings {
                 vgm_metadata_language: MetadataLanguage::Original,
             },
@@ -1521,6 +1526,7 @@ mod tests {
         assert_eq!(loaded.playlist_width, Some(380.));
         assert_eq!(loaded.playback, config.playback);
         assert_eq!(loaded.audio_output_device, config.audio_output_device);
+        assert_eq!(loaded.audio_sample_rate, config.audio_sample_rate);
         assert_eq!(loaded.general, config.general);
     }
 

@@ -58,19 +58,18 @@ Right-click selected Playlist rows to remove them or clear the playlist.
 
 ## Playback
 
-Playlist tracks play in order. Previous and next do not wrap at either end.
-With loop disabled, VGM and MDX tracks play through their song loop twice and
-then fade out over two seconds by default. Use the settings button at the
-bottom right to change the play count (1-99) and fade-out duration (0-600
-seconds), or select an audio output device for emulated audio. The device
-selection is saved and applies to the next track; **System default** follows
-the operating system's default output. When hardware routing is active, this
-device still plays the emulated chips, while NanoDrive audio is output
-separately. Enable loop to repeat song loop points indefinitely, regardless of
-the play count and fade-out settings.
+Playlist tracks play in order; previous and next do not wrap. With loop off,
+the default is two plays followed by a two-second fade. Enable loop to repeat
+indefinitely.
 
-Track Info shows available track, game, composer, and notes metadata. Artwork
-is loaded from supported image files in the track's folder.
+The Playback settings button sets play count (1-99), fade-out (0-600 seconds),
+and the emulated audio output. **System default** follows the operating system;
+supported 44.1, 48, 96, and 192 kHz rates or **Device default** can be chosen.
+Settings are saved and apply to the next track. Changing the output device
+resets its sample rate to **Device default**. With NanoDrive routing, emulated
+chips use this output; hardware audio is separate.
+
+Track Info shows available metadata. Artwork is loaded from the track's folder.
 
 ### Piano Roll
 

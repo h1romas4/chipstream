@@ -46,6 +46,7 @@ const ACCENT_COLOR: u32 = 0x2fb3aa;
 const APP_TITLE: &str = "NDDRV";
 const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
+const DEVICE_DEFAULT_SAMPLE_RATE: &str = "device-default";
 
 fn initial_window_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
     let window_size = INITIAL_WINDOW_SIZE.min(&visible.size);
@@ -530,6 +531,7 @@ impl AppView {
             }
         };
         let selected_output_device = self.config.audio_output_device.clone();
+        let selected_sample_rate = self.config.audio_sample_rate;
         let mut output_name_counts = HashMap::new();
         for (_, name) in &output_devices {
             *output_name_counts.entry(name.clone()).or_insert(0usize) += 1;
@@ -547,11 +549,41 @@ impl AppView {
             output_options.push((id.into(), label.into()));
         }
         if let Some(selected) = &selected_output_device
-            && !output_options.iter().any(|(value, _)| value.as_ref() == selected)
+            && !output_options
+                .iter()
+                .any(|(value, _)| value.as_ref() == selected)
         {
             output_options.push((
                 selected.clone().into(),
                 format!("Unavailable ({selected})").into(),
+            ));
+        }
+        let sample_rates = match playback::audio_sample_rates(selected_output_device.as_deref()) {
+            Ok(rates) => rates,
+            Err(error) => {
+                self.pending_errors.push(error_notification(
+                    "Audio sample rate error",
+                    format!("{error:#}"),
+                ));
+                cx.notify();
+                Vec::new()
+            }
+        };
+        let mut sample_rate_options: Vec<(SharedString, SharedString)> = vec![(
+            DEVICE_DEFAULT_SAMPLE_RATE.to_owned().into(),
+            "Device default".to_owned().into(),
+        )];
+        for rate in sample_rates {
+            sample_rate_options.push((rate.to_string().into(), format!("{rate} Hz").into()));
+        }
+        if let Some(rate) = selected_sample_rate
+            && !sample_rate_options
+                .iter()
+                .any(|(value, _)| value.as_ref() == rate.to_string())
+        {
+            sample_rate_options.push((
+                rate.to_string().into(),
+                format!("Unavailable ({rate} Hz)").into(),
             ));
         }
         let view = cx.weak_entity();
@@ -648,15 +680,71 @@ impl AppView {
                 },
                 move |value, cx| {
                     let _ = output_set.update(cx, |view, cx| {
-                        view.config.audio_output_device =
-                            (value.as_ref() != SYSTEM_DEFAULT_AUDIO_DEVICE)
-                                .then(|| value.to_string());
+                        let device_id = (value.as_ref() != SYSTEM_DEFAULT_AUDIO_DEVICE)
+                            .then(|| value.to_string());
+                        if view.config.audio_output_device != device_id {
+                            view.config.audio_sample_rate = None;
+                        }
+                        view.config.audio_output_device = device_id;
                         view.save();
                         cx.notify();
                     });
                 },
             )
             .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE);
+            let sample_rate_get = view.clone();
+            let sample_rate_set = view.clone();
+            let sample_rate_field = SettingField::dropdown(
+                sample_rate_options.clone(),
+                move |cx| {
+                    sample_rate_get.upgrade().map_or_else(
+                        || DEVICE_DEFAULT_SAMPLE_RATE.into(),
+                        |view| {
+                            view.read(cx).config.audio_sample_rate.map_or_else(
+                                || DEVICE_DEFAULT_SAMPLE_RATE.into(),
+                                |rate| rate.to_string().into(),
+                            )
+                        },
+                    )
+                },
+                move |value, cx| {
+                    let _ = sample_rate_set.update(cx, |view, cx| {
+                        let rate = if value.as_ref() == DEVICE_DEFAULT_SAMPLE_RATE {
+                            None
+                        } else {
+                            value.as_ref().parse::<u32>().ok()
+                        };
+                        let available = playback::audio_sample_rates(
+                            view.config.audio_output_device.as_deref(),
+                        );
+                        match (rate, available) {
+                            (Some(rate), Ok(available)) if available.contains(&rate) => {
+                                view.config.audio_sample_rate = Some(rate);
+                            }
+                            (None, _) => view.config.audio_sample_rate = None,
+                            (Some(rate), Ok(_)) => {
+                                view.config.audio_sample_rate = None;
+                                view.pending_errors.push(error_notification(
+                                    "Unsupported audio sample rate",
+                                    format!(
+                                        "{rate} Hz is not supported by the selected output device."
+                                    ),
+                                ));
+                            }
+                            (Some(_), Err(error)) => {
+                                view.config.audio_sample_rate = None;
+                                view.pending_errors.push(error_notification(
+                                    "Audio sample rate error",
+                                    format!("{error:#}"),
+                                ));
+                            }
+                        }
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(DEVICE_DEFAULT_SAMPLE_RATE);
             dialog.title("Settings").width(px(760.)).centered().child(
                 div().h(px(400.)).w_full().child(
                     Settings::new("nddrv-settings")
@@ -677,6 +765,7 @@ impl AppView {
                                     SettingItem::new("Play count", loop_field),
                                     SettingItem::new("Fade out (seconds)", fade_field),
                                     SettingItem::new("Emulation audio device", output_field),
+                                    SettingItem::new("Emulation sample rate", sample_rate_field),
                                 ])),
                         ),
                 ),
@@ -1258,6 +1347,8 @@ impl AppView {
             self.player.set_settings(self.config.playback);
             self.player
                 .set_audio_output_device(self.config.audio_output_device.clone());
+            self.player
+                .set_audio_sample_rate(self.config.audio_sample_rate);
             let use_transition =
                 self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
             let preview_mute = if self.playing.is_none()

@@ -52,6 +52,7 @@ pub struct Playback {
     control: Arc<PlaybackControl>,
     settings: PlaybackSettings,
     audio_output_device: Option<String>,
+    audio_sample_rate: Option<u32>,
     volume: Arc<NdsifOutputGain>,
     gains: Arc<GainState>,
     generation: u64,
@@ -96,6 +97,7 @@ struct GainState {
 struct PlaybackControl {
     settings: PlaybackSettings,
     audio_output_device: Option<String>,
+    audio_sample_rate: Option<u32>,
     cancel: AtomicBool,
     paused: AtomicBool,
     frames: AtomicU64,
@@ -122,6 +124,7 @@ impl PlaybackControl {
         Self {
             settings: PlaybackSettings::default(),
             audio_output_device: None,
+            audio_sample_rate: None,
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
@@ -228,6 +231,7 @@ impl Playback {
             control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
             settings: PlaybackSettings::default(),
             audio_output_device: None,
+            audio_sample_rate: None,
             volume,
             gains,
             generation: 0,
@@ -248,6 +252,10 @@ impl Playback {
 
     pub fn set_audio_output_device(&mut self, device_id: Option<String>) {
         self.audio_output_device = device_id;
+    }
+
+    pub fn set_audio_sample_rate(&mut self, sample_rate: Option<u32>) {
+        self.audio_sample_rate = sample_rate;
     }
 
     pub fn play_hardware(
@@ -275,6 +283,7 @@ impl Playback {
         let mut control = PlaybackControl::with_gains(self.volume.clone(), self.gains.clone());
         control.settings = self.settings;
         control.audio_output_device = self.audio_output_device.clone();
+        control.audio_sample_rate = self.audio_sample_rate;
         self.control = Arc::new(control);
         if let Some(preview_mute) = preview_mute {
             self.control.fm_mute.copy_selections_from(preview_mute);
@@ -1576,6 +1585,24 @@ pub fn audio_output_devices() -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+pub fn audio_sample_rates(device_id: Option<&str>) -> Result<Vec<u32>> {
+    let device = audio_output_device(device_id)?;
+    let ranges = device
+        .supported_output_configs()
+        .context("could not enumerate supported audio output configurations")?
+        .collect::<Vec<_>>();
+    let mut rates = std::collections::BTreeSet::new();
+    for rate in [44_100, 48_000, 96_000, 192_000] {
+        if ranges
+            .iter()
+            .any(|range| range.try_with_sample_rate(rate).is_some())
+        {
+            rates.insert(rate);
+        }
+    }
+    Ok(rates.into_iter().collect())
+}
+
 fn audio_output_device(device_id: Option<&str>) -> Result<cpal::Device> {
     match device_id {
         Some(device_id) => {
@@ -1591,6 +1618,43 @@ fn audio_output_device(device_id: Option<&str>) -> Result<cpal::Device> {
             .default_output_device()
             .context("no default audio output device"),
     }
+}
+
+fn audio_output_config(
+    device: &cpal::Device,
+    sample_rate: Option<u32>,
+) -> Result<cpal::SupportedStreamConfig> {
+    let default = device
+        .default_output_config()
+        .context("no default audio configuration")?;
+    let Some(sample_rate) = sample_rate else {
+        return Ok(default);
+    };
+    if sample_rate == default.sample_rate() {
+        return Ok(default);
+    }
+    let ranges = device
+        .supported_output_configs()
+        .context("could not enumerate supported audio output configurations")?
+        .collect::<Vec<_>>();
+    let range = ranges
+        .iter()
+        .copied()
+        .find(|range| {
+            range.channels() == default.channels()
+                && range.sample_format() == default.sample_format()
+                && range.try_with_sample_rate(sample_rate).is_some()
+        })
+        .or_else(|| {
+            ranges
+                .iter()
+                .copied()
+                .find(|range| range.try_with_sample_rate(sample_rate).is_some())
+        })
+        .with_context(|| format!("audio output device does not support {sample_rate} Hz"))?;
+    range
+        .try_with_sample_rate(sample_rate)
+        .with_context(|| format!("audio output device does not support {sample_rate} Hz"))
 }
 
 fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
@@ -1646,9 +1710,7 @@ fn run_inner(
     )>,
 ) -> Result<()> {
     let device = audio_output_device(control.audio_output_device.as_deref())?;
-    let supported = device
-        .default_output_config()
-        .context("no default audio configuration")?;
+    let supported = audio_output_config(&device, control.audio_sample_rate)?;
     let config = supported.config();
     let routes = hardware.map_or(&[][..], |(_, plan)| plan.routes.as_slice());
     let (mut sequencer, hardware) = if let Some((lease, plan)) = hardware {
