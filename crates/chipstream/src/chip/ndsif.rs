@@ -316,6 +316,10 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
+    fn has_no_audio_output(&self) -> bool {
+        true
+    }
+
     fn chip_type(&self) -> &Chip {
         &self.chip
     }
@@ -528,6 +532,10 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
+    fn has_no_audio_output(&self) -> bool {
+        true
+    }
+
     fn chip_type(&self) -> &Chip {
         &Chip::Sn76489
     }
@@ -973,6 +981,10 @@ enum Okim6258Event {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
+    fn has_no_audio_output(&self) -> bool {
+        true
+    }
+
     fn chip_type(&self) -> &Chip {
         static CHIP: Chip = Chip::Okim6258;
         &CHIP

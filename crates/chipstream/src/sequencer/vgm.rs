@@ -549,7 +549,7 @@ impl Voice {
 
     /// Capture native frames, convert them to stereo, and queue resampled output.
     fn capture(&mut self, frames: usize) -> Result<(), VgmSequencerError> {
-        if frames == 0 {
+        if frames == 0 || self.route.chip().has_no_audio_output() {
             return Ok(());
         }
         let samples = frames
@@ -1884,10 +1884,10 @@ impl<'a> VgmSequencer<'a> {
             }
             if self.ended
                 || (self.available >= self.chunk_frames
-                    && self
-                        .voices
-                        .iter()
-                        .all(|voice| voice.queue.len() >= self.chunk_frames))
+                    && self.voices.iter().all(|voice| {
+                        voice.route.chip().has_no_audio_output()
+                            || voice.queue.len() >= self.chunk_frames
+                    }))
             {
                 let count = self.available.min(self.chunk_frames);
                 if count == 0 {
@@ -1895,6 +1895,9 @@ impl<'a> VgmSequencer<'a> {
                 }
                 let mut bus = StereoBlock::silence(SampleRate::from_hz(self.output_rate), count)?;
                 for voice in &mut self.voices {
+                    if voice.route.chip().has_no_audio_output() {
+                        continue;
+                    }
                     let mut frames = Vec::with_capacity(count);
                     for _ in 0..count {
                         frames.push(voice.queue.pop_front().unwrap_or([0.0; 2]));
@@ -1911,9 +1914,11 @@ impl<'a> VgmSequencer<'a> {
             if self.fade_remaining == Some(0) {
                 self.flush_paced_writes(sample_frame_origin)?;
                 for voice in &mut self.voices {
-                    voice
-                        .queue
-                        .extend(voice.resampler.finish()?.frames().iter().copied());
+                    if !voice.route.chip().has_no_audio_output() {
+                        voice
+                            .queue
+                            .extend(voice.resampler.finish()?.frames().iter().copied());
+                    }
                 }
                 self.ended = true;
                 continue;
@@ -1999,9 +2004,11 @@ impl<'a> VgmSequencer<'a> {
                 StreamResult::EndOfStream => {
                     self.flush_paced_writes(sample_frame_origin)?;
                     for voice in &mut self.voices {
-                        voice
-                            .queue
-                            .extend(voice.resampler.finish()?.frames().iter().copied());
+                        if !voice.route.chip().has_no_audio_output() {
+                            voice
+                                .queue
+                                .extend(voice.resampler.finish()?.frames().iter().copied());
+                        }
                     }
                     self.ended = true;
                 }

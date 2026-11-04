@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn timed_dac_sample_stream_prebuffers_four_blocks_with_nd6_capacity() {
+    fn timed_dac_sample_stream_prebuffers_eight_blocks_with_nd6_capacity() {
         let (starts, started) = mpsc::channel();
         let (device, port, release, fake) =
             fake_dac_device_with_capacity(starts, None, 8192, 512, false, None);
@@ -569,9 +569,18 @@ mod tests {
         let timeline = Arc::new(NdsifHostTimeline::pending());
         let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
-        for (block, (dac_writes, event_writes)) in [(336, 167), (302, 4), (302, 8), (302, 4)]
-            .into_iter()
-            .enumerate()
+        for (block, (dac_writes, event_writes)) in [
+            (336, 167),
+            (302, 4),
+            (302, 8),
+            (302, 4),
+            (302, 4),
+            (302, 8),
+            (302, 4),
+            (302, 4),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let mut recorder = recorders[0].borrow_mut();
             for index in 0..dac_writes {
@@ -610,7 +619,7 @@ mod tests {
                     .unwrap()
             );
         }
-        workers.prepare_audio(4096, 44_100, &cancelled).unwrap();
+        workers.prepare_audio(8192, 44_100, &cancelled).unwrap();
         timeline
             .start(Instant::now() + Duration::from_millis(20))
             .unwrap();

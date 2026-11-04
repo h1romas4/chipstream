@@ -16,7 +16,8 @@ use super::{
 
 const DAC_PREBUFFER_MILLISECONDS: u64 = 80;
 const DAC_PRESTART_WINDOW_BYTES: usize = 2048;
-const DAC_RUNNING_WINDOW_BYTES: usize = 1024;
+const DAC_RUNNING_WINDOW_BYTES: usize = 4096;
+const DAC_HOST_SERIAL_WINDOW_BYTES: usize = 1024;
 const DAC_SYNC_RESERVE_BYTES: usize = 64;
 const DAC_STATUS_INTERVAL: Duration = Duration::from_millis(5);
 const DAC_STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
@@ -946,7 +947,7 @@ impl NdsifSerialTransport {
             let available = if startup {
                 usize::MAX
             } else {
-                let serial = DAC_RUNNING_WINDOW_BYTES
+                let serial = DAC_HOST_SERIAL_WINDOW_BYTES
                     .saturating_sub(self.session.unconfirmed_bytes())
                     .saturating_sub(DAC_SYNC_RESERVE_BYTES + DAC_HOST_FRAME_OVERHEAD);
                 let fm = DAC_HOST_WINDOW_BYTES

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Improve NanoDrive playback buffering and avoid processing silent hardware
+  audio, helping prevent timed DAC playback interruptions on Windows.
+
 ## v0.7.0
 
 - Add a General setting to choose English or original VGM metadata.

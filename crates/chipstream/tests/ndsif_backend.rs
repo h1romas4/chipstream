@@ -1,11 +1,14 @@
 #![cfg(feature = "ndsif")]
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use chipstream::{
     chip::{
-        ChipError, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258, NdsifPsgEvent,
-        NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
+        ChipError, ChipRegisterWrite, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258,
+        NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
         ndsif::{NdsifAudioControl, register_okim6258_factory, register_ymfm_factories},
     },
     sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
@@ -500,6 +503,7 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
         assert_eq!(config.output_rate(), 44_100);
         let mut chip = NdsifSoundChip::new(config, Rc::clone(&shared))?;
         assert_eq!(chip.channels(), 2);
+        assert!(chip.has_no_audio_output());
         let mut samples = [1; 8];
         chip.generate(&mut samples)?;
         assert_eq!(samples, [0; 8]);
@@ -509,6 +513,110 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
     let mut player =
         VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
     assert!(player.render().unwrap().is_some());
+}
+
+#[test]
+#[cfg(feature = "okim6258")]
+fn skipping_silent_capture_preserves_audio_and_write_timing() {
+    struct SilentChip {
+        skip_capture: bool,
+        captures: Rc<Cell<usize>>,
+        writes: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl SoundChip for SilentChip {
+        fn chip_type(&self) -> &Chip {
+            &Chip::Ym2151
+        }
+        fn clock(&self) -> u32 {
+            4_000_000
+        }
+        fn sample_rate(&self) -> u32 {
+            62_500
+        }
+        fn channels(&self) -> usize {
+            2
+        }
+        fn has_no_audio_output(&self) -> bool {
+            self.skip_capture
+        }
+        fn apply_register_write(&mut self, _: ChipRegisterWrite) -> Result<(), ChipError> {
+            Ok(())
+        }
+        fn apply_register_write_at(
+            &mut self,
+            _: ChipRegisterWrite,
+            frame: usize,
+            _: u32,
+        ) -> Result<(), ChipError> {
+            self.writes.borrow_mut().push(frame);
+            Ok(())
+        }
+        fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+            self.captures.set(self.captures.get() + 1);
+            samples.fill(0);
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+
+    for mixed in [false, true] {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        if mixed {
+            builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+            for (register, value) in [(0, 2), (1, 0x71), (1, 0x2f)] {
+                builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+            }
+        }
+        for value in [0x11, 0x22, 0x33] {
+            builder.add_chip_write(
+                Instance::Primary,
+                Ym2151Spec {
+                    register: 0x20,
+                    value,
+                },
+            );
+            builder.add_vgm_command(WaitSamples(350));
+        }
+        let document = builder.finalize();
+        for rate in [44_100, 48_000] {
+            let render = |skip_capture| {
+                let captures = Rc::new(Cell::new(0));
+                let writes = Rc::new(RefCell::new(Vec::new()));
+                let mut factories = ChipFactoryRegistry::new();
+                let (chip_captures, chip_writes) = (Rc::clone(&captures), Rc::clone(&writes));
+                factories.register(Chip::Ym2151, move |_| {
+                    Ok(Box::new(SilentChip {
+                        skip_capture,
+                        captures: Rc::clone(&chip_captures),
+                        writes: Rc::clone(&chip_writes),
+                    }))
+                });
+                let mut sequencer =
+                    VgmSequencer::new_with_factories(document.clone(), rate, 73, factories)
+                        .unwrap();
+                let mut frames = Vec::new();
+                while let Some(block) = sequencer.render().unwrap() {
+                    frames.extend_from_slice(block.frames());
+                }
+                let writes = writes.borrow().clone();
+                (frames, writes, captures.get())
+            };
+            let (expected, expected_writes, captured) = render(false);
+            let (actual, actual_writes, skipped) = render(true);
+            assert!(captured > 0);
+            assert_eq!(skipped, 0);
+            assert_eq!(expected_writes.len(), 3);
+            assert_eq!(actual_writes, expected_writes);
+            assert_eq!(actual, expected);
+            if mixed {
+                assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+            } else {
+                assert!(actual.iter().flatten().all(|sample| *sample == 0.0));
+            }
+        }
+    }
 }
 
 #[test]

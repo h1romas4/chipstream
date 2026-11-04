@@ -30,7 +30,8 @@ use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
 const CHUNK_FRAMES: usize = 1024;
-const QUEUE_BLOCKS: usize = 8;
+const QUEUE_BLOCKS: usize = 16;
+const PREBUFFER_BLOCKS: usize = 8;
 #[cfg(test)]
 const FADEOUT_SAMPLES: u32 = 2 * 44_100;
 const YM2608_RHYTHM_ROM: &str = "ym2608_adpcm_rom.bin";
@@ -1787,7 +1788,7 @@ fn run_inner(
     let mut hardware_fade_scheduled = false;
     let mut prebuffered_frames = 0_usize;
     let mut hardware_prepared = false;
-    for _ in 0..4 {
+    for _ in 0..PREBUFFER_BLOCKS {
         Sequencer::apply_chip_gains(&mut sequencer, &sources, &control.gains, &mut gain_revision)?;
         let block = sequencer.render()?;
         flush_visual_events(&control, &visual_events, sequencer.take_visual_overflow())?;

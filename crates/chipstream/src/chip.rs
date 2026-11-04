@@ -129,6 +129,12 @@ pub trait SoundChip {
     /// Number of native output values per frame.
     fn channels(&self) -> usize;
 
+    /// True only for backends that always output silence and whose `generate`
+    /// has no side effects. Sequencers may skip their PC audio capture.
+    fn has_no_audio_output(&self) -> bool {
+        false
+    }
+
     /// External stereo mutes controlled by the chip, if present.
     ///
     /// A chip's internal channel panning may instead already be reflected in
@@ -358,6 +364,10 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
 
     fn channels(&self) -> usize {
         (**self).channels()
+    }
+
+    fn has_no_audio_output(&self) -> bool {
+        (**self).has_no_audio_output()
     }
 
     fn stereo_mute(&self) -> Option<StereoMute> {
