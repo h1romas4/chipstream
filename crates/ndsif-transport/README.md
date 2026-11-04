@@ -1,439 +1,139 @@
 # ndsif-transport
 
 Serial transport and `chipstream` backend integration for NanoDrive NDSIF
-devices. This crate opens devices, discovers their capabilities, and schedules
-chip writes. The lower-level `ndsif` crate provides the I/O-independent
-protocol codec and stream state.
+devices. Use this crate to discover device capabilities and route supported
+chip instances to hardware.
 
-Hardware-backed chips produce **silence in the host PCM buffer**. Their sound
+Hardware-backed chips produce **silence in the host PCM buffer**. Their audio
 comes from the physical device and must be played or captured separately.
-Emulated chips continue to produce host PCM normally.
+Emulated chips continue to produce host PCM.
 
-## Public API
+## Choose an API
 
-| Item | Purpose |
+| Use case | API |
 | --- | --- |
-| `NdsifSerialConfig` | Serial port and initialization options for one device. |
-| `create_chip_factories` | Open devices and create a `chipstream` factory registry. |
-| `NdsifSerialTransport::open` | Open and initialize one transport directly. |
-| `NdsifSerialTransport::capabilities` | Read the target capabilities discovered on open. |
-| `NdsifSerialTransport::device_info` | Query the model and firmware identifiers. |
-| `NdsifSerialTransport::reset_for_reuse` | Reset playback state while retaining the serial connection. |
-| `NdsifSerialTransport::{defer_audio_stream_start, prepare_audio_stream_start, start_prepared_audio_stream}` | Prebuffer an OKIM6258 stream and explicitly control its start. |
-| `NdsifSerialTransport::{defer_timed_dac_start_with_cancellation, prepare_timed_dac_start_for_frames, start_prepared_timed_dac}` | Prebuffer and synchronize a supported YM2612 timed DAC stream. |
-| `NdsifHostTimeline`, `NdsifSerialTransport::set_host_timeline` | Share a cancellable host-pacing origin for untimed writes. |
-| `NdsifHostTimeline::schedule_output_fade`, `NdsifSerialTransport::{supports_output_volume, set_output_fade_timeline, update_output_fade}` | Schedule a best-effort device-global fade on capable devices. |
-| `NdsifOutputGain`, `NdsifHostTimeline::set_output_gain`, `NdsifSerialTransport::{initialize_output_volume, synchronize_output_volume}` | Initialize a device's output and share a live linear master gain. |
-| `NdsifSerialTransport::supports_clock` | Check cached chip and clock capabilities. |
-| `NdsifSerialTransport::supports_audio_stream` | Check cached OKIM6258 stream support. |
-| `NdsifRoute`, `create_routed_chip_factories` | Route individual source instances to explicitly selected open devices. |
-| `create_shared_routed_chip_factories` | Route through shared transport handles that the caller can later recover. |
-| `NdsifRecordingTransport`, `NdsifCommandBatch` | Record bounded batches without serial I/O and replay them on a device worker. |
-| `create_recorders`, `NdsifHardwareWorkers` | Record and replay bounded batches on synchronized device workers. |
-| `NdsifRoutingTransport`, `create_routed_transport_factories` | Route through a custom scheduled transport, including a recorder. |
-| `NdsifRoutingError` | Invalid or conflicting explicit route. |
-| `NdsifTransportError` | Typed configuration and initialization errors. |
+| Typical playback with automatic device selection | `NdsifSerialConfig`, `create_chip_factories` |
+| Select a device and target for each chip instance | `NdsifRoute`, `create_routed_chip_factories` |
+| Keep device connections open across playback sessions | `create_shared_routed_chip_factories`, `NdsifSerialTransport::reset_for_reuse` |
+| Use a custom scheduled transport or record chip writes | `NdsifRoutingTransport`, `create_routed_transport_factories`, `NdsifRecordingTransport` |
+| Schedule multiple devices on a host audio timeline | `create_recorders`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
+| Inspect or control a device directly | `NdsifSerialTransport::open` |
 
-`NdsifSerialTransport` also implements `chipstream::chip::NdsifTransport` for
-lower-level scheduling. Most players should use `create_chip_factories` and
-let the sequencer manage scheduling.
+Most applications should start with `create_chip_factories`. It selects the
+first connected device that advertises a compatible chip and clock; unmatched
+chips use chipstream's normal emulation. Errors opening or initializing a
+configured device are returned rather than silently ignored.
 
-### Synchronized device workers
+## Connect devices and play
 
-For host audio synchronized with multiple devices, the application can retain
-its connections as `NdsifSharedDevice` handles and use `create_recorders` to
-create one recorder per device. Pass the recorders and explicit routes to
-`create_routed_transport_factories`, then construct the sequencer. Start
-`NdsifHardwareWorkers` with the same devices and recorders in the same order;
-its setup drains the configuration recorded during sequencer construction.
+`NdsifSerialConfig` requires all connection and initialization settings:
 
-After each render, call `enqueue` to deliver the recorded batches. Before
-starting the shared `NdsifHostTimeline`, call `prepare_audio` with the number
-of frames already queued to every device-timed stream and the output rate.
-For bounded startup, `enqueue_prebuffer` estimates timed DAC queue usage and
-prepares early if the next batch might exceed capacity. Once it reports that
-preparation occurred, use `enqueue` for later batches; otherwise call
-`prepare_audio` when the desired initial span is buffered. The first batch must
-fit on the device. Start the timeline at the
-estimated audio presentation time. Check worker errors while playing and call
-`finish` after the final batch; start or cancel the timeline before finishing.
-Dropping the workers cancels the timeline and joins them. Drop all sequencers,
-recorders, and worker handles before resetting or reclaiming the connections.
-Device IDs, handles, and recorders must be unique. The caller owns audio output,
-connection management, and cancellation; hardware audio is not part of host PCM.
-
-## Configuration and device selection
-
-`NdsifSerialConfig` has no implicit defaults; supply all fields:
-
-| Field | Meaning and constraints |
+| Field | Description |
 | --- | --- |
-| `port: String` | Serial device path; empty or whitespace-only paths are rejected. |
-| `baud_rate: u32` | Serial baud rate; must be nonzero. |
-| `response_timeout: Duration` | Timeout for a request/response transaction; must be nonzero. |
-| `reset_device: bool` | Reset before capability discovery when `true`. |
+| `port` | Serial device path |
+| `baud_rate` | Nonzero serial baud rate |
+| `response_timeout` | Nonzero request/response timeout |
+| `reset_device` | Reset the device before discovering capabilities |
 
-For example, `/dev/ttyACM0`, `115_200`, and 500 ms are illustrative values;
-use the port and serial settings appropriate to the device.
-
-`create_chip_factories` validates **all** configurations, including duplicate
-port strings, before opening any device. An empty slice returns an empty
-registry. Otherwise, devices are opened in the supplied order. For each
-supported chip instance, the first device with a compatible capability and
-clock is selected when the sequencer constructs that chip. If no device
-matches, the normal emulated backend is used. A failure to open or initialize
-any configured device is returned as an error rather than falling back.
-
-For applications that need an exact saved routing, `create_routed_chip_factories`
-instead takes already-opened transports and `NdsifRoute` entries. Each entry
-selects the chip type, source instance, device index, and target instance.
-Unrouted instances use the built-in backend; routed instances fail if their
-selected device does not support the required clock or stream. Duplicate
-sources and physical targets, unsupported chip types, and unknown device
-indices are rejected. The registry retains the supplied devices.
-For applications that must keep connections open across playback, use
-`create_shared_routed_chip_factories` with `Rc<RefCell<NdsifSerialTransport>>`
-handles. Two indices may not alias the same handle. After dropping the
-sequencer and all factories, recover each connection with `Rc::try_unwrap`,
-then call `reset_for_reuse` before returning it to the connection owner.
-The reset checks that supported audio streams are idle and clears the host-side
-playback state. If reset or its idle checks fail, close the transport rather
-than reusing it. Do not reset a transport still used by a sequencer.
-The existing PSG-format and paired YM2151/OKIM6258 compatibility restrictions
-also apply to explicit routes.
-
-```rust,no_run
-use std::time::Duration;
-use chipstream::sequencer::{Chip, Instance};
-use ndsif_transport::{create_routed_chip_factories, NdsifRoute, NdsifSerialTransport};
-
-let device = NdsifSerialTransport::open("/dev/ttyACM0", 115_200, Duration::from_millis(500), false)?;
-let routes = [NdsifRoute {
-    chip: Chip::Ym2151,
-    source: Instance::Secondary,
-    device: 0,
-    target: Instance::Primary,
-}];
-let factories = create_routed_chip_factories(vec![device], &routes)?;
-# let _ = factories;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-Initialization clears pending serial input, optionally resets the device,
-sends a ping, discovers capabilities, and verifies applicable audio and timed
-DAC streams are idle. With `reset_device: false`, an active or faulted stream
-can cause a `DeviceBusy` initialization error. Opening multiple devices is not
-transactional: earlier devices may already have been opened or reset when a
-later device fails.
-
-Variable-clock capabilities are accepted; fixed clocks may differ by at most
-10 parts per million from the device's advertised frequency, and unknown clock
-modes do not match. Fixed clocks are not changed: the hardware plays at its
-advertised frequency, so a small pitch difference remains. `supports_clock` only
-checks cached capabilities: it performs no I/O and does not configure the clock.
-`supports_audio_stream` checks the primary OKIM6258 instance, nonzero advertised
-capacities, and a supported OKIM6258 clock. It does **not** check the
-advertised chip clock mode; also call `supports_clock` when checking a clock.
-
-### Multiple devices
-
-```rust,no_run
-use std::time::Duration;
-use ndsif_transport::{NdsifSerialConfig, create_chip_factories};
-
-let devices = [
-    NdsifSerialConfig {
-        port: "/dev/ttyACM0".to_owned(),
-        baud_rate: 115_200,
-        response_timeout: Duration::from_millis(500),
-        reset_device: true,
-    },
-    NdsifSerialConfig {
-        port: "/dev/ttyACM1".to_owned(),
-        baud_rate: 115_200,
-        response_timeout: Duration::from_millis(500),
-        reset_device: true,
-    },
-];
-let factories = create_chip_factories(&devices)?;
-# let _ = factories;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-### Software-only registry
-
-An empty device list performs no serial I/O:
-
-```rust
-use ndsif_transport::create_chip_factories;
-
-let factories = create_chip_factories(&[])?;
-# let _ = factories;
-# Ok::<(), ndsif_transport::NdsifTransportError>(())
-```
-
-## Playing with chipstream
-
-Pass the registry to a sequencer. These examples use the `chipstream` crate
-directly; the MDX example also requires `soundlog` as a direct dependency.
-The host application remains responsible for sending the returned stereo
-frames to an audio output. Configure a suitable loop limit if playback should
-terminate; continuously looping input can otherwise keep rendering.
-
-### VGM
-
-`from_vgm_with_factories` accepts **uncompressed VGM** bytes. Decompress VGZ
-before calling it.
+An empty device list performs no serial I/O and creates a software-only
+registry. For example, to play an uncompressed VGM file:
 
 ```rust,no_run
 use std::time::Duration;
 use chipstream::sequencer::VgmSequencer;
 use ndsif_transport::{NdsifSerialConfig, create_chip_factories};
 
-fn play_vgm(vgm: Vec<u8>, port: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let devices = [NdsifSerialConfig {
-        port: port.to_owned(),
-        baud_rate: 115_200,
-        response_timeout: Duration::from_millis(500),
-        reset_device: true,
-    }];
-    let factories = create_chip_factories(&devices)?;
-    let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+let vgm = std::fs::read("music.vgm")?;
+let devices = [NdsifSerialConfig {
+    port: "/dev/ttyACM0".to_owned(),
+    baud_rate: 115_200,
+    response_timeout: Duration::from_millis(500),
+    reset_device: true,
+}];
+let factories = create_chip_factories(&devices)?;
+let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
 
-    while let Some(block) = player.render()? {
-        // Send block.frames() to the application's stereo audio output.
-        let _frames = block.frames();
-    }
-    Ok(())
+while let Some(block) = player.render()? {
+    // Send block.frames() to the application's audio output.
 }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-### MDX with optional PDX
+The application supplies the audio output and handles the rendered PCM.
+VGZ files must be decompressed before passing their VGM data to chipstream.
+For MDX playback, use `MdxPackage` with an optional PDX bank and pass the
+package to `MdxSequencer`.
 
-```rust,no_run
-use std::time::Duration;
-use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
-use ndsif_transport::{NdsifSerialConfig, create_chip_factories};
-use soundlog::mdx::package::MdxPackage;
+## Explicit routing
 
-fn play_mdx(
-    mdx: Vec<u8>,
-    pdx: Option<Vec<u8>>,
-    port: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let package = MdxPackage::parse_owned(mdx, pdx)?;
-    let devices = [NdsifSerialConfig {
-        port: port.to_owned(),
-        baud_rate: 115_200,
-        response_timeout: Duration::from_millis(500),
-        reset_device: true,
-    }];
-    let factories = create_chip_factories(&devices)?;
-    let options = MdxSequencerOptions {
-        loop_count: Some(1),
-        ..MdxSequencerOptions::default()
-    };
-    let mut player =
-        MdxSequencer::with_options_with_factories(package, 48_000, 512, options, factories)?;
+Use `NdsifRoute` when a saved configuration must select an exact source and
+hardware target. Each route specifies a chip type, source instance, device
+index, and target instance. Unrouted instances use the built-in backend;
+unsupported explicit routes return an error instead of falling back.
 
-    while let Some(block) = player.render()? {
-        // Send block.frames() to the application's stereo audio output.
-        let _frames = block.frames();
-    }
-    Ok(())
-}
-```
+`create_shared_routed_chip_factories` accepts shared transport handles so the
+application can retain device connections between playback sessions. Drop
+the sequencer and factories before recovering a connection, then call
+`reset_for_reuse` before returning it to the connection owner. Do not reset a
+transport while a sequencer is using it. If reset fails, close the connection
+instead of reusing it.
 
-## Direct transport access
+## Multiple synchronized devices
 
-Use the direct API to inspect a device without creating a registry. This
-example requires `ndsif` as a direct dependency for `WriteId`:
+For applications that need to pace several devices against host audio:
 
-```rust,no_run
-use std::time::Duration;
-use ndsif::WriteId;
-use ndsif_transport::NdsifSerialTransport;
+1. Keep each connection as an `NdsifSharedDevice` and create a recorder for
+   each device with `create_recorders`.
+2. Create routed factories with `create_routed_transport_factories`, then
+   construct the sequencer using those factories.
+3. Start `NdsifHardwareWorkers` with the same devices and recorders in the
+   same order.
+4. After rendering, enqueue each recorder's batches to its worker. Buffer
+   enough audio before starting the shared `NdsifHostTimeline` at the
+   estimated audio presentation time.
+5. Check worker errors during playback and finish after the final batch.
+   Drop sequencers, recorders, and workers before resetting or reclaiming
+   connections.
 
-let device = NdsifSerialTransport::open(
-    "/dev/ttyACM0",
-    115_200,
-    Duration::from_millis(500),
-    false,
-)?;
-let clock = 4_000_000;
-let supports_oki = device.supports_clock(WriteId::OKIM6258, 0, clock)
-    && device.supports_audio_stream(0, clock);
-println!("primary OKIM6258 stream supported: {supports_oki}");
-# Ok::<(), ndsif_transport::NdsifTransportError>(())
-```
+Use `enqueue_prebuffer` when you need bounded startup for timed DAC data.
+Applications are responsible for audio output, connection management,
+cancellation, and bounding any inter-thread queues. Worker playback and serial
+operations may block; this crate does not put hardware audio into host PCM.
 
-The transport's `NdsifTransport` methods queue events at absolute host
-output-frame positions. Callers using this lower-level trait are responsible
-for configuring the chip, flushing scheduled events, and finishing streams.
-Events from different chips can be queued out of order. Playback operations
-through this trait report errors as `String`.
+## Playback support and limitations
 
-`NdsifRecordingTransport` snapshots one open device's routing capabilities and
-records transport operations without serial I/O. Use
-`create_routed_transport_factories` to route a sequencer to recorders, then
-drain each recorder after each render block. Send its batches in order to the
-worker owning the corresponding physical device and replay them there. The
-recorder limits operations per batch; applications must also bound their
-inter-thread queues. Overflow makes the recorder unusable for that playback.
-Configuration and device failures can occur during replay, after earlier
-operations have already run: stop playback and reset or close the device on
-error. Recording does not itself synchronize host audio or device-timed streams.
+The transport supports YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
+YM3526, Y8950, YM3812, YMF262, YMF278B, SN76489, and OKIM6258 where the
+device advertises compatible capabilities. Check the connected device rather
+than relying on its model name.
 
-## Playback behavior and limitations
+- Automatic routing uses emulation when no compatible hardware target is
+  available. Explicit routes fail when the selected target is incompatible.
+- SN76489 hardware routing is unavailable for non-default Game Gear stereo
+  masks; T6W28 PSG is not supported. A VGM stereo-capable flag alone does not
+  prevent routing.
+- A VGM pairing YM2151 with OKIM6258 requires a compatible primary OKIM6258
+  stream on the same device for hardware YM2151 routing.
+- Only one primary OKIM6258 stream is supported per transport. Supported
+  clocks are 4 MHz and 8 MHz, subject to device capabilities.
+- Hardware writes are best-effort, not sample-accurate. Device latency,
+  serial bandwidth, scheduling, and clock drift can affect timing. Hardware
+  audio must be mixed externally with any host audio.
 
-- Factory routing covers YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
-  YM3526, Y8950, YM3812, YMF262, YMF278B, SN76489, and OKIM6258. Actual
-  hardware selection depends on the device's advertised capabilities.
-- Automatic routing uses emulation for SN76489 instances that use non-default
-  Game Gear stereo masks; explicit hardware routes reject them. A stereo-enabled
-  header alone does not prevent hardware playback. T6W28 PSG is rejected.
-  When a VGM pairs YM2151 with OKIM6258, hardware selection for YM2151 also
-  requires a compatible primary OKIM6258 stream on that device.
-- Only one primary OKIM6258 audio stream is supported per transport. It cannot
-  share a transport with the timed DAC profile. Raw PSG writes cannot share an
-  OKIM6258 audio stream.
-- OKIM6258 clock and divider changes are scheduled at ADPCM byte positions.
-  The host retains fractional byte timing across changes, and register events
-  for other chips use the same timeline. Only 4 MHz and 8 MHz clocks and the
-  advertised device clock capabilities are supported. Changes earlier than an
-  already committed audio frame are rejected.
-- An application can defer the OKIM6258 start after configuration and before
-  sending audio data. It must buffer enough bytes for its intended lead time,
-  call `prepare_audio_stream_start` to validate the minimum and complete the
-  serial ping, then call `start_prepared_audio_stream` at its chosen time.
-  Alternatively, `prepare_audio_stream_start_for_frames` checks coverage of
-  a number of host PCM frames. `defer_audio_stream_start_with_cancellation`
-  uses a shared timeline to interrupt buffering and capacity waits on stop.
-  Event and data capacity limits still apply and never force an early start.
-  Reset or close the device after a failed start. This API does not itself
-  synchronize device and host clocks; serial/device latency and clock drift
-  still apply. The existing automatic-start behavior is unchanged by default.
-- A device advertising the supported revision 40, profile 1 timed DAC
-  capabilities uses that profile for primary YM2612. YM2612 `$2A` and `$2B`
-  writes become DAC records; other supported FM and PSG writes become
-  positioned events. For VGM playback, register and PSG configuration before
-  the first positive source wait is sent before the DAC clock starts. Initial
-  YM2612 key writes are reduced to the last value for each channel in
-  last-write order, and only the last initial `$2A` value is retained. A VGM
-  ending without a positive wait does not emit the held keys or DAC value.
-  This startup normalization applies only to a transport with a configured
-  primary YM2612 timed DAC stream; other backends retain their usual pacing.
-  Consecutive identical DAC values at tick zero within a
-  flush are collapsed; later DAC values and intervening select writes are
-  preserved. Waits are packed into the preceding DAC or select record when
-  possible without changing their timing. Active work is submitted in chunks
-  of approximately 5 ms or at most 59 DAC writes; longer silent gaps may be
-  represented by a single wait. If a chunk would exceed the event FIFO,
-  subsequent FM and PSG events permanently switch to a bounded host queue.
-  They wait for all previously submitted device events to be consumed; a
-  host-owned tick-zero prefix with no preceding device events is sent before
-  DAC start. Runtime host writes are paced best-effort and yield to DAC
-  buffering, so serial and operating-system latency can delay them.
-
-  Unanswered traffic is bounded to 2048 bytes before start and 1024 bytes while
-  running. Running DAC_STATUS requests are polled asynchronously, normally
-  every 5 ms, with read-only retries after 20 ms and a 500 ms timeout. Each
-  reply is validated against its request-time record, event and serial-byte
-  positions, including when newer writes have already been submitted.
-  Incomplete responses are discarded when retried; late replies are handled
-  without retrying DAC data or state-changing commands. Initial preparation,
-  start and final draining still use synchronous control exchanges. The
-  transport targets 80 ms of prebuffering and seals/drains the profile at end
-  of playback. Without this profile, normal scheduled writes are used.
-- Applications can defer a timed DAC stream, verify its buffered PCM span and
-  verify the device's queued records and events before starting it on their presentation
-  timeline. A stream sealed before starting is drained after it starts.
-  Cancellation interrupts capacity and drain waits, but not serial I/O.
-- Without an audio or timed DAC stream, the transport paces configured chip
-  writes against a host wall clock, sending events at their scheduled frame
-  positions and batching only writes at the same position. This is best-effort
-  host scheduling, not a guarantee of sample-accurate serial delivery. Each
-  transport has its own clock origin; synchronization between devices or with
-  host PCM is the application's responsibility. Playback operations may block
-  while pacing, waiting for queue capacity, communicating with the device,
-  or draining.
-- An application can opt into a shared `NdsifHostTimeline` before the first
-  host-paced flush. Use a separate worker per transport and choose the
-  frame-zero presentation time to match the application's audio clock. Use
-  `pending()` followed by `start()` if that time is not known at setup; pacing
-  waits until the timeline starts or is cancelled. Device-timed stream workers
-  can use `wait_until_presentation()` before issuing their prepared start.
-  Calling
-  `cancel` interrupts host-pacing waits; it does not interrupt serial I/O
-  already in progress. This mechanism rejects OKIM6258 and timed DAC streams,
-  which run on a device clock and require separate synchronization.
-- A shared timeline can also schedule one linear-amplitude output fade, and
-  transports advertising output-volume control can attach it with
-  `set_output_fade_timeline`. Attenuation is sent as immediate whole-decibel
-  commands at most every 50 ms; timing is best-effort, including for
-  device-timed streams. Playback requests and host pacing service the fade;
-  callers must also call `update_output_fade` while the device is idle.
-  Cancellation stops further changes. After an attempted volume change,
-  `reset_for_reuse` explicitly restores zero attenuation; a failed reset or
-  restore requires closing the connection. Devices without the capability
-  return `Ok(false)` when the timeline is attached and remain unchanged.
-- A shared `NdsifOutputGain` can be attached to the timeline for live master
-  volume; it multiplies the fade gain, if any. Before audio starts, use
-  `initialize_output_volume` to send the current gain even if it matches the
-  cached value, or zero attenuation when no gain is attached. Use
-  `synchronize_output_volume` for later immediate updates. Gain and fade share
-  the same global device control and are quantized to integer decibels.
-- Dropping a transport after chip configuration or a volume change attempts a
-  device reset and, after a volume change, restores zero attenuation. Failures
-  are reported to standard error. `reset_device: false` only disables the
-  **initial** reset.
-
-Capabilities, firmware, physical audio routing, and serial configuration vary
-by device. For reference, current NanoDrive 6 firmware advertises YM2612 and
-two SN76489 targets; NanoDrive 7 advertises YM2203, YM2413 when its clock is
-configured, YMF262, YM3526, and YM3812; NanoDrive 8 advertises YM2151 and an
-OKIM6258 stream. Check the actual device rather than relying on model names.
-
-## Errors
+## Errors and device reuse
 
 `create_chip_factories` and `NdsifSerialTransport::open` return
-`NdsifTransportError`. Configuration errors include `EmptyPort`,
-`DuplicatePort`, `InvalidBaudRate`, and `InvalidTimeout`. Initialization
-failures are wrapped in `Device { port, source }`; the source may identify a
-serial or I/O error, a protocol error, timeout, rejection, unexpected reply,
-invalid capability pagination, unexpected DAC profile, or non-idle stream.
-Underlying serial, I/O, and codec errors remain available through
-`std::error::Error::source`.
+`NdsifTransportError`. Invalid ports, baud rates, timeouts, and duplicate
+ports are reported as configuration errors; serial, I/O, protocol, and device
+initialization failures are reported with their source error. Opening multiple
+devices is not transactional: earlier devices may already have been opened
+or reset if a later device fails.
 
-```rust,no_run
-use ndsif_transport::{NdsifSerialConfig, NdsifTransportError, create_chip_factories};
-
-fn connect(devices: &[NdsifSerialConfig]) -> Result<(), NdsifTransportError> {
-    match create_chip_factories(devices) {
-        Ok(_factories) => Ok(()),
-        Err(NdsifTransportError::InvalidBaudRate { port }) => {
-            eprintln!("Configure a nonzero baud rate for {port}");
-            Err(NdsifTransportError::InvalidBaudRate { port })
-        }
-        Err(error @ NdsifTransportError::Device { .. }) => {
-            eprintln!("Device initialization failed: {error}");
-            Err(error)
-        }
-        Err(error) => Err(error),
-    }
-}
-```
-
-Errors during sequencer playback cross the `NdsifTransport` trait's existing
-`String` error boundary; they are not returned as `NdsifTransportError`.
-
-## Internal organization and tests
-
-The private `factory`, `session`, and `transport` modules handle device
-selection, serial exchange, and scheduling respectively. Audio and timed-DAC
-operations are organized under `transport`. Transport unit tests live in
-`tests/unit/transport.rs` and are included as a test-only module to exercise
-private scheduling and stream state.
+Use `NdsifRoutingError` for explicit route validation failures.
+`NdsifSerialTransport::supports_clock` and `supports_audio_stream` check
+capabilities discovered when the device was opened; they do not perform I/O
+or configure the device. Playback errors crossing chipstream's
+`NdsifTransport` interface are reported as `String`.
 
 ## License
 
