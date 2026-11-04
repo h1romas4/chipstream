@@ -2406,6 +2406,77 @@ fn mdx_converter_configures_opm_lfo_and_resets_it_on_key_on() {
 }
 
 #[test]
+fn mdx_converter_resets_volume_lfo_before_key_on() {
+    for key_on_delay in [0, 2] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .append_tone(MdxTone {
+                voice_number: 0,
+                con: 0,
+                fl: 0,
+                op: 0,
+                operators: [MdxOperator::default(); 4],
+            })
+            .add_mdx_command(0, MdxVoiceOrPcmBank { value: 0 })
+            .add_mdx_command(
+                0,
+                MdxVolumeLfo::Configure {
+                    waveform: MdxLfoWaveform::Sawtooth,
+                    frequency: 64,
+                    amplitude: 0x0100,
+                },
+            )
+            .add_mdx_command(0, soundlog::mdx::command::MdxLfoDelay { value: 32 })
+            .add_mdx_command(
+                0,
+                MdxNote {
+                    note: 0x80,
+                    length: 42,
+                },
+            )
+            .add_mdx_command(
+                0,
+                soundlog::mdx::command::MdxKeyOnDelay {
+                    value: key_on_delay,
+                },
+            )
+            .add_mdx_command(
+                0,
+                MdxNote {
+                    note: 0x81,
+                    length: 40,
+                },
+            );
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let document = to_vgm_document(&package, &MdxToVgmOptions::default())
+            .expect("convert notes with volume LFO delay");
+        let key_on_indices: Vec<_> = document
+            .commands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                matches!(command, VgmCommand::Ym2151Write(_, spec)
+                    if spec.register == 0x08 && spec.value == 0x40)
+                .then_some(index)
+            })
+            .collect();
+        assert_eq!(key_on_indices.len(), 2);
+        let levels: Vec<_> = document.commands[key_on_indices[0] + 1..key_on_indices[1]]
+            .iter()
+            .filter_map(|command| match command {
+                VgmCommand::Ym2151Write(_, spec) if spec.register == 0x78 => Some(spec.value),
+                _ => None,
+            })
+            .collect();
+        assert!(levels.iter().any(|&level| level > 0x15));
+        assert_eq!(levels.last(), Some(&0x15), "key-on delay {key_on_delay}");
+    }
+}
+
+#[test]
 fn mdx_converter_applies_key_on_delay_and_gate_before_key_off() {
     let mut builder = MdxBuilder::new();
     builder

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Apply the reset volume LFO level before MDX key-on when an LFO delay is configured.
 - [x] Add: Optionally expose DAC stream start/stop commands and their configured chip targets.
 - [x] Fix: Preserve DAC stream timing and fractional phase across frequency changes.
 - [x] Fix: Track SN76489 latch-only pitch changes and allow clock-divider and zero-period settings to be configured.

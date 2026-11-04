@@ -2105,6 +2105,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         let already_on = self.tracks[track].fm.key_on;
         if !already_on && self.tracks[track].lfo.delay > 0 {
             self.tracks[track].lfo.start_delay();
+            self.emit_volume(track, builder);
         }
         self.tracks[track].fm.bend_offset = 0;
         if !already_on {
