@@ -37,8 +37,8 @@ Enable the chips your application needs, for example:
 chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 ```
 
-`cstools` enables all six features. When a VGM header declares one of
-these chips without its feature, sequencer construction returns
+When a VGM header declares one of these chips without its feature,
+sequencer construction returns
 `VgmSequencerError::FeatureDisabled`; unsupported chips without implementations
 remain silent. MDX playback with a supplied PDX requires `okim6258` even when
 the song does not use PCM notes. Without a PDX, FM-only MDX playback does not
@@ -247,25 +247,23 @@ fn play<T: NdsifTransport + 'static>(
 # }
 ```
 
-`NdsifSoundChip` supports YMFM and AY-3-8910 replacements; use
-`register_ay8910_factory` to opt into AY hardware playback. There is no built-in
-AY emulation. AY variants other than AY-3-8910, raw or discrete output and
-per-channel stereo masks are unsupported. Hardware sound may differ from
-original AY output, depending on the device.
-`NdsifSn76489` rejects T6W28 and SN76489 tracks using non-default Game Gear
-stereo masks; enabling stereo in the header alone is not a restriction.
-`NdsifOkim6258` decodes source ADPCM and re-encodes it against the continuously
-running device decoder. Source PLAY/STOP and DAC stream start/stop reset the
-source state without resetting the device state. Both output
-silence to host PCM: audible hardware audio must be mixed from the device.
-Their `with_target_instance` constructors can select a different physical
-instance from the source.
+| Adapter | Supported use | Notes |
+| --- | --- | --- |
+| `NdsifSoundChip` | YMFM chips; optional AY-3-8910 | Register AY with `register_ay8910_factory`. No built-in AY emulation; other AY variants, raw/discrete output, and per-channel stereo are unsupported. |
+| `NdsifSn76489` | SN76489 | Rejects T6W28 and non-default Game Gear stereo masks. A stereo-enabled header alone is allowed. |
+| `NdsifOkim6258` | OKIM6258 | Decodes source ADPCM and re-encodes it for the device. |
 
-The `ndsif` crate is a protocol codec, not a transport or scheduler. The
-application must queue events at absolute output-frame positions, accept
-out-of-order arrivals, and send them in protocol order using the device's
-timing model, including ADPCM-byte positions. Device clock and chip support are
-also transport/device responsibilities.
+All three adapters produce silence in host PCM; mix audible hardware output
+from the device separately. Use `with_target_instance` to select a physical
+instance different from the source instance.
+
+The `ndsif` crate provides protocol encoding, not device I/O or scheduling.
+The application-supplied transport must:
+
+- Queue events at absolute output-frame positions and handle out-of-order arrival.
+- Send events in protocol order using device timing; ADPCM data is positioned
+  by byte, not by output frame.
+- Check device chip and clock capabilities.
 
 ## Audio processing
 
