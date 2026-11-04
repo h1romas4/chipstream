@@ -275,9 +275,8 @@ fn polygon(window: &mut Window, points: &[(f32, f32)], color: Rgba) {
         path.line_to(point(px(x), px(y)));
     }
     path.close();
-    match path.build() {
-        Ok(path) => window.paint_path(path, color),
-        Err(error) => eprintln!("Could not draw piano roll: {error}"),
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
     }
 }
 
@@ -290,9 +289,8 @@ fn line(window: &mut Window, points: &[(f32, f32)], width: f32, color: Rgba) {
     for &(x, y) in &points[1..] {
         path.line_to(point(px(x), px(y)));
     }
-    match path.build() {
-        Ok(path) => window.paint_path(path, color),
-        Err(error) => eprintln!("Could not draw piano roll grid: {error}"),
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
     }
 }
 

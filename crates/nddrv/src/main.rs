@@ -206,13 +206,10 @@ impl ScanOrigin {
     }
 }
 
-fn reported_scan_errors(origin: ScanOrigin, context: &str, errors: Vec<String>) -> Vec<String> {
+fn reported_scan_errors(origin: ScanOrigin, errors: Vec<String>) -> Vec<String> {
     if origin.reports_errors() {
         errors
     } else {
-        for error in errors {
-            eprintln!("{context}: {error}");
-        }
         Vec::new()
     }
 }
@@ -957,7 +954,7 @@ impl AppView {
                         Err(error) => errors.push(format!("{}: {error:#}", path.display())),
                     }
                 }
-                let errors = reported_scan_errors(origin, "Playlist metadata error", errors);
+                let errors = reported_scan_errors(origin, errors);
                 if !errors.is_empty() {
                     view.pending_errors.push(error_details_notification(
                         "Playlist metadata errors",
@@ -1031,7 +1028,7 @@ impl AppView {
                 view.scan_progress = None;
                 view.completed_scan_notification = Some((
                     view.tracks.len(),
-                    reported_scan_errors(origin, "Library scan error", result.errors),
+                    reported_scan_errors(origin, result.errors),
                 ));
                 view.load_playlist_metadata(origin, cx);
                 cx.notify();
@@ -3157,10 +3154,9 @@ impl AppView {
                                 let control_offset = (end.x - start.x) * 0.45;
                                 path.cubic_bezier_to(end, point(start.x + control_offset, start.y),
                                     point(end.x - control_offset, end.y));
-                                match path.build() {
-                                    Ok(path) => window.paint_path(path, rgb(if !cable.available { 0xf2a968 }
-                                        else if cable.hardware { ACCENT_COLOR } else { 0x466370 })),
-                                    Err(error) => eprintln!("Failed to draw routing cable: {error}"),
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, rgb(if !cable.available { 0xf2a968 }
+                                        else if cable.hardware { ACCENT_COLOR } else { 0x466370 }));
                                 }
                             }
                         }
@@ -4114,13 +4110,13 @@ mod tests {
             scan_progress_text(ScanOrigin::Background, progress),
             "12 files scanned"
         );
-        assert!(reported_scan_errors(ScanOrigin::Background, "test", errors.clone()).is_empty());
+        assert!(reported_scan_errors(ScanOrigin::Background, errors.clone()).is_empty());
         for origin in [ScanOrigin::Add, ScanOrigin::Rescan] {
             assert_eq!(
                 scan_progress_text(origin, progress),
                 "12 files scanned; 2 errors"
             );
-            assert_eq!(reported_scan_errors(origin, "test", errors.clone()), errors);
+            assert_eq!(reported_scan_errors(origin, errors.clone()), errors);
         }
     }
 

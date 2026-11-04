@@ -149,12 +149,7 @@ impl<T: DeviceConnection + 'static> DeviceService<T> {
                                     devices.remove(&id);
                                     let message = format!("Could not reset device: {error}");
                                     errors.push(format!("Device {id}: {message}"));
-                                    if send_events
-                                        .send(DeviceEvent::Error(id, message.clone()))
-                                        .is_err()
-                                    {
-                                        eprintln!("NanoDrive device {id}: {message}");
-                                    }
+                                    let _ = send_events.send(DeviceEvent::Error(id, message));
                                 }
                             }
                         }
@@ -164,12 +159,7 @@ impl<T: DeviceConnection + 'static> DeviceService<T> {
                                 "Device is still held by a previous playback; restart to reconnect"
                                     .to_owned();
                             errors.push(format!("Device {id}: {message}"));
-                            if send_events
-                                .send(DeviceEvent::Error(id, message.clone()))
-                                .is_err()
-                            {
-                                eprintln!("NanoDrive device {id}: {message}");
-                            }
+                            let _ = send_events.send(DeviceEvent::Error(id, message));
                         }
                         if let Some(reply) = reply {
                             let result = if errors.is_empty() {
@@ -177,9 +167,7 @@ impl<T: DeviceConnection + 'static> DeviceService<T> {
                             } else {
                                 Err(errors.join("; "))
                             };
-                            if let Err(mpsc::SendError(Err(error))) = reply.send(result) {
-                                eprintln!("Could not return NanoDrive devices: {error}");
-                            }
+                            let _ = reply.send(result);
                         }
                         continue;
                     }
@@ -311,10 +299,7 @@ impl<T: DeviceConnection> DeviceLease<T> {
                 Ok(connection) => {
                     let connection = match connection.into_inner() {
                         Ok(connection) => connection,
-                        Err(error) => {
-                            eprintln!("NanoDrive device {id} worker failed; resetting connection");
-                            error.into_inner()
-                        }
+                        Err(error) => error.into_inner(),
                     };
                     devices.push((id, connection));
                 }
@@ -336,9 +321,7 @@ impl<T: DeviceConnection> DeviceLease<T> {
 
 impl<T: DeviceConnection> Drop for DeviceLease<T> {
     fn drop(&mut self) {
-        if let Err(error) = self.return_devices(None) {
-            eprintln!("Could not return NanoDrive devices: {error:#}");
-        }
+        let _ = self.return_devices(None);
     }
 }
 

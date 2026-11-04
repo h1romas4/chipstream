@@ -1424,17 +1424,14 @@ impl Drop for NdsifSerialTransport {
         if !self.configured_chip && !self.output_volume_modified {
             return;
         }
-        if let Err(error) = self.request_typed(Command::Reset) {
-            eprintln!("failed to reset NDSIF device while closing: {error}");
+        if self.request_typed(Command::Reset).is_err() {
             return;
         }
-        if self.output_volume_modified
-            && let Err(error) = self.request_typed(Command::SetOutputVolume {
+        if self.output_volume_modified {
+            let _ = self.request_typed(Command::SetOutputVolume {
                 attenuation: 0,
                 response: true,
-            })
-        {
-            eprintln!("failed to restore NDSIF output volume while closing: {error}");
+            });
         }
     }
 }

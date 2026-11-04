@@ -300,9 +300,7 @@ impl NdsifHardwareWorkers {
                                 return Ok(());
                             }
                             let message = format!("NanoDrive device {id}: {error}");
-                            if errors_tx.send(message.clone()).is_err() {
-                                eprintln!("{message}");
-                            }
+                            let _ = errors_tx.send(message.clone());
                             timeline.cancel();
                             return Err(message);
                         }
@@ -547,9 +545,7 @@ impl Drop for NdsifHardwareWorkers {
         if !self.joined {
             self.timeline.cancel();
             self.senders.clear();
-            if let Err(error) = self.join() {
-                eprintln!("NanoDrive worker cleanup failed: {error}");
-            }
+            let _ = self.join();
         }
     }
 }

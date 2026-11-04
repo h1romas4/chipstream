@@ -63,7 +63,7 @@ of the window. While scanning, an animated indeterminate meter and the number of
 files processed are shown; the total is not known in advance. Scans started by
 **Add directory** or **Rescan** report errors
 in persistent notifications with scrollable details. Startup and directory
-removal scans do not show error notifications; errors are logged to stderr.
+removal scans do not show error notifications.
 Playlist metadata errors follow the same policy when loaded after a scan.
 Use the copy icon on a notification to copy its title, message, and any
 scrollable error details.

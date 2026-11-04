@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop writing application and NanoDrive cleanup errors to standard error.
+
 ## v0.6.0
 
 - Normalize NanoDrive 6/6.1 VGM startup writes before starting the timed DAC,

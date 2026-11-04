@@ -290,8 +290,6 @@ impl Playback {
                     Err(error) => Event::Error(generation, format!("{error:#}")),
                 };
                 let _ = sender.send(event);
-            } else if let Err(error) = result {
-                eprintln!("Playback cleanup failed after cancellation: {error:#}");
             }
         });
     }
@@ -488,9 +486,8 @@ impl IdlePreview {
                     run_preview(&path, rate, looped, &state, &state.cancel, Some(sources))
                 })();
                 if let Err(error) = result {
-                    match state.preview.lock() {
-                        Ok(mut preview) => preview.error = Some(format!("{error:#}")),
-                        Err(_) => eprintln!("Piano roll preview failed: {error:#}"),
+                    if let Ok(mut preview) = state.preview.lock() {
+                        preview.error = Some(format!("{error:#}"));
                     }
                 }
             })
@@ -577,9 +574,8 @@ struct PreviewPanicGuard(Arc<PlaybackControl>);
 impl Drop for PreviewPanicGuard {
     fn drop(&mut self) {
         if thread::panicking() {
-            match self.0.preview.lock() {
-                Ok(mut preview) => preview.error = Some("preview worker panicked".into()),
-                Err(_) => eprintln!("Piano roll preview worker panicked"),
+            if let Ok(mut preview) = self.0.preview.lock() {
+                preview.error = Some("preview worker panicked".into());
             }
         }
     }
@@ -596,9 +592,8 @@ impl PreviewWorker {
             .spawn(move || {
                 let _panic_guard = PreviewPanicGuard(Arc::clone(&control));
                 if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop, None) {
-                    match control.preview.lock() {
-                        Ok(mut preview) => preview.error = Some(format!("{error:#}")),
-                        Err(_) => eprintln!("Piano roll preview failed: {error:#}"),
+                    if let Ok(mut preview) = control.preview.lock() {
+                        preview.error = Some(format!("{error:#}"));
                     }
                 }
             })
@@ -613,10 +608,8 @@ impl PreviewWorker {
 impl Drop for PreviewWorker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            eprintln!("Piano roll preview worker panicked");
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
