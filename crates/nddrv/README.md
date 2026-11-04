@@ -35,9 +35,11 @@ Use **Rescan** to refresh a registered folder after its contents change.
 
 The search field filters by title, artist, album, notes, or path. Add chip names
 or the `MDX` and `VGM` format tags to narrow results; `VGM` includes VGZ files.
-For VGM/VGZ tracks, General settings select English or original-language metadata;
-English is the default, and missing fields fall back to the other language.
-Search matches either language. MDX metadata is unaffected.
+
+For VGM/VGZ tracks, General settings select English or original-language
+metadata. English is the default, and missing fields fall back to the other
+language. Search matches either language; MDX metadata is unaffected.
+
 Multiple chip tags require all listed chips. When a NanoDrive is connected, the
 `NanoDrive` tag filters for tracks with chips advertised by the device; it does
 not guarantee that the track can be routed to hardware.
