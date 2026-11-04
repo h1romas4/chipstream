@@ -2441,9 +2441,9 @@ impl AppView {
                                         .px_2()
                                         .py_1()
                                         .rounded_sm()
-                                        .bg(rgb(0x244047))
+                                        .bg(rgb(0x39434b))
                                         .text_sm()
-                                        .text_color(rgb(0xb9e9e7))
+                                        .text_color(rgb(0xd0d8dd))
                                         .child(device.name.clone())
                                 }),
                         ),
@@ -2459,9 +2459,9 @@ impl AppView {
                                     .px_2()
                                     .py_1()
                                     .rounded_sm()
-                                    .bg(rgb(0x244047))
+                                    .bg(rgb(0x39434b))
                                     .text_sm()
-                                    .text_color(rgb(0xb9e9e7))
+                                    .text_color(rgb(0xd0d8dd))
                                     .child("Emulation"),
                             )
                         },
