@@ -2812,7 +2812,7 @@ impl AppView {
                         .px_3()
                         .py_2()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("SEQUENCER"),
+                        .child("Sequencer"),
                 )
                 .into_any_element(),
             div()
@@ -2829,9 +2829,8 @@ impl AppView {
                     div()
                         .px_3()
                         .py_2()
-                        .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Emulation (chipstream)"),
+                        .child("Emulation"),
                 )
                 .into_any_element(),
         ];

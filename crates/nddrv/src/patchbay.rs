@@ -75,12 +75,6 @@ pub fn row_y(index: usize) -> f32 {
     HEADER + ROW * index as f32
 }
 
-fn unnumbered_name(name: &str) -> &str {
-    name.rsplit_once(" #")
-        .filter(|(_, suffix)| suffix.parse::<usize>().is_ok_and(|number| number >= 2))
-        .map_or(name, |(model, _)| model)
-}
-
 pub fn build(
     devices: &[Device],
     statuses: &HashMap<u64, DeviceStatus>,
@@ -143,18 +137,10 @@ pub fn build(
         let height = DEVICE_HEADER + ROW * (endpoints.len() + extra_labels.len()) as f32 + 8.;
         boxes.push(DeviceBox {
             id: device.id,
-            name: if device.name.is_empty() {
-                if device.port.is_empty() {
-                    "NanoDrive".into()
-                } else {
-                    device.port.clone()
-                }
+            name: if connected && !device.name.is_empty() {
+                device.name.clone()
             } else {
-                if connected {
-                    device.name.clone()
-                } else {
-                    unnumbered_name(&device.name).to_owned()
-                }
+                "NanoDrive".into()
             },
             connected,
             top: next_top,
@@ -219,7 +205,7 @@ mod tests {
     use crate::routing::{Connection, SessionRouting};
 
     #[test]
-    fn offline_device_names_do_not_show_stale_connection_numbers() {
+    fn offline_device_names_do_not_show_stale_models_or_ports() {
         let devices = vec![
             Device {
                 id: 1,
@@ -233,11 +219,21 @@ mod tests {
                 port: "port2".into(),
                 baud_rate: 115_200,
             },
+            Device {
+                id: 3,
+                name: String::new(),
+                port: "port3".into(),
+                baud_rate: 115_200,
+            },
         ];
         let statuses = HashMap::from([(2, DeviceStatus::Connected(vec![]))]);
         let graph = build(&devices, &statuses, &[]);
-        assert_eq!(graph.devices[0].name, "NanoDrive 7");
+        assert_eq!(graph.devices[0].name, "NanoDrive");
         assert_eq!(graph.devices[1].name, "NanoDrive 7 #2");
+        assert_eq!(graph.devices[2].name, "NanoDrive");
+
+        let graph = build(&devices, &HashMap::new(), &[]);
+        assert!(graph.devices.iter().all(|device| device.name == "NanoDrive"));
     }
 
     #[test]
