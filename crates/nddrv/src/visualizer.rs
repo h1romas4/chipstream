@@ -565,7 +565,7 @@ pub fn view(
                 } else {
                     "Select a track and start playback"
                 }))
-                .child(playback_buttons)
+                .child(playback_buttons.mt_2())
                 .when_some(error, |view, error| {
                     view.child(
                         div()
