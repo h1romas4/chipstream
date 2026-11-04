@@ -13,7 +13,7 @@ pub const TARGET_WIDTH: f32 = 200.;
 pub const DEVICE_X: f32 = 620.;
 pub const DEVICE_WIDTH: f32 = 300.;
 pub const HEADER: f32 = 40.;
-pub const DEVICE_HEADER: f32 = 112.;
+pub const DEVICE_HEADER: f32 = 120.;
 pub const ROW: f32 = 30.;
 const GAP: f32 = 16.;
 

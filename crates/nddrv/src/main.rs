@@ -2967,7 +2967,6 @@ impl AppView {
                                     .child(
                                         div()
                                             .min_w_0()
-                                            .text_sm()
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_ellipsis()
                                             .child(device.name.clone()),
@@ -2987,6 +2986,7 @@ impl AppView {
                                 div()
                                     .flex()
                                     .items_center()
+                                    .mt_1()
                                     .gap_1()
                                     .child(
                                         div().flex_1().min_w_0().child(
