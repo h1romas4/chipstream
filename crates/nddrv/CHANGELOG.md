@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.7.0
+
 - Add a General setting to choose English or original VGM metadata.
 - Add Playback settings for play count and fade-out duration.
 - Update gpui-kit to 0.9.0 and refresh other dependencies.
