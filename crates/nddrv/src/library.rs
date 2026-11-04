@@ -341,6 +341,38 @@ fn default_library_width() -> f32 {
     DEFAULT_LIBRARY_WIDTH
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaybackSettings {
+    pub loop_count: u32,
+    pub fadeout_seconds: u32,
+}
+
+impl PlaybackSettings {
+    pub fn validate(self) -> Result<()> {
+        if !(1..=99).contains(&self.loop_count) {
+            bail!("playback loop count must be between 1 and 99");
+        }
+        if self.fadeout_seconds > 600 {
+            bail!("playback fadeout must be between 0 and 600 seconds");
+        }
+        Ok(())
+    }
+
+    pub fn fadeout_samples(self) -> u32 {
+        self.fadeout_seconds * 44_100
+    }
+}
+
+impl Default for PlaybackSettings {
+    fn default() -> Self {
+        Self {
+            loop_count: 2,
+            fadeout_seconds: 2,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub directories: Vec<PathBuf>,
@@ -351,6 +383,8 @@ pub struct Config {
     pub playlist_width: Option<f32>,
     #[serde(default)]
     pub routing: crate::routing::RoutingConfig,
+    #[serde(default)]
+    pub playback: PlaybackSettings,
 }
 
 impl Default for Config {
@@ -361,6 +395,7 @@ impl Default for Config {
             library_width: DEFAULT_LIBRARY_WIDTH,
             playlist_width: None,
             routing: crate::routing::RoutingConfig::default(),
+            playback: PlaybackSettings::default(),
         }
     }
 }
@@ -381,6 +416,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
                 .routing
                 .validate()
                 .context("invalid routing configuration")?;
+            config
+                .playback
+                .validate()
+                .context("invalid playback configuration")?;
             for (name, width) in [
                 ("library_width", Some(config.library_width)),
                 ("playlist_width", config.playlist_width),
@@ -400,6 +439,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
 }
 
 pub fn save_config(path: &Path, config: &Config) -> Result<()> {
+    config
+        .playback
+        .validate()
+        .context("invalid playback configuration")?;
     config
         .routing
         .validate()
@@ -761,6 +804,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(config.library_width, 312.);
         assert_eq!(config.playlist_width, None);
+        assert_eq!(config.playback, PlaybackSettings::default());
         fs::write(
             &path,
             r#"{"directories":[],"playlist":[],"library_width":-1}"#,
@@ -772,6 +816,43 @@ mod tests {
                 .to_string()
                 .contains("library_width")
         );
+    }
+
+    #[test]
+    fn playback_settings_validate_on_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        for playback in [
+            PlaybackSettings {
+                loop_count: 0,
+                fadeout_seconds: 2,
+            },
+            PlaybackSettings {
+                loop_count: 100,
+                fadeout_seconds: 2,
+            },
+            PlaybackSettings {
+                loop_count: 2,
+                fadeout_seconds: 601,
+            },
+        ] {
+            let config = Config {
+                playback,
+                ..Config::default()
+            };
+            assert!(save_config(&path, &config).is_err());
+            fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            assert!(load_config(&path).is_err());
+        }
+        let config = Config {
+            playback: PlaybackSettings {
+                loop_count: 1,
+                fadeout_seconds: 0,
+            },
+            ..Config::default()
+        };
+        save_config(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().playback, config.playback);
     }
 
     #[test]
@@ -1288,6 +1369,10 @@ mod tests {
             library_width: 410.,
             playlist_width: Some(380.),
             routing: crate::routing::RoutingConfig::default(),
+            playback: PlaybackSettings {
+                loop_count: 3,
+                fadeout_seconds: 5,
+            },
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();
@@ -1296,6 +1381,7 @@ mod tests {
         assert_eq!(loaded.playlist, config.playlist);
         assert_eq!(loaded.library_width, 410.);
         assert_eq!(loaded.playlist_width, Some(380.));
+        assert_eq!(loaded.playback, config.playback);
     }
 
     #[test]

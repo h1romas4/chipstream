@@ -31,6 +31,9 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarHandle, ScrollbarMode};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::setting::{
+    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt};
@@ -509,9 +512,77 @@ struct IdlePreviewTarget {
     path: PathBuf,
     plan: Option<routing::PlaybackPlan>,
     looped: bool,
+    settings: library::PlaybackSettings,
 }
 
 impl AppView {
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let loop_get = view.clone();
+            let loop_set = view.clone();
+            let fade_get = view.clone();
+            let fade_set = view.clone();
+            let loop_field = SettingField::number_input(
+                NumberFieldOptions {
+                    min: 1.,
+                    max: 99.,
+                    step: 1.,
+                },
+                move |cx| {
+                    loop_get
+                        .upgrade()
+                        .map_or(2., |view| view.read(cx).config.playback.loop_count as f64)
+                },
+                move |value, cx| {
+                    let _ = loop_set.update(cx, |view, cx| {
+                        view.config.playback.loop_count = value.round() as u32;
+                        view.save();
+                        view.sync_idle_preview(cx);
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(2.);
+            let fade_field = SettingField::number_input(
+                NumberFieldOptions {
+                    min: 0.,
+                    max: 600.,
+                    step: 1.,
+                },
+                move |cx| {
+                    fade_get.upgrade().map_or(2., |view| {
+                        view.read(cx).config.playback.fadeout_seconds as f64
+                    })
+                },
+                move |value, cx| {
+                    let _ = fade_set.update(cx, |view, cx| {
+                        view.config.playback.fadeout_seconds = value.round() as u32;
+                        view.save();
+                        view.sync_idle_preview(cx);
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(2.);
+            dialog.title("Settings").width(px(760.)).centered().child(
+                div().h(px(400.)).w_full().child(
+                    Settings::new("nddrv-settings")
+                        .sidebar_width(px(180.))
+                        .sidebar_size_range(px(150.)..px(240.))
+                        .page(
+                            SettingPage::new("Playback")
+                                .icon(assets::IconName::Play)
+                                .group(SettingGroup::new().items([
+                                    SettingItem::new("Play count", loop_field),
+                                    SettingItem::new("Fade out (seconds)", fade_field),
+                                ])),
+                        ),
+                ),
+            )
+        });
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive")
@@ -1083,6 +1154,7 @@ impl AppView {
         }
         let plan = self.routing.playback_plan(&self.config.routing.devices);
         if let Some(path) = self.config.playlist.get(index).cloned() {
+            self.player.set_settings(self.config.playback);
             let use_transition =
                 self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
             let preview_mute = if self.playing.is_none()
@@ -1167,6 +1239,7 @@ impl AppView {
             path: path.clone(),
             plan: self.routing.playback_plan(&self.config.routing.devices),
             looped: self.looped,
+            settings: self.config.playback,
         })
     }
 
@@ -1210,8 +1283,12 @@ impl AppView {
         self.gain_sources = None;
         self.gain_sources_failed = false;
         if let Some(target) = &self.idle_target {
-            let result =
-                IdlePreview::start(target.path.clone(), target.looped, target.plan.as_ref());
+            let result = IdlePreview::start_with_settings(
+                target.path.clone(),
+                target.looped,
+                target.plan.as_ref(),
+                target.settings,
+            );
             match result {
                 Ok(preview) => {
                     if same_track && let Some(previous) = &previous {
@@ -2236,9 +2313,12 @@ impl AppView {
                 Button::new("transport-loop")
                     .icon(assets::IconName::Repeat2)
                     .tooltip(if self.looped {
-                        "Loop indefinitely"
+                        "Loop indefinitely".to_string()
                     } else {
-                        "Play twice, then fade out for 2 seconds"
+                        format!(
+                            "Play {} times, then fade out for {} seconds",
+                            self.config.playback.loop_count, self.config.playback.fadeout_seconds
+                        )
                     })
                     .accessibility_label("Follow song loop points")
                     .toggled(self.looped)
@@ -5325,7 +5405,16 @@ impl Render for AppView {
                                 .custom(blue)
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                         )
-                    }),
+                    })
+                    .child(
+                        Button::new("settings")
+                            .icon(assets::IconName::Settings)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Settings")
+                            .accessibility_label("Settings")
+                            .on_click(cx.listener(|view, _, window, cx| view.open_settings(window, cx))),
+                    ),
             )
     }
 }

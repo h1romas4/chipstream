@@ -57,8 +57,10 @@ Right-click selected Playlist rows to remove them or clear the playlist.
 
 Playlist tracks play in order. Previous and next do not wrap at either end.
 With loop disabled, VGM and MDX tracks play through their song loop twice and
-then fade out over two seconds. Enable loop to repeat song loop points
-indefinitely.
+then fade out over two seconds by default. Use the settings button at the
+bottom right to change the play count (1-99) and fade-out duration (0-600
+seconds). Changes apply to the next track. Enable loop to repeat song loop
+points indefinitely, regardless of these settings.
 
 Track Info shows available track, game, composer, and notes metadata. Artwork
 is loaded from supported image files in the track's folder.

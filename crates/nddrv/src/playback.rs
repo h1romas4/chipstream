@@ -25,14 +25,14 @@ use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::fm_mute::FmMute;
-use crate::library::{extension, read_bounded, read_track};
+use crate::library::{PlaybackSettings, extension, read_bounded, read_track};
 use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
 const CHUNK_FRAMES: usize = 1024;
 const QUEUE_BLOCKS: usize = 8;
-const FADEOUT_SECONDS: u32 = 2;
-const FADEOUT_SAMPLES: u32 = FADEOUT_SECONDS * 44_100;
+#[cfg(test)]
+const FADEOUT_SAMPLES: u32 = 2 * 44_100;
 const YM2608_RHYTHM_ROM: &str = "ym2608_adpcm_rom.bin";
 
 pub enum Event {
@@ -50,6 +50,7 @@ pub enum VolumeMode {
 
 pub struct Playback {
     control: Arc<PlaybackControl>,
+    settings: PlaybackSettings,
     volume: Arc<NdsifOutputGain>,
     gains: Arc<GainState>,
     generation: u64,
@@ -92,6 +93,7 @@ struct GainState {
 }
 
 struct PlaybackControl {
+    settings: PlaybackSettings,
     cancel: AtomicBool,
     paused: AtomicBool,
     frames: AtomicU64,
@@ -116,6 +118,7 @@ impl PlaybackControl {
 
     fn with_gains(volume: Arc<NdsifOutputGain>, gains: Arc<GainState>) -> Self {
         Self {
+            settings: PlaybackSettings::default(),
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
@@ -220,6 +223,7 @@ impl Playback {
         let gains = Arc::new(GainState::default());
         Self {
             control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
+            settings: PlaybackSettings::default(),
             volume,
             gains,
             generation: 0,
@@ -232,6 +236,10 @@ impl Playback {
 
     pub fn play(&mut self, path: PathBuf, looped: bool, preview_mute: Option<&FmMute>) {
         self.start(path, looped, None, preview_mute);
+    }
+
+    pub fn set_settings(&mut self, settings: PlaybackSettings) {
+        self.settings = settings;
     }
 
     pub fn play_hardware(
@@ -256,10 +264,9 @@ impl Playback {
         preview_mute: Option<&FmMute>,
     ) {
         self.stop();
-        self.control = Arc::new(PlaybackControl::with_gains(
-            self.volume.clone(),
-            self.gains.clone(),
-        ));
+        let mut control = PlaybackControl::with_gains(self.volume.clone(), self.gains.clone());
+        control.settings = self.settings;
+        self.control = Arc::new(control);
         if let Some(preview_mute) = preview_mute {
             self.control.fm_mute.copy_selections_from(preview_mute);
         }
@@ -463,11 +470,23 @@ pub struct IdlePreview {
 }
 
 impl IdlePreview {
+    #[cfg(test)]
     pub fn start(path: PathBuf, looped: bool, plan: Option<&PlaybackPlan>) -> Result<Self> {
-        let control = Arc::new(PlaybackControl::with_gains(
+        Self::start_with_settings(path, looped, plan, PlaybackSettings::default())
+    }
+
+    pub fn start_with_settings(
+        path: PathBuf,
+        looped: bool,
+        plan: Option<&PlaybackPlan>,
+        settings: PlaybackSettings,
+    ) -> Result<Self> {
+        let mut control = PlaybackControl::with_gains(
             Arc::new(NdsifOutputGain::new()),
             Arc::new(GainState::default()),
-        ));
+        );
+        control.settings = settings;
+        let control = Arc::new(control);
         let rate = VGM_SAMPLE_RATE;
         control.sample_rate.store(rate, Ordering::Release);
         let routes = plan.map_or_else(Vec::new, |plan| plan.routes.clone());
@@ -477,8 +496,14 @@ impl IdlePreview {
             .spawn(move || {
                 let _guard = PreviewPanicGuard(Arc::clone(&state));
                 let result = (|| {
-                    let sequencer =
-                        Sequencer::with_factories(&path, rate, looped, ChipFactoryRegistry::new())?;
+                    let sequencer = Sequencer::create(
+                        &path,
+                        rate,
+                        looped,
+                        ChipFactoryRegistry::new(),
+                        None,
+                        settings,
+                    )?;
                     if state.cancel.load(Ordering::Acquire) {
                         return Ok(());
                     }
@@ -628,9 +653,13 @@ fn mdx_package(path: &Path, bytes: Vec<u8>) -> Result<MdxPackage> {
     Ok(MdxPackage::parse_owned(normalized.into_owned(), pdx)?)
 }
 
-fn mdx_options(looped: bool) -> MdxSequencerOptions {
+fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions {
     MdxSequencerOptions {
-        loop_count: if looped { None } else { Some(2) },
+        loop_count: if looped {
+            None
+        } else {
+            Some(settings.loop_count)
+        },
         max_ticks: if looped {
             None
         } else {
@@ -654,7 +683,7 @@ fn run_preview(
     let bytes = read_track(path)?;
     let (mut stream, marker) = if extension(path) == "mdx" {
         let package = mdx_package(path, bytes)?;
-        let options = mdx_options(looped);
+        let options = mdx_options(looped, control.settings);
         let (generator, marker) = if looped {
             (to_vgm_stream_generator(package, options)?, None)
         } else {
@@ -712,11 +741,15 @@ fn run_preview(
                 );
             }
         }
-        stream.set_loop_count(if looped { None } else { Some(2) });
+        stream.set_loop_count(if looped {
+            None
+        } else {
+            Some(control.settings.loop_count)
+        });
         if !looped {
             stream.set_loop_base(0);
             stream.set_loop_modifier(0x10);
-            stream.set_fadeout_samples(Some(FADEOUT_SAMPLES as usize));
+            stream.set_fadeout_samples(Some(control.settings.fadeout_samples() as usize));
         }
         (stream, None)
     };
@@ -824,7 +857,7 @@ fn run_preview(
             if fade_end.is_none() && marker.as_ref().is_some_and(|marker| marker.reached()) {
                 fade_end = Some(
                     samples
-                        .checked_add(u64::from(FADEOUT_SAMPLES))
+                        .checked_add(u64::from(control.settings.fadeout_samples()))
                         .context("piano roll preview sample overflow")?,
                 );
             }
@@ -1060,15 +1093,24 @@ impl Sequencer {
         Ok(())
     }
 
+    #[cfg(test)]
     fn with_factories(
         path: &Path,
         rate: u32,
         looped: bool,
         factories: ChipFactoryRegistry,
     ) -> Result<Self> {
-        Self::create(path, rate, looped, factories, None)
+        Self::create(
+            path,
+            rate,
+            looped,
+            factories,
+            None,
+            PlaybackSettings::default(),
+        )
     }
 
+    #[cfg(test)]
     fn for_playback(
         path: &Path,
         rate: u32,
@@ -1077,7 +1119,34 @@ impl Sequencer {
         rom_directory: &Path,
         routes: &[ndsif_transport::NdsifRoute],
     ) -> Result<Self> {
-        Self::create(path, rate, looped, factories, Some((rom_directory, routes)))
+        Self::for_playback_with_settings(
+            path,
+            rate,
+            looped,
+            factories,
+            rom_directory,
+            routes,
+            PlaybackSettings::default(),
+        )
+    }
+
+    fn for_playback_with_settings(
+        path: &Path,
+        rate: u32,
+        looped: bool,
+        factories: ChipFactoryRegistry,
+        rom_directory: &Path,
+        routes: &[ndsif_transport::NdsifRoute],
+        settings: PlaybackSettings,
+    ) -> Result<Self> {
+        Self::create(
+            path,
+            rate,
+            looped,
+            factories,
+            Some((rom_directory, routes)),
+            settings,
+        )
     }
 
     fn create(
@@ -1086,18 +1155,19 @@ impl Sequencer {
         looped: bool,
         factories: ChipFactoryRegistry,
         rom: Option<(&Path, &[ndsif_transport::NdsifRoute])>,
+        settings: PlaybackSettings,
     ) -> Result<Self> {
         let bytes = read_track(path)?;
         if extension(path) == "mdx" {
             let package = mdx_package(path, bytes)?;
-            let options = mdx_options(looped);
+            let options = mdx_options(looped, settings);
             Ok(Self::Mdx(
                 MdxSequencer::with_options_and_fadeout_with_factories(
                     package,
                     rate,
                     CHUNK_FRAMES,
                     options,
-                    (!looped).then_some(FADEOUT_SAMPLES),
+                    (!looped).then_some(settings.fadeout_samples()),
                     factories,
                 )?,
             ))
@@ -1118,11 +1188,15 @@ impl Sequencer {
                     routes,
                 )?;
             }
-            sequencer.set_loop_count(if looped { None } else { Some(2) });
+            sequencer.set_loop_count(if looped {
+                None
+            } else {
+                Some(settings.loop_count)
+            });
             if !looped {
                 sequencer.set_loop_base(0);
                 sequencer.set_loop_modifier(0x10);
-                sequencer.set_fadeout_samples(Some(FADEOUT_SAMPLES))?;
+                sequencer.set_fadeout_samples(Some(settings.fadeout_samples()))?;
             }
             Ok(Self::Vgm(sequencer))
         }
@@ -1269,7 +1343,11 @@ impl Sequencer {
             && let Some(timeline) = control.hardware_timeline.get()
         {
             timeline
-                .schedule_output_fade(start, rate, Duration::from_secs(u64::from(FADEOUT_SECONDS)))
+                .schedule_output_fade(
+                    start,
+                    rate,
+                    Duration::from_secs(u64::from(control.settings.fadeout_seconds)),
+                )
                 .map_err(anyhow::Error::msg)?;
             *scheduled = true;
         }
@@ -1552,25 +1630,27 @@ fn run_inner(
         let recorders = crate::hardware::recorders(lease)?;
         let factories =
             ndsif_transport::create_routed_transport_factories(&recorders, &plan.routes)?;
-        let sequencer = Sequencer::for_playback(
+        let sequencer = Sequencer::for_playback_with_settings(
             path,
             config.sample_rate,
             looped,
             factories,
             Path::new("."),
             &plan.routes,
+            control.settings,
         )?;
         let workers = crate::hardware::HardwareWorkers::start(lease, &recorders, timeline)?;
         (sequencer, Some((recorders, workers)))
     } else {
         (
-            Sequencer::for_playback(
+            Sequencer::for_playback_with_settings(
                 path,
                 config.sample_rate,
                 looped,
                 ChipFactoryRegistry::new(),
                 Path::new("."),
                 &[],
+                control.settings,
             )?,
             None,
         )
@@ -2957,6 +3037,45 @@ mod tests {
             let mut finite_mdx = Sequencer::new(&mdx, rate, false).unwrap();
             assert_eq!(render_frames(&mut finite_mdx), expected as usize);
 
+            let settings = PlaybackSettings {
+                loop_count: 3,
+                fadeout_seconds: 1,
+            };
+            let mut configured_vgm = Sequencer::create(
+                &vgm,
+                rate,
+                false,
+                ChipFactoryRegistry::new(),
+                None,
+                settings,
+            )
+            .unwrap();
+            let expected_vgm = ((10_000 + u64::from(settings.fadeout_samples())) * u64::from(rate)
+                + 22_050)
+                / 44_100;
+            assert_eq!(render_frames(&mut configured_vgm), expected_vgm as usize);
+            let configured_mdx_duration = measure_mdx_duration_frames(
+                MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap(),
+                rate,
+                mdx_options(false, settings),
+                Some(settings.fadeout_samples()),
+            )
+            .unwrap()
+            .unwrap();
+            let mut configured_mdx = Sequencer::create(
+                &mdx,
+                rate,
+                false,
+                ChipFactoryRegistry::new(),
+                None,
+                settings,
+            )
+            .unwrap();
+            assert_eq!(
+                render_frames(&mut configured_mdx),
+                configured_mdx_duration as usize
+            );
+
             for path in [&vgm, &mdx] {
                 let mut looped = Sequencer::new(path, rate, true).unwrap();
                 for _ in 0..(expected as usize / CHUNK_FRAMES + 10) {
@@ -3864,23 +3983,50 @@ mod tests {
         )
         .unwrap();
 
-        for rate in [8_000, 44_100, 48_000] {
-            for path in [&vgm, &mdx] {
-                let mut player = Sequencer::new(path, rate, false).unwrap();
-                let mut expected = 0_u64;
-                while let Some(block) = player.render().unwrap() {
-                    expected += block.frames().len() as u64;
-                    assert!(expected < u64::from(rate) * 300);
-                }
-                let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
-                control
-                    .visual_clock
-                    .publish(u64::from(rate) * 300, 1, Instant::now())
+        for settings in [
+            PlaybackSettings::default(),
+            PlaybackSettings {
+                loop_count: 3,
+                fadeout_seconds: 1,
+            },
+            PlaybackSettings {
+                loop_count: 1,
+                fadeout_seconds: 0,
+            },
+        ] {
+            for rate in [8_000, 44_100, 48_000] {
+                for path in [&vgm, &mdx] {
+                    let mut player = Sequencer::create(
+                        path,
+                        rate,
+                        false,
+                        ChipFactoryRegistry::new(),
+                        None,
+                        settings,
+                    )
                     .unwrap();
-                run_preview(path, rate, false, &control, &AtomicBool::new(false), None).unwrap();
-                let preview = control.preview.lock().unwrap();
-                assert!(preview.done);
-                assert_eq!(preview.scanned, expected, "{} at {rate} Hz", path.display());
+                    let mut expected = 0_u64;
+                    while let Some(block) = player.render().unwrap() {
+                        expected += block.frames().len() as u64;
+                        assert!(expected < u64::from(rate) * 300);
+                    }
+                    let mut control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+                    control.settings = settings;
+                    control
+                        .visual_clock
+                        .publish(u64::from(rate) * 300, 1, Instant::now())
+                        .unwrap();
+                    run_preview(path, rate, false, &control, &AtomicBool::new(false), None)
+                        .unwrap();
+                    let preview = control.preview.lock().unwrap();
+                    assert!(preview.done);
+                    assert_eq!(
+                        preview.scanned,
+                        expected,
+                        "{} at {rate} Hz with {settings:?}",
+                        path.display()
+                    );
+                }
             }
         }
     }
