@@ -44,29 +44,27 @@ Example URI: `chipstream:///music/game%20theme.vgm`
 
 ### NDSIF hardware playback
 
-When `ndsif-port` or `ndsif-ports` is set, the shared `ndsif-transport` crate
-opens each serial device, optionally resets it, and queries its capabilities.
-Chip instances route to the first configured device with matching chip and
-clock capabilities. NanoDrive 6 can receive YM2612 and SN76489 writes,
-NanoDrive 7 can receive the FM targets it advertises, and NanoDrive 8 can
-receive YM2151 and OKIM6258. The OKIM6258 path re-encodes source ADPCM against
-the continuously running device decoder, preserving source PLAY/STOP state
-and generating state-matched silence for the track tail.
-Unsupported chips or instances continue through their emulator backends. The
-device produces the audible hardware output; NDSIF-backed chip voices are
-silent in the GStreamer PCM stream.
+Set `ndsif-port` for one device or `ndsif-ports` for an ordered list. Devices
+are opened and their capabilities queried at startup. Each chip instance uses
+the first device advertising a matching chip and clock; unsupported instances
+continue through software emulation.
 
-`ndsif-port` remains available for a single device. Use `ndsif-ports` for
-multiple devices, for example `ndsif-ports=/dev/ttyACM0,/dev/ttyACM1`; list
-order determines preference when multiple devices support the same chip.
-NanoDrive 6's advertised revision-40/profile-1 timed DAC path schedules
-YM2612 `$2A`/`$2B` writes and positioned FM/PSG events. Devices without that
-profile continue to use normal YM2612 register writes.
+| Device | Example hardware targets |
+| --- | --- |
+| NanoDrive 6 | YM2612, SN76489 |
+| NanoDrive 7 | Advertised FM targets |
+| NanoDrive 8 | YM2151, OKIM6258 |
 
-NDSIF OKIM6258 and timed DAC streams are one-shot, so loop/restart behavior and
-the GStreamer `fadeout-seconds` ramp are not reproduced on the physical chip.
-For predictable hardware playback, use `play-count=1` and
-`fadeout-seconds=0`. Only the primary OKIM6258 stream is supported.
+Actual routing depends on the capabilities reported by the connected device.
+Hardware audio is not included in the GStreamer PCM output; mix it separately.
+
+**Playback notes**
+
+- Seeking is disabled while an NDSIF port is configured.
+- OKIM6258 and timed DAC streams do not repeat with `play-count` or follow the
+  GStreamer `fadeout-seconds` ramp. For hardware playback, use
+  `play-count=1` and `fadeout-seconds=0`.
+- Only the primary OKIM6258 stream is supported.
 
 ```sh
 GST_PLUGIN_PATH="$HOME/.local/lib/chipstream" gst-launch-1.0 \
