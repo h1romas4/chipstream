@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0
 
 - Play a single selected Playlist track with Enter.
 - Focus the Music search box with Ctrl+F on the Library page.
