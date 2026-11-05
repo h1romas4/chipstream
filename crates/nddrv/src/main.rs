@@ -558,6 +558,7 @@ struct AppView {
     queue_anchor: Option<usize>,
     queue_selection_order: Vec<usize>,
     details_selection: DetailsSelection,
+    focus: FocusHandle,
     track_focus: FocusHandle,
     queue_focus: FocusHandle,
     playlist_tracks: HashMap<PathBuf, Track>,
@@ -1019,6 +1020,7 @@ impl AppView {
             queue_anchor: None,
             queue_selection_order: Vec::new(),
             details_selection: DetailsSelection::Music,
+            focus: cx.focus_handle(),
             track_focus: cx.focus_handle(),
             queue_focus: cx.focus_handle(),
             playlist_tracks: HashMap::new(),
@@ -2634,9 +2636,9 @@ impl AppView {
         let play_label = if active && self.playing_hardware {
             "Pause unavailable during NanoDrive playback"
         } else if !active {
-            "Play"
+            "Play (F5)"
         } else if self.paused {
-            "Resume"
+            "Resume (F5)"
         } else {
             "Pause"
         };
@@ -4427,6 +4429,18 @@ fn is_select_all(keystroke: &Keystroke) -> bool {
         && !modifiers.function
 }
 
+fn is_play_shortcut(keystroke: &Keystroke, page: Page, has_tracks: bool) -> bool {
+    let modifiers = keystroke.modifiers;
+    has_tracks
+        && matches!(page, Page::Library | Page::Piano)
+        && keystroke.key == "f5"
+        && !modifiers.control
+        && !modifiers.platform
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.function
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ListKey {
     SelectAll,
@@ -4544,16 +4558,36 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, ScanOrigin, adjacent_track,
+        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, Page, ScanOrigin, adjacent_track,
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, notification_copy_text, piano_transition_ready, playback_state_label,
-        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
-        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, unsupported_chips, update_selection_order,
-        update_window_settings,
+        initial_window_bounds, is_play_shortcut, is_select_all, keep_preview_sources, list_key,
+        list_selection_step, music_format, notification_copy_text, piano_transition_ready,
+        playback_state_label, remove_playlist_entries, renumber_connected_devices,
+        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
+        select_for_context, select_item, select_range, selection_status, unsupported_chips,
+        update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn play_shortcut_is_limited_to_library_and_piano() {
+        let f5 = Keystroke::parse("f5").unwrap();
+        assert!(is_play_shortcut(&f5, Page::Library, true));
+        assert!(is_play_shortcut(&f5, Page::Piano, true));
+        assert!(!is_play_shortcut(&f5, Page::Devices, true));
+        assert!(!is_play_shortcut(&f5, Page::Library, false));
+        assert!(!is_play_shortcut(&f5, Page::Piano, false));
+        assert!(!is_play_shortcut(
+            &Keystroke::parse("shift-f5").unwrap(),
+            Page::Library,
+            true
+        ));
+        assert!(!is_play_shortcut(
+            &Keystroke::parse("f6").unwrap(),
+            Page::Piano,
+            true
+        ));
+    }
 
     #[test]
     fn playback_state_displays_waiting_and_paused() {
@@ -5570,6 +5604,25 @@ impl Render for AppView {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if !is_play_shortcut(&event.keystroke, view.page, !view.config.playlist.is_empty()) {
+                    return;
+                }
+                if view.page != Page::Piano {
+                    view.focus.focus(window, cx);
+                }
+                view.page = Page::Piano;
+                if view.playing.is_none() {
+                    view.play(0, cx);
+                } else if view.paused && !view.playing_hardware {
+                    view.paused = false;
+                    view.player.set_paused(false);
+                    view.status = "Playing".into();
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .bg(rgb(0x111820))
             .text_color(rgb(0xe4edf2))
             .when(show_title_bar, |view| {
@@ -5608,7 +5661,10 @@ impl Render for AppView {
                             .child(
                                 Button::new("library-icon")
                                     .icon(assets::IconName::FolderOpen)
-                                    .on_click(cx.listener(|view, _, _, cx| {
+                                    .tooltip("Library")
+                                    .accessibility_label("Library")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.focus.focus(window, cx);
                                         view.page = Page::Library;
                                         cx.notify();
                                     })),
@@ -5622,7 +5678,8 @@ impl Render for AppView {
                                             .tooltip("Piano roll")
                                             .accessibility_label("Piano roll")
                                             .toggled(self.page == Page::Piano)
-                                            .on_click(cx.listener(|view, _, _, cx| {
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.focus.focus(window, cx);
                                                 view.page = Page::Piano;
                                                 cx.notify();
                                             })),
@@ -5642,6 +5699,8 @@ impl Render for AppView {
                             .child(
                                 Button::new("devices-icon")
                                     .icon(assets::IconName::Cable)
+                                    .tooltip("Devices")
+                                    .accessibility_label("Devices")
                                     .on_click(cx.listener(|view, _, _, cx| {
                                         view.page = Page::Devices;
                                         view.refresh_ports(cx);
@@ -6142,6 +6201,7 @@ fn main() {
                     config_error,
                     window_settings,
                 );
+                app.focus.focus(window, cx);
                 cx.observe_window_bounds(window, |view, _, _| {
                     view.window_observation_pending = Some(Instant::now());
                 })
