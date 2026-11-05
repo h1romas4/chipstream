@@ -3,12 +3,13 @@
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chipstream::metadata::{MetadataError, TrackMetadata, probe_mdx_bytes, probe_vgm_bytes};
 use flate2::read::GzDecoder;
@@ -30,7 +31,10 @@ use chipstream::sequencer::{
     VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
     measure_vgm_duration_frames,
 };
-use ndsif_transport::{NdsifSerialConfig, create_chip_factories as create_ndsif_factories};
+use ndsif_transport::{
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport,
+    NdsifSharedDevice, create_automatic_transport_factories, create_recorders,
+};
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
@@ -47,6 +51,8 @@ const DEFAULT_CHUNK_FRAMES: u32 = 512;
 const DEFAULT_NDSIF_BAUD_RATE: u32 = 115_200;
 const DEFAULT_NDSIF_TIMEOUT_MS: u32 = 500;
 const QUEUE_BLOCKS: usize = 4;
+const HARDWARE_QUEUE_BLOCKS: usize = 8;
+const MAX_HARDWARE_OPERATIONS: usize = 16_384;
 const CHECKPOINT_INTERVAL_SECONDS: usize = 30;
 const RECENT_CHECKPOINTS: usize = 2;
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
@@ -101,6 +107,13 @@ struct NdsifSettings {
     reset_device: bool,
 }
 
+struct HardwarePlayback {
+    devices: Vec<NdsifSharedDevice>,
+    recorders: Vec<NdsifRecorder>,
+    workers: Option<NdsifHardwareWorkers>,
+    timeline: Arc<NdsifHostTimeline>,
+}
+
 #[derive(Clone, Copy)]
 struct RenderSettings {
     sample_rate: u32,
@@ -152,6 +165,13 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.position_frames(),
             Self::Mdx(player) => player.position_frames(),
+        }
+    }
+
+    fn fade_start_frame(&self) -> Option<usize> {
+        match self {
+            Self::Vgm(player) => player.fade_start_frame(),
+            Self::Mdx(player) => player.fade_start_frame(),
         }
     }
 
@@ -212,6 +232,9 @@ mod imp {
         controls: Mutex<Option<Sender<WorkerControl>>>,
         cancelled: Arc<AtomicBool>,
         flushing: AtomicBool,
+        hardware_timeline: Mutex<Option<Arc<NdsifHostTimeline>>>,
+        hardware_started: AtomicBool,
+        hardware_latency: Mutex<Option<gst::ClockTime>>,
         initial_ndsif_seek_pending: AtomicBool,
         duration: Arc<Mutex<Option<gst::ClockTime>>>,
     }
@@ -225,6 +248,9 @@ mod imp {
                 controls: Mutex::new(None),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 flushing: AtomicBool::new(false),
+                hardware_timeline: Mutex::new(None),
+                hardware_started: AtomicBool::new(false),
+                hardware_latency: Mutex::new(None),
                 initial_ndsif_seek_pending: AtomicBool::new(false),
                 duration: Arc::new(Mutex::new(None)),
             }
@@ -465,6 +491,84 @@ mod imp {
     }
 
     impl ElementImpl for ChipstreamSrc {
+        fn change_state(
+            &self,
+            transition: gst::StateChange,
+        ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+            if transition == gst::StateChange::PausedToPlaying
+                && self.hardware_started.load(Ordering::Acquire)
+            {
+                gst::element_error!(
+                    self.obj(),
+                    gst::CoreError::StateChange,
+                    ("NDSIF playback cannot resume after being paused; restart the pipeline")
+                );
+                return Err(gst::StateChangeError);
+            }
+            let result = self.parent_change_state(transition)?;
+            if transition == gst::StateChange::PausedToPlaying {
+                let timeline = self
+                    .hardware_timeline
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                if let Some(timeline) = timeline {
+                    let source = self.obj();
+                    let Some(clock) = source.clock() else {
+                        gst::element_error!(
+                            source,
+                            gst::CoreError::Clock,
+                            ("NDSIF playback requires a pipeline clock")
+                        );
+                        return Err(gst::StateChangeError);
+                    };
+                    let Some(base) = source.base_time() else {
+                        gst::element_error!(
+                            source,
+                            gst::CoreError::Clock,
+                            ("NDSIF playback clock is unavailable")
+                        );
+                        return Err(gst::StateChangeError);
+                    };
+                    let now = clock.time();
+                    let mut parent = source.parent();
+                    let mut latency = gst::ClockTime::ZERO;
+                    while let Some(object) = parent {
+                        if let Some(pipeline) = object.downcast_ref::<gst::Pipeline>() {
+                            latency = pipeline.latency().unwrap_or(gst::ClockTime::ZERO);
+                            break;
+                        }
+                        parent = object.parent();
+                    }
+                    if let Some(reported) = *self
+                        .hardware_latency
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                    {
+                        latency = reported;
+                    }
+                    let origin = presentation_instant(Instant::now(), base, now, latency);
+                    let Some(origin) = origin else {
+                        gst::element_error!(
+                            source,
+                            gst::CoreError::Clock,
+                            ("NDSIF playback clock is out of range")
+                        );
+                        return Err(gst::StateChangeError);
+                    };
+                    timeline.start(origin).map_err(|_| gst::StateChangeError)?;
+                    self.hardware_started.store(true, Ordering::Release);
+                }
+            } else if transition == gst::StateChange::PlayingToPaused
+                && self.hardware_started.load(Ordering::Acquire)
+            {
+                self.stop_worker().map_err(|_| gst::StateChangeError)?;
+            } else if transition == gst::StateChange::PausedToReady {
+                self.hardware_started.store(false, Ordering::Release);
+            }
+            Ok(result)
+        }
+
         fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
             static METADATA: OnceLock<gst::subclass::ElementMetadata> = OnceLock::new();
             Some(METADATA.get_or_init(|| {
@@ -504,6 +608,10 @@ mod imp {
 
     impl BaseSrcImpl for ChipstreamSrc {
         fn start(&self) -> Result<(), gst::ErrorMessage> {
+            *self
+                .hardware_latency
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
             let settings = self
                 .settings
                 .lock()
@@ -534,6 +642,16 @@ mod imp {
 
         fn size(&self) -> Option<u64> {
             None
+        }
+
+        fn event(&self, event: &gst::Event) -> bool {
+            if let gst::EventView::Latency(latency) = event.view() {
+                *self
+                    .hardware_latency
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(latency.latency());
+            }
+            self.parent_event(event)
         }
 
         fn query(&self, query: &mut gst::QueryRef) -> bool {
@@ -685,7 +803,7 @@ mod imp {
                 .duration
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = None;
-            let Some(location) = settings.location else {
+            let Some(location) = settings.location.clone() else {
                 return Err(gst::error_msg!(
                     gst::CoreError::Failed,
                     ["location is required"]
@@ -709,6 +827,13 @@ mod imp {
                 timeout_ms: settings.ndsif_timeout_ms,
                 reset_device: settings.ndsif_reset,
             };
+            let timeline = Arc::new(NdsifHostTimeline::pending());
+            if settings.ndsif_enabled() {
+                *self
+                    .hardware_timeline
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(Arc::clone(&timeline));
+            }
             let worker = thread::Builder::new()
                 .name("chipstream-render".to_owned())
                 .spawn(move || {
@@ -717,6 +842,7 @@ mod imp {
                         settings.pdx_location.map(PathBuf::from),
                         render_settings,
                         ndsif_settings,
+                        timeline,
                         cancelled,
                         duration,
                         sender,
@@ -772,6 +898,14 @@ mod imp {
         /// Cancel and join the render worker, releasing its channels.
         fn stop_worker(&self) -> Result<(), gst::ErrorMessage> {
             self.cancelled.store(true, Ordering::Release);
+            if let Some(timeline) = self
+                .hardware_timeline
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                timeline.cancel();
+            }
             self.receiver
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -827,18 +961,18 @@ fn render_file(
     pdx_location: Option<PathBuf>,
     settings: RenderSettings,
     ndsif_settings: NdsifSettings,
+    timeline: Arc<NdsifHostTimeline>,
     cancelled: Arc<AtomicBool>,
     duration: Arc<Mutex<Option<gst::ClockTime>>>,
     sender: SyncSender<WorkerMessage>,
     controls: Receiver<WorkerControl>,
 ) {
-    let result = load_sequencer_with_ndsif(
-        &location,
-        pdx_location.as_deref(),
-        settings,
-        Some(&ndsif_settings),
-    );
-    let (mut player, metadata, metadata_warning, duration_frames) = match result {
+    let result =
+        create_chip_factories(&ndsif_settings, timeline).and_then(|(factories, hardware)| {
+            load_sequencer_with_factories(&location, pdx_location.as_deref(), settings, factories)
+                .map(|result| (result, hardware))
+        });
+    let (result, mut hardware) = match result {
         Ok(result) => result,
         Err(error) => {
             let mut output = sender;
@@ -853,6 +987,21 @@ fn render_file(
             return;
         }
     };
+    let (mut player, metadata, metadata_warning, duration_frames) = result;
+    if let Some(hardware) = &mut hardware {
+        match NdsifHardwareWorkers::start(
+            &hardware.devices,
+            &hardware.recorders,
+            Arc::clone(&hardware.timeline),
+            NonZeroUsize::new(HARDWARE_QUEUE_BLOCKS).expect("nonzero queue size"),
+        ) {
+            Ok(workers) => hardware.workers = Some(workers),
+            Err(error) => {
+                let _ = sender.send(WorkerMessage::Error(error.to_string()));
+                return;
+            }
+        }
+    }
     let mut sender = sender;
     let mut pending_messages = VecDeque::new();
     if let Some(duration_frames) = duration_frames
@@ -865,10 +1014,10 @@ fn render_file(
         pending_messages.push_back(WorkerMessage::Warning(warning));
     }
     let mut checkpoints = VecDeque::new();
-    let mut checkpointing_enabled = true;
+    let mut checkpointing_enabled = hardware.is_none();
     let checkpoint_interval = settings.sample_rate as usize * CHECKPOINT_INTERVAL_SECONDS;
     let mut next_checkpoint_frame = checkpoint_interval;
-    if let Err(error) = capture_checkpoint(&mut player, &mut checkpoints) {
+    if checkpointing_enabled && let Err(error) = capture_checkpoint(&mut player, &mut checkpoints) {
         checkpointing_enabled = false;
         pending_messages.push_back(WorkerMessage::Warning(format!(
             "checkpoint-based seek is unavailable: {error}"
@@ -880,8 +1029,81 @@ fn render_file(
     let mut at_eos = false;
     let mut eos_sent = false;
     let mut output_detached = false;
+    let mut fade_scheduled = false;
+    if let Some(hardware) = &hardware {
+        let workers = hardware.workers.as_ref().expect("workers were started");
+        let mut buffered_frames = 0_usize;
+        let mut prepared = false;
+        for _ in 0..QUEUE_BLOCKS {
+            let rendered = match player.render() {
+                Ok(block) => block,
+                Err(error) => {
+                    let _ = sender.send(WorkerMessage::Error(error));
+                    return;
+                }
+            };
+            if let Err(error) =
+                schedule_hardware_fade(&player, hardware, settings, &mut fade_scheduled)
+            {
+                let _ = sender.send(WorkerMessage::Error(error));
+                return;
+            }
+            match workers.enqueue_prebuffer(
+                &hardware.recorders,
+                buffered_frames,
+                settings.sample_rate,
+                &cancelled,
+            ) {
+                Ok(value) => prepared = value,
+                Err(error) => {
+                    let _ = sender.send(WorkerMessage::Error(error.to_string()));
+                    return;
+                }
+            }
+            let Some(block) = rendered else {
+                at_eos = true;
+                break;
+            };
+            let frames = block.frames().to_vec();
+            if frames.is_empty() {
+                let _ = sender.send(WorkerMessage::Error(
+                    "sequencer produced an empty block".into(),
+                ));
+                return;
+            }
+            let Some(next) = start_frame.checked_add(frames.len() as u64) else {
+                let _ = sender.send(WorkerMessage::Error("audio position overflow".into()));
+                return;
+            };
+            pending_messages.push_back(WorkerMessage::Frames {
+                start_frame,
+                frames,
+            });
+            buffered_frames += (next - start_frame) as usize;
+            start_frame = next;
+            if prepared {
+                break;
+            }
+        }
+        if buffered_frames > 0
+            && !prepared
+            && let Err(error) =
+                workers.prepare_audio(buffered_frames, settings.sample_rate, &cancelled)
+        {
+            let _ = sender.send(WorkerMessage::Error(error.to_string()));
+            return;
+        }
+    }
     loop {
         if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(workers) = hardware
+            .as_ref()
+            .and_then(|hardware| hardware.workers.as_ref())
+            && let Err(error) = workers.check()
+        {
+            let _ = sender.send(WorkerMessage::Error(error.to_string()));
             return;
         }
         let control = if (at_eos && eos_sent) || output_detached {
@@ -941,6 +1163,19 @@ fn render_file(
         }
         if at_eos {
             if !eos_sent {
+                if let Some(hardware) = &mut hardware
+                    && let Some(workers) = hardware.workers.take()
+                {
+                    if start_frame == 0 {
+                        hardware.timeline.cancel();
+                    }
+                    if let Err(error) = workers.finish() {
+                        if !cancelled.load(Ordering::Acquire) {
+                            let _ = sender.send(WorkerMessage::Error(error.to_string()));
+                        }
+                        return;
+                    }
+                }
                 if sender.send(WorkerMessage::Eos).is_err() {
                     output_detached = true;
                 }
@@ -951,7 +1186,25 @@ fn render_file(
         let frames = if let Some(frames) = pending_frames.take() {
             frames
         } else {
-            match player.render() {
+            let rendered = player.render();
+            if let Some(hardware) = &hardware
+                && let Err(error) =
+                    schedule_hardware_fade(&player, hardware, settings, &mut fade_scheduled)
+            {
+                let _ = sender.send(WorkerMessage::Error(error));
+                return;
+            }
+            if let Some(hardware) = &hardware
+                && let Err(error) = hardware
+                    .workers
+                    .as_ref()
+                    .expect("workers were started")
+                    .enqueue(&hardware.recorders, &cancelled)
+            {
+                let _ = sender.send(WorkerMessage::Error(error.to_string()));
+                return;
+            }
+            match rendered {
                 Ok(Some(block)) => block.frames().to_vec(),
                 Ok(None) => {
                     at_eos = true;
@@ -999,6 +1252,40 @@ fn render_file(
             output_detached = true;
         }
         start_frame = next_frame;
+    }
+}
+
+fn schedule_hardware_fade(
+    player: &Sequencer,
+    hardware: &HardwarePlayback,
+    settings: RenderSettings,
+    scheduled: &mut bool,
+) -> Result<(), String> {
+    if !*scheduled
+        && let Some(start) = player.fade_start_frame()
+        && let Some(samples) = settings.fadeout_samples
+    {
+        hardware.timeline.schedule_output_fade(
+            start,
+            settings.sample_rate,
+            Duration::from_secs_f64(f64::from(samples) / f64::from(FADEOUT_REFERENCE_RATE)),
+        )?;
+        *scheduled = true;
+    }
+    Ok(())
+}
+
+fn presentation_instant(
+    anchor: Instant,
+    base: gst::ClockTime,
+    clock: gst::ClockTime,
+    latency: gst::ClockTime,
+) -> Option<Instant> {
+    let target = base.nseconds().checked_add(latency.nseconds())?;
+    if target >= clock.nseconds() {
+        anchor.checked_add(Duration::from_nanos(target - clock.nseconds()))
+    } else {
+        anchor.checked_sub(Duration::from_nanos(clock.nseconds() - target))
     }
 }
 
@@ -1120,17 +1407,16 @@ fn load_sequencer(
     pdx_location: Option<&Path>,
     settings: RenderSettings,
 ) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
-    load_sequencer_with_ndsif(path, pdx_location, settings, None)
+    load_sequencer_with_factories(path, pdx_location, settings, ChipFactoryRegistry::new())
 }
 
 /// Load an MDX or VGM player with optional NDSIF chip factories.
-fn load_sequencer_with_ndsif(
+fn load_sequencer_with_factories(
     path: &Path,
     pdx_location: Option<&Path>,
     settings: RenderSettings,
-    ndsif_settings: Option<&NdsifSettings>,
+    factories: ChipFactoryRegistry,
 ) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
-    let factories = create_chip_factories(ndsif_settings)?;
     let bytes = read_path(path, MAX_FILE_BYTES)?;
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("mdx") => {
@@ -1232,21 +1518,53 @@ fn load_sequencer_with_ndsif(
 }
 
 /// Create hardware factories for the configured serial ports, if any.
-fn create_chip_factories(settings: Option<&NdsifSettings>) -> Result<ChipFactoryRegistry, String> {
-    let Some(settings) = settings else {
-        return Ok(ChipFactoryRegistry::new());
-    };
+fn create_chip_factories(
+    settings: &NdsifSettings,
+    timeline: Arc<NdsifHostTimeline>,
+) -> Result<(ChipFactoryRegistry, Option<HardwarePlayback>), String> {
     let ports = parse_ndsif_ports(settings)?;
-    let configs = ports
-        .into_iter()
-        .map(|port| NdsifSerialConfig {
-            port,
-            baud_rate: settings.baud_rate,
-            response_timeout: Duration::from_millis(u64::from(settings.timeout_ms)),
-            reset_device: settings.reset_device,
-        })
-        .collect::<Vec<_>>();
-    create_ndsif_factories(&configs).map_err(|error| error.to_string())
+    if ports.is_empty() {
+        return Ok((ChipFactoryRegistry::new(), None));
+    }
+    if settings.baud_rate == 0 || settings.timeout_ms == 0 {
+        return Err("NDSIF baud rate and timeout must be nonzero".into());
+    }
+    for (index, port) in ports.iter().enumerate() {
+        if ports[..index].contains(port) {
+            return Err(format!("duplicate NDSIF port: {port}"));
+        }
+    }
+    let mut devices = Vec::new();
+    let mut supports_ay = false;
+    for (index, port) in ports.into_iter().enumerate() {
+        let transport = NdsifSerialTransport::open(
+            &port,
+            settings.baud_rate,
+            Duration::from_millis(u64::from(settings.timeout_ms)),
+            settings.reset_device,
+        )
+        .map_err(|error| format!("NDSIF device {port}: {error}"))?;
+        supports_ay |= transport
+            .capabilities()
+            .iter()
+            .any(|entry| entry.write_id == 0xa0);
+        devices.push((index as u64, Arc::new(Mutex::new(transport))));
+    }
+    let recorders = create_recorders(
+        &devices,
+        NonZeroUsize::new(MAX_HARDWARE_OPERATIONS).expect("nonzero operation limit"),
+    )
+    .map_err(|error| error.to_string())?;
+    let factories = create_automatic_transport_factories(&recorders, supports_ay);
+    Ok((
+        factories,
+        Some(HardwarePlayback {
+            devices,
+            recorders,
+            workers: None,
+            timeline,
+        }),
+    ))
 }
 
 /// Parse mutually exclusive single-port and comma-separated port settings.
@@ -1495,9 +1813,348 @@ fn is_initial_noop_time_segment(segment: &gst::Segment) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundlog::chip::{Chip as SoundlogChip, Ym2608Spec};
+    use soundlog::chip::{Chip as SoundlogChip, Ym2608Spec, Ym2612Spec};
     use soundlog::vgm::VgmBuilder;
     use soundlog::vgm::command::{Instance as SoundlogInstance, WaitSamples};
+
+    #[test]
+    fn presentation_origin_uses_pipeline_latency_and_clock() {
+        let anchor = Instant::now();
+        let base = gst::ClockTime::from_seconds(10);
+        let latency = gst::ClockTime::from_mseconds(50);
+        assert_eq!(
+            presentation_instant(anchor, base, gst::ClockTime::from_mseconds(10_020), latency),
+            anchor.checked_add(Duration::from_millis(30))
+        );
+        assert_eq!(
+            presentation_instant(anchor, base, gst::ClockTime::from_mseconds(10_100), latency),
+            anchor.checked_sub(Duration::from_millis(50))
+        );
+        assert!(
+            presentation_instant(anchor, gst::ClockTime::MAX, gst::ClockTime::ZERO, latency)
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_waits_for_playing_and_cannot_resume_after_pause() {
+        use ndsif::{Capabilities, Decoder, Reply, Request, Response};
+        use serialport::SerialPort;
+        use std::io::{Read, Write};
+
+        gst::init().unwrap();
+        let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+        fake.set_timeout(Duration::from_millis(50)).unwrap();
+        let port_name = port.name().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fake_stop = Arc::clone(&stop);
+        let (writes, observed) = mpsc::channel();
+        let device = thread::spawn(move || {
+            let mut decoder = Decoder::new();
+            while !fake_stop.load(Ordering::Acquire) {
+                let mut byte = [0];
+                match fake.read_exact(&mut byte) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(error) => panic!("fake NDSIF read failed: {error}"),
+                }
+                let mut frame = None;
+                decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                let Some(frame) = frame else { continue };
+                let reply = match Request::decode(&frame).unwrap() {
+                    Request::Ping(bytes) => Some(Reply::Ping(bytes)),
+                    Request::GetCapabilities { offset: 0 } => Some(Reply::Capabilities(
+                        Capabilities::new(256, 0, 0, 0, u16::MAX, &[0x51, 0, 0, 4, 2, 0, 0, 0, 0])
+                            .unwrap(),
+                    )),
+                    Request::SetChipClock { .. } | Request::Reset => Some(Reply::Complete),
+                    Request::WriteRegisters { .. } => {
+                        let _ = writes.send(Instant::now());
+                        None
+                    }
+                    request => panic!("unexpected NDSIF request: {request:?}"),
+                };
+                if let Some(reply) = reply {
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../soundlog/assets/vgm/ym2413_fm_a4.vgm");
+        let source = glib::Object::builder::<ChipstreamSrc>()
+            .property("location", path.to_string_lossy().as_ref())
+            .property("ndsif-port", port_name)
+            .property("play-count", 1_u32)
+            .property("fadeout-seconds", 0.0_f64)
+            .build();
+        let sink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .unwrap();
+        let pipeline = gst::Pipeline::new();
+        pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
+        source.link(&sink).unwrap();
+        pipeline.set_state(gst::State::Paused).unwrap();
+        pipeline.state(gst::ClockTime::from_seconds(5)).0.unwrap();
+        assert!(observed.recv_timeout(Duration::from_millis(100)).is_err());
+        pipeline.set_state(gst::State::Playing).unwrap();
+        assert!(observed.recv_timeout(Duration::from_secs(3)).is_ok());
+        pipeline.set_state(gst::State::Paused).unwrap();
+        pipeline.state(gst::ClockTime::from_seconds(5)).0.unwrap();
+        assert!(pipeline.set_state(gst::State::Playing).is_err());
+        pipeline.set_state(gst::State::Ready).unwrap();
+        while observed.try_recv().is_ok() {}
+        pipeline.set_state(gst::State::Paused).unwrap();
+        pipeline.state(gst::ClockTime::from_seconds(5)).0.unwrap();
+        assert!(observed.recv_timeout(Duration::from_millis(100)).is_err());
+        pipeline.set_state(gst::State::Playing).unwrap();
+        assert!(observed.recv_timeout(Duration::from_secs(3)).is_ok());
+        pipeline.set_state(gst::State::Null).unwrap();
+        stop.store(true, Ordering::Release);
+        device.join().unwrap();
+        drop(port);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_dac_is_prebuffered_before_pipeline_playback() {
+        exercise_timed_dac_latency(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_dac_uses_latency_event() {
+        exercise_timed_dac_latency(false);
+    }
+
+    #[cfg(unix)]
+    fn exercise_timed_dac_latency(explicit_latency: bool) {
+        use ndsif::{
+            Capabilities, DacCapabilities, DacRecordKind, DacStatus, Decoder, Reply, Request,
+            Response,
+        };
+        use serialport::SerialPort;
+        use std::io::{Read, Write};
+
+        gst::init().unwrap();
+        let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+        fake.set_timeout(Duration::from_millis(50)).unwrap();
+        let port_name = port.name().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fake_stop = Arc::clone(&stop);
+        let (starts, started) = mpsc::channel();
+        let (samples, received_samples) = mpsc::channel();
+        let device = thread::spawn(move || {
+            let mut decoder = Decoder::new();
+            let mut accepted = 0_u32;
+            let mut tick = 0_u64;
+            let mut events = 0_u32;
+            let mut running = false;
+            let mut sealed = false;
+            while !fake_stop.load(Ordering::Acquire) {
+                let mut byte = [0];
+                match fake.read_exact(&mut byte) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(error) => panic!("fake NDSIF read failed: {error}"),
+                }
+                let mut frame = None;
+                decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                let Some(frame) = frame else { continue };
+                let reply = match Request::decode(&frame).unwrap() {
+                    Request::Ping(bytes) => Some(Reply::Ping(bytes)),
+                    Request::GetCapabilities { offset: 0 } => Some(Reply::Capabilities(
+                        Capabilities::new(
+                            256,
+                            0,
+                            0,
+                            ndsif::CONTROL_FEATURE_DAC_PROFILE,
+                            u16::MAX,
+                            &[0x52, 0, 0, 4, 2, 0, 0, 0, 0],
+                        )
+                        .unwrap(),
+                    )),
+                    Request::GetDacCapabilities => Some(Reply::DacCapabilities(DacCapabilities {
+                        profile: ndsif::DAC_PROFILE_YM2612,
+                        revision: 40,
+                        ticks_per_second: ndsif::DAC_TICKS_PER_SECOND,
+                        record_capacity: 8192,
+                        event_capacity: 1024,
+                        max_records: 60,
+                        record_bytes: 4,
+                        max_dac_late_us: 0,
+                    })),
+                    Request::SetChipClock { .. } => Some(Reply::Complete),
+                    Request::Reset => {
+                        accepted = 0;
+                        tick = 0;
+                        events = 0;
+                        running = false;
+                        sealed = false;
+                        Some(Reply::Complete)
+                    }
+                    Request::DacData { records, .. } => {
+                        for record in records.iter() {
+                            tick += u64::from(record.wait_ticks);
+                            accepted += 1;
+                            if record.kind == DacRecordKind::Dac {
+                                let _ = samples.send(record.value);
+                            }
+                        }
+                        None
+                    }
+                    Request::DacRegisterEvent { writes, .. } => {
+                        events += (writes.len() / 2) as u32;
+                        None
+                    }
+                    Request::WriteRegisters { .. } => None,
+                    Request::DacEnd { .. } => {
+                        sealed = true;
+                        None
+                    }
+                    Request::DacStart { .. } => {
+                        running = true;
+                        let _ = starts.send(Instant::now());
+                        Some(Reply::Complete)
+                    }
+                    Request::DacStatus { .. } => {
+                        let done = running && sealed;
+                        Some(Reply::DacStatus(DacStatus {
+                            profile: ndsif::DAC_PROFILE_YM2612,
+                            state: if done {
+                                2
+                            } else if running {
+                                1
+                            } else {
+                                0
+                            },
+                            fault: 0,
+                            sealed,
+                            accepted,
+                            consumed: if done { accepted } else { 0 },
+                            queued: if done { 0 } else { accepted },
+                            free: if done { 8192 } else { 8192 - accepted },
+                            event_queued: if done { 0 } else { events },
+                            event_consumed: if done { events } else { 0 },
+                            underflows: 0,
+                            overflows: 0,
+                            rejected: 0,
+                            late_dac: 0,
+                            max_late_us: 0,
+                            accepted_tick: tick,
+                            played_tick: if done { tick } else { 0 },
+                            executed_tick: if done { tick } else { 0 },
+                        }))
+                    }
+                    request => panic!("unexpected NDSIF request: {request:?}"),
+                };
+                if let Some(reply) = reply {
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+        let path = std::env::temp_dir().join(format!(
+            "chipstream-gstreamer-dac-{}-{}.vgm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(SoundlogChip::Ym2612, SoundlogInstance::Primary, 7_670_454);
+        builder.add_chip_write(
+            SoundlogInstance::Primary,
+            Ym2612Spec {
+                port: 0,
+                register: 0x2b,
+                value: 0x80,
+            },
+        );
+        for value in 0x80..0x94 {
+            builder.add_chip_write(
+                SoundlogInstance::Primary,
+                Ym2612Spec {
+                    port: 0,
+                    register: 0x2a,
+                    value,
+                },
+            );
+            builder.add_vgm_command(WaitSamples(220));
+        }
+        let bytes: Vec<u8> = builder.finalize().into();
+        fs::write(&path, bytes).unwrap();
+        let source = glib::Object::builder::<ChipstreamSrc>()
+            .property("location", path.to_string_lossy().as_ref())
+            .property("ndsif-port", port_name)
+            .property("play-count", 1_u32)
+            .property("fadeout-seconds", 0.0_f64)
+            .build();
+        let sink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .unwrap();
+        let pipeline = gst::Pipeline::new();
+        if explicit_latency {
+            pipeline.set_latency(gst::ClockTime::from_mseconds(250));
+        } else {
+            source.static_pad("src").unwrap().add_probe(
+                gst::PadProbeType::QUERY_UPSTREAM,
+                |_, info| {
+                    if let Some(query) = info.query_mut()
+                        && let gst::QueryViewMut::Latency(latency) = query.view_mut()
+                    {
+                        latency.set(
+                            true,
+                            gst::ClockTime::from_mseconds(250),
+                            gst::ClockTime::NONE,
+                        );
+                        return gst::PadProbeReturn::Handled;
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            );
+        }
+        pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
+        source.link(&sink).unwrap();
+        pipeline.set_state(gst::State::Paused).unwrap();
+        pipeline.state(gst::ClockTime::from_seconds(5)).0.unwrap();
+        assert!(started.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(
+            received_samples
+                .recv_timeout(Duration::from_secs(3))
+                .is_ok()
+        );
+        let before_playing = Instant::now();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let started_at = started.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(started_at.duration_since(before_playing) >= Duration::from_millis(200));
+        let message = pipeline
+            .bus()
+            .unwrap()
+            .timed_pop_filtered(
+                gst::ClockTime::from_seconds(5),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            )
+            .expect("hardware playback should finish");
+        assert_eq!(message.type_(), gst::MessageType::Eos, "{message:?}");
+        pipeline.set_state(gst::State::Null).unwrap();
+        stop.store(true, Ordering::Release);
+        device.join().unwrap();
+        drop(port);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn checkpoint_cache_keeps_origin_and_two_recent_entries() {

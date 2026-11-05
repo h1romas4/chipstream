@@ -61,9 +61,20 @@ Hardware audio is not included in the GStreamer PCM output; mix it separately.
 **Playback notes**
 
 - Seeking is disabled while an NDSIF port is configured.
-- OKIM6258 and timed DAC streams do not repeat with `play-count` or follow the
-  GStreamer `fadeout-seconds` ramp. For hardware playback, use
-  `play-count=1` and `fadeout-seconds=0`.
+- Hardware commands are scheduled against the GStreamer clock and the latest
+  latency reported before playback starts. If no latency event has arrived, an
+  explicitly configured pipeline latency is used; otherwise latency defaults to
+  zero. This is best-effort synchronization: sink buffering, physical audio
+  output, serial communication, and device latency can introduce additional
+  delay. Latency changes after playback starts are not applied to hardware.
+- Pausing after hardware playback starts stops the hardware worker. Resuming
+  from `PAUSED` is not supported; transition to `READY` or `NULL` and start
+  playback again.
+- Hardware fadeout requires a device with output-volume control; other devices
+  do not follow the `fadeout-seconds` ramp. Volume changes are best-effort.
+- OKIM6258 and timed DAC stream repetition with `play-count` is not guaranteed.
+  For hardware playback, use `play-count=1` and `fadeout-seconds=0` when this
+  behavior or hardware fade support is uncertain.
 - Only the primary OKIM6258 stream is supported.
 
 ```sh

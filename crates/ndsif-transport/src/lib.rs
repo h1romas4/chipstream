@@ -11,7 +11,7 @@ mod transport;
 mod worker;
 
 pub use error::NdsifTransportError;
-pub use factory::{NdsifSerialConfig, create_chip_factories};
+pub use factory::{NdsifSerialConfig, create_automatic_transport_factories, create_chip_factories};
 pub use recording::{
     NdsifCommandBatch, NdsifRecordingError, NdsifRecordingTransport, NdsifReplayError,
 };

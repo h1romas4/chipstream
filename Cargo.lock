@@ -1082,7 +1082,9 @@ dependencies = [
  "gstreamer",
  "gstreamer-audio",
  "gstreamer-base",
+ "ndsif",
  "ndsif-transport",
+ "serialport",
  "soundlog",
 ]
 

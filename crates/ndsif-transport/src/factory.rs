@@ -12,7 +12,7 @@ use chipstream::chip::{
 use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
 
-use crate::{NdsifSerialTransport, NdsifTransportError};
+use crate::{NdsifRoutingTransport, NdsifSerialTransport, NdsifTransportError};
 
 /// Serial connection and reset options for an NDSIF device.
 #[derive(Debug, Clone)]
@@ -63,7 +63,27 @@ pub fn create_chip_factories(
         )?)));
     }
 
-    let transports = Rc::new(transports);
+    let supports_ay = transports.iter().any(|transport| {
+        transport
+            .borrow()
+            .capabilities()
+            .iter()
+            .any(|capability| capability.write_id == 0xa0)
+    });
+    Ok(create_automatic_transport_factories(
+        &transports,
+        supports_ay,
+    ))
+}
+
+/// Build automatic chip factories using scheduled transports with cached capabilities.
+///
+/// `supports_ay` must indicate whether any transport advertises AY8910.
+pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
+    transports: &[Rc<RefCell<T>>],
+    supports_ay: bool,
+) -> ChipFactoryRegistry {
+    let transports = Rc::new(transports.to_vec());
     let mut factories = ChipFactoryRegistry::new();
 
     for chip in [
@@ -111,13 +131,7 @@ pub fn create_chip_factories(
         });
     }
 
-    if transports.iter().any(|transport| {
-        transport
-            .borrow()
-            .capabilities()
-            .iter()
-            .any(|capability| capability.write_id == 0xa0)
-    }) {
+    if supports_ay {
         let ay_transports = Rc::clone(&transports);
         factories.register(Chip::Ay8910, move |config| {
             let transport = find_transport(
@@ -211,7 +225,7 @@ pub fn create_chip_factories(
         Ok(Box::new(chip))
     });
 
-    Ok(factories)
+    factories
 }
 
 /// Reject invalid serial settings before opening any device.
@@ -237,25 +251,25 @@ pub(super) fn validate_config(
 }
 
 /// Find the first configured device supporting the requested chip and clock.
-fn find_transport(
-    transports: &[Rc<RefCell<NdsifSerialTransport>>],
+fn find_transport<T: NdsifRoutingTransport>(
+    transports: &[Rc<RefCell<T>>],
     chip: &Chip,
     write_id: WriteId,
     instance: u8,
     clock_hz: u32,
     oki_timing_clock: Option<u32>,
-) -> Result<Option<Rc<RefCell<NdsifSerialTransport>>>, ChipError> {
+) -> Result<Option<Rc<RefCell<T>>>, ChipError> {
     for transport in transports {
         let device = transport.try_borrow().map_err(|_| ChipError::External {
             chip: chip.clone(),
             message: "NDSIF transport is already borrowed".to_owned(),
         })?;
-        if !device.supports_clock(write_id, instance, clock_hz) {
+        if !device.supports_route_clock(write_id, instance, clock_hz) {
             continue;
         }
         if oki_timing_clock.is_some_and(|clock| {
-            !device.supports_clock(WriteId::OKIM6258, 0, clock)
-                || !device.supports_audio_stream(0, clock)
+            !device.supports_route_clock(WriteId::OKIM6258, 0, clock)
+                || !device.supports_route_audio(0, clock)
         }) {
             continue;
         }

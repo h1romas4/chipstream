@@ -20,3 +20,7 @@ gstreamer-audio = "0.25"
 gstreamer-base = "0.25"
 flate2 = "1.0"
 soundlog = { workspace = true, features = ["mdx"] }
+
+[dev-dependencies]
+ndsif = { path = "../ndsif" }
+serialport = { version = "4.10.1", default-features = false }
