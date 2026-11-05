@@ -130,6 +130,23 @@ fn clipboard_track_path(path: &Path) -> Result<&str, &'static str> {
         .ok_or("The track path cannot be represented as text.")
 }
 
+fn copy_path_menu_item(path: PathBuf, view: WeakEntity<AppView>) -> PopupMenuItem {
+    PopupMenuItem::new("Copy full path").on_click(move |_, window, cx| {
+        match clipboard_track_path(&path) {
+            Ok(path) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(path.to_owned()));
+                let _ = view.update(cx, |view, cx| {
+                    view.status = "Copied full path".into();
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                window.push_notification(error_notification("Cannot copy path", error), cx);
+            }
+        }
+    })
+}
+
 fn chip_colors(ymfm: bool) -> (u32, u32) {
     if ymfm {
         (ACCENT_COLOR, 0x102e2d)
@@ -3790,43 +3807,33 @@ impl AppView {
                             ),
                     )
                     .context_menu(move |menu, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            if select_for_context(&mut view.selected_tracks, menu_path.clone()) {
-                                view.track_anchor = Some(menu_path.clone());
-                            }
-                            view.update_track_selection_order(Some(&menu_path));
-                            cx.notify();
-                        });
-                        let add_view = view.clone();
-                        let copy_view = view.clone();
-                        let copy_path = menu_path.clone();
-                        menu.item(PopupMenuItem::new("Add selected to playlist").on_click(
-                            move |_, _, cx| {
-                                let _ =
-                                    add_view.update(cx, |view, cx| view.add_selected_tracks(cx));
-                            },
-                        ))
-                        .item(
-                            PopupMenuItem::new("Copy full path").on_click(move |_, window, cx| {
-                                match clipboard_track_path(&copy_path) {
-                                    Ok(path) => {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            path.to_owned(),
-                                        ));
-                                        let _ = copy_view.update(cx, |view, cx| {
-                                            view.status = "Copied full path".into();
-                                            cx.notify();
-                                        });
-                                    }
-                                    Err(error) => {
-                                        window.push_notification(
-                                            error_notification("Cannot copy path", error),
-                                            cx,
-                                        );
-                                    }
+                        let single = view
+                            .update(cx, |view, cx| {
+                                let (changed, single) = select_for_context(
+                                    &mut view.selected_tracks,
+                                    menu_path.clone(),
+                                );
+                                if changed {
+                                    view.track_anchor = Some(menu_path.clone());
                                 }
-                            }),
-                        )
+                                view.update_track_selection_order(Some(&menu_path));
+                                cx.notify();
+                                single
+                            })
+                            .unwrap_or(false);
+                        let add_view = view.clone();
+                        let menu =
+                            menu.item(PopupMenuItem::new("Add selected to playlist").on_click(
+                                move |_, _, cx| {
+                                    let _ = add_view
+                                        .update(cx, |view, cx| view.add_selected_tracks(cx));
+                                },
+                            ));
+                        if single {
+                            menu.item(copy_path_menu_item(menu_path.clone(), view.clone()))
+                        } else {
+                            menu
+                        }
                     })
                     .into_any_element()
             })
@@ -3958,6 +3965,7 @@ impl AppView {
                 let playing = self.playing == Some(index);
                 let selected = self.selected_queue.contains(&index);
                 let view = cx.weak_entity();
+                let menu_path = path.clone();
                 div()
                     .id(SharedString::from(format!("queue-row-{index}")))
                     .w_full()
@@ -4062,28 +4070,39 @@ impl AppView {
                             ),
                     )
                     .context_menu(move |menu, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            if select_for_context(&mut view.selected_queue, index) {
-                                view.queue_anchor = Some(index);
-                            }
-                            view.update_queue_selection_order(Some(index));
-                            cx.notify();
-                        });
+                        let single = view
+                            .update(cx, |view, cx| {
+                                let (changed, single) =
+                                    select_for_context(&mut view.selected_queue, index);
+                                if changed {
+                                    view.queue_anchor = Some(index);
+                                }
+                                view.update_queue_selection_order(Some(index));
+                                cx.notify();
+                                single
+                            })
+                            .unwrap_or(false);
                         let selected_view = view.clone();
                         let all_view = view.clone();
-                        menu.item(PopupMenuItem::new("Remove selected").on_click(
+                        let menu = menu.item(PopupMenuItem::new("Remove selected").on_click(
                             move |_, _, cx| {
                                 let _ = selected_view
                                     .update(cx, |view, cx| view.remove_queue_selection(false, cx));
                             },
-                        ))
-                        .separator()
-                        .item(
-                            PopupMenuItem::new("Clear playlist").on_click(move |_, _, cx| {
-                                let _ = all_view
-                                    .update(cx, |view, cx| view.remove_queue_selection(true, cx));
-                            }),
-                        )
+                        ));
+                        let menu = if single {
+                            menu.item(copy_path_menu_item(menu_path.clone(), view.clone()))
+                        } else {
+                            menu
+                        };
+                        menu.separator()
+                            .item(
+                                PopupMenuItem::new("Clear playlist").on_click(move |_, _, cx| {
+                                    let _ = all_view.update(cx, |view, cx| {
+                                        view.remove_queue_selection(true, cx)
+                                    });
+                                }),
+                            )
                     })
                     .into_any_element()
             })
@@ -4359,13 +4378,14 @@ fn select_item<T: Eq + Hash>(selection: &mut HashSet<T>, item: T, toggle: bool) 
     }
 }
 
-fn select_for_context<T: Eq + Hash>(selection: &mut HashSet<T>, item: T) -> bool {
-    if !selection.contains(&item) {
+fn select_for_context<T: Eq + Hash>(selection: &mut HashSet<T>, item: T) -> (bool, bool) {
+    let changed = if !selection.contains(&item) {
         select_item(selection, item, false);
         true
     } else {
         false
-    }
+    };
+    (changed, selection.len() == 1)
 }
 
 fn inclusive_range(a: usize, b: usize) -> std::ops::RangeInclusive<usize> {
@@ -5353,14 +5373,26 @@ mod tests {
         let mut selected = HashSet::new();
         select_item(&mut selected, 1, false);
         select_item(&mut selected, 2, true);
-        select_for_context(&mut selected, 1);
+        assert_eq!(select_for_context(&mut selected, 1), (false, false));
         assert_eq!(selected, HashSet::from([1, 2]));
         select_item(&mut selected, 1, true);
         assert_eq!(selected, HashSet::from([2]));
-        select_for_context(&mut selected, 3);
+        assert_eq!(select_for_context(&mut selected, 3), (true, true));
         assert_eq!(selected, HashSet::from([3]));
+        assert_eq!(select_for_context(&mut selected, 3), (false, true));
         select_item(&mut selected, 4, false);
         assert_eq!(selected, HashSet::from([4]));
+    }
+
+    #[test]
+    fn context_copy_requires_one_selected_playlist_row_even_for_duplicate_paths() {
+        let playlist = ["/music/a.vgm", "/music/a.vgm", "/music/b.vgm"];
+        let mut selected = HashSet::from([0, 1]);
+        assert_eq!(playlist[0], playlist[1]);
+        assert_eq!(select_for_context(&mut selected, 1), (false, false));
+        assert_eq!(select_for_context(&mut selected, 2), (true, true));
+        assert_eq!(selected, HashSet::from([2]));
+        assert_eq!(select_for_context(&mut selected, 2), (false, true));
     }
 
     #[test]

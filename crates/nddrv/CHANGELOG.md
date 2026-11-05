@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show full-path copying for a single selected Music or Playlist track.
 - Reduce staggered Piano Roll updates when playback advances.
 - Increase the spacing above the Routing connection boxes.
 - Adjust the update notification button's default and hover colors.
