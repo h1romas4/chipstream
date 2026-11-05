@@ -1500,6 +1500,15 @@ impl AppView {
         .detach();
     }
 
+    fn stop_playback(&mut self, cx: &mut Context<Self>) {
+        self.player.stop();
+        self.playing = None;
+        self.paused = false;
+        self.elapsed = 0;
+        self.status = "Stopped".into();
+        cx.notify();
+    }
+
     fn play(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.device_status.values().any(|status| {
             matches!(
@@ -2711,17 +2720,12 @@ impl AppView {
             .child(
                 Button::new("transport-stop")
                     .icon(assets::IconName::Square)
-                    .tooltip("Stop")
+                    .tooltip("Stop (Shift+F5)")
                     .accessibility_label("Stop")
                     .custom(accent)
                     .disabled(!active)
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.player.stop();
-                        view.playing = None;
-                        view.paused = false;
-                        view.elapsed = 0;
-                        view.status = "Stopped".into();
-                        cx.notify();
+                        view.stop_playback(cx);
                     })),
             )
             .child(
@@ -4441,6 +4445,18 @@ fn is_play_shortcut(keystroke: &Keystroke, page: Page, has_tracks: bool) -> bool
         && !modifiers.function
 }
 
+fn is_stop_shortcut(keystroke: &Keystroke, page: Page, active: bool) -> bool {
+    let modifiers = keystroke.modifiers;
+    active
+        && matches!(page, Page::Library | Page::Piano)
+        && keystroke.key == "f5"
+        && modifiers.shift
+        && !modifiers.control
+        && !modifiers.platform
+        && !modifiers.alt
+        && !modifiers.function
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ListKey {
     SelectAll,
@@ -4561,12 +4577,12 @@ mod tests {
         ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, Page, ScanOrigin, adjacent_track,
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_play_shortcut, is_select_all, keep_preview_sources, list_key,
-        list_selection_step, music_format, notification_copy_text, piano_transition_ready,
-        playback_state_label, remove_playlist_entries, renumber_connected_devices,
-        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, unsupported_chips,
-        update_selection_order, update_window_settings,
+        initial_window_bounds, is_play_shortcut, is_select_all, is_stop_shortcut,
+        keep_preview_sources, list_key, list_selection_step, music_format, notification_copy_text,
+        piano_transition_ready, playback_state_label, remove_playlist_entries,
+        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
+        scan_progress_text, search_terms, select_for_context, select_item, select_range,
+        selection_status, unsupported_chips, update_selection_order, update_window_settings,
     };
 
     #[test]
@@ -4584,6 +4600,25 @@ mod tests {
         ));
         assert!(!is_play_shortcut(
             &Keystroke::parse("f6").unwrap(),
+            Page::Piano,
+            true
+        ));
+    }
+
+    #[test]
+    fn stop_shortcut_requires_active_playback_and_shift_f5() {
+        let shift_f5 = Keystroke::parse("shift-f5").unwrap();
+        assert!(is_stop_shortcut(&shift_f5, Page::Library, true));
+        assert!(is_stop_shortcut(&shift_f5, Page::Piano, true));
+        assert!(!is_stop_shortcut(&shift_f5, Page::Devices, true));
+        assert!(!is_stop_shortcut(&shift_f5, Page::Library, false));
+        assert!(!is_stop_shortcut(
+            &Keystroke::parse("f5").unwrap(),
+            Page::Piano,
+            true
+        ));
+        assert!(!is_stop_shortcut(
+            &Keystroke::parse("ctrl-shift-f5").unwrap(),
             Page::Piano,
             true
         ));
@@ -5606,6 +5641,11 @@ impl Render for AppView {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if is_stop_shortcut(&event.keystroke, view.page, view.playing.is_some()) {
+                    view.stop_playback(cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if !is_play_shortcut(&event.keystroke, view.page, !view.config.playlist.is_empty()) {
                     return;
                 }

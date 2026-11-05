@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add F5 playback and Piano Roll navigation, plus sidebar icon tooltips.
+- Add F5 playback and Piano Roll navigation, Shift+F5 stop, and sidebar icon tooltips.
 - Add a playback start delay and show the initial silence in Piano Roll.
 - Show full-path copying for a single selected Music or Playlist track.
 - Reduce staggered Piano Roll updates when playback advances.
