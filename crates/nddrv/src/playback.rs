@@ -104,6 +104,7 @@ struct PlaybackControl {
     frames: AtomicU64,
     sample_rate: AtomicU32,
     visual_clock: PresentationClock,
+    silence_clock: PresentationClock,
     visualizer: Mutex<PianoRoll>,
     preview: Mutex<PreviewState>,
     volume: Arc<NdsifOutputGain>,
@@ -131,6 +132,7 @@ impl PlaybackControl {
             frames: AtomicU64::new(0),
             sample_rate: AtomicU32::new(0),
             visual_clock: PresentationClock::new(),
+            silence_clock: PresentationClock::new(),
             visualizer: Mutex::new(PianoRoll::default()),
             preview: Mutex::new(PreviewState::default()),
             volume,
@@ -442,6 +444,12 @@ impl Playback {
                 )
             }
         };
+        let leading_silence = if mode == RollMode::Incoming {
+            let total = u64::from(self.control.settings.start_delay_seconds) * u64::from(rate);
+            total.saturating_sub(self.control.silence_clock.position(now, rate)?)
+        } else {
+            0
+        };
         Ok(Snapshot {
             position,
             rate,
@@ -451,7 +459,9 @@ impl Playback {
             started,
             preparing,
             scanning,
-        })
+            ..Snapshot::default()
+        }
+        .with_leading_silence(leading_silence))
     }
 
     pub fn is_current(&self, generation: u64) -> bool {
@@ -552,7 +562,14 @@ impl IdlePreview {
     }
 
     pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
-        self.snapshot_at(mode, 0, false)
+        self.snapshot_at(mode, 0, false).map(|snapshot| {
+            let silence = if mode == RollMode::Incoming {
+                u64::from(self.control.settings.start_delay_seconds) * u64::from(snapshot.rate)
+            } else {
+                0
+            };
+            snapshot.with_leading_silence(silence)
+        })
     }
 
     fn visual_snapshot_for_playback(&self, live: &Snapshot) -> Result<Snapshot> {
@@ -563,7 +580,16 @@ impl IdlePreview {
             u64::try_from(u128::from(live.position) * u128::from(rate) / u128::from(live.rate))
                 .context("piano roll preview position overflow")?
         };
+        let leading_silence = if live.rate == 0 {
+            u64::from(self.control.settings.start_delay_seconds) * u64::from(rate)
+        } else {
+            u64::try_from(
+                u128::from(live.leading_silence) * u128::from(rate) / u128::from(live.rate),
+            )
+            .context("piano roll preview delay overflow")?
+        };
         self.snapshot_at(RollMode::Incoming, position, live.started)
+            .map(|snapshot| snapshot.with_leading_silence(leading_silence))
     }
 
     fn snapshot_at(&self, mode: RollMode, position: u64, started: bool) -> Result<Snapshot> {
@@ -1419,6 +1445,7 @@ struct AudioConsumer {
     ended: bool,
     channels: usize,
     rate: u32,
+    silence_remaining: u64,
 }
 
 impl AudioConsumer {
@@ -1441,8 +1468,17 @@ impl AudioConsumer {
         }
         let volume = self.control.volume.get();
         let mut played = 0;
+        let mut silence = 0_u64;
+        let total_silence =
+            u64::from(self.control.settings.start_delay_seconds) * u64::from(self.rate);
+        let silence_start = total_silence.saturating_sub(self.silence_remaining);
         let mut needs_origin = self.control.first_presentation.get().is_none();
         for (frame_index, frame) in out.chunks_mut(self.channels).enumerate() {
+            if self.silence_remaining > 0 {
+                self.silence_remaining -= 1;
+                silence += 1;
+                continue;
+            }
             if self.position == self.frames.len() {
                 match self.rx.try_recv() {
                     Ok(Block::Audio(block)) => {
@@ -1519,10 +1555,29 @@ impl AudioConsumer {
                 }
             }
         }
+        if silence > 0 {
+            let result = callback_time
+                .checked_add(latency)
+                .context("audio presentation time overflow")
+                .and_then(|time| {
+                    self.control
+                        .silence_clock
+                        .publish(silence_start, silence, time)
+                });
+            if let Err(error) = result {
+                self.ended = true;
+                let _ = self.events.send(Err(error));
+            }
+        }
         let start = self.control.frames.fetch_add(played, Ordering::Relaxed);
         if played > 0 {
             let result = callback_time
                 .checked_add(latency)
+                .and_then(|time| {
+                    time.checked_add(Duration::from_secs_f64(
+                        silence as f64 / f64::from(self.rate),
+                    ))
+                })
                 .context("audio presentation time overflow")
                 .and_then(|time| self.control.visual_clock.publish(start, played, time));
             if let Err(error) = result {
@@ -1545,6 +1600,8 @@ fn stream<T: SizedSample + FromSample<f32>>(
         bail!("audio device has no channels");
     }
     let errors = events.clone();
+    let silence_remaining =
+        u64::from(control.settings.start_delay_seconds) * u64::from(config.sample_rate);
     let mut consumer = AudioConsumer {
         rx,
         events,
@@ -1554,6 +1611,7 @@ fn stream<T: SizedSample + FromSample<f32>>(
         ended: false,
         channels,
         rate: config.sample_rate,
+        silence_remaining,
     };
     Ok(device.build_output_stream(
         *config,
@@ -2727,6 +2785,7 @@ mod tests {
             ended: false,
             channels: 2,
             rate: 44_100,
+            silence_remaining: 0,
         };
         let base = Instant::now();
         let latency = Duration::from_millis(40);
@@ -2747,6 +2806,184 @@ mod tests {
             control.first_presentation.get(),
             Some(&(first_callback + latency))
         );
+    }
+
+    #[test]
+    fn leading_silence_delays_audio_and_hardware_presentation() {
+        let mut player = Playback::new();
+        Arc::get_mut(&mut player.control)
+            .unwrap()
+            .settings
+            .start_delay_seconds = 1;
+        let control = player.control.clone();
+        let timeline = Arc::new(NdsifHostTimeline::pending());
+        assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
+        let (sender, receiver) = mpsc::channel();
+        let (events, _) = mpsc::channel();
+        sender
+            .send(Block::Audio(vec![[0.25, 0.5], [0.5, 0.25]]))
+            .unwrap();
+        let mut consumer = AudioConsumer {
+            rx: receiver,
+            events,
+            control: control.clone(),
+            frames: Vec::new(),
+            position: 0,
+            ended: false,
+            channels: 2,
+            rate: 4,
+            silence_remaining: 4,
+        };
+        let now = Instant::now();
+        let latency = Duration::from_millis(100);
+        let mut output = [1.0_f32; 4];
+        consumer.fill_at(&mut output, now, latency);
+        assert_eq!(output, [0.0; 4]);
+        assert_eq!(consumer.silence_remaining, 2);
+        assert_eq!(control.frames.load(Ordering::Relaxed), 0);
+        assert!(control.first_presentation.get().is_none());
+        player.set_paused(true);
+        consumer.fill_at(&mut output, now, latency);
+        assert_eq!(consumer.silence_remaining, 2);
+        player.set_paused(false);
+        let mut output = [1.0_f32; 6];
+        consumer.fill_at(&mut output, now + Duration::from_millis(500), latency);
+        assert_eq!(output, [0.0, 0.0, 0.0, 0.0, 0.25, 0.5]);
+        let presentation = now + latency + Duration::from_secs(1);
+        assert_eq!(control.first_presentation.get(), Some(&presentation));
+        assert!(timeline.start(now).is_err());
+        assert_eq!(control.silence_clock.position(presentation, 4).unwrap(), 4);
+        assert_eq!(control.visual_clock.position(presentation, 4).unwrap(), 0);
+        assert_eq!(
+            control
+                .visual_clock
+                .position(presentation + Duration::from_millis(250), 4)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn incoming_piano_roll_tracks_the_presented_leading_silence() {
+        use soundlog::chip::event::{StateEvent, ToneInfo};
+
+        let mut player = Playback::new();
+        Arc::get_mut(&mut player.control)
+            .unwrap()
+            .settings
+            .start_delay_seconds = 1;
+        let control = player.control.clone();
+        control.sample_rate.store(4, Ordering::Relaxed);
+        {
+            let mut preview = control.preview.lock().unwrap();
+            preview.roll.apply(
+                0,
+                Instance::Primary,
+                0,
+                vec![StateEvent::KeyOn {
+                    channel: 0,
+                    tone: ToneInfo::new(0, 0, Some(440.0)),
+                }],
+            );
+            preview.scanned = 4;
+            preview.done = true;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let (events, _) = mpsc::channel();
+        sender.send(Block::Audio(vec![[0.25, 0.5]])).unwrap();
+        let mut consumer = AudioConsumer {
+            rx: receiver,
+            events,
+            control: control.clone(),
+            frames: Vec::new(),
+            position: 0,
+            ended: false,
+            channels: 2,
+            rate: 4,
+            silence_remaining: 4,
+        };
+        let now = Instant::now();
+        let latency = Duration::from_millis(100);
+        consumer.fill_at(&mut [0.0_f32; 4], now, latency);
+        let before = player
+            .visual_snapshot_at(now + latency, RollMode::Incoming)
+            .unwrap();
+        assert_eq!((before.leading_silence, before.notes[0].start), (4, 4));
+        let midway = player
+            .visual_snapshot_at(
+                now + latency + Duration::from_millis(250),
+                RollMode::Incoming,
+            )
+            .unwrap();
+        assert_eq!((midway.leading_silence, midway.notes[0].start), (3, 3));
+        assert!(!midway.started);
+        let held = player
+            .visual_snapshot_at(now + Duration::from_secs(2), RollMode::Incoming)
+            .unwrap();
+        assert_eq!((held.leading_silence, held.notes[0].start), (2, 2));
+        consumer.fill_at(&mut [0.0_f32; 6], now + Duration::from_secs(2), latency);
+        let started = player
+            .visual_snapshot_at(
+                now + Duration::from_secs(2) + latency + Duration::from_millis(500),
+                RollMode::Incoming,
+            )
+            .unwrap();
+        assert_eq!((started.leading_silence, started.notes[0].start), (0, 0));
+        assert!(started.started);
+    }
+
+    #[test]
+    fn idle_piano_preview_includes_configured_leading_silence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.vgm");
+        std::fs::write(
+            &path,
+            include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
+        )
+        .unwrap();
+        let settings = PlaybackSettings {
+            start_delay_seconds: 2,
+            ..PlaybackSettings::default()
+        };
+        let preview = IdlePreview::start_with_settings(path, false, None, settings).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let snapshot = loop {
+            let snapshot = preview.visual_snapshot(RollMode::Incoming).unwrap();
+            if !snapshot.scanning {
+                break snapshot;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(snapshot.leading_silence, 2 * u64::from(snapshot.rate));
+        assert!(!snapshot.notes.is_empty());
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .all(|note| note.start >= snapshot.leading_silence)
+        );
+
+        let mut player = Playback::new();
+        Arc::get_mut(&mut player.control).unwrap().settings = settings;
+        let fallback = player
+            .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+            .unwrap();
+        assert_eq!(fallback.leading_silence, 88_200);
+        player.control.sample_rate.store(48_000, Ordering::Release);
+        let now = Instant::now();
+        player
+            .control
+            .silence_clock
+            .publish(48_000, 0, now)
+            .unwrap();
+        let fallback = player
+            .visual_snapshot_with_preview(RollMode::Incoming, Some(&preview))
+            .unwrap();
+        assert_eq!(fallback.leading_silence, 44_100);
+        let trail = preview.visual_snapshot(RollMode::Trail).unwrap();
+        assert_eq!(trail.leading_silence, 0);
+        assert!(trail.notes.is_empty());
     }
 
     #[test]
@@ -2838,6 +3075,7 @@ mod tests {
                 ended: false,
                 channels: 2,
                 rate: 44_100,
+                silence_remaining: 0,
             };
             consumer.fill_at(&mut [0.0_f32; 2], Instant::now(), Duration::ZERO);
             assert!(control.first_presentation.get().is_none());
@@ -2866,6 +3104,7 @@ mod tests {
                 ended: false,
                 channels: 2,
                 rate: 44_100,
+                silence_remaining: 0,
             };
             consumer.fill_at(&mut [0.0_f32; 2], Instant::now(), Duration::ZERO);
             assert!(timeline.start(Instant::now()).is_ok());
@@ -2891,6 +3130,7 @@ mod tests {
             ended: false,
             channels: 2,
             rate: 2,
+            silence_remaining: 0,
         };
         let mut out = [0.0_f32; 2];
         player.set_paused(true);
@@ -2932,6 +3172,7 @@ mod tests {
             ended: false,
             channels: 2,
             rate: 44_100,
+            silence_remaining: 0,
         };
         player.stop();
         let mut out = [1.; 2];
@@ -3142,6 +3383,7 @@ mod tests {
             let settings = PlaybackSettings {
                 loop_count: 3,
                 fadeout_seconds: 1,
+                start_delay_seconds: 0,
             };
             let mut configured_vgm = Sequencer::create(
                 &vgm,
@@ -4090,10 +4332,12 @@ mod tests {
             PlaybackSettings {
                 loop_count: 3,
                 fadeout_seconds: 1,
+                start_delay_seconds: 0,
             },
             PlaybackSettings {
                 loop_count: 1,
                 fadeout_seconds: 0,
+                start_delay_seconds: 0,
             },
         ] {
             for rate in [8_000, 44_100, 48_000] {

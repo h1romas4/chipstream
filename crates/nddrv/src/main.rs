@@ -208,7 +208,7 @@ fn piano_transition_ready(
                 && (mode == visualizer::RollMode::Trail
                     || !snapshot.scanning
                     || (!snapshot.preparing
-                        && snapshot.scanned
+                        && snapshot.scanned.saturating_sub(snapshot.leading_silence)
                             >= u64::from(snapshot.rate) * visualizer::WINDOW_SECONDS))
         }
     }
@@ -769,6 +769,29 @@ impl AppView {
                 },
             )
             .default_value(2.);
+            let delay_get = view.clone();
+            let delay_set = view.clone();
+            let delay_field = SettingField::number_input(
+                NumberFieldOptions {
+                    min: 0.,
+                    max: 600.,
+                    step: 1.,
+                },
+                move |cx| {
+                    delay_get.upgrade().map_or(0., |view| {
+                        view.read(cx).config.playback.start_delay_seconds as f64
+                    })
+                },
+                move |value, cx| {
+                    let _ = delay_set.update(cx, |view, cx| {
+                        view.config.playback.start_delay_seconds = value.round() as u32;
+                        view.save();
+                        view.sync_idle_preview(cx);
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(0.);
             let output_get = view.clone();
             let output_set = view.clone();
             let output_field = SettingField::dropdown(
@@ -872,6 +895,7 @@ impl AppView {
                                 .group(SettingGroup::new().items([
                                     SettingItem::new("Play count", loop_field),
                                     SettingItem::new("Fade out (seconds)", fade_field),
+                                    SettingItem::new("Start delay (seconds)", delay_field),
                                     SettingItem::new("Emulation audio device", output_field),
                                     SettingItem::new("Emulation sample rate", sample_rate_field),
                                 ])),
@@ -4537,7 +4561,15 @@ mod tests {
             true,
             false
         ));
-        snapshot.scanned = u64::from(snapshot.rate) * super::visualizer::WINDOW_SECONDS;
+        snapshot.leading_silence = u64::from(snapshot.rate) * 600;
+        snapshot.scanned = snapshot.leading_silence;
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            false
+        ));
+        snapshot.scanned += u64::from(snapshot.rate) * super::visualizer::WINDOW_SECONDS;
         assert!(piano_transition_ready(
             Ok(&snapshot),
             RollMode::Incoming,

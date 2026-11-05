@@ -53,6 +53,19 @@ pub struct Snapshot {
     pub started: bool,
     pub preparing: bool,
     pub scanning: bool,
+    pub leading_silence: u64,
+}
+
+impl Snapshot {
+    pub fn with_leading_silence(mut self, frames: u64) -> Self {
+        self.leading_silence = frames;
+        self.scanned = self.scanned.saturating_add(frames);
+        for note in &mut self.notes {
+            note.start = note.start.saturating_add(frames);
+            note.end = note.end.map(|end| end.saturating_add(frames));
+        }
+        self
+    }
 }
 
 #[derive(Default)]

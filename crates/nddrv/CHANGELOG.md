@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a playback start delay and show the initial silence in Piano Roll.
 - Show full-path copying for a single selected Music or Playlist track.
 - Reduce staggered Piano Roll updates when playback advances.
 - Increase the spacing above the Routing connection boxes.

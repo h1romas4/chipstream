@@ -387,6 +387,7 @@ pub struct GeneralSettings {
 pub struct PlaybackSettings {
     pub loop_count: u32,
     pub fadeout_seconds: u32,
+    pub start_delay_seconds: u32,
 }
 
 impl PlaybackSettings {
@@ -396,6 +397,9 @@ impl PlaybackSettings {
         }
         if self.fadeout_seconds > 600 {
             bail!("playback fadeout must be between 0 and 600 seconds");
+        }
+        if self.start_delay_seconds > 600 {
+            bail!("playback start delay must be between 0 and 600 seconds");
         }
         Ok(())
     }
@@ -410,6 +414,7 @@ impl Default for PlaybackSettings {
         Self {
             loop_count: 2,
             fadeout_seconds: 2,
+            start_delay_seconds: 0,
         }
     }
 }
@@ -945,14 +950,22 @@ mod tests {
             PlaybackSettings {
                 loop_count: 0,
                 fadeout_seconds: 2,
+                start_delay_seconds: 0,
             },
             PlaybackSettings {
                 loop_count: 100,
                 fadeout_seconds: 2,
+                start_delay_seconds: 0,
             },
             PlaybackSettings {
                 loop_count: 2,
                 fadeout_seconds: 601,
+                start_delay_seconds: 0,
+            },
+            PlaybackSettings {
+                loop_count: 2,
+                fadeout_seconds: 2,
+                start_delay_seconds: 601,
             },
         ] {
             let config = Config {
@@ -967,11 +980,27 @@ mod tests {
             playback: PlaybackSettings {
                 loop_count: 1,
                 fadeout_seconds: 0,
+                start_delay_seconds: 3,
             },
             ..Config::default()
         };
         save_config(&path, &config).unwrap();
         assert_eq!(load_config(&path).unwrap().playback, config.playback);
+        let config = Config {
+            playback: PlaybackSettings {
+                start_delay_seconds: 600,
+                ..PlaybackSettings::default()
+            },
+            ..Config::default()
+        };
+        save_config(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().playback, config.playback);
+        fs::write(
+            &path,
+            r#"{"directories":[],"playlist":[],"playback":{"loop_count":3,"fadeout_seconds":4}}"#,
+        )
+        .unwrap();
+        assert_eq!(load_config(&path).unwrap().playback.start_delay_seconds, 0);
     }
 
     #[test]
@@ -1569,6 +1598,7 @@ mod tests {
             playback: PlaybackSettings {
                 loop_count: 3,
                 fadeout_seconds: 5,
+                start_delay_seconds: 4,
             },
             audio_output_device: Some("alsa:device-test".into()),
             audio_sample_rate: Some(44_100),
