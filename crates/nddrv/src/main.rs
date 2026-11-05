@@ -5881,9 +5881,9 @@ impl Render for AppView {
                             "https://github.com/h1romas4/chipstream/releases/tag/nddrv-v{version}"
                         );
                         let blue = ButtonCustomVariant::new(cx)
-                            .color(rgb(0x0078d4).into())
+                            .color(rgb(0x006cbe).into())
                             .foreground(rgb(0xffffff).into())
-                            .hover(rgb(0x006cbe).into())
+                            .hover(rgb(0x0078d4).into())
                             .active(rgb(0x005a9e).into());
                         bar.child(
                             Button::new("update-available")

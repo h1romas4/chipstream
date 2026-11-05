@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Adjust the update notification button's default and hover colors.
+
 ## v0.8.0
 
 - Improve NanoDrive playback buffering and avoid processing silent hardware
