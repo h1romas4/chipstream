@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, bail};
 use chipstream::sequencer::{Chip, Instance};
 use ndsif::CapabilityEntry;
-use ndsif_transport::NdsifRoute;
+use ndsif_transport::{NdsifNd7Validator, NdsifRoute};
 use serde::{Deserialize, Serialize};
 
 /// Chip types that can be routed to an NDSIF device.
@@ -339,19 +339,17 @@ impl PlaybackPlan {
     ) -> Result<()> {
         use soundlog::vgm::header::ChipId;
 
-        let mut opn_slots = HashSet::new();
-        let mut opn_clocks = HashMap::new();
-        let mut opl_slots = HashSet::new();
+        let mut validator = NdsifNd7Validator::default();
         for route in &self.routes {
             if !self.nd7_devices.contains(&route.device) {
                 continue;
             }
-            let (raw, chip_id, multiplier, opn) = match route.chip {
-                Chip::Ay8910 => (header.ay8910_clock, ChipId::Ay8910, 2, true),
-                Chip::Ym2203 => (header.ym2203_clock, ChipId::Ym2203, 1, true),
-                Chip::Ym3526 => (header.ym3526_clock, ChipId::Ym3526, 4, false),
-                Chip::Ym3812 => (header.ym3812_clock, ChipId::Ym3812, 4, false),
-                Chip::Ymf262 => (header.ymf262_clock, ChipId::Ymf262, 1, false),
+            let (raw, chip_id) = match route.chip {
+                Chip::Ay8910 => (header.ay8910_clock, ChipId::Ay8910),
+                Chip::Ym2203 => (header.ym2203_clock, ChipId::Ym2203),
+                Chip::Ym3526 => (header.ym3526_clock, ChipId::Ym3526),
+                Chip::Ym3812 => (header.ym3812_clock, ChipId::Ym3812),
+                Chip::Ymf262 => (header.ymf262_clock, ChipId::Ymf262),
                 _ => continue,
             };
             if raw & 0x3fff_ffff == 0
@@ -367,32 +365,7 @@ impl PlaybackPlan {
                         .find(|clock| clock.chip_id == chip_id && clock.instance == route.source)
                 })
                 .map_or(raw & 0x3fff_ffff, |clock| clock.clock & 0x3fff_ffff);
-            let physical = clock
-                .checked_mul(multiplier)
-                .ok_or_else(|| anyhow::anyhow!("NanoDrive 7 clock overflow"))?;
-            if opn {
-                if !opn_slots.insert((route.device, route.target == Instance::Secondary)) {
-                    bail!(
-                        "NanoDrive 7 AY8910 and YM2203 routes share the same physical chip; change the routing before playback"
-                    );
-                }
-                let physical = match physical {
-                    3_579_000..=3_580_000 => 3_579_545,
-                    3_993_600 => 4_000_000,
-                    _ => physical,
-                };
-                if let Some(previous) = opn_clocks.insert(route.device, physical)
-                    && previous != physical
-                {
-                    bail!(
-                        "NanoDrive 7 AY8910 and YM2203 routes require different shared clocks ({previous} Hz and {physical} Hz)"
-                    );
-                }
-            } else if !opl_slots.insert(route.device) {
-                bail!(
-                    "NanoDrive 7 YM3526, YM3812 and YMF262 routes share the same physical chip; change the routing before playback"
-                );
-            }
+            validator.add(route, clock).map_err(anyhow::Error::msg)?;
         }
         Ok(())
     }

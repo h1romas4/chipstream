@@ -60,6 +60,10 @@ Hardware audio is not included in the GStreamer PCM output; mix it separately.
 
 **Playback notes**
 
+- For devices advertising AY8910, YM2203, YM3526, YM3812, or YMF262, startup
+  requires a nonempty model name from NDSIF `GET_INFO`. NanoDrive 7 routes are
+  checked for shared-chip and shared-clock conflicts before playback. A
+  conflict fails playback; automatic routing does not retry another device.
 - Seeking is disabled while an NDSIF port is configured.
 - Hardware commands are scheduled against the GStreamer clock and the latest
   latency reported before playback starts. If no latency event has arrived, an

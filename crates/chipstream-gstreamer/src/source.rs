@@ -33,7 +33,7 @@ use chipstream::sequencer::{
 };
 use ndsif_transport::{
     NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport,
-    NdsifSharedDevice, create_automatic_transport_factories, create_recorders,
+    NdsifSharedDevice, create_automatic_transport_factories_with_nd7, create_recorders,
 };
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -1536,8 +1536,9 @@ fn create_chip_factories(
     }
     let mut devices = Vec::new();
     let mut supports_ay = false;
+    let mut nd7_devices = Vec::new();
     for (index, port) in ports.into_iter().enumerate() {
-        let transport = NdsifSerialTransport::open(
+        let mut transport = NdsifSerialTransport::open(
             &port,
             settings.baud_rate,
             Duration::from_millis(u64::from(settings.timeout_ms)),
@@ -1548,6 +1549,21 @@ fn create_chip_factories(
             .capabilities()
             .iter()
             .any(|entry| entry.write_id == 0xa0);
+        if transport
+            .capabilities()
+            .iter()
+            .any(|entry| matches!(entry.write_id, 0xa0 | 0x55 | 0x5b | 0x5a | 0x5e))
+        {
+            let info = transport.device_info().map_err(|error| format!("NDSIF device {port}: cannot identify device for shared-chip validation: {error}"))?;
+            if info.model.trim().is_empty() {
+                return Err(format!(
+                    "NDSIF device {port}: empty model name prevents shared-chip validation"
+                ));
+            }
+            if info.model.trim() == "NanoDrive 7" {
+                nd7_devices.push(index);
+            }
+        }
         devices.push((index as u64, Arc::new(Mutex::new(transport))));
     }
     let recorders = create_recorders(
@@ -1555,7 +1571,8 @@ fn create_chip_factories(
         NonZeroUsize::new(MAX_HARDWARE_OPERATIONS).expect("nonzero operation limit"),
     )
     .map_err(|error| error.to_string())?;
-    let factories = create_automatic_transport_factories(&recorders, supports_ay);
+    let factories =
+        create_automatic_transport_factories_with_nd7(&recorders, supports_ay, &nd7_devices);
     Ok((
         factories,
         Some(HardwarePlayback {
@@ -1834,6 +1851,163 @@ mod tests {
             presentation_instant(anchor, gst::ClockTime::MAX, gst::ClockTime::ZERO, latency)
                 .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nd7_identification_rejects_conflicting_automatic_routes() {
+        use ndsif::{Capabilities, Decoder, DeviceInfo, Reply, Request, Response};
+        use serialport::SerialPort;
+        use std::io::{Read, Write};
+
+        gst::init().unwrap();
+        for (model, conflict) in [
+            ("NanoDrive 7", Some(true)),
+            ("Other device", Some(false)),
+            (" ", None),
+        ] {
+            let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+            fake.set_timeout(Duration::from_millis(50)).unwrap();
+            let port_name = port.name().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let fake_stop = Arc::clone(&stop);
+            let device = thread::spawn(move || {
+                let mut decoder = Decoder::new();
+                while !fake_stop.load(Ordering::Acquire) {
+                    let mut byte = [0];
+                    match fake.read_exact(&mut byte) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+                        Err(error) => panic!("fake NDSIF read failed: {error}"),
+                    }
+                    let mut frame = None;
+                    decoder.push(&byte, |result| frame = Some(result.unwrap()));
+                    let Some(frame) = frame else { continue };
+                    let reply = match Request::decode(&frame).unwrap() {
+                        Request::Ping(bytes) => Reply::Ping(bytes),
+                        Request::GetCapabilities { offset: 0 } => Reply::Capabilities(
+                            Capabilities::new(
+                                256,
+                                0,
+                                0,
+                                0,
+                                u16::MAX,
+                                &[0x5b, 0, 0, 4, 2, 0, 0, 0, 0, 0x5e, 0, 0, 4, 2, 0, 0, 0, 0],
+                            )
+                            .unwrap(),
+                        ),
+                        Request::GetInfo => Reply::Info(DeviceInfo {
+                            model,
+                            firmware: "test",
+                        }),
+                        Request::Reset => Reply::Complete,
+                        request => {
+                            panic!("unexpected NDSIF request before validation: {request:?}")
+                        }
+                    };
+                    let response = Response::for_request(&frame, reply)
+                        .unwrap()
+                        .to_frame()
+                        .unwrap()
+                        .encode();
+                    fake.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            let settings = NdsifSettings {
+                port: Some(port_name),
+                ports: None,
+                baud_rate: 115_200,
+                timeout_ms: 500,
+                reset_device: true,
+            };
+            let result = create_chip_factories(&settings, Arc::new(NdsifHostTimeline::pending()));
+            if let Some(conflict) = conflict {
+                let (factories, hardware) = result.unwrap();
+                let mut builder = VgmBuilder::new();
+                builder.register_chip(SoundlogChip::Ym3526, SoundlogInstance::Primary, 3_579_545);
+                builder.register_chip(SoundlogChip::Ymf262, SoundlogInstance::Primary, 14_318_180);
+                builder.add_vgm_command(WaitSamples(441));
+                let result = VgmSequencer::from_vgm_with_factories(
+                    builder.finalize(),
+                    44_100,
+                    256,
+                    factories,
+                );
+                if conflict {
+                    assert!(
+                        result
+                            .err()
+                            .expect("ND7 conflict should fail")
+                            .to_string()
+                            .contains("same physical chip")
+                    );
+                } else {
+                    assert!(result.is_ok());
+                }
+                drop(hardware);
+                if conflict {
+                    let path = std::env::temp_dir().join(format!(
+                        "chipstream-gstreamer-nd7-{}-{}.vgm",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos()
+                    ));
+                    let mut builder = VgmBuilder::new();
+                    builder.register_chip(
+                        SoundlogChip::Ym3526,
+                        SoundlogInstance::Primary,
+                        3_579_545,
+                    );
+                    builder.register_chip(
+                        SoundlogChip::Ymf262,
+                        SoundlogInstance::Primary,
+                        14_318_180,
+                    );
+                    builder.add_vgm_command(WaitSamples(441));
+                    fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+                    let source = glib::Object::builder::<ChipstreamSrc>()
+                        .property("location", path.to_string_lossy().as_ref())
+                        .property("ndsif-port", settings.port.as_deref().unwrap())
+                        .build();
+                    let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+                    let pipeline = gst::Pipeline::new();
+                    pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
+                    source.link(&sink).unwrap();
+                    pipeline.set_state(gst::State::Paused).unwrap();
+                    let message = pipeline
+                        .bus()
+                        .unwrap()
+                        .timed_pop_filtered(
+                            gst::ClockTime::from_seconds(5),
+                            &[gst::MessageType::Error],
+                        )
+                        .expect("conflict should be posted on the bus");
+                    let gst::MessageView::Error(error) = message.view() else {
+                        unreachable!()
+                    };
+                    assert!(
+                        error
+                            .debug()
+                            .unwrap_or_default()
+                            .contains("same physical chip")
+                    );
+                    pipeline.set_state(gst::State::Null).unwrap();
+                    fs::remove_file(path).unwrap();
+                }
+            } else {
+                assert!(
+                    result
+                        .err()
+                        .expect("empty model should fail")
+                        .contains("empty model name")
+                );
+            }
+            stop.store(true, Ordering::Release);
+            device.join().unwrap();
+            drop(port);
+        }
     }
 
     #[cfg(unix)]

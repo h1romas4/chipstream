@@ -1,6 +1,7 @@
 //! Explicit chip-instance routing for applications with saved connections.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -24,6 +25,58 @@ pub struct NdsifRoute {
     pub device: usize,
     /// Instance advertised by the selected device.
     pub target: Instance,
+}
+
+/// Validate the physical chip and clock resources shared by NanoDrive 7 routes.
+#[derive(Default)]
+pub struct NdsifNd7Validator {
+    opn_slots: HashSet<(usize, bool)>,
+    opn_clocks: HashMap<usize, u32>,
+    opl_slots: HashSet<usize>,
+}
+
+impl NdsifNd7Validator {
+    /// Add one active hardware route using its source chip's effective clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the route conflicts with an earlier route or its
+    /// physical clock cannot be represented.
+    pub fn add(&mut self, route: &NdsifRoute, clock: u32) -> Result<(), String> {
+        let (multiplier, opn) = match route.chip {
+            Chip::Ay8910 => (2, true),
+            Chip::Ym2203 => (1, true),
+            Chip::Ym3526 | Chip::Ym3812 => (4, false),
+            Chip::Ymf262 => (1, false),
+            _ => return Ok(()),
+        };
+        let physical = clock
+            .checked_mul(multiplier)
+            .ok_or_else(|| "NanoDrive 7 clock overflow".to_owned())?;
+        if opn {
+            let slot = (route.device, route.target == Instance::Secondary);
+            if self.opn_slots.contains(&slot) {
+                return Err("NanoDrive 7 AY8910 and YM2203 routes share the same physical chip; change the routing before playback".into());
+            }
+            let physical = match physical {
+                3_579_000..=3_580_000 => 3_579_545,
+                3_993_600 => 4_000_000,
+                _ => physical,
+            };
+            if let Some(&previous) = self.opn_clocks.get(&route.device)
+                && previous != physical
+            {
+                return Err(format!(
+                    "NanoDrive 7 AY8910 and YM2203 routes require different shared clocks ({previous} Hz and {physical} Hz)"
+                ));
+            }
+            self.opn_slots.insert(slot);
+            self.opn_clocks.insert(route.device, physical);
+        } else if !self.opl_slots.insert(route.device) {
+            return Err("NanoDrive 7 YM3526, YM3812 and YMF262 routes share the same physical chip; change the routing before playback".into());
+        }
+        Ok(())
+    }
 }
 
 /// Invalid routing configuration detected before chip construction.
@@ -366,6 +419,154 @@ mod tests {
         }
         builder.add_vgm_command(WaitSamples(441));
         builder.finalize().into()
+    }
+
+    #[test]
+    fn automatic_nd7_validation_uses_selected_active_chips() {
+        use crate::create_automatic_transport_factories_with_nd7;
+
+        for (chips, nd7, expected_error) in [
+            (
+                vec![(Chip::Ay8910, 2_000_000), (Chip::Ym2203, 4_000_000)],
+                true,
+                Some("same physical chip"),
+            ),
+            (
+                vec![(Chip::Ym3526, 3_579_545), (Chip::Ymf262, 14_318_180)],
+                true,
+                Some("same physical chip"),
+            ),
+            (
+                vec![(Chip::Ym3526, 3_579_545), (Chip::Ymf262, 14_318_180)],
+                false,
+                None,
+            ),
+            (vec![(Chip::Ym3526, 3_579_545)], true, None),
+        ] {
+            let mut builder = VgmBuilder::new();
+            for (chip, clock) in chips {
+                builder.register_chip(chip, Instance::Primary, clock);
+            }
+            builder.add_vgm_command(WaitSamples(441));
+            let device = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let devices = [device];
+            let nd7_devices: &[usize] = if nd7 { &[0] } else { &[] };
+            let factories =
+                create_automatic_transport_factories_with_nd7(&devices, true, nd7_devices);
+            let result =
+                VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories);
+            match expected_error {
+                Some(expected) => assert!(
+                    result
+                        .err()
+                        .expect("conflict should fail")
+                        .to_string()
+                        .contains(expected)
+                ),
+                None => assert!(result.is_ok(), "valid routes should succeed"),
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_nd7_validation_uses_extra_header_clocks() {
+        use crate::create_automatic_transport_factories_with_nd7;
+        use soundlog::vgm::header::{ChipClock, ChipId, VgmExtraHeader};
+
+        struct SelectedInstances;
+        impl NdsifTransport for SelectedInstances {
+            fn configure_chip(&mut self, _: WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, _: NdsifRegisterEvent) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, _: NdsifPsgEvent) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        impl NdsifRoutingTransport for SelectedInstances {
+            fn supports_route_clock(&self, id: WriteId, instance: u8, _: u32) -> bool {
+                (id == WriteId::try_from(0xa0).unwrap() && instance == 0)
+                    || (id == WriteId::try_from(0x55).unwrap() && instance == 1)
+            }
+            fn supports_route_audio(&self, _: u8, _: u32) -> bool {
+                false
+            }
+        }
+        for (secondary_clock, expected_error) in [(3_993_600, false), (3_500_000, true)] {
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+            builder.register_chip(Chip::Ym2203, Instance::Primary, 4_000_000);
+            builder.register_chip(Chip::Ym2203, Instance::Secondary, 4_000_000);
+            let mut document = builder.finalize();
+            document.header.ay_chip_type = soundlog::vgm::header::Ay8910ChipType::Ay8910;
+            document.header.ym2203_clock |= 0x4000_0000;
+            document.extra_header = Some(VgmExtraHeader {
+                chip_clocks: vec![ChipClock::new(
+                    ChipId::Ym2203,
+                    Instance::Secondary,
+                    secondary_clock,
+                )],
+                ..Default::default()
+            });
+            let device = Rc::new(RefCell::new(SelectedInstances));
+            let factories = create_automatic_transport_factories_with_nd7(&[device], true, &[0]);
+            let result = VgmSequencer::new_with_factories(document, 44_100, 256, factories);
+            if expected_error {
+                assert!(
+                    result
+                        .err()
+                        .expect("clock mismatch should fail")
+                        .to_string()
+                        .contains("different shared clocks")
+                );
+            } else if let Err(error) = result {
+                panic!("valid shared clock should succeed: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_nd7_validation_is_per_selected_device() {
+        use crate::create_automatic_transport_factories_with_nd7;
+
+        struct ChipDevice(WriteId);
+        impl NdsifTransport for ChipDevice {
+            fn configure_chip(&mut self, _: WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, _: NdsifRegisterEvent) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, _: NdsifPsgEvent) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        impl NdsifRoutingTransport for ChipDevice {
+            fn supports_route_clock(&self, id: WriteId, _: u8, _: u32) -> bool {
+                self.0 == id
+            }
+            fn supports_route_audio(&self, _: u8, _: u32) -> bool {
+                false
+            }
+        }
+
+        let devices = [
+            Rc::new(RefCell::new(ChipDevice(WriteId::try_from(0x5b).unwrap()))),
+            Rc::new(RefCell::new(ChipDevice(WriteId::try_from(0x5e).unwrap()))),
+        ];
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym3526, Instance::Primary, 3_579_545);
+        builder.register_chip(Chip::Ymf262, Instance::Primary, 14_318_180);
+        let factories = create_automatic_transport_factories_with_nd7(&devices, false, &[0, 1]);
+        let document = builder.finalize();
+        assert!(VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories).is_ok());
+        let factories = create_automatic_transport_factories_with_nd7(&devices[..1], false, &[0]);
+        assert!(VgmSequencer::new_with_factories(document, 44_100, 256, factories).is_ok());
     }
 
     #[test]
