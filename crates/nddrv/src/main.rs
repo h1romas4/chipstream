@@ -4764,6 +4764,7 @@ enum ListKey {
     ExtendUp,
     ExtendDown,
     Add,
+    Play,
     Delete,
 }
 
@@ -4781,9 +4782,21 @@ fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
         ("up", _) => Some(ListKey::Up),
         ("down", _) => Some(ListKey::Down),
         ("enter", DetailsSelection::Music) if !modifiers.shift => Some(ListKey::Add),
+        ("enter", DetailsSelection::Playlist) if !modifiers.shift => Some(ListKey::Play),
         ("delete", DetailsSelection::Playlist) if !modifiers.shift => Some(ListKey::Delete),
         _ => None,
     }
+}
+
+fn single_queue_selection(selection: &HashSet<usize>, len: usize) -> Option<usize> {
+    if selection.len() != 1 {
+        return None;
+    }
+    selection
+        .iter()
+        .copied()
+        .next()
+        .filter(|&index| index < len)
 }
 
 fn list_cursor_index(current: Option<usize>, len: usize) -> Option<usize> {
@@ -4905,8 +4918,8 @@ mod tests {
         list_selection_target, music_format, notification_copy_text, piano_transition_ready,
         playback_state_label, remove_playlist_entries, renumber_connected_devices,
         reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, unsupported_chips,
-        update_selection_order, update_window_settings,
+        select_for_context, select_item, select_range, selection_status, single_queue_selection,
+        unsupported_chips, update_selection_order, update_window_settings,
     };
 
     #[test]
@@ -5291,11 +5304,22 @@ mod tests {
         }
         assert_eq!(key("enter", DetailsSelection::Music), Some(ListKey::Add));
         assert_eq!(key("delete", DetailsSelection::Music), None);
-        assert_eq!(key("enter", DetailsSelection::Playlist), None);
+        assert_eq!(
+            key("enter", DetailsSelection::Playlist),
+            Some(ListKey::Play)
+        );
         assert_eq!(
             key("delete", DetailsSelection::Playlist),
             Some(ListKey::Delete)
         );
+    }
+
+    #[test]
+    fn playlist_enter_requires_one_valid_selected_row() {
+        assert_eq!(single_queue_selection(&HashSet::new(), 3), None);
+        assert_eq!(single_queue_selection(&HashSet::from([1]), 3), Some(1));
+        assert_eq!(single_queue_selection(&HashSet::from([0, 1]), 3), None);
+        assert_eq!(single_queue_selection(&HashSet::from([3]), 3), None);
     }
 
     #[test]
@@ -6527,6 +6551,12 @@ impl Render for AppView {
                                                                     Some(ListKey::Down) => view.move_queue_selection(true, false),
                                                                     Some(ListKey::ExtendUp) => view.move_queue_selection(false, true),
                                                                     Some(ListKey::ExtendDown) => view.move_queue_selection(true, true),
+                                                                    Some(ListKey::Play) => {
+                                                                        let Some(index) = single_queue_selection(&view.selected_queue, view.config.playlist.len()) else {
+                                                                            return;
+                                                                        };
+                                                                        view.play(index, cx);
+                                                                    }
                                                                     Some(ListKey::Delete) => view.delete_queue_selection(cx),
                                                                     _ => return,
                                                                 }
