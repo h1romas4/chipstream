@@ -1164,8 +1164,8 @@ impl AppView {
             queue_selection_order: Vec::new(),
             details_selection: DetailsSelection::Music,
             focus: cx.focus_handle(),
-            track_focus: cx.focus_handle(),
-            queue_focus: cx.focus_handle(),
+            track_focus: cx.focus_handle().tab_stop(true),
+            queue_focus: cx.focus_handle().tab_stop(true),
             playlist_tracks: HashMap::new(),
             details_path: None,
             details_artwork: None,
@@ -4115,18 +4115,30 @@ impl AppView {
         self.update_track_selection_order(None);
     }
 
-    fn move_track_selection(&mut self, down: bool) {
+    fn move_track_selection(&mut self, down: bool, extend: bool) {
         let current = self.track_selection_order.last().and_then(|path| {
             self.filtered_tracks
                 .iter()
                 .position(|&index| &self.tracks[index].path == path)
         });
-        let Some(index) = list_selection_step(current, self.filtered_tracks.len(), down) else {
+        let anchor = self.track_anchor.as_ref().and_then(|path| {
+            self.filtered_tracks
+                .iter()
+                .position(|&index| &self.tracks[index].path == path)
+        });
+        let Some((index, anchor)) =
+            list_selection_target(current, anchor, self.filtered_tracks.len(), down, extend)
+        else {
             return;
         };
         let path = self.tracks[self.filtered_tracks[index]].path.clone();
-        select_item(&mut self.selected_tracks, path.clone(), false);
-        self.track_anchor = Some(path.clone());
+        select_range(
+            &mut self.selected_tracks,
+            inclusive_range(anchor, index)
+                .map(|row| self.tracks[self.filtered_tracks[row]].path.clone()),
+            false,
+        );
+        self.track_anchor = Some(self.tracks[self.filtered_tracks[anchor]].path.clone());
         self.update_track_selection_order(Some(&path));
         self.library_scroll
             .scroll_to_item(index, ScrollStrategy::Nearest);
@@ -4156,12 +4168,26 @@ impl AppView {
         self.update_queue_selection_order(None);
     }
 
-    fn move_queue_selection(&mut self, down: bool) {
+    fn move_queue_selection(&mut self, down: bool, extend: bool) {
         let current = self.queue_selection_order.last().copied();
-        let Some(index) = list_selection_step(current, self.config.playlist.len(), down) else {
+        let Some((index, anchor)) = list_selection_target(
+            current,
+            self.queue_anchor,
+            self.config.playlist.len(),
+            down,
+            extend,
+        ) else {
             return;
         };
-        self.select_queue_row(index);
+        select_range(
+            &mut self.selected_queue,
+            inclusive_range(anchor, index),
+            false,
+        );
+        self.queue_anchor = Some(anchor);
+        self.update_queue_selection_order(Some(index));
+        self.queue_scroll
+            .scroll_to_item(index, ScrollStrategy::Nearest);
     }
 
     fn select_queue_row(&mut self, index: usize) {
@@ -4688,6 +4714,8 @@ enum ListKey {
     SelectAll,
     Up,
     Down,
+    ExtendUp,
+    ExtendDown,
     Add,
     Delete,
 }
@@ -4697,19 +4725,16 @@ fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
         return Some(ListKey::SelectAll);
     }
     let modifiers = keystroke.modifiers;
-    if modifiers.control
-        || modifiers.platform
-        || modifiers.alt
-        || modifiers.shift
-        || modifiers.function
-    {
+    if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
         return None;
     }
     match (keystroke.key.as_str(), list) {
+        ("up", _) if modifiers.shift => Some(ListKey::ExtendUp),
+        ("down", _) if modifiers.shift => Some(ListKey::ExtendDown),
         ("up", _) => Some(ListKey::Up),
         ("down", _) => Some(ListKey::Down),
-        ("enter", DetailsSelection::Music) => Some(ListKey::Add),
-        ("delete", DetailsSelection::Playlist) => Some(ListKey::Delete),
+        ("enter", DetailsSelection::Music) if !modifiers.shift => Some(ListKey::Add),
+        ("delete", DetailsSelection::Playlist) if !modifiers.shift => Some(ListKey::Delete),
         _ => None,
     }
 }
@@ -4724,6 +4749,25 @@ fn list_selection_step(current: Option<usize>, len: usize, down: bool) -> Option
         None if down => Some(0),
         None => Some(len - 1),
     }
+}
+
+fn list_selection_target(
+    current: Option<usize>,
+    anchor: Option<usize>,
+    len: usize,
+    down: bool,
+    extend: bool,
+) -> Option<(usize, usize)> {
+    let current = current.filter(|&index| index < len);
+    let index = list_selection_step(current, len, down)?;
+    let anchor = if extend {
+        current
+            .map(|current| anchor.filter(|&anchor| anchor < len).unwrap_or(current))
+            .unwrap_or(index)
+    } else {
+        index
+    };
+    Some((index, anchor))
 }
 
 fn select_range<T: Eq + Hash>(
@@ -4804,11 +4848,12 @@ mod tests {
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_play_shortcut, is_select_all, is_stop_shortcut,
-        keep_preview_sources, list_key, list_selection_step, music_format, notification_copy_text,
-        piano_transition_ready, playback_state_label, remove_playlist_entries,
-        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
-        scan_progress_text, search_terms, select_for_context, select_item, select_range,
-        selection_status, unsupported_chips, update_selection_order, update_window_settings,
+        keep_preview_sources, list_key, list_selection_step, list_selection_target, music_format,
+        notification_copy_text, piano_transition_ready, playback_state_label,
+        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
+        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
+        select_range, selection_status, unsupported_chips, update_selection_order,
+        update_window_settings,
     };
 
     #[test]
@@ -5163,8 +5208,17 @@ mod tests {
         for list in [DetailsSelection::Music, DetailsSelection::Playlist] {
             assert_eq!(key("up", list), Some(ListKey::Up));
             assert_eq!(key("down", list), Some(ListKey::Down));
+            assert_eq!(key("shift-up", list), Some(ListKey::ExtendUp));
+            assert_eq!(key("shift-down", list), Some(ListKey::ExtendDown));
             assert_eq!(key("ctrl-a", list), Some(ListKey::SelectAll));
-            for modified in ["shift-up", "ctrl-down", "alt-enter", "cmd-delete"] {
+            for modified in [
+                "ctrl-down",
+                "ctrl-shift-up",
+                "shift-enter",
+                "shift-delete",
+                "alt-enter",
+                "cmd-delete",
+            ] {
                 assert_eq!(key(modified, list), None);
             }
         }
@@ -5187,6 +5241,60 @@ mod tests {
         assert_eq!(list_selection_step(Some(2), 3, true), Some(2));
         assert_eq!(list_selection_step(Some(0), 3, false), Some(0));
         assert_eq!(list_selection_step(Some(3), 3, true), Some(0));
+    }
+
+    #[test]
+    fn extended_list_selection_keeps_anchor_and_moves_endpoint() {
+        assert_eq!(list_selection_target(None, None, 0, true, true), None);
+        assert_eq!(
+            list_selection_target(None, Some(2), 5, true, true),
+            Some((0, 0))
+        );
+        assert_eq!(
+            list_selection_target(Some(2), None, 5, true, true),
+            Some((3, 2))
+        );
+        assert_eq!(
+            list_selection_target(Some(3), Some(2), 5, true, true),
+            Some((4, 2))
+        );
+        assert_eq!(
+            list_selection_target(Some(4), Some(2), 5, false, true),
+            Some((3, 2))
+        );
+        assert_eq!(
+            list_selection_target(Some(2), Some(2), 5, false, true),
+            Some((1, 2))
+        );
+        assert_eq!(
+            list_selection_target(Some(4), Some(2), 5, false, false),
+            Some((3, 3))
+        );
+        assert_eq!(
+            list_selection_target(Some(2), Some(9), 5, true, true),
+            Some((3, 2))
+        );
+    }
+
+    #[test]
+    fn extended_list_selection_expands_and_shrinks_across_anchor() {
+        let mut selected = HashSet::from([2]);
+        let mut order = vec![2];
+        let anchor = Some(2);
+        for (down, expected) in [
+            (true, vec![2, 3]),
+            (true, vec![2, 3, 4]),
+            (false, vec![2, 3]),
+            (false, vec![2]),
+            (false, vec![1, 2]),
+        ] {
+            let (index, anchor) =
+                list_selection_target(order.last().copied(), anchor, 5, down, true).unwrap();
+            select_range(&mut selected, inclusive_range(anchor, index), false);
+            update_selection_order(&mut order, &selected, 0..5, Some(&index));
+            assert_eq!(selected, expected.into_iter().collect());
+            assert_eq!(order.last(), Some(&index));
+        }
     }
 
     #[test]
@@ -6252,6 +6360,9 @@ impl Render for AppView {
                                                 div()
                                                     .id("music-list-container")
                                                     .track_focus(&self.track_focus)
+                                                    .border_1()
+                                                    .border_color(rgb(0x303b45))
+                                                    .focus(|style| style.border_color(rgb(ACCENT_COLOR)))
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         cx.listener(|view, _, window, cx| {
@@ -6265,8 +6376,10 @@ impl Render for AppView {
                                                             }
                                                             match list_key(&event.keystroke, DetailsSelection::Music) {
                                                                 Some(ListKey::SelectAll) => view.select_all_tracks(),
-                                                                Some(ListKey::Up) => view.move_track_selection(false),
-                                                                Some(ListKey::Down) => view.move_track_selection(true),
+                                                                Some(ListKey::Up) => view.move_track_selection(false, false),
+                                                                Some(ListKey::Down) => view.move_track_selection(true, false),
+                                                                Some(ListKey::ExtendUp) => view.move_track_selection(false, true),
+                                                                Some(ListKey::ExtendDown) => view.move_track_selection(true, true),
                                                                 Some(ListKey::Add) if !view.selected_tracks.is_empty() => view.add_selected_tracks(cx),
                                                                 _ => return,
                                                             }
@@ -6320,6 +6433,9 @@ impl Render for AppView {
                                                     div()
                                                         .id("playlist-list-container")
                                                         .track_focus(&self.queue_focus)
+                                                        .border_1()
+                                                        .border_color(rgb(0x303b45))
+                                                        .focus(|style| style.border_color(rgb(ACCENT_COLOR)))
                                                         .on_mouse_down(
                                                             MouseButton::Left,
                                                             cx.listener(|view, _, window, cx| {
@@ -6333,8 +6449,10 @@ impl Render for AppView {
                                                                 }
                                                                 match list_key(&event.keystroke, DetailsSelection::Playlist) {
                                                                     Some(ListKey::SelectAll) => view.select_all_queue(),
-                                                                    Some(ListKey::Up) => view.move_queue_selection(false),
-                                                                    Some(ListKey::Down) => view.move_queue_selection(true),
+                                                                    Some(ListKey::Up) => view.move_queue_selection(false, false),
+                                                                    Some(ListKey::Down) => view.move_queue_selection(true, false),
+                                                                    Some(ListKey::ExtendUp) => view.move_queue_selection(false, true),
+                                                                    Some(ListKey::ExtendDown) => view.move_queue_selection(true, true),
                                                                     Some(ListKey::Delete) => view.delete_queue_selection(cx),
                                                                     _ => return,
                                                                 }

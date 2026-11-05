@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Allow Tab focus and Shift+Arrow range selection in the Music and Playlist lists.
 - Use source filenames and readable timestamps for recordings, and warn about
   recoverable input interruptions.
 - Add experimental per-track WAV recording from an audio input device.
