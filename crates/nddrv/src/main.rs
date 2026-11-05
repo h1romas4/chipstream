@@ -562,6 +562,7 @@ struct AppView {
     focus: FocusHandle,
     track_focus: FocusHandle,
     queue_focus: FocusHandle,
+    _list_focus_subscriptions: Vec<Subscription>,
     playlist_tracks: HashMap<PathBuf, Track>,
     details_path: Option<PathBuf>,
     details_artwork: Option<Arc<RenderImage>>,
@@ -1136,6 +1137,13 @@ impl AppView {
             .collect();
         let persistence_error = config_error;
         let expanded_directories = HashMap::new();
+        let track_focus = cx.focus_handle().tab_stop(true);
+        let queue_focus = cx.focus_handle().tab_stop(true);
+        let mut list_focus_subscriptions = Vec::new();
+        for focus in [&track_focus, &queue_focus] {
+            list_focus_subscriptions.push(cx.on_focus(focus, window, |_, _, cx| cx.notify()));
+            list_focus_subscriptions.push(cx.on_blur(focus, window, |_, _, cx| cx.notify()));
+        }
         Self {
             config_path,
             config,
@@ -1164,8 +1172,9 @@ impl AppView {
             queue_selection_order: Vec::new(),
             details_selection: DetailsSelection::Music,
             focus: cx.focus_handle(),
-            track_focus: cx.focus_handle().tab_stop(true),
-            queue_focus: cx.focus_handle().tab_stop(true),
+            track_focus,
+            queue_focus,
+            _list_focus_subscriptions: list_focus_subscriptions,
             playlist_tracks: HashMap::new(),
             details_path: None,
             details_artwork: None,
@@ -3906,7 +3915,18 @@ impl AppView {
             )
     }
 
-    fn library_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn library_rows(
+        &mut self,
+        range: Range<usize>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let current = self.track_selection_order.last().and_then(|path| {
+            self.filtered_tracks
+                .iter()
+                .position(|&index| &self.tracks[index].path == path)
+        });
+        let cursor = list_cursor_index(current, self.filtered_tracks.len());
         range
             .map(|index| {
                 let track = &self.tracks[self.filtered_tracks[index]];
@@ -3914,6 +3934,7 @@ impl AppView {
                 let click_path = path.clone();
                 let menu_path = path.clone();
                 let selected = self.selected_tracks.contains(&path);
+                let focused = self.track_focus.is_focused(window) && cursor == Some(index);
                 let view = cx.weak_entity();
                 let metadata = track.metadata_for(self.config.general.vgm_metadata_language);
                 let title = track.display_title_for(self.config.general.vgm_metadata_language);
@@ -3956,7 +3977,8 @@ impl AppView {
                     .border_b_1()
                     .border_color(rgb(if folder_boundary { 0x718c9a } else { 0x303b45 }))
                     .when(selected, |row| row.bg(rgb(0x304755)))
-                    .hover(|style| style.bg(rgb(0x293a47)))
+                    .when(focused, |row| row.bg(rgb(0x456672)))
+                    .when(!focused, |row| row.hover(|style| style.bg(rgb(0x293a47))))
                     .when(dimmed, |row| {
                         row.tooltip(move |window, cx| {
                             Tooltip::new(unsupported_tooltip.clone()).build(window, cx)
@@ -4121,11 +4143,16 @@ impl AppView {
                 .iter()
                 .position(|&index| &self.tracks[index].path == path)
         });
-        let anchor = self.track_anchor.as_ref().and_then(|path| {
-            self.filtered_tracks
-                .iter()
-                .position(|&index| &self.tracks[index].path == path)
-        });
+        let anchor = self
+            .track_anchor
+            .as_ref()
+            .filter(|_| current.is_some())
+            .and_then(|path| {
+                self.filtered_tracks
+                    .iter()
+                    .position(|&index| &self.tracks[index].path == path)
+            });
+        let current = list_cursor_index(current, self.filtered_tracks.len());
         let Some((index, anchor)) =
             list_selection_target(current, anchor, self.filtered_tracks.len(), down, extend)
         else {
@@ -4170,13 +4197,11 @@ impl AppView {
 
     fn move_queue_selection(&mut self, down: bool, extend: bool) {
         let current = self.queue_selection_order.last().copied();
-        let Some((index, anchor)) = list_selection_target(
-            current,
-            self.queue_anchor,
-            self.config.playlist.len(),
-            down,
-            extend,
-        ) else {
+        let anchor = self.queue_anchor.filter(|_| current.is_some());
+        let current = list_cursor_index(current, self.config.playlist.len());
+        let Some((index, anchor)) =
+            list_selection_target(current, anchor, self.config.playlist.len(), down, extend)
+        else {
             return;
         };
         select_range(
@@ -4218,7 +4243,16 @@ impl AppView {
         self.details_selection = DetailsSelection::Playlist;
     }
 
-    fn queue_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn queue_rows(
+        &mut self,
+        range: Range<usize>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let cursor = list_cursor_index(
+            self.queue_selection_order.last().copied(),
+            self.config.playlist.len(),
+        );
         range
             .map(|index| {
                 let path = &self.config.playlist[index];
@@ -4248,6 +4282,7 @@ impl AppView {
                 let artist = metadata.artist.as_deref().unwrap_or_default().to_owned();
                 let playing = self.playing == Some(index);
                 let selected = self.selected_queue.contains(&index);
+                let focused = self.queue_focus.is_focused(window) && cursor == Some(index);
                 let view = cx.weak_entity();
                 let menu_path = path.clone();
                 div()
@@ -4263,7 +4298,8 @@ impl AppView {
                     .border_color(rgb(if playing { ACCENT_COLOR } else { 0x17212b }))
                     .when(playing, |row| row.bg(rgb(0x223e40)))
                     .when(selected, |row| row.bg(rgb(0x304755)))
-                    .hover(|style| style.bg(rgb(0x293a47)))
+                    .when(focused, |row| row.bg(rgb(0x456672)))
+                    .when(!focused, |row| row.hover(|style| style.bg(rgb(0x293a47))))
                     .on_click(cx.listener(move |view, event: &ClickEvent, _, cx| {
                         if event.click_count() == 2 {
                             view.play(index, cx);
@@ -4685,6 +4721,17 @@ fn is_select_all(keystroke: &Keystroke) -> bool {
         && !modifiers.function
 }
 
+fn is_search_shortcut(keystroke: &Keystroke, page: Page) -> bool {
+    let modifiers = keystroke.modifiers;
+    page == Page::Library
+        && keystroke.key == "f"
+        && modifiers.control
+        && !modifiers.platform
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.function
+}
+
 fn is_play_shortcut(keystroke: &Keystroke, page: Page, has_tracks: bool) -> bool {
     let modifiers = keystroke.modifiers;
     has_tracks
@@ -4737,6 +4784,12 @@ fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
         ("delete", DetailsSelection::Playlist) if !modifiers.shift => Some(ListKey::Delete),
         _ => None,
     }
+}
+
+fn list_cursor_index(current: Option<usize>, len: usize) -> Option<usize> {
+    current
+        .filter(|&index| index < len)
+        .or((len > 0).then_some(0))
 }
 
 fn list_selection_step(current: Option<usize>, len: usize, down: bool) -> Option<usize> {
@@ -4847,14 +4900,28 @@ mod tests {
         ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, Page, ScanOrigin, adjacent_track,
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
-        initial_window_bounds, is_play_shortcut, is_select_all, is_stop_shortcut,
-        keep_preview_sources, list_key, list_selection_step, list_selection_target, music_format,
-        notification_copy_text, piano_transition_ready, playback_state_label,
-        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
-        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, unsupported_chips, update_selection_order,
-        update_window_settings,
+        initial_window_bounds, is_play_shortcut, is_search_shortcut, is_select_all,
+        is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
+        list_selection_target, music_format, notification_copy_text, piano_transition_ready,
+        playback_state_label, remove_playlist_entries, renumber_connected_devices,
+        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
+        select_for_context, select_item, select_range, selection_status, unsupported_chips,
+        update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn search_shortcut_is_limited_to_library_and_control_f() {
+        let control_f = Keystroke::parse("ctrl-f").unwrap();
+        assert!(is_search_shortcut(&control_f, Page::Library));
+        assert!(!is_search_shortcut(&control_f, Page::Piano));
+        assert!(!is_search_shortcut(&control_f, Page::Devices));
+        for key in ["f", "ctrl-shift-f", "ctrl-alt-f", "cmd-f", "ctrl-g"] {
+            assert!(!is_search_shortcut(
+                &Keystroke::parse(key).unwrap(),
+                Page::Library
+            ));
+        }
+    }
 
     #[test]
     fn play_shortcut_is_limited_to_library_and_piano() {
@@ -5233,6 +5300,14 @@ mod tests {
 
     #[test]
     fn list_selection_navigation_handles_empty_and_boundaries() {
+        assert_eq!(list_cursor_index(None, 0), None);
+        assert_eq!(list_cursor_index(None, 3), Some(0));
+        assert_eq!(list_cursor_index(Some(2), 3), Some(2));
+        assert_eq!(list_cursor_index(Some(3), 3), Some(0));
+        assert_eq!(
+            list_selection_target(list_cursor_index(None, 3), None, 3, true, true),
+            Some((1, 0))
+        );
         assert_eq!(list_selection_step(None, 0, true), None);
         assert_eq!(list_selection_step(None, 3, true), Some(0));
         assert_eq!(list_selection_step(None, 3, false), Some(2));
@@ -5975,6 +6050,11 @@ impl Render for AppView {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if is_search_shortcut(&event.keystroke, view.page) {
+                    view.query.update(cx, |input, cx| input.focus(window, cx));
+                    cx.stop_propagation();
+                    return;
+                }
                 if is_stop_shortcut(&event.keystroke, view.page, view.playing.is_some()) {
                     view.stop_playback(cx);
                     cx.stop_propagation();
@@ -6360,9 +6440,6 @@ impl Render for AppView {
                                                 div()
                                                     .id("music-list-container")
                                                     .track_focus(&self.track_focus)
-                                                    .border_1()
-                                                    .border_color(rgb(0x303b45))
-                                                    .focus(|style| style.border_color(rgb(ACCENT_COLOR)))
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         cx.listener(|view, _, window, cx| {
@@ -6394,8 +6471,8 @@ impl Render for AppView {
                                                         uniform_list(
                                                             "track-list",
                                                             self.filtered_tracks.len(),
-                                                            cx.processor(|view, range, _, cx| {
-                                                                view.library_rows(range, cx)
+                                                            cx.processor(|view, range, window, cx| {
+                                                                view.library_rows(range, window, cx)
                                                             }),
                                                         )
                                                         .track_scroll(&self.library_scroll)
@@ -6433,9 +6510,6 @@ impl Render for AppView {
                                                     div()
                                                         .id("playlist-list-container")
                                                         .track_focus(&self.queue_focus)
-                                                        .border_1()
-                                                        .border_color(rgb(0x303b45))
-                                                        .focus(|style| style.border_color(rgb(ACCENT_COLOR)))
                                                         .on_mouse_down(
                                                             MouseButton::Left,
                                                             cx.listener(|view, _, window, cx| {
@@ -6468,8 +6542,8 @@ impl Render for AppView {
                                                                 "queue-list",
                                                                 self.config.playlist.len(),
                                                                 cx.processor(
-                                                                    |view, range, _, cx| {
-                                                                        view.queue_rows(range, cx)
+                                                                    |view, range, window, cx| {
+                                                                        view.queue_rows(range, window, cx)
                                                                     },
                                                                 ),
                                                             )

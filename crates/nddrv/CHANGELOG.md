@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Focus the Music search box with Ctrl+F on the Library page.
 - Allow Tab focus and Shift+Arrow range selection in the Music and Playlist lists.
 - Use source filenames and readable timestamps for recordings, and warn about
   recoverable input interruptions.
