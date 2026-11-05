@@ -1034,6 +1034,7 @@ impl AppView {
                         .page(
                             SettingPage::new("Recording")
                                 .icon(assets::IconName::Mic)
+                                .description("For NanoDrive recordings, playing tracks directly from its SD card instead of using NDDRV's recording feature may improve audio quality, especially for PCM.")
                                 .group(SettingGroup::new().items([
                                     SettingItem::new(
                                         "Enable recording (experimental)",
@@ -2487,8 +2488,19 @@ impl AppView {
                     let notification = if saved.xruns == 0 {
                         Notification::success(path.to_string()).title("Recording saved")
                     } else {
-                        Notification::warning(format!("{path}\nAudio may contain gaps or timing shifts ({} input interruptions).", saved.xruns))
-                            .title("Recording saved with interruptions")
+                        let title = "Recording saved with interruptions";
+                        let message = format!(
+                            "{path}\nAudio may contain gaps or timing shifts ({} input interruptions).",
+                            saved.xruns
+                        );
+                        let copy_text: SharedString =
+                            notification_copy_text(title, &message, None).into();
+                        Notification::warning(message)
+                            .title(title)
+                            .autohide(false)
+                            .content(move |_, _, _| {
+                                notification_copy_row(copy_text.clone()).into_any_element()
+                            })
                     };
                     window.push_notification(notification, cx);
                 }
