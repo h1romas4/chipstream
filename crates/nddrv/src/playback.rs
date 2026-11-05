@@ -25,7 +25,9 @@ use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::fm_mute::FmMute;
-use crate::library::{PlaybackSettings, extension, read_bounded, read_track};
+use crate::library::{
+    MetadataLanguage, PlaybackSettings, RecordingSettings, extension, read_bounded, read_track,
+};
 use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
@@ -39,6 +41,8 @@ const YM2608_RHYTHM_ROM: &str = "ym2608_adpcm_rom.bin";
 pub enum Event {
     Finished(u64),
     Error(u64, String),
+    RecordingSaved(PathBuf),
+    RecordingError(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +58,7 @@ pub struct Playback {
     settings: PlaybackSettings,
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
+    recording: Option<(RecordingSettings, String, MetadataLanguage)>,
     volume: Arc<NdsifOutputGain>,
     gains: Arc<GainState>,
     generation: u64,
@@ -68,6 +73,43 @@ trait PlaybackBackend: Send + Sync {
 }
 
 struct EmulationBackend;
+
+fn record_and_play<C>(
+    recording: Option<(RecordingSettings, String)>,
+    control: &PlaybackControl,
+    sender: &mpsc::Sender<Event>,
+    start: impl FnOnce(&RecordingSettings, &str) -> Result<C>,
+    play: impl FnOnce() -> Result<()>,
+    finish: impl FnOnce(C) -> Result<Option<PathBuf>>,
+) -> Result<()> {
+    if control.cancel.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let capture = recording
+        .map(|(settings, title)| start(&settings, &title))
+        .transpose()
+        .context("could not start recording")?;
+    let playback = if control.cancel.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        play()
+    };
+    match capture.map(finish).transpose() {
+        Ok(Some(Some(path))) => {
+            let _ = sender.send(Event::RecordingSaved(path));
+            playback
+        }
+        Ok(Some(None)) if !control.cancel.load(Ordering::Acquire) && playback.is_ok() => {
+            bail!("audio input produced no recording samples")
+        }
+        Ok(_) => playback,
+        Err(error) if control.cancel.load(Ordering::Acquire) => {
+            let _ = sender.send(Event::RecordingError(format!("{error:#}")));
+            playback
+        }
+        Err(error) => Err(error.context("could not save recording")),
+    }
+}
 
 impl PlaybackBackend for EmulationBackend {
     fn play(&self, path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
@@ -100,6 +142,7 @@ struct PlaybackControl {
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
     cancel: AtomicBool,
+    recording_failed: Arc<AtomicBool>,
     paused: AtomicBool,
     frames: AtomicU64,
     sample_rate: AtomicU32,
@@ -128,6 +171,7 @@ impl PlaybackControl {
             audio_output_device: None,
             audio_sample_rate: None,
             cancel: AtomicBool::new(false),
+            recording_failed: Arc::new(AtomicBool::new(false)),
             paused: AtomicBool::new(false),
             frames: AtomicU64::new(0),
             sample_rate: AtomicU32::new(0),
@@ -235,6 +279,7 @@ impl Playback {
             settings: PlaybackSettings::default(),
             audio_output_device: None,
             audio_sample_rate: None,
+            recording: None,
             volume,
             gains,
             generation: 0,
@@ -259,6 +304,13 @@ impl Playback {
 
     pub fn set_audio_sample_rate(&mut self, sample_rate: Option<u32>) {
         self.audio_sample_rate = sample_rate;
+    }
+
+    pub fn set_recording(
+        &mut self,
+        recording: Option<(RecordingSettings, String, MetadataLanguage)>,
+    ) {
+        self.recording = recording;
     }
 
     pub fn play_hardware(
@@ -301,15 +353,37 @@ impl Playback {
         let backend = self.backend.clone();
         let worker_gate = self.worker_gate.clone();
         let generation = self.generation;
+        let recording = self.recording.clone();
         thread::spawn(move || {
             let result = match worker_gate.lock() {
                 Ok(_guard) if control.cancel.load(Ordering::Acquire) => Ok(()),
-                Ok(_guard) => match hardware {
-                    Some((devices, plan)) => {
-                        run_hardware(&path, control.clone(), looped, devices, plan)
-                    }
-                    None => backend.play(&path, control.clone(), looped),
-                },
+                Ok(_guard) => {
+                    let recording = recording.map(|(settings, title, language)| {
+                        let title = crate::library::read_track_info(&path)
+                            .map(|track| track.display_title_for(language))
+                            .unwrap_or(title);
+                        (settings, title)
+                    });
+                    record_and_play(
+                        recording,
+                        &control,
+                        &sender,
+                        |settings, title| {
+                            crate::recording::Capture::start(
+                                settings,
+                                title,
+                                control.recording_failed.clone(),
+                            )
+                        },
+                        || match hardware {
+                            Some((devices, plan)) => {
+                                run_hardware(&path, control.clone(), looped, devices, plan)
+                            }
+                            None => backend.play(&path, control.clone(), looped),
+                        },
+                        crate::recording::Capture::finish,
+                    )
+                }
                 Err(_) => Err(anyhow::anyhow!("previous playback worker failed")),
             };
             if !control.cancel.load(Ordering::Relaxed) {
@@ -328,6 +402,11 @@ impl Playback {
             timeline.cancel();
         }
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    pub fn stop_and_wait(&mut self) {
+        self.stop();
+        let _guard = self.worker_gate.lock();
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -1920,6 +1999,9 @@ fn run_inner(
         }
     };
     'playback: while !control.cancel.load(Ordering::Relaxed) {
+        if control.recording_failed.load(Ordering::Acquire) {
+            bail!("audio input failed");
+        }
         if let Some((_, workers)) = &hardware
             && let Err(error) = workers.check()
         {
@@ -1969,6 +2051,9 @@ fn run_inner(
                         if control.cancel.load(Ordering::Relaxed) {
                             return Ok(());
                         }
+                        if control.recording_failed.load(Ordering::Acquire) {
+                            bail!("audio input failed");
+                        }
                         if let Ok(result) = event_rx.try_recv() {
                             wait_for_audio_with_hardware(
                                 result?,
@@ -2015,6 +2100,9 @@ fn wait_for_audio_with_hardware(
     while (Instant::now() < deadline || control.paused.load(Ordering::Relaxed))
         && !control.cancel.load(Ordering::Relaxed)
     {
+        if control.recording_failed.load(Ordering::Acquire) {
+            bail!("audio input failed");
+        }
         if let Some(workers) = workers {
             workers.check()?;
         }
@@ -2026,6 +2114,148 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_starts_before_each_track_and_finalizes_after_playback() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let (sender, events) = mpsc::channel();
+        let sequence = RefCell::new(Vec::new());
+        for title in ["first", "second"] {
+            record_and_play(
+                Some((RecordingSettings::default(), title.into())),
+                &control,
+                &sender,
+                |_, title| {
+                    sequence.borrow_mut().push(format!("start {title}"));
+                    Ok(title.to_owned())
+                },
+                || {
+                    sequence.borrow_mut().push(format!("play {title}"));
+                    Ok(())
+                },
+                |title| {
+                    sequence.borrow_mut().push(format!("finish {title}"));
+                    Ok(Some(PathBuf::from(format!("{title}.wav"))))
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            *sequence.borrow(),
+            [
+                "start first",
+                "play first",
+                "finish first",
+                "start second",
+                "play second",
+                "finish second"
+            ]
+        );
+        assert!(
+            matches!(events.try_recv(), Ok(Event::RecordingSaved(path)) if path == Path::new("first.wav"))
+        );
+        assert!(
+            matches!(events.try_recv(), Ok(Event::RecordingSaved(path)) if path == Path::new("second.wav"))
+        );
+    }
+
+    #[test]
+    fn recording_failure_prevents_playback_and_cancelled_save_errors_are_reported() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let (sender, events) = mpsc::channel();
+        let played = Cell::new(false);
+        let result = record_and_play(
+            Some((RecordingSettings::default(), "track".into())),
+            &control,
+            &sender,
+            |_, _| -> Result<()> { bail!("input unavailable") },
+            || {
+                played.set(true);
+                Ok(())
+            },
+            |_| Ok(None),
+        );
+        assert!(result.is_err());
+        assert!(!played.get());
+        record_and_play(
+            Some((RecordingSettings::default(), "track".into())),
+            &control,
+            &sender,
+            |_, _| Ok(()),
+            || {
+                control.cancel.store(true, Ordering::Release);
+                Ok(())
+            },
+            |_| bail!("disk full"),
+        )
+        .unwrap();
+        assert!(
+            matches!(events.try_recv(), Ok(Event::RecordingError(error)) if error.contains("disk full"))
+        );
+    }
+
+    #[test]
+    fn recording_save_failure_fails_active_playback() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let (sender, _) = mpsc::channel();
+        let result = record_and_play(
+            Some((RecordingSettings::default(), "track".into())),
+            &control,
+            &sender,
+            |_, _| Ok(()),
+            || Ok(()),
+            |_| bail!("disk full"),
+        );
+        assert!(format!("{:#}", result.unwrap_err()).contains("disk full"));
+    }
+
+    #[test]
+    fn recording_without_input_samples_fails_playback() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let (sender, _) = mpsc::channel();
+        let result = record_and_play(
+            Some((RecordingSettings::default(), "track".into())),
+            &control,
+            &sender,
+            |_, _| Ok(()),
+            || Ok(()),
+            |_| Ok(None),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no recording samples")
+        );
+    }
+
+    #[test]
+    fn cancelled_playback_does_not_open_an_input_device() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        control.cancel.store(true, Ordering::Release);
+        let (sender, _) = mpsc::channel();
+        let started = Cell::new(false);
+        record_and_play(
+            Some((RecordingSettings::default(), "track".into())),
+            &control,
+            &sender,
+            |_, _| {
+                started.set(true);
+                Ok(())
+            },
+            || Ok(()),
+            |_| Ok(None),
+        )
+        .unwrap();
+        assert!(!started.get());
+    }
+
+    #[test]
+    fn input_failure_interrupts_audio_presentation_wait() {
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        control.recording_failed.store(true, Ordering::Release);
+        assert!(wait_for_audio(Instant::now() + Duration::from_secs(60), &control).is_err());
+    }
 
     #[test]
     fn fm_mute_filters_live_vgm_hardware_writes_per_instance() {

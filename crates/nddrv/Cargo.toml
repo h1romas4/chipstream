@@ -11,6 +11,9 @@ product-name = "NDDRV"
 identifier = "io.github.h1romas4.nddrv"
 icons = ["assets/icon/nddrv-icon.icns"]
 
+[package.metadata.packager.macos]
+info_plist_path = "assets/recording-info.plist"
+
 [build-dependencies]
 winresource = { version = "0.1.34", default-features = false }
 
@@ -21,6 +24,7 @@ cpal = "0.18.2"
 directories = "6"
 flate2 = "1"
 gpui-kit = "0.9.0"
+hound = "3.5"
 image = { version = "0.25", default-features = false }
 ndsif = { path = "../ndsif" }
 ndsif-transport = { path = "../ndsif-transport" }

@@ -419,6 +419,15 @@ impl Default for PlaybackSettings {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingSettings {
+    pub enabled: bool,
+    pub input_device: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub output_directory: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowSettings {
     pub width: f32,
@@ -452,6 +461,8 @@ pub struct Config {
     #[serde(default)]
     pub playback: PlaybackSettings,
     #[serde(default)]
+    pub recording: RecordingSettings,
+    #[serde(default)]
     pub audio_output_device: Option<String>,
     #[serde(default)]
     pub audio_sample_rate: Option<u32>,
@@ -470,6 +481,7 @@ impl Default for Config {
             playlist_width: None,
             routing: crate::routing::RoutingConfig::default(),
             playback: PlaybackSettings::default(),
+            recording: RecordingSettings::default(),
             audio_output_device: None,
             audio_sample_rate: None,
             general: GeneralSettings::default(),
@@ -896,6 +908,7 @@ mod tests {
         assert_eq!(config.library_width, 312.);
         assert_eq!(config.playlist_width, None);
         assert_eq!(config.playback, PlaybackSettings::default());
+        assert_eq!(config.recording, RecordingSettings::default());
         assert_eq!(config.audio_output_device, None);
         assert_eq!(config.audio_sample_rate, None);
         assert_eq!(config.general, GeneralSettings::default());
@@ -1001,6 +1014,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_config(&path).unwrap().playback.start_delay_seconds, 0);
+    }
+
+    #[test]
+    fn recording_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let config = Config {
+            recording: RecordingSettings {
+                enabled: true,
+                input_device: Some("input-device".into()),
+                sample_rate: Some(48_000),
+                output_directory: Some(dir.path().to_path_buf()),
+            },
+            ..Config::default()
+        };
+        save_config(&path, &config).unwrap();
+        assert_eq!(load_config(&path).unwrap().recording, config.recording);
     }
 
     #[test]
@@ -1600,6 +1630,7 @@ mod tests {
                 fadeout_seconds: 5,
                 start_delay_seconds: 4,
             },
+            recording: RecordingSettings::default(),
             audio_output_device: Some("alsa:device-test".into()),
             audio_sample_rate: Some(44_100),
             general: GeneralSettings {

@@ -5,6 +5,7 @@ mod hardware;
 mod library;
 mod patchbay;
 mod playback;
+mod recording;
 mod routing;
 mod update;
 mod visualizer;
@@ -588,6 +589,7 @@ struct AppView {
     gain_sources: Option<Vec<GainSource>>,
     gain_sources_failed: bool,
     player: Playback,
+    recording_session: Option<library::RecordingSettings>,
     idle_target: Option<IdlePreviewTarget>,
     idle_preview: Option<IdlePreview>,
     idle_preview_error: Option<String>,
@@ -696,8 +698,135 @@ impl AppView {
                 format!("Unavailable ({rate} Hz)").into(),
             ));
         }
+        let input_devices = recording::input_devices().unwrap_or_default();
+        let mut input_name_counts = HashMap::new();
+        for (_, name) in &input_devices {
+            *input_name_counts.entry(name.clone()).or_insert(0usize) += 1;
+        }
+        let mut input_options: Vec<(SharedString, SharedString)> =
+            vec![(SYSTEM_DEFAULT_AUDIO_DEVICE.into(), "System default".into())];
+        for (id, name) in input_devices {
+            let label = if input_name_counts.get(&name).copied().unwrap_or(0) > 1 {
+                format!("{name} ({id})")
+            } else {
+                name
+            };
+            input_options.push((id.into(), label.into()));
+        }
+        if let Some(selected) = &self.config.recording.input_device
+            && !input_options
+                .iter()
+                .any(|(value, _)| value.as_ref() == selected)
+        {
+            input_options.push((
+                selected.clone().into(),
+                format!("Unavailable ({selected})").into(),
+            ));
+        }
+        let mut input_rate_options: Vec<(SharedString, SharedString)> =
+            vec![(DEVICE_DEFAULT_SAMPLE_RATE.into(), "Device default".into())];
+        for rate in [
+            22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+        ] {
+            input_rate_options.push((rate.to_string().into(), format!("{rate} Hz").into()));
+        }
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, _| {
+            let recording_get = view.clone();
+            let recording_set = view.clone();
+            let recording_field = SettingField::checkbox(
+                move |cx| {
+                    recording_get
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).config.recording.enabled)
+                },
+                move |enabled, cx| {
+                    let _ = recording_set.update(cx, |view, cx| {
+                        view.config.recording.enabled = enabled;
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(false);
+            let input_get = view.clone();
+            let input_set = view.clone();
+            let input_field = SettingField::dropdown(
+                input_options.clone(),
+                move |cx| {
+                    input_get
+                        .upgrade()
+                        .and_then(|view| view.read(cx).config.recording.input_device.clone())
+                        .unwrap_or_else(|| SYSTEM_DEFAULT_AUDIO_DEVICE.into())
+                        .into()
+                },
+                move |value, cx| {
+                    let _ = input_set.update(cx, |view, cx| {
+                        let device = (value.as_ref() != SYSTEM_DEFAULT_AUDIO_DEVICE)
+                            .then(|| value.to_string());
+                        if view.config.recording.input_device != device {
+                            view.config.recording.sample_rate = None;
+                        }
+                        view.config.recording.input_device = device;
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE);
+            let input_rate_get = view.clone();
+            let input_rate_set = view.clone();
+            let input_rate_field = SettingField::dropdown(
+                input_rate_options.clone(),
+                move |cx| {
+                    input_rate_get
+                        .upgrade()
+                        .and_then(|view| view.read(cx).config.recording.sample_rate)
+                        .map_or_else(
+                            || DEVICE_DEFAULT_SAMPLE_RATE.into(),
+                            |rate| rate.to_string().into(),
+                        )
+                },
+                move |value, cx| {
+                    let _ = input_rate_set.update(cx, |view, cx| {
+                        view.config.recording.sample_rate =
+                            if value.as_ref() == DEVICE_DEFAULT_SAMPLE_RATE {
+                                None
+                            } else {
+                                value.parse().ok()
+                            };
+                        view.save();
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(DEVICE_DEFAULT_SAMPLE_RATE);
+            let folder_view = view.clone();
+            let folder_field = SettingField::render(move |_, _, cx| {
+                let path = folder_view
+                    .upgrade()
+                    .and_then(|view| view.read(cx).config.recording.output_directory.clone());
+                let choose_view = folder_view.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(
+                        path.map_or_else(
+                            || "Not selected".to_owned(),
+                            |path| path.display().to_string(),
+                        ),
+                    ))
+                    .child(
+                        Button::new("recording-folder")
+                            .label("Choose folder")
+                            .on_click(move |_, _, cx| {
+                                let _ = choose_view
+                                    .update(cx, |view, cx| view.choose_recording_folder(cx));
+                            }),
+                    )
+            });
             let language_get = view.clone();
             let language_set = view.clone();
             let language_field = SettingField::dropdown(
@@ -901,6 +1030,19 @@ impl AppView {
                                     SettingItem::new("Emulation audio device", output_field),
                                     SettingItem::new("Emulation sample rate", sample_rate_field),
                                 ])),
+                        )
+                        .page(
+                            SettingPage::new("Recording")
+                                .icon(assets::IconName::Mic)
+                                .group(SettingGroup::new().items([
+                                    SettingItem::new(
+                                        "Enable recording (experimental)",
+                                        recording_field,
+                                    ),
+                                    SettingItem::new("Input audio device", input_field),
+                                    SettingItem::new("Input sample rate", input_rate_field),
+                                    SettingItem::new("WAV output folder", folder_field),
+                                ])),
                         ),
                 ),
             )
@@ -1050,6 +1192,7 @@ impl AppView {
             gain_sources: None,
             gain_sources_failed: false,
             player: Playback::new(),
+            recording_session: None,
             idle_target: None,
             idle_preview: None,
             idle_preview_error: None,
@@ -1326,6 +1469,7 @@ impl AppView {
         self.playing = playing;
         if stopped {
             self.player.stop();
+            self.recording_session = None;
             self.paused = false;
             self.elapsed = 0;
         }
@@ -1500,8 +1644,25 @@ impl AppView {
         .detach();
     }
 
+    fn choose_recording_folder(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let selection = cx
+                .background_spawn(async { rfd::FileDialog::new().pick_folder() })
+                .await;
+            if let Some(path) = selection {
+                let _ = this.update(cx, |view, cx| {
+                    view.config.recording.output_directory = Some(path);
+                    view.save();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn stop_playback(&mut self, cx: &mut Context<Self>) {
         self.player.stop();
+        self.recording_session = None;
         self.playing = None;
         self.paused = false;
         self.elapsed = 0;
@@ -1567,6 +1728,14 @@ impl AppView {
                     })
                 })
                 .unwrap_or_else(|| Track::format_display_title(&path, &Default::default()));
+            self.player
+                .set_recording(self.recording_session.clone().map(|settings| {
+                    (
+                        settings,
+                        self.playing_title.clone(),
+                        self.config.general.vgm_metadata_language,
+                    )
+                }));
             if let Some(plan) = plan {
                 self.player.play_hardware(
                     path.clone(),
@@ -2303,6 +2472,7 @@ impl AppView {
                         self.play(next, cx);
                     } else {
                         self.playing = None;
+                        self.recording_session = None;
                         self.paused = false;
                         self.elapsed = 0;
                         self.status = "Playback finished".into();
@@ -2311,12 +2481,23 @@ impl AppView {
                 }
                 Event::Error(generation, error) if self.player.is_current(generation) => {
                     self.playing = None;
+                    self.recording_session = None;
                     self.paused = false;
                     self.elapsed = 0;
                     self.status = "Stopped".into();
                     self.pending_errors
                         .push(error_notification("Playback error", error));
                     cx.notify();
+                }
+                Event::RecordingSaved(path) => {
+                    window.push_notification(
+                        Notification::success(path.display().to_string()).title("Recording saved"),
+                        cx,
+                    );
+                }
+                Event::RecordingError(error) => {
+                    self.pending_errors
+                        .push(error_notification("Recording error", error));
                 }
                 _ => {}
             }
@@ -2704,6 +2885,38 @@ impl AppView {
                             view.play(0, cx);
                         }
                     })),
+            )
+            .when(
+                self.config.recording.enabled || self.recording_session.is_some(),
+                |panel| {
+                    panel.child(
+                        Button::new("transport-record")
+                            .icon(assets::IconName::Mic)
+                            .tooltip(if self.recording_session.is_some() {
+                                "Recording"
+                            } else {
+                                "Record and play"
+                            })
+                            .accessibility_label("Record and play")
+                            .toggled(self.recording_session.is_some())
+                            .disabled(
+                                self.config.playlist.is_empty() || self.recording_session.is_some(),
+                            )
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if view.device_status.values().any(|status| {
+                                    matches!(
+                                        status,
+                                        DeviceStatus::Connecting | DeviceStatus::Disconnecting
+                                    )
+                                }) {
+                                    view.play(view.playing.unwrap_or(0), cx);
+                                    return;
+                                }
+                                view.recording_session = Some(view.config.recording.clone());
+                                view.play(view.playing.unwrap_or(0), cx);
+                            })),
+                    )
+                },
             )
             .child(
                 Button::new("transport-next")
@@ -6249,6 +6462,8 @@ fn main() {
                 let view = cx.weak_entity();
                 window.on_window_should_close(cx, move |window, cx| {
                     let _ = view.update(cx, |view, _| {
+                        view.player.stop_and_wait();
+                        view.recording_session = None;
                         view.capture_window_settings(window);
                         view.save_window_settings();
                     });
@@ -6256,6 +6471,7 @@ fn main() {
                 });
                 let handle = window.window_handle();
                 cx.on_app_quit(move |view, cx| {
+                    view.player.stop_and_wait();
                     if let Ok(Some(bounds)) = handle.update(cx, |_, window, _| {
                         window.is_visible().then(|| window.window_bounds())
                     }) {
@@ -6265,8 +6481,11 @@ fn main() {
                     async {}
                 })
                 .detach();
-                cx.on_release(|view, _| view.save_window_settings())
-                    .detach();
+                cx.on_release(|view, _| {
+                    view.player.stop_and_wait();
+                    view.save_window_settings();
+                })
+                .detach();
                 app.check_for_updates(cx);
                 if !app.config.directories.is_empty() {
                     app.scan(ScanOrigin::Background, cx);

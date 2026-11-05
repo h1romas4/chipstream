@@ -79,6 +79,17 @@ chips use this output; hardware audio is separate.
 
 Track Info shows available metadata. Artwork is loaded from the track's folder.
 
+### Recording
+
+Recording is experimental. Enable it in Recording settings, choose an input
+device, input sample rate and WAV output folder, then use the record button in
+the playback controls. The selected input must receive the audio to be recorded;
+NanoDrive and software output may need external mixing or system loopback.
+Recording starts before playback and saves a 16-bit WAV for each playlist track.
+The start delay is included. Stopping or changing tracks saves the current file.
+Pausing playback does not pause the input recording. A notification reports each
+saved file; recording errors stop playback and are reported separately.
+
 ### Piano Roll
 
 Choose the piano icon to open the full-window Piano Roll. **Incoming** shows
