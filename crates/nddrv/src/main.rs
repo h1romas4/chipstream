@@ -3558,7 +3558,7 @@ impl AppView {
                         .disabled(!editable)
                         .on_click(cx.listener(|view, _, window, cx| view.add_empty_device(window, cx)))))
                 }))
-            .child(div().text_sm().text_color(rgb(0xa6b6c3)).child(
+            .child(div().mb_1().text_sm().text_color(rgb(0xa6b6c3)).child(
                 "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."))
             .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
                 .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))

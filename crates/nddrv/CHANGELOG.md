@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Increase the spacing above the Routing connection boxes.
 - Adjust the update notification button's default and hover colors.
 
 ## v0.8.0
