@@ -4913,6 +4913,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "chipstream",
+ "chrono",
  "cpal",
  "directories",
  "flate2",

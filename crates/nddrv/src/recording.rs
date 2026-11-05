@@ -1,10 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -64,39 +63,32 @@ fn input_config(
         .with_context(|| format!("audio input device does not support {rate} Hz"))
 }
 
-fn filename_title(title: &str) -> String {
-    let title: String = title
-        .chars()
-        .map(|character| {
-            if character.is_control()
-                || matches!(
-                    character,
-                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-                )
-            {
-                '_'
-            } else {
-                character
-            }
-        })
-        .scan(0usize, |length, character| {
-            *length += character.len_utf8();
-            (*length <= 120).then_some(character)
-        })
-        .collect();
-    let title = title.trim_matches(|character: char| character == '.' || character.is_whitespace());
-    if title.is_empty() {
-        "Recording".into()
-    } else {
-        title.into()
-    }
+fn create_file(directory: &Path, source: &Path) -> Result<(PathBuf, File)> {
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    create_file_at(directory, source, &timestamp)
 }
 
-fn create_file(directory: &Path, title: &str) -> Result<(PathBuf, File)> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-    let title = filename_title(title);
+fn create_file_at(directory: &Path, source: &Path, timestamp: &str) -> Result<(PathBuf, File)> {
+    let stem = source.file_stem().context("track has no filename")?;
     for sequence in 0..10_000 {
-        let path = directory.join(format!("{title}-{timestamp}-{sequence}.wav"));
+        let mut filename = stem.to_os_string();
+        if filename.as_encoded_bytes().len() > 230 {
+            filename = stem
+                .to_string_lossy()
+                .chars()
+                .scan(0usize, |length, character| {
+                    *length += character.len_utf8();
+                    (*length <= 230).then_some(character)
+                })
+                .collect::<String>()
+                .into();
+        }
+        filename.push(format!("-{timestamp}"));
+        if sequence > 0 {
+            filename.push(format!("-{sequence}"));
+        }
+        filename.push(".wav");
+        let path = directory.join(filename);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -133,12 +125,29 @@ fn write_samples(mut writer: Writer, receiver: mpsc::Receiver<Vec<i16>>) -> Resu
     Ok(count)
 }
 
+fn handle_input_error(
+    stream_error: cpal::Error,
+    failed: &AtomicBool,
+    error: &Mutex<Option<String>>,
+    xruns: &AtomicU64,
+) {
+    if stream_error.kind() == cpal::ErrorKind::Xrun {
+        xruns.fetch_add(1, Ordering::Relaxed);
+    } else {
+        if let Ok(mut error) = error.lock() {
+            *error = Some(stream_error.to_string());
+        }
+        failed.store(true, Ordering::Release);
+    }
+}
+
 fn stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     sender: mpsc::SyncSender<Vec<i16>>,
     failed: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    xruns: Arc<AtomicU64>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample,
@@ -156,12 +165,7 @@ where
                 failed.store(true, Ordering::Release);
             }
         },
-        move |stream_error| {
-            if let Ok(mut error) = error.lock() {
-                *error = Some(stream_error.to_string());
-            }
-            input_failed.store(true, Ordering::Release);
-        },
+        move |stream_error| handle_input_error(stream_error, &input_failed, &error, &xruns),
         None,
     )?)
 }
@@ -171,13 +175,19 @@ pub struct Capture {
     writer: JoinHandle<Result<u64>>,
     failed: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    xruns: Arc<AtomicU64>,
     path: PathBuf,
+}
+
+pub struct SavedRecording {
+    pub path: PathBuf,
+    pub xruns: u64,
 }
 
 impl Capture {
     pub fn start(
         settings: &RecordingSettings,
-        title: &str,
+        source: &Path,
         failed: Arc<AtomicBool>,
     ) -> Result<Self> {
         let directory = settings
@@ -189,9 +199,17 @@ impl Capture {
         let config = supported.config();
         let (sender, receiver) = mpsc::sync_channel(256);
         let error = Arc::new(Mutex::new(None));
+        let xruns = Arc::new(AtomicU64::new(0));
         macro_rules! build {
             ($sample:ty) => {
-                stream::<$sample>(&device, &config, sender, failed.clone(), error.clone())?
+                stream::<$sample>(
+                    &device,
+                    &config,
+                    sender,
+                    failed.clone(),
+                    error.clone(),
+                    xruns.clone(),
+                )?
             };
         }
         let stream = match supported.sample_format() {
@@ -209,7 +227,7 @@ impl Capture {
             SampleFormat::F64 => build!(f64),
             format => bail!("unsupported audio input format: {format:?}"),
         };
-        let (path, file) = create_file(directory, title)?;
+        let (path, file) = create_file(directory, source)?;
         let spec = hound::WavSpec {
             channels: config.channels,
             sample_rate: config.sample_rate,
@@ -229,6 +247,7 @@ impl Capture {
             writer,
             failed,
             error,
+            xruns,
             path,
         };
         if let Err(error) = capture.stream.as_ref().unwrap().play() {
@@ -240,7 +259,7 @@ impl Capture {
         Ok(capture)
     }
 
-    pub fn finish(mut self) -> Result<Option<PathBuf>> {
+    pub fn finish(mut self) -> Result<Option<SavedRecording>> {
         drop(self.stream.take());
         let result = self
             .writer
@@ -266,7 +285,10 @@ impl Capture {
                 let _ = std::fs::remove_file(&self.path);
                 Ok(None)
             }
-            Ok(_) => Ok(Some(self.path)),
+            Ok(_) => Ok(Some(SavedRecording {
+                path: self.path,
+                xruns: self.xruns.load(Ordering::Acquire),
+            })),
             Err(error) => {
                 let _ = std::fs::remove_file(&self.path);
                 Err(error)
@@ -282,11 +304,14 @@ mod tests {
     #[test]
     fn wav_writer_preserves_samples_and_uses_unique_safe_names() {
         let directory = tempfile::tempdir().unwrap();
-        let (path, file) = create_file(directory.path(), "../bad: title?").unwrap();
-        let (other, _) = create_file(directory.path(), "../bad: title?").unwrap();
-        assert_ne!(path, other);
+        let timestamp = "20261105-123456";
+        let (path, file) =
+            create_file_at(directory.path(), Path::new("../song.vgm"), timestamp).unwrap();
+        let (other, _) =
+            create_file_at(directory.path(), Path::new("../song.vgm"), timestamp).unwrap();
+        assert_eq!(path.file_name().unwrap(), "song-20261105-123456.wav");
+        assert_eq!(other.file_name().unwrap(), "song-20261105-123456-1.wav");
         assert_eq!(path.parent(), Some(directory.path()));
-        assert!(!path.file_name().unwrap().to_string_lossy().contains(':'));
         let writer = hound::WavWriter::new(
             BufWriter::new(file),
             hound::WavSpec {
@@ -310,8 +335,46 @@ mod tests {
                 .unwrap(),
             vec![1, -2, 3, -4]
         );
-        let (long_path, _) = create_file(directory.path(), &"音".repeat(200)).unwrap();
-        assert!(long_path.file_name().unwrap().to_string_lossy().len() < 255);
+        let long_name = format!("{}.mdx", "音".repeat(80));
+        let (long_path, _) =
+            create_file_at(directory.path(), Path::new(&long_name), timestamp).unwrap();
+        let (long_collision, _) =
+            create_file_at(directory.path(), Path::new(&long_name), timestamp).unwrap();
+        assert!(
+            long_path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(timestamp)
+        );
+        assert!(long_collision.file_name().unwrap().to_string_lossy().len() < 255);
+    }
+
+    #[test]
+    fn recording_filename_includes_local_readable_timestamp() {
+        let directory = tempfile::tempdir().unwrap();
+        let (path, _) = create_file(directory.path(), Path::new("music.mdx")).unwrap();
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let timestamp = filename
+            .strip_prefix("music-")
+            .unwrap()
+            .strip_suffix(".wav")
+            .unwrap();
+        chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%d-%H%M%S").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recording_filename_preserves_non_utf8_source_name() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = Path::new(std::ffi::OsStr::from_bytes(b"track\xff.mdx"));
+        let (path, _) = create_file_at(directory.path(), source, "20261105-123456").unwrap();
+        assert_eq!(
+            path.file_name().unwrap().as_bytes(),
+            b"track\xff-20261105-123456.wav"
+        );
     }
 
     #[test]
@@ -325,7 +388,7 @@ mod tests {
     fn capture_finalizes_valid_audio_and_removes_failed_recording() {
         let directory = tempfile::tempdir().unwrap();
         for failed in [false, true] {
-            let (path, file) = create_file(directory.path(), "track").unwrap();
+            let (path, file) = create_file(directory.path(), Path::new("track.mdx")).unwrap();
             let spec = hound::WavSpec {
                 channels: 1,
                 sample_rate: 44_100,
@@ -341,6 +404,7 @@ mod tests {
                 writer: thread::spawn(move || write_samples(writer, receiver)),
                 failed: Arc::new(AtomicBool::new(failed)),
                 error: Arc::new(Mutex::new(None)),
+                xruns: Arc::new(AtomicU64::new(0)),
                 path: path.clone(),
             };
             let result = capture.finish();
@@ -348,7 +412,9 @@ mod tests {
                 assert!(result.is_err());
                 assert!(!path.exists());
             } else {
-                assert_eq!(result.unwrap(), Some(path.clone()));
+                let saved = result.unwrap().unwrap();
+                assert_eq!(saved.path, path);
+                assert_eq!(saved.xruns, 0);
                 let mut reader = hound::WavReader::open(path).unwrap();
                 assert_eq!(
                     reader
@@ -359,5 +425,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn input_xrun_is_recoverable_but_disconnect_is_fatal() {
+        let failed = AtomicBool::new(false);
+        let error = Mutex::new(None);
+        let xruns = AtomicU64::new(0);
+        handle_input_error(cpal::ErrorKind::Xrun.into(), &failed, &error, &xruns);
+        assert_eq!(xruns.load(Ordering::Relaxed), 1);
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(error.lock().unwrap().is_none());
+        handle_input_error(
+            cpal::ErrorKind::DeviceNotAvailable.into(),
+            &failed,
+            &error,
+            &xruns,
+        );
+        assert!(failed.load(Ordering::Acquire));
+        assert!(error.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn capture_saves_samples_and_reports_recovered_xruns() {
+        let directory = tempfile::tempdir().unwrap();
+        let (path, file) = create_file(directory.path(), Path::new("track.vgm")).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let writer = hound::WavWriter::new(BufWriter::new(file), spec).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(vec![12, -34]).unwrap();
+        drop(sender);
+        let failed = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
+        let xruns = Arc::new(AtomicU64::new(0));
+        handle_input_error(cpal::ErrorKind::Xrun.into(), &failed, &error, &xruns);
+        let capture = Capture {
+            stream: None,
+            writer: thread::spawn(move || write_samples(writer, receiver)),
+            failed,
+            error,
+            xruns,
+            path: path.clone(),
+        };
+        let saved = capture.finish().unwrap().unwrap();
+        assert_eq!(saved.path, path);
+        assert_eq!(saved.xruns, 1);
+        let mut reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(
+            reader
+                .samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![12, -34]
+        );
     }
 }

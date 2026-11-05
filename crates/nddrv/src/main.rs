@@ -1728,14 +1728,7 @@ impl AppView {
                     })
                 })
                 .unwrap_or_else(|| Track::format_display_title(&path, &Default::default()));
-            self.player
-                .set_recording(self.recording_session.clone().map(|settings| {
-                    (
-                        settings,
-                        self.playing_title.clone(),
-                        self.config.general.vgm_metadata_language,
-                    )
-                }));
+            self.player.set_recording(self.recording_session.clone());
             if let Some(plan) = plan {
                 self.player.play_hardware(
                     path.clone(),
@@ -2489,11 +2482,15 @@ impl AppView {
                         .push(error_notification("Playback error", error));
                     cx.notify();
                 }
-                Event::RecordingSaved(path) => {
-                    window.push_notification(
-                        Notification::success(path.display().to_string()).title("Recording saved"),
-                        cx,
-                    );
+                Event::RecordingSaved(saved) => {
+                    let path = saved.path.display();
+                    let notification = if saved.xruns == 0 {
+                        Notification::success(path.to_string()).title("Recording saved")
+                    } else {
+                        Notification::warning(format!("{path}\nAudio may contain gaps or timing shifts ({} input interruptions).", saved.xruns))
+                            .title("Recording saved with interruptions")
+                    };
+                    window.push_notification(notification, cx);
                 }
                 Event::RecordingError(error) => {
                     self.pending_errors
@@ -2892,6 +2889,7 @@ impl AppView {
                     panel.child(
                         Button::new("transport-record")
                             .icon(assets::IconName::Mic)
+                            .custom(accent)
                             .tooltip(if self.recording_session.is_some() {
                                 "Recording"
                             } else {
@@ -2902,6 +2900,9 @@ impl AppView {
                             .disabled(
                                 self.config.playlist.is_empty() || self.recording_session.is_some(),
                             )
+                            .when(self.recording_session.is_some(), |button| {
+                                button.bg(rgb(0x9c3d46)).text_color(rgb(0xffe7e7))
+                            })
                             .on_click(cx.listener(|view, _, _, cx| {
                                 if view.device_status.values().any(|status| {
                                     matches!(

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use source filenames and readable timestamps for recordings, and warn about
+  recoverable input interruptions.
 - Add experimental per-track WAV recording from an audio input device.
 - Add F5 playback and Piano Roll navigation, Shift+F5 stop, and sidebar icon tooltips.
 - Add a playback start delay and show the initial silence in Piano Roll.

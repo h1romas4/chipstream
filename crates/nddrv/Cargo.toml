@@ -20,6 +20,7 @@ winresource = { version = "0.1.34", default-features = false }
 [dependencies]
 anyhow = "1"
 chipstream = { path = "../chipstream", features = ["c140", "okim6258", "okim6295", "pwm", "segapcm", "sn76496"] }
+chrono = "0.4"
 cpal = "0.18.2"
 directories = "6"
 flate2 = "1"
