@@ -176,6 +176,27 @@ fn keep_preview_sources(
     playing && transitioning && current.is_some() && playback.is_none()
 }
 
+fn piano_transition_ready(
+    snapshot: Result<&visualizer::Snapshot, ()>,
+    mode: visualizer::RollMode,
+    sources_ready: bool,
+    title_pending: bool,
+) -> bool {
+    match snapshot {
+        Err(()) => true,
+        Ok(snapshot) => {
+            !title_pending
+                && sources_ready
+                && snapshot.rate != 0
+                && (mode == visualizer::RollMode::Trail
+                    || !snapshot.scanning
+                    || (!snapshot.preparing
+                        && snapshot.scanned
+                            >= u64::from(snapshot.rate) * visualizer::WINDOW_SECONDS))
+        }
+    }
+}
+
 fn track_title(
     id: SharedString,
     path: &Path,
@@ -553,6 +574,8 @@ struct AppView {
     idle_preview: Option<IdlePreview>,
     idle_preview_error: Option<String>,
     transition_preview: Option<IdlePreview>,
+    piano_transition_pending: bool,
+    piano_title_pending: bool,
     playing: Option<usize>,
     playing_hardware: bool,
     displayed_volume_mode: VolumeMode,
@@ -987,6 +1010,8 @@ impl AppView {
             idle_preview: None,
             idle_preview_error: None,
             transition_preview: None,
+            piano_transition_pending: false,
+            piano_title_pending: false,
             playing: None,
             playing_hardware: false,
             displayed_volume_mode: VolumeMode::Master,
@@ -1453,6 +1478,7 @@ impl AppView {
                 .set_audio_sample_rate(self.config.audio_sample_rate);
             let use_transition =
                 self.playing.is_none() && index == 0 && self.current_idle_preview().is_some();
+            self.piano_transition_pending = self.playing.is_some();
             let preview_mute = if self.playing.is_none()
                 && index == 0
                 && self
@@ -1474,6 +1500,8 @@ impl AppView {
             self.paused = false;
             self.elapsed = 0;
             let indexed = self.track_by_path.get(&path).copied();
+            self.piano_title_pending =
+                indexed.is_none() && !self.playlist_tracks.contains_key(&path);
             self.playing_title = indexed
                 .map(|index| {
                     self.tracks[index].display_title_for(self.config.general.vgm_metadata_language)
@@ -1513,6 +1541,7 @@ impl AppView {
                         .await;
                     let _ = this.update(cx, |view, cx| {
                         if view.playing.is_some() && view.player.is_current(generation) {
+                            view.piano_title_pending = false;
                             match result {
                                 Ok(track) => {
                                     view.playing_title = track.display_title_for(
@@ -4461,11 +4490,82 @@ mod tests {
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, notification_copy_text, remove_playlist_entries, renumber_connected_devices,
-        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, unsupported_chips,
-        update_selection_order, update_window_settings,
+        music_format, notification_copy_text, piano_transition_ready, remove_playlist_entries,
+        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
+        scan_progress_text, search_terms, select_for_context, select_item, select_range,
+        selection_status, unsupported_chips, update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn piano_transition_waits_for_complete_track_information() {
+        use super::visualizer::{RollMode, Snapshot};
+
+        let mut snapshot = Snapshot {
+            rate: 48_000,
+            scanning: true,
+            ..Default::default()
+        };
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            false
+        ));
+        assert!(piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Trail,
+            true,
+            false
+        ));
+        snapshot.scanned = u64::from(snapshot.rate) * super::visualizer::WINDOW_SECONDS;
+        assert!(piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            false
+        ));
+        snapshot.preparing = true;
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            false
+        ));
+        snapshot.preparing = false;
+        snapshot.scanned = 0;
+        snapshot.scanning = false;
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            false,
+            false
+        ));
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            true
+        ));
+        assert!(piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Incoming,
+            true,
+            false
+        ));
+        snapshot.rate = 0;
+        assert!(!piano_transition_ready(
+            Ok(&snapshot),
+            RollMode::Trail,
+            true,
+            false
+        ));
+        assert!(piano_transition_ready(
+            Err(()),
+            RollMode::Incoming,
+            false,
+            true
+        ));
+    }
 
     #[test]
     fn notification_copy_text_includes_full_message_and_details() {
@@ -5480,6 +5580,25 @@ impl Render for AppView {
                                 } else {
                                     Ok(visualizer::Snapshot::default())
                                 };
+                                if self.piano_transition_pending
+                                    && piano_transition_ready(
+                                        snapshot.as_ref().map_err(|_| ()),
+                                        self.roll_mode,
+                                        self.gain_sources.is_some() || self.gain_sources_failed,
+                                        self.piano_title_pending,
+                                    )
+                                {
+                                    self.piano_transition_pending = false;
+                                }
+                                let transitioning = self.playing.is_some() && self.piano_transition_pending;
+                                if transitioning && self.paused {
+                                    window.request_animation_frame();
+                                }
+                                let snapshot = if transitioning {
+                                    Ok(visualizer::Snapshot::default())
+                                } else {
+                                    snapshot
+                                };
                                 if (self.paused || self.playing.is_none())
                                     && snapshot.as_ref().is_ok_and(|snapshot| snapshot.scanning)
                                 {
@@ -5550,8 +5669,9 @@ impl Render for AppView {
                                                         .flex()
                                                         .flex_col()
                                                         .gap_2()
-                                                        .child(self.piano_gain_panel(cx))
-                                                        .child(self.piano_channel_panel(cx)),
+                                                        .when(!transitioning, |panel| panel
+                                                            .child(self.piano_gain_panel(cx))
+                                                            .child(self.piano_channel_panel(cx))),
                                                 )
                                         )
                                         ,
