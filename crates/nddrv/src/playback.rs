@@ -377,6 +377,19 @@ impl Playback {
         self.control.elapsed_seconds()
     }
 
+    pub fn waiting_for_start(&self) -> bool {
+        self.waiting_for_start_at(Instant::now())
+    }
+
+    fn waiting_for_start_at(&self, now: Instant) -> bool {
+        self.control.settings.start_delay_seconds > 0
+            && self
+                .control
+                .first_presentation
+                .get()
+                .is_none_or(|presentation| now < *presentation)
+    }
+
     pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
         self.visual_snapshot_at(Instant::now(), mode)
     }
@@ -2811,6 +2824,7 @@ mod tests {
     #[test]
     fn leading_silence_delays_audio_and_hardware_presentation() {
         let mut player = Playback::new();
+        assert!(!player.waiting_for_start_at(Instant::now()));
         Arc::get_mut(&mut player.control)
             .unwrap()
             .settings
@@ -2842,6 +2856,7 @@ mod tests {
         assert_eq!(consumer.silence_remaining, 2);
         assert_eq!(control.frames.load(Ordering::Relaxed), 0);
         assert!(control.first_presentation.get().is_none());
+        assert!(player.waiting_for_start_at(now));
         player.set_paused(true);
         consumer.fill_at(&mut output, now, latency);
         assert_eq!(consumer.silence_remaining, 2);
@@ -2851,6 +2866,8 @@ mod tests {
         assert_eq!(output, [0.0, 0.0, 0.0, 0.0, 0.25, 0.5]);
         let presentation = now + latency + Duration::from_secs(1);
         assert_eq!(control.first_presentation.get(), Some(&presentation));
+        assert!(player.waiting_for_start_at(presentation - Duration::from_nanos(1)));
+        assert!(!player.waiting_for_start_at(presentation));
         assert!(timeline.start(now).is_err());
         assert_eq!(control.silence_clock.position(presentation, 4).unwrap(), 4);
         assert_eq!(control.visual_clock.position(presentation, 4).unwrap(), 0);

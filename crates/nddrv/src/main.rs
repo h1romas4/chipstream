@@ -595,6 +595,7 @@ struct AppView {
     piano_title_pending: bool,
     playing: Option<usize>,
     playing_hardware: bool,
+    waiting_for_start: bool,
     displayed_volume_mode: VolumeMode,
     paused: bool,
     looped: bool,
@@ -1055,6 +1056,7 @@ impl AppView {
             piano_title_pending: false,
             playing: None,
             playing_hardware: false,
+            waiting_for_start: false,
             displayed_volume_mode: VolumeMode::Master,
             paused: false,
             looped: false,
@@ -1533,6 +1535,7 @@ impl AppView {
             };
             self.status = "Playing".into();
             self.playing = Some(index);
+            self.waiting_for_start = self.config.playback.start_delay_seconds > 0;
             if !use_transition {
                 self.gain_sources = None;
             }
@@ -2262,6 +2265,11 @@ impl AppView {
             }
         }
         if self.playing.is_some() {
+            let waiting = self.player.waiting_for_start();
+            if waiting != self.waiting_for_start {
+                self.waiting_for_start = waiting;
+                cx.notify();
+            }
             let mode = self.player.volume_mode();
             if mode != self.displayed_volume_mode {
                 self.displayed_volume_mode = mode;
@@ -2748,13 +2756,7 @@ impl AppView {
             VolumeMode::SoftwareOnly => "Software volume (NanoDrive fixed)",
             VolumeMode::Preparing => "Checking NanoDrive volume",
         };
-        let state = if !active {
-            "Stopped"
-        } else if self.paused {
-            "Paused"
-        } else {
-            "Playing"
-        };
+        let state = playback_state_label(active, self.paused, self.waiting_for_start);
         let title = self.now_playing_title();
         let title_width = self
             .measured_title
@@ -4521,6 +4523,18 @@ fn scrollbar(id: &'static str, handle: &(impl ScrollbarHandle + Clone)) -> impl 
         )
 }
 
+fn playback_state_label(active: bool, paused: bool, waiting: bool) -> &'static str {
+    if !active {
+        "Stopped"
+    } else if paused {
+        "Paused"
+    } else if waiting {
+        "Waiting to play"
+    } else {
+        "Playing"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -4534,11 +4548,20 @@ mod tests {
         can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_select_all, keep_preview_sources, list_key, list_selection_step,
-        music_format, notification_copy_text, piano_transition_ready, remove_playlist_entries,
-        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
-        scan_progress_text, search_terms, select_for_context, select_item, select_range,
-        selection_status, unsupported_chips, update_selection_order, update_window_settings,
+        music_format, notification_copy_text, piano_transition_ready, playback_state_label,
+        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
+        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
+        select_range, selection_status, unsupported_chips, update_selection_order,
+        update_window_settings,
     };
+
+    #[test]
+    fn playback_state_displays_waiting_and_paused() {
+        assert_eq!(playback_state_label(false, false, true), "Stopped");
+        assert_eq!(playback_state_label(true, true, true), "Paused");
+        assert_eq!(playback_state_label(true, false, true), "Waiting to play");
+        assert_eq!(playback_state_label(true, false, false), "Playing");
+    }
 
     #[test]
     fn piano_transition_waits_for_complete_track_information() {
