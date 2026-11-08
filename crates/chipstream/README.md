@@ -190,6 +190,12 @@ registry to `VgmSequencer::from_vgm_with_factories`,
 
 `register_optional` can select the built-in backend for individual instances
 by returning `Ok(None)`; errors are propagated rather than triggering fallback.
+`register_fallback` can add a backend for instances declined by an existing
+factory. AY8910 has no default backend, so a declined instance is an error.
+To opt into YM2149 approximation, register a factory using
+`YmfmChip::new_ym2149(clock, divide_clock)` for `Chip::Ay8910`; callers
+must interpret and validate the VGM AY type and flags. The three YM2149 outputs
+are mixed as AY channels, including VGM per-channel stereo masks.
 
 YMFM-backed chip types can be replaced individually:
 

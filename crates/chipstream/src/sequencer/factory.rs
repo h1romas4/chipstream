@@ -119,6 +119,7 @@ impl ChipFactoryRegistry {
     ///
     /// Returning `Ok(None)` explicitly selects the normal sequencer backend for
     /// that instance. Errors are propagated and never cause a fallback.
+    /// AY8910 has no default backend, so a declined instance is an error.
     /// Registering the same chip type again replaces the previous factory.
     pub fn register_optional<F>(&mut self, chip: Chip, factory: F) -> &mut Self
     where
@@ -127,6 +128,25 @@ impl ChipFactoryRegistry {
     {
         self.factories.insert(chip, Box::new(factory));
         self
+    }
+
+    /// Add a fallback for instances declined by the existing factory.
+    ///
+    /// Existing factory errors are propagated; they never select the fallback.
+    /// If no factory is registered, the fallback handles all instances.
+    pub fn register_fallback<F>(&mut self, chip: Chip, mut fallback: F) -> &mut Self
+    where
+        F: for<'a> FnMut(&ChipFactoryConfig<'a>) -> Result<Box<dyn SoundChip>, ChipError> + 'static,
+    {
+        let mut previous = self.factories.remove(&chip);
+        self.register_optional(chip, move |config| {
+            if let Some(factory) = &mut previous
+                && let Some(backend) = factory(config)?
+            {
+                return Ok(Some(backend));
+            }
+            fallback(config).map(Some)
+        })
     }
 
     /// Invoke a registered factory and validate its chip type and clock.

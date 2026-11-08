@@ -36,6 +36,7 @@ pub struct ChipTag {
     pub name: &'static str,
     pub instances: usize,
     pub ymfm: bool,
+    pub ym2149_compatible: [bool; 2],
 }
 
 impl ChipTag {
@@ -44,6 +45,7 @@ impl ChipTag {
             name: Track::chip_name(chip),
             instances: 1,
             ymfm: YMFM_CHIPS.contains(chip),
+            ym2149_compatible: [false; 2],
         }
     }
 
@@ -66,6 +68,29 @@ impl ChipTag {
             self.name.to_string()
         }
     }
+}
+
+pub fn ym2149_clock_divider(header: &VgmHeader) -> Option<bool> {
+    use soundlog::vgm::header::Ay8910ChipType;
+    let ym = matches!(
+        header.ay_chip_type,
+        Ay8910ChipType::Ym2149
+            | Ay8910ChipType::Ym3439
+            | Ay8910ChipType::Ymz284
+            | Ay8910ChipType::Ymz294
+    );
+    if (!ym
+        && !matches!(
+            header.ay_chip_type,
+            Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
+        ))
+        || header.ay8910_flags.discrete_output
+        || header.ay8910_flags.raw_output
+        || header.ay8910_flags.reserved != 0
+    {
+        return None;
+    }
+    Some(ym && header.ay8910_flags.ym_pin26_low)
 }
 
 #[derive(Clone, Debug)]
@@ -189,12 +214,38 @@ impl Track {
             Ok(chips)
         } else {
             let header = VgmHeader::from_bytes(bytes).context("invalid VGM header")?;
+            let extra = if header.ay8910_clock & 0x3fff_ffff != 0 {
+                header
+                    .extra_header_from_bytes(bytes)
+                    .context("invalid VGM extra header")?
+            } else {
+                None
+            };
             let mut chips: Vec<ChipTag> = Vec::new();
-            for (_, chip, _) in header.chip_instances() {
-                let tag = ChipTag::new(&chip);
+            for (instance, chip, _) in header.chip_instances() {
+                let mut tag = ChipTag::new(&chip);
+                if chip == Chip::Ay8910
+                    && let Some(divided) = ym2149_clock_divider(&header)
+                {
+                    use soundlog::vgm::header::ChipId;
+                    let clock = extra
+                        .as_ref()
+                        .and_then(|extra| {
+                            extra.chip_clocks.iter().find(|entry| {
+                                entry.chip_id == ChipId::Ay8910 && entry.instance == instance
+                            })
+                        })
+                        .map_or(header.ay8910_clock & 0x3fff_ffff, |entry| {
+                            entry.clock & 0x3fff_ffff
+                        });
+                    tag.ym2149_compatible[instance as usize] =
+                        chipstream::chip::YmfmChip::validate_ym2149_clock(clock, divided).is_ok();
+                }
                 if let Some(existing) = chips.iter_mut().find(|existing| existing.name == tag.name)
                 {
                     existing.instances += 1;
+                    existing.ym2149_compatible[instance as usize] =
+                        tag.ym2149_compatible[instance as usize];
                 } else {
                     chips.push(tag);
                 }
@@ -382,6 +433,12 @@ pub struct GeneralSettings {
     pub vgm_metadata_language: MetadataLanguage,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VgmSettings {
+    pub ay8910_ym2149: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlaybackSettings {
@@ -469,6 +526,8 @@ pub struct Config {
     #[serde(default)]
     pub general: GeneralSettings,
     #[serde(default)]
+    pub vgm: VgmSettings,
+    #[serde(default)]
     pub window: Option<WindowSettings>,
 }
 
@@ -485,6 +544,7 @@ impl Default for Config {
             audio_output_device: None,
             audio_sample_rate: None,
             general: GeneralSettings::default(),
+            vgm: VgmSettings::default(),
             window: None,
         }
     }
@@ -813,6 +873,13 @@ pub fn scan_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vgm_emulation_defaults_off_for_existing_config() {
+        let config: Config = serde_json::from_str(r#"{"directories":[],"playlist":[]}"#).unwrap();
+        assert!(!config.vgm.ay8910_ym2149);
+        assert!(!Config::default().vgm.ay8910_ym2149);
+    }
 
     #[test]
     fn display_title_uses_game_and_falls_back_to_filename() {
@@ -1526,6 +1593,64 @@ mod tests {
     }
 
     #[test]
+    fn ym2149_track_compatibility_uses_variant_flags_and_instance_clocks() {
+        use soundlog::vgm::command::Instance;
+        use soundlog::vgm::header::{
+            Ay8910ChipType, Ay8910Flags, ChipClock, ChipId, VgmExtraHeader,
+        };
+
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        builder.register_chip(Chip::Ay8910, Instance::Secondary, 1_792_000);
+        builder.set_extra_header(VgmExtraHeader {
+            chip_clocks: vec![ChipClock::new(ChipId::Ay8910, Instance::Secondary, 7)],
+            ..Default::default()
+        });
+        let mut document = builder.finalize();
+        let compatibility = |document: &soundlog::vgm::VgmDocument| {
+            let bytes = Vec::<u8>::from(document);
+            let tags = Track::track_chips(&bytes, false).unwrap();
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].instances, 2);
+            tags[0].ym2149_compatible
+        };
+
+        for chip_type in [
+            Ay8910ChipType::Ay8910,
+            Ay8910ChipType::Ay8912,
+            Ay8910ChipType::Ay8913,
+            Ay8910ChipType::Ym2149,
+            Ay8910ChipType::Ym3439,
+            Ay8910ChipType::Ymz284,
+            Ay8910ChipType::Ymz294,
+        ] {
+            document.header.ay_chip_type = chip_type;
+            assert_eq!(compatibility(&document), [true, false], "{chip_type:?}");
+        }
+        for chip_type in [
+            Ay8910ChipType::Ay8930,
+            Ay8910ChipType::Ay8914,
+            Ay8910ChipType::Unknown(0xff),
+        ] {
+            document.header.ay_chip_type = chip_type;
+            assert_eq!(compatibility(&document), [false, false], "{chip_type:?}");
+        }
+        document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+        for flags in [4, 8, 32] {
+            document.header.ay8910_flags = Ay8910Flags::from(flags);
+            assert_eq!(compatibility(&document), [false, false], "flags={flags}");
+        }
+        document.header.ay8910_flags = Ay8910Flags::from(0x10);
+        document.header.ay8910_clock = 15 | 0x4000_0000;
+        assert_eq!(compatibility(&document), [false, false]);
+        document.header.ay8910_clock = 16 | 0x4000_0000;
+        assert_eq!(compatibility(&document), [true, false]);
+        document.header.ay8910_flags = Ay8910Flags::from(0);
+        document.header.ay8910_clock = 536_870_912 | 0x4000_0000;
+        assert_eq!(compatibility(&document), [false, false]);
+    }
+
+    #[test]
     fn chip_labels_cover_vgm_instances_and_mdx_pdx_declarations() {
         use soundlog::vgm::command::Instance;
 
@@ -1636,6 +1761,9 @@ mod tests {
             general: GeneralSettings {
                 vgm_metadata_language: MetadataLanguage::Original,
             },
+            vgm: VgmSettings {
+                ay8910_ym2149: true,
+            },
             window: None,
         };
         let path = dir.path().join("config/config.json");
@@ -1649,6 +1777,7 @@ mod tests {
         assert_eq!(loaded.audio_output_device, config.audio_output_device);
         assert_eq!(loaded.audio_sample_rate, config.audio_sample_rate);
         assert_eq!(loaded.general, config.general);
+        assert_eq!(loaded.vgm, config.vgm);
     }
 
     #[test]

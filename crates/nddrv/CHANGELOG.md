@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reflect YM2149 assignments in Routing, Music, and Playlist support indicators.
+- Add opt-in YMFM YM2149 emulation for unrouted VGM AY8910-family chips.
+- Show AY8910 and YM2149 tone channels in Piano Roll, including NanoDrive routes.
 - Route YM2149 VGM writes to NanoDrive 7's AY-compatible YM2203 SSG.
 
 ## v0.9.0

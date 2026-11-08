@@ -25,7 +25,9 @@ use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::fm_mute::FmMute;
-use crate::library::{PlaybackSettings, RecordingSettings, extension, read_bounded, read_track};
+use crate::library::{
+    PlaybackSettings, RecordingSettings, VgmSettings, extension, read_bounded, read_track,
+};
 use crate::routing::PlaybackPlan;
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
@@ -54,6 +56,7 @@ pub enum VolumeMode {
 pub struct Playback {
     control: Arc<PlaybackControl>,
     settings: PlaybackSettings,
+    vgm_settings: VgmSettings,
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
     recording: Option<RecordingSettings>,
@@ -127,6 +130,7 @@ pub struct GainSource {
     pub chip: Chip,
     pub instance: Instance,
     pub hardware: bool,
+    pub visual_only: bool,
 }
 
 #[derive(Default)]
@@ -137,6 +141,7 @@ struct GainState {
 
 struct PlaybackControl {
     settings: PlaybackSettings,
+    vgm_settings: VgmSettings,
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
     cancel: AtomicBool,
@@ -166,6 +171,7 @@ impl PlaybackControl {
     fn with_gains(volume: Arc<NdsifOutputGain>, gains: Arc<GainState>) -> Self {
         Self {
             settings: PlaybackSettings::default(),
+            vgm_settings: VgmSettings::default(),
             audio_output_device: None,
             audio_sample_rate: None,
             cancel: AtomicBool::new(false),
@@ -275,6 +281,7 @@ impl Playback {
         Self {
             control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
             settings: PlaybackSettings::default(),
+            vgm_settings: VgmSettings::default(),
             audio_output_device: None,
             audio_sample_rate: None,
             recording: None,
@@ -294,6 +301,14 @@ impl Playback {
 
     pub fn set_settings(&mut self, settings: PlaybackSettings) {
         self.settings = settings;
+    }
+
+    pub fn set_vgm_settings(&mut self, settings: VgmSettings) {
+        self.vgm_settings = settings;
+    }
+
+    pub fn active_vgm_settings(&self) -> VgmSettings {
+        self.control.vgm_settings
     }
 
     pub fn set_audio_output_device(&mut self, device_id: Option<String>) {
@@ -332,6 +347,7 @@ impl Playback {
         self.stop();
         let mut control = PlaybackControl::with_gains(self.volume.clone(), self.gains.clone());
         control.settings = self.settings;
+        control.vgm_settings = self.vgm_settings;
         control.audio_output_device = self.audio_output_device.clone();
         control.audio_sample_rate = self.audio_sample_rate;
         self.control = Arc::new(control);
@@ -491,11 +507,42 @@ impl Playback {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("piano roll state is unavailable"))?;
                 let incomplete = visualizer.incomplete();
-                let notes = if started {
+                let mut notes = if started {
                     visualizer.snapshot(position, rate, mode)
                 } else {
                     Vec::new()
                 };
+                drop(visualizer);
+                let has_ay = self
+                    .control
+                    .gain_sources
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("chip gain sources are unavailable"))?
+                    .as_ref()
+                    .is_some_and(|sources| {
+                        sources.iter().any(|source| source.chip == Chip::Ay8910)
+                    });
+                let mut incomplete = incomplete;
+                if has_ay {
+                    let mut preview = self
+                        .control
+                        .preview
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("piano roll preview is unavailable"))?;
+                    if let Some(error) = &preview.error {
+                        bail!("piano roll preview: {error}");
+                    }
+                    if started {
+                        notes.extend(
+                            preview
+                                .roll
+                                .snapshot(position, rate, mode)
+                                .into_iter()
+                                .filter(|note| note.chip == crate::visualizer::AY8910_INDEX),
+                        );
+                    }
+                    incomplete |= preview.roll.incomplete();
+                }
                 (notes, position, incomplete, false, false)
             }
             RollMode::Incoming => {
@@ -580,7 +627,13 @@ pub struct IdlePreview {
 impl IdlePreview {
     #[cfg(test)]
     pub fn start(path: PathBuf, looped: bool, plan: Option<&PlaybackPlan>) -> Result<Self> {
-        Self::start_with_settings(path, looped, plan, PlaybackSettings::default())
+        Self::start_with_settings(
+            path,
+            looped,
+            plan,
+            PlaybackSettings::default(),
+            VgmSettings::default(),
+        )
     }
 
     pub fn start_with_settings(
@@ -588,12 +641,14 @@ impl IdlePreview {
         looped: bool,
         plan: Option<&PlaybackPlan>,
         settings: PlaybackSettings,
+        vgm_settings: VgmSettings,
     ) -> Result<Self> {
         let mut control = PlaybackControl::with_gains(
             Arc::new(NdsifOutputGain::new()),
             Arc::new(GainState::default()),
         );
         control.settings = settings;
+        control.vgm_settings = vgm_settings;
         let control = Arc::new(control);
         let rate = VGM_SAMPLE_RATE;
         control.sample_rate.store(rate, Ordering::Release);
@@ -604,18 +659,15 @@ impl IdlePreview {
             .spawn(move || {
                 let _guard = PreviewPanicGuard(Arc::clone(&state));
                 let result = (|| {
-                    let sequencer = Sequencer::create(
-                        &path,
-                        rate,
-                        looped,
-                        ChipFactoryRegistry::new(),
-                        None,
-                        settings,
-                    )?;
+                    let mut factories = ChipFactoryRegistry::new();
+                    register_ay_emulation(&mut factories, vgm_settings);
+                    let sequencer =
+                        Sequencer::create(&path, rate, looped, factories, None, settings)?;
                     if state.cancel.load(Ordering::Acquire) {
                         return Ok(());
                     }
-                    let sources = Sequencer::gain_sources(&sequencer, &routes);
+                    let mut sources = Sequencer::gain_sources(&sequencer, &routes);
+                    add_visual_ay_sources(&path, &routes, &mut sources)?;
                     run_preview(&path, rate, looped, &state, &state.cancel, Some(sources))
                 })();
                 if let Err(error) = result {
@@ -627,7 +679,29 @@ impl IdlePreview {
             .context("start piano roll preview worker")?;
         Ok(Self { control })
     }
+}
 
+fn register_ay_emulation(factories: &mut ChipFactoryRegistry, settings: VgmSettings) {
+    if !settings.ay8910_ym2149 {
+        return;
+    }
+    factories.register_fallback(Chip::Ay8910, ym2149_backend);
+}
+
+fn ym2149_backend(
+    config: &chipstream::sequencer::ChipFactoryConfig<'_>,
+) -> Result<Box<dyn chipstream::chip::SoundChip>, chipstream::chip::ChipError> {
+    use chipstream::chip::{ChipError, YmfmChip};
+    let header = config.header();
+    let divide =
+        crate::library::ym2149_clock_divider(header).ok_or(ChipError::InvalidConfiguration {
+            chip: Chip::Ay8910,
+            reason: "YM2149 emulation does not support this AY variant or output flags",
+        })?;
+    Ok(Box::new(YmfmChip::new_ym2149(config.clock(), divide)?))
+}
+
+impl IdlePreview {
     pub fn gain_sources(&self) -> Result<Option<Vec<GainSource>>> {
         self.control
             .gain_sources
@@ -793,6 +867,36 @@ fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions 
     }
 }
 
+fn add_visual_ay_sources(
+    path: &Path,
+    routes: &[ndsif_transport::NdsifRoute],
+    sources: &mut Vec<GainSource>,
+) -> Result<()> {
+    if extension(path) == "mdx" {
+        return Ok(());
+    }
+    let bytes = read_track(path)?;
+    let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
+    for (instance, chip, _) in header.chip_instances().iter() {
+        if *chip == Chip::Ay8910
+            && !sources
+                .iter()
+                .any(|source| source.chip == *chip && source.instance == *instance)
+        {
+            let hardware = routes
+                .iter()
+                .any(|route| route.chip == *chip && route.source == *instance);
+            sources.push(GainSource {
+                chip: chip.clone(),
+                instance: *instance,
+                hardware,
+                visual_only: !hardware,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn run_preview(
     path: &Path,
     rate: u32,
@@ -829,6 +933,7 @@ fn run_preview(
             for (instance, chip, clock) in &mut instances.0 {
                 let id = match chip {
                     Chip::Sn76489 => ChipId::Sn76489,
+                    Chip::Ay8910 => ChipId::Ay8910,
                     Chip::Ym2151 => ChipId::Ym2151,
                     Chip::Ym2203 => ChipId::Ym2203,
                     Chip::Ym2413 => ChipId::Ym2413,
@@ -863,6 +968,21 @@ fn run_preview(
                         header.sn76489_flags.frequency_0_is_400,
                     ),
                 );
+            } else if *chip == Chip::Ay8910 {
+                use soundlog::vgm::header::Ay8910ChipType;
+                let clock = if header.ay8910_flags.ym_pin26_low
+                    && matches!(
+                        header.ay_chip_type,
+                        Ay8910ChipType::Ym2149
+                            | Ay8910ChipType::Ym3439
+                            | Ay8910ChipType::Ymz284
+                            | Ay8910ChipType::Ymz294
+                    ) {
+                    *clock / 2.0
+                } else {
+                    *clock
+                };
+                stream.track_state_with(*instance, soundlog::chip::state::Ay8910State::new(clock));
             }
         }
         stream.set_loop_count(if looped {
@@ -899,8 +1019,8 @@ fn run_preview(
         }};
     }
     use soundlog::chip::{
-        PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
-        Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+        Ay8910Spec, PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
+        Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
     };
     register!(0, Ym2151Spec);
     register!(1, Ym2203Spec);
@@ -937,6 +1057,7 @@ fn run_preview(
     register_opl!(10, Ymf278bSpec, Chip::Ymf278b, |write: &Ymf278bSpec| write
         .port);
     register!(crate::visualizer::SN76489_INDEX, PsgSpec);
+    register!(crate::visualizer::AY8910_INDEX, Ay8910Spec);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -1150,6 +1271,7 @@ impl Sequencer {
                     .any(|route| route.chip == chip && route.source == instance),
                 chip,
                 instance,
+                visual_only: false,
             })
             .collect()
     }
@@ -1196,7 +1318,10 @@ impl Sequencer {
             .values
             .lock()
             .map_err(|_| anyhow::anyhow!("chip gain state is unavailable"))?;
-        for source in sources.iter().filter(|source| !source.hardware) {
+        for source in sources
+            .iter()
+            .filter(|source| !source.hardware && !source.visual_only)
+        {
             let value = |part| {
                 values
                     .get(&(source.chip.clone(), part))
@@ -1867,11 +1992,12 @@ fn run_inner(
             return Ok(());
         }
         let recorders = crate::hardware::recorders(lease)?;
-        let factories = ndsif_transport::create_routed_transport_factories_with_nd7(
+        let mut factories = ndsif_transport::create_routed_transport_factories_with_nd7(
             &recorders,
             &plan.routes,
             &plan.nd7_devices,
         )?;
+        register_ay_emulation(&mut factories, control.vgm_settings);
         let sequencer = Sequencer::for_playback_with_settings(
             path,
             config.sample_rate,
@@ -1884,12 +2010,14 @@ fn run_inner(
         let workers = crate::hardware::HardwareWorkers::start(lease, &recorders, timeline)?;
         (sequencer, Some((recorders, workers)))
     } else {
+        let mut factories = ChipFactoryRegistry::new();
+        register_ay_emulation(&mut factories, control.vgm_settings);
         (
             Sequencer::for_playback_with_settings(
                 path,
                 config.sample_rate,
                 looped,
-                ChipFactoryRegistry::new(),
+                factories,
                 Path::new("."),
                 &[],
                 control.settings,
@@ -1897,7 +2025,8 @@ fn run_inner(
             None,
         )
     };
-    let sources = Sequencer::gain_sources(&sequencer, routes);
+    let mut sources = Sequencer::gain_sources(&sequencer, routes);
+    add_visual_ay_sources(path, routes, &mut sources)?;
     sequencer.filter_fm_mutes(Arc::clone(&control.fm_mute));
     *control
         .gain_sources
@@ -2752,6 +2881,7 @@ mod tests {
             chip: Chip::Ym2203,
             instance: Instance::Primary,
             hardware: false,
+            visual_only: false,
         };
         let render = |hardware| {
             let control =
@@ -3185,7 +3315,9 @@ mod tests {
             start_delay_seconds: 2,
             ..PlaybackSettings::default()
         };
-        let preview = IdlePreview::start_with_settings(path, false, None, settings).unwrap();
+        let preview =
+            IdlePreview::start_with_settings(path, false, None, settings, VgmSettings::default())
+                .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let snapshot = loop {
             let snapshot = preview.visual_snapshot(RollMode::Incoming).unwrap();
@@ -4264,6 +4396,481 @@ mod tests {
                 notes
                     .iter()
                     .all(|note| note.end == Some(u64::from(rate) / 5))
+            );
+        }
+    }
+
+    #[test]
+    fn ay_preview_and_trail_follow_volume_clocks_and_routes() {
+        use soundlog::chip::Ay8910Spec;
+        use soundlog::vgm::command::WaitSamples;
+        use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId, VgmExtraHeader};
+
+        let dir = tempfile::tempdir().unwrap();
+        for divider in [false, true] {
+            let path = dir.path().join(format!("ay-{divider}.vgm"));
+            let mut builder = soundlog::vgm::VgmBuilder::new();
+            for instance in [Instance::Primary, Instance::Secondary] {
+                builder.register_chip(Chip::Ay8910, instance, 1_792_000);
+            }
+            builder.set_extra_header(VgmExtraHeader {
+                chip_clocks: vec![ChipClock::new(ChipId::Ay8910, Instance::Secondary, 896_000)],
+                ..Default::default()
+            });
+            for instance in [Instance::Primary, Instance::Secondary] {
+                for channel in 0..3 {
+                    builder.add_chip_write(
+                        instance,
+                        Ay8910Spec {
+                            register: 2 * channel,
+                            value: 255,
+                        },
+                    );
+                }
+                builder.add_chip_write(
+                    instance,
+                    Ay8910Spec {
+                        register: 7,
+                        value: 0xf8,
+                    },
+                );
+                for channel in 0..3 {
+                    builder.add_chip_write(
+                        instance,
+                        Ay8910Spec {
+                            register: 8 + channel,
+                            value: 15,
+                        },
+                    );
+                }
+            }
+            builder.add_vgm_command(WaitSamples(4_410));
+            for instance in [Instance::Primary, Instance::Secondary] {
+                for channel in 0..3 {
+                    builder.add_chip_write(
+                        instance,
+                        Ay8910Spec {
+                            register: 8 + channel,
+                            value: 0,
+                        },
+                    );
+                }
+            }
+            builder.add_vgm_command(WaitSamples(100));
+            let mut document = builder.finalize();
+            document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+            document.header.ay8910_flags.ym_pin26_low = divider;
+            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+
+            let mut sources = Vec::new();
+            add_visual_ay_sources(&path, &[], &mut sources).unwrap();
+            assert_eq!(sources.len(), 2);
+            assert!(
+                sources
+                    .iter()
+                    .all(|source| source.visual_only && !source.hardware)
+            );
+            let route = ndsif_transport::NdsifRoute {
+                chip: Chip::Ay8910,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Secondary,
+            };
+            let mut routed = Vec::new();
+            add_visual_ay_sources(&path, &[route], &mut routed).unwrap();
+            assert!(
+                routed
+                    .iter()
+                    .any(|source| source.instance == Instance::Primary
+                        && source.hardware
+                        && !source.visual_only)
+            );
+            assert!(
+                routed
+                    .iter()
+                    .any(|source| source.instance == Instance::Secondary && source.visual_only)
+            );
+
+            let player = Playback::new();
+            *player.control.gain_sources.lock().unwrap() = Some(sources);
+            player.control.sample_rate.store(44_100, Ordering::Relaxed);
+            run_preview(
+                &path,
+                44_100,
+                false,
+                &player.control,
+                &AtomicBool::new(false),
+                None,
+            )
+            .unwrap();
+            let now = Instant::now();
+            assert!(
+                player
+                    .visual_snapshot_at(now, RollMode::Trail)
+                    .unwrap()
+                    .notes
+                    .is_empty()
+            );
+            player.control.first_presentation.set(now).unwrap();
+            player.control.visual_clock.publish(2_205, 0, now).unwrap();
+            let incoming = player.visual_snapshot_at(now, RollMode::Incoming).unwrap();
+            let trail = player.visual_snapshot_at(now, RollMode::Trail).unwrap();
+            for notes in [incoming.notes, trail.notes] {
+                assert_eq!(notes.len(), 6);
+                for note in notes {
+                    assert_eq!(note.chip, crate::visualizer::AY8910_INDEX);
+                    assert!(note.channel < 3);
+                    assert_eq!(
+                        note.pitch,
+                        69 - 12 * note.instance - if divider { 12 } else { 0 }
+                    );
+                    assert_eq!((note.start, note.end), (0, Some(4_410)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ay_nd7_hardware_route_and_preview_run_together() {
+        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
+        use soundlog::chip::Ay8910Spec;
+        use soundlog::vgm::command::WaitSamples;
+        use soundlog::vgm::header::Ay8910ChipType;
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, _: NdsifPsgEvent) -> Result<(), String> {
+                Err("unexpected PSG write".into())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nd7.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        for (register, value) in [(0, 255), (7, 0xfe), (8, 15)] {
+            builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ay8910Spec {
+                register: 8,
+                value: 0,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(100));
+        let mut document = builder.finalize();
+        document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+        std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+
+        let transport = Rc::new(RefCell::new(Recorder::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        let target = Rc::clone(&transport);
+        factories.register(Chip::Ay8910, move |config| {
+            Ok(Box::new(NdsifSoundChip::with_target_instance_for_nd7(
+                config,
+                Instance::Secondary,
+                Rc::clone(&target),
+            )?))
+        });
+        let mut sequencer = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
+        let route = ndsif_transport::NdsifRoute {
+            chip: Chip::Ay8910,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Secondary,
+        };
+        let mut sources = Sequencer::gain_sources(&sequencer, std::slice::from_ref(&route));
+        add_visual_ay_sources(&path, &[route], &mut sources).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].hardware && !sources[0].visual_only);
+        while sequencer.render().unwrap().is_some() {}
+        assert!(!transport.borrow().0.is_empty());
+        assert!(
+            transport
+                .borrow()
+                .0
+                .iter()
+                .all(|event| event.instance == 1 && event.chip == Chip::Ay8910)
+        );
+
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        run_preview(
+            &path,
+            44_100,
+            false,
+            &control,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+        let notes = control
+            .preview
+            .lock()
+            .unwrap()
+            .roll
+            .snapshot(0, 44_100, RollMode::Incoming);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            (notes[0].pitch, notes[0].start, notes[0].end),
+            (69, 0, Some(4_410))
+        );
+    }
+
+    #[test]
+    fn ay_emulation_respects_settings_and_per_instance_hardware_routes() {
+        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
+        use soundlog::chip::Ay8910Spec;
+        use soundlog::vgm::command::WaitSamples;
+        use soundlog::vgm::header::Ay8910ChipType;
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, _: NdsifPsgEvent) -> Result<(), String> {
+                Err("unexpected PSG write".into())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ay.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            builder.register_chip(Chip::Ay8910, instance, 1_792_000);
+            for (register, value) in [(0, 255), (7, 0xfe), (8, 15)] {
+                builder.add_chip_write(instance, Ay8910Spec { register, value });
+            }
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        let mut document = builder.finalize();
+        document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+        std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+        let route = ndsif_transport::NdsifRoute {
+            chip: Chip::Ay8910,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Secondary,
+        };
+        for enabled in [false, true] {
+            for hardware in [false, true] {
+                let routes = if hardware {
+                    std::slice::from_ref(&route)
+                } else {
+                    &[]
+                };
+                let transport = Rc::new(RefCell::new(Recorder::default()));
+                let mut factories = ChipFactoryRegistry::new();
+                if hardware {
+                    let target = Rc::clone(&transport);
+                    factories.register_optional(Chip::Ay8910, move |config| {
+                        if config.instance() == Instance::Primary {
+                            Ok(Some(Box::new(
+                                NdsifSoundChip::with_target_instance_for_nd7(
+                                    config,
+                                    Instance::Secondary,
+                                    Rc::clone(&target),
+                                )?,
+                            )))
+                        } else {
+                            Ok(None)
+                        }
+                    });
+                }
+                register_ay_emulation(
+                    &mut factories,
+                    VgmSettings {
+                        ay8910_ym2149: enabled,
+                    },
+                );
+                let player =
+                    Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), routes);
+                if hardware && !enabled {
+                    assert!(player.is_err());
+                } else {
+                    let mut player = player.unwrap();
+                    let sources = Sequencer::gain_sources(&player, routes);
+                    assert_eq!(sources.len(), if enabled { 2 } else { 0 });
+                    if hardware {
+                        assert!(
+                            sources
+                                .iter()
+                                .any(|s| s.instance == Instance::Primary && s.hardware)
+                        );
+                    }
+                    if enabled {
+                        assert!(sources.iter().any(|s| s.instance == Instance::Secondary
+                            && !s.hardware
+                            && !s.visual_only));
+                    }
+                    let mut peak = 0.0_f32;
+                    while let Some(block) = player.render().unwrap() {
+                        for sample in block.frames().iter().flatten() {
+                            peak = peak.max(sample.abs());
+                        }
+                    }
+                    assert_eq!(peak > 0.001, enabled, "hardware={hardware}, peak={peak}");
+                    assert_eq!(!transport.borrow().0.is_empty(), hardware);
+                    assert!(transport.borrow().0.iter().all(|event| event.instance == 1));
+                }
+
+                let plan = hardware.then(|| PlaybackPlan {
+                    device_ids: vec![1],
+                    routes: vec![route.clone()],
+                    nd7_devices: vec![0],
+                });
+                let preview = IdlePreview::start_with_settings(
+                    path.clone(),
+                    false,
+                    plan.as_ref(),
+                    PlaybackSettings::default(),
+                    VgmSettings {
+                        ay8910_ym2149: enabled,
+                    },
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let sources = loop {
+                    if let Some(sources) = preview.gain_sources().unwrap() {
+                        break sources;
+                    }
+                    assert!(Instant::now() < deadline, "AY idle preview did not start");
+                    thread::sleep(Duration::from_millis(10));
+                };
+                assert_eq!(sources.len(), 2);
+                for source in sources {
+                    let is_hardware = hardware && source.instance == Instance::Primary;
+                    assert_eq!(source.hardware, is_hardware);
+                    assert_eq!(source.visual_only, !is_hardware && !enabled);
+                }
+            }
+        }
+
+        for (chip_type, raw_output) in [
+            (Ay8910ChipType::Ay8930, false),
+            (Ay8910ChipType::Ym2149, true),
+        ] {
+            document.header.ay_chip_type = chip_type;
+            document.header.ay8910_flags.raw_output = raw_output;
+            std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+            let mut factories = ChipFactoryRegistry::new();
+            register_ay_emulation(
+                &mut factories,
+                VgmSettings {
+                    ay8910_ym2149: true,
+                },
+            );
+            assert!(
+                Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), &[]).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn ay_emulation_pitch_and_stereo_match_vgm_and_piano_roll() {
+        use soundlog::chip::Ay8910Spec;
+        use soundlog::vgm::command::{Ay8910StereoMask, WaitSamples};
+        use soundlog::vgm::header::Ay8910ChipType;
+
+        let dir = tempfile::tempdir().unwrap();
+        for divider in [false, true] {
+            let path = dir.path().join(format!("ym2149-{divider}.vgm"));
+            let mut builder = soundlog::vgm::VgmBuilder::new();
+            builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+            builder.add_vgm_command(Ay8910StereoMask::from_mask(0x02));
+            for (register, value) in [(0, 255), (7, 0xfe), (8, 15)] {
+                builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
+            }
+            builder.add_vgm_command(WaitSamples(44_100));
+            let mut document = builder.finalize();
+            document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+            document.header.ay8910_flags.ym_pin26_low = divider;
+            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+            let mut factories = ChipFactoryRegistry::new();
+            register_ay_emulation(
+                &mut factories,
+                VgmSettings {
+                    ay8910_ym2149: true,
+                },
+            );
+            let mut player =
+                Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), &[]).unwrap();
+            let mut frames = Vec::new();
+            while let Some(block) = player.render().unwrap() {
+                frames.extend_from_slice(block.frames());
+            }
+            assert!(frames.iter().all(|frame| frame[0].abs() < 0.00001));
+            let peak = frames.iter().map(|frame| frame[1]).fold(0.0_f32, f32::max);
+            assert!(peak > 0.001);
+            let mut previous = false;
+            let mut rising = 0;
+            for frame in &frames[100..44_000] {
+                let high = frame[1] > peak / 2.0;
+                rising += usize::from(high && !previous);
+                previous = high;
+            }
+            let expected = if divider { 219 } else { 437 };
+            assert!((rising as isize - expected).abs() <= 2, "{rising}");
+
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            run_preview(
+                &path,
+                44_100,
+                false,
+                &control,
+                &AtomicBool::new(false),
+                None,
+            )
+            .unwrap();
+            let notes =
+                control
+                    .preview
+                    .lock()
+                    .unwrap()
+                    .roll
+                    .snapshot(0, 44_100, RollMode::Incoming);
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].pitch, if divider { 57 } else { 69 });
+
+            let mut factories = ChipFactoryRegistry::new();
+            register_ay_emulation(
+                &mut factories,
+                VgmSettings {
+                    ay8910_ym2149: true,
+                },
+            );
+            let mut muted =
+                Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), &[]).unwrap();
+            let sources = Sequencer::gain_sources(&muted, &[]);
+            let gains = GainState::default();
+            gains
+                .values
+                .lock()
+                .unwrap()
+                .insert((Chip::Ay8910, GainPart::Chip), 0.0);
+            Sequencer::apply_chip_gains(&mut muted, &sources, &gains, &mut None).unwrap();
+            assert!(
+                muted
+                    .render()
+                    .unwrap()
+                    .unwrap()
+                    .frames()
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() < 0.00001)
             );
         }
     }

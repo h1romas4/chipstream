@@ -8,6 +8,7 @@ use soundlog::vgm::command::Instance;
 const MAX_NOTES: usize = 8192;
 pub const WINDOW_SECONDS: u64 = 6;
 pub const SN76489_INDEX: u8 = crate::fm_mute::CHIP_COUNT as u8;
+pub const AY8910_INDEX: u8 = SN76489_INDEX + 1;
 const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
@@ -214,6 +215,8 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
 pub fn source_color_index(chip: u8, instance: u8) -> u8 {
     if chip == SN76489_INDEX {
         2 * SN76489_INDEX + instance
+    } else if chip == AY8910_INDEX {
+        2 * SN76489_INDEX + 2 + instance
     } else {
         chip + instance * SN76489_INDEX
     }
@@ -222,6 +225,8 @@ pub fn source_color_index(chip: u8, instance: u8) -> u8 {
 pub fn tracked_chip(chip: &chipstream::sequencer::Chip) -> Option<(u8, u8)> {
     if matches!(chip, chipstream::sequencer::Chip::Sn76489) {
         Some((SN76489_INDEX, 3))
+    } else if matches!(chip, chipstream::sequencer::Chip::Ay8910) {
+        Some((AY8910_INDEX, 3))
     } else {
         Some((
             crate::fm_mute::chip_index(chip)? as u8,
@@ -617,9 +622,9 @@ pub fn view(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, SN76489_INDEX, active_key_colors,
-        channel_color, frequency_to_pitch, key_position, note_color, note_depths, ordered_notes,
-        source_color_index, tracked_chip,
+        AY8910_INDEX, MAX_NOTES, Note, PianoRoll, RollMode, RollProjection, SN76489_INDEX,
+        active_key_colors, channel_color, frequency_to_pitch, key_position, note_color,
+        note_depths, ordered_notes, source_color_index, tracked_chip,
     };
     use soundlog::chip::event::StateEvent;
     use soundlog::chip::event::ToneInfo;
@@ -642,16 +647,22 @@ mod tests {
                 end: None,
             })
             .collect();
-        let colors: HashSet<_> = (0..24)
+        let colors: HashSet<_> = (0..26)
             .flat_map(|chip| (0..18).map(move |channel| channel_color(chip, channel)))
             .collect();
-        assert_eq!(colors.len(), 24 * 18);
+        assert_eq!(colors.len(), 26 * 18);
         assert_eq!(
             tracked_chip(&chipstream::sequencer::Chip::Sn76489),
             Some((SN76489_INDEX, 3))
         );
         assert_eq!(source_color_index(SN76489_INDEX, 0), 22);
         assert_eq!(source_color_index(SN76489_INDEX, 1), 23);
+        assert_eq!(
+            tracked_chip(&chipstream::sequencer::Chip::Ay8910),
+            Some((AY8910_INDEX, 3))
+        );
+        assert_eq!(source_color_index(AY8910_INDEX, 0), 24);
+        assert_eq!(source_color_index(AY8910_INDEX, 1), 25);
 
         let mut hidden = HashSet::from([(0, 6), (0, 7)]);
         let filtered = ordered_notes(&notes, &hidden);

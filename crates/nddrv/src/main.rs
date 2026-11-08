@@ -628,6 +628,7 @@ struct IdlePreviewTarget {
     plan: Option<routing::PlaybackPlan>,
     looped: bool,
     settings: library::PlaybackSettings,
+    vgm_settings: library::VgmSettings,
 }
 
 impl AppView {
@@ -1008,6 +1009,24 @@ impl AppView {
                 },
             )
             .default_value(DEVICE_DEFAULT_SAMPLE_RATE);
+            let ay_get = view.clone();
+            let ay_set = view.clone();
+            let ay_field = SettingField::checkbox(
+                move |cx| {
+                    ay_get
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).config.vgm.ay8910_ym2149)
+                },
+                move |enabled, cx| {
+                    let _ = ay_set.update(cx, |view, cx| {
+                        view.config.vgm.ay8910_ym2149 = enabled;
+                        view.save();
+                        view.sync_idle_preview(cx);
+                        cx.notify();
+                    });
+                },
+            )
+            .default_value(false);
             dialog.title("Settings").width(px(760.)).centered().child(
                 div().h(px(400.)).w_full().child(
                     Settings::new("nddrv-settings")
@@ -1031,6 +1050,15 @@ impl AppView {
                                     SettingItem::new("Emulation audio device", output_field),
                                     SettingItem::new("Emulation sample rate", sample_rate_field),
                                 ])),
+                        )
+                        .page(
+                            SettingPage::new("VGM")
+                                .icon(assets::IconName::Cpu)
+                                .description("Changes apply to the next track. AY8910 is approximated by YM2149; NanoDrive routes take priority.")
+                                .group(SettingGroup::new().item(SettingItem::new(
+                                    "Assign YM2149 to AY8910",
+                                    ay_field,
+                                ))),
                         )
                         .page(
                             SettingPage::new("Recording")
@@ -1697,6 +1725,7 @@ impl AppView {
         let plan = self.routing.playback_plan(&self.config.routing.devices);
         if let Some(path) = self.config.playlist.get(index).cloned() {
             self.player.set_settings(self.config.playback);
+            self.player.set_vgm_settings(self.config.vgm);
             self.player
                 .set_audio_output_device(self.config.audio_output_device.clone());
             self.player
@@ -1799,6 +1828,7 @@ impl AppView {
             plan: self.routing.playback_plan(&self.config.routing.devices),
             looped: self.looped,
             settings: self.config.playback,
+            vgm_settings: self.config.vgm,
         })
     }
 
@@ -1847,6 +1877,7 @@ impl AppView {
                 target.looped,
                 target.plan.as_ref(),
                 target.settings,
+                target.vgm_settings,
             );
             match result {
                 Ok(preview) => {
@@ -1874,7 +1905,13 @@ impl AppView {
                     "{} #{}{}",
                     Track::chip_name(&source.chip),
                     source.instance as u8 + 1,
-                    if source.hardware { " (NanoDrive)" } else { "" }
+                    if source.hardware {
+                        " (NanoDrive)"
+                    } else if source.visual_only {
+                        " (visual only)"
+                    } else {
+                        ""
+                    }
                 );
                 rows.push(div().text_xs().text_color(rgb(0xb9e9e7)).child(title));
                 for channel in 0..total {
@@ -1921,7 +1958,7 @@ impl AppView {
                                 })),
                         );
                     }
-                    let label = if source.chip == Chip::Sn76489 {
+                    let label = if matches!(source.chip, Chip::Sn76489 | Chip::Ay8910) {
                         format!("Tone {}", channel + 1)
                     } else if channel >= fm_count {
                         format!("SSG {}", channel - fm_count + 1)
@@ -2077,12 +2114,15 @@ impl AppView {
         let mut seen = HashSet::new();
         if let Some(sources) = self.piano_sources() {
             for source in sources {
+                if source.visual_only {
+                    continue;
+                }
                 if !seen.insert(source.chip.clone()) {
                     continue;
                 }
-                let software = sources
-                    .iter()
-                    .any(|other| other.chip == source.chip && !other.hardware);
+                let software = sources.iter().any(|other| {
+                    other.chip == source.chip && !other.hardware && !other.visual_only
+                });
                 let hardware = sources
                     .iter()
                     .any(|other| other.chip == source.chip && other.hardware);
@@ -2394,7 +2434,10 @@ impl AppView {
                 Ok(sources) if self.gain_sources != sources => {
                     self.gain_sources_failed = false;
                     if let Some(sources) = &sources {
-                        for source in sources.iter().filter(|source| !source.hardware) {
+                        for source in sources
+                            .iter()
+                            .filter(|source| !source.hardware && !source.visual_only)
+                        {
                             let mut parts = vec![GainPart::Chip];
                             if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
                                 parts.extend([GainPart::Fm, GainPart::Ssg]);
@@ -3528,6 +3571,11 @@ impl AppView {
             &self.device_status,
             self.routing.connections(),
         );
+        let ay_emulation = if self.playing.is_some() {
+            self.player.active_vgm_settings().ay8910_ym2149
+        } else {
+            self.config.vgm.ay8910_ym2149
+        };
         let mut panels = vec![
             div()
                 .absolute()
@@ -3607,15 +3655,12 @@ impl AppView {
                     }));
             }
             nodes.push(source_node.into_any_element());
-            let silent = matches!(
+            let ay_source = matches!(
                 source,
                 patchbay::Source::Hardware(routing::HardwareChip::Ay8910, _)
             );
-            let target_label = if silent {
-                format!("{} (silent)", source.label())
-            } else {
-                source.label()
-            };
+            let silent = ay_source && !ay_emulation;
+            let target_label = source.emulator_label(ay_emulation);
             let mut target_node = div()
                 .id(SharedString::from(format!("emulator-{index}")))
                 .absolute()
@@ -3943,6 +3988,7 @@ impl AppView {
                     &track.chips,
                     self.routing.connections(),
                     &self.device_status,
+                    self.config.vgm.ay8910_ym2149,
                 );
                 let dimmed = !unsupported.is_empty();
                 let unsupported_tooltip = format!(
@@ -4271,6 +4317,7 @@ impl AppView {
                             &track.chips,
                             self.routing.connections(),
                             &self.device_status,
+                            self.config.vgm.ay8910_ym2149,
                         )
                     })
                     .unwrap_or_default();
@@ -4512,6 +4559,7 @@ fn unsupported_chips(
     chips: &[ChipTag],
     connections: &[routing::Connection],
     statuses: &HashMap<u64, DeviceStatus>,
+    ay_emulation: bool,
 ) -> Vec<String> {
     chips
         .iter()
@@ -4532,15 +4580,21 @@ fn unsupported_chips(
                 return true;
             }
             !instances.iter().all(|source| {
-                connections.iter().any(|connection| {
-                    connection.chip == chip
-                        && connection.source == *source
-                        && matches!(
-                            statuses.get(&connection.device_id),
-                            Some(DeviceStatus::Connected(entries))
-                                if chip.advertised(connection.target, entries)
-                        )
-                })
+                match connections
+                    .iter()
+                    .find(|connection| connection.chip == chip && connection.source == *source)
+                {
+                    Some(connection) => matches!(
+                        statuses.get(&connection.device_id),
+                        Some(DeviceStatus::Connected(entries))
+                            if chip.advertised(connection.target, entries)
+                    ),
+                    None => {
+                        ay_emulation
+                            && chip == routing::HardwareChip::Ay8910
+                            && tag.ym2149_compatible[source.number() as usize]
+                    }
+                }
             })
         })
         .map(ChipTag::label)
@@ -5186,6 +5240,7 @@ mod tests {
             name: "AY8910",
             instances: 1,
             ymfm: false,
+            ym2149_compatible: [true; 2],
         };
         let dual_ay = ChipTag {
             instances: 2,
@@ -5195,11 +5250,13 @@ mod tests {
             name: "POKEY",
             instances: 1,
             ymfm: false,
+            ym2149_compatible: [false; 2],
         };
         let ym = ChipTag {
             name: "YM2151",
             instances: 1,
             ymfm: true,
+            ym2149_compatible: [false; 2],
         };
         let capability = ndsif::CapabilityEntry {
             write_id: 0xa0,
@@ -5217,14 +5274,20 @@ mod tests {
         };
         let mut statuses = HashMap::from([(1, DeviceStatus::Connected(vec![capability]))]);
         assert_eq!(
-            unsupported_chips(&[ay.clone(), pokey.clone(), ym], &[], &statuses),
+            unsupported_chips(
+                &[ay.clone(), pokey.clone(), ym.clone()],
+                &[],
+                &statuses,
+                false
+            ),
             ["AY8910", "POKEY"]
         );
         assert_eq!(
             unsupported_chips(
                 &[ay.clone(), pokey.clone()],
                 std::slice::from_ref(&first),
-                &statuses
+                &statuses,
+                false
             ),
             ["POKEY"]
         );
@@ -5232,7 +5295,8 @@ mod tests {
             unsupported_chips(
                 std::slice::from_ref(&dual_ay),
                 std::slice::from_ref(&first),
-                &statuses
+                &statuses,
+                false
             ),
             ["AY8910x2"]
         );
@@ -5254,7 +5318,8 @@ mod tests {
             unsupported_chips(
                 std::slice::from_ref(&dual_ay),
                 &[first.clone(), second.clone()],
-                &statuses
+                &statuses,
+                false
             )
             .is_empty()
         );
@@ -5263,13 +5328,98 @@ mod tests {
             unsupported_chips(
                 std::slice::from_ref(&dual_ay),
                 &[first.clone(), second],
-                &statuses
+                &statuses,
+                false
             ),
             ["AY8910x2"]
         );
         statuses.insert(1, DeviceStatus::Connected(vec![]));
-        assert_eq!(unsupported_chips(&[ay], &[first], &statuses), ["AY8910"]);
-        assert_eq!(unsupported_chips(&[pokey], &[], &statuses), ["POKEY"]);
+        assert_eq!(
+            unsupported_chips(&[ay.clone()], &[first], &statuses, false),
+            ["AY8910"]
+        );
+        assert_eq!(
+            unsupported_chips(&[pokey.clone()], &[], &statuses, false),
+            ["POKEY"]
+        );
+        assert_eq!(
+            unsupported_chips(&[ay.clone(), pokey, ym], &[], &statuses, true),
+            ["POKEY"]
+        );
+        assert!(unsupported_chips(&[dual_ay.clone()], &[], &statuses, true).is_empty());
+        let valid_route = Connection {
+            chip: HardwareChip::Ay8910,
+            source: ChipInstance::Primary,
+            device_id: 2,
+            target: ChipInstance::Primary,
+        };
+        statuses.insert(
+            2,
+            DeviceStatus::Connected(vec![ndsif::CapabilityEntry {
+                instance: 0,
+                ..capability
+            }]),
+        );
+        assert!(
+            unsupported_chips(&[dual_ay.clone()], &[valid_route.clone()], &statuses, true)
+                .is_empty()
+        );
+        let incompatible = ChipTag {
+            ym2149_compatible: [true, false],
+            ..dual_ay
+        };
+        assert_eq!(
+            unsupported_chips(&[incompatible], &[valid_route.clone()], &statuses, true),
+            ["AY8910x2"]
+        );
+        statuses.insert(2, DeviceStatus::Disconnecting);
+        assert_eq!(
+            unsupported_chips(&[ay], &[valid_route], &statuses, true),
+            ["AY8910"]
+        );
+    }
+
+    #[test]
+    fn music_and_playlist_support_uses_loaded_vgm_compatibility() {
+        use flate2::{Compression, write::GzEncoder};
+        use soundlog::chip::Chip;
+        use soundlog::vgm::command::Instance;
+        use soundlog::vgm::header::Ay8910ChipType;
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        let mut document = builder.finalize();
+        for (chip_type, expected) in [
+            (Ay8910ChipType::Ym2149, Vec::<String>::new()),
+            (Ay8910ChipType::Ay8930, vec!["AY8910".to_owned()]),
+        ] {
+            document.header.ay_chip_type = chip_type;
+            let bytes = Vec::<u8>::from(&document);
+            for extension in ["vgm", "vgz"] {
+                let path = directory.path().join(format!("track.{extension}"));
+                let data = if extension == "vgz" {
+                    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                    encoder.write_all(&bytes).unwrap();
+                    encoder.finish().unwrap()
+                } else {
+                    bytes.clone()
+                };
+                std::fs::write(&path, data).unwrap();
+                let track = super::library::read_track_info(&path).unwrap();
+                let statuses = HashMap::new();
+                assert_eq!(
+                    unsupported_chips(&track.chips, &[], &statuses, false),
+                    ["AY8910"]
+                );
+                assert_eq!(
+                    unsupported_chips(&track.chips, &[], &statuses, true),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]

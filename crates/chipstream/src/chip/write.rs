@@ -184,6 +184,7 @@ typed_write!(Okim6258, Okim6258Spec, Okim6258);
 #[cfg(feature = "okim6295")]
 typed_write!(Okim6295, Okim6295Spec, Okim6295);
 typed_write!(YmfmChip, Ym2413Spec, Ym2413);
+typed_write!(YmfmChip, Ay8910Spec, Ay8910);
 typed_write!(YmfmChip, Ym2151Spec, Ym2151);
 typed_write!(YmfmChip, Ym2203Spec, Ym2203);
 typed_write!(YmfmChip, Ym3812Spec, Ym3812);

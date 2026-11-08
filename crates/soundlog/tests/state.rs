@@ -426,6 +426,13 @@ fn test_ay8910_state_tracking() {
             value: 0x02,
         },
     );
+    builder.add_chip_write(
+        Instance::Primary,
+        Ay8910Spec {
+            register: 0x08,
+            value: 0x0f,
+        },
+    );
     // Enable channel 0 tone
     builder.add_chip_write(
         Instance::Primary,

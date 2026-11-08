@@ -18,9 +18,11 @@ use super::{ChipError, ChipRegisterWrite, SoundChip};
 /// YM3526, Y8950, YM3812, YMF262, and YMF278B. Reset does not reset external
 /// callback state and is not necessarily equivalent to creating a new chip;
 /// for example, ymfm's YM2612 reset does not clear DAC state.
+/// [`Self::new_ym2149`] additionally provides an AY8910-compatible YM2149.
 pub struct YmfmChip {
     chip_type: Chip,
     clock: u32,
+    native_clock: u32,
     banks: u8,
     inner: ChipPtr,
 }
@@ -28,6 +30,7 @@ pub struct YmfmChip {
 struct YmfmStateSnapshot {
     chip_type: Chip,
     clock: u32,
+    native_clock: u32,
     banks: u8,
     native: Vec<u8>,
 }
@@ -36,6 +39,44 @@ impl YmfmChip {
     /// Create a chip using ymfm-sys's default callbacks.
     pub fn new(chip: Chip, clock: u32) -> Result<Self, ChipError> {
         Self::with_handler(chip, clock, InterfaceHandler::default())
+    }
+
+    /// Approximate an AY8910-compatible source with YMFM's YM2149.
+    ///
+    /// `divide_clock` models the YM2149 clock-divider pin. The reported input
+    /// clock remains the original clock, as required by sequencer factories.
+    pub fn new_ym2149(clock: u32, divide_clock: bool) -> Result<Self, ChipError> {
+        let native_clock = Self::ym2149_native_clock(clock, divide_clock)?;
+        let mut chip = Self::create(
+            Chip::Ay8910,
+            native_clock,
+            InterfaceHandler::default(),
+            ChipType::Ym2149,
+            64,
+            1,
+        )?;
+        chip.clock = clock;
+        Ok(chip)
+    }
+
+    /// Validate the input clock for [`Self::new_ym2149`] without creating a chip.
+    pub fn validate_ym2149_clock(clock: u32, divide_clock: bool) -> Result<(), ChipError> {
+        Self::ym2149_native_clock(clock, divide_clock).map(|_| ())
+    }
+
+    fn ym2149_native_clock(clock: u32, divide_clock: bool) -> Result<u32, ChipError> {
+        let minimum = if divide_clock { 16 } else { 8 };
+        if clock < minimum {
+            return Err(ChipError::InvalidClock { clock, minimum });
+        }
+        // ymfm's standalone YM2149 clocks the SSG once per generated sample,
+        // but reports input_clock / 64; the SSG must run at clock / 8.
+        clock
+            .checked_mul(if divide_clock { 4 } else { 8 })
+            .ok_or(ChipError::InvalidConfiguration {
+                chip: Chip::Ay8910,
+                reason: "YM2149 clock exceeds the supported range",
+            })
     }
 
     /// Create a chip with callbacks for external data, timers, and I/O.
@@ -111,6 +152,7 @@ impl YmfmChip {
         Ok(Self {
             chip_type: chip,
             clock,
+            native_clock: clock,
             banks,
             inner,
         })
@@ -136,6 +178,12 @@ impl SoundChip for YmfmChip {
 
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
+        if self.chip_type == Chip::Ay8910 && register > 0x0f {
+            return Err(ChipError::InvalidRegister {
+                chip: self.chip_type.clone(),
+                register,
+            });
+        }
         if bank >= self.banks {
             return Err(ChipError::InvalidRegisterBank {
                 chip: self.chip_type.clone(),
@@ -144,7 +192,10 @@ impl SoundChip for YmfmChip {
         }
         let offset = u32::from(bank) * 2;
         self.inner.pin_mut().write(offset, register);
-        self.inner.pin_mut().write(offset + 1, value);
+        self.inner.pin_mut().write(
+            offset + if self.chip_type == Chip::Ay8910 { 2 } else { 1 },
+            value,
+        );
         Ok(())
     }
 
@@ -173,6 +224,7 @@ impl SoundChip for YmfmChip {
         Ok(Box::new(YmfmStateSnapshot {
             chip_type: self.chip_type.clone(),
             clock: self.clock,
+            native_clock: self.native_clock,
             banks: self.banks,
             native,
         }))
@@ -184,7 +236,10 @@ impl SoundChip for YmfmChip {
                 self.chip_type.clone(),
             ));
         };
-        if state.chip_type != self.chip_type || state.clock != self.clock {
+        if state.chip_type != self.chip_type
+            || state.clock != self.clock
+            || state.native_clock != self.native_clock
+        {
             return Err(super::ChipError::InvalidStateSnapshot(
                 self.chip_type.clone(),
             ));

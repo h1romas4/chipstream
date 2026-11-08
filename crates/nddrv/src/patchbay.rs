@@ -31,6 +31,16 @@ impl Source {
         };
         format!("{name} #{}", instance.number() + 1)
     }
+
+    pub fn emulator_label(self, ay_emulation: bool) -> String {
+        match self {
+            Self::Hardware(HardwareChip::Ay8910, instance) if ay_emulation => {
+                format!("YM2149 #{} (assigned)", instance.number() + 1)
+            }
+            Self::Hardware(HardwareChip::Ay8910, _) => format!("{} (silent)", self.label()),
+            _ => self.label(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -203,6 +213,15 @@ pub fn build(
 mod tests {
     use super::*;
     use crate::routing::{Connection, SessionRouting};
+
+    #[test]
+    fn ay_emulator_labels_follow_setting() {
+        let ay = Source::Hardware(HardwareChip::Ay8910, ChipInstance::Secondary);
+        assert_eq!(ay.emulator_label(false), "AY8910 #2 (silent)");
+        assert_eq!(ay.emulator_label(true), "YM2149 #2 (assigned)");
+        let other = Source::Hardware(HardwareChip::Ym2151, ChipInstance::Primary);
+        assert_eq!(other.emulator_label(true), other.label());
+    }
 
     #[test]
     fn compact_device_header_keeps_endpoints_and_cables_aligned() {

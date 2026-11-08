@@ -20,6 +20,10 @@ pub type Ay8910Storage = SparseStorage<u8, u8>;
 ///
 /// Tracks all 3 tone channels and their register state, detecting key on/off
 /// events and extracting tone information.
+/// A tone is considered active when its mixer bit is enabled, its period is
+/// nonzero, and its volume is nonzero or envelope mode is selected. Envelope
+/// amplitude and noise-only output are not tracked. Until written, mixer bits
+/// are considered disabled and volume and period registers zero.
 ///
 /// # Register Layout
 ///
@@ -134,8 +138,8 @@ impl Ay8910State {
         let fine_reg = (channel * 2) as u8;
         let coarse_reg = fine_reg + 1;
 
-        let fine = self.registers.read(fine_reg)?;
-        let coarse = self.registers.read(coarse_reg)?;
+        let fine = self.registers.read(fine_reg).unwrap_or(0);
+        let coarse = self.registers.read(coarse_reg).unwrap_or(0);
 
         // 12-bit period: fine (8 bits) + coarse (4 bits)
         let period = (fine as u16) | ((coarse as u16 & 0x0F) << 8);
@@ -149,121 +153,38 @@ impl Ay8910State {
         Some(ToneInfo::new(period, 0, Some(freq_hz)))
     }
 
-    /// Handle period register writes
-    ///
-    /// # Arguments
-    ///
-    /// * `register` - Register address (0x00-0x05)
-    ///
-    /// # Returns
-    ///
-    /// Some(vec![StateEvent::ToneChange) if tone changed while enabled, None otherwise
-    fn handle_period_register(&mut self, register: u8) -> Option<Vec<StateEvent>> {
-        let channel = (register / 2) as usize;
-
-        if channel >= AY8910_CHANNELS {
-            return None;
-        }
-
-        // If channel is enabled and tone changed, emit ToneChange
-        if self.channels[channel].key_state == KeyState::On
-            && let Some(tone) = self.extract_tone(channel)
-        {
-            let tone_changed = self.channels[channel]
-                .tone
-                .as_ref()
-                .map(|old_tone| old_tone.fnum != tone.fnum)
-                .unwrap_or(true);
-
-            if tone_changed {
-                self.channels[channel].tone = Some(tone);
-                return Some(vec![StateEvent::ToneChange {
+    fn update_channel(&mut self, channel: usize) -> Option<StateEvent> {
+        let mixer = self.registers.read(0x07).unwrap_or(0xff);
+        let volume = self.registers.read(0x08 + channel as u8).unwrap_or(0);
+        let tone = if mixer & (1 << channel) == 0 && volume & 0x1f != 0 {
+            self.extract_tone(channel)
+        } else {
+            None
+        };
+        let state = &mut self.channels[channel];
+        let event = match (state.key_state, state.tone, tone) {
+            (KeyState::Off, _, Some(tone)) => Some(StateEvent::KeyOn {
+                channel: channel as u8,
+                tone,
+            }),
+            (KeyState::On, _, None) => Some(StateEvent::KeyOff {
+                channel: channel as u8,
+            }),
+            (KeyState::On, previous, Some(tone)) if previous != Some(tone) => {
+                Some(StateEvent::ToneChange {
                     channel: channel as u8,
                     tone,
-                }]);
+                })
             }
-        }
-
-        None
-    }
-
-    /// Handle mixer control register write (0x07)
-    ///
-    /// Register 0x07 format:
-    /// - Bit 0: Channel A tone enable (0=enabled, 1=disabled)
-    /// - Bit 1: Channel B tone enable (0=enabled, 1=disabled)
-    /// - Bit 2: Channel C tone enable (0=enabled, 1=disabled)
-    /// - Bit 3: Channel A noise enable (0=enabled, 1=disabled)
-    /// - Bit 4: Channel B noise enable (0=enabled, 1=disabled)
-    /// - Bit 5: Channel C noise enable (0=enabled, 1=disabled)
-    /// - Bits 6-7: I/O port direction
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Value written
-    ///
-    /// # Returns
-    ///
-    /// Some(StateEvent) for the first channel that changed state, None otherwise
-    fn handle_mixer_register(&mut self, value: u8) -> Option<Vec<StateEvent>> {
-        let mut events = Vec::new();
-
-        for channel in 0..AY8910_CHANNELS {
-            // Tone enable bit (0=enabled, 1=disabled, so we invert)
-            let tone_disabled = (value & (1 << channel)) != 0;
-            let new_key_state = if tone_disabled {
-                KeyState::Off
-            } else {
-                KeyState::On
-            };
-
-            let old_key_state = self.channels[channel].key_state;
-            self.channels[channel].key_state = new_key_state;
-
-            match (old_key_state, new_key_state) {
-                (KeyState::Off, KeyState::On) => {
-                    if let Some(tone) = self.extract_tone(channel) {
-                        self.channels[channel].tone = Some(tone);
-                        events.push(StateEvent::KeyOn {
-                            channel: channel as u8,
-                            tone,
-                        });
-                    }
-                }
-                (KeyState::On, KeyState::Off) => {
-                    events.push(StateEvent::KeyOff {
-                        channel: channel as u8,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // Return all events
-        if events.is_empty() {
-            None
+            _ => None,
+        };
+        state.key_state = if tone.is_some() {
+            KeyState::On
         } else {
-            Some(events)
-        }
-    }
-
-    /// Handle volume register writes (0x08-0x0A)
-    ///
-    /// # Arguments
-    ///
-    /// * `register` - Register address (0x08-0x0A)
-    ///
-    /// # Returns
-    ///
-    /// None (volume changes don't generate events)
-    fn handle_volume_register(&mut self, register: u8) -> Option<Vec<StateEvent>> {
-        let channel = (register - 0x08) as usize;
-
-        if channel >= AY8910_CHANNELS {
-            return None;
-        }
-
-        None
+            KeyState::Off
+        };
+        state.tone = tone;
+        event
     }
 }
 
@@ -285,7 +206,9 @@ impl ChipState for Ay8910State {
 
         match register {
             // Channel period registers (0x00-0x05)
-            0x00..=0x05 => self.handle_period_register(register),
+            0x00..=0x05 => self
+                .update_channel((register / 2) as usize)
+                .map(|event| vec![event]),
 
             // Noise period register (0x06)
             0x06 => {
@@ -294,10 +217,17 @@ impl ChipState for Ay8910State {
             }
 
             // Mixer control register (0x07)
-            0x07 => self.handle_mixer_register(value),
+            0x07 => {
+                let events: Vec<_> = (0..AY8910_CHANNELS)
+                    .filter_map(|channel| self.update_channel(channel))
+                    .collect();
+                (!events.is_empty()).then_some(events)
+            }
 
             // Volume registers (0x08-0x0A)
-            0x08..=0x0A => self.handle_volume_register(register),
+            0x08..=0x0A => self
+                .update_channel((register - 0x08) as usize)
+                .map(|event| vec![event]),
 
             // Envelope period registers (0x0B-0x0C)
             0x0B | 0x0C => {
@@ -344,6 +274,7 @@ mod tests {
         // Set period for channel A
         state.on_register_write(0x00, 0xCD); // Fine
         state.on_register_write(0x01, 0x02); // Coarse
+        state.on_register_write(0x08, 0x0f);
 
         // Enable channel A tone (disable bit 0)
         let event = state.on_register_write(0x07, 0b11111110);
@@ -367,6 +298,7 @@ mod tests {
         // Set up and enable channel A
         state.on_register_write(0x00, 0xCD);
         state.on_register_write(0x01, 0x02);
+        state.on_register_write(0x08, 0x0f);
         state.on_register_write(0x07, 0b11111110);
 
         // Disable channel A tone (set bit 0)
@@ -386,6 +318,7 @@ mod tests {
         // Set up and enable channel A
         state.on_register_write(0x00, 0xCD);
         state.on_register_write(0x01, 0x02);
+        state.on_register_write(0x08, 0x0f);
         state.on_register_write(0x07, 0b11111110);
 
         // Change period while enabled
@@ -413,6 +346,8 @@ mod tests {
         // Set up channel B
         state.on_register_write(0x02, 0x80);
         state.on_register_write(0x03, 0x01);
+        state.on_register_write(0x08, 0x0f);
+        state.on_register_write(0x09, 0x0f);
 
         // Enable both channels (disable bits 0 and 1)
         state.on_register_write(0x07, 0b11111100);
@@ -438,6 +373,7 @@ mod tests {
 
         state.on_register_write(0x00, 0xCD);
         state.on_register_write(0x01, 0x02);
+        state.on_register_write(0x08, 0x0f);
         state.on_register_write(0x07, 0b11111110);
 
         state.reset();
@@ -465,5 +401,38 @@ mod tests {
                     .map(|e| e.len() == 1 && matches!(&e[0], StateEvent::KeyOff { .. }))
                     .unwrap_or(false))
         );
+    }
+
+    #[test]
+    fn volume_mixer_envelope_and_period_control_notes() {
+        let mut state = Ay8910State::new(2_000_000.0);
+        assert!(state.on_register_write(0x00, 125).is_none());
+        assert!(state.on_register_write(0x07, 0xfe).is_none());
+        let on = state.on_register_write(0x08, 0x0f).unwrap();
+        assert!(
+            matches!(&on[..], [StateEvent::KeyOn { channel: 0, tone }] if tone.freq_hz == Some(1000.0))
+        );
+        assert!(state.on_register_write(0x08, 1).is_none());
+        assert!(matches!(
+            &state.on_register_write(0x08, 0).unwrap()[..],
+            [StateEvent::KeyOff { channel: 0 }]
+        ));
+        assert!(matches!(
+            &state.on_register_write(0x08, 0x10).unwrap()[..],
+            [StateEvent::KeyOn { channel: 0, .. }]
+        ));
+        assert!(matches!(
+            &state.on_register_write(0x00, 0).unwrap()[..],
+            [StateEvent::KeyOff { channel: 0 }]
+        ));
+        assert!(matches!(
+            &state.on_register_write(0x00, 125).unwrap()[..],
+            [StateEvent::KeyOn { channel: 0, .. }]
+        ));
+        assert!(matches!(
+            &state.on_register_write(0x07, 0xf7).unwrap()[..],
+            [StateEvent::KeyOff { channel: 0 }]
+        ));
+        assert!(state.on_register_write(0x08, 15).is_none());
     }
 }

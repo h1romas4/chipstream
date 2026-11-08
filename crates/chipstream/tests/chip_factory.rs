@@ -11,6 +11,53 @@ use soundlog::vgm::command::WaitSamples;
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
 
 #[test]
+fn factory_fallback_only_handles_declined_instances_and_propagates_errors() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+    builder.register_chip(Chip::Ay8910, Instance::Secondary, 2_000_000);
+    builder.add_vgm_command(WaitSamples(10));
+    let document = builder.finalize();
+    let called = Arc::new(Mutex::new(Vec::new()));
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register_optional(Chip::Ay8910, |config| {
+        if config.instance() == Instance::Primary {
+            Ok(Some(Box::new(FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            ))))
+        } else {
+            Ok(None)
+        }
+    });
+    let seen = Arc::clone(&called);
+    factories.register_fallback(Chip::Ay8910, move |config| {
+        seen.lock().unwrap().push(config.instance());
+        Ok(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        )))
+    });
+    let player = VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+    assert_eq!(player.chip_instances().count(), 2);
+    assert_eq!(*called.lock().unwrap(), vec![Instance::Secondary]);
+
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register_optional(Chip::Ay8910, |_| {
+        Err(ChipError::External {
+            chip: Chip::Ay8910,
+            message: "route failed".into(),
+        })
+    });
+    factories.register_fallback(Chip::Ay8910, |_| panic!("errors must not fall back"));
+    assert!(matches!(
+        VgmSequencer::new_with_factories(document, 44_100, 64, factories),
+        Err(VgmSequencerError::Chip(ChipError::External { .. }))
+    ));
+}
+
+#[test]
 fn state_callbacks_work_with_external_chip_factories() {
     use chipstream::sequencer::StateEvent;
     use soundlog::chip::state::Ym2151State;

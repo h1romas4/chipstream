@@ -111,6 +111,59 @@ fn clock_boundaries_and_unsupported_chips_are_checked_before_creation() {
 }
 
 #[test]
+fn ym2149_emits_correct_pitch_and_honors_clock_divider() {
+    for (divide, expected) in [(false, 439_usize), (true, 220)] {
+        let mut chip = YmfmChip::new_ym2149(1_792_000, divide).unwrap();
+        assert_eq!(chip.chip_type(), &Chip::Ay8910);
+        assert_eq!(chip.clock(), 1_792_000);
+        assert_eq!(chip.sample_rate(), if divide { 112_000 } else { 224_000 });
+        assert_eq!(chip.channels(), 3);
+        for (register, value) in [(0, 255), (1, 0), (7, 0xfe), (8, 15)] {
+            chip.write(Ay8910Spec { register, value }).unwrap();
+        }
+        let mut samples = vec![0; chip.sample_rate() as usize * 3];
+        chip.generate(&mut samples).unwrap();
+        let mut previous = 0;
+        let mut rising = 0;
+        for frame in samples.chunks_exact(3) {
+            if frame[0] > 0 && previous == 0 {
+                rising += 1;
+            }
+            assert_eq!(frame[1], 0);
+            assert_eq!(frame[2], 0);
+            previous = frame[0];
+        }
+        assert!((rising as isize - expected as isize).abs() <= 1, "{rising}");
+    }
+    assert!(matches!(
+        YmfmChip::new_ym2149(7, false),
+        Err(ChipError::InvalidClock { .. })
+    ));
+    assert!(matches!(
+        YmfmChip::new_ym2149(u32::MAX, false),
+        Err(ChipError::InvalidConfiguration { .. })
+    ));
+    let mut normal = YmfmChip::new_ym2149(1_792_000, false).unwrap();
+    assert!(matches!(
+        normal.write(Ay8910Spec {
+            register: 0x10,
+            value: 0
+        }),
+        Err(ChipError::InvalidRegister {
+            chip: Chip::Ay8910,
+            register: 0x10
+        })
+    ));
+    let snapshot = normal.save_state().unwrap();
+    normal.restore_state(snapshot.as_ref()).unwrap();
+    let mut divided = YmfmChip::new_ym2149(1_792_000, true).unwrap();
+    assert!(matches!(
+        divided.restore_state(snapshot.as_ref()),
+        Err(ChipError::InvalidStateSnapshot(Chip::Ay8910))
+    ));
+}
+
+#[test]
 fn invalid_buffer_does_not_change_state_or_samples() {
     let mut chip = YmfmChip::new(Chip::Ym2612, 7_670_000).unwrap();
     let mut reference = YmfmChip::new(Chip::Ym2612, 7_670_000).unwrap();

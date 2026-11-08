@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Fix: Track AY8910 tone key transitions using mixer, volume, and envelope selection rather than mixer alone.
 - [x] Fix: Apply the reset volume LFO level before MDX key-on when an LFO delay is configured.
 - [x] Add: Optionally expose DAC stream start/stop commands and their configured chip targets.
 - [x] Fix: Preserve DAC stream timing and fractional phase across frequency changes.

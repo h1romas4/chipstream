@@ -77,6 +77,17 @@ Settings are saved and apply to the next track. Changing the output device
 resets its sample rate to **Device default**. With NanoDrive routing, emulated
 chips use this output; hardware audio is separate.
 
+In **Settings > VGM**, enable **Assign YM2149 to AY8910** to
+approximate AY8910-family VGM audio in software. It is off by default and
+changes apply to the next track. NanoDrive routes take priority per instance;
+unrouted instances use YM2149. AY8910 and YM2149 sound different, and AY8930,
+AY8914, raw/discrete output and reserved AY flags are not supported by this
+emulation. YM2149 clock division and per-channel stereo masks are supported.
+If a VGM has two AY instances and only one is routed to hardware, enable this
+option or route both instances; a partial hardware route without emulation is
+not playable. Music and Playlist support indicators reflect this setting and
+the track's AY variant and output flags.
+
 Track Info shows available metadata. Artwork is loaded from the track's folder.
 
 ### Recording
@@ -103,7 +114,10 @@ FM channels also provide mute and solo controls. These controls do not affect
 NanoDrive output.
 
 The Piano Roll visualizes selected pitched voices; it does not display every
-sound, such as PCM and noise.
+sound, such as PCM and noise. AY8910 and YM2149 tone channels are shown in
+both modes, including when routed to NanoDrive. Without an AY hardware route
+or enabled YM2149 emulation they are visual-only. Envelope-enabled
+tones are shown as active without simulating the envelope amplitude.
 
 ## NanoDrive Routing
 

@@ -1035,6 +1035,7 @@ impl<'a> VgmSequencer<'a> {
             * volume::mix_gain(&chip, true, has_ym2612)
             * volume::chip_gain(extra, &chip, id, instance, true, dual);
         let coefficients = match chip {
+            Chip::Ay8910 if backend.channels() == 3 => vec![[main / 3.0, main / 3.0]; 3],
             Chip::Ym2203 => vec![
                 [main, main],
                 [paired, paired],
@@ -1052,9 +1053,14 @@ impl<'a> VgmSequencer<'a> {
             _ => vec![[main, 0.0], [0.0, main]],
         };
         let matrix = StereoMatrix::new(coefficients)?;
-        if backend.channels() != Self::matrix_channels(&chip) {
+        let expected_channels = if chip == Chip::Ay8910 && backend.channels() == 3 {
+            3
+        } else {
+            Self::matrix_channels(&chip)
+        };
+        if backend.channels() != expected_channels {
             return Err(VgmSequencerError::Audio(AudioError::ChannelMismatch {
-                expected: Self::matrix_channels(&chip),
+                expected: expected_channels,
                 actual: backend.channels(),
             }));
         }
@@ -2084,21 +2090,36 @@ impl<'a> VgmSequencer<'a> {
                     ])?;
                 }
             }
-            AY8910StereoMask(mask)
-                if self.voices.iter().any(|voice| {
+            AY8910StereoMask(mask) => {
+                if let Some(voice) = self.voices.iter_mut().find(|voice| {
                     voice.chip == Chip::Ay8910 && voice.instance == mask.chip_instance
-                }) && !(mask.left_ch1
-                    && mask.right_ch1
-                    && mask.left_ch2
-                    && mask.right_ch2
-                    && mask.left_ch3
-                    && mask.right_ch3) =>
-            {
-                return Err(ChipError::InvalidConfiguration {
-                    chip: Chip::Ay8910,
-                    reason: "AY8910 per-channel stereo masks are not supported",
+                }) {
+                    if voice.route.chip().channels() == 3 {
+                        let gain = voice.main_coefficient / 3.0;
+                        let coefficient = |left, right| {
+                            [
+                                if left { gain } else { 0.0 },
+                                if right { gain } else { 0.0 },
+                            ]
+                        };
+                        voice.matrix = StereoMatrix::new(vec![
+                            coefficient(mask.left_ch1, mask.right_ch1),
+                            coefficient(mask.left_ch2, mask.right_ch2),
+                            coefficient(mask.left_ch3, mask.right_ch3),
+                        ])?;
+                    } else if !(mask.left_ch1
+                        && mask.right_ch1
+                        && mask.left_ch2
+                        && mask.right_ch2
+                        && mask.left_ch3
+                        && mask.right_ch3)
+                    {
+                        return Err(ChipError::InvalidConfiguration {
+                            chip: Chip::Ay8910,
+                            reason: "AY8910 per-channel stereo masks are not supported by this backend",
+                        }.into());
+                    }
                 }
-                .into());
             }
             DataBlock(block) => {
                 self.load_block(*block)?;
