@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
 
 - Reflect YM2149 assignments in Routing, Music, and Playlist support indicators.
 - Add opt-in YMFM YM2149 emulation for unrouted VGM AY8910-family chips.
