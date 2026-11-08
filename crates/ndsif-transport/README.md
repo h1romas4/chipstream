@@ -19,6 +19,13 @@ Emulated chips continue to produce host PCM.
 | Schedule multiple devices on a host audio timeline | `create_recorders`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
 | Inspect or control a device directly | `NdsifSerialTransport::open` |
 
+For explicitly routed scheduled transports, `create_routed_transport_factories_with_nd7`
+accepts identified NanoDrive 7 indices and permits YM2149 on their AY targets
+as an approximation using YM2203 SSG. The caller must validate shared ND7
+chip and clock resources. Existing route factories without ND7 identification
+continue to reject YM2149. `create_automatic_transport_factories_with_nd7`
+also supports this mapping and validates shared resources.
+
 Most applications should start with `create_chip_factories`. It selects the
 first connected device that advertises a compatible chip and clock; unmatched
 chips use chipstream's normal emulation. Errors opening or initializing a

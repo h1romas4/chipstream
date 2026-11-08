@@ -112,6 +112,11 @@ select a serial port, and connect the device. Matching chip instances are routed
 automatically where possible. To change a route, select a sequencer chip and
 then a highlighted device or software-emulation target.
 
+YM2149 tracks appear as AY8910 and can use a NanoDrive 7 AY route. The device
+uses YM2203 SSG rather than a physical YM2149, so the sound may differ. AY and
+YM2203 routes share physical chips and clocks; incompatible combinations are
+rejected. YM2149 clock-divider, raw and discrete-output flags are not supported.
+
 Hardware playback is best-effort and may not be sample-accurate. NanoDrive
 audio comes from the device and must be mixed externally with software output.
 Pause is unavailable while a hardware route is active. Unsupported or

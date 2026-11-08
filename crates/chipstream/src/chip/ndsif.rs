@@ -233,12 +233,37 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
+        Self::with_ay_compatibility(config, target, transport, false)
+    }
+
+    /// Create an adapter for NanoDrive 7, whose AY target uses YM2203 SSG.
+    ///
+    /// YM2149 writes are accepted as an approximation on the AY-compatible
+    /// target. Other AY variants and unsupported output or clock flags remain
+    /// rejected. The caller must ensure the target is a NanoDrive 7.
+    pub fn with_target_instance_for_nd7(
+        config: &ChipFactoryConfig<'_>,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+    ) -> Result<Self, ChipError> {
+        Self::with_ay_compatibility(config, target, transport, true)
+    }
+
+    fn with_ay_compatibility(
+        config: &ChipFactoryConfig<'_>,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+        allow_ym2149: bool,
+    ) -> Result<Self, ChipError> {
+        use soundlog::vgm::header::Ay8910ChipType;
+
         let chip = config.chip().clone();
         let Some((divisor, channels, write_id)) = ndsif_chip_config(&chip) else {
             return Err(ChipError::UnsupportedChip(chip));
         };
         if chip == Chip::Ay8910
-            && (config.header().ay_chip_type != soundlog::vgm::header::Ay8910ChipType::Ay8910
+            && (!(config.header().ay_chip_type == Ay8910ChipType::Ay8910
+                || (allow_ym2149 && config.header().ay_chip_type == Ay8910ChipType::Ym2149))
                 || config.header().ay8910_flags.ym_pin26_low
                 || config.header().ay8910_flags.discrete_output
                 || config.header().ay8910_flags.raw_output
@@ -246,7 +271,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         {
             return Err(ChipError::InvalidConfiguration {
                 chip,
-                reason: "NDSIF AY routing requires AY-3-8910 with mixed output and no YM clock-divider flags",
+                reason: "NDSIF AY routing requires a supported AY chip type with mixed output and no YM clock-divider flags",
             });
         }
         if config.clock() < divisor {

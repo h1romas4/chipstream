@@ -64,6 +64,9 @@ Hardware audio is not included in the GStreamer PCM output; mix it separately.
   requires a nonempty model name from NDSIF `GET_INFO`. NanoDrive 7 routes are
   checked for shared-chip and shared-clock conflicts before playback. A
   conflict fails playback; automatic routing does not retry another device.
+- YM2149 can use a NanoDrive 7 AY target through its YM2203 SSG, as an
+  approximation. YM clock-divider, raw and discrete-output flags remain
+  unsupported; other devices do not accept YM2149 through this route.
 - Seeking is disabled while an NDSIF port is configured.
 - Hardware commands are scheduled against the GStreamer clock and the latest
   latency reported before playback starts. If no latency event has arrived, an

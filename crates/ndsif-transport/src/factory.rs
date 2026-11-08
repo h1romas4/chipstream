@@ -92,6 +92,8 @@ pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
 ///
 /// `nd7_devices` contains indices into `transports`. The validation applies to
 /// hardware-selected chip instances as they are constructed.
+/// A NanoDrive 7 AY target also accepts YM2149 as an approximation using its
+/// YM2203 SSG.
 pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
@@ -174,7 +176,19 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
                 reason: "no NDSIF AY8910 target supports this instance and clock",
             })?;
             validate_nd7_selection(&ay_transports, &nd7_devices, &validator, &transport, config)?;
-            Ok(Box::new(NdsifSoundChip::new(config, transport)?))
+            let is_nd7 = ay_transports
+                .iter()
+                .position(|candidate| Rc::ptr_eq(candidate, &transport))
+                .is_some_and(|index| nd7_devices.contains(&index));
+            if is_nd7 {
+                Ok(Box::new(NdsifSoundChip::with_target_instance_for_nd7(
+                    config,
+                    config.instance(),
+                    transport,
+                )?))
+            } else {
+                Ok(Box::new(NdsifSoundChip::new(config, transport)?))
+            }
         });
     }
 

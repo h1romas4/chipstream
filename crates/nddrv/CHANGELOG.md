@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Route YM2149 VGM writes to NanoDrive 7's AY-compatible YM2203 SSG.
+
 ## v0.9.0
 
 - Play a single selected Playlist track with Enter.

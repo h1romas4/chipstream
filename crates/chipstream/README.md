@@ -249,7 +249,7 @@ fn play<T: NdsifTransport + 'static>(
 
 | Adapter | Supported use | Notes |
 | --- | --- | --- |
-| `NdsifSoundChip` | YMFM chips; optional AY-3-8910 | Register AY with `register_ay8910_factory`. No built-in AY emulation; other AY variants, raw/discrete output, and per-channel stereo are unsupported. |
+| `NdsifSoundChip` | YMFM chips; optional AY-3-8910 | Register AY with `register_ay8910_factory`. No built-in AY emulation. `with_target_instance_for_nd7` additionally allows YM2149 as an approximation on NanoDrive 7; other AY variants, raw/discrete output, YM clock-divider flags, and per-channel stereo are unsupported. |
 | `NdsifSn76489` | SN76489 | Rejects T6W28 and non-default Game Gear stereo masks. A stereo-enabled header alone is allowed. |
 | `NdsifOkim6258` | OKIM6258 | Decodes source ADPCM and re-encodes it for the device. |
 

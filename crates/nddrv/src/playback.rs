@@ -1867,8 +1867,11 @@ fn run_inner(
             return Ok(());
         }
         let recorders = crate::hardware::recorders(lease)?;
-        let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &plan.routes)?;
+        let factories = ndsif_transport::create_routed_transport_factories_with_nd7(
+            &recorders,
+            &plan.routes,
+            &plan.nd7_devices,
+        )?;
         let sequencer = Sequencer::for_playback_with_settings(
             path,
             config.sample_rate,

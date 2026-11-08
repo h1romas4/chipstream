@@ -208,6 +208,30 @@ pub fn create_routed_transport_factories<T: NdsifRoutingTransport + 'static>(
     routed_factories(devices.to_vec(), routes)
 }
 
+/// Build explicit route factories with NanoDrive 7 AY-compatible YM2149 support.
+///
+/// `nd7_devices` identifies NanoDrive 7 indices in `devices`. Their AY targets
+/// accept YM2149 as an approximation through YM2203 SSG. The caller must also
+/// validate NanoDrive 7 shared chip and clock resources before playback.
+///
+/// # Errors
+///
+/// Returns an error for an unknown NanoDrive 7 index, aliased devices, or
+/// invalid routes. Clock and stream compatibility are checked when the
+/// sequencer constructs its chip instances.
+pub fn create_routed_transport_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
+    devices: &[Rc<RefCell<T>>],
+    routes: &[NdsifRoute],
+    nd7_devices: &[usize],
+) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
+    for &index in nd7_devices {
+        if index >= devices.len() {
+            return Err(NdsifRoutingError::UnknownDevice(index));
+        }
+    }
+    routed_factories_with_nd7(devices.to_vec(), routes, nd7_devices)
+}
+
 fn route_write_id(chip: &Chip, target: Instance) -> Option<WriteId> {
     match chip {
         Chip::Sn76489 => Some(match target {
@@ -253,6 +277,14 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
     devices: Vec<Rc<RefCell<T>>>,
     routes: &[NdsifRoute],
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
+    routed_factories_with_nd7(devices, routes, &[])
+}
+
+fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
+    devices: Vec<Rc<RefCell<T>>>,
+    routes: &[NdsifRoute],
+    nd7_devices: &[usize],
+) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
     for (second, device) in devices.iter().enumerate() {
         if let Some(first) = devices[..second]
             .iter()
@@ -277,6 +309,7 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
             .cloned()
             .collect();
         let devices = Rc::clone(&devices);
+        let nd7_devices = nd7_devices.to_vec();
         factories.register_optional(chip.clone(), move |config| {
             let Some(route) = chip_routes
                 .iter()
@@ -337,11 +370,10 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
                     route.target,
                     transport,
                 )?),
-                _ => Box::new(NdsifSoundChip::with_target_instance(
-                    config,
-                    route.target,
-                    transport,
-                )?),
+                _ if nd7_devices.contains(&route.device) => Box::new(
+                    NdsifSoundChip::with_target_instance_for_nd7(config, route.target, transport)?,
+                ),
+                _ => Box::new(NdsifSoundChip::with_target_instance(config, route.target, transport)?),
             };
             Ok(Some(backend))
         });
@@ -904,6 +936,120 @@ mod tests {
             }))
         ));
     }
+
+    #[test]
+    fn ym2149_routes_only_to_identified_nd7_ay_targets() {
+        use crate::create_automatic_transport_factories_with_nd7;
+
+        let device = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        let route = NdsifRoute {
+            chip: Chip::Ay8910,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Secondary,
+        };
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+        builder.add_chip_write(
+            Instance::Primary,
+            Ay8910Spec {
+                register: 8,
+                value: 15,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(441));
+        let mut bytes: Vec<u8> = builder.finalize().into();
+        bytes[0x78] = 0x10;
+        bytes[0x79] = 0x01;
+
+        for automatic in [false, true] {
+            for nd7 in [false, true] {
+                device.borrow_mut().configured.clear();
+                device.borrow_mut().events.clear();
+                let nd7_devices: &[usize] = if nd7 { &[0] } else { &[] };
+                let factories = if automatic {
+                    create_automatic_transport_factories_with_nd7(
+                        std::slice::from_ref(&device),
+                        true,
+                        nd7_devices,
+                    )
+                } else {
+                    create_routed_transport_factories_with_nd7(
+                        std::slice::from_ref(&device),
+                        std::slice::from_ref(&route),
+                        nd7_devices,
+                    )
+                    .unwrap()
+                };
+                let sequencer =
+                    VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 256, factories);
+                if !nd7 {
+                    assert!(matches!(
+                        sequencer,
+                        Err(VgmSequencerError::Chip(
+                            ChipError::InvalidConfiguration { .. }
+                        ))
+                    ));
+                    assert!(device.borrow().configured.is_empty());
+                    continue;
+                }
+                let mut sequencer = sequencer.unwrap();
+                while sequencer.render().unwrap().is_some() {}
+                let target = if automatic { 0 } else { 1 };
+                let device = device.borrow();
+                let ay = WriteId::try_from(0xa0).unwrap();
+                assert_eq!(device.configured, [(ay, target, 2_000_000)]);
+                assert_eq!(device.events.len(), 1);
+                assert_eq!(
+                    (
+                        device.events[0].write_id,
+                        device.events[0].instance,
+                        device.events[0].page,
+                        device.events[0].write.address,
+                        device.events[0].write.value,
+                    ),
+                    (ay, target, 0, 8, 15)
+                );
+            }
+        }
+
+        for (offset, value) in [
+            (0x78, 0x11),
+            (0x79, 0x04),
+            (0x79, 0x08),
+            (0x79, 0x10),
+            (0x79, 0x20),
+        ] {
+            device.borrow_mut().configured.clear();
+            let mut invalid = bytes.clone();
+            invalid[offset] = value;
+            let factories = create_routed_transport_factories_with_nd7(
+                std::slice::from_ref(&device),
+                std::slice::from_ref(&route),
+                &[0],
+            )
+            .unwrap();
+            assert!(matches!(
+                VgmSequencer::from_vgm_with_factories(invalid, 44_100, 256, factories),
+                Err(VgmSequencerError::Chip(
+                    ChipError::InvalidConfiguration { .. }
+                ))
+            ));
+            assert!(device.borrow().configured.is_empty());
+        }
+        assert!(matches!(
+            create_routed_transport_factories_with_nd7(
+                std::slice::from_ref(&device),
+                &[route],
+                &[1]
+            ),
+            Err(NdsifRoutingError::UnknownDevice(1))
+        ));
+    }
+
     #[test]
     fn routes_two_source_instances_to_distinct_devices() {
         let first = Rc::new(RefCell::new(Device {
