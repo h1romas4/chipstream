@@ -25,7 +25,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::bubble::{Bubble, BubbleContent};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::{
-    InlineToken, InlineTokenSpan, Input, InputEvent, InputState, InputToken,
+    InlineToken, InlineTokenSpan, Input, InputContent, InputEvent, InputState, InputToken,
 };
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::notification::{Notification, NotificationType};
@@ -1088,8 +1088,23 @@ impl AppView {
         config_error: Option<String>,
         window_settings: WindowSettings,
     ) -> Self {
+        let (search_content, search_error) = match config.music_search.as_ref() {
+            Some(saved) => match restore_music_search(saved) {
+                Ok(content) => (content, None),
+                Err(error) => {
+                    config.music_search = None;
+                    let message = format!("Saved Music search was cleared: {error}");
+                    eprintln!("Configuration error: {message}");
+                    (InputContent::new(""), Some(message))
+                }
+            },
+            None => (InputContent::new(""), None),
+        };
         let query = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive")
+            let mut input =
+                InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive");
+            input.set_value(search_content, window, cx);
+            input
         });
         let subscription =
             cx.subscribe_in(&query, window, |view: &mut Self, _, event, window, cx| {
@@ -1163,6 +1178,7 @@ impl AppView {
             .as_ref()
             .map(|error| error_notification("Configuration error", error.clone()))
             .into_iter()
+            .chain(search_error.map(|error| error_notification("Music search", error)))
             .collect();
         let persistence_error = config_error;
         let expanded_directories = HashMap::new();
@@ -1308,6 +1324,11 @@ impl AppView {
                 self.window_save_pending = Some(Instant::now());
             }
         }
+    }
+
+    fn save_music_search(&mut self, cx: &App) {
+        self.config.music_search = Some(snapshot_music_search(&self.query.read(cx).content()));
+        self.save();
     }
 
     fn capture_window_settings(&mut self, window: &Window) {
@@ -4837,6 +4858,55 @@ fn search_terms(text: &str, tokens: &[InlineTokenSpan]) -> (String, Vec<String>)
     )
 }
 
+fn snapshot_music_search(content: &InputContent) -> serde_json::Value {
+    let tokens: Vec<_> = content
+        .tokens()
+        .iter()
+        .map(|span| {
+            let range = span.range();
+            serde_json::json!({
+                "start": range.start,
+                "end": range.end,
+                "id": span.token().id().as_ref(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "text": content.text().as_ref(), "tokens": tokens })
+}
+
+fn restore_music_search(value: &serde_json::Value) -> Result<InputContent, String> {
+    #[derive(serde::Deserialize)]
+    struct SavedSearch {
+        text: String,
+        tokens: Vec<SavedToken>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SavedToken {
+        start: usize,
+        end: usize,
+        id: String,
+    }
+    let saved: SavedSearch =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if saved
+        .text
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+    {
+        return Err("search text contains control characters".into());
+    }
+    let mut content = InputContent::new(saved.text);
+    for token in saved.tokens {
+        content = content
+            .with_token(
+                token.start..token.end,
+                InlineToken::new(token.id.clone(), token.id),
+            )
+            .map_err(|error| format!("invalid search token: {error:?}"))?;
+    }
+    Ok(content)
+}
+
 fn chip_suggestions(
     text: &str,
     cursor: usize,
@@ -6363,6 +6433,62 @@ mod tests {
     }
 
     #[test]
+    fn music_search_restores_text_tags_and_rejects_invalid_data() {
+        let content = InputContent::new("ゲーム YM2151VGM NanoDrive 曲")
+            .with_token(10..16, InlineToken::new("YM2151", "YM2151"))
+            .unwrap()
+            .with_token(16..19, InlineToken::new("VGM", "VGM"))
+            .unwrap()
+            .with_token(20..29, InlineToken::new("NanoDrive", "NanoDrive"))
+            .unwrap();
+        let snapshot = super::snapshot_music_search(&content);
+        let restored = super::restore_music_search(&snapshot).unwrap();
+        assert_eq!(restored, content);
+        assert_eq!(
+            search_terms(restored.text(), restored.tokens()),
+            (
+                "ゲーム 曲".into(),
+                vec!["YM2151".into(), "VGM".into(), "NanoDrive".into()]
+            )
+        );
+        for invalid in [
+            serde_json::json!({"text": "éVGM", "tokens": [{"start": 1, "end": 5, "id": "VGM"}]}),
+            serde_json::json!({"text": "VGM", "tokens": [{"start": 0, "end": 3, "id": "MDX"}]}),
+            serde_json::json!({"text": "VGM", "tokens": [{"start": 0, "end": 3, "id": "VGM"}, {"start": 0, "end": 3, "id": "VGM"}]}),
+            serde_json::json!({"text": "bad\ntext", "tokens": []}),
+            serde_json::json!({"text": 1}),
+        ] {
+            assert!(super::restore_music_search(&invalid).is_err());
+        }
+        let empty = InputContent::new("");
+        assert_eq!(
+            super::restore_music_search(&super::snapshot_music_search(&empty)).unwrap(),
+            empty
+        );
+    }
+
+    #[test]
+    fn music_search_restores_from_saved_configuration() {
+        let content = InputContent::new("song AY8910")
+            .with_token(5..11, InlineToken::new("AY8910", "AY8910"))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let config = super::Config {
+            music_search: Some(super::snapshot_music_search(&content)),
+            ..super::Config::default()
+        };
+        super::library::save_config(&path, &config).unwrap();
+        let loaded = super::library::load_config(&path).unwrap();
+        let restored = super::restore_music_search(loaded.music_search.as_ref().unwrap()).unwrap();
+        assert_eq!(restored, content);
+        assert_eq!(
+            search_terms(restored.text(), restored.tokens()),
+            ("song".into(), vec!["AY8910".into()])
+        );
+    }
+
+    #[test]
     fn selection_toggles_and_context_menu_preserves_selected_items() {
         let mut selected = HashSet::new();
         select_item(&mut selected, 1, false);
@@ -6546,9 +6672,10 @@ impl Render for AppView {
                         .bg(rgb(0x1b2530))
                         .border_color(rgb(0x243441))
                         .text_color(rgb(0xe4edf2))
-                        .on_close_window(cx.listener(|view, _, window, _| {
+                        .on_close_window(cx.listener(|view, _, window, cx| {
                             view.capture_window_settings(window);
                             view.save_window_settings();
+                            view.save_music_search(cx);
                             window.remove_window();
                         }))
                         .child(
@@ -7134,11 +7261,12 @@ fn main() {
                 .detach();
                 let view = cx.weak_entity();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let _ = view.update(cx, |view, _| {
+                    let _ = view.update(cx, |view, cx| {
                         view.player.stop_and_wait();
                         view.recording_session = None;
                         view.capture_window_settings(window);
                         view.save_window_settings();
+                        view.save_music_search(cx);
                     });
                     true
                 });
@@ -7151,12 +7279,14 @@ fn main() {
                         view.record_window_bounds(bounds);
                     }
                     view.save_window_settings();
+                    view.save_music_search(cx);
                     async {}
                 })
                 .detach();
-                cx.on_release(|view, _| {
+                cx.on_release(|view, cx| {
                     view.player.stop_and_wait();
                     view.save_window_settings();
+                    view.save_music_search(cx);
                 })
                 .detach();
                 app.check_for_updates(cx);

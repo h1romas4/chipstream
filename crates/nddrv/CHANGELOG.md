@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore Music search text and tags on startup.
 - Show chip routing destinations in the Piano Roll Channels panel.
 - Separate routing sources, targets, adapters and playback plans without changing
   existing NanoDrive or YM2149 assignment behavior.

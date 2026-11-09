@@ -42,6 +42,11 @@ The search field filters by title, artist, album, notes, or path. Add chip names
 or the `MDX` and `VGM` format tags to narrow results; `VGM` includes VGZ files.
 Use the clear button on the right to remove all search text and tags.
 
+The Music search text and tags are saved on exit and restored on startup.
+An invalid saved search is cleared with a notification. A restored NanoDrive
+tag remains active while disconnected, so it matches no tracks until a
+NanoDrive is connected.
+
 For VGM/VGZ tracks, General settings select English or original-language
 metadata. English is the default, and missing fields fall back to the other
 language. Search matches either language; MDX metadata is unaffected.

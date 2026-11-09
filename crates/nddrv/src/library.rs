@@ -506,6 +506,8 @@ pub struct Config {
     pub vgm: VgmSettings,
     #[serde(default)]
     pub window: Option<WindowSettings>,
+    #[serde(default)]
+    pub music_search: Option<serde_json::Value>,
 }
 
 impl Default for Config {
@@ -523,6 +525,7 @@ impl Default for Config {
             general: GeneralSettings::default(),
             vgm: VgmSettings::default(),
             window: None,
+            music_search: None,
         }
     }
 }
@@ -957,6 +960,7 @@ mod tests {
         assert_eq!(config.audio_sample_rate, None);
         assert_eq!(config.general, GeneralSettings::default());
         assert_eq!(config.window, None);
+        assert_eq!(config.music_search, None);
         fs::write(
             &path,
             r#"{"directories":[],"playlist":[],"library_width":-1}"#,
@@ -968,6 +972,25 @@ mod tests {
                 .to_string()
                 .contains("library_width")
         );
+    }
+
+    #[test]
+    fn music_search_round_trips_without_affecting_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.json");
+        let search = serde_json::json!({
+            "text": "game VGM",
+            "tokens": [{"start": 5, "end": 8, "id": "VGM"}]
+        });
+        let config = Config {
+            music_search: Some(search.clone()),
+            directories: vec![PathBuf::from("/music")],
+            ..Config::default()
+        };
+        save_config(&path, &config).unwrap();
+        let restored = load_config(&path).unwrap();
+        assert_eq!(restored.music_search, Some(search));
+        assert_eq!(restored.directories, config.directories);
     }
 
     #[test]
@@ -1742,6 +1765,7 @@ mod tests {
                 ay8910_ym2149: true,
             },
             window: None,
+            music_search: None,
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();
