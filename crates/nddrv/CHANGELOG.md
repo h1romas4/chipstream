@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Separate routing sources, targets, adapters and playback plans without changing
+  existing NanoDrive or YM2149 assignment behavior.
+
 ## v0.10.0
 
 - Reflect YM2149 assignments in Routing, Music, and Playlist support indicators.

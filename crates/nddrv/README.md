@@ -137,6 +137,12 @@ Pause is unavailable while a hardware route is active. Unsupported or
 incompatible explicit routes stop playback rather than silently switching to
 emulation.
 
+Internally, routing resolves each sequencer source to a hardware, software or
+silent target and an adapter. Hardware routes are converted to NDSIF routes;
+software assignments use the same plan for playback, preview and support
+indicators. This separation does not yet add conversions between different
+physical chip types.
+
 ## Supported Files and Notes
 
 - **VGM / VGZ:** VGZ files are decompressed for playback. Input files and

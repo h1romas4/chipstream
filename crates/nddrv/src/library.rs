@@ -70,29 +70,6 @@ impl ChipTag {
     }
 }
 
-pub fn ym2149_clock_divider(header: &VgmHeader) -> Option<bool> {
-    use soundlog::vgm::header::Ay8910ChipType;
-    let ym = matches!(
-        header.ay_chip_type,
-        Ay8910ChipType::Ym2149
-            | Ay8910ChipType::Ym3439
-            | Ay8910ChipType::Ymz284
-            | Ay8910ChipType::Ymz294
-    );
-    if (!ym
-        && !matches!(
-            header.ay_chip_type,
-            Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
-        ))
-        || header.ay8910_flags.discrete_output
-        || header.ay8910_flags.raw_output
-        || header.ay8910_flags.reserved != 0
-    {
-        return None;
-    }
-    Some(ym && header.ay8910_flags.ym_pin26_low)
-}
-
 #[derive(Clone, Debug)]
 pub struct Track {
     pub path: PathBuf,
@@ -225,7 +202,7 @@ impl Track {
             for (instance, chip, _) in header.chip_instances() {
                 let mut tag = ChipTag::new(&chip);
                 if chip == Chip::Ay8910
-                    && let Some(divided) = ym2149_clock_divider(&header)
+                    && let Some(divided) = crate::adapter::ym2149_clock_divider(&header)
                 {
                     use soundlog::vgm::header::ChipId;
                     let clock = extra

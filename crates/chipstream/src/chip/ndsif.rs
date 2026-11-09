@@ -218,6 +218,16 @@ pub struct NdsifSoundChip<T> {
     transport: Rc<RefCell<T>>,
 }
 
+/// AY-family variants accepted by an NDSIF AY-compatible target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NdsifAyCompatibility {
+    /// Accept only AY8910.
+    #[default]
+    Ay8910,
+    /// Also accept YM2149 as an approximation.
+    Ay8910AndYm2149,
+}
+
 impl<T: NdsifTransport> NdsifSoundChip<T> {
     /// Configure a physical chip and create its scheduled sound-chip adapter.
     pub fn new(
@@ -233,27 +243,18 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
-        Self::with_ay_compatibility(config, target, transport, false)
+        Self::with_target_ay_compatibility(config, target, transport, NdsifAyCompatibility::Ay8910)
     }
 
-    /// Create an adapter for NanoDrive 7, whose AY target uses YM2203 SSG.
+    /// Configure an instance with an explicitly selected AY compatibility policy.
     ///
-    /// YM2149 writes are accepted as an approximation on the AY-compatible
-    /// target. Other AY variants and unsupported output or clock flags remain
-    /// rejected. The caller must ensure the target is a NanoDrive 7.
-    pub fn with_target_instance_for_nd7(
+    /// The caller must ensure the target supports the selected approximation.
+    /// Unsupported AY output and clock flags remain rejected.
+    pub fn with_target_ay_compatibility(
         config: &ChipFactoryConfig<'_>,
         target: Instance,
         transport: Rc<RefCell<T>>,
-    ) -> Result<Self, ChipError> {
-        Self::with_ay_compatibility(config, target, transport, true)
-    }
-
-    fn with_ay_compatibility(
-        config: &ChipFactoryConfig<'_>,
-        target: Instance,
-        transport: Rc<RefCell<T>>,
-        allow_ym2149: bool,
+        compatibility: NdsifAyCompatibility,
     ) -> Result<Self, ChipError> {
         use soundlog::vgm::header::Ay8910ChipType;
 
@@ -263,7 +264,8 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         };
         if chip == Chip::Ay8910
             && (!(config.header().ay_chip_type == Ay8910ChipType::Ay8910
-                || (allow_ym2149 && config.header().ay_chip_type == Ay8910ChipType::Ym2149))
+                || (compatibility == NdsifAyCompatibility::Ay8910AndYm2149
+                    && config.header().ay_chip_type == Ay8910ChipType::Ym2149))
                 || config.header().ay8910_flags.ym_pin26_low
                 || config.header().ay8910_flags.discrete_output
                 || config.header().ay8910_flags.raw_output

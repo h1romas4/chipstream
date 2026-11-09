@@ -4,17 +4,20 @@
 
 mod error;
 mod factory;
+mod policy;
 mod recording;
 mod routing;
 mod session;
 mod transport;
 mod worker;
 
+pub use chipstream::chip::NdsifAyCompatibility;
 pub use error::NdsifTransportError;
 pub use factory::{
     NdsifSerialConfig, create_automatic_transport_factories,
-    create_automatic_transport_factories_with_nd7, create_chip_factories,
+    create_automatic_transport_factories_with_policy, create_chip_factories,
 };
+pub use policy::{NdsifDirectPolicy, NdsifNd7Policy, NdsifRouteOptions, NdsifRoutePolicy};
 pub use recording::{
     NdsifCommandBatch, NdsifRecordingError, NdsifRecordingTransport, NdsifReplayError,
 };

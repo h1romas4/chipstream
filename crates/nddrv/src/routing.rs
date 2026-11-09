@@ -8,6 +8,8 @@ use ndsif::CapabilityEntry;
 use ndsif_transport::{NdsifNd7Validator, NdsifRoute};
 use serde::{Deserialize, Serialize};
 
+use crate::library::VgmSettings;
+
 /// Chip types that can be routed to an NDSIF device.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HardwareChip {
@@ -64,7 +66,7 @@ impl HardwareChip {
         }
     }
 
-    fn sequencer_chip(self) -> Chip {
+    pub fn sequencer_chip(self) -> Chip {
         match self {
             Self::Sn76489 => Chip::Sn76489,
             Self::Ay8910 => Chip::Ay8910,
@@ -140,6 +142,7 @@ pub struct PlaybackPlan {
     pub device_ids: Vec<u64>,
     pub routes: Vec<NdsifRoute>,
     pub nd7_devices: Vec<usize>,
+    pub routing: RoutingPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +159,145 @@ pub struct Connection {
     pub source: ChipInstance,
     pub device_id: u64,
     pub target: ChipInstance,
+}
+
+/// A logical source in the sequencer, independent of its destination.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Source {
+    pub chip: Chip,
+    pub instance: ChipInstance,
+}
+
+/// The physical or software endpoint selected for a source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Hardware {
+        device_id: u64,
+        chip: HardwareChip,
+        instance: ChipInstance,
+    },
+    Software {
+        chip: SoftwareTarget,
+        instance: ChipInstance,
+    },
+    Silent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SoftwareTarget {
+    Native(Chip),
+    Ym2149,
+}
+
+/// How the source is interpreted by the selected target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Adapter {
+    Direct,
+    AyToYm2149,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assignment {
+    pub source: Source,
+    pub target: Target,
+    pub adapter: Adapter,
+}
+
+/// Resolved session assignments, including software and silent fallbacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutingPlan {
+    assignments: Vec<Assignment>,
+    settings: VgmSettings,
+}
+
+impl RoutingPlan {
+    pub fn new(connections: &[Connection], settings: VgmSettings) -> Self {
+        let assignments = HardwareChip::ALL
+            .into_iter()
+            .flat_map(|chip| {
+                ChipInstance::ALL.into_iter().map(move |instance| {
+                    let source = Source {
+                        chip: chip.sequencer_chip(),
+                        instance,
+                    };
+                    let hardware = connections.iter().find(|connection| {
+                        connection.chip == chip && connection.source == instance
+                    });
+                    match hardware {
+                        Some(connection) => Assignment {
+                            source,
+                            target: Target::Hardware {
+                                device_id: connection.device_id,
+                                chip: connection.chip,
+                                instance: connection.target,
+                            },
+                            adapter: Adapter::Direct,
+                        },
+                        None => Self::software_assignment(source, settings),
+                    }
+                })
+            })
+            .chain(
+                [Chip::SegaPcm, Chip::Pwm, Chip::C140, Chip::Okim6295]
+                    .into_iter()
+                    .flat_map(|chip| {
+                        ChipInstance::ALL.map(move |instance| {
+                            Self::software_assignment(
+                                Source {
+                                    chip: chip.clone(),
+                                    instance,
+                                },
+                                settings,
+                            )
+                        })
+                    }),
+            )
+            .collect();
+        Self {
+            assignments,
+            settings,
+        }
+    }
+
+    pub fn assignment(&self, source: &Source) -> &Assignment {
+        self.assignments
+            .iter()
+            .find(|assignment| &assignment.source == source)
+            .expect("all routable source instances have an assignment")
+    }
+
+    pub fn software_assignment(source: Source, settings: VgmSettings) -> Assignment {
+        let (target, adapter) = match &source.chip {
+            Chip::Ay8910 if settings.ay8910_ym2149 => (
+                Target::Software {
+                    chip: SoftwareTarget::Ym2149,
+                    instance: source.instance,
+                },
+                Adapter::AyToYm2149,
+            ),
+            Chip::Ay8910 => (Target::Silent, Adapter::Direct),
+            chip => (
+                Target::Software {
+                    chip: SoftwareTarget::Native(chip.clone()),
+                    instance: source.instance,
+                },
+                Adapter::Direct,
+            ),
+        };
+        Assignment {
+            source,
+            target,
+            adapter,
+        }
+    }
+
+    pub fn software_fallback(&self, source: Source) -> Assignment {
+        Self::software_assignment(source, self.settings)
+    }
+
+    pub fn assignments(&self) -> &[Assignment] {
+        &self.assignments
+    }
 }
 
 /// Older profile fields are ignored when loading; device settings are retained.
@@ -187,13 +329,13 @@ impl RoutingConfig {
     }
 }
 
-type Source = (HardwareChip, ChipInstance);
-type Target = (u64, ChipInstance);
+type SourceKey = (HardwareChip, ChipInstance);
+type TargetKey = (u64, ChipInstance);
 
 /// Manual choices, including explicit emulation, live only for this session.
 #[derive(Clone, Debug, Default)]
 pub struct SessionRouting {
-    overrides: HashMap<Source, Option<Target>>,
+    overrides: HashMap<SourceKey, Option<TargetKey>>,
     connections: Vec<Connection>,
 }
 
@@ -253,7 +395,7 @@ impl SessionRouting {
         &mut self,
         chip: HardwareChip,
         source: ChipInstance,
-        target: Option<Target>,
+        target: Option<TargetKey>,
         devices: &[Device],
         available: &HashMap<u64, Vec<CapabilityEntry>>,
     ) -> Result<()> {
@@ -280,27 +422,36 @@ impl SessionRouting {
         Ok(())
     }
 
-    pub fn playback_plan(&self, devices: &[Device]) -> Option<PlaybackPlan> {
+    pub fn playback_plan(&self, devices: &[Device], settings: VgmSettings) -> Option<PlaybackPlan> {
         if self.connections.is_empty() {
             return None;
         }
         let mut device_ids = Vec::new();
         let mut indices = HashMap::new();
-        let routes = self
-            .connections
+        let routing = RoutingPlan::new(&self.connections, settings);
+        let routes = routing
+            .assignments()
             .iter()
-            .map(|connection| {
-                let device = *indices.entry(connection.device_id).or_insert_with(|| {
+            .filter_map(|assignment| {
+                let Target::Hardware {
+                    device_id,
+                    chip,
+                    instance,
+                } = &assignment.target
+                else {
+                    return None;
+                };
+                let device = *indices.entry(*device_id).or_insert_with(|| {
                     let index = device_ids.len();
-                    device_ids.push(connection.device_id);
+                    device_ids.push(*device_id);
                     index
                 });
-                NdsifRoute {
-                    chip: connection.chip.sequencer_chip(),
-                    source: connection.source.sequencer_instance(),
+                Some(NdsifRoute {
+                    chip: chip.sequencer_chip(),
+                    source: assignment.source.instance.sequencer_instance(),
                     device,
-                    target: connection.target.sequencer_instance(),
-                }
+                    target: instance.sequencer_instance(),
+                })
             })
             .collect();
         let nd7_devices = device_ids
@@ -318,6 +469,7 @@ impl SessionRouting {
             device_ids,
             routes,
             nd7_devices,
+            routing,
         })
     }
 }
@@ -400,6 +552,7 @@ mod tests {
             device_ids: vec![1, 2],
             routes,
             nd7_devices,
+            routing: RoutingPlan::new(&[], VgmSettings::default()),
         }
     }
 
@@ -409,6 +562,85 @@ mod tests {
             source,
             device,
             target,
+        }
+    }
+
+    #[test]
+    fn routing_plan_resolves_hardware_software_and_silent_per_instance() {
+        let primary = Source {
+            chip: Chip::Ay8910,
+            instance: ChipInstance::Primary,
+        };
+        let secondary = Source {
+            instance: ChipInstance::Secondary,
+            ..primary.clone()
+        };
+        let connection = Connection {
+            chip: HardwareChip::Ay8910,
+            source: ChipInstance::Primary,
+            device_id: 7,
+            target: ChipInstance::Secondary,
+        };
+        for enabled in [false, true] {
+            let settings = VgmSettings {
+                ay8910_ym2149: enabled,
+            };
+            let plan = RoutingPlan::new(std::slice::from_ref(&connection), settings);
+            assert_eq!(
+                plan.assignment(&primary),
+                &Assignment {
+                    source: primary.clone(),
+                    target: Target::Hardware {
+                        device_id: 7,
+                        chip: HardwareChip::Ay8910,
+                        instance: ChipInstance::Secondary
+                    },
+                    adapter: Adapter::Direct,
+                }
+            );
+            let software = if enabled {
+                Assignment {
+                    source: secondary.clone(),
+                    target: Target::Software {
+                        chip: SoftwareTarget::Ym2149,
+                        instance: ChipInstance::Secondary,
+                    },
+                    adapter: Adapter::AyToYm2149,
+                }
+            } else {
+                Assignment {
+                    source: secondary.clone(),
+                    target: Target::Silent,
+                    adapter: Adapter::Direct,
+                }
+            };
+            assert_eq!(*plan.assignment(&secondary), software);
+            assert_eq!(
+                plan.software_fallback(primary.clone()).adapter,
+                software.adapter
+            );
+            let fm = Source {
+                chip: Chip::Ym2151,
+                instance: ChipInstance::Primary,
+            };
+            assert_eq!(
+                plan.assignment(&fm).target,
+                Target::Software {
+                    chip: SoftwareTarget::Native(Chip::Ym2151),
+                    instance: ChipInstance::Primary
+                }
+            );
+            let pcm = Source {
+                chip: Chip::SegaPcm,
+                instance: ChipInstance::Secondary,
+            };
+            assert_eq!(
+                plan.assignment(&pcm).target,
+                Target::Software {
+                    chip: SoftwareTarget::Native(Chip::SegaPcm),
+                    instance: ChipInstance::Secondary,
+                }
+            );
         }
     }
 
@@ -514,7 +746,9 @@ mod tests {
                 },
             ]
         );
-        let plan = routing.playback_plan(&devices).unwrap();
+        let plan = routing
+            .playback_plan(&devices, VgmSettings::default())
+            .unwrap();
         assert_eq!(plan.device_ids, [2, 1]);
         assert_eq!(plan.routes[1].source, Instance::Secondary);
         assert_eq!(plan.routes[1].target, Instance::Primary);
@@ -626,9 +860,19 @@ mod tests {
         assert_eq!(routing.connections()[0].target, ChipInstance::Primary);
         assert_eq!(routing.connections()[1].device_id, 1);
         assert_eq!(routing.connections()[1].target, ChipInstance::Secondary);
-        assert_eq!(routing.playback_plan(&devices).unwrap().device_ids, [1]);
+        assert_eq!(
+            routing
+                .playback_plan(&devices, VgmSettings::default())
+                .unwrap()
+                .device_ids,
+            [1]
+        );
         routing.reset(&devices, &HashMap::new());
-        assert!(routing.playback_plan(&devices).is_none());
+        assert!(
+            routing
+                .playback_plan(&devices, VgmSettings::default())
+                .is_none()
+        );
     }
 
     #[test]

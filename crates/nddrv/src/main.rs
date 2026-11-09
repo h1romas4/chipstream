@@ -1,3 +1,4 @@
+mod adapter;
 mod artwork;
 mod device;
 mod fm_mute;
@@ -1722,7 +1723,9 @@ impl AppView {
             cx.notify();
             return;
         }
-        let plan = self.routing.playback_plan(&self.config.routing.devices);
+        let plan = self
+            .routing
+            .playback_plan(&self.config.routing.devices, self.config.vgm);
         if let Some(path) = self.config.playlist.get(index).cloned() {
             self.player.set_settings(self.config.playback);
             self.player.set_vgm_settings(self.config.vgm);
@@ -1825,7 +1828,9 @@ impl AppView {
     fn idle_preview_target(&self) -> Option<IdlePreviewTarget> {
         self.config.playlist.first().map(|path| IdlePreviewTarget {
             path: path.clone(),
-            plan: self.routing.playback_plan(&self.config.routing.devices),
+            plan: self
+                .routing
+                .playback_plan(&self.config.routing.devices, self.config.vgm),
             looped: self.looped,
             settings: self.config.playback,
             vgm_settings: self.config.vgm,
@@ -3566,16 +3571,17 @@ impl AppView {
                     DeviceStatus::Connecting | DeviceStatus::Disconnecting
                 )
             });
+        let vgm_settings = if self.playing.is_some() {
+            self.player.active_vgm_settings()
+        } else {
+            self.config.vgm
+        };
+        let routing_plan = routing::RoutingPlan::new(self.routing.connections(), vgm_settings);
         let graph = patchbay::build(
             &self.config.routing.devices,
             &self.device_status,
-            self.routing.connections(),
+            &routing_plan,
         );
-        let ay_emulation = if self.playing.is_some() {
-            self.player.active_vgm_settings().ay8910_ym2149
-        } else {
-            self.config.vgm.ay8910_ym2149
-        };
         let mut panels = vec![
             div()
                 .absolute()
@@ -3655,12 +3661,8 @@ impl AppView {
                     }));
             }
             nodes.push(source_node.into_any_element());
-            let ay_source = matches!(
-                source,
-                patchbay::Source::Hardware(routing::HardwareChip::Ay8910, _)
-            );
-            let silent = ay_source && !ay_emulation;
-            let target_label = source.emulator_label(ay_emulation);
+            let silent = source.is_silent(&routing_plan);
+            let target_label = source.emulator_label(&routing_plan);
             let mut target_node = div()
                 .id(SharedString::from(format!("emulator-{index}")))
                 .absolute()
@@ -3972,6 +3974,7 @@ impl AppView {
                 .position(|&index| &self.tracks[index].path == path)
         });
         let cursor = list_cursor_index(current, self.filtered_tracks.len());
+        let routing_plan = routing::RoutingPlan::new(self.routing.connections(), self.config.vgm);
         range
             .map(|index| {
                 let track = &self.tracks[self.filtered_tracks[index]];
@@ -3984,12 +3987,8 @@ impl AppView {
                 let metadata = track.metadata_for(self.config.general.vgm_metadata_language);
                 let title = track.display_title_for(self.config.general.vgm_metadata_language);
                 let artist = metadata.artist.as_deref().unwrap_or_default();
-                let unsupported = unsupported_chips(
-                    &track.chips,
-                    self.routing.connections(),
-                    &self.device_status,
-                    self.config.vgm.ay8910_ym2149,
-                );
+                let unsupported =
+                    unsupported_chips_with_plan(&track.chips, &routing_plan, &self.device_status);
                 let dimmed = !unsupported.is_empty();
                 let unsupported_tooltip = format!(
                     "No software or routed hardware support: {}",
@@ -4299,6 +4298,7 @@ impl AppView {
             self.queue_selection_order.last().copied(),
             self.config.playlist.len(),
         );
+        let routing_plan = routing::RoutingPlan::new(self.routing.connections(), self.config.vgm);
         range
             .map(|index| {
                 let path = &self.config.playlist[index];
@@ -4313,11 +4313,10 @@ impl AppView {
                 });
                 let unsupported = track
                     .map(|track| {
-                        unsupported_chips(
+                        unsupported_chips_with_plan(
                             &track.chips,
-                            self.routing.connections(),
+                            &routing_plan,
                             &self.device_status,
-                            self.config.vgm.ay8910_ym2149,
                         )
                     })
                     .unwrap_or_default();
@@ -4555,11 +4554,26 @@ fn update_selection_order<T: Clone + Eq + Hash>(
     }
 }
 
+#[cfg(test)]
 fn unsupported_chips(
     chips: &[ChipTag],
     connections: &[routing::Connection],
     statuses: &HashMap<u64, DeviceStatus>,
     ay_emulation: bool,
+) -> Vec<String> {
+    let plan = routing::RoutingPlan::new(
+        connections,
+        library::VgmSettings {
+            ay8910_ym2149: ay_emulation,
+        },
+    );
+    unsupported_chips_with_plan(chips, &plan, statuses)
+}
+
+fn unsupported_chips_with_plan(
+    chips: &[ChipTag],
+    plan: &routing::RoutingPlan,
+    statuses: &HashMap<u64, DeviceStatus>,
 ) -> Vec<String> {
     chips
         .iter()
@@ -4580,20 +4594,29 @@ fn unsupported_chips(
                 return true;
             }
             !instances.iter().all(|source| {
-                match connections
-                    .iter()
-                    .find(|connection| connection.chip == chip && connection.source == *source)
-                {
-                    Some(connection) => matches!(
-                        statuses.get(&connection.device_id),
+                let assignment = plan.assignment(&routing::Source {
+                    chip: chip.sequencer_chip(),
+                    instance: *source,
+                });
+                match &assignment.target {
+                    routing::Target::Hardware {
+                        device_id,
+                        chip: target_chip,
+                        instance,
+                    } => matches!(
+                        statuses.get(device_id),
                         Some(DeviceStatus::Connected(entries))
-                            if chip.advertised(connection.target, entries)
+                            if target_chip.advertised(*instance, entries)
                     ),
-                    None => {
-                        ay_emulation
-                            && chip == routing::HardwareChip::Ay8910
-                            && tag.ym2149_compatible[source.number() as usize]
-                    }
+                    routing::Target::Software {
+                        chip: routing::SoftwareTarget::Ym2149,
+                        ..
+                    } => tag.ym2149_compatible[source.number() as usize],
+                    routing::Target::Software {
+                        chip: routing::SoftwareTarget::Native(_),
+                        ..
+                    } => tag.software_supported(),
+                    routing::Target::Silent => false,
                 }
             })
         })

@@ -28,7 +28,7 @@ use crate::fm_mute::FmMute;
 use crate::library::{
     PlaybackSettings, RecordingSettings, VgmSettings, extension, read_bounded, read_track,
 };
-use crate::routing::PlaybackPlan;
+use crate::routing::{PlaybackPlan, RoutingPlan};
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
 
 const CHUNK_FRAMES: usize = 1024;
@@ -653,6 +653,7 @@ impl IdlePreview {
         let rate = VGM_SAMPLE_RATE;
         control.sample_rate.store(rate, Ordering::Release);
         let routes = plan.map_or_else(Vec::new, |plan| plan.routes.clone());
+        let plan_for_preview = plan.cloned();
         let state = Arc::clone(&control);
         thread::Builder::new()
             .name("piano-roll-idle-preview".into())
@@ -660,7 +661,15 @@ impl IdlePreview {
                 let _guard = PreviewPanicGuard(Arc::clone(&state));
                 let result = (|| {
                     let mut factories = ChipFactoryRegistry::new();
-                    register_ay_emulation(&mut factories, vgm_settings);
+                    let routing = plan_for_preview.as_ref().map_or_else(
+                        || RoutingPlan::new(&[], vgm_settings),
+                        |plan| plan.routing.clone(),
+                    );
+                    crate::adapter::register_software_adapters(
+                        &mut factories,
+                        &routing,
+                        crate::adapter::AdapterMode::Preview,
+                    );
                     let sequencer =
                         Sequencer::create(&path, rate, looped, factories, None, settings)?;
                     if state.cancel.load(Ordering::Acquire) {
@@ -681,24 +690,13 @@ impl IdlePreview {
     }
 }
 
+#[cfg(test)]
 fn register_ay_emulation(factories: &mut ChipFactoryRegistry, settings: VgmSettings) {
-    if !settings.ay8910_ym2149 {
-        return;
-    }
-    factories.register_fallback(Chip::Ay8910, ym2149_backend);
-}
-
-fn ym2149_backend(
-    config: &chipstream::sequencer::ChipFactoryConfig<'_>,
-) -> Result<Box<dyn chipstream::chip::SoundChip>, chipstream::chip::ChipError> {
-    use chipstream::chip::{ChipError, YmfmChip};
-    let header = config.header();
-    let divide =
-        crate::library::ym2149_clock_divider(header).ok_or(ChipError::InvalidConfiguration {
-            chip: Chip::Ay8910,
-            reason: "YM2149 emulation does not support this AY variant or output flags",
-        })?;
-    Ok(Box::new(YmfmChip::new_ym2149(config.clock(), divide)?))
+    crate::adapter::register_software_adapters(
+        factories,
+        &RoutingPlan::new(&[], settings),
+        crate::adapter::AdapterMode::Playback,
+    );
 }
 
 impl IdlePreview {
@@ -1997,7 +1995,11 @@ fn run_inner(
             &plan.routes,
             &plan.nd7_devices,
         )?;
-        register_ay_emulation(&mut factories, control.vgm_settings);
+        crate::adapter::register_software_adapters(
+            &mut factories,
+            &plan.routing,
+            crate::adapter::AdapterMode::Playback,
+        );
         let sequencer = Sequencer::for_playback_with_settings(
             path,
             config.sample_rate,
@@ -2011,7 +2013,12 @@ fn run_inner(
         (sequencer, Some((recorders, workers)))
     } else {
         let mut factories = ChipFactoryRegistry::new();
-        register_ay_emulation(&mut factories, control.vgm_settings);
+        let routing = RoutingPlan::new(&[], control.vgm_settings);
+        crate::adapter::register_software_adapters(
+            &mut factories,
+            &routing,
+            crate::adapter::AdapterMode::Playback,
+        );
         (
             Sequencer::for_playback_with_settings(
                 path,
@@ -4153,6 +4160,7 @@ mod tests {
         let plan = PlaybackPlan {
             device_ids: vec![1],
             nd7_devices: vec![],
+            routing: RoutingPlan::new(&[], VgmSettings::default()),
             routes: vec![ndsif_transport::NdsifRoute {
                 chip: Chip::Ym2151,
                 source: Instance::Primary,
@@ -4532,7 +4540,9 @@ mod tests {
 
     #[test]
     fn ay_nd7_hardware_route_and_preview_run_together() {
-        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
+        use chipstream::chip::{
+            NdsifAyCompatibility, NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport,
+        };
         use soundlog::chip::Ay8910Spec;
         use soundlog::vgm::command::WaitSamples;
         use soundlog::vgm::header::Ay8910ChipType;
@@ -4575,10 +4585,11 @@ mod tests {
         let mut factories = ChipFactoryRegistry::new();
         let target = Rc::clone(&transport);
         factories.register(Chip::Ay8910, move |config| {
-            Ok(Box::new(NdsifSoundChip::with_target_instance_for_nd7(
+            Ok(Box::new(NdsifSoundChip::with_target_ay_compatibility(
                 config,
                 Instance::Secondary,
                 Rc::clone(&target),
+                NdsifAyCompatibility::Ay8910AndYm2149,
             )?))
         });
         let mut sequencer = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
@@ -4627,13 +4638,13 @@ mod tests {
 
     #[test]
     fn ay_emulation_respects_settings_and_per_instance_hardware_routes() {
-        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport};
+        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::Ay8910Spec;
         use soundlog::vgm::command::WaitSamples;
         use soundlog::vgm::header::Ay8910ChipType;
 
         #[derive(Default)]
-        struct Recorder(Vec<NdsifRegisterEvent>);
+        struct Recorder(Vec<NdsifRegisterEvent>, bool);
         impl NdsifTransport for Recorder {
             fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
                 Ok(())
@@ -4644,6 +4655,14 @@ mod tests {
             fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
                 self.0.push(event);
                 Ok(())
+            }
+        }
+        impl ndsif_transport::NdsifRoutingTransport for Recorder {
+            fn supports_route_clock(&self, _: ndsif::WriteId, _: u8, _: u32) -> bool {
+                !self.1
+            }
+            fn supports_route_audio(&self, _: u8, _: u32) -> bool {
+                false
             }
         }
         let dir = tempfile::tempdir().unwrap();
@@ -4667,34 +4686,57 @@ mod tests {
         };
         for enabled in [false, true] {
             for hardware in [false, true] {
-                let routes = if hardware {
-                    std::slice::from_ref(&route)
-                } else {
-                    &[]
-                };
                 let transport = Rc::new(RefCell::new(Recorder::default()));
-                let mut factories = ChipFactoryRegistry::new();
-                if hardware {
-                    let target = Rc::clone(&transport);
-                    factories.register_optional(Chip::Ay8910, move |config| {
-                        if config.instance() == Instance::Primary {
-                            Ok(Some(Box::new(
-                                NdsifSoundChip::with_target_instance_for_nd7(
-                                    config,
-                                    Instance::Secondary,
-                                    Rc::clone(&target),
-                                )?,
-                            )))
-                        } else {
-                            Ok(None)
-                        }
-                    });
-                }
-                register_ay_emulation(
+                let settings = VgmSettings {
+                    ay8910_ym2149: enabled,
+                };
+                let plan = if hardware {
+                    let device = crate::routing::Device {
+                        id: 1,
+                        name: "NanoDrive 7".into(),
+                        port: "test".into(),
+                        baud_rate: 115_200,
+                    };
+                    let capability = ndsif::CapabilityEntry {
+                        write_id: 0xa0,
+                        instance: 1,
+                        page: 0,
+                        features: 0,
+                        clock_mode: ndsif::ClockMode::Variable,
+                        fixed_clock_hz: 0,
+                    };
+                    let mut session = crate::routing::SessionRouting::default();
+                    session.refresh(
+                        std::slice::from_ref(&device),
+                        &HashMap::from([(1, vec![capability])]),
+                    );
+                    let plan = session.playback_plan(&[device], settings).unwrap();
+                    assert_eq!(plan.routes, [route.clone()]);
+                    assert_eq!(plan.nd7_devices, [0]);
+                    plan.validate_nd7(&document.header, None).unwrap();
+                    Some(plan)
+                } else {
+                    None
+                };
+                let routes = plan.as_ref().map_or(&[][..], |plan| plan.routes.as_slice());
+                let routing = plan.as_ref().map_or_else(
+                    || RoutingPlan::new(&[], settings),
+                    |plan| plan.routing.clone(),
+                );
+                let mut factories = if let Some(plan) = &plan {
+                    ndsif_transport::create_routed_transport_factories_with_nd7(
+                        std::slice::from_ref(&transport),
+                        routes,
+                        &plan.nd7_devices,
+                    )
+                    .unwrap()
+                } else {
+                    ChipFactoryRegistry::new()
+                };
+                crate::adapter::register_software_adapters(
                     &mut factories,
-                    VgmSettings {
-                        ay8910_ym2149: enabled,
-                    },
+                    &routing,
+                    crate::adapter::AdapterMode::Playback,
                 );
                 let player =
                     Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), routes);
@@ -4727,11 +4769,6 @@ mod tests {
                     assert!(transport.borrow().0.iter().all(|event| event.instance == 1));
                 }
 
-                let plan = hardware.then(|| PlaybackPlan {
-                    device_ids: vec![1],
-                    routes: vec![route.clone()],
-                    nd7_devices: vec![0],
-                });
                 let preview = IdlePreview::start_with_settings(
                     path.clone(),
                     false,
@@ -4777,6 +4814,56 @@ mod tests {
                 Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), &[]).is_err()
             );
         }
+
+        let transport = Rc::new(RefCell::new(Recorder(Vec::new(), true)));
+        let connections = [crate::routing::Connection {
+            chip: crate::routing::HardwareChip::Ay8910,
+            source: crate::routing::ChipInstance::Primary,
+            device_id: 1,
+            target: crate::routing::ChipInstance::Secondary,
+        }];
+        let routing = RoutingPlan::new(
+            &connections,
+            VgmSettings {
+                ay8910_ym2149: true,
+            },
+        );
+        document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+        document.header.ay8910_flags.raw_output = false;
+        std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+        let mut missing_hardware = ChipFactoryRegistry::new();
+        crate::adapter::register_software_adapters(
+            &mut missing_hardware,
+            &routing,
+            crate::adapter::AdapterMode::Playback,
+        );
+        let error = Sequencer::for_playback(
+            &path,
+            44_100,
+            false,
+            missing_hardware,
+            dir.path(),
+            std::slice::from_ref(&route),
+        )
+        .err()
+        .expect("a missing hardware factory must not fall back");
+        assert!(format!("{error:#}").contains("hardware route has no active factory"));
+        let mut factories = ndsif_transport::create_routed_transport_factories_with_nd7(
+            std::slice::from_ref(&transport),
+            std::slice::from_ref(&route),
+            &[0],
+        )
+        .unwrap();
+        crate::adapter::register_software_adapters(
+            &mut factories,
+            &routing,
+            crate::adapter::AdapterMode::Playback,
+        );
+        let error = Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), &[route])
+            .err()
+            .expect("hardware errors must not fall back to software");
+        assert!(format!("{error:#}").contains("does not support"));
+        assert!(transport.borrow().0.is_empty());
     }
 
     #[test]
@@ -5519,7 +5606,9 @@ mod tests {
             std::slice::from_ref(&device),
             &std::collections::HashMap::from([(7, capabilities)]),
         );
-        let plan = routing.playback_plan(&[device]).unwrap();
+        let plan = routing
+            .playback_plan(&[device], VgmSettings::default())
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let song = dir.path().join("song.vgm");
         let mut builder = VgmBuilder::new();

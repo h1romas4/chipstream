@@ -13,7 +13,8 @@ use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instan
 use ndsif::WriteId;
 
 use crate::{
-    NdsifNd7Validator, NdsifRoute, NdsifRoutingTransport, NdsifSerialTransport, NdsifTransportError,
+    NdsifDirectPolicy, NdsifRoute, NdsifRouteOptions, NdsifRoutePolicy, NdsifRoutingTransport,
+    NdsifSerialTransport, NdsifTransportError,
 };
 
 /// Serial connection and reset options for an NDSIF device.
@@ -85,23 +86,21 @@ pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
 ) -> ChipFactoryRegistry {
-    create_automatic_transport_factories_with_nd7(transports, supports_ay, &[])
+    create_automatic_transport_factories_with_policy(transports, supports_ay, NdsifDirectPolicy)
 }
 
-/// Build automatic factories with shared-resource validation for NanoDrive 7 devices.
+/// Build automatic factories with a policy for selected hardware routes.
 ///
-/// `nd7_devices` contains indices into `transports`. The validation applies to
-/// hardware-selected chip instances as they are constructed.
-/// A NanoDrive 7 AY target also accepts YM2149 as an approximation using its
-/// YM2203 SSG.
-pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
+/// The policy is called for each selected hardware instance and shared across
+/// factories. It can validate device resources and select AY compatibility.
+/// Rejected selections return an error rather than falling back.
+pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
-    nd7_devices: &[usize],
+    policy: impl NdsifRoutePolicy + 'static,
 ) -> ChipFactoryRegistry {
     let transports = Rc::new(transports.to_vec());
-    let nd7_devices = Rc::new(nd7_devices.to_vec());
-    let validator = Rc::new(RefCell::new(NdsifNd7Validator::default()));
+    let policy = Rc::new(RefCell::new(policy));
     let mut factories = ChipFactoryRegistry::new();
 
     for chip in [
@@ -122,8 +121,7 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
         };
         let registered_chip = chip.clone();
         let chip_transports = Rc::clone(&transports);
-        let nd7_devices = Rc::clone(&nd7_devices);
-        let validator = Rc::clone(&validator);
+        let policy = Rc::clone(&policy);
         factories.register(chip, move |config| {
             let instance = instance_number(config.instance());
             let oki_clock = if registered_chip == Chip::Ym2151 {
@@ -140,15 +138,14 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
                 config.clock(),
                 oki_timing_clock,
             )?;
-            if let Some(transport) = transport {
-                validate_nd7_selection(
-                    &chip_transports,
-                    &nd7_devices,
-                    &validator,
-                    &transport,
+            if let Some((device, transport)) = transport {
+                let options = select_route(&policy, device, config)?;
+                Ok(Box::new(NdsifSoundChip::with_target_ay_compatibility(
                     config,
-                )?;
-                Ok(Box::new(NdsifSoundChip::new(config, transport)?))
+                    config.instance(),
+                    transport,
+                    options.ay_compatibility,
+                )?))
             } else {
                 Ok(Box::new(YmfmChip::new(
                     registered_chip.clone(),
@@ -160,10 +157,9 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
 
     if supports_ay {
         let ay_transports = Rc::clone(&transports);
-        let nd7_devices = Rc::clone(&nd7_devices);
-        let validator = Rc::clone(&validator);
+        let policy = Rc::clone(&policy);
         factories.register(Chip::Ay8910, move |config| {
-            let transport = find_transport(
+            let (device, transport) = find_transport(
                 &ay_transports,
                 &Chip::Ay8910,
                 WriteId::try_from(0xa0).expect("AY8910 write ID"),
@@ -175,24 +171,18 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
                 chip: Chip::Ay8910,
                 reason: "no NDSIF AY8910 target supports this instance and clock",
             })?;
-            validate_nd7_selection(&ay_transports, &nd7_devices, &validator, &transport, config)?;
-            let is_nd7 = ay_transports
-                .iter()
-                .position(|candidate| Rc::ptr_eq(candidate, &transport))
-                .is_some_and(|index| nd7_devices.contains(&index));
-            if is_nd7 {
-                Ok(Box::new(NdsifSoundChip::with_target_instance_for_nd7(
-                    config,
-                    config.instance(),
-                    transport,
-                )?))
-            } else {
-                Ok(Box::new(NdsifSoundChip::new(config, transport)?))
-            }
+            let options = select_route(&policy, device, config)?;
+            Ok(Box::new(NdsifSoundChip::with_target_ay_compatibility(
+                config,
+                config.instance(),
+                transport,
+                options.ay_compatibility,
+            )?))
         });
     }
 
     let psg_transports = Rc::clone(&transports);
+    let psg_policy = Rc::clone(&policy);
     factories.register(Chip::Sn76489, move |config| {
         let flags = &config.header().sn76489_flags;
         if config.header().misc().t6w28_detected == Some(true) {
@@ -218,7 +208,8 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
                 None,
             )?
         };
-        if let Some(transport) = transport {
+        if let Some((device, transport)) = transport {
+            select_route(&psg_policy, device, config)?;
             return Ok(Box::new(NdsifSn76489::new(config, transport)?));
         }
 
@@ -239,9 +230,10 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
     });
 
     let oki_transports = Rc::clone(&transports);
+    let oki_policy = Rc::clone(&policy);
     factories.register(Chip::Okim6258, move |config| {
         let instance = instance_number(config.instance());
-        if let Some(transport) = find_transport(
+        if let Some((device, transport)) = find_transport(
             &oki_transports,
             &Chip::Okim6258,
             WriteId::OKIM6258,
@@ -249,6 +241,7 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
             config.clock(),
             Some(config.clock()),
         )? {
+            select_route(&oki_policy, device, config)?;
             return Ok(Box::new(NdsifOkim6258::new(config, transport)?));
         }
 
@@ -270,33 +263,26 @@ pub fn create_automatic_transport_factories_with_nd7<T: NdsifRoutingTransport + 
     factories
 }
 
-fn validate_nd7_selection<T>(
-    transports: &[Rc<RefCell<T>>],
-    nd7_devices: &[usize],
-    validator: &RefCell<NdsifNd7Validator>,
-    selected: &Rc<RefCell<T>>,
+fn select_route(
+    policy: &RefCell<impl NdsifRoutePolicy>,
+    device: usize,
     config: &ChipFactoryConfig<'_>,
-) -> Result<(), ChipError> {
-    let device = transports
-        .iter()
-        .position(|transport| Rc::ptr_eq(transport, selected))
-        .expect("selected transport belongs to the factory");
-    if nd7_devices.contains(&device) {
-        let route = NdsifRoute {
-            chip: config.chip().clone(),
-            source: config.instance(),
-            device,
-            target: config.instance(),
-        };
-        validator
-            .borrow_mut()
-            .add(&route, config.clock())
-            .map_err(|message| ChipError::External {
-                chip: config.chip().clone(),
-                message,
-            })?;
-    }
-    Ok(())
+) -> Result<NdsifRouteOptions, ChipError> {
+    let route = NdsifRoute {
+        chip: config.chip().clone(),
+        source: config.instance(),
+        device,
+        target: config.instance(),
+    };
+    let error = |message| ChipError::External {
+        chip: config.chip().clone(),
+        message,
+    };
+    policy
+        .try_borrow_mut()
+        .map_err(|_| error("NDSIF route policy is already borrowed".to_owned()))?
+        .select(&route, config.clock())
+        .map_err(error)
 }
 
 /// Reject invalid serial settings before opening any device.
@@ -329,8 +315,8 @@ fn find_transport<T: NdsifRoutingTransport>(
     instance: u8,
     clock_hz: u32,
     oki_timing_clock: Option<u32>,
-) -> Result<Option<Rc<RefCell<T>>>, ChipError> {
-    for transport in transports {
+) -> Result<Option<(usize, Rc<RefCell<T>>)>, ChipError> {
+    for (index, transport) in transports.iter().enumerate() {
         let device = transport.try_borrow().map_err(|_| ChipError::External {
             chip: chip.clone(),
             message: "NDSIF transport is already borrowed".to_owned(),
@@ -344,7 +330,7 @@ fn find_transport<T: NdsifRoutingTransport>(
         }) {
             continue;
         }
-        return Ok(Some(Rc::clone(transport)));
+        return Ok(Some((index, Rc::clone(transport))));
     }
     Ok(None)
 }

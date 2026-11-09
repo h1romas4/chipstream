@@ -32,8 +32,8 @@ use chipstream::sequencer::{
     measure_vgm_duration_frames,
 };
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport,
-    NdsifSharedDevice, create_automatic_transport_factories_with_nd7, create_recorders,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifNd7Policy, NdsifRecorder, NdsifSerialTransport,
+    NdsifSharedDevice, create_automatic_transport_factories_with_policy, create_recorders,
 };
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -1571,8 +1571,11 @@ fn create_chip_factories(
         NonZeroUsize::new(MAX_HARDWARE_OPERATIONS).expect("nonzero operation limit"),
     )
     .map_err(|error| error.to_string())?;
-    let factories =
-        create_automatic_transport_factories_with_nd7(&recorders, supports_ay, &nd7_devices);
+    let factories = create_automatic_transport_factories_with_policy(
+        &recorders,
+        supports_ay,
+        NdsifNd7Policy::new(nd7_devices, recorders.len()).map_err(|error| error.to_string())?,
+    );
     Ok((
         factories,
         Some(HardwarePlayback {

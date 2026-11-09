@@ -23,8 +23,33 @@ For explicitly routed scheduled transports, `create_routed_transport_factories_w
 accepts identified NanoDrive 7 indices and permits YM2149 on their AY targets
 as an approximation using YM2203 SSG. The caller must validate shared ND7
 chip and clock resources. Existing route factories without ND7 identification
-continue to reject YM2149. `create_automatic_transport_factories_with_nd7`
-also supports this mapping and validates shared resources.
+continue to reject YM2149. For automatic selection, pass `NdsifNd7Policy` to
+`create_automatic_transport_factories_with_policy` to apply the same mapping
+and shared-resource validation. Custom `NdsifRoutePolicy` implementations can
+validate selected routes and specify AY compatibility without changing the
+factory. A rejected hardware route is an error, not a software fallback.
+
+```rust,no_run
+use std::{cell::RefCell, rc::Rc};
+use chipstream::sequencer::ChipFactoryRegistry;
+use ndsif_transport::{
+    NdsifNd7Policy, NdsifRoutingError, NdsifRoutingTransport,
+    create_automatic_transport_factories_with_policy,
+};
+
+fn factories<T: NdsifRoutingTransport + 'static>(
+    transports: &[Rc<RefCell<T>>],
+    supports_ay: bool,
+    nd7_devices: &[usize],
+) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
+    let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
+    Ok(create_automatic_transport_factories_with_policy(transports, supports_ay, policy))
+}
+```
+
+Create a new policy for each playback: it retains selected routes to detect
+shared-resource conflicts. The supplied device count must match the transport
+list used by the factory.
 
 Most applications should start with `create_chip_factories`. It selects the
 first connected device that advertises a compatible chip and clock; unmatched

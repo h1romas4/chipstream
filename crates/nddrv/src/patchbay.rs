@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::DeviceStatus;
-use crate::routing::{ChipInstance, Connection, Device, HardwareChip};
+use crate::routing::{ChipInstance, Device, HardwareChip, RoutingPlan, SoftwareTarget, Target};
 
 pub const WIDTH: f32 = DEVICE_X + DEVICE_WIDTH + 16.;
 pub const SOURCE_X: f32 = 336.;
@@ -24,6 +24,23 @@ pub enum Source {
 }
 
 impl Source {
+    fn software_target(self, plan: &RoutingPlan) -> Option<Target> {
+        match self {
+            Self::Hardware(chip, instance) => Some(
+                plan.software_fallback(crate::routing::Source {
+                    chip: chip.sequencer_chip(),
+                    instance,
+                })
+                .target,
+            ),
+            Self::Software(_, _) => None,
+        }
+    }
+
+    pub fn is_silent(self, plan: &RoutingPlan) -> bool {
+        matches!(self.software_target(plan), Some(Target::Silent))
+    }
+
     pub fn label(self) -> String {
         let (name, instance) = match self {
             Self::Hardware(chip, instance) => (chip.name(), instance),
@@ -32,12 +49,18 @@ impl Source {
         format!("{name} #{}", instance.number() + 1)
     }
 
-    pub fn emulator_label(self, ay_emulation: bool) -> String {
-        match self {
-            Self::Hardware(HardwareChip::Ay8910, instance) if ay_emulation => {
-                format!("YM2149 #{} (assigned)", instance.number() + 1)
-            }
-            Self::Hardware(HardwareChip::Ay8910, _) => format!("{} (silent)", self.label()),
+    pub fn emulator_label(self, plan: &RoutingPlan) -> String {
+        match (self, self.software_target(plan)) {
+            (Self::Hardware(_, instance), Some(target)) => match target {
+                Target::Software {
+                    chip: SoftwareTarget::Ym2149,
+                    ..
+                } => {
+                    format!("YM2149 #{} (assigned)", instance.number() + 1)
+                }
+                Target::Silent => format!("{} (silent)", self.label()),
+                _ => self.label(),
+            },
             _ => self.label(),
         }
     }
@@ -88,7 +111,7 @@ pub fn row_y(index: usize) -> f32 {
 pub fn build(
     devices: &[Device],
     statuses: &HashMap<u64, DeviceStatus>,
-    routes: &[Connection],
+    plan: &RoutingPlan,
 ) -> Graph {
     let sources: Vec<_> = HardwareChip::ALL
         .into_iter()
@@ -115,8 +138,13 @@ pub fn build(
             .flat_map(|chip| ChipInstance::ALL.map(move |instance| (chip, instance)))
             .filter_map(|(chip, instance)| {
                 let available = chip.advertised(instance, entries);
-                let saved = routes.iter().any(|route| {
-                    route.device_id == device.id && route.chip == chip && route.target == instance
+                let saved = plan.assignments().iter().any(|assignment| {
+                    assignment.target
+                        == Target::Hardware {
+                            device_id: device.id,
+                            chip,
+                            instance,
+                        }
                 });
                 (available || saved).then_some((chip, instance, available))
             })
@@ -164,20 +192,31 @@ pub fn build(
         .iter()
         .enumerate()
         .map(|(index, source)| {
-            let route: Option<&Connection> = match source {
-                Source::Hardware(chip, instance) => routes
-                    .iter()
-                    .find(|route| route.chip == *chip && route.source == *instance),
+            let target = match source {
+                Source::Hardware(chip, instance) => Some(
+                    plan.assignment(&crate::routing::Source {
+                        chip: chip.sequencer_chip(),
+                        instance: *instance,
+                    })
+                    .target
+                    .clone(),
+                ),
                 Source::Software(_, _) => None,
             };
-            if let Some(route) = route {
+            if let Some(Target::Hardware {
+                device_id,
+                chip,
+                instance,
+            }) = target
+            {
                 let endpoint = boxes
                     .iter()
-                    .find(|device| device.id == route.device_id)
+                    .find(|device| device.id == device_id)
                     .and_then(|device| {
-                        device.endpoints.iter().find(|endpoint| {
-                            endpoint.chip == route.chip && endpoint.instance == route.target
-                        })
+                        device
+                            .endpoints
+                            .iter()
+                            .find(|endpoint| endpoint.chip == chip && endpoint.instance == instance)
                     })
                     .expect("validated routes have a device and retained endpoint");
                 Cable {
@@ -214,13 +253,32 @@ mod tests {
     use super::*;
     use crate::routing::{Connection, SessionRouting};
 
+    fn build(
+        devices: &[Device],
+        statuses: &HashMap<u64, DeviceStatus>,
+        connections: &[Connection],
+    ) -> Graph {
+        super::build(
+            devices,
+            statuses,
+            &RoutingPlan::new(connections, Default::default()),
+        )
+    }
+
     #[test]
     fn ay_emulator_labels_follow_setting() {
         let ay = Source::Hardware(HardwareChip::Ay8910, ChipInstance::Secondary);
-        assert_eq!(ay.emulator_label(false), "AY8910 #2 (silent)");
-        assert_eq!(ay.emulator_label(true), "YM2149 #2 (assigned)");
+        let off = RoutingPlan::new(&[], Default::default());
+        let on = RoutingPlan::new(
+            &[],
+            crate::library::VgmSettings {
+                ay8910_ym2149: true,
+            },
+        );
+        assert_eq!(ay.emulator_label(&off), "AY8910 #2 (silent)");
+        assert_eq!(ay.emulator_label(&on), "YM2149 #2 (assigned)");
         let other = Source::Hardware(HardwareChip::Ym2151, ChipInstance::Primary);
-        assert_eq!(other.emulator_label(true), other.label());
+        assert_eq!(other.emulator_label(&on), other.label());
     }
 
     #[test]
