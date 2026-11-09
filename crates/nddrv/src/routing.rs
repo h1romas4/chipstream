@@ -140,6 +140,7 @@ impl ChipInstance {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackPlan {
     pub device_ids: Vec<u64>,
+    pub device_names: HashMap<u64, String>,
     pub routes: Vec<NdsifRoute>,
     pub nd7_devices: Vec<usize>,
     pub routing: RoutingPlan,
@@ -466,6 +467,11 @@ impl SessionRouting {
             })
             .collect();
         Some(PlaybackPlan {
+            device_names: devices
+                .iter()
+                .filter(|device| device_ids.contains(&device.id))
+                .map(|device| (device.id, device.name.clone()))
+                .collect(),
             device_ids,
             routes,
             nd7_devices,
@@ -550,6 +556,7 @@ mod tests {
     fn nd7_plan(routes: Vec<NdsifRoute>, nd7_devices: Vec<usize>) -> PlaybackPlan {
         PlaybackPlan {
             device_ids: vec![1, 2],
+            device_names: HashMap::new(),
             routes,
             nd7_devices,
             routing: RoutingPlan::new(&[], VgmSettings::default()),

@@ -1910,15 +1910,44 @@ impl AppView {
                     "{} #{}{}",
                     Track::chip_name(&source.chip),
                     source.instance as u8 + 1,
-                    if source.hardware {
-                        " (NanoDrive)"
-                    } else if source.visual_only {
+                    if source.visual_only {
                         " (visual only)"
                     } else {
                         ""
                     }
                 );
-                rows.push(div().text_xs().text_color(rgb(0xb9e9e7)).child(title));
+                rows.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .text_color(rgb(0xb9e9e7))
+                                .child(title),
+                        )
+                        .when_some(piano_route_label(source), |row, (label, tooltip)| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!("piano-route-{chip_id}")))
+                                    .flex_shrink_0()
+                                    .whitespace_nowrap()
+                                    .text_xs()
+                                    .text_color(rgb(0xd0a76e))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tooltip.clone()).build(window, cx)
+                                    })
+                                    .child(label),
+                            )
+                        }),
+                );
                 for channel in 0..total {
                     let paired =
                         self.piano_fm_mute()
@@ -2128,25 +2157,38 @@ impl AppView {
                 let software = sources.iter().any(|other| {
                     other.chip == source.chip && !other.hardware && !other.visual_only
                 });
-                let hardware = sources
-                    .iter()
-                    .any(|other| other.chip == source.chip && other.hardware);
                 let name = Track::chip_name(&source.chip);
                 rows.push(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap_1()
+                        .min_w_0()
                         .text_xs()
                         .text_color(rgb(0xb9e9e7))
-                        .child(name)
-                        .when(hardware, |row| {
-                            row.child(div().text_color(rgb(0xd0a76e)).child(if software {
-                                "NanoDrive fixed"
-                            } else {
-                                "NanoDrive"
-                            }))
-                        }),
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(name),
+                        )
+                        .when_some(
+                            piano_gain_route_label(&source.chip, sources),
+                            |row, (label, tooltip)| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!("gain-route-{name}")))
+                                        .flex_shrink_0()
+                                        .text_color(rgb(0xd0a76e))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(tooltip.clone()).build(window, cx)
+                                        })
+                                        .child(label),
+                                )
+                            },
+                        ),
                 );
                 if !software {
                     continue;
@@ -4570,6 +4612,98 @@ fn unsupported_chips(
     unsupported_chips_with_plan(chips, &plan, statuses)
 }
 
+fn piano_route_label(source: &GainSource) -> Option<(String, String)> {
+    match &source.target {
+        Some(routing::Target::Hardware {
+            device_id,
+            chip,
+            instance,
+        }) if source.hardware => {
+            let name = source
+                .target_device_name
+                .clone()
+                .unwrap_or_else(|| format!("NanoDrive (device {device_id})"));
+            Some((
+                format!("ND #{}", instance.number() + 1),
+                format!("Route: {name} / {} #{}", chip.name(), instance.number() + 1),
+            ))
+        }
+        Some(routing::Target::Software {
+            chip: routing::SoftwareTarget::Ym2149,
+            instance,
+        }) if !source.hardware && !source.visual_only => Some((
+            format!("YM2149 #{}", instance.number() + 1),
+            format!("Output: YM2149 #{} (software)", instance.number() + 1),
+        )),
+        _ if source.hardware => {
+            Some(("ND".into(), "Route: NanoDrive (details unavailable)".into()))
+        }
+        _ => None,
+    }
+}
+
+fn piano_gain_route_label(chip: &Chip, sources: &[GainSource]) -> Option<(String, String)> {
+    let sources: Vec<_> = sources
+        .iter()
+        .filter(|source| source.chip == *chip && !source.visual_only)
+        .collect();
+    if sources.len() == 1 {
+        let source = sources[0];
+        return piano_route_label(source).map(|(label, tooltip)| {
+            if source.hardware {
+                (
+                    format!("{label} fixed"),
+                    format!("{tooltip}\nNanoDrive gain is fixed."),
+                )
+            } else {
+                (label, tooltip)
+            }
+        });
+    }
+
+    let hardware = sources.iter().filter(|source| source.hardware).count();
+    let software = sources.len() - hardware;
+    let has_assignment = sources
+        .iter()
+        .any(|source| piano_route_label(source).is_some());
+    if !has_assignment {
+        return None;
+    }
+    let label = if hardware > 0 && software > 0 {
+        "ND fixed + SW".to_owned()
+    } else if hardware > 0 {
+        format!("ND x{hardware} fixed")
+    } else if sources.iter().all(|source| {
+        matches!(
+            source.target,
+            Some(routing::Target::Software {
+                chip: routing::SoftwareTarget::Ym2149,
+                ..
+            })
+        )
+    }) {
+        format!("YM2149 x{software}")
+    } else {
+        "SW mixed".to_owned()
+    };
+    let mut details: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            let detail = piano_route_label(source)
+                .map_or_else(|| "Output: software".to_owned(), |(_, tooltip)| tooltip);
+            format!("#{}: {detail}", source.instance as u8 + 1)
+        })
+        .collect();
+    if hardware > 0 {
+        details.push(if software > 0 {
+            "Chip gain applies only to software; NanoDrive gain is fixed.".to_owned()
+        } else {
+            "NanoDrive gain is fixed.".to_owned()
+        });
+    }
+    Some((label, details.join("\n")))
+}
+
 fn unsupported_chips_with_plan(
     chips: &[ChipTag],
     plan: &routing::RoutingPlan,
@@ -4998,6 +5132,136 @@ mod tests {
         select_for_context, select_item, select_range, selection_status, single_queue_selection,
         unsupported_chips, update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn piano_route_labels_distinguish_destinations() {
+        use crate::playback::GainSource;
+        use crate::routing::{ChipInstance, HardwareChip, SoftwareTarget, Target};
+        use chipstream::sequencer::{Chip, Instance};
+
+        let mut source = GainSource {
+            chip: Chip::Ay8910,
+            instance: Instance::Primary,
+            hardware: true,
+            visual_only: false,
+            target: Some(Target::Hardware {
+                device_id: 42,
+                chip: HardwareChip::Ay8910,
+                instance: ChipInstance::Secondary,
+            }),
+            target_device_name: Some("NanoDrive 7 #2".into()),
+        };
+        assert_eq!(
+            super::piano_route_label(&source),
+            Some(("ND #2".into(), "Route: NanoDrive 7 #2 / AY8910 #2".into()))
+        );
+        source.target_device_name = None;
+        assert_eq!(
+            super::piano_route_label(&source),
+            Some((
+                "ND #2".into(),
+                "Route: NanoDrive (device 42) / AY8910 #2".into()
+            ))
+        );
+        source.target = None;
+        assert_eq!(
+            super::piano_route_label(&source),
+            Some(("ND".into(), "Route: NanoDrive (details unavailable)".into()))
+        );
+        source.hardware = false;
+        source.instance = Instance::Secondary;
+        source.target = Some(Target::Software {
+            chip: SoftwareTarget::Ym2149,
+            instance: ChipInstance::Secondary,
+        });
+        assert_eq!(
+            super::piano_route_label(&source),
+            Some(("YM2149 #2".into(), "Output: YM2149 #2 (software)".into()))
+        );
+        source.visual_only = true;
+        source.target = Some(Target::Silent);
+        assert_eq!(super::piano_route_label(&source), None);
+        source.visual_only = false;
+        source.target = Some(Target::Software {
+            chip: SoftwareTarget::Native(Chip::Ym2151),
+            instance: ChipInstance::Primary,
+        });
+        assert_eq!(super::piano_route_label(&source), None);
+    }
+
+    #[test]
+    fn piano_gain_route_labels_cover_mixed_and_multiple_instances() {
+        use crate::playback::GainSource;
+        use crate::routing::{ChipInstance, HardwareChip, SoftwareTarget, Target};
+        use chipstream::sequencer::{Chip, Instance};
+
+        let hardware = GainSource {
+            chip: Chip::Ay8910,
+            instance: Instance::Primary,
+            hardware: true,
+            visual_only: false,
+            target: Some(Target::Hardware {
+                device_id: 1,
+                chip: HardwareChip::Ay8910,
+                instance: ChipInstance::Secondary,
+            }),
+            target_device_name: Some("NanoDrive 7".into()),
+        };
+        let software = GainSource {
+            chip: Chip::Ay8910,
+            instance: Instance::Secondary,
+            hardware: false,
+            visual_only: false,
+            target: Some(Target::Software {
+                chip: SoftwareTarget::Ym2149,
+                instance: ChipInstance::Secondary,
+            }),
+            target_device_name: None,
+        };
+        let (label, tooltip) =
+            super::piano_gain_route_label(&Chip::Ay8910, std::slice::from_ref(&hardware)).unwrap();
+        assert_eq!(label, "ND #2 fixed");
+        assert!(tooltip.contains("NanoDrive gain is fixed."));
+        let (label, tooltip) =
+            super::piano_gain_route_label(&Chip::Ay8910, &[hardware.clone(), software.clone()])
+                .unwrap();
+        assert_eq!(label, "ND fixed + SW");
+        assert!(tooltip.contains("#1: Route: NanoDrive 7 / AY8910 #2"));
+        assert!(tooltip.contains("#2: Output: YM2149 #2 (software)"));
+        assert!(tooltip.contains("Chip gain applies only to software"));
+
+        let mut second_hardware = hardware.clone();
+        second_hardware.instance = Instance::Secondary;
+        second_hardware.target_device_name = Some("NanoDrive 6".into());
+        let (label, tooltip) =
+            super::piano_gain_route_label(&Chip::Ay8910, &[hardware.clone(), second_hardware])
+                .unwrap();
+        assert_eq!(label, "ND x2 fixed");
+        assert!(tooltip.contains("NanoDrive 7"));
+        assert!(tooltip.contains("NanoDrive 6"));
+        let mut first_software = software.clone();
+        first_software.instance = Instance::Primary;
+        first_software.target = Some(Target::Software {
+            chip: SoftwareTarget::Ym2149,
+            instance: ChipInstance::Primary,
+        });
+        assert_eq!(
+            super::piano_gain_route_label(&Chip::Ay8910, &[first_software, software.clone()])
+                .unwrap()
+                .0,
+            "YM2149 x2"
+        );
+        let mut silent = software;
+        silent.visual_only = true;
+        silent.target = Some(Target::Silent);
+        assert_eq!(
+            super::piano_gain_route_label(&Chip::Ay8910, &[hardware, silent])
+                .unwrap()
+                .0,
+            "ND #2 fixed"
+        );
+        assert_eq!(super::piano_gain_route_label(&Chip::Ym2151, &[]), None);
+    }
 
     #[test]
     fn search_shortcut_is_limited_to_library_and_control_f() {

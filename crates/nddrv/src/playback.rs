@@ -131,6 +131,8 @@ pub struct GainSource {
     pub instance: Instance,
     pub hardware: bool,
     pub visual_only: bool,
+    pub target: Option<crate::routing::Target>,
+    pub target_device_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -677,6 +679,7 @@ impl IdlePreview {
                     }
                     let mut sources = Sequencer::gain_sources(&sequencer, &routes);
                     add_visual_ay_sources(&path, &routes, &mut sources)?;
+                    set_source_targets(&mut sources, &routing, plan_for_preview.as_ref());
                     run_preview(&path, rate, looped, &state, &state.cancel, Some(sources))
                 })();
                 if let Err(error) = result {
@@ -889,10 +892,47 @@ fn add_visual_ay_sources(
                 instance: *instance,
                 hardware,
                 visual_only: !hardware,
+                target: None,
+                target_device_name: None,
             });
         }
     }
     Ok(())
+}
+
+fn set_source_targets(
+    sources: &mut [GainSource],
+    routing: &RoutingPlan,
+    plan: Option<&PlaybackPlan>,
+) {
+    for source in sources {
+        if source.visual_only {
+            source.target = Some(crate::routing::Target::Silent);
+            continue;
+        }
+        let instance = match source.instance {
+            Instance::Primary => crate::routing::ChipInstance::Primary,
+            Instance::Secondary => crate::routing::ChipInstance::Secondary,
+        };
+        source.target = routing
+            .assignments()
+            .iter()
+            .find(|assignment| {
+                assignment.source.chip == source.chip && assignment.source.instance == instance
+            })
+            .filter(|assignment| {
+                matches!(assignment.target, crate::routing::Target::Hardware { .. })
+                    == source.hardware
+            })
+            .map(|assignment| assignment.target.clone());
+        source.target_device_name = match &source.target {
+            Some(crate::routing::Target::Hardware { device_id, .. }) => plan
+                .and_then(|plan| plan.device_names.get(device_id))
+                .filter(|name| !name.is_empty())
+                .cloned(),
+            _ => None,
+        };
+    }
 }
 
 fn run_preview(
@@ -1270,6 +1310,8 @@ impl Sequencer {
                 chip,
                 instance,
                 visual_only: false,
+                target: None,
+                target_device_name: None,
             })
             .collect()
     }
@@ -1974,6 +2016,11 @@ fn run_inner(
     let supported = audio_output_config(&device, control.audio_sample_rate)?;
     let config = supported.config();
     let routes = hardware.map_or(&[][..], |(_, plan)| plan.routes.as_slice());
+    let playback_plan = hardware.map(|(_, plan)| plan);
+    let routing = hardware.map_or_else(
+        || RoutingPlan::new(&[], control.vgm_settings),
+        |(_, plan)| plan.routing.clone(),
+    );
     let (mut sequencer, hardware) = if let Some((lease, plan)) = hardware {
         let timeline = Arc::new(NdsifHostTimeline::pending());
         if control.volume_mode.load(Ordering::Acquire) == VolumeMode::Master as u8 {
@@ -1997,7 +2044,7 @@ fn run_inner(
         )?;
         crate::adapter::register_software_adapters(
             &mut factories,
-            &plan.routing,
+            &routing,
             crate::adapter::AdapterMode::Playback,
         );
         let sequencer = Sequencer::for_playback_with_settings(
@@ -2013,7 +2060,6 @@ fn run_inner(
         (sequencer, Some((recorders, workers)))
     } else {
         let mut factories = ChipFactoryRegistry::new();
-        let routing = RoutingPlan::new(&[], control.vgm_settings);
         crate::adapter::register_software_adapters(
             &mut factories,
             &routing,
@@ -2034,6 +2080,7 @@ fn run_inner(
     };
     let mut sources = Sequencer::gain_sources(&sequencer, routes);
     add_visual_ay_sources(path, routes, &mut sources)?;
+    set_source_targets(&mut sources, &routing, playback_plan);
     sequencer.filter_fm_mutes(Arc::clone(&control.fm_mute));
     *control
         .gain_sources
@@ -2889,6 +2936,8 @@ mod tests {
             instance: Instance::Primary,
             hardware: false,
             visual_only: false,
+            target: None,
+            target_device_name: None,
         };
         let render = |hardware| {
             let control =
@@ -4159,8 +4208,17 @@ mod tests {
         .unwrap();
         let plan = PlaybackPlan {
             device_ids: vec![1],
+            device_names: HashMap::new(),
             nd7_devices: vec![],
-            routing: RoutingPlan::new(&[], VgmSettings::default()),
+            routing: RoutingPlan::new(
+                &[crate::routing::Connection {
+                    chip: crate::routing::HardwareChip::Ym2151,
+                    source: crate::routing::ChipInstance::Primary,
+                    device_id: 1,
+                    target: crate::routing::ChipInstance::Primary,
+                }],
+                VgmSettings::default(),
+            ),
             routes: vec![ndsif_transport::NdsifRoute {
                 chip: Chip::Ym2151,
                 source: Instance::Primary,
@@ -4637,11 +4695,131 @@ mod tests {
     }
 
     #[test]
+    fn source_targets_snapshot_multiple_devices_and_software() {
+        use crate::routing::{ChipInstance, Connection, HardwareChip, SoftwareTarget, Target};
+
+        let connections = [
+            Connection {
+                chip: HardwareChip::Ay8910,
+                source: ChipInstance::Primary,
+                device_id: 1,
+                target: ChipInstance::Secondary,
+            },
+            Connection {
+                chip: HardwareChip::Ay8910,
+                source: ChipInstance::Secondary,
+                device_id: 2,
+                target: ChipInstance::Primary,
+            },
+        ];
+        let mut plan = PlaybackPlan {
+            device_ids: vec![1, 2],
+            device_names: HashMap::from([(1, "NanoDrive 7".into()), (2, "NanoDrive 6".into())]),
+            routes: vec![],
+            nd7_devices: vec![],
+            routing: RoutingPlan::new(&connections, VgmSettings::default()),
+        };
+        let mut sources = vec![
+            GainSource {
+                chip: Chip::Ay8910,
+                instance: Instance::Primary,
+                hardware: true,
+                visual_only: false,
+                target: None,
+                target_device_name: None,
+            },
+            GainSource {
+                chip: Chip::Ay8910,
+                instance: Instance::Secondary,
+                hardware: true,
+                visual_only: false,
+                target: None,
+                target_device_name: None,
+            },
+            GainSource {
+                chip: Chip::Ym2151,
+                instance: Instance::Primary,
+                hardware: false,
+                visual_only: false,
+                target: None,
+                target_device_name: None,
+            },
+        ];
+        set_source_targets(&mut sources, &plan.routing, Some(&plan));
+        plan.device_names.insert(1, "Renamed".into());
+        plan.routing = RoutingPlan::new(&[], VgmSettings::default());
+        assert_eq!(
+            sources[0].target_device_name.as_deref(),
+            Some("NanoDrive 7")
+        );
+        assert_eq!(
+            sources[1].target_device_name.as_deref(),
+            Some("NanoDrive 6")
+        );
+        assert_eq!(
+            sources[0].target,
+            Some(Target::Hardware {
+                device_id: 1,
+                chip: HardwareChip::Ay8910,
+                instance: ChipInstance::Secondary,
+            })
+        );
+        assert_eq!(
+            sources[1].target,
+            Some(Target::Hardware {
+                device_id: 2,
+                chip: HardwareChip::Ay8910,
+                instance: ChipInstance::Primary,
+            })
+        );
+        assert_eq!(
+            sources[2].target,
+            Some(Target::Software {
+                chip: SoftwareTarget::Native(Chip::Ym2151),
+                instance: ChipInstance::Primary,
+            })
+        );
+    }
+
+    #[test]
     fn ay_emulation_respects_settings_and_per_instance_hardware_routes() {
+        use crate::routing::{ChipInstance, HardwareChip, SoftwareTarget, Target};
         use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::Ay8910Spec;
         use soundlog::vgm::command::WaitSamples;
         use soundlog::vgm::header::Ay8910ChipType;
+
+        fn assert_targets(sources: &[GainSource], hardware: bool, enabled: bool) {
+            assert_eq!(sources.len(), 2);
+            for source in sources {
+                let instance = match source.instance {
+                    Instance::Primary => ChipInstance::Primary,
+                    Instance::Secondary => ChipInstance::Secondary,
+                };
+                let is_hardware = hardware && source.instance == Instance::Primary;
+                let expected = if is_hardware {
+                    Target::Hardware {
+                        device_id: 1,
+                        chip: HardwareChip::Ay8910,
+                        instance: ChipInstance::Secondary,
+                    }
+                } else if enabled {
+                    Target::Software {
+                        chip: SoftwareTarget::Ym2149,
+                        instance,
+                    }
+                } else {
+                    Target::Silent
+                };
+                assert_eq!(source.hardware, is_hardware);
+                assert_eq!(source.visual_only, !is_hardware && !enabled);
+                assert_eq!(source.target.as_ref(), Some(&expected));
+                assert_eq!(
+                    source.target_device_name.as_deref(),
+                    is_hardware.then_some("NanoDrive 7")
+                );
+            }
+        }
 
         #[derive(Default)]
         struct Recorder(Vec<NdsifRegisterEvent>, bool);
@@ -4690,7 +4868,7 @@ mod tests {
                 let settings = VgmSettings {
                     ay8910_ym2149: enabled,
                 };
-                let plan = if hardware {
+                let mut plan = if hardware {
                     let device = crate::routing::Device {
                         id: 1,
                         name: "NanoDrive 7".into(),
@@ -4744,7 +4922,7 @@ mod tests {
                     assert!(player.is_err());
                 } else {
                     let mut player = player.unwrap();
-                    let sources = Sequencer::gain_sources(&player, routes);
+                    let mut sources = Sequencer::gain_sources(&player, routes);
                     assert_eq!(sources.len(), if enabled { 2 } else { 0 });
                     if hardware {
                         assert!(
@@ -4758,6 +4936,9 @@ mod tests {
                             && !s.hardware
                             && !s.visual_only));
                     }
+                    add_visual_ay_sources(&path, routes, &mut sources).unwrap();
+                    set_source_targets(&mut sources, &routing, plan.as_ref());
+                    assert_targets(&sources, hardware, enabled);
                     let mut peak = 0.0_f32;
                     while let Some(block) = player.render().unwrap() {
                         for sample in block.frames().iter().flatten() {
@@ -4779,6 +4960,10 @@ mod tests {
                     },
                 )
                 .unwrap();
+                if let Some(plan) = &mut plan {
+                    plan.device_names.insert(1, "Renamed".into());
+                    plan.routing = RoutingPlan::new(&[], VgmSettings::default());
+                }
                 let deadline = Instant::now() + Duration::from_secs(10);
                 let sources = loop {
                     if let Some(sources) = preview.gain_sources().unwrap() {
@@ -4787,12 +4972,7 @@ mod tests {
                     assert!(Instant::now() < deadline, "AY idle preview did not start");
                     thread::sleep(Duration::from_millis(10));
                 };
-                assert_eq!(sources.len(), 2);
-                for source in sources {
-                    let is_hardware = hardware && source.instance == Instance::Primary;
-                    assert_eq!(source.hardware, is_hardware);
-                    assert_eq!(source.visual_only, !is_hardware && !enabled);
-                }
+                assert_targets(&sources, hardware, enabled);
             }
         }
 
