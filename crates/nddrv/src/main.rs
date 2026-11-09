@@ -7113,6 +7113,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(bounds),
             window_decorations: Some(WindowDecorations::Client),
+            app_id: Some("nddrv".into()),
             ..TitleBar::window_options()
         };
         open_window(options, cx, |window, cx| {
