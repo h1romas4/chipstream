@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Allow selecting a preferred YM2608 rhythm ROM in General settings.
+- Use PipeWire playback and recording devices on Linux when available, with ALSA fallback and an option to show all devices.
 - Add a macOS application menu and Command+Q shortcut to quit, even after the
   window is closed.
 - Restore Music search text and tags on startup.

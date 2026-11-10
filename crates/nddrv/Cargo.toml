@@ -39,3 +39,7 @@ soundlog = { workspace = true, features = ["mdx"] }
 tempfile = "3"
 ureq = { version = "3", features = ["json"] }
 walkdir = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.2", features = ["pipewire"] }
+pipewire = "0.10.1"

@@ -13,10 +13,16 @@ Windows downloads include a standalone executable.
 
 The Windows and macOS binaries are not signed or notarized, so the operating
 system may show a security warning. Linux builds require compatible system
-libraries, including ALSA and GPUI platform dependencies.
+libraries, including ALSA, PipeWire, and GPUI platform dependencies.
 
 To build from source, install Rust and the platform prerequisites in the
-[GPUI Kit installation guide](https://gpui-kit.com/docs/installation/), then run:
+[GPUI Kit installation guide](https://gpui-kit.com/docs/installation/).
+
+On Linux, also install the PipeWire and ALSA development packages and libclang
+(for example, `libpipewire-0.3-dev`, `libasound2-dev`, and `libclang-dev` on
+Debian/Ubuntu).
+
+Then run:
 
 ```sh
 cargo run --release -p nddrv
@@ -81,6 +87,19 @@ supported 44.1, 48, 96, and 192 kHz rates or **Device default** can be chosen.
 Settings are saved and apply to the next track. Changing the output device
 resets its sample rate to **Device default**. With NanoDrive routing, emulated
 chips use this output; hardware audio is separate.
+
+On Linux, playback and recording use PipeWire when it is available, and fall
+back to ALSA otherwise. With PipeWire, the device lists show its output and
+input devices, not individual application streams; recording also offers
+**System output (monitor)**. Enable
+**Show all audio devices** in either settings page to include ALSA devices and
+plugins. Without PipeWire, the default list instead shows common ALSA audio
+servers and representative hardware devices. This display choice lasts until
+Settings is closed; existing device selections remain available even when the
+list is filtered. Direct ALSA hardware devices can be
+busy while PipeWire or another application uses them. In that case, select
+**System default** or a PipeWire device and choose the desired device in the
+system sound settings.
 
 In **Settings > VGM**, enable **Assign YM2149 to AY8910** to
 approximate AY8910-family VGM audio in software. It is off by default and

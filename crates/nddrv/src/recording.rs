@@ -12,11 +12,8 @@ use cpal::{FromSample, SampleFormat, SizedSample};
 use crate::library::RecordingSettings;
 
 pub fn input_devices() -> Result<Vec<(String, String)>> {
-    cpal::default_host()
-        .input_devices()
-        .context("could not enumerate audio input devices")?
-        .map(|device| Ok((device.id()?.to_string(), device.to_string())))
-        .collect()
+    crate::audio::devices(crate::audio::Direction::Input)
+        .context("could not enumerate audio input devices")
 }
 
 fn input_device(device_id: Option<&str>) -> Result<cpal::Device> {
@@ -131,7 +128,9 @@ fn handle_input_error(
     error: &Mutex<Option<String>>,
     xruns: &AtomicU64,
 ) {
-    if stream_error.kind() == cpal::ErrorKind::Xrun {
+    if stream_error.kind() == cpal::ErrorKind::DeviceChanged {
+        eprintln!("Audio input route changed: {stream_error}");
+    } else if stream_error.kind() == cpal::ErrorKind::Xrun {
         xruns.fetch_add(1, Ordering::Relaxed);
     } else {
         if let Ok(mut error) = error.lock() {
@@ -195,7 +194,9 @@ impl Capture {
             .as_deref()
             .context("select a WAV output folder in Recording settings")?;
         let device = input_device(settings.input_device.as_deref())?;
-        let supported = input_config(&device, settings.sample_rate)?;
+        let supported = input_config(&device, settings.sample_rate).map_err(|error| {
+            crate::audio::with_device_busy_hint(error, settings.input_device.as_deref())
+        })?;
         let config = supported.config();
         let (sender, receiver) = mpsc::sync_channel(256);
         let error = Arc::new(Mutex::new(None));
@@ -209,7 +210,10 @@ impl Capture {
                     failed.clone(),
                     error.clone(),
                     xruns.clone(),
-                )?
+                )
+                .map_err(|error| {
+                    crate::audio::with_device_busy_hint(error, settings.input_device.as_deref())
+                })?
             };
         }
         let stream = match supported.sample_format() {
@@ -254,7 +258,10 @@ impl Capture {
             let path = capture.path.clone();
             let _ = capture.finish();
             let _ = std::fs::remove_file(path);
-            return Err(error.into());
+            return Err(crate::audio::with_device_busy_hint(
+                error.into(),
+                settings.input_device.as_deref(),
+            ));
         }
         Ok(capture)
     }
@@ -432,6 +439,15 @@ mod tests {
         let failed = AtomicBool::new(false);
         let error = Mutex::new(None);
         let xruns = AtomicU64::new(0);
+        handle_input_error(
+            cpal::ErrorKind::DeviceChanged.into(),
+            &failed,
+            &error,
+            &xruns,
+        );
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(error.lock().unwrap().is_none());
+        assert_eq!(xruns.load(Ordering::Relaxed), 0);
         handle_input_error(cpal::ErrorKind::Xrun.into(), &failed, &error, &xruns);
         assert_eq!(xruns.load(Ordering::Relaxed), 1);
         assert!(!failed.load(Ordering::Acquire));

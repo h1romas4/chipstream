@@ -1855,6 +1855,16 @@ impl AudioConsumer {
     }
 }
 
+fn handle_output_error(error: cpal::Error, events: &mpsc::Sender<Result<Instant>>) {
+    match error.kind() {
+        cpal::ErrorKind::DeviceChanged => eprintln!("Audio output route changed: {error}"),
+        cpal::ErrorKind::Xrun => eprintln!("Audio output interruption: {error}"),
+        _ => {
+            let _ = events.send(Err(anyhow::anyhow!("audio device: {error}")));
+        }
+    }
+}
+
 fn stream<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -1889,33 +1899,22 @@ fn stream<T: SizedSample + FromSample<f32>>(
                 .saturating_duration_since(timestamps.callback);
             consumer.fill(out, latency);
         },
-        move |error| {
-            let _ = errors.send(Err(anyhow::anyhow!("audio device: {error}")));
-        },
+        move |error| handle_output_error(error, &errors),
         None,
     )?)
 }
 
 pub fn audio_output_devices() -> Result<Vec<(String, String)>> {
-    let host = cpal::default_host();
-    host.output_devices()
-        .context("could not enumerate audio output devices")?
-        .map(|device| {
-            let name = device.to_string();
-            let id = device
-                .id()
-                .context("could not read audio output device ID")?
-                .to_string();
-            Ok((id, name))
-        })
-        .collect()
+    crate::audio::devices(crate::audio::Direction::Output)
+        .context("could not enumerate audio output devices")
 }
 
 pub fn audio_sample_rates(device_id: Option<&str>) -> Result<Vec<u32>> {
     let device = audio_output_device(device_id)?;
     let ranges = device
         .supported_output_configs()
-        .context("could not enumerate supported audio output configurations")?
+        .context("could not enumerate supported audio output configurations")
+        .map_err(|error| crate::audio::with_device_busy_hint(error, device_id))?
         .collect::<Vec<_>>();
     let mut rates = std::collections::BTreeSet::new();
     for rate in [44_100, 48_000, 96_000, 192_000] {
@@ -2036,7 +2035,9 @@ fn run_inner(
     )>,
 ) -> Result<()> {
     let device = audio_output_device(control.audio_output_device.as_deref())?;
-    let supported = audio_output_config(&device, control.audio_sample_rate)?;
+    let supported = audio_output_config(&device, control.audio_sample_rate).map_err(|error| {
+        crate::audio::with_device_busy_hint(error, control.audio_output_device.as_deref())
+    })?;
     let config = supported.config();
     let routes = hardware.map_or(&[][..], |(_, plan)| plan.routes.as_slice());
     let playback_plan = hardware.map(|(_, plan)| plan);
@@ -2128,18 +2129,21 @@ fn run_inner(
     let (tx, rx) = mpsc::sync_channel(QUEUE_BLOCKS);
     let (events, event_rx) = mpsc::channel();
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => stream::<f32>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::F64 => stream::<f64>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::I8 => stream::<i8>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::I16 => stream::<i16>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::I32 => stream::<i32>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::I64 => stream::<i64>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::U8 => stream::<u8>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::U16 => stream::<u16>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::U32 => stream::<u32>(&device, &config, rx, events, control.clone())?,
-        SampleFormat::U64 => stream::<u64>(&device, &config, rx, events, control.clone())?,
+        SampleFormat::F32 => stream::<f32>(&device, &config, rx, events, control.clone()),
+        SampleFormat::F64 => stream::<f64>(&device, &config, rx, events, control.clone()),
+        SampleFormat::I8 => stream::<i8>(&device, &config, rx, events, control.clone()),
+        SampleFormat::I16 => stream::<i16>(&device, &config, rx, events, control.clone()),
+        SampleFormat::I32 => stream::<i32>(&device, &config, rx, events, control.clone()),
+        SampleFormat::I64 => stream::<i64>(&device, &config, rx, events, control.clone()),
+        SampleFormat::U8 => stream::<u8>(&device, &config, rx, events, control.clone()),
+        SampleFormat::U16 => stream::<u16>(&device, &config, rx, events, control.clone()),
+        SampleFormat::U32 => stream::<u32>(&device, &config, rx, events, control.clone()),
+        SampleFormat::U64 => stream::<u64>(&device, &config, rx, events, control.clone()),
         other => bail!("unsupported audio sample format: {other:?}"),
-    };
+    }
+    .map_err(|error| {
+        crate::audio::with_device_busy_hint(error, control.audio_output_device.as_deref())
+    })?;
     let mut exhausted = false;
     let mut hardware_fade_scheduled = false;
     let mut prebuffered_frames = 0_usize;
@@ -2191,7 +2195,9 @@ fn run_inner(
     if control.cancel.load(Ordering::Acquire) {
         return Ok(());
     }
-    stream.play()?;
+    stream.play().map_err(|error| {
+        crate::audio::with_device_busy_hint(error.into(), control.audio_output_device.as_deref())
+    })?;
     let _preview_worker = match PreviewWorker::start(path, config.sample_rate, looped, &control) {
         Ok(worker) => Some(worker),
         Err(error) => {
@@ -2319,6 +2325,17 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_device_change_is_nonfatal_but_other_errors_are_reported() {
+        let (sender, receiver) = mpsc::channel();
+        handle_output_error(cpal::ErrorKind::DeviceChanged.into(), &sender);
+        assert!(receiver.try_recv().is_err());
+        handle_output_error(cpal::ErrorKind::Xrun.into(), &sender);
+        assert!(receiver.try_recv().is_err());
+        handle_output_error(cpal::ErrorKind::DeviceNotAvailable.into(), &sender);
+        assert!(receiver.try_recv().unwrap().is_err());
+    }
 
     #[test]
     fn recording_starts_before_each_track_and_finalizes_after_playback() {

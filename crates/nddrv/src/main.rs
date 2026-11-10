@@ -1,5 +1,6 @@
 mod adapter;
 mod artwork;
+mod audio;
 mod device;
 mod fm_mute;
 mod hardware;
@@ -11,10 +12,12 @@ mod routing;
 mod update;
 mod visualizer;
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -641,6 +644,100 @@ struct IdlePreviewTarget {
     vgm_settings: library::VgmSettings,
 }
 
+fn audio_device_options(
+    devices: &[(String, String)],
+    selected: Option<&str>,
+    filter_linux: bool,
+    input: bool,
+) -> Vec<(SharedString, SharedString)> {
+    let pipewire_available = devices.iter().any(|(id, _)| id.starts_with("pipewire:"));
+    let visible: Vec<_> = devices
+        .iter()
+        .filter(|(id, _)| {
+            if !filter_linux || selected == Some(id.as_str()) {
+                return true;
+            }
+            if pipewire_available {
+                return id.starts_with("pipewire:")
+                    && !matches!(
+                        id.as_str(),
+                        "pipewire:input_default" | "pipewire:output_default"
+                    )
+                    && (input || id != "pipewire:sink_default");
+            }
+            let Some(pcm) = id.strip_prefix("alsa:") else {
+                return true;
+            };
+            if matches!(pcm, "pipewire" | "pulse" | "jack") || pcm.starts_with("plughw:") {
+                return true;
+            }
+            if let Some(device) = pcm.strip_prefix("hw:") {
+                return !devices
+                    .iter()
+                    .any(|(id, _)| id == &format!("alsa:plughw:{device}"));
+            }
+            false
+        })
+        .collect();
+    let mut name_counts = HashMap::new();
+    for (_, name) in &visible {
+        *name_counts.entry(name.as_str()).or_insert(0usize) += 1;
+    }
+    let mut options: Vec<(SharedString, SharedString)> =
+        vec![(SYSTEM_DEFAULT_AUDIO_DEVICE.into(), "System default".into())];
+    for (id, name) in visible {
+        let label = if id == "pipewire:sink_default" {
+            "System output (monitor)".to_owned()
+        } else if name_counts.get(name.as_str()).copied().unwrap_or(0) > 1 {
+            format!("{name} ({id})")
+        } else {
+            name.clone()
+        };
+        options.push((id.clone().into(), label.into()));
+    }
+    if let Some(selected) = selected
+        && !options.iter().any(|(value, _)| value.as_ref() == selected)
+    {
+        options.push((
+            selected.to_owned().into(),
+            format!("Unavailable ({selected})").into(),
+        ));
+    }
+    options
+}
+
+fn show_all_audio_devices_field(show_all: Rc<Cell<bool>>) -> SettingField<bool> {
+    let get = show_all.clone();
+    SettingField::checkbox(
+        move |_| get.get(),
+        move |value, cx| {
+            show_all.set(value);
+            cx.refresh_windows();
+        },
+    )
+}
+
+fn audio_sample_rate_options(
+    rates: &[u32],
+    selected: Option<u32>,
+) -> Vec<(SharedString, SharedString)> {
+    let mut options = vec![(DEVICE_DEFAULT_SAMPLE_RATE.into(), "Device default".into())];
+    options.extend(
+        rates
+            .iter()
+            .map(|rate| (rate.to_string().into(), format!("{rate} Hz").into())),
+    );
+    if let Some(rate) = selected
+        && !rates.contains(&rate)
+    {
+        options.push((
+            rate.to_string().into(),
+            format!("Unavailable ({rate} Hz)").into(),
+        ));
+    }
+    options
+}
+
 impl AppView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let output_devices = match playback::audio_output_devices() {
@@ -656,32 +753,6 @@ impl AppView {
         };
         let selected_output_device = self.config.audio_output_device.clone();
         let selected_sample_rate = self.config.audio_sample_rate;
-        let mut output_name_counts = HashMap::new();
-        for (_, name) in &output_devices {
-            *output_name_counts.entry(name.clone()).or_insert(0usize) += 1;
-        }
-        let mut output_options: Vec<(SharedString, SharedString)> = vec![(
-            SYSTEM_DEFAULT_AUDIO_DEVICE.to_owned().into(),
-            "System default".to_owned().into(),
-        )];
-        for (id, name) in output_devices {
-            let label = if output_name_counts.get(&name).copied().unwrap_or(0) > 1 {
-                format!("{name} ({id})")
-            } else {
-                name
-            };
-            output_options.push((id.into(), label.into()));
-        }
-        if let Some(selected) = &selected_output_device
-            && !output_options
-                .iter()
-                .any(|(value, _)| value.as_ref() == selected)
-        {
-            output_options.push((
-                selected.clone().into(),
-                format!("Unavailable ({selected})").into(),
-            ));
-        }
         let sample_rates = match playback::audio_sample_rates(selected_output_device.as_deref()) {
             Ok(rates) => rates,
             Err(error) => {
@@ -693,48 +764,21 @@ impl AppView {
                 Vec::new()
             }
         };
-        let mut sample_rate_options: Vec<(SharedString, SharedString)> = vec![(
-            DEVICE_DEFAULT_SAMPLE_RATE.to_owned().into(),
-            "Device default".to_owned().into(),
-        )];
-        for rate in sample_rates {
-            sample_rate_options.push((rate.to_string().into(), format!("{rate} Hz").into()));
-        }
-        if let Some(rate) = selected_sample_rate
-            && !sample_rate_options
-                .iter()
-                .any(|(value, _)| value.as_ref() == rate.to_string())
-        {
-            sample_rate_options.push((
-                rate.to_string().into(),
-                format!("Unavailable ({rate} Hz)").into(),
-            ));
-        }
-        let input_devices = recording::input_devices().unwrap_or_default();
-        let mut input_name_counts = HashMap::new();
-        for (_, name) in &input_devices {
-            *input_name_counts.entry(name.clone()).or_insert(0usize) += 1;
-        }
-        let mut input_options: Vec<(SharedString, SharedString)> =
-            vec![(SYSTEM_DEFAULT_AUDIO_DEVICE.into(), "System default".into())];
-        for (id, name) in input_devices {
-            let label = if input_name_counts.get(&name).copied().unwrap_or(0) > 1 {
-                format!("{name} ({id})")
-            } else {
-                name
-            };
-            input_options.push((id.into(), label.into()));
-        }
-        if let Some(selected) = &self.config.recording.input_device
-            && !input_options
-                .iter()
-                .any(|(value, _)| value.as_ref() == selected)
-        {
-            input_options.push((
-                selected.clone().into(),
-                format!("Unavailable ({selected})").into(),
-            ));
-        }
+        let sample_rate_options = Rc::new(RefCell::new(audio_sample_rate_options(
+            &sample_rates,
+            selected_sample_rate,
+        )));
+        let input_devices = match recording::input_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                self.pending_errors.push(error_notification(
+                    "Audio input device error",
+                    format!("{error:#}"),
+                ));
+                cx.notify();
+                Vec::new()
+            }
+        };
         let mut input_rate_options: Vec<(SharedString, SharedString)> =
             vec![(DEVICE_DEFAULT_SAMPLE_RATE.into(), "Device default".into())];
         for rate in [
@@ -743,7 +787,19 @@ impl AppView {
             input_rate_options.push((rate.to_string().into(), format!("{rate} Hz").into()));
         }
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        let show_all_audio_devices = Rc::new(Cell::new(false));
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let selected_output = view
+                .upgrade()
+                .and_then(|view| view.read(cx).config.audio_output_device.clone());
+            let selected_input = view
+                .upgrade()
+                .and_then(|view| view.read(cx).config.recording.input_device.clone());
+            let filter_linux = cfg!(target_os = "linux") && !show_all_audio_devices.get();
+            let output_options =
+                audio_device_options(&output_devices, selected_output.as_deref(), filter_linux, false);
+            let input_options =
+                audio_device_options(&input_devices, selected_input.as_deref(), filter_linux, true);
             let recording_get = view.clone();
             let recording_set = view.clone();
             let recording_field = SettingField::checkbox(
@@ -763,7 +819,7 @@ impl AppView {
             .default_value(false);
             let input_get = view.clone();
             let input_set = view.clone();
-            let input_field = SettingField::dropdown(
+            let input_field = SettingField::scrollable_dropdown(
                 input_options.clone(),
                 move |cx| {
                     input_get
@@ -785,7 +841,8 @@ impl AppView {
                     });
                 },
             )
-            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE);
+            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE)
+            .max_w(px(280.));
             let input_rate_get = view.clone();
             let input_rate_set = view.clone();
             let input_rate_field = SettingField::dropdown(
@@ -997,7 +1054,8 @@ impl AppView {
             .default_value(0.);
             let output_get = view.clone();
             let output_set = view.clone();
-            let output_field = SettingField::dropdown(
+            let output_sample_rates = sample_rate_options.clone();
+            let output_field = SettingField::scrollable_dropdown(
                 output_options.clone(),
                 move |cx| {
                     output_get.upgrade().map_or_else(
@@ -1018,6 +1076,18 @@ impl AppView {
                             .then(|| value.to_string());
                         if view.config.audio_output_device != device_id {
                             view.config.audio_sample_rate = None;
+                            let rates = match playback::audio_sample_rates(device_id.as_deref()) {
+                                Ok(rates) => rates,
+                                Err(error) => {
+                                    view.pending_errors.push(error_notification(
+                                        "Audio sample rate error",
+                                        format!("{error:#}"),
+                                    ));
+                                    Vec::new()
+                                }
+                            };
+                            *output_sample_rates.borrow_mut() =
+                                audio_sample_rate_options(&rates, None);
                         }
                         view.config.audio_output_device = device_id;
                         view.save();
@@ -1025,11 +1095,12 @@ impl AppView {
                     });
                 },
             )
-            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE);
+            .default_value(SYSTEM_DEFAULT_AUDIO_DEVICE)
+            .max_w(px(280.));
             let sample_rate_get = view.clone();
             let sample_rate_set = view.clone();
             let sample_rate_field = SettingField::dropdown(
-                sample_rate_options.clone(),
+                sample_rate_options.borrow().clone(),
                 move |cx| {
                     sample_rate_get.upgrade().map_or_else(
                         || DEVICE_DEFAULT_SAMPLE_RATE.into(),
@@ -1120,7 +1191,12 @@ impl AppView {
                                     SettingItem::new("Start delay (seconds)", delay_field),
                                     SettingItem::new("Emulation audio device", output_field),
                                     SettingItem::new("Emulation sample rate", sample_rate_field),
-                                ])),
+                                ].into_iter().chain(cfg!(target_os = "linux").then(|| {
+                                    SettingItem::new(
+                                        "Show all audio devices",
+                                        show_all_audio_devices_field(show_all_audio_devices.clone()),
+                                    )
+                                })))),
                         )
                         .page(
                             SettingPage::new("VGM")
@@ -1143,7 +1219,12 @@ impl AppView {
                                     SettingItem::new("Input audio device", input_field),
                                     SettingItem::new("Input sample rate", input_rate_field),
                                     SettingItem::new("WAV output folder", folder_field),
-                                ])),
+                                ].into_iter().chain(cfg!(target_os = "linux").then(|| {
+                                    SettingItem::new(
+                                        "Show all audio devices",
+                                        show_all_audio_devices_field(show_all_audio_devices.clone()),
+                                    )
+                                })))),
                         ),
                 ),
             )
@@ -5995,6 +6076,108 @@ mod tests {
         select_for_context, select_item, select_range, selection_status, single_queue_selection,
         unsupported_chips, update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn linux_audio_device_options_preserve_access_and_saved_selections() {
+        let devices: Vec<(String, String)> = [
+            ("alsa:pipewire", "PipeWire"),
+            ("alsa:pulse", "PulseAudio"),
+            ("alsa:jack", "JACK"),
+            ("alsa:null", "Discard"),
+            ("alsa:default", "ALSA default"),
+            ("alsa:hw:CARD=A,DEV=0", "USB"),
+            ("alsa:plughw:CARD=A,DEV=0", "USB"),
+            ("alsa:hw:CARD=B,DEV=0", "USB"),
+            ("alsa:front:CARD=A,DEV=0", "USB"),
+        ]
+        .into_iter()
+        .map(|(id, name)| (id.into(), name.into()))
+        .collect();
+        let options = super::audio_device_options(&devices, None, true, false);
+        let ids: Vec<_> = options.iter().map(|(id, _)| id.as_ref()).collect();
+        assert_eq!(
+            ids,
+            [
+                "system-default",
+                "alsa:pipewire",
+                "alsa:pulse",
+                "alsa:jack",
+                "alsa:plughw:CARD=A,DEV=0",
+                "alsa:hw:CARD=B,DEV=0",
+            ]
+        );
+        assert!(options[4].1.contains("alsa:plughw:CARD=A,DEV=0"));
+        assert!(options[5].1.contains("alsa:hw:CARD=B,DEV=0"));
+
+        let selected = super::audio_device_options(&devices, Some("alsa:null"), true, false);
+        assert!(
+            selected
+                .iter()
+                .any(|(id, label)| id == "alsa:null" && label == "Discard")
+        );
+        let unavailable = super::audio_device_options(&devices, Some("alsa:missing"), true, false);
+        assert!(
+            unavailable.iter().any(|(id, label)| {
+                id == "alsa:missing" && label == "Unavailable (alsa:missing)"
+            })
+        );
+        let all = super::audio_device_options(&devices, None, false, false);
+        assert_eq!(all.len(), devices.len() + 1);
+        assert!(all.iter().any(|(id, _)| id == "alsa:front:CARD=A,DEV=0"));
+    }
+
+    #[test]
+    fn linux_audio_device_options_prefer_pipewire_and_keep_alsa_selections() {
+        let devices: Vec<(String, String)> = [
+            ("pipewire:output_default", "default_output"),
+            ("pipewire:input_default", "default_input"),
+            ("pipewire:sink_default", "default_sink"),
+            ("pipewire:node", "USB"),
+            ("alsa:plughw:CARD=A,DEV=0", "USB"),
+        ]
+        .into_iter()
+        .map(|(id, name)| (id.into(), name.into()))
+        .collect();
+        let output = super::audio_device_options(&devices, None, true, false);
+        assert_eq!(
+            output.iter().map(|(id, _)| id.as_ref()).collect::<Vec<_>>(),
+            ["system-default", "pipewire:node"]
+        );
+        let input = super::audio_device_options(&devices, None, true, true);
+        assert!(input.iter().any(|(id, name)| {
+            id == "pipewire:sink_default" && name == "System output (monitor)"
+        }));
+        let saved =
+            super::audio_device_options(&devices, Some("alsa:plughw:CARD=A,DEV=0"), true, false);
+        assert!(
+            saved
+                .iter()
+                .any(|(id, name)| id == "alsa:plughw:CARD=A,DEV=0" && name.contains("USB"))
+        );
+        let all = super::audio_device_options(&devices, None, false, false);
+        assert_eq!(all.len(), devices.len() + 1);
+    }
+
+    #[test]
+    fn audio_sample_rate_options_reflect_selected_device_and_preserve_unavailable_rate() {
+        let options = super::audio_sample_rate_options(&[44_100, 48_000], Some(96_000));
+        assert_eq!(
+            options
+                .iter()
+                .map(|(id, _)| id.as_ref())
+                .collect::<Vec<_>>(),
+            ["device-default", "44100", "48000", "96000"]
+        );
+        assert_eq!(options[3].1, "Unavailable (96000 Hz)");
+        let changed_device = super::audio_sample_rate_options(&[96_000], None);
+        assert_eq!(
+            changed_device
+                .iter()
+                .map(|(id, _)| id.as_ref())
+                .collect::<Vec<_>>(),
+            ["device-default", "96000"]
+        );
+    }
 
     #[test]
     fn piano_route_labels_distinguish_destinations() {

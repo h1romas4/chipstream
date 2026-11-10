@@ -821,8 +821,20 @@ fn supported_sample_format(format: SampleFormat) -> bool {
     )
 }
 
+fn default_audio_host() -> Result<cpal::Host> {
+    #[cfg(target_os = "linux")]
+    {
+        // Keep csplay on ALSA when Cargo unifies CPAL features with NDDRV.
+        cpal::host_from_id(cpal::HostId::Alsa).context("failed to initialize ALSA audio host")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(cpal::default_host())
+    }
+}
+
 pub fn audio_output_devices() -> Result<Vec<(String, String)>> {
-    cpal::default_host()
+    default_audio_host()?
         .output_devices()
         .context("failed to enumerate audio output devices")?
         .map(|device| {
@@ -847,7 +859,7 @@ fn audio_output_device(device_id: Option<&str>) -> Result<cpal::Device> {
             host.device_by_id(&id)
                 .with_context(|| format!("audio output device is unavailable: {device_id}"))
         }
-        None => cpal::default_host()
+        None => default_audio_host()?
             .default_output_device()
             .context("no default audio output device"),
     }
