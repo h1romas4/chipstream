@@ -18,4 +18,4 @@ pub mod stream;
 pub use callback_stream::{VgmCallbackStream, WriteCallbackTarget};
 pub use document::{VgmBuilder, VgmDocument};
 pub use header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
-pub use stream::{VgmCommandGenerator, VgmStream};
+pub use stream::{DacStreamSelector, DacStreamTarget, VgmCommandGenerator, VgmStream};

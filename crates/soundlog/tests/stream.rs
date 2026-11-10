@@ -158,6 +158,7 @@ fn dac_budget_document(frequency: u32, waits: &[VgmCommand]) -> VgmDocument {
 #[test]
 fn dac_stream_controls_are_opt_in_and_expose_their_targets() {
     use soundlog::vgm::command::StopStream;
+    use soundlog::vgm::{DacStreamSelector, DacStreamTarget};
 
     let mut document = dac_budget_document(44_100, &[WaitSamples(1).into()]);
     document.commands.insert(
@@ -166,21 +167,42 @@ fn dac_stream_controls_are_opt_in_and_expose_their_targets() {
     );
     for enabled in [false, true] {
         let mut stream = VgmStream::from_document(document.clone());
-        stream.set_emit_stream_controls(enabled);
+        if enabled {
+            stream.set_emit_stream_controls(true);
+        }
         let mut controls = Vec::new();
         while let Some(result) = stream.next() {
             match result.unwrap() {
                 StreamResult::Command(command) => match command {
                     VgmCommand::StartStream(_) => {
                         assert_eq!(
-                            stream.dac_stream_targets(0).collect::<Vec<_>>(),
-                            [(ChipId::Ym2612, Instance::Primary, 0, 0x2a)]
+                            stream
+                                .dac_stream_targets(DacStreamSelector::Stream(0))
+                                .collect::<Vec<_>>(),
+                            [DacStreamTarget {
+                                chip: ChipId::Ym2612,
+                                instance: Instance::Primary,
+                                port: 0,
+                                register: 0x2a
+                            }]
                         );
                         assert_eq!(
-                            stream.dac_stream_targets(0xff).collect::<Vec<_>>(),
-                            [(ChipId::Ym2612, Instance::Primary, 0, 0x2a)]
+                            stream
+                                .dac_stream_targets(DacStreamSelector::All)
+                                .collect::<Vec<_>>(),
+                            [DacStreamTarget {
+                                chip: ChipId::Ym2612,
+                                instance: Instance::Primary,
+                                port: 0,
+                                register: 0x2a
+                            }]
                         );
-                        assert_eq!(stream.dac_stream_targets(1).count(), 0);
+                        assert_eq!(
+                            stream
+                                .dac_stream_targets(DacStreamSelector::Stream(1))
+                                .count(),
+                            0
+                        );
                         controls.push("start");
                     }
                     VgmCommand::StopStream(_) => controls.push("stop"),
@@ -198,6 +220,162 @@ fn dac_stream_controls_are_opt_in_and_expose_their_targets() {
             }
         );
     }
+}
+
+#[test]
+fn dac_stream_selection_and_target_stop_preserve_other_streams_and_restart() {
+    use soundlog::vgm::command::{
+        LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl, StartStream,
+        StartStreamFastCall, StartStreamFastCallFlags, StopStream,
+    };
+    use soundlog::vgm::{DacStreamSelector, DacStreamTarget};
+
+    let primary = DacStreamTarget {
+        chip: ChipId::Ym2612,
+        instance: Instance::Primary,
+        port: 0,
+        register: 0x2a,
+    };
+    let secondary = DacStreamTarget {
+        instance: Instance::Secondary,
+        ..primary
+    };
+    let mut builder = VgmBuilder::new();
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x80],
+    });
+    for (stream_id, target) in [(0, primary), (1, primary), (0xff, secondary)] {
+        builder.add_vgm_command(SetupStreamControl {
+            stream_id,
+            chip_type: DacStreamChipType {
+                chip_id: target.chip,
+                instance: target.instance,
+            },
+            write_port: target.port,
+            write_command: target.register,
+        });
+        builder.add_vgm_command(SetStreamData {
+            stream_id,
+            data_bank_id: 0,
+            step_size: 1,
+            step_base: 0,
+        });
+        builder.add_vgm_command(SetStreamFrequency {
+            stream_id,
+            frequency: 44_100,
+        });
+        builder.add_vgm_command(StartStream {
+            stream_id,
+            data_start_offset: 0,
+            length_mode: LengthMode::CommandCount {
+                reverse: false,
+                looped: true,
+            },
+            data_length: 1,
+        });
+    }
+    builder.add_vgm_command(WaitSamples(1));
+    for stream_id in [0, 1] {
+        builder.add_vgm_command(StartStreamFastCall {
+            stream_id,
+            block_id: 0,
+            flags: StartStreamFastCallFlags {
+                reverse: false,
+                looped: true,
+            },
+        });
+    }
+    builder.add_vgm_command(WaitSamples(1));
+    builder.add_vgm_command(StopStream { stream_id: 0xff });
+    builder.add_vgm_command(WaitSamples(1));
+
+    let mut stream = VgmStream::from_document(builder.finalize());
+    stream.set_emit_stream_controls(true);
+    let mut writes = Vec::new();
+    let mut fast_starts = 0;
+    let mut waits = 0;
+    let mut stops = 0;
+    while let Some(result) = stream.next() {
+        match result.unwrap() {
+            StreamResult::Command(VgmCommand::StartStream(start)) if start.stream_id == 0xff => {
+                assert_eq!(
+                    stream
+                        .dac_stream_targets(DacStreamSelector::Stream(0xff))
+                        .collect::<Vec<_>>(),
+                    [secondary]
+                );
+                assert_eq!(
+                    stream
+                        .dac_stream_targets(DacStreamSelector::Stream(2))
+                        .count(),
+                    0
+                );
+                assert_eq!(
+                    stream
+                        .dac_stream_targets(DacStreamSelector::All)
+                        .filter(|target| *target == primary)
+                        .count(),
+                    2
+                );
+                stream.stop_dac_streams_for_target(primary);
+                assert_eq!(
+                    stream
+                        .dac_stream_targets(DacStreamSelector::Stream(0))
+                        .collect::<Vec<_>>(),
+                    [primary]
+                );
+            }
+            StreamResult::Command(VgmCommand::StartStreamFastCall(start)) => {
+                assert_eq!(
+                    stream
+                        .dac_stream_targets(DacStreamSelector::Stream(start.stream_id))
+                        .collect::<Vec<_>>(),
+                    [primary]
+                );
+                fast_starts += 1;
+            }
+            StreamResult::Command(VgmCommand::StopStream(stop)) => {
+                assert_eq!(DacStreamSelector::from(&stop), DacStreamSelector::All);
+                assert_eq!(stream.dac_stream_targets((&stop).into()).count(), 3);
+                writes.clear();
+                stops += 1;
+            }
+            StreamResult::Command(VgmCommand::Ym2612Write(instance, _)) => writes.push(instance),
+            StreamResult::Command(VgmCommand::WaitSamples(_)) => {
+                match waits {
+                    0 => assert_eq!(writes, [Instance::Secondary]),
+                    1 => {
+                        assert_eq!(
+                            writes
+                                .iter()
+                                .filter(|instance| **instance == Instance::Primary)
+                                .count(),
+                            2
+                        );
+                        assert_eq!(
+                            writes
+                                .iter()
+                                .filter(|instance| **instance == Instance::Secondary)
+                                .count(),
+                            1
+                        );
+                    }
+                    2 => assert!(writes.is_empty()),
+                    _ => panic!("unexpected wait"),
+                }
+                writes.clear();
+                waits += 1;
+            }
+            StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
+            _ => {}
+        }
+    }
+    assert_eq!((fast_starts, stops, waits), (2, 1, 3));
+    assert_eq!(
+        DacStreamSelector::from(&StopStream { stream_id: 1 }),
+        DacStreamSelector::Stream(1)
+    );
 }
 
 #[test]

@@ -16,7 +16,9 @@ use soundlog::vgm::detail::{DataBlockType, parse_data_block};
 use soundlog::vgm::header::{ChipId, VgmExtraHeader};
 use soundlog::vgm::parser::visit_non_data_block_commands;
 use soundlog::vgm::stream::StreamResult;
-use soundlog::vgm::{VGM_SAMPLE_RATE, VgmDocument, VgmHeader, VgmStream};
+use soundlog::vgm::{
+    DacStreamSelector, DacStreamTarget, VGM_SAMPLE_RATE, VgmDocument, VgmHeader, VgmStream,
+};
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
 use crate::audio::{
@@ -2037,13 +2039,21 @@ impl<'a> VgmSequencer<'a> {
         let write = ChipRegisterWrite::from_vgm_command(&command);
         match command {
             StartStream(ref start) => {
-                self.notify_dac_stream(start.stream_id, true, sample_frame_origin)?;
+                self.notify_dac_stream(
+                    DacStreamSelector::Stream(start.stream_id),
+                    true,
+                    sample_frame_origin,
+                )?;
             }
             StartStreamFastCall(ref start) => {
-                self.notify_dac_stream(start.stream_id, true, sample_frame_origin)?;
+                self.notify_dac_stream(
+                    DacStreamSelector::Stream(start.stream_id),
+                    true,
+                    sample_frame_origin,
+                )?;
             }
             StopStream(ref stop) => {
-                self.notify_dac_stream(stop.stream_id, false, sample_frame_origin)?;
+                self.notify_dac_stream(stop.into(), false, sample_frame_origin)?;
             }
             PwmWrite(i, s) => {
                 let index = match i {
@@ -2134,15 +2144,16 @@ impl<'a> VgmSequencer<'a> {
 
     fn notify_dac_stream(
         &mut self,
-        stream_id: u8,
+        selector: DacStreamSelector,
         playing: bool,
         sample_frame_origin: usize,
     ) -> Result<(), VgmSequencerError> {
         let instances: Vec<_> = self
             .stream
-            .dac_stream_targets(stream_id)
-            .filter_map(|(chip, instance, port, register)| {
-                (chip == ChipId::Okim6258 && port == 0 && register == 1).then_some(instance)
+            .dac_stream_targets(selector)
+            .filter_map(|target| {
+                (target.chip == ChipId::Okim6258 && target.port == 0 && target.register == 1)
+                    .then_some(target.instance)
             })
             .collect();
         let sample_frame = sample_frame_origin
@@ -2150,7 +2161,8 @@ impl<'a> VgmSequencer<'a> {
             .ok_or(VgmSequencerError::DurationOverflow)?;
         for voice in &mut self.voices {
             if voice.chip == Chip::Okim6258
-                && ((!playing && stream_id == 0xff) || instances.contains(&voice.instance))
+                && ((!playing && selector == DacStreamSelector::All)
+                    || instances.contains(&voice.instance))
             {
                 voice.route.chip_mut().set_dac_stream_playing_at(
                     playing,
@@ -2202,8 +2214,12 @@ impl<'a> VgmSequencer<'a> {
                     },
                 )?;
                 if stop_stream {
-                    self.stream
-                        .stop_dac_streams_for_target(ChipId::Okim6258, instance, 0, 1);
+                    self.stream.stop_dac_streams_for_target(DacStreamTarget {
+                        chip: ChipId::Okim6258,
+                        instance,
+                        port: 0,
+                        register: 1,
+                    });
                 }
             }
         }

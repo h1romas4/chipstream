@@ -37,6 +37,41 @@ use std::sync::Arc;
 /// (lower for very small-RAM targets).
 const MIN_CAP_TO_SHRINK: usize = 64 * 1024; // 64 KiB
 
+/// A chip register targeted by one or more DAC streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DacStreamTarget {
+    /// Target chip type.
+    pub chip: ChipId,
+    /// Target chip instance.
+    pub instance: Instance,
+    /// Target register port.
+    pub port: u8,
+    /// Target register or write command.
+    pub register: u8,
+}
+
+/// Select one DAC stream or every configured stream.
+///
+/// Convert a [`StopStream`] reference to interpret its all-streams marker.
+/// For start commands, use [`Self::Stream`] with the command's exact ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DacStreamSelector {
+    /// Select a stream by its ID, including `0xff`.
+    Stream(u8),
+    /// Select all configured streams.
+    All,
+}
+
+impl From<&StopStream> for DacStreamSelector {
+    fn from(stop: &StopStream) -> Self {
+        if stop.stream_id == 0xff {
+            Self::All
+        } else {
+            Self::Stream(stop.stream_id)
+        }
+    }
+}
+
 /// A lazy, single-pass producer of VGM commands for [`VgmStream::from_generator`].
 ///
 /// Unlike [`VgmStream::from_document`], which requires the entire command
@@ -1423,47 +1458,46 @@ impl VgmStream {
         Ok(Some(StreamResult::Command(command)))
     }
 
-    /// Also emit DAC stream start and stop commands after processing them.
+    /// Also emit DAC stream start, fast-start and stop commands after processing them.
     ///
     /// By default these commands are consumed internally, and only the
     /// resulting chip writes are emitted. This option is useful to backends
-    /// that must track a stream's logical playback state separately.
+    /// that must track a stream's logical playback state separately. The
+    /// configured targets can be queried with [`Self::dac_stream_targets`]
+    /// when a command is emitted.
     pub fn set_emit_stream_controls(&mut self, enabled: bool) {
         self.emit_stream_controls = enabled;
     }
 
-    /// Return the configured chip targets for a DAC stream, or for all
-    /// streams when `stream_id` is `0xff`.
+    /// Return the configured targets for the selected streams.
+    ///
+    /// This includes inactive streams and may return duplicate targets. The
+    /// order is unspecified. Unknown stream IDs produce no targets.
     pub fn dac_stream_targets(
         &self,
-        stream_id: u8,
-    ) -> impl Iterator<Item = (ChipId, Instance, u8, u8)> + '_ {
+        selector: DacStreamSelector,
+    ) -> impl Iterator<Item = DacStreamTarget> + '_ {
         self.stream_states.iter().filter_map(move |(&id, state)| {
-            (stream_id == 0xff || stream_id == id).then_some((
-                state.chip_type,
-                state.instance,
-                state.write_port,
-                state.write_command,
-            ))
+            (selector == DacStreamSelector::All || selector == DacStreamSelector::Stream(id))
+                .then_some(DacStreamTarget {
+                    chip: state.chip_type,
+                    instance: state.instance,
+                    port: state.write_port,
+                    register: state.write_command,
+                })
         })
     }
 
-    /// Stop DAC streams writing a specific chip register.
+    /// Stop all DAC streams writing a specific chip register.
     ///
     /// This does not emit a stop command. A later stream start can resume
     /// playback using the previously configured stream parameters.
-    pub fn stop_dac_streams_for_target(
-        &mut self,
-        chip: ChipId,
-        instance: Instance,
-        port: u8,
-        register: u8,
-    ) {
+    pub fn stop_dac_streams_for_target(&mut self, target: DacStreamTarget) {
         for state in self.stream_states.values_mut() {
-            if state.chip_type == chip
-                && state.instance == instance
-                && state.write_port == port
-                && state.write_command == register
+            if state.chip_type == target.chip
+                && state.instance == target.instance
+                && state.write_port == target.port
+                && state.write_command == target.register
             {
                 state.active = false;
             }
@@ -2369,12 +2403,17 @@ impl VgmStream {
 
     /// Handles StopStream command (0x94).
     fn handle_stop_stream(&mut self, stop: &StopStream) {
-        if stop.stream_id == 0xFF {
-            for state in self.stream_states.values_mut() {
-                state.active = false;
+        match DacStreamSelector::from(stop) {
+            DacStreamSelector::All => {
+                for state in self.stream_states.values_mut() {
+                    state.active = false;
+                }
             }
-        } else if let Some(state) = self.stream_states.get_mut(&stop.stream_id) {
-            state.active = false;
+            DacStreamSelector::Stream(id) => {
+                if let Some(state) = self.stream_states.get_mut(&id) {
+                    state.active = false;
+                }
+            }
         }
     }
 

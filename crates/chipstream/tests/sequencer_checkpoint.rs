@@ -73,6 +73,88 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
 }
 
 #[test]
+fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
+    use soundlog::chip::{Chip, Ym2612Spec};
+    use soundlog::vgm::command::{
+        DacStreamChipType, Instance, SetStreamData, SetStreamFrequency, SetupStreamControl,
+        StartStreamFastCall, StartStreamFastCallFlags, StopStream,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+    use soundlog::vgm::header::ChipId;
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 1,
+            register: 0xb6,
+            value: 0xc0,
+        },
+    );
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x2b,
+            value: 0x80,
+        },
+    );
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Ym2612Pcm,
+        data: vec![0x40, 0x80, 0xc0, 0x80],
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType::new(ChipId::Ym2612, Instance::Primary),
+        write_port: 0,
+        write_command: 0x2a,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 11_025,
+    });
+    let start = StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: true,
+        },
+    };
+    builder.add_vgm_command(start.clone());
+    builder.add_vgm_command(WaitSamples(256));
+    builder.add_vgm_command(StopStream { stream_id: 0xff });
+    builder.add_vgm_command(WaitSamples(256));
+    builder.add_vgm_command(start);
+    builder.add_vgm_command(WaitSamples(1024));
+
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 128).unwrap();
+    let first = player.render().unwrap().unwrap();
+    assert!(first.frames().iter().flatten().any(|sample| *sample != 0.0));
+    let checkpoint = player.checkpoint().unwrap();
+    let expected = player.render().unwrap();
+    assert!(player.render().unwrap().is_some());
+    let block = player.render().unwrap().unwrap();
+    let next = player.render().unwrap();
+
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(player.render().unwrap(), expected);
+    player.seek_to_frame(&checkpoint, 400).unwrap();
+    assert_eq!(
+        player.render().unwrap().unwrap().frames(),
+        &block.frames()[16..]
+    );
+    assert_eq!(player.render().unwrap(), next);
+}
+
+#[test]
 fn checkpoint_cannot_be_restored_to_a_different_sequencer() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));

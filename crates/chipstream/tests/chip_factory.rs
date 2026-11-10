@@ -99,6 +99,7 @@ struct FakeChip {
     clock: u32,
     channels: usize,
     writes: Arc<Mutex<Vec<Chip>>>,
+    dac_notifications: Option<(Instance, Arc<Mutex<Vec<(Instance, bool)>>>)>,
 }
 
 impl FakeChip {
@@ -115,6 +116,7 @@ impl FakeChip {
             clock,
             channels,
             writes,
+            dac_notifications: None,
         }
     }
 }
@@ -129,7 +131,11 @@ impl SoundChip for FakeChip {
     }
 
     fn sample_rate(&self) -> u32 {
-        44_100
+        if self.chip == Chip::Okim6258 {
+            7_812
+        } else {
+            44_100
+        }
     }
 
     fn channels(&self) -> usize {
@@ -147,12 +153,107 @@ impl SoundChip for FakeChip {
         Ok(())
     }
 
+    fn set_dac_stream_playing_at(
+        &mut self,
+        playing: bool,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        if let Some((instance, notifications)) = &self.dac_notifications {
+            notifications.lock().unwrap().push((*instance, playing));
+        }
+        Ok(())
+    }
+
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
         samples.fill(0);
         Ok(())
     }
 
     fn reset(&mut self) {}
+}
+
+#[test]
+fn dac_notifications_use_exact_start_ids_and_all_stop_reaches_all_voices() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, LengthMode, SetStreamData, SetupStreamControl, StartStream,
+        StartStreamFastCall, StartStreamFastCallFlags, StopStream,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+    use soundlog::vgm::header::ChipId;
+
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Okim6258, instance, 4_000_000);
+    }
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Okim6258Adpcm,
+        data: vec![0x77],
+    });
+    builder.add_vgm_command(StopStream { stream_id: 0xff });
+    for (stream_id, instance) in [(0, Instance::Primary), (0xff, Instance::Secondary)] {
+        builder.add_vgm_command(SetupStreamControl {
+            stream_id,
+            chip_type: DacStreamChipType::new(ChipId::Okim6258, instance),
+            write_port: 0,
+            write_command: 1,
+        });
+        builder.add_vgm_command(SetStreamData {
+            stream_id,
+            data_bank_id: 4,
+            step_size: 1,
+            step_base: 0,
+        });
+    }
+    builder.add_vgm_command(StartStream {
+        stream_id: 0xff,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: false,
+        },
+        data_length: 1,
+    });
+    builder.add_vgm_command(StopStream { stream_id: 0 });
+    builder.add_vgm_command(StartStreamFastCall {
+        stream_id: 0xff,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(StopStream { stream_id: 0xff });
+    builder.add_vgm_command(WaitSamples(1));
+
+    let notifications = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&notifications);
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::Okim6258, move |config| {
+        let mut chip = FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        chip.dac_notifications = Some((config.instance(), Arc::clone(&captured)));
+        Ok(Box::new(chip))
+    });
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    while player.render().unwrap().is_some() {}
+    let notifications = notifications.lock().unwrap();
+    for (instance, expected) in [
+        (Instance::Primary, vec![false, false, false]),
+        (Instance::Secondary, vec![false, true, true, false]),
+    ] {
+        assert_eq!(
+            notifications
+                .iter()
+                .filter_map(|(target, playing)| (*target == instance).then_some(*playing))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
 }
 
 fn ymfm_chips() -> [Chip; 11] {
