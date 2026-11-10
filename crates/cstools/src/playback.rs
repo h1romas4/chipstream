@@ -822,17 +822,47 @@ fn supported_sample_format(format: SampleFormat) -> bool {
     )
 }
 
+pub fn audio_output_devices() -> Result<Vec<(String, String)>> {
+    cpal::default_host()
+        .output_devices()
+        .context("failed to enumerate audio output devices")?
+        .map(|device| {
+            let name = device.to_string();
+            let id = device
+                .id()
+                .context("failed to read audio output device ID")?
+                .to_string();
+            Ok((id, name))
+        })
+        .collect()
+}
+
+fn audio_output_device(device_id: Option<&str>) -> Result<cpal::Device> {
+    match device_id {
+        Some(device_id) => {
+            let id = device_id
+                .parse::<cpal::DeviceId>()
+                .with_context(|| format!("invalid audio output device ID: {device_id}"))?;
+            let host = cpal::host_from_id(id.host())
+                .with_context(|| format!("audio host for device {device_id} is unavailable"))?;
+            host.device_by_id(&id)
+                .with_context(|| format!("audio output device is unavailable: {device_id}"))
+        }
+        None => cpal::default_host()
+            .default_output_device()
+            .context("no default audio output device"),
+    }
+}
+
 pub fn play(
     data: Input,
     options: Options,
     sample_rate: Option<u32>,
+    output_device: Option<&str>,
     no_progress: bool,
 ) -> Result<()> {
     options.validate(&data)?;
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| anyhow!("no default audio output device"))?;
+    let device = audio_output_device(output_device)?;
     let default = device
         .default_output_config()
         .context("failed to obtain default audio output configuration")?;
@@ -880,6 +910,14 @@ pub fn play(
 #[cfg(test)]
 mod playback_tests {
     use super::*;
+
+    #[test]
+    fn invalid_audio_output_device_id_is_rejected() {
+        let error = audio_output_device(Some("not-a-device-id"))
+            .err()
+            .expect("invalid device ID should fail");
+        assert!(format!("{error:#}").contains("invalid audio output device ID"));
+    }
 
     #[test]
     fn ym2149_adapter_validates_ay_types_flags_and_clock_divider() {

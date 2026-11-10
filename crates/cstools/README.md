@@ -9,8 +9,10 @@ them to WAV.
 Play retro sound-chip music
 
 Usage: csplay [OPTIONS] <FILE> [OUTPUT]
+  csplay device list
 
 Options:
+  --output-device <ID>             Audio output device ID from `csplay device list`
       --sample-rate <HZ>               Output sample rate
       --pdx <PDX_FILE>                 PDX sample file for MDX/MML
       --ym2608-rhythm-rom <ROM_FILE>   YM2608 rhythm ROM for VGM/VGZ
@@ -32,6 +34,8 @@ Examples:
 
 ```bash
 csplay example.vgm
+csplay device list
+csplay example.vgm --output-device 'alsa:device-id'
 csplay example.vgz --loop-count 2
 csplay example.vgm --infinite
 csplay example.mdx --pdx samples.pdx
@@ -51,10 +55,13 @@ csplay example.vgm - | ffplay -i -
 
 | Mode | Behavior |
 | --- | --- |
-| Audio device | Uses the device's default sample rate. An explicit rate must be supported. |
+| Audio device | Uses the default device unless `--output-device <ID>` selects an ID from `csplay device list`. Uses the selected device's default sample rate; an explicit rate must be supported. |
 | WAV file | Add an output path after the input to render stereo 16-bit PCM WAV. Defaults to 44,100 Hz. |
 | WAV to stdout | Use `-` as the output path. |
 | Samples | Output samples are clipped. |
+
+`--output-device` cannot be combined with WAV output. Device IDs are provided
+by the audio host and may change when devices or system configuration change.
 
 ### Audio-device playback
 

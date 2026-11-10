@@ -1,19 +1,28 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::Parser;
-use cstools::{PlayOptions, play};
+use clap::{Parser, Subcommand};
+use cstools::{PlayOptions, audio_output_devices, play};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Play retro sound-chip music")]
+#[command(
+    version,
+    about = "Play retro sound-chip music",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true
+)]
 struct Args {
     /// VGM, VGZ, MDX, or MML input file.
-    #[arg(value_name = "FILE")]
-    file: PathBuf,
+    #[arg(value_name = "FILE", required = true)]
+    file: Option<PathBuf>,
 
     /// Render a stereo 16-bit PCM WAV file instead of using the audio device; use - for stdout.
     #[arg(value_name = "OUTPUT")]
     output: Option<PathBuf>,
+
+    /// Audio output device ID from `csplay device list`.
+    #[arg(long, value_name = "ID", conflicts_with = "output")]
+    output_device: Option<String>,
 
     /// Output sample rate in Hz (WAV default: 44100; device default otherwise).
     #[arg(long, value_name = "HZ", value_parser = clap::value_parser!(u32).range(1..))]
@@ -63,12 +72,31 @@ struct Args {
     /// Do not display playback progress on standard output.
     #[arg(long)]
     no_progress: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Manage audio output devices.
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeviceCommand {
+    /// List audio output device IDs and names.
+    List,
 }
 
 fn main() -> Result<()> {
     let Args {
         file,
         output,
+        output_device,
         sample_rate,
         pdx,
         ym2608_rhythm_rom,
@@ -80,10 +108,24 @@ fn main() -> Result<()> {
         compat_vgm_pwm,
         ay8910_ym2149,
         no_progress,
+        command,
     } = Args::parse();
+    if let Some(Command::Device {
+        command: DeviceCommand::List,
+    }) = command
+    {
+        for (id, name) in audio_output_devices()? {
+            println!(
+                "{id}\t{}",
+                name.split_whitespace().collect::<Vec<_>>().join(" ")
+            );
+        }
+        return Ok(());
+    }
     crate::play(PlayOptions {
-        file,
+        file: file.expect("clap requires FILE for playback"),
         output,
+        output_device,
         sample_rate,
         pdx,
         ym2608_rhythm_rom,
@@ -101,6 +143,37 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_list_and_output_device_arguments() {
+        let args = Args::try_parse_from(["csplay", "device", "list"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Device {
+                command: DeviceCommand::List
+            })
+        ));
+        assert!(args.file.is_none());
+        assert!(Args::try_parse_from(["csplay", "device"]).is_err());
+        assert!(Args::try_parse_from(["csplay"]).is_err());
+        let args =
+            Args::try_parse_from(["csplay", "song.vgm", "--output-device", "alsa:test"]).unwrap();
+        assert_eq!(args.output_device.as_deref(), Some("alsa:test"));
+        assert!(
+            Args::try_parse_from([
+                "csplay",
+                "song.vgm",
+                "song.wav",
+                "--output-device",
+                "alsa:test"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from(["csplay", "song.vgm", "-", "--output-device", "alsa:test"])
+                .is_err()
+        );
+    }
 
     #[test]
     fn play_options_follow_soundlog_loop_semantics() {

@@ -450,6 +450,7 @@ fn library_rejects_conflicting_infinite_options() {
     let options = || cstools::PlayOptions {
         file: "unused.vgm".into(),
         output: Some("unused.wav".into()),
+        output_device: None,
         sample_rate: None,
         pdx: None,
         ym2608_rhythm_rom: None,
@@ -486,6 +487,28 @@ fn library_rejects_conflicting_infinite_options() {
             .to_string()
             .contains("sample rate")
     );
+    let mut conflicting_device = options();
+    conflicting_device.infinite = false;
+    conflicting_device.output_device = Some("alsa:test".into());
+    assert!(
+        cstools::play(conflicting_device)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined with WAV output")
+    );
+}
+
+#[test]
+fn cli_rejects_invalid_output_device() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../soundlog/assets/vgm/ym2151_a4.vgm");
+    let result = cli()
+        .arg(source)
+        .args(["--output-device", "not-a-device-id"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid audio output device ID"));
 }
 
 #[test]
@@ -516,6 +539,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
     cstools::play(cstools::PlayOptions {
         file: source.clone(),
         output: Some(library_output.clone()),
+        output_device: None,
         sample_rate: Some(48_000),
         pdx: None,
         ym2608_rhythm_rom: None,

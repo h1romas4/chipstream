@@ -8,12 +8,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+pub use playback::audio_output_devices;
+
 /// Options for playing or rendering a VGM, VGZ, MDX, or MML file.
 pub struct PlayOptions {
     /// Input file.
     pub file: PathBuf,
     /// WAV output path, `-` for stdout, or `None` for device playback.
     pub output: Option<PathBuf>,
+    /// Audio output device ID; `None` uses the default device. Incompatible with WAV output.
+    pub output_device: Option<String>,
     /// Output rate in Hz; defaults to 44,100 for WAV or the device rate.
     pub sample_rate: Option<u32>,
     /// Optional PDX path; otherwise resolve the MDX or MML's filename.
@@ -43,6 +47,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
     let PlayOptions {
         file,
         output,
+        output_device,
         sample_rate,
         pdx,
         ym2608_rhythm_rom,
@@ -60,6 +65,9 @@ pub fn play(options: PlayOptions) -> Result<()> {
     }
     if sample_rate == Some(0) {
         anyhow::bail!("sample rate must be nonzero");
+    }
+    if output.is_some() && output_device.is_some() {
+        anyhow::bail!("audio output device cannot be combined with WAV output");
     }
     let output_path = output.as_deref().filter(|path| *path != Path::new("-"));
     input::protect_source(&file, output_path)?;
@@ -95,7 +103,13 @@ pub fn play(options: PlayOptions) -> Result<()> {
         }
         Some(path) => output::write_wav(data, options, sample_rate.unwrap_or(44_100), &path)
             .with_context(|| format!("failed to render {}", file.display())),
-        None => playback::play(data, options, sample_rate, no_progress)
-            .with_context(|| format!("failed to play {}", file.display())),
+        None => playback::play(
+            data,
+            options,
+            sample_rate,
+            output_device.as_deref(),
+            no_progress,
+        )
+        .with_context(|| format!("failed to play {}", file.display())),
     }
 }
