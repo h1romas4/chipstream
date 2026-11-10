@@ -34,8 +34,8 @@ use chipstream::sequencer::{
     measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifNd7Policy, NdsifRecorder, NdsifSerialTransport,
-    NdsifSharedDevice, create_automatic_transport_factories_with_policy, create_recorders,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifNd7Policy, NdsifSerialTransport,
+    NdsifWorkerDevice, create_automatic_transport_factories_with_policy,
 };
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -112,8 +112,7 @@ struct NdsifSettings {
 }
 
 struct HardwarePlayback {
-    devices: Vec<NdsifSharedDevice>,
-    recorders: Vec<NdsifRecorder>,
+    devices: Vec<NdsifWorkerDevice>,
     workers: Option<NdsifHardwareWorkers>,
     timeline: Arc<NdsifHostTimeline>,
 }
@@ -1007,7 +1006,6 @@ fn render_file(
     if let Some(hardware) = &mut hardware {
         match NdsifHardwareWorkers::start(
             &hardware.devices,
-            &hardware.recorders,
             Arc::clone(&hardware.timeline),
             NonZeroUsize::new(HARDWARE_QUEUE_BLOCKS).expect("nonzero queue size"),
         ) {
@@ -1064,12 +1062,7 @@ fn render_file(
                 let _ = sender.send(WorkerMessage::Error(error));
                 return;
             }
-            match workers.enqueue_prebuffer(
-                &hardware.recorders,
-                buffered_frames,
-                settings.sample_rate,
-                &cancelled,
-            ) {
+            match workers.enqueue_prebuffer(buffered_frames, settings.sample_rate, &cancelled) {
                 Ok(value) => prepared = value,
                 Err(error) => {
                     let _ = sender.send(WorkerMessage::Error(error.to_string()));
@@ -1215,7 +1208,7 @@ fn render_file(
                     .workers
                     .as_ref()
                     .expect("workers were started")
-                    .enqueue(&hardware.recorders, &cancelled)
+                    .enqueue(&cancelled)
             {
                 let _ = sender.send(WorkerMessage::Error(error.to_string()));
                 return;
@@ -1611,13 +1604,15 @@ fn create_chip_factories(
                 nd7_devices.push(index);
             }
         }
-        devices.push((index as u64, Arc::new(Mutex::new(transport))));
+        devices.push(
+            NdsifWorkerDevice::new(
+                Arc::new(Mutex::new(transport)),
+                NonZeroUsize::new(MAX_HARDWARE_OPERATIONS).expect("nonzero operation limit"),
+            )
+            .map_err(|error| error.to_string())?,
+        );
     }
-    let recorders = create_recorders(
-        &devices,
-        NonZeroUsize::new(MAX_HARDWARE_OPERATIONS).expect("nonzero operation limit"),
-    )
-    .map_err(|error| error.to_string())?;
+    let recorders: Vec<_> = devices.iter().map(NdsifWorkerDevice::recorder).collect();
     let factories = create_automatic_transport_factories_with_policy(
         &recorders,
         supports_ay,
@@ -1627,7 +1622,6 @@ fn create_chip_factories(
         factories,
         Some(HardwarePlayback {
             devices,
-            recorders,
             workers: None,
             timeline,
         }),

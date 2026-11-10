@@ -16,7 +16,7 @@ Emulated chips continue to produce host PCM.
 | Select a device and target for each chip instance | `NdsifRoute`, `create_routed_chip_factories` |
 | Keep device connections open across playback sessions | `create_shared_routed_chip_factories`, `NdsifSerialTransport::reset_for_reuse` |
 | Use a custom scheduled transport or record chip writes | `NdsifRoutingTransport`, `create_routed_transport_factories`, `NdsifRecordingTransport` |
-| Schedule multiple devices on a host audio timeline | `create_recorders`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
+| Schedule multiple devices on a host audio timeline | `NdsifWorkerDevice`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
 | Inspect or control a device directly | `NdsifSerialTransport::open` |
 
 For NanoDrive 7 devices, pass `NdsifNd7Policy` to either
@@ -167,18 +167,44 @@ instead of reusing it.
 
 For applications that need to pace several devices against host audio:
 
-1. Keep each connection as an `NdsifSharedDevice` and create a recorder for
-   each device with `create_recorders`.
-2. Create routed factories with `create_routed_transport_factories`, then
-   construct the sequencer using those factories.
-3. Start `NdsifHardwareWorkers` with the same devices and recorders in the
-   same order.
-4. After rendering, enqueue each recorder's batches to its worker. Buffer
-   enough audio before starting the shared `NdsifHostTimeline` at the
-   estimated audio presentation time.
+1. Construct an `NdsifWorkerDevice` for each shared serial connection. Each
+  device owns its matching recorder; no application-specific ID is required.
+2. Obtain the recorders with `NdsifWorkerDevice::recorder`, create routed
+  factories with `create_routed_transport_factories`, and construct the
+  sequencer. Route indices refer to the order of the recorder list.
+3. Start `NdsifHardwareWorkers` with the worker devices. The devices may be
+  supplied in any order because each remains paired with its own recorder.
+4. After rendering, call `enqueue` on the workers to submit all recorded
+  batches. Buffer enough audio before starting the shared `NdsifHostTimeline`
+  at the estimated audio presentation time.
 5. Check worker errors during playback and finish after the final batch.
-   Drop sequencers, recorders, and workers before resetting or reclaiming
-   connections.
+  Drop sequencers, factories, recorders, worker devices, and workers before
+  resetting or reclaiming connections.
+
+```rust,no_run
+use std::{num::NonZeroUsize, sync::{Arc, Mutex}, time::Duration};
+use chipstream::sequencer::VgmSequencer;
+use ndsif_transport::{
+  NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport,
+  NdsifWorkerDevice, create_automatic_transport_factories,
+};
+
+fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers, Arc<NdsifHostTimeline>), Box<dyn std::error::Error>> {
+  let connection = NdsifSerialTransport::open(
+    "/dev/ttyACM0", 115_200, Duration::from_millis(500), true,
+  )?;
+  let supports_ay = connection.capabilities().iter().any(|entry| entry.write_id == 0xa0);
+  let devices = [NdsifWorkerDevice::new(
+    Arc::new(Mutex::new(connection)), NonZeroUsize::new(16_384).unwrap(),
+  )?];
+  let recorders: Vec<_> = devices.iter().map(NdsifWorkerDevice::recorder).collect();
+  let factories = create_automatic_transport_factories(&recorders, supports_ay);
+  let player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+  let timeline = Arc::new(NdsifHostTimeline::pending());
+  let workers = NdsifHardwareWorkers::start(&devices, Arc::clone(&timeline), NonZeroUsize::new(8).unwrap())?;
+  Ok((player, workers, timeline))
+}
+```
 
 Use `enqueue_prebuffer` when you need bounded startup for timed DAC data.
 Applications are responsible for audio output, connection management,

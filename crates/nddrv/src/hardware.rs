@@ -1,9 +1,10 @@
 use std::num::NonZeroUsize;
+use std::ops::Deref;
 use std::sync::{Arc, atomic::AtomicBool};
 
 use anyhow::{Result, anyhow};
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRecorder, NdsifSerialTransport, NdsifWorkerDevice,
 };
 
 use crate::device::DeviceLease;
@@ -32,24 +33,49 @@ pub fn supports_master_volume(lease: &DeviceLease<NdsifSerialTransport>) -> Resu
         })
 }
 
-pub fn recorders(lease: &DeviceLease<NdsifSerialTransport>) -> Result<Vec<Recorder>> {
-    Ok(ndsif_transport::create_recorders(
-        lease.devices(),
-        NonZeroUsize::new(MAX_OPERATIONS_PER_BLOCK).expect("nonzero operation limit"),
-    )?)
+pub struct Recorders {
+    devices: Vec<NdsifWorkerDevice>,
+    recorders: Vec<Recorder>,
+}
+
+impl Deref for Recorders {
+    type Target = [Recorder];
+
+    fn deref(&self) -> &Self::Target {
+        &self.recorders
+    }
+}
+
+impl<'a> IntoIterator for &'a Recorders {
+    type Item = &'a Recorder;
+    type IntoIter = std::slice::Iter<'a, Recorder>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.recorders.iter()
+    }
+}
+
+pub fn recorders(lease: &DeviceLease<NdsifSerialTransport>) -> Result<Recorders> {
+    let devices = lease
+        .devices()
+        .iter()
+        .map(|(_, device)| {
+            NdsifWorkerDevice::new(
+                Arc::clone(device),
+                NonZeroUsize::new(MAX_OPERATIONS_PER_BLOCK).expect("nonzero operation limit"),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let recorders = devices.iter().map(NdsifWorkerDevice::recorder).collect();
+    Ok(Recorders { devices, recorders })
 }
 
 pub struct HardwareWorkers(NdsifHardwareWorkers);
 
 impl HardwareWorkers {
-    pub fn start(
-        lease: &DeviceLease<NdsifSerialTransport>,
-        recorders: &[Recorder],
-        timeline: Arc<NdsifHostTimeline>,
-    ) -> Result<Self> {
+    pub fn start(recorders: &Recorders, timeline: Arc<NdsifHostTimeline>) -> Result<Self> {
         Ok(Self(NdsifHardwareWorkers::start(
-            lease.devices(),
-            recorders,
+            &recorders.devices,
             timeline,
             NonZeroUsize::new(QUEUE_BLOCKS).expect("nonzero queue size"),
         )?))
@@ -59,20 +85,17 @@ impl HardwareWorkers {
         Ok(self.0.check()?)
     }
 
-    pub fn enqueue(&self, recorders: &[Recorder], cancelled: &AtomicBool) -> Result<()> {
-        Ok(self.0.enqueue(recorders, cancelled)?)
+    pub fn enqueue(&self, cancelled: &AtomicBool) -> Result<()> {
+        Ok(self.0.enqueue(cancelled)?)
     }
 
     pub fn enqueue_prebuffer(
         &self,
-        recorders: &[Recorder],
         frames: usize,
         rate: u32,
         cancelled: &AtomicBool,
     ) -> Result<bool> {
-        Ok(self
-            .0
-            .enqueue_prebuffer(recorders, frames, rate, cancelled)?)
+        Ok(self.0.enqueue_prebuffer(frames, rate, cancelled)?)
     }
 
     pub fn prepare_audio(&self, frames: usize, rate: u32, cancelled: &AtomicBool) -> Result<()> {
@@ -307,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn workers_reject_duplicate_devices_and_recorders() {
+    fn workers_reject_duplicate_connections() {
         let (starts, _) = mpsc::channel();
         let (first, first_port, first_release, first_fake) = fake_dac_device(starts.clone());
         let (mut second, second_port, second_release, second_fake) = fake_dac_device(starts);
@@ -324,35 +347,24 @@ mod tests {
         let lease = service.playback_handle().acquire(vec![1, 2]).unwrap();
         let recorders = recorders(&lease).unwrap();
         let queue_blocks = NonZeroUsize::new(1).unwrap();
-        let start = |devices: &[ndsif_transport::NdsifSharedDevice], recorders: &[Recorder]| {
+        let start = |devices: &[NdsifWorkerDevice]| {
             NdsifHardwareWorkers::start(
                 devices,
-                recorders,
                 Arc::new(NdsifHostTimeline::pending()),
                 queue_blocks,
             )
         };
-        {
-            let mut devices = lease.devices().to_vec();
-            devices[1].0 = devices[0].0;
-            assert!(
-                matches!(start(&devices, &recorders), Err(error) if error.to_string().contains("unique IDs"))
-            );
-            devices[1].0 = 2;
-            devices[1].1 = Arc::clone(&devices[0].1);
-            assert!(
-                matches!(start(&devices, &recorders), Err(error) if error.to_string().contains("unique IDs"))
-            );
+        let separate_pair = NdsifWorkerDevice::new(
+            Arc::clone(&lease.devices()[0].1),
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        for duplicate in [recorders.devices[0].clone(), separate_pair] {
+            assert!(matches!(
+                start(&[recorders.devices[0].clone(), duplicate]),
+                Err(error) if error.to_string().contains("connections must be unique")
+            ));
         }
-        {
-            let duplicates = vec![recorders[0].clone(), recorders[0].clone()];
-            assert!(
-                matches!(start(lease.devices(), &duplicates), Err(error) if error.to_string().contains("recorders must be unique"))
-            );
-        }
-        assert!(
-            matches!(start(lease.devices(), &recorders[..1]), Err(error) if error.to_string().contains("counts do not match"))
-        );
         drop(recorders);
         lease.release().unwrap();
         first_release.send(()).unwrap();
@@ -379,7 +391,7 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         {
             let mut recorder = recorders[0].borrow_mut();
             for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
@@ -399,7 +411,7 @@ mod tests {
             recorder.finish_dac_stream(441, 44_100).unwrap();
         }
         let cancelled = AtomicBool::new(false);
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         workers.prepare_audio(441, 44_100, &cancelled).unwrap();
         assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
         let origin = Instant::now() + Duration::from_millis(50);
@@ -432,7 +444,7 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         let mut prepared = false;
         for block in 0..4 {
@@ -468,7 +480,7 @@ mod tests {
                 .unwrap();
             drop(recorder);
             prepared = workers
-                .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                .enqueue_prebuffer(block * 1024, 44_100, &cancelled)
                 .unwrap();
             assert_eq!(prepared, block == 3);
         }
@@ -508,7 +520,7 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         for block in 0..4 {
             let mut recorder = recorders[0].borrow_mut();
@@ -531,7 +543,7 @@ mod tests {
             drop(recorder);
             assert!(
                 !workers
-                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .enqueue_prebuffer(block * 1024, 44_100, &cancelled)
                     .unwrap()
             );
         }
@@ -567,7 +579,7 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         for (block, (dac_writes, event_writes)) in [
             (336, 167),
@@ -615,7 +627,7 @@ mod tests {
             drop(recorder);
             assert!(
                 !workers
-                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .enqueue_prebuffer(block * 1024, 44_100, &cancelled)
                     .unwrap()
             );
         }
@@ -649,7 +661,7 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         for block in 0..2 {
             let mut recorder = recorders[0].borrow_mut();
@@ -672,7 +684,7 @@ mod tests {
             drop(recorder);
             assert_eq!(
                 workers
-                    .enqueue_prebuffer(&recorders, block * 1024, 44_100, &cancelled)
+                    .enqueue_prebuffer(block * 1024, 44_100, &cancelled)
                     .unwrap(),
                 block == 1
             );
@@ -706,13 +718,13 @@ mod tests {
             .configure_chip(WriteId::YM2612, 0, 7_670_454)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         recorders[0]
             .borrow_mut()
             .flush_scheduled_until(441, 44_100)
             .unwrap();
         let cancelled = AtomicBool::new(false);
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         workers.prepare_audio(441, 44_100, &cancelled).unwrap();
         timeline.cancel();
         workers.finish().unwrap();
@@ -952,7 +964,7 @@ mod tests {
         timeline
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let mut initialized = Vec::new();
         for _ in 0..2 {
             let (id, value, _) = received.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -962,9 +974,7 @@ mod tests {
         initialized.sort_unstable();
         assert_eq!(initialized, [1, 2]);
         record_write(&recorders[0], 0x7f, 44_100 / 2);
-        workers
-            .enqueue(&recorders, &AtomicBool::new(false))
-            .unwrap();
+        workers.enqueue(&AtomicBool::new(false)).unwrap();
         let origin = Instant::now() + Duration::from_millis(80);
         timeline.start(origin).unwrap();
         assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
@@ -1074,12 +1084,12 @@ mod tests {
         )
         .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         let cancelled = AtomicBool::new(false);
         for _ in 0..4 {
             assert!(sequencer.render().unwrap().is_some());
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
         }
         assert_eq!(sequencer.fade_start_frame(), Some(boundary));
         timeline
@@ -1128,7 +1138,7 @@ mod tests {
         gain.set(0.0).unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
         timeline.set_output_gain(Arc::clone(&gain)).unwrap();
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
         gain.set(0.5).unwrap();
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 6);
@@ -1162,7 +1172,7 @@ mod tests {
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let result = HardwareWorkers::start(&lease, &recorders, timeline);
+        let result = HardwareWorkers::start(&recorders, timeline);
         assert!(result.err().unwrap().to_string().contains("rejected"));
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         drop(recorders);
@@ -1211,13 +1221,13 @@ mod tests {
         timeline
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         let cancelled = AtomicBool::new(false);
         let mut frames = 0;
         for _ in 0..4 {
             frames += sequencer.render().unwrap().unwrap().frames().len();
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
         }
         workers.prepare_audio(frames, 44_100, &cancelled).unwrap();
         let origin = Instant::now() + Duration::from_millis(50);
@@ -1225,7 +1235,7 @@ mod tests {
         assert!(started.recv_timeout(Duration::from_secs(1)).unwrap() >= origin);
         for _ in 0..15 {
             sequencer.render().unwrap().unwrap();
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
             thread::sleep(Duration::from_millis(20));
         }
         let mut steps = Vec::new();
@@ -1267,7 +1277,7 @@ mod tests {
         timeline
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
             .unwrap();
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         let cancelled = AtomicBool::new(false);
         for index in 0..=10 {
@@ -1287,7 +1297,7 @@ mod tests {
                     .unwrap();
                 recorder.flush_scheduled_until(frame + 441, 44_100).unwrap();
             }
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
             if index == 0 {
                 workers.prepare_audio(441, 44_100, &cancelled).unwrap();
                 let origin = Instant::now() + Duration::from_millis(50);
@@ -1503,12 +1513,20 @@ mod tests {
                 .unwrap();
         }
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let mut devices = recorders.devices.clone();
+        devices.reverse();
+        let workers = NdsifHardwareWorkers::start(
+            &devices,
+            Arc::clone(&timeline),
+            NonZeroUsize::new(QUEUE_BLOCKS).unwrap(),
+        )
+        .unwrap();
+        drop(devices);
         for (index, recorder) in recorders.iter().enumerate() {
             record_write(recorder, index as u8 + 1, 0);
         }
         let cancelled = AtomicBool::new(false);
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         assert!(writes_rx.recv_timeout(Duration::from_millis(50)).is_err());
         timeline
             .start(Instant::now() + Duration::from_millis(30))
@@ -1525,7 +1543,7 @@ mod tests {
         for recorder in &recorders {
             record_write(recorder, 9, 44_100);
         }
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         timeline.cancel();
         workers.finish().unwrap();
         drop(recorders);
@@ -1625,22 +1643,22 @@ mod tests {
         )
         .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         let mut frames = 0;
         for _ in 0..2 {
             let block = sequencer.render().unwrap().unwrap();
             frames += block.frames().len();
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
         }
         workers.prepare_audio(frames, 44_100, &cancelled).unwrap();
         assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
         timeline.start(Instant::now()).unwrap();
         started.recv_timeout(Duration::from_secs(1)).unwrap();
         while let Some(_) = sequencer.render().unwrap() {
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
         }
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         let actual: Vec<_> = (0..5)
             .map(|_| received.recv_timeout(Duration::from_secs(1)).unwrap())
             .collect();
@@ -1735,7 +1753,7 @@ mod tests {
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = AtomicBool::new(false);
         let mut frames = 0;
         for index in 0..4 {
@@ -1746,7 +1764,7 @@ mod tests {
             if index == 0 {
                 record_write(&recorders[1], 0x23, 0);
             }
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
             if block.is_none() {
                 break;
             }
@@ -1813,7 +1831,7 @@ mod tests {
                 .unwrap();
         }
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         {
             let mut recorder = recorders[0].borrow_mut();
             recorder
@@ -1828,7 +1846,7 @@ mod tests {
             recorder.flush_scheduled_until(0, 44_100).unwrap();
         }
         let cancelled = AtomicBool::new(false);
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         let error = workers
             .prepare_audio(44_100, 44_100, &cancelled)
             .unwrap_err();
@@ -1865,7 +1883,7 @@ mod tests {
                 .unwrap();
         }
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         {
             let mut recorder = recorders[0].borrow_mut();
             for position in 0..20 {
@@ -1882,7 +1900,7 @@ mod tests {
             recorder.flush_scheduled_until(441, 44_100).unwrap();
         }
         let cancelled = AtomicBool::new(false);
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         workers.prepare_audio(441, 44_100, &cancelled).unwrap();
         timeline.start(Instant::now()).unwrap();
         starts_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1919,8 +1937,7 @@ mod tests {
             .borrow_mut()
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
-        let result =
-            HardwareWorkers::start(&lease, &recorders, Arc::new(NdsifHostTimeline::pending()));
+        let result = HardwareWorkers::start(&recorders, Arc::new(NdsifHostTimeline::pending()));
         assert!(matches!(result, Err(error) if format!("{error:#}").contains("rejected")));
         drop(recorders);
         lease.release().unwrap();
@@ -1946,14 +1963,12 @@ mod tests {
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         recorders[0]
             .borrow_mut()
             .configure_chip(WriteId::OKIM6258, 0, 4_000_000)
             .unwrap();
-        workers
-            .enqueue(&recorders, &AtomicBool::new(false))
-            .unwrap();
+        workers.enqueue(&AtomicBool::new(false)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         let error = loop {
             if let Err(error) = workers.check() {
@@ -1990,11 +2005,11 @@ mod tests {
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         for value in 0..=QUEUE_BLOCKS {
             record_write(&recorders[0], value as u8, 0);
-            workers.enqueue(&recorders, &cancelled).unwrap();
+            workers.enqueue(&cancelled).unwrap();
         }
         let flag = Arc::clone(&cancelled);
         let clock = Arc::clone(&timeline);
@@ -2005,7 +2020,7 @@ mod tests {
         });
         record_write(&recorders[0], 99, 0);
         let start = Instant::now();
-        workers.enqueue(&recorders, &cancelled).unwrap();
+        workers.enqueue(&cancelled).unwrap();
         assert!(start.elapsed() >= Duration::from_millis(30));
         canceller.join().unwrap();
         workers.finish().unwrap();
@@ -2059,12 +2074,10 @@ mod tests {
         )
         .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
-        let workers = HardwareWorkers::start(&lease, &recorders, Arc::clone(&timeline)).unwrap();
+        let workers = HardwareWorkers::start(&recorders, Arc::clone(&timeline)).unwrap();
         loop {
             let block = sequencer.render().unwrap();
-            workers
-                .enqueue(&recorders, &AtomicBool::new(false))
-                .unwrap();
+            workers.enqueue(&AtomicBool::new(false)).unwrap();
             if block.is_none() {
                 break;
             }

@@ -27,6 +27,4 @@ pub use routing::{
     create_routed_transport_factories_with_policy, create_shared_routed_chip_factories,
 };
 pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
-pub use worker::{
-    NdsifHardwareWorkers, NdsifRecorder, NdsifSharedDevice, NdsifWorkerError, create_recorders,
-};
+pub use worker::{NdsifHardwareWorkers, NdsifRecorder, NdsifWorkerDevice, NdsifWorkerError};

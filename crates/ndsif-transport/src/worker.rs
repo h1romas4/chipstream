@@ -10,11 +10,46 @@ use std::time::Duration;
 
 use crate::{NdsifCommandBatch, NdsifHostTimeline, NdsifRecordingTransport, NdsifSerialTransport};
 
-/// A device ID and connection shared with a playback worker.
-pub type NdsifSharedDevice = (u64, Arc<Mutex<NdsifSerialTransport>>);
-
 /// A recorder shared with chip factories during rendering.
 pub type NdsifRecorder = Rc<RefCell<NdsifRecordingTransport>>;
+
+/// A device connection paired with its recording transport for one playback.
+///
+/// Clones refer to the same connection and recorder. Create a fresh pair for
+/// each playback and drop it before reclaiming the connection.
+#[derive(Clone)]
+pub struct NdsifWorkerDevice {
+    device: Arc<Mutex<NdsifSerialTransport>>,
+    recorder: NdsifRecorder,
+}
+
+impl NdsifWorkerDevice {
+    /// Snapshot the connection's capabilities into a bounded recorder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection lock is poisoned.
+    pub fn new(
+        device: Arc<Mutex<NdsifSerialTransport>>,
+        operation_limit: NonZeroUsize,
+    ) -> Result<Self, NdsifWorkerError> {
+        let recorder = {
+            let connection = device
+                .lock()
+                .map_err(|_| NdsifWorkerError("NDSIF device lock poisoned".into()))?;
+            Rc::new(RefCell::new(NdsifRecordingTransport::new(
+                &connection,
+                operation_limit,
+            )))
+        };
+        Ok(Self { device, recorder })
+    }
+
+    /// Return the recorder used by the chip factories for this device.
+    pub fn recorder(&self) -> NdsifRecorder {
+        Rc::clone(&self.recorder)
+    }
+}
 
 /// An error preparing or running device workers.
 #[derive(Debug)]
@@ -27,25 +62,6 @@ impl fmt::Display for NdsifWorkerError {
 }
 
 impl Error for NdsifWorkerError {}
-
-/// Create one bounded recorder for each shared device, in the same order.
-pub fn create_recorders(
-    devices: &[NdsifSharedDevice],
-    operation_limit: NonZeroUsize,
-) -> Result<Vec<NdsifRecorder>, NdsifWorkerError> {
-    devices
-        .iter()
-        .map(|(id, device)| {
-            let device = device
-                .lock()
-                .map_err(|_| NdsifWorkerError(format!("NanoDrive device {id} worker failed")))?;
-            Ok(Rc::new(RefCell::new(NdsifRecordingTransport::new(
-                &device,
-                operation_limit,
-            ))))
-        })
-        .collect()
-}
 
 enum Work {
     Batch(NdsifCommandBatch),
@@ -64,7 +80,8 @@ enum DeviceTiming {
 }
 
 struct DeviceWorker {
-    id: u64,
+    index: usize,
+    recorder: NdsifRecorder,
     sender: mpsc::SyncSender<Work>,
     timing: DeviceTiming,
     dac_prebuffer: Option<DacPrebuffer>,
@@ -76,6 +93,9 @@ struct DacPrebuffer {
 }
 
 /// Bounded device workers that replay recorded batches against a shared timeline.
+///
+/// The workers retain their paired recorders on the calling thread and cannot
+/// be sent to another thread. Device I/O runs on separate worker threads.
 pub struct NdsifHardwareWorkers {
     senders: Vec<DeviceWorker>,
     threads: Vec<JoinHandle<Result<(), String>>>,
@@ -95,11 +115,10 @@ impl NdsifHardwareWorkers {
 
     /// Start one worker per device, replaying each recorder's setup batch.
     ///
-    /// Recorders must correspond to the devices in the same order used by
-    /// [`create_recorders`]. Device IDs, handles, and recorders must be unique.
+    /// Connections must be unique. Error messages identify devices by their
+    /// index in `devices`.
     pub fn start(
-        devices: &[NdsifSharedDevice],
-        recorders: &[NdsifRecorder],
+        devices: &[NdsifWorkerDevice],
         timeline: Arc<NdsifHostTimeline>,
         queue_blocks: NonZeroUsize,
     ) -> Result<Self, NdsifWorkerError> {
@@ -108,26 +127,13 @@ impl NdsifHardwareWorkers {
                 "NanoDrive workers require at least one device".into(),
             ));
         }
-        if devices.len() != recorders.len() {
-            return Err(NdsifWorkerError(
-                "NanoDrive recorder and device counts do not match".into(),
-            ));
-        }
-        for (index, (id, device)) in devices.iter().enumerate() {
-            for (other_id, other_device) in &devices[..index] {
-                if id == other_id || Arc::ptr_eq(device, other_device) {
+        for (index, device) in devices.iter().enumerate() {
+            for other_device in &devices[..index] {
+                if Arc::ptr_eq(&device.device, &other_device.device) {
                     return Err(NdsifWorkerError(
-                        "NanoDrive devices must have unique IDs and handles".into(),
+                        "NanoDrive device connections must be unique".into(),
                     ));
                 }
-            }
-            if recorders[..index]
-                .iter()
-                .any(|other| Rc::ptr_eq(&recorders[index], other))
-            {
-                return Err(NdsifWorkerError(
-                    "NanoDrive recorders must be unique".into(),
-                ));
             }
         }
         let (errors_tx, errors) = mpsc::channel();
@@ -140,24 +146,27 @@ impl NdsifHardwareWorkers {
             joined: false,
             prebuffer_prepared: Cell::new(false),
         };
-        for ((id, device), recorder) in devices.iter().zip(recorders) {
-            let setup = recorder
+        for (index, device) in devices.iter().enumerate() {
+            let setup = device
+                .recorder
                 .try_borrow_mut()
                 .map_err(|_| {
-                    NdsifWorkerError(format!("NanoDrive recorder {id} is already borrowed"))
+                    NdsifWorkerError(format!("NanoDrive recorder {index} is already borrowed"))
                 })?
                 .take_batch()
                 .map_err(|error| NdsifWorkerError(error.to_string()))?;
-            let dac_capabilities = if !setup.configures_audio_stream()
-                && setup.configures_primary_ym2612()
-            {
-                device
-                    .lock()
-                    .map_err(|_| NdsifWorkerError(format!("NanoDrive device {id} worker failed")))?
-                    .timed_dac_capabilities()
-            } else {
-                None
-            };
+            let dac_capabilities =
+                if !setup.configures_audio_stream() && setup.configures_primary_ym2612() {
+                    device
+                        .device
+                        .lock()
+                        .map_err(|_| {
+                            NdsifWorkerError(format!("NanoDrive device {index} worker failed"))
+                        })?
+                        .timed_dac_capabilities()
+                } else {
+                    None
+                };
             let timing = if setup.configures_audio_stream() {
                 DeviceTiming::Audio
             } else if dac_capabilities.is_some() {
@@ -170,16 +179,15 @@ impl NdsifHardwareWorkers {
                 capabilities,
             });
             let (sender, receiver) = mpsc::sync_channel::<Work>(queue_blocks.get());
-            let device = Arc::clone(device);
+            let connection = Arc::clone(&device.device);
             let timeline = Arc::clone(&workers.timeline);
             let ready_tx = ready_tx.clone();
             let errors_tx = errors_tx.clone();
-            let id = *id;
             let handle = thread::Builder::new()
-                .name(format!("nanodrive-{id}"))
+                .name(format!("nanodrive-{index}"))
                 .spawn(move || {
                     let setup_result = (|| {
-                        let mut device = device
+                        let mut device = connection
                             .lock()
                             .map_err(|_| "device lock poisoned".to_owned())?;
                         device.set_output_fade_timeline(Arc::clone(&timeline))?;
@@ -204,7 +212,7 @@ impl NdsifHardwareWorkers {
                         Ok::<(), String>(())
                     })();
                     if let Err(error) = &setup_result {
-                        let _ = ready_tx.send(Err(format!("NanoDrive device {id}: {error}")));
+                        let _ = ready_tx.send(Err(format!("NanoDrive device {index}: {error}")));
                         timeline.cancel();
                         return Err(error.clone());
                     }
@@ -219,7 +227,7 @@ impl NdsifHardwareWorkers {
                         }
                         let idle_poll = if timing == DeviceTiming::Dac { 5 } else { 10 };
                         let result = match receiver.recv_timeout(Duration::from_millis(idle_poll)) {
-                            Ok(Work::Batch(batch)) => device
+                            Ok(Work::Batch(batch)) => connection
                                 .lock()
                                 .map_err(|_| "device lock poisoned".to_owned())
                                 .and_then(|mut device| {
@@ -232,7 +240,7 @@ impl NdsifHardwareWorkers {
                                 rate,
                                 ready,
                             }) => {
-                                let result = device
+                                let result = connection
                                     .lock()
                                     .map_err(|_| "device lock poisoned".to_owned())
                                     .and_then(|mut device| match timing {
@@ -257,7 +265,7 @@ impl NdsifHardwareWorkers {
                                                         "NDSIF host pacing was cancelled".into()
                                                     );
                                                 }
-                                                device
+                                                connection
                                                     .lock()
                                                     .map_err(|_| "device lock poisoned".to_owned())
                                                     .and_then(|mut device| {
@@ -283,7 +291,7 @@ impl NdsifHardwareWorkers {
                                     }
                                 }
                             }
-                            Err(mpsc::RecvTimeoutError::Timeout) => device
+                            Err(mpsc::RecvTimeoutError::Timeout) => connection
                                 .lock()
                                 .map_err(|_| "device lock poisoned".to_owned())
                                 .and_then(|mut device| {
@@ -299,7 +307,7 @@ impl NdsifHardwareWorkers {
                             if timeline.is_cancelled() {
                                 return Ok(());
                             }
-                            let message = format!("NanoDrive device {id}: {error}");
+                            let message = format!("NanoDrive device {index}: {error}");
                             let _ = errors_tx.send(message.clone());
                             timeline.cancel();
                             return Err(message);
@@ -310,7 +318,8 @@ impl NdsifHardwareWorkers {
                     NdsifWorkerError(format!("start NanoDrive device worker: {error}"))
                 })?;
             workers.senders.push(DeviceWorker {
-                id,
+                index,
+                recorder: device.recorder(),
                 sender,
                 timing,
                 dac_prebuffer,
@@ -339,19 +348,11 @@ impl NdsifHardwareWorkers {
         }
     }
 
-    /// Drain the recorders and enqueue their batches in device order.
-    pub fn enqueue(
-        &self,
-        recorders: &[NdsifRecorder],
-        cancelled: &AtomicBool,
-    ) -> Result<(), NdsifWorkerError> {
-        if recorders.len() != self.senders.len() {
-            return Err(NdsifWorkerError(
-                "NanoDrive recorder and worker counts do not match".into(),
-            ));
-        }
-        for (recorder, worker) in recorders.iter().zip(&self.senders) {
-            let batch = recorder
+    /// Drain each paired recorder and enqueue its batch for the same device.
+    pub fn enqueue(&self, cancelled: &AtomicBool) -> Result<(), NdsifWorkerError> {
+        for worker in &self.senders {
+            let batch = worker
+                .recorder
                 .try_borrow_mut()
                 .map_err(|_| NdsifWorkerError("NanoDrive recorder is already borrowed".into()))?
                 .take_batch()
@@ -371,12 +372,11 @@ impl NdsifHardwareWorkers {
     ///
     /// # Errors
     ///
-    /// Returns an error if the recorders do not match or preparation fails.
+    /// Returns an error if a recorder cannot be drained or preparation fails.
     /// The first batch is always submitted; an oversized batch is reported by
     /// the device transport.
     pub fn enqueue_prebuffer(
         &self,
-        recorders: &[NdsifRecorder],
         buffered_frames: usize,
         rate: u32,
         cancelled: &AtomicBool,
@@ -386,16 +386,12 @@ impl NdsifHardwareWorkers {
                 "NanoDrive prebuffer is already prepared".into(),
             ));
         }
-        if recorders.len() != self.senders.len() {
-            return Err(NdsifWorkerError(
-                "NanoDrive recorder and worker counts do not match".into(),
-            ));
-        }
-        let mut estimates = Vec::with_capacity(recorders.len());
+        let mut estimates = Vec::with_capacity(self.senders.len());
         let mut would_overflow = false;
-        for (recorder, worker) in recorders.iter().zip(&self.senders) {
+        for worker in &self.senders {
             let estimate = if let Some(buffer) = &worker.dac_prebuffer {
-                let additional = recorder
+                let additional = worker
+                    .recorder
                     .try_borrow()
                     .map_err(|_| NdsifWorkerError("NanoDrive recorder is already borrowed".into()))?
                     .timed_dac_prebuffer_usage(buffer.capabilities.ticks_per_second);
@@ -417,7 +413,7 @@ impl NdsifHardwareWorkers {
             self.prepare_audio(buffered_frames, rate, cancelled)?;
             self.prebuffer_prepared.set(true);
         }
-        self.enqueue(recorders, cancelled)?;
+        self.enqueue(cancelled)?;
         if !prepare {
             for (worker, estimate) in self.senders.iter().zip(estimates) {
                 if let (Some(buffer), Some(usage)) = (&worker.dac_prebuffer, estimate) {
@@ -457,7 +453,7 @@ impl NdsifHardwareWorkers {
                     self.check()?;
                     return Err(NdsifWorkerError(format!(
                         "NanoDrive device {} worker disconnected",
-                        worker.id
+                        worker.index
                     )));
                 }
             }
@@ -493,7 +489,7 @@ impl NdsifHardwareWorkers {
                 match result.recv_timeout(Duration::from_millis(5)) {
                     Ok(result) => {
                         result.map_err(|error| {
-                            NdsifWorkerError(format!("NanoDrive device {}: {error}", worker.id))
+                            NdsifWorkerError(format!("NanoDrive device {}: {error}", worker.index))
                         })?;
                         break;
                     }
@@ -502,7 +498,7 @@ impl NdsifHardwareWorkers {
                         self.check()?;
                         return Err(NdsifWorkerError(format!(
                             "NanoDrive device {} stopped during audio preparation",
-                            worker.id
+                            worker.index
                         )));
                     }
                 }
@@ -555,18 +551,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_devices_produce_no_recorders() {
-        assert!(
-            create_recorders(&[], NonZeroUsize::new(1).unwrap())
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
     fn workers_reject_an_empty_device_list() {
         let result = NdsifHardwareWorkers::start(
-            &[],
             &[],
             Arc::new(NdsifHostTimeline::pending()),
             NonZeroUsize::new(1).unwrap(),

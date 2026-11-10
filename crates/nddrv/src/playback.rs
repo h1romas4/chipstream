@@ -2056,7 +2056,7 @@ fn run_inner(
             &plan.routes,
             control.settings,
         )?;
-        let workers = crate::hardware::HardwareWorkers::start(lease, &recorders, timeline)?;
+        let workers = crate::hardware::HardwareWorkers::start(&recorders, timeline)?;
         (sequencer, Some((recorders, workers)))
     } else {
         let mut factories = ChipFactoryRegistry::new();
@@ -2120,12 +2120,11 @@ fn run_inner(
             config.sample_rate,
             &mut hardware_fade_scheduled,
         )?;
-        if let Some((recorders, workers)) = &hardware {
+        if let Some((_, workers)) = &hardware {
             if hardware_prepared {
-                workers.enqueue(recorders, &control.cancel)?;
+                workers.enqueue(&control.cancel)?;
             } else {
                 hardware_prepared = workers.enqueue_prebuffer(
-                    recorders,
                     prebuffered_frames,
                     config.sample_rate,
                     &control.cancel,
@@ -2205,8 +2204,8 @@ fn run_inner(
                 config.sample_rate,
                 &mut hardware_fade_scheduled,
             )?;
-            if let Some((recorders, workers)) = &hardware {
-                workers.enqueue(recorders, &control.cancel)?;
+            if let Some((_, workers)) = &hardware {
+                workers.enqueue(&control.cancel)?;
             }
             let block = match rendered {
                 Some(block) if !block.frames().is_empty() => Block::Audio(block.frames().to_vec()),
