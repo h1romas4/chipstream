@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Allow selecting a preferred YM2608 rhythm ROM in General settings.
+- Align ROM and recording folder path controls and allow clearing the WAV output folder.
 - Use PipeWire playback and recording devices on Linux when available, with ALSA fallback and an option to show all devices.
 - Add a macOS application menu and Command+Q shortcut to quit, even after the
   window is closed.

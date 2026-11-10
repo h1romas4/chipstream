@@ -120,6 +120,8 @@ Recording is experimental. Enable it in Recording settings, choose an input
 device, input sample rate and WAV output folder, then use the record button in
 the playback controls. The selected input must receive the audio to be recorded;
 NanoDrive and software output may need external mixing or system loopback.
+The folder can be changed or cleared with the icons beside its path; a folder
+must be selected before recording.
 Recording starts before playback and saves a 16-bit WAV for each playlist track.
 The WAV uses the source filename and local timestamp; existing files are preserved
 with a numeric suffix.

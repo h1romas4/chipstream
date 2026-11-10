@@ -41,7 +41,9 @@ use gpui_kit::component::setting::{
 };
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, IndexPath, Sizable, Theme, ThemeMode, TitleBar, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use library::{
@@ -717,6 +719,47 @@ fn show_all_audio_devices_field(show_all: Rc<Cell<bool>>) -> SettingField<bool> 
     )
 }
 
+fn setting_path_display(
+    id: &'static str,
+    path: Option<&Path>,
+    placeholder: &'static str,
+    placeholder_tooltip: &'static str,
+    cx: &App,
+) -> Stateful<Div> {
+    let text = path.map_or_else(|| placeholder.to_owned(), |path| path.display().to_string());
+    let tooltip = if path.is_some() {
+        text.clone()
+    } else {
+        placeholder_tooltip.to_owned()
+    };
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .flex_1()
+        .min_w_0()
+        .h(px(32.))
+        .px_3()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().input)
+        .bg(cx.theme().input_background())
+        .text_sm()
+        .when(path.is_none(), |this| {
+            this.text_color(cx.theme().muted_foreground)
+        })
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis_start()
+                .whitespace_nowrap()
+                .child(text),
+        )
+}
+
 fn audio_sample_rate_options(
     rates: &[u32],
     selected: Option<u32>,
@@ -876,23 +919,49 @@ impl AppView {
                     .upgrade()
                     .and_then(|view| view.read(cx).config.recording.output_directory.clone());
                 let choose_view = folder_view.clone();
+                let clear_view = folder_view.clone();
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .w_full()
                     .min_w_0()
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(
-                        path.map_or_else(
-                            || "Not selected".to_owned(),
-                            |path| path.display().to_string(),
-                        ),
+                    .pl_4()
+                    .child(setting_path_display(
+                        "recording-folder-path",
+                        path.as_deref(),
+                        "Not selected",
+                        "Choose a WAV output folder",
+                        cx,
                     ))
                     .child(
                         Button::new("recording-folder")
-                            .label("Choose folder")
+                            .flex_shrink_0()
+                            .icon(assets::IconName::FolderOpen)
+                            .ghost()
+                            .small()
+                            .tooltip("Choose WAV output folder")
+                            .accessibility_label("Choose WAV output folder")
                             .on_click(move |_, _, cx| {
                                 let _ = choose_view
                                     .update(cx, |view, cx| view.choose_recording_folder(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("recording-folder-clear")
+                            .flex_shrink_0()
+                            .icon(assets::IconName::CircleX)
+                            .ghost()
+                            .small()
+                            .tooltip("Clear WAV output folder")
+                            .accessibility_label("Clear WAV output folder")
+                            .disabled(path.is_none())
+                            .on_click(move |_, _, cx| {
+                                let _ = clear_view.update(cx, |view, cx| {
+                                    view.config.recording.output_directory = None;
+                                    view.save();
+                                    cx.notify();
+                                });
                             }),
                     )
             });
@@ -901,7 +970,6 @@ impl AppView {
                 let path = rom_view
                     .upgrade()
                     .and_then(|view| view.read(cx).config.general.ym2608_rhythm_rom.clone());
-                let tooltip = path.as_ref().map(|path| path.display().to_string());
                 let choose_view = rom_view.clone();
                 let clear_view = rom_view.clone();
                 div()
@@ -911,21 +979,13 @@ impl AppView {
                     .w_full()
                     .min_w_0()
                     .pl_4()
-                    .child(
-                        div()
-                            .id("ym2608-rom-path")
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis_start()
-                            .text_sm()
-                            .whitespace_nowrap()
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(tooltip.clone().unwrap_or_else(|| "Search the track folder, then the current working directory".into()))
-                                    .build(window, cx)
-                            })
-                            .child(path.as_ref().map_or_else(|| "Track / current directory".to_owned(), |path| path.display().to_string())),
-                    )
+                    .child(setting_path_display(
+                        "ym2608-rom-path",
+                        path.as_deref(),
+                        "Track / current directory",
+                        "Search the track folder, then the current working directory",
+                        cx,
+                    ))
                     .child(
                         Button::new("ym2608-rom-choose")
                             .flex_shrink_0()
@@ -1199,15 +1259,6 @@ impl AppView {
                                 })))),
                         )
                         .page(
-                            SettingPage::new("VGM")
-                                .icon(assets::IconName::Cpu)
-                                .description("Changes apply to the next track. AY8910 is approximated by YM2149; NanoDrive routes take priority.")
-                                .group(SettingGroup::new().item(SettingItem::new(
-                                    "Assign YM2149 to AY8910",
-                                    ay_field,
-                                ))),
-                        )
-                        .page(
                             SettingPage::new("Recording")
                                 .icon(assets::IconName::Mic)
                                 .description("For NanoDrive recordings, playing tracks directly from its SD card instead of using NDDRV's recording feature may improve audio quality, especially for PCM.")
@@ -1218,13 +1269,23 @@ impl AppView {
                                     ),
                                     SettingItem::new("Input audio device", input_field),
                                     SettingItem::new("Input sample rate", input_rate_field),
-                                    SettingItem::new("WAV output folder", folder_field),
+                                    SettingItem::new("WAV output folder", folder_field)
+                                        .layout(Axis::Vertical),
                                 ].into_iter().chain(cfg!(target_os = "linux").then(|| {
                                     SettingItem::new(
                                         "Show all audio devices",
                                         show_all_audio_devices_field(show_all_audio_devices.clone()),
                                     )
                                 })))),
+                        )
+                        .page(
+                            SettingPage::new("VGM")
+                                .icon(assets::IconName::Cpu)
+                                .description("Changes apply to the next track. AY8910 is approximated by YM2149; NanoDrive routes take priority.")
+                                .group(SettingGroup::new().item(SettingItem::new(
+                                    "Assign YM2149 to AY8910",
+                                    ay_field,
+                                ))),
                         ),
                 ),
             )
