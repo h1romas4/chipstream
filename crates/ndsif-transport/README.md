@@ -19,22 +19,22 @@ Emulated chips continue to produce host PCM.
 | Schedule multiple devices on a host audio timeline | `create_recorders`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
 | Inspect or control a device directly | `NdsifSerialTransport::open` |
 
-For explicitly routed scheduled transports, `create_routed_transport_factories_with_nd7`
-accepts identified NanoDrive 7 indices and permits YM2149 on their AY targets
-as an approximation using YM2203 SSG. The caller must validate shared ND7
-chip and clock resources. Existing route factories without ND7 identification
-continue to reject YM2149. For automatic selection, pass `NdsifNd7Policy` to
-`create_automatic_transport_factories_with_policy` to apply the same mapping
-and shared-resource validation. Custom `NdsifRoutePolicy` implementations can
-validate selected routes and specify AY compatibility without changing the
-factory. A rejected hardware route is an error, not a software fallback.
+For NanoDrive 7 devices, pass `NdsifNd7Policy` to either
+`create_routed_transport_factories_with_policy` or
+`create_automatic_transport_factories_with_policy`. The policy validates
+shared chip and clock resources and permits YM2149 on AY targets as an
+approximation using YM2203 SSG. Factories without this policy reject YM2149.
+Custom `NdsifRoutePolicy` implementations can validate selected routes and
+specify AY compatibility. A rejected hardware route is an error, not a
+software fallback.
 
 ```rust,no_run
 use std::{cell::RefCell, rc::Rc};
 use chipstream::sequencer::ChipFactoryRegistry;
 use ndsif_transport::{
-    NdsifNd7Policy, NdsifRoutingError, NdsifRoutingTransport,
+  NdsifNd7Policy, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
     create_automatic_transport_factories_with_policy,
+  create_routed_transport_factories_with_policy,
 };
 
 fn factories<T: NdsifRoutingTransport + 'static>(
@@ -45,11 +45,21 @@ fn factories<T: NdsifRoutingTransport + 'static>(
     let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
     Ok(create_automatic_transport_factories_with_policy(transports, supports_ay, policy))
 }
+
+  fn routed_factories<T: NdsifRoutingTransport + 'static>(
+    transports: &[Rc<RefCell<T>>],
+    routes: &[NdsifRoute],
+    nd7_devices: &[usize],
+  ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
+    let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
+    create_routed_transport_factories_with_policy(transports, routes, policy)
+  }
 ```
 
 Create a new policy for each playback: it retains selected routes to detect
 shared-resource conflicts. The supplied device count must match the transport
-list used by the factory.
+list used by the factory. Validation occurs while each active chip is created,
+so earlier chips may already be configured when a later route is rejected.
 
 Most applications should start with `create_chip_factories`. It selects the
 first connected device that advertises a compatible chip and clock; unmatched

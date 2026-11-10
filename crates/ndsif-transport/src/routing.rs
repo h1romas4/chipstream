@@ -6,14 +6,13 @@ use std::fmt;
 use std::rc::Rc;
 
 use chipstream::chip::{
-    ChipError, NdsifAyCompatibility, NdsifOkim6258, NdsifSn76489, NdsifSoundChip, NdsifTransport,
-    SoundChip,
+    ChipError, NdsifOkim6258, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
 };
 use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
 
-use crate::NdsifSerialTransport;
 use crate::factory::{chip_write_id, instance_number};
+use crate::{NdsifDirectPolicy, NdsifRoutePolicy, NdsifSerialTransport};
 
 /// One source chip instance connected to a physical device instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,28 +208,22 @@ pub fn create_routed_transport_factories<T: NdsifRoutingTransport + 'static>(
     routed_factories(devices.to_vec(), routes)
 }
 
-/// Build explicit route factories with NanoDrive 7 AY-compatible YM2149 support.
+/// Build explicit route factories with a policy for selected hardware routes.
 ///
-/// `nd7_devices` identifies NanoDrive 7 indices in `devices`. Their AY targets
-/// accept YM2149 as an approximation through YM2203 SSG. The caller must also
-/// validate NanoDrive 7 shared chip and clock resources before playback.
+/// The policy is shared across factories and called for each active routed
+/// instance, after capability checks and before constructing its backend.
+/// Rejected selections return an error rather than falling back.
 ///
 /// # Errors
 ///
-/// Returns an error for an unknown NanoDrive 7 index, aliased devices, or
-/// invalid routes. Clock and stream compatibility are checked when the
-/// sequencer constructs its chip instances.
-pub fn create_routed_transport_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
+/// Returns an error for aliased devices or invalid routes. Clock, stream, and
+/// policy compatibility are checked when the sequencer constructs its chips.
+pub fn create_routed_transport_factories_with_policy<T: NdsifRoutingTransport + 'static>(
     devices: &[Rc<RefCell<T>>],
     routes: &[NdsifRoute],
-    nd7_devices: &[usize],
+    policy: impl NdsifRoutePolicy + 'static,
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
-    for &index in nd7_devices {
-        if index >= devices.len() {
-            return Err(NdsifRoutingError::UnknownDevice(index));
-        }
-    }
-    routed_factories_with_nd7(devices.to_vec(), routes, nd7_devices)
+    routed_factories_with_policy(devices.to_vec(), routes, policy)
 }
 
 fn route_write_id(chip: &Chip, target: Instance) -> Option<WriteId> {
@@ -278,13 +271,13 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
     devices: Vec<Rc<RefCell<T>>>,
     routes: &[NdsifRoute],
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
-    routed_factories_with_nd7(devices, routes, &[])
+    routed_factories_with_policy(devices, routes, NdsifDirectPolicy)
 }
 
-fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
+fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
     devices: Vec<Rc<RefCell<T>>>,
     routes: &[NdsifRoute],
-    nd7_devices: &[usize],
+    policy: impl NdsifRoutePolicy + 'static,
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
     for (second, device) in devices.iter().enumerate() {
         if let Some(first) = devices[..second]
@@ -295,6 +288,7 @@ fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
         }
     }
     validate_routes(devices.len(), routes)?;
+    let policy = Rc::new(RefCell::new(policy));
     let devices = Rc::new(devices);
     let mut factories = ChipFactoryRegistry::new();
     let mut registered = Vec::new();
@@ -310,7 +304,7 @@ fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
             .cloned()
             .collect();
         let devices = Rc::clone(&devices);
-        let nd7_devices = nd7_devices.to_vec();
+        let policy = Rc::clone(&policy);
         factories.register_optional(chip.clone(), move |config| {
             let Some(route) = chip_routes
                 .iter()
@@ -358,6 +352,11 @@ fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
                     )));
                 }
             }
+            let options = policy
+                .try_borrow_mut()
+                .map_err(|_| invalid("NDSIF route policy is already borrowed".into()))?
+                .select(route, config.clock())
+                .map_err(invalid)?;
             let backend: Box<dyn SoundChip> = match chip {
                 Chip::Sn76489 => {
                     Box::new(NdsifSn76489::with_target_instance(
@@ -371,12 +370,9 @@ fn routed_factories_with_nd7<T: NdsifRoutingTransport + 'static>(
                     route.target,
                     transport,
                 )?),
-                _ if nd7_devices.contains(&route.device) => Box::new(
-                    NdsifSoundChip::with_target_ay_compatibility(
-                        config, route.target, transport, NdsifAyCompatibility::Ay8910AndYm2149,
-                    )?,
-                ),
-                _ => Box::new(NdsifSoundChip::with_target_instance(config, route.target, transport)?),
+                _ => Box::new(NdsifSoundChip::with_target_ay_compatibility(
+                    config, route.target, transport, options.ay_compatibility,
+                )?),
             };
             Ok(Some(backend))
         });
@@ -585,6 +581,100 @@ mod tests {
     }
 
     #[test]
+    fn explicit_factory_passes_target_to_custom_policy_and_propagates_rejection() {
+        use crate::NdsifRouteOptions;
+
+        struct Reject(Rc<RefCell<Vec<(NdsifRoute, u32)>>>);
+        impl NdsifRoutePolicy for Reject {
+            fn select(
+                &mut self,
+                route: &NdsifRoute,
+                clock: u32,
+            ) -> Result<NdsifRouteOptions, String> {
+                self.0.borrow_mut().push((route.clone(), clock));
+                Err("custom policy rejected the route".into())
+            }
+        }
+
+        let selected = Rc::new(RefCell::new(Vec::new()));
+        let device = Rc::new(RefCell::new(Device {
+            supported: true,
+            ..Default::default()
+        }));
+        let route = route(Instance::Primary, 0, Instance::Secondary);
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+        let factories = create_routed_transport_factories_with_policy(
+            std::slice::from_ref(&device),
+            std::slice::from_ref(&route),
+            Reject(Rc::clone(&selected)),
+        )
+        .unwrap();
+        let error = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories)
+            .err()
+            .expect("policy rejection must not fall back");
+        assert!(
+            error
+                .to_string()
+                .contains("custom policy rejected the route")
+        );
+        assert_eq!(*selected.borrow(), [(route, 4_000_000)]);
+        assert!(device.borrow().configured.is_empty());
+    }
+
+    #[test]
+    fn explicit_nd7_validation_checks_shared_clock() {
+        use crate::NdsifNd7Policy;
+        let routes = [
+            NdsifRoute {
+                chip: Chip::Ay8910,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            },
+            NdsifRoute {
+                chip: Chip::Ym2203,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Secondary,
+            },
+        ];
+        for (clock, conflict) in [(4_000_000, false), (3_500_000, true)] {
+            let device = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+            builder.register_chip(Chip::Ym2203, Instance::Primary, clock);
+            let mut document = builder.finalize();
+            document.header.ay_chip_type = soundlog::vgm::header::Ay8910ChipType::Ay8910;
+            let factories = create_routed_transport_factories_with_policy(
+                &[device],
+                &routes,
+                NdsifNd7Policy::new([0], 1).unwrap(),
+            )
+            .unwrap();
+            let result = VgmSequencer::new_with_factories(document, 44_100, 256, factories);
+            if conflict {
+                assert!(
+                    result
+                        .err()
+                        .expect("clock mismatch should fail")
+                        .to_string()
+                        .contains("different shared clocks")
+                );
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "matching clocks should succeed: {}",
+                    result.err().unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn automatic_nd7_validation_uses_selected_active_chips() {
         use crate::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
 
@@ -633,6 +723,57 @@ mod tests {
                         .contains(expected)
                 ),
                 None => assert!(result.is_ok(), "valid routes should succeed"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_nd7_validation_uses_selected_active_chips() {
+        use crate::NdsifNd7Policy;
+        let routes = [
+            NdsifRoute {
+                chip: Chip::Ym3526,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            },
+            NdsifRoute {
+                chip: Chip::Ymf262,
+                source: Instance::Primary,
+                device: 0,
+                target: Instance::Primary,
+            },
+        ];
+        for (include_second, nd7, conflict) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
+            let device = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::Ym3526, Instance::Primary, 3_579_545);
+            if include_second {
+                builder.register_chip(Chip::Ymf262, Instance::Primary, 14_318_180);
+            }
+            let nd7_devices: &[usize] = if nd7 { &[0] } else { &[] };
+            let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), 1).unwrap();
+            let factories =
+                create_routed_transport_factories_with_policy(&[device], &routes, policy).unwrap();
+            let result =
+                VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
+            if conflict {
+                assert!(
+                    result
+                        .err()
+                        .expect("conflict should fail")
+                        .to_string()
+                        .contains("same physical chip")
+                );
+            } else {
+                assert!(result.is_ok(), "valid routes should succeed");
             }
         }
     }
@@ -1123,10 +1264,10 @@ mod tests {
                         NdsifNd7Policy::new(nd7_devices.iter().copied(), 1).unwrap(),
                     )
                 } else {
-                    create_routed_transport_factories_with_nd7(
+                    create_routed_transport_factories_with_policy(
                         std::slice::from_ref(&device),
                         std::slice::from_ref(&route),
-                        nd7_devices,
+                        NdsifNd7Policy::new(nd7_devices.iter().copied(), 1).unwrap(),
                     )
                     .unwrap()
                 };
@@ -1172,10 +1313,10 @@ mod tests {
             device.borrow_mut().configured.clear();
             let mut invalid = bytes.clone();
             invalid[offset] = value;
-            let factories = create_routed_transport_factories_with_nd7(
+            let factories = create_routed_transport_factories_with_policy(
                 std::slice::from_ref(&device),
                 std::slice::from_ref(&route),
-                &[0],
+                NdsifNd7Policy::new([0], 1).unwrap(),
             )
             .unwrap();
             assert!(matches!(
@@ -1186,14 +1327,6 @@ mod tests {
             ));
             assert!(device.borrow().configured.is_empty());
         }
-        assert!(matches!(
-            create_routed_transport_factories_with_nd7(
-                std::slice::from_ref(&device),
-                &[route],
-                &[1]
-            ),
-            Err(NdsifRoutingError::UnknownDevice(1))
-        ));
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub use recording::{
 pub use routing::{
     NdsifNd7Validator, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
     create_routed_chip_factories, create_routed_transport_factories,
-    create_routed_transport_factories_with_nd7, create_shared_routed_chip_factories,
+    create_routed_transport_factories_with_policy, create_shared_routed_chip_factories,
 };
 pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
 pub use worker::{

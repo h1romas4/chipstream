@@ -2033,10 +2033,14 @@ fn run_inner(
             return Ok(());
         }
         let recorders = crate::hardware::recorders(lease)?;
-        let mut factories = ndsif_transport::create_routed_transport_factories_with_nd7(
+        let policy = ndsif_transport::NdsifNd7Policy::new(
+            plan.nd7_devices.iter().copied(),
+            recorders.len(),
+        )?;
+        let mut factories = ndsif_transport::create_routed_transport_factories_with_policy(
             &recorders,
             &plan.routes,
-            &plan.nd7_devices,
+            policy,
         )?;
         crate::adapter::register_software_adapters(
             &mut factories,
@@ -4903,10 +4907,11 @@ mod tests {
                     |plan| plan.routing.clone(),
                 );
                 let mut factories = if let Some(plan) = &plan {
-                    ndsif_transport::create_routed_transport_factories_with_nd7(
+                    ndsif_transport::create_routed_transport_factories_with_policy(
                         std::slice::from_ref(&transport),
                         routes,
-                        &plan.nd7_devices,
+                        ndsif_transport::NdsifNd7Policy::new(plan.nd7_devices.iter().copied(), 1)
+                            .unwrap(),
                     )
                     .unwrap()
                 } else {
@@ -5029,10 +5034,10 @@ mod tests {
         .err()
         .expect("a missing hardware factory must not fall back");
         assert!(format!("{error:#}").contains("hardware route has no active factory"));
-        let mut factories = ndsif_transport::create_routed_transport_factories_with_nd7(
+        let mut factories = ndsif_transport::create_routed_transport_factories_with_policy(
             std::slice::from_ref(&transport),
             std::slice::from_ref(&route),
-            &[0],
+            ndsif_transport::NdsifNd7Policy::new([0], 1).unwrap(),
         )
         .unwrap();
         crate::adapter::register_software_adapters(

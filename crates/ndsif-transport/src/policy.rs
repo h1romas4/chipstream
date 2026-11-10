@@ -1,4 +1,4 @@
-//! Device-specific policies for automatic route selection.
+//! Device-specific policies for selected hardware routes.
 
 use chipstream::chip::NdsifAyCompatibility;
 use std::collections::HashSet;
