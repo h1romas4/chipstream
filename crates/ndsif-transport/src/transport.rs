@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use chipstream::chip::{
+use crate::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent,
     NdsifTransport,
 };
@@ -17,8 +17,28 @@ use ndsif::{
 };
 
 use crate::NdsifTransportError;
-use crate::factory::validate_config;
 use crate::session::SerialSession;
+
+fn validate_config(
+    path: &str,
+    baud_rate: u32,
+    timeout: Duration,
+) -> Result<(), NdsifTransportError> {
+    if path.trim().is_empty() {
+        return Err(NdsifTransportError::EmptyPort);
+    }
+    if baud_rate == 0 {
+        return Err(NdsifTransportError::InvalidBaudRate {
+            port: path.to_owned(),
+        });
+    }
+    if timeout.is_zero() {
+        return Err(NdsifTransportError::InvalidTimeout {
+            port: path.to_owned(),
+        });
+    }
+    Ok(())
+}
 
 mod audio;
 mod dac;
@@ -297,7 +317,7 @@ impl PendingEvent {
     }
 }
 
-/// Serial connection implementing chipstream's scheduled NDSIF transport.
+/// Serial connection implementing the scheduled NDSIF transport.
 pub struct NdsifSerialTransport {
     session: SerialSession,
     capabilities: Vec<ndsif::CapabilityEntry>,

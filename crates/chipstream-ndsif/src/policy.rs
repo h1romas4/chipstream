@@ -1,6 +1,6 @@
 //! Device-specific policies for selected hardware routes.
 
-use chipstream::chip::NdsifAyCompatibility;
+use crate::NdsifAyCompatibility;
 use std::collections::HashSet;
 
 use crate::{NdsifNd7Validator, NdsifRoute, NdsifRoutingError};

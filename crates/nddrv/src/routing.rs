@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
 use chipstream::sequencer::{Chip, Instance};
+use chipstream_ndsif::{NdsifNd7Validator, NdsifRoute};
 use ndsif::CapabilityEntry;
-use ndsif_transport::{NdsifNd7Validator, NdsifRoute};
 use serde::{Deserialize, Serialize};
 
 use crate::library::VgmSettings;

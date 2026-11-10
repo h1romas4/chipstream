@@ -1,20 +1,21 @@
-#![cfg(feature = "ndsif")]
-
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
 
 use chipstream::{
-    chip::{
-        ChipError, ChipRegisterWrite, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258,
-        NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport,
-        ScheduledChip, SoundChip,
-        ndsif::{NdsifAudioControl, register_okim6258_factory, register_ymfm_factories},
-    },
+    chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip},
     sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
 };
+use chipstream_ndsif::{
+    NdsifOkim6258, NdsifSn76489, NdsifSoundChip, ndsif::register_ymfm_factories,
+    register_okim6258_factory,
+};
 use ndsif::{Divider, RegisterWrite, WriteId, ZeroPair};
+use ndsif_transport::{
+    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent,
+    NdsifTransport,
+};
 use soundlog::{
     chip::{
         Okim6258Spec, PsgSpec, Ym2151Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ymf262Spec,
@@ -119,6 +120,48 @@ impl NdsifTransport for FakeTransport {
     ) -> Result<(), String> {
         self.finished.push((instance, sample_frame, output_rate));
         Ok(())
+    }
+}
+
+#[test]
+fn rendered_audio_reaches_pcm_block_boundary() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    for _ in 0..800 {
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 1,
+                value: 0x77,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(6));
+    }
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 2;
+    let capture = Rc::new(RefCell::new(FakeTransport::default()));
+    let mut factories = ChipFactoryRegistry::new();
+    register_okim6258_factory(&mut factories, Rc::clone(&capture));
+    let mut player = VgmSequencer::new_with_factories(document, 48_000, 1024, factories).unwrap();
+    for _ in 0..4 {
+        player.render().unwrap().unwrap();
+    }
+    let capture = capture.borrow();
+    let events: Vec<_> = capture
+        .adpcm_events
+        .iter()
+        .filter(|event| event.sample_frame <= 4096)
+        .collect();
+    assert_eq!(events.len(), 666);
+    for (position, event) in events.iter().enumerate() {
+        assert_eq!(event.position.get(), position as u32);
     }
 }
 
@@ -398,7 +441,6 @@ fn factory_schedules_absolute_frames_and_protocol_registers() {
     assert_eq!(
         transport.events[0],
         NdsifRegisterEvent {
-            chip: Chip::Ym2151,
             write_id: WriteId::YM2151,
             instance: 0,
             page: 0,
@@ -517,7 +559,6 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
 }
 
 #[test]
-#[cfg(feature = "okim6258")]
 fn skipping_silent_capture_preserves_audio_and_write_timing() {
     struct SilentChip {
         skip_capture: bool,

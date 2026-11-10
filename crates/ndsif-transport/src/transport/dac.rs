@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chipstream::chip::{NdsifRegisterEvent, NdsifTransport};
+use crate::{NdsifRegisterEvent, NdsifTransport};
 use ndsif::{
     Command, DAC_PROFILE_YM2612, DacCapabilities, DacRecord, DacRecordKind, DacStatus,
     MAX_DAC_EVENT_BYTES, MAX_DAC_RECORDS, Reply, Response, WriteId,

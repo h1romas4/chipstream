@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chipstream::chip::{NdsifAdpcmEvent, NdsifAudioControlEvent};
+use crate::{NdsifAdpcmEvent, NdsifAudioControlEvent};
 use ndsif::{
     AudioPositionClock, AudioStreamState, AudioTiming, BytePosition, Command, Divider, Reply,
     Response,
@@ -64,7 +64,7 @@ impl AudioStream {
         &mut self,
         event: NdsifAudioControlEvent,
     ) -> Result<(), String> {
-        use chipstream::chip::NdsifAudioControl;
+        use crate::NdsifAudioControl;
         let NdsifAudioControl::Clock { clock_hz, divider } = event.control else {
             return Err("NDSIF event is not a clock change".into());
         };

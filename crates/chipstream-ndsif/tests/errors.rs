@@ -1,9 +1,8 @@
 use std::error::Error;
 use std::time::Duration;
 
-use ndsif_transport::{
-    NdsifSerialConfig, NdsifSerialTransport, NdsifTransportError, create_chip_factories,
-};
+use chipstream_ndsif::{NdsifSerialConfig, create_chip_factories};
+use ndsif_transport::{NdsifSerialTransport, NdsifTransportError};
 
 fn config(port: &str) -> NdsifSerialConfig {
     NdsifSerialConfig {
@@ -179,4 +178,116 @@ fn initialization_reports_timeout_with_command_and_transaction() {
         } if *command == ndsif::Command::Ping(b"chipstream").to_frame(0).unwrap().command_id())),
         "unexpected error: {error:?}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn fixed_clock_routing_and_connection_reuse_work_through_serial_transport() {
+    use chipstream::sequencer::{Chip, Instance, VgmSequencer};
+    use chipstream_ndsif::{NdsifRoute, create_shared_routed_chip_factories};
+    use ndsif::{Capabilities, Decoder, Reply, Request, Response};
+    use serialport::SerialPort;
+    use soundlog::{
+        chip::Ym2413Spec,
+        vgm::{VgmBuilder, command::WaitSamples},
+    };
+    use std::{
+        cell::RefCell,
+        io::{Read, Write},
+        rc::Rc,
+    };
+
+    let (mut fake, port) = serialport::TTYPort::pair().unwrap();
+    fake.set_timeout(Duration::from_secs(3)).unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let (writes, received) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = Decoder::new();
+        loop {
+            let mut frame = None;
+            while frame.is_none() {
+                let mut byte = [0];
+                fake.read_exact(&mut byte).unwrap();
+                decoder.push(&byte, |result| frame = Some(result.unwrap()));
+            }
+            let frame = frame.unwrap();
+            let mut entry = [0x51, 0, 0, 0, 1, 0, 0, 0, 0];
+            entry[5..].copy_from_slice(&3_579_540_u32.to_le_bytes());
+            let (reply, stop) = match Request::decode(&frame).unwrap() {
+                Request::Ping(data) => (Some(Reply::Ping(data)), false),
+                Request::GetCapabilities { offset: 0 } => (
+                    Some(Reply::Capabilities(
+                        Capabilities::new(256, 0, 0, 0, u16::MAX, &entry).unwrap(),
+                    )),
+                    false,
+                ),
+                Request::WriteRegisters {
+                    writes: registers, ..
+                } => {
+                    writes.send(registers.as_bytes().to_vec()).unwrap();
+                    (None, false)
+                }
+                Request::Reset => (Some(Reply::Complete), true),
+                request => panic!("unexpected NDSIF request: {request:?}"),
+            };
+            if let Some(reply) = reply {
+                let response = Response::for_request(&frame, reply)
+                    .unwrap()
+                    .to_frame()
+                    .unwrap()
+                    .encode();
+                fake.write_all(response.as_bytes()).unwrap();
+            }
+            if stop {
+                break;
+            }
+        }
+        wait.recv().unwrap();
+    });
+    let transport = NdsifSerialTransport::open(
+        &port.name().unwrap(),
+        115_200,
+        Duration::from_secs(2),
+        false,
+    )
+    .unwrap();
+    let shared = Rc::new(RefCell::new(transport));
+    let route = NdsifRoute {
+        chip: Chip::Ym2413,
+        source: Instance::Primary,
+        device: 0,
+        target: Instance::Primary,
+    };
+    for (clock, accepted) in [(3_579_576, false), (3_579_545, true)] {
+        let factories = create_shared_routed_chip_factories(
+            std::slice::from_ref(&shared),
+            std::slice::from_ref(&route),
+        )
+        .unwrap();
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ym2413, Instance::Primary, clock);
+        builder.add_chip_write(
+            Instance::Primary,
+            Ym2413Spec {
+                register: 0x20,
+                value: 0xc7,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(441));
+        let result = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
+        if accepted {
+            let mut player = result.unwrap();
+            while player.render().unwrap().is_some() {}
+        } else {
+            assert!(result.is_err());
+        }
+    }
+    assert_eq!(
+        received.recv_timeout(Duration::from_secs(2)).unwrap(),
+        [0x20, 0xc7]
+    );
+    let mut transport = Rc::try_unwrap(shared).ok().unwrap().into_inner();
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    worker.join().unwrap();
 }

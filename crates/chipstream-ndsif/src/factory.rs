@@ -6,15 +6,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use chipstream::chip::{
-    ChipError, ClockDivider, NdsifOkim6258, NdsifSn76489, NdsifSoundChip, Okim6258, OutputBits,
-    Sn76496, Sn76496Config, YmfmChip,
+    ChipError, ClockDivider, Okim6258, OutputBits, Sn76496, Sn76496Config, YmfmChip,
 };
 use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
 
 use crate::{
-    NdsifDirectPolicy, NdsifRoute, NdsifRouteOptions, NdsifRoutePolicy, NdsifRoutingTransport,
-    NdsifSerialTransport, NdsifTransportError,
+    NdsifDirectPolicy, NdsifOkim6258, NdsifRoute, NdsifRouteOptions, NdsifRoutePolicy,
+    NdsifRoutingTransport, NdsifSerialTransport, NdsifSn76489, NdsifSoundChip, NdsifTransportError,
 };
 
 /// Serial connection and reset options for an NDSIF device.

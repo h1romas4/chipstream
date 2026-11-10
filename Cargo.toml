@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
 	"crates/chipstream",
+	"crates/chipstream-ndsif",
 	"crates/chipstream-gstreamer",
 	"crates/ndsif-transport",
 	"crates/cstools",

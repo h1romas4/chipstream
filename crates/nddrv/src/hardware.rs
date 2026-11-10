@@ -112,9 +112,9 @@ mod tests {
     use super::*;
     use crate::device::{DeviceEvent, DeviceService};
     use crate::routing::Device;
-    use chipstream::chip::{NdsifRegisterEvent, NdsifTransport};
     use chipstream::sequencer::Chip;
     use ndsif::{Capabilities, Decoder, Reply, Request, Response, WriteId};
+    use ndsif_transport::{NdsifRegisterEvent, NdsifTransport};
     use serialport::SerialPort;
     use std::io::{Read, Write};
     use std::sync::atomic::Ordering;
@@ -397,7 +397,6 @@ mod tests {
             for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -452,7 +451,6 @@ mod tests {
             if block == 0 {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -465,7 +463,6 @@ mod tests {
             for _ in 0..if block == 0 { 506 } else { 3 } {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -527,7 +524,6 @@ mod tests {
             for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -598,7 +594,6 @@ mod tests {
             for index in 0..dac_writes {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -611,7 +606,6 @@ mod tests {
             for _ in 0..event_writes {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -668,7 +662,6 @@ mod tests {
             for index in 0..20 {
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -1061,14 +1054,14 @@ mod tests {
         ));
         let lease = service.playback_handle().acquire(vec![1]).unwrap();
         let recorders = recorders(&lease).unwrap();
-        let routes = [ndsif_transport::NdsifRoute {
+        let routes = [chipstream_ndsif::NdsifRoute {
             chip: Chip::Ym2151,
             source: Instance::Primary,
             device: 0,
             target: Instance::Primary,
         }];
         let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+            chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
         let mut sequencer = MdxSequencer::with_options_with_factories(
             package,
             44_100,
@@ -1201,14 +1194,14 @@ mod tests {
         ));
         let lease = service.playback_handle().acquire(vec![1]).unwrap();
         let recorders = recorders(&lease).unwrap();
-        let routes = [ndsif_transport::NdsifRoute {
+        let routes = [chipstream_ndsif::NdsifRoute {
             chip: Chip::Okim6258,
             source: Instance::Primary,
             device: 0,
             target: Instance::Primary,
         }];
         let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+            chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
         for (register, value) in [(0, 2), (1, 0x21)] {
@@ -1286,7 +1279,6 @@ mod tests {
                 let mut recorder = recorders[0].borrow_mut();
                 recorder
                     .schedule_register_write(NdsifRegisterEvent {
-                        chip: Chip::Ym2612,
                         write_id: WriteId::YM2612,
                         instance: 0,
                         page: 0,
@@ -1478,7 +1470,6 @@ mod tests {
         let mut recorder = recorder.borrow_mut();
         recorder
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2151,
                 write_id: WriteId::YM2151,
                 instance: 0,
                 page: 0,
@@ -1576,7 +1567,7 @@ mod tests {
         let recorders = recorders(&lease).unwrap();
         let routes: Vec<_> = [Chip::Ym2151, Chip::Okim6258]
             .into_iter()
-            .map(|chip| ndsif_transport::NdsifRoute {
+            .map(|chip| chipstream_ndsif::NdsifRoute {
                 chip,
                 source: Instance::Primary,
                 device: 0,
@@ -1584,7 +1575,7 @@ mod tests {
             })
             .collect();
         let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+            chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
@@ -1717,13 +1708,13 @@ mod tests {
         let lease = service.playback_handle().acquire(vec![1, 2]).unwrap();
         let recorders = recorders(&lease).unwrap();
         let routes = [
-            ndsif_transport::NdsifRoute {
+            chipstream_ndsif::NdsifRoute {
                 chip: Chip::Ym2151,
                 source: Instance::Primary,
                 device: 0,
                 target: Instance::Primary,
             },
-            ndsif_transport::NdsifRoute {
+            chipstream_ndsif::NdsifRoute {
                 chip: Chip::Okim6258,
                 source: Instance::Primary,
                 device: 0,
@@ -1731,7 +1722,7 @@ mod tests {
             },
         ];
         let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+            chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -1810,7 +1801,7 @@ mod tests {
 
     #[test]
     fn insufficient_audio_prebuffer_reports_error_and_returns_device() {
-        use chipstream::chip::NdsifAdpcmEvent;
+        use ndsif_transport::NdsifAdpcmEvent;
         let (starts_tx, starts_rx) = mpsc::channel();
         let (device, port, release, fake) = fake_audio_device(1, starts_tx, false);
         let service = DeviceService::new();
@@ -1862,7 +1853,7 @@ mod tests {
 
     #[test]
     fn failed_audio_start_is_reported_and_device_is_reset() {
-        use chipstream::chip::NdsifAdpcmEvent;
+        use ndsif_transport::NdsifAdpcmEvent;
         let (starts_tx, starts_rx) = mpsc::channel();
         let (device, port, release, fake) = fake_audio_device(1, starts_tx, true);
         let service = DeviceService::new();
@@ -2048,14 +2039,14 @@ mod tests {
         ));
         let lease = service.playback_handle().acquire(vec![1]).unwrap();
         let recorders = recorders(&lease).unwrap();
-        let routes = [ndsif_transport::NdsifRoute {
+        let routes = [chipstream_ndsif::NdsifRoute {
             chip: Chip::Ym2151,
             source: Instance::Primary,
             device: 0,
             target: Instance::Primary,
         }];
         let factories =
-            ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
+            chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.add_chip_write(

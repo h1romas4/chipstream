@@ -2,9 +2,7 @@
 
 #[cfg(feature = "c140")]
 mod c140;
-#[cfg(feature = "ndsif")]
-pub mod ndsif;
-#[cfg(any(feature = "ndsif", feature = "okim6258", feature = "okim6295"))]
+#[cfg(any(feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]
 mod okim6258;
@@ -28,12 +26,6 @@ use soundlog::chip::Chip;
 
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
-#[cfg(feature = "ndsif")]
-pub use ndsif::{
-    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifAyCompatibility,
-    NdsifOkim6258, NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport,
-    register_ay8910_factory, register_okim6258_factory,
-};
 #[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "okim6295")]

@@ -13,192 +13,15 @@ use ::ndsif::{
 use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::vgm::command::Instance;
 
-use crate::{
+use chipstream::{
     chip::{ChipError, ChipRegisterWrite, SampleRate, ScheduledChip, SoundChip},
     sequencer::{ChipFactoryConfig, ChipFactoryRegistry},
 };
 
-/// One timed register write for an NDSIF transport to schedule.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NdsifRegisterEvent {
-    /// Chip type represented by the write.
-    pub chip: Chip,
-    /// NDSIF target command ID.
-    pub write_id: WriteId,
-    /// Target chip instance.
-    pub instance: u8,
-    /// Target register page.
-    pub page: u8,
-    /// Register address and value.
-    pub write: RegisterWrite,
-    /// Absolute host output-frame position.
-    pub sample_frame: usize,
-    /// Host output rate in frames per second.
-    pub sample_rate: u32,
-}
-
-/// One timed raw byte for an NDSIF SN76489 stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NdsifPsgEvent {
-    /// NDSIF target command ID.
-    pub write_id: WriteId,
-    /// Target chip instance.
-    pub instance: u8,
-    /// Target page.
-    pub page: u8,
-    /// Absolute host output-frame position.
-    pub sample_frame: usize,
-    /// Host output rate in frames per second.
-    pub sample_rate: u32,
-    /// Raw PSG byte.
-    pub value: u8,
-}
-
-/// One encoded ADPCM byte for an NDSIF OKIM6258 stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NdsifAdpcmEvent {
-    /// Audio stream instance.
-    pub instance: u8,
-    /// Absolute position in ADPCM bytes.
-    pub position: BytePosition,
-    /// Host frame through which the byte was rendered and can be committed.
-    /// Playback timing is determined by `position`, not by this batch horizon.
-    pub sample_frame: usize,
-    /// Host output rate in frames per second.
-    pub sample_rate: u32,
-    /// Encoded ADPCM byte.
-    pub value: u8,
-}
-
-/// A control change positioned on the NDSIF ADPCM stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NdsifAudioControl {
-    /// Change the stream clock and divider.
-    Clock {
-        /// Input clock in hertz.
-        clock_hz: u32,
-        /// Clock divider.
-        divider: Divider,
-    },
-    /// Change the output-channel selection.
-    Pan(Pan),
-    /// End the stream using a state-dependent repeated ADPCM byte.
-    End(ZeroPair),
-}
-
-/// One positioned audio-stream control event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NdsifAudioControlEvent {
-    /// Audio stream instance.
-    pub instance: u8,
-    /// Absolute position in ADPCM bytes.
-    pub position: BytePosition,
-    /// Absolute host output-frame position.
-    pub sample_frame: usize,
-    /// Host output rate in frames per second.
-    pub sample_rate: u32,
-    /// Stream control to execute.
-    pub control: NdsifAudioControl,
-}
-
-/// Schedules chip writes on an NDSIF-capable device.
-///
-/// Implementations must queue writes; they must not treat this call as an
-/// instruction to write to the device immediately. Register and PSG writes
-/// use `sample_frame`; audio data and control events use byte positions for
-/// playback timing. ADPCM data's frame is a commit horizon. Sequencer
-/// rendering is ahead of playback, and events from different chip instances
-/// may arrive out of chronological order.
-pub trait NdsifTransport {
-    /// Whether this transport accepts source-timed VGM initialization.
-    fn supports_vgm_initialization(&self) -> bool {
-        false
-    }
-
-    /// Configure a chip instance before playback.
-    fn configure_chip(
-        &mut self,
-        write_id: WriteId,
-        instance: u8,
-        clock_hz: u32,
-    ) -> Result<(), String>;
-
-    /// Queue a register write at its absolute output-frame position.
-    fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String>;
-
-    /// Queue a register write from before the first positive VGM wait.
-    fn schedule_vgm_initial_register_write(
-        &mut self,
-        event: NdsifRegisterEvent,
-    ) -> Result<(), String> {
-        self.schedule_register_write(event)
-    }
-
-    /// Queue a raw PSG byte at its absolute output-frame position.
-    fn schedule_psg_write(&mut self, _event: NdsifPsgEvent) -> Result<(), String> {
-        Err("NDSIF transport does not support raw PSG writes".to_owned())
-    }
-
-    /// Queue a PSG write from before the first positive VGM wait.
-    fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
-        self.schedule_psg_write(event)
-    }
-
-    /// Mark the first positive VGM wait.
-    fn finish_vgm_initialization(&mut self) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Configure an OKIM6258 stream and its host timing.
-    fn configure_audio_stream(
-        &mut self,
-        _instance: u8,
-        _clock_hz: u32,
-        _divider: Divider,
-        _output_rate: u32,
-    ) -> Result<(), String> {
-        Err("NDSIF transport does not support audio streams".to_owned())
-    }
-
-    /// Queue one ADPCM byte at its absolute output-frame position.
-    fn schedule_adpcm_data(&mut self, _event: NdsifAdpcmEvent) -> Result<(), String> {
-        Err("NDSIF transport does not support audio streams".to_owned())
-    }
-
-    /// Queue a stream control at its absolute output-frame position.
-    fn schedule_audio_control(&mut self, _event: NdsifAudioControlEvent) -> Result<(), String> {
-        Err("NDSIF transport does not support audio streams".to_owned())
-    }
-
-    /// Commit all queued events through an output-frame position.
-    fn flush_scheduled_until(
-        &mut self,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Start a configured audio stream after prebuffering.
-    fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
-        Err("NDSIF transport does not support audio streams".to_owned())
-    }
-
-    /// Finish an audio stream at an absolute output-frame position.
-    fn finish_audio_stream(
-        &mut self,
-        _instance: u8,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), String> {
-        Err("NDSIF transport does not support audio streams".to_owned())
-    }
-
-    /// Seal and drain an optional timed DAC profile at end of playback.
-    fn finish_dac_stream(&mut self, _sample_frame: usize, _output_rate: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
+use ndsif_transport::{
+    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent,
+    NdsifTransport,
+};
 
 /// NDSIF-backed chip replacement that emits silence to the host PCM path.
 ///
@@ -206,7 +29,7 @@ pub trait NdsifTransport {
 /// to the injected transport with absolute output-frame positions.
 ///
 /// Untimed calls to [`SoundChip::apply_register_write`] are scheduled at frame
-/// zero. Sequencer playback uses [`SoundChip::apply_register_write_at`] and
+/// zero. Sequencer playback uses [`ScheduledChip::apply_register_write_at`] and
 /// supplies the correct absolute frame.
 pub struct NdsifSoundChip<T> {
     chip: Chip,
@@ -321,7 +144,6 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         }
         let (write_id, page, address, value) = register_parts(&write)?;
         let event = NdsifRegisterEvent {
-            chip: self.chip.clone(),
             write_id: write_id_for(write_id, &self.chip)?,
             instance: self.instance,
             page,
@@ -530,19 +352,15 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
                 reason: "NDSIF SN76489 does not support Game Gear stereo masks",
             });
         }
-        let (page, register, value) = write.byte_parts_for(&Chip::Sn76489)?;
-        if page != 0 {
-            return Err(ChipError::InvalidRegisterBank {
-                chip: Chip::Sn76489,
-                bank: page,
-            });
-        }
-        if register != 0 {
-            return Err(ChipError::InvalidRegister {
-                chip: Chip::Sn76489,
-                register,
-            });
-        }
+        let value = match write {
+            ChipRegisterWrite::Psg(spec) => spec.value,
+            other => {
+                return Err(ChipError::ChipMismatch {
+                    expected: other.chip(),
+                    actual: Chip::Sn76489,
+                });
+            }
+        };
         let mut transport = self
             .transport
             .try_borrow_mut()
@@ -550,7 +368,7 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
         let event = NdsifPsgEvent {
             write_id: self.write_id,
             instance: self.instance,
-            page,
+            page: 0,
             sample_frame,
             sample_rate,
             value,

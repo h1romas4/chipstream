@@ -29,7 +29,6 @@ YMFM chips are always available. Optional features are disabled by default:
 | `pwm` | PWM |
 | `segapcm` | SegaPCM |
 | `sn76496` | SN76489 / SN76496 |
-| `ndsif` | Scheduled NDSIF adapters for YMFM chips, AY8910, SN76489, and OKIM6258 |
 
 Enable the chips your application needs, for example:
 
@@ -252,48 +251,9 @@ VGM header volume settings and `set_gain` multiply these levels.
 
 ### NDSIF scheduled output
 
-Enable the `ndsif` feature and provide an `NdsifTransport` to route a chip to
-hardware. For example, register YM2151 with an application-supplied transport:
-
-```rust,no_run
-# #[cfg(feature = "ndsif")]
-# mod example {
-use std::{cell::RefCell, rc::Rc};
-use chipstream::chip::{NdsifTransport, ndsif::register_ymfm_factory};
-use chipstream::sequencer::{Chip, ChipFactoryRegistry, VgmSequencer};
-
-fn play<T: NdsifTransport + 'static>(
-    transport: Rc<RefCell<T>>,
-    vgm: Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut factories = ChipFactoryRegistry::new();
-    register_ymfm_factory(&mut factories, Chip::Ym2151, transport)?;
-    let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
-    while let Some(block) = player.render()? {
-        // Send block.frames() to the host for any software-emulated chips.
-    }
-    Ok(())
-}
-# }
-```
-
-| Adapter | Supported use | Notes |
-| --- | --- | --- |
-| `NdsifSoundChip` | YMFM chips; optional AY-3-8910 | Register AY with `register_ay8910_factory`. No built-in AY emulation. `with_target_ay_compatibility` can allow YM2149 as an approximation on a compatible target; other AY variants, raw/discrete output, YM clock-divider flags, and per-channel stereo are unsupported. |
-| `NdsifSn76489` | SN76489 | Rejects T6W28 and non-default Game Gear stereo masks. A stereo-enabled header alone is allowed. |
-| `NdsifOkim6258` | OKIM6258 | Decodes source ADPCM and re-encodes it for the device. |
-
-All three adapters produce silence in host PCM; mix audible hardware output
-from the device separately. Use `with_target_instance` to select a physical
-instance different from the source instance.
-
-The `ndsif` crate provides protocol encoding, not device I/O or scheduling.
-The application-supplied transport must:
-
-- Queue events at absolute output-frame positions and handle out-of-order arrival.
-- Send events in protocol order using device timing; ADPCM data is positioned
-  by byte, not by output frame.
-- Check device chip and clock capabilities.
+Use `chipstream-ndsif` for hardware-backed chip adapters and routing. Hardware
+audio is emitted by the physical device and must be mixed separately from
+host PCM. See the `chipstream-ndsif` README for supported chips and examples.
 
 ## Audio processing
 

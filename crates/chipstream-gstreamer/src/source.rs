@@ -33,9 +33,9 @@ use chipstream::sequencer::{
     PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
     measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
+use chipstream_ndsif::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifNd7Policy, NdsifSerialTransport,
-    NdsifWorkerDevice, create_automatic_transport_factories_with_policy,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport, NdsifWorkerDevice,
 };
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;

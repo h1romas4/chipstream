@@ -2,7 +2,6 @@
 
 use super::dac::{append_dac_waits, is_timed_dac_data_register, ticks_for_frame};
 use super::*;
-use chipstream::sequencer::Chip;
 use ndsif::{DacRecord, DacRecordKind, DacStatus};
 
 #[cfg(unix)]
@@ -596,55 +595,6 @@ fn fixed_clock_route_and_configuration_accept_same_tolerance_without_clock_comma
 
 #[cfg(unix)]
 #[test]
-fn vgm_ym2413_routes_to_nearly_matching_fixed_clock() {
-    use crate::{NdsifRecordingTransport, NdsifRoute, create_routed_transport_factories};
-    use chipstream::sequencer::{Instance, VgmSequencer};
-    use soundlog::vgm::{VgmBuilder, command::WaitSamples};
-    use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
-
-    for (clock, accepted) in [(3_579_545, true), (3_579_576, false)] {
-        let (mut transport, _device) = test_transport();
-        transport.capabilities.push(ndsif::CapabilityEntry {
-            write_id: 0x51,
-            instance: 0,
-            page: 0,
-            features: 0,
-            clock_mode: ClockMode::Fixed,
-            fixed_clock_hz: 3_579_540,
-        });
-        let recorder = Rc::new(RefCell::new(NdsifRecordingTransport::new(
-            &transport,
-            NonZeroUsize::new(1024).unwrap(),
-        )));
-        let routes = [NdsifRoute {
-            chip: Chip::Ym2413,
-            source: Instance::Primary,
-            device: 0,
-            target: Instance::Primary,
-        }];
-        let factories =
-            create_routed_transport_factories(std::slice::from_ref(&recorder), &routes).unwrap();
-        let mut builder = VgmBuilder::new();
-        builder.register_chip(Chip::Ym2413, Instance::Primary, clock);
-        builder.add_vgm_command(WaitSamples(441));
-        let result = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
-        if accepted {
-            let _player = result.unwrap();
-            recorder
-                .borrow_mut()
-                .take_batch()
-                .unwrap()
-                .replay(&mut transport)
-                .unwrap();
-            assert!(transport.configured_chip);
-        } else {
-            assert!(result.is_err());
-        }
-    }
-}
-
-#[cfg(unix)]
-#[test]
 fn device_info_queries_and_owns_model_and_firmware() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();
@@ -844,9 +794,6 @@ fn reset_refuses_reuse_if_audio_stream_is_still_running() {
 #[cfg(unix)]
 #[test]
 fn shared_routed_playback_can_recover_and_reset_the_same_connection() {
-    use chipstream::sequencer::{Instance, VgmSequencer};
-    use soundlog::chip::Ym2151Spec;
-    use soundlog::vgm::{VgmBuilder, command::WaitSamples};
     use std::{cell::RefCell, rc::Rc};
 
     let (mut transport, mut device) = test_transport();
@@ -888,30 +835,25 @@ fn shared_routed_playback_can_recover_and_reset_the_same_connection() {
     });
 
     let shared = Rc::new(RefCell::new(transport));
-    let factories = crate::create_shared_routed_chip_factories(
-        std::slice::from_ref(&shared),
-        &[crate::NdsifRoute {
-            chip: Chip::Ym2151,
-            source: Instance::Primary,
-            device: 0,
-            target: Instance::Primary,
-        }],
-    )
-    .unwrap();
-    let mut builder = VgmBuilder::new();
-    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
-    builder.add_chip_write(
-        Instance::Primary,
-        Ym2151Spec {
-            register: 0x20,
-            value: 0xc7,
-        },
-    );
-    builder.add_vgm_command(WaitSamples(441));
-    let mut sequencer =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
-    while sequencer.render().unwrap().is_some() {}
-    drop(sequencer);
+    shared
+        .borrow_mut()
+        .configure_chip(WriteId::YM2151, 0, 4_000_000)
+        .unwrap();
+    shared
+        .borrow_mut()
+        .schedule_register_write(NdsifRegisterEvent {
+            write_id: WriteId::YM2151,
+            instance: 0,
+            page: 0,
+            write: ndsif::RegisterWrite::new(0x20, 0xc7),
+            sample_frame: 0,
+            sample_rate: 44_100,
+        })
+        .unwrap();
+    shared
+        .borrow_mut()
+        .flush_scheduled_until(441, 44_100)
+        .unwrap();
 
     let mut transport = Rc::try_unwrap(shared).ok().unwrap().into_inner();
     transport.reset_for_reuse().unwrap();
@@ -944,7 +886,6 @@ fn host_paced_register_writes_keep_their_frame_timing() {
     for (sample_frame, value) in [(0, 0x11), (3_000, 0x22)] {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2151,
                 write_id: WriteId::YM2151,
                 instance: 0,
                 page: 0,
@@ -1177,7 +1118,6 @@ fn host_paced_events_are_ordered_and_only_same_frame_writes_are_batched() {
     for (sample_frame, value) in [(2, 0x33), (0, 0x11), (0, 0x22), (3, 0x44)] {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2151,
                 write_id: WriteId::YM2151,
                 instance: 0,
                 page: 0,
@@ -1325,7 +1265,6 @@ fn clock_changes_and_other_chip_writes_share_the_audio_timeline() {
     for sample_frame in [2205, 6615, 11025] {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2151,
                 write_id: WriteId::YM2151,
                 instance: 0,
                 page: 0,
@@ -1533,73 +1472,7 @@ fn audio_data_events_and_start_keep_their_device_order() {
 
 #[cfg(unix)]
 #[test]
-fn rendered_audio_prebuffer_is_complete_at_pcm_block_boundary() {
-    use chipstream::{
-        chip::{NdsifTransport, ndsif::register_okim6258_factory},
-        sequencer::{ChipFactoryRegistry, Instance, VgmSequencer},
-    };
-    use soundlog::{
-        chip::Okim6258Spec,
-        vgm::{VgmBuilder, command::WaitSamples},
-    };
-    use std::{cell::RefCell, rc::Rc};
-
-    #[derive(Default)]
-    struct Capture(Vec<NdsifAdpcmEvent>);
-    impl NdsifTransport for Capture {
-        fn configure_chip(&mut self, _: WriteId, _: u8, _: u32) -> Result<(), String> {
-            Ok(())
-        }
-        fn configure_audio_stream(
-            &mut self,
-            _: u8,
-            _: u32,
-            _: Divider,
-            _: u32,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn schedule_register_write(&mut self, _: NdsifRegisterEvent) -> Result<(), String> {
-            Ok(())
-        }
-        fn schedule_audio_control(&mut self, _: NdsifAudioControlEvent) -> Result<(), String> {
-            Ok(())
-        }
-        fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
-            self.0.push(event);
-            Ok(())
-        }
-    }
-
-    let mut builder = VgmBuilder::new();
-    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
-    builder.add_chip_write(
-        Instance::Primary,
-        Okim6258Spec {
-            register: 0,
-            value: 2,
-        },
-    );
-    for _ in 0..800 {
-        builder.add_chip_write(
-            Instance::Primary,
-            Okim6258Spec {
-                register: 1,
-                value: 0x77,
-            },
-        );
-        builder.add_vgm_command(WaitSamples(6));
-    }
-    let mut document = builder.finalize();
-    document.header.okim6258_flags.clock_divider = 2;
-    let capture = Rc::new(RefCell::new(Capture::default()));
-    let mut factories = ChipFactoryRegistry::new();
-    register_okim6258_factory(&mut factories, Rc::clone(&capture));
-    let mut player = VgmSequencer::new_with_factories(document, 48_000, 1024, factories).unwrap();
-    for _ in 0..4 {
-        player.render().unwrap().unwrap();
-    }
-
+fn audio_prebuffer_is_complete_at_pcm_block_boundary() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
@@ -1628,8 +1501,16 @@ fn rendered_audio_prebuffer_is_complete_at_pcm_block_boundary() {
         .configure_audio_stream(0, 8_000_000, Divider::Div512, 48_000)
         .unwrap();
     transport.defer_audio_stream_start().unwrap();
-    for event in &capture.borrow().0 {
-        transport.schedule_adpcm_data(*event).unwrap();
+    for position in 0..666 {
+        transport
+            .schedule_adpcm_data(NdsifAdpcmEvent {
+                instance: 0,
+                position: BytePosition::new(position),
+                sample_frame: 4096,
+                sample_rate: 48_000,
+                value: 0x77,
+            })
+            .unwrap();
     }
     transport.flush_scheduled_until(4096, 48_000).unwrap();
     assert_eq!(
@@ -2050,7 +1931,6 @@ fn cancelling_timeline_interrupts_timed_dac_capacity_waits() {
         };
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2401,7 +2281,6 @@ fn host_fallback_respects_unconfirmed_fm_byte_budget() {
     for value in 0..520 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2457,7 +2336,6 @@ fn host_only_zero_duration_stream_is_flushed_without_starting_dac() {
     for value in 0..5 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2534,7 +2412,6 @@ fn dense_dac_samples_are_chunked_without_changing_sample_times() {
     for frame in 1..=441 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2632,7 +2509,6 @@ fn host_fallback_waits_for_all_earlier_device_events() {
         for value in values {
             transport
                 .schedule_register_write(NdsifRegisterEvent {
-                    chip: Chip::Ym2612,
                     write_id: WriteId::YM2612,
                     instance: 0,
                     page: 0,
@@ -2747,7 +2623,6 @@ fn dense_first_dac_chunk_uses_ordered_host_startup_before_start() {
     for value in 0..520 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2759,7 +2634,6 @@ fn dense_first_dac_chunk_uses_ordered_host_startup_before_start() {
     }
     transport
         .schedule_register_write(NdsifRegisterEvent {
-            chip: Chip::Ym2612,
             write_id: WriteId::YM2612,
             instance: 0,
             page: 0,
@@ -2919,7 +2793,6 @@ fn async_timed_dac_status_uses_request_time_counters_after_later_writes() {
     for frame in 0..2 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -2972,7 +2845,6 @@ fn timed_dac_vgm_initialization_without_wait_does_not_emit_keys_or_dac_values() 
     for (address, value) in [(0x22, 1), (0x28, 0xf0), (0x2a, 0x55), (0x2b, 0x80)] {
         transport
             .schedule_vgm_initial_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3083,7 +2955,6 @@ fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
     ] {
         transport
             .schedule_vgm_initial_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3166,7 +3037,6 @@ fn timed_dac_collapses_only_identical_initial_dac_writes() {
     ] {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3285,7 +3155,6 @@ fn timed_dac_bounds_unanswered_bytes_before_and_after_start() {
     for frame in 0..506 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3303,7 +3172,6 @@ fn timed_dac_bounds_unanswered_bytes_before_and_after_start() {
     for frame in 1024..1324 {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3607,7 +3475,6 @@ fn timed_dac_events_start_and_drain_keep_their_device_order() {
     for (address, value) in [(0x22, 0x08), (0x2a, 0x80)] {
         transport
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2612,
                 write_id: WriteId::YM2612,
                 instance: 0,
                 page: 0,
@@ -3839,7 +3706,6 @@ fn timed_dac_frame_positions_and_wait_records_are_exact() {
 #[test]
 fn timed_dac_register_detection_is_limited_to_ym2612_dac_registers() {
     let event = |write_id, page, address| NdsifRegisterEvent {
-        chip: Chip::Ym2612,
         write_id,
         instance: 0,
         page,
@@ -3896,7 +3762,6 @@ fn audio_events_are_ordered_by_byte_position() {
         control: NdsifAudioControl::Pan(ndsif::Pan::Both),
     });
     let earlier = PendingEvent::Register(NdsifRegisterEvent {
-        chip: soundlog::chip::Chip::Ym2151,
         write_id: WriteId::YM2151,
         instance: 0,
         page: 0,

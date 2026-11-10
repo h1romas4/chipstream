@@ -3,13 +3,13 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use chipstream::chip::{
+use crate::{
     NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport,
 };
 use ndsif::{CapabilityEntry, Divider, WriteId};
 
+use crate::NdsifRoutingTransport;
 use crate::NdsifSerialTransport;
-use crate::routing::NdsifRoutingTransport;
 use crate::transport::{
     DAC_CHUNK_MILLISECONDS, is_timed_dac_data_register, supports_cached_audio,
     supports_cached_clock,
@@ -408,7 +408,6 @@ mod tests {
         for frame in [0, 220, 440] {
             recorder
                 .schedule_register_write(NdsifRegisterEvent {
-                    chip: chipstream::sequencer::Chip::Ym2612,
                     write_id: WriteId::YM2612,
                     instance: 0,
                     page: 0,
@@ -483,15 +482,13 @@ mod tests {
     }
 
     fn all_operations(recorder: &mut NdsifRecordingTransport) {
-        use chipstream::chip::NdsifAudioControl;
-        use chipstream::sequencer::Chip;
+        use crate::NdsifAudioControl;
 
         recorder
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
             .unwrap();
         recorder
             .schedule_register_write(NdsifRegisterEvent {
-                chip: Chip::Ym2151,
                 write_id: WriteId::YM2151,
                 instance: 0,
                 page: 0,

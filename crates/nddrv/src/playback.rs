@@ -873,7 +873,7 @@ fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions 
 
 fn add_visual_ay_sources(
     path: &Path,
-    routes: &[ndsif_transport::NdsifRoute],
+    routes: &[chipstream_ndsif::NdsifRoute],
     sources: &mut Vec<GainSource>,
 ) -> Result<()> {
     if extension(path) == "mdx" {
@@ -1302,7 +1302,7 @@ impl Sequencer {
 
     fn gain_sources(
         sequencer: &Sequencer,
-        routes: &[ndsif_transport::NdsifRoute],
+        routes: &[chipstream_ndsif::NdsifRoute],
     ) -> Vec<GainSource> {
         sequencer
             .chip_instances()
@@ -1410,7 +1410,7 @@ impl Sequencer {
         looped: bool,
         factories: ChipFactoryRegistry,
         rom_directory: &Path,
-        routes: &[ndsif_transport::NdsifRoute],
+        routes: &[chipstream_ndsif::NdsifRoute],
     ) -> Result<Self> {
         Self::for_playback_with_settings(
             path,
@@ -1429,7 +1429,7 @@ impl Sequencer {
         looped: bool,
         factories: ChipFactoryRegistry,
         rom_directory: &Path,
-        routes: &[ndsif_transport::NdsifRoute],
+        routes: &[chipstream_ndsif::NdsifRoute],
         settings: PlaybackSettings,
     ) -> Result<Self> {
         Self::create(
@@ -1447,7 +1447,7 @@ impl Sequencer {
         rate: u32,
         looped: bool,
         factories: ChipFactoryRegistry,
-        rom: Option<(&Path, &[ndsif_transport::NdsifRoute])>,
+        rom: Option<(&Path, &[chipstream_ndsif::NdsifRoute])>,
         settings: PlaybackSettings,
     ) -> Result<Self> {
         let bytes = read_track(path)?;
@@ -1492,7 +1492,7 @@ impl Sequencer {
         clock: u32,
         track: &Path,
         directory: &Path,
-        routes: &[ndsif_transport::NdsifRoute],
+        routes: &[chipstream_ndsif::NdsifRoute],
     ) -> Result<()> {
         if clock & 0x3fff_ffff == 0 {
             return Ok(());
@@ -2033,11 +2033,11 @@ fn run_inner(
             return Ok(());
         }
         let recorders = crate::hardware::recorders(lease)?;
-        let policy = ndsif_transport::NdsifNd7Policy::new(
+        let policy = chipstream_ndsif::NdsifNd7Policy::new(
             plan.nd7_devices.iter().copied(),
             recorders.len(),
         )?;
-        let mut factories = ndsif_transport::create_routed_transport_factories_with_policy(
+        let mut factories = chipstream_ndsif::create_routed_transport_factories_with_policy(
             &recorders,
             &plan.routes,
             policy,
@@ -2434,9 +2434,8 @@ mod tests {
 
     #[test]
     fn fm_mute_filters_live_vgm_hardware_writes_per_instance() {
-        use chipstream::chip::{
-            NdsifRegisterEvent, NdsifTransport, ndsif::register_ymfm_factories,
-        };
+        use chipstream_ndsif::ndsif::register_ymfm_factories;
+        use ndsif_transport::{NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::Ym2151Spec;
         use soundlog::vgm::{VgmBuilder, command::WaitSamples};
 
@@ -2532,9 +2531,8 @@ mod tests {
 
     #[test]
     fn fm_mute_register_filters_cover_all_tracked_ymfm_chips() {
-        use chipstream::chip::{
-            NdsifRegisterEvent, NdsifTransport, ndsif::register_ymfm_factories,
-        };
+        use chipstream_ndsif::ndsif::register_ymfm_factories;
+        use ndsif_transport::{NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::{
             Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
             Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
@@ -3029,7 +3027,7 @@ mod tests {
     fn rhythm_audio(
         track: &Path,
         rom_dir: &Path,
-        routes: &[ndsif_transport::NdsifRoute],
+        routes: &[chipstream_ndsif::NdsifRoute],
     ) -> Vec<[f32; 2]> {
         let mut player = Sequencer::for_playback(
             track,
@@ -3114,7 +3112,7 @@ mod tests {
                 );
                 std::fs::remove_file(song_dir.join(YM2608_RHYTHM_ROM)).unwrap();
                 if instance == Instance::Secondary {
-                    let route = ndsif_transport::NdsifRoute {
+                    let route = chipstream_ndsif::NdsifRoute {
                         chip: Chip::Ym2608,
                         source: Instance::Primary,
                         device: 0,
@@ -3122,7 +3120,7 @@ mod tests {
                     };
                     assert_eq!(rhythm_audio(&track, &rom_dir, &[route]), loaded);
                 }
-                let route = ndsif_transport::NdsifRoute {
+                let route = chipstream_ndsif::NdsifRoute {
                     chip: Chip::Ym2608,
                     source: instance,
                     device: 0,
@@ -3141,7 +3139,7 @@ mod tests {
         std::fs::write(&track, rhythm_vgm(Instance::Primary)).unwrap();
         let rom = dir.path().join(YM2608_RHYTHM_ROM);
         std::fs::write(&rom, []).unwrap();
-        let make = |routes: &[ndsif_transport::NdsifRoute]| {
+        let make = |routes: &[chipstream_ndsif::NdsifRoute]| {
             Sequencer::for_playback(
                 &track,
                 44_100,
@@ -3152,7 +3150,7 @@ mod tests {
             )
         };
         assert!(format!("{:#}", make(&[]).err().unwrap()).contains("empty"));
-        let route = ndsif_transport::NdsifRoute {
+        let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ym2608,
             source: Instance::Primary,
             device: 0,
@@ -4223,7 +4221,7 @@ mod tests {
                 }],
                 VgmSettings::default(),
             ),
-            routes: vec![ndsif_transport::NdsifRoute {
+            routes: vec![chipstream_ndsif::NdsifRoute {
                 chip: Chip::Ym2151,
                 source: Instance::Primary,
                 device: 0,
@@ -4540,7 +4538,7 @@ mod tests {
                     .iter()
                     .all(|source| source.visual_only && !source.hardware)
             );
-            let route = ndsif_transport::NdsifRoute {
+            let route = chipstream_ndsif::NdsifRoute {
                 chip: Chip::Ay8910,
                 source: Instance::Primary,
                 device: 0,
@@ -4602,9 +4600,8 @@ mod tests {
 
     #[test]
     fn ay_nd7_hardware_route_and_preview_run_together() {
-        use chipstream::chip::{
-            NdsifAyCompatibility, NdsifPsgEvent, NdsifRegisterEvent, NdsifSoundChip, NdsifTransport,
-        };
+        use chipstream_ndsif::{NdsifAyCompatibility, NdsifSoundChip};
+        use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::Ay8910Spec;
         use soundlog::vgm::command::WaitSamples;
         use soundlog::vgm::header::Ay8910ChipType;
@@ -4655,7 +4652,7 @@ mod tests {
             )?))
         });
         let mut sequencer = Sequencer::with_factories(&path, 44_100, false, factories).unwrap();
-        let route = ndsif_transport::NdsifRoute {
+        let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ay8910,
             source: Instance::Primary,
             device: 0,
@@ -4667,13 +4664,8 @@ mod tests {
         assert!(sources[0].hardware && !sources[0].visual_only);
         while sequencer.render().unwrap().is_some() {}
         assert!(!transport.borrow().0.is_empty());
-        assert!(
-            transport
-                .borrow()
-                .0
-                .iter()
-                .all(|event| event.instance == 1 && event.chip == Chip::Ay8910)
-        );
+        assert!(transport.borrow().0.iter().all(|event| event.instance == 1
+            && event.write_id == ndsif::WriteId::try_from(0xa0).unwrap()));
 
         let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
@@ -4788,7 +4780,7 @@ mod tests {
     #[test]
     fn ay_emulation_respects_settings_and_per_instance_hardware_routes() {
         use crate::routing::{ChipInstance, HardwareChip, SoftwareTarget, Target};
-        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
+        use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::Ay8910Spec;
         use soundlog::vgm::command::WaitSamples;
         use soundlog::vgm::header::Ay8910ChipType;
@@ -4860,7 +4852,7 @@ mod tests {
         let mut document = builder.finalize();
         document.header.ay_chip_type = Ay8910ChipType::Ym2149;
         std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
-        let route = ndsif_transport::NdsifRoute {
+        let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ay8910,
             source: Instance::Primary,
             device: 0,
@@ -4906,10 +4898,10 @@ mod tests {
                     |plan| plan.routing.clone(),
                 );
                 let mut factories = if let Some(plan) = &plan {
-                    ndsif_transport::create_routed_transport_factories_with_policy(
+                    chipstream_ndsif::create_routed_transport_factories_with_policy(
                         std::slice::from_ref(&transport),
                         routes,
-                        ndsif_transport::NdsifNd7Policy::new(plan.nd7_devices.iter().copied(), 1)
+                        chipstream_ndsif::NdsifNd7Policy::new(plan.nd7_devices.iter().copied(), 1)
                             .unwrap(),
                     )
                     .unwrap()
@@ -5033,10 +5025,10 @@ mod tests {
         .err()
         .expect("a missing hardware factory must not fall back");
         assert!(format!("{error:#}").contains("hardware route has no active factory"));
-        let mut factories = ndsif_transport::create_routed_transport_factories_with_policy(
+        let mut factories = chipstream_ndsif::create_routed_transport_factories_with_policy(
             std::slice::from_ref(&transport),
             std::slice::from_ref(&route),
-            ndsif_transport::NdsifNd7Policy::new([0], 1).unwrap(),
+            chipstream_ndsif::NdsifNd7Policy::new([0], 1).unwrap(),
         )
         .unwrap();
         crate::adapter::register_software_adapters(
@@ -5348,7 +5340,8 @@ mod tests {
 
     #[test]
     fn sn76489_hardware_writes_produce_piano_notes() {
-        use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifTransport};
+        use chipstream_ndsif::NdsifSn76489;
+        use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
         use soundlog::chip::PsgSpec;
         use soundlog::vgm::command::WaitSamples;
 
@@ -5709,8 +5702,9 @@ mod tests {
         use crate::device::{DeviceEvent, DeviceService};
         use crate::routing::Device;
         use chipstream::sequencer::{Chip, Instance};
+        use chipstream_ndsif::create_routed_transport_factories;
         use ndsif::{Capabilities, Decoder, Reply, Request, Response};
-        use ndsif_transport::{NdsifRecordingTransport, create_routed_transport_factories};
+        use ndsif_transport::NdsifRecordingTransport;
         use serialport::SerialPort;
         use soundlog::chip::Ym2151Spec;
         use soundlog::vgm::{VgmBuilder, command::WaitSamples};

@@ -5,14 +5,16 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
-use chipstream::chip::{
-    ChipError, NdsifOkim6258, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
-};
+use chipstream::chip::{ChipError, SoundChip};
 use chipstream::sequencer::{Chip, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
+use ndsif_transport::NdsifRoutingTransport;
 
 use crate::factory::{chip_write_id, instance_number};
-use crate::{NdsifDirectPolicy, NdsifRoutePolicy, NdsifSerialTransport};
+use crate::{
+    NdsifDirectPolicy, NdsifOkim6258, NdsifRoutePolicy, NdsifSerialTransport, NdsifSn76489,
+    NdsifSoundChip,
+};
 
 /// One source chip instance connected to a physical device instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,27 +170,6 @@ pub fn create_shared_routed_chip_factories(
     routes: &[NdsifRoute],
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
     routed_factories(devices.to_vec(), routes)
-}
-
-/// A scheduled transport with cached route-capability checks.
-///
-/// The checks must not perform I/O. They are used before a routed chip is
-/// constructed; configuration and write errors still propagate separately.
-pub trait NdsifRoutingTransport: NdsifTransport {
-    /// Return whether the target supports the requested chip clock.
-    fn supports_route_clock(&self, write_id: WriteId, instance: u8, clock: u32) -> bool;
-    /// Return whether the target supports an OKIM6258 audio stream.
-    fn supports_route_audio(&self, instance: u8, clock: u32) -> bool;
-}
-
-impl NdsifRoutingTransport for NdsifSerialTransport {
-    fn supports_route_clock(&self, write_id: WriteId, instance: u8, clock: u32) -> bool {
-        self.supports_clock(write_id, instance, clock)
-    }
-
-    fn supports_route_audio(&self, instance: u8, clock: u32) -> bool {
-        self.supports_audio_stream(instance, clock)
-    }
 }
 
 /// Build explicit route factories from shared scheduled transports.
@@ -383,8 +364,8 @@ fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chipstream::chip::{NdsifPsgEvent, NdsifRegisterEvent};
     use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
+    use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
     use soundlog::chip::{Ay8910Spec, GameGearPsgSpec, Okim6258Spec, PsgSpec, Ym2151Spec};
     use soundlog::vgm::{
         VgmBuilder,
