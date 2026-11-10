@@ -8,7 +8,8 @@ use std::{
 use chipstream::{
     chip::{
         ChipError, ChipRegisterWrite, NdsifAdpcmEvent, NdsifAudioControlEvent, NdsifOkim6258,
-        NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport, SoundChip,
+        NdsifPsgEvent, NdsifRegisterEvent, NdsifSn76489, NdsifSoundChip, NdsifTransport,
+        ScheduledChip, SoundChip,
         ndsif::{NdsifAudioControl, register_okim6258_factory, register_ymfm_factories},
     },
     sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
@@ -543,6 +544,18 @@ fn skipping_silent_capture_preserves_audio_and_write_timing() {
         fn apply_register_write(&mut self, _: ChipRegisterWrite) -> Result<(), ChipError> {
             Ok(())
         }
+        fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+            Some(self)
+        }
+        fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+            self.captures.set(self.captures.get() + 1);
+            samples.fill(0);
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl ScheduledChip for SilentChip {
         fn apply_register_write_at(
             &mut self,
             _: ChipRegisterWrite,
@@ -552,12 +565,6 @@ fn skipping_silent_capture_preserves_audio_and_write_timing() {
             self.writes.borrow_mut().push(frame);
             Ok(())
         }
-        fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-            self.captures.set(self.captures.get() + 1);
-            samples.fill(0);
-            Ok(())
-        }
-        fn reset(&mut self) {}
     }
 
     for mixed in [false, true] {

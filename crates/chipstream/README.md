@@ -76,14 +76,35 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`MdxSequencer::new` and `from_mdx` play once using the default resource limits.
-In contrast, `MdxSequencer::with_options` uses the supplied options as-is:
-`MdxSequencerOptions::default()` sets `loop_count` to `None`, so looped tracks
-repeat until a limit or another playback ending is reached. Set `loop_count` to
-`Some(1)` for the same single-traversal behavior as `new`. For indefinite
-playback also set `max_ticks` to `None`; other resource limits remain active.
-PDX lookup is the caller's responsibility, and omitting PDX disables the PCM
-path even when the MDX names a PDX.
+Both sequencers default to one traversal without fading. Use `PlaybackOptions`
+for loop count and fade duration; MDX includes it in `MdxSequencerOptions`:
+
+```rust,no_run
+use std::time::Duration;
+use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer};
+use soundlog::mdx::package::MdxPackage;
+
+let playback = PlaybackOptions { loop_count: Some(2), fadeout: Some(Duration::from_secs(2)) };
+let mut vgm = VgmSequencer::from_vgm(std::fs::read("song.vgm")?, 48_000, 512)?;
+vgm.set_playback_options(playback)?;
+let package = MdxPackage::parse_owned(std::fs::read("song.mdx")?, None)?;
+let mdx = MdxSequencer::with_options(package, 48_000, 512, MdxSequencerOptions {
+    playback,
+    ..Default::default()
+})?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`None` as the loop count allows unlimited looping. For indefinite MDX playback
+also set `max_ticks` to `None`; other resource limits remain active. PDX lookup
+is the caller's responsibility, and omitting PDX disables the PCM path even
+when the MDX names a PDX.
+
+`measure_vgm_duration_frames` and `measure_mdx_duration_frames` take the same
+playback settings and return `PlaybackDuration::Finite`, `Unbounded`, or
+`Unknown`. Scans are bounded; unlimited MDX loops that do not end within the
+scan limit are `Unknown`, not assumed unbounded. Durations exceeding `u32::MAX`
+output frames are also `Unknown`; playback is not limited by this measurement.
 
 `set_gain` applies a linear gain to a chip instance and returns an error if it
 is absent. `VgmSequencer::set_opn_gains` independently adjusts the FM/ADPCM and
@@ -217,7 +238,10 @@ The returned backend must report the configured chip type and clock and match
 the native output count above. Its `generate()` method still supplies samples
 to the sequencer; routing register writes to physical hardware does not by
 itself route that hardware's audio into the host PCM output. Implement
-`save_state()` and `restore_state()` to support checkpoint seeking. Backend
+`save_state()` and `restore_state()` to support checkpoint seeking. Backends
+that schedule timed output expose `ScheduledChip` through `SoundChip::scheduled`;
+they must also opt into `supports_checkpoint` when their scheduled state can
+be restored. DAC-interrupting backends cannot currently use checkpoints. Backend
 errors can be returned as `ChipError::External`.
 
 The VGM sequencer applies backend output balancing to built-in and custom

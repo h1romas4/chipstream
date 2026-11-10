@@ -1030,11 +1030,15 @@ mod tests {
             pdx: None,
         };
         let options = MdxSequencerOptions {
-            loop_count: Some(2),
+            playback: chipstream::sequencer::PlaybackOptions {
+                loop_count: Some(2),
+                fadeout: None,
+            },
             ..Default::default()
         };
-        let boundary = measure_mdx_duration_frames(package.clone(), 44_100, options, None)
+        let boundary = measure_mdx_duration_frames(package.clone(), 44_100, options)
             .unwrap()
+            .finite_frames()
             .unwrap() as usize;
 
         let (volumes, received) = mpsc::channel();
@@ -1055,12 +1059,17 @@ mod tests {
         }];
         let factories =
             ndsif_transport::create_routed_transport_factories(&recorders, &routes).unwrap();
-        let mut sequencer = MdxSequencer::with_options_and_fadeout_with_factories(
+        let mut sequencer = MdxSequencer::with_options_with_factories(
             package,
             44_100,
             1024,
-            options,
-            Some(88_200),
+            MdxSequencerOptions {
+                playback: chipstream::sequencer::PlaybackOptions {
+                    fadeout: Some(Duration::from_secs(2)),
+                    ..options.playback
+                },
+                ..options
+            },
             factories,
         )
         .unwrap();

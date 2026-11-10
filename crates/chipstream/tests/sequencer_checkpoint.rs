@@ -1,7 +1,10 @@
-use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions, VgmSequencer, VgmSequencerError};
+use chipstream::sequencer::{
+    MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerError,
+};
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmBuilder;
 use soundlog::vgm::command::WaitSamples;
+use std::time::Duration;
 
 #[test]
 fn filter_state_is_caller_owned_and_seek_runs_filters() {
@@ -51,7 +54,9 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
     player.set_loop_count(Some(2));
     player.set_loop_modifier(0x10);
     player.set_loop_base(0);
-    player.set_fadeout_samples(Some(2_000)).unwrap();
+    player
+        .set_fadeout(Some(Duration::from_secs_f64(2_000.0 / 44_100.0)))
+        .unwrap();
     for _ in 0..3 {
         assert!(player.render().unwrap().is_some());
     }
@@ -211,11 +216,13 @@ fn mdx_checkpoint_restores_generator_and_audio_state() {
     let mdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
     let package = MdxPackage::parse_owned(mdx.to_vec(), None).unwrap();
     let options = MdxSequencerOptions {
-        loop_count: Some(2),
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            fadeout: Some(Duration::from_secs_f64(2_000.0 / 44_100.0)),
+        },
         ..MdxSequencerOptions::default()
     };
-    let mut player =
-        MdxSequencer::with_options_and_fadeout(package, 48_000, 128, options, Some(2_000)).unwrap();
+    let mut player = MdxSequencer::with_options(package, 48_000, 128, options).unwrap();
     for _ in 0..3 {
         assert!(player.render().unwrap().is_some());
     }
@@ -252,12 +259,13 @@ fn mdx_checkpoint_restores_fade_start_position() {
         pdx: None,
     };
     let options = MdxSequencerOptions {
-        loop_count: Some(2),
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            fadeout: Some(Duration::from_secs(2)),
+        },
         ..Default::default()
     };
-    let mut player =
-        MdxSequencer::with_options_and_fadeout(package, 44_100, 128, options, Some(88_200))
-            .unwrap();
+    let mut player = MdxSequencer::with_options(package, 44_100, 128, options).unwrap();
     assert_eq!(player.fade_start_frame(), None);
     let before_fade = player.checkpoint().unwrap();
     while player.fade_start_frame().is_none() {

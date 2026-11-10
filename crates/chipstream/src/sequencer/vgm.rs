@@ -412,16 +412,19 @@ impl Voice {
         let write = context
             .callbacks
             .filter_write(self.instance, write, sample_frame);
-        let stop_stream = self.route.chip().stops_dac_stream_on_write(&write);
-        if vgm_initial {
-            self.route
-                .chip_mut()
-                .apply_vgm_initial_write(write, sample_frame, output_rate)?;
+        let chip = self.route.chip_mut();
+        let stop_stream = if let Some(scheduled) = chip.scheduled() {
+            let stop_stream = scheduled.stops_dac_stream_on_write(&write);
+            if vgm_initial {
+                scheduled.apply_vgm_initial_write(write, sample_frame, output_rate)?;
+            } else {
+                scheduled.apply_register_write_at(write, sample_frame, output_rate)?;
+            }
+            stop_stream
         } else {
-            self.route
-                .chip_mut()
-                .apply_register_write_at(write, sample_frame, output_rate)?;
-        }
+            chip.apply_register_write(write)?;
+            false
+        };
         let state_events = if let Some(tracker) = self.tracker.as_mut() {
             let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
                 chip: self.chip.clone(),
@@ -1300,12 +1303,34 @@ impl<'a> VgmSequencer<'a> {
         })
     }
 
-    /// Fade linearly to silence after the final VGM loop, over this many
-    /// 44,100 Hz samples. Files without a loop and infinite playback ignore it.
-    /// A zero duration disables the fade. Configure before rendering. Fade
-    /// length and gain use `f32` arithmetic, so long fades have reduced
-    /// frame-level precision.
-    pub fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
+    /// Configure loop count and fade duration before rendering.
+    ///
+    /// Fade durations are rounded to the nearest 44,100 Hz sample. A duration
+    /// rounding to zero disables fading. Files without a loop and unlimited
+    /// playback ignore the fade.
+    pub fn set_playback_options(
+        &mut self,
+        options: super::PlaybackOptions,
+    ) -> Result<(), VgmSequencerError> {
+        let fadeout = super::options::fadeout_samples(options.fadeout)?;
+        if self.started {
+            return Err(VgmSequencerError::FadeoutConfigurationAfterPlayback);
+        }
+        self.set_loop_count(options.loop_count);
+        self.set_fadeout_samples(fadeout)
+    }
+
+    /// Set the fade duration before rendering without changing the loop count.
+    ///
+    /// See [`Self::set_playback_options`] for rounding and loop behavior.
+    pub fn set_fadeout(
+        &mut self,
+        fadeout: Option<std::time::Duration>,
+    ) -> Result<(), VgmSequencerError> {
+        self.set_fadeout_samples(super::options::fadeout_samples(fadeout)?)
+    }
+
+    fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
         self.configure_fadeout(samples, None)?;
         let samples = samples.filter(|samples| *samples != 0);
         self.stream
@@ -1580,18 +1605,17 @@ impl<'a> VgmSequencer<'a> {
 
         let mut voices = Vec::with_capacity(self.voices.len());
         for voice in &mut self.voices {
-            if voice.chip == Chip::Okim6258
-                && voice
-                    .route
-                    .chip()
-                    .stops_dac_stream_on_write(&ChipRegisterWrite::Okim6258(
-                        soundlog::chip::Okim6258Spec {
-                            register: 0,
-                            value: 1,
-                        },
-                    ))
+            if let Some(scheduled) = voice.route.chip_mut().scheduled()
+                && (!scheduled.supports_checkpoint()
+                    || (voice.chip == Chip::Okim6258
+                        && scheduled.stops_dac_stream_on_write(&ChipRegisterWrite::Okim6258(
+                            soundlog::chip::Okim6258Spec {
+                                register: 0,
+                                value: 1,
+                            },
+                        ))))
             {
-                return Err(ChipError::UnsupportedStateSnapshot(Chip::Okim6258).into());
+                return Err(ChipError::UnsupportedStateSnapshot(voice.chip.clone()).into());
             }
             voices.push(VoiceCheckpoint {
                 chip: voice.chip.clone(),
@@ -1820,30 +1844,29 @@ impl<'a> VgmSequencer<'a> {
         let sample_start = self.position_frames;
         let result = self.render_inner(sample_start).and_then(|block| {
             for voice in &mut self.voices {
-                voice.route.chip_mut().prepare_scheduled()?;
+                if let Some(scheduled) = voice.route.chip_mut().scheduled() {
+                    scheduled.prepare_scheduled()?;
+                }
             }
             if let Some(block) = &block {
                 let sample_end = sample_start
                     .checked_add(block.frames().len())
                     .ok_or(VgmSequencerError::DurationOverflow)?;
                 for voice in &mut self.voices {
-                    voice
-                        .route
-                        .chip_mut()
-                        .flush_scheduled_until(sample_end, self.output_rate)?;
+                    if let Some(scheduled) = voice.route.chip_mut().scheduled() {
+                        scheduled.flush_scheduled_until(sample_end, self.output_rate)?;
+                    }
                 }
             } else {
                 for voice in &mut self.voices {
-                    voice
-                        .route
-                        .chip_mut()
-                        .flush_scheduled_until(sample_start, self.output_rate)?;
+                    if let Some(scheduled) = voice.route.chip_mut().scheduled() {
+                        scheduled.flush_scheduled_until(sample_start, self.output_rate)?;
+                    }
                 }
                 for voice in &mut self.voices {
-                    voice
-                        .route
-                        .chip_mut()
-                        .finish_scheduled(sample_start, self.output_rate)?;
+                    if let Some(scheduled) = voice.route.chip_mut().scheduled() {
+                        scheduled.finish_scheduled(sample_start, self.output_rate)?;
+                    }
                 }
             }
             Ok(block)
@@ -1979,8 +2002,10 @@ impl<'a> VgmSequencer<'a> {
             let result = result?;
             if was_initial && !self.stream.is_initial_timestamp() {
                 for voice in &mut self.voices {
-                    if voice.route.chip().wants_vgm_initialization()? {
-                        voice.route.chip_mut().finish_vgm_initialization()?;
+                    if let Some(scheduled) = voice.route.chip_mut().scheduled()
+                        && scheduled.wants_vgm_initialization()?
+                    {
+                        scheduled.finish_vgm_initialization()?;
                     }
                 }
             }
@@ -2164,11 +2189,9 @@ impl<'a> VgmSequencer<'a> {
                 && ((!playing && selector == DacStreamSelector::All)
                     || instances.contains(&voice.instance))
             {
-                voice.route.chip_mut().set_dac_stream_playing_at(
-                    playing,
-                    sample_frame,
-                    self.output_rate,
-                )?;
+                if let Some(scheduled) = voice.route.chip_mut().scheduled() {
+                    scheduled.set_dac_stream_playing_at(playing, sample_frame, self.output_rate)?;
+                }
             }
         }
         Ok(())
@@ -2188,7 +2211,14 @@ impl<'a> VgmSequencer<'a> {
             .iter_mut()
             .find(|v| v.chip == chip && v.instance == instance)
         {
-            let vgm_initial = source_initial && voice.route.chip().wants_vgm_initialization()?;
+            let vgm_initial = if source_initial {
+                match voice.route.chip_mut().scheduled() {
+                    Some(scheduled) => scheduled.wants_vgm_initialization()?,
+                    None => false,
+                }
+            } else {
+                false
+            };
             if !vgm_initial && let Some(queue) = &mut voice.paced_writes {
                 if queue.len() == MAX_PENDING_WRITES {
                     return Err(VgmSequencerError::WriteQueueFull {

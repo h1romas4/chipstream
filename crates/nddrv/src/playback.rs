@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, VgmSequencer,
+    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -854,10 +854,13 @@ fn mdx_package(path: &Path, bytes: Vec<u8>) -> Result<MdxPackage> {
 
 fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions {
     MdxSequencerOptions {
-        loop_count: if looped {
-            None
-        } else {
-            Some(settings.loop_count)
+        playback: PlaybackOptions {
+            loop_count: if looped {
+                None
+            } else {
+                Some(settings.loop_count)
+            },
+            fadeout: (!looped).then(|| Duration::from_secs(u64::from(settings.fadeout_seconds))),
         },
         max_ticks: if looped {
             None
@@ -951,9 +954,10 @@ fn run_preview(
         let package = mdx_package(path, bytes)?;
         let options = mdx_options(looped, control.settings);
         let (generator, marker) = if looped {
-            (to_vgm_stream_generator(package, options)?, None)
+            (to_vgm_stream_generator(package, options.into())?, None)
         } else {
-            let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)?;
+            let (generator, marker) =
+                to_vgm_stream_generator_with_loop_marker(package, options.into())?;
             (generator, Some(marker))
         };
         let mut stream = VgmCallbackStream::from_generator(generator);
@@ -1450,16 +1454,13 @@ impl Sequencer {
         if extension(path) == "mdx" {
             let package = mdx_package(path, bytes)?;
             let options = mdx_options(looped, settings);
-            Ok(Self::Mdx(
-                MdxSequencer::with_options_and_fadeout_with_factories(
-                    package,
-                    rate,
-                    CHUNK_FRAMES,
-                    options,
-                    (!looped).then_some(settings.fadeout_samples()),
-                    factories,
-                )?,
-            ))
+            Ok(Self::Mdx(MdxSequencer::with_options_with_factories(
+                package,
+                rate,
+                CHUNK_FRAMES,
+                options,
+                factories,
+            )?))
         } else {
             let ym2608_clock = if rom.is_some() {
                 soundlog::vgm::VgmHeader::from_bytes(&bytes)?.ym2608_clock
@@ -1477,15 +1478,10 @@ impl Sequencer {
                     routes,
                 )?;
             }
-            sequencer.set_loop_count(if looped {
-                None
-            } else {
-                Some(settings.loop_count)
-            });
+            sequencer.set_playback_options(mdx_options(looped, settings).playback)?;
             if !looped {
                 sequencer.set_loop_base(0);
                 sequencer.set_loop_modifier(0x10);
-                sequencer.set_fadeout_samples(Some(settings.fadeout_samples()))?;
             }
             Ok(Self::Vgm(sequencer))
         }
@@ -3080,9 +3076,7 @@ mod tests {
                 reference.set_loop_count(Some(2));
                 reference.set_loop_base(0);
                 reference.set_loop_modifier(0x10);
-                reference
-                    .set_fadeout_samples(Some(FADEOUT_SAMPLES))
-                    .unwrap();
+                reference.set_fadeout(Some(Duration::from_secs(2))).unwrap();
                 reference
                     .set_ym2608_rhythm_rom(instance, &[0x77; 8192])
                     .unwrap();
@@ -3798,13 +3792,16 @@ mod tests {
 
             let package = MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap();
             let options = MdxSequencerOptions {
-                loop_count: Some(2),
+                playback: PlaybackOptions {
+                    loop_count: Some(2),
+                    fadeout: Some(Duration::from_secs(2)),
+                },
                 ..MdxSequencerOptions::default()
             };
-            let expected =
-                measure_mdx_duration_frames(package, rate, options, Some(FADEOUT_SAMPLES))
-                    .unwrap()
-                    .unwrap();
+            let expected = measure_mdx_duration_frames(package, rate, options)
+                .unwrap()
+                .finite_frames()
+                .unwrap();
             let mut finite_mdx = Sequencer::new(&mdx, rate, false).unwrap();
             assert_eq!(render_frames(&mut finite_mdx), expected as usize);
 
@@ -3830,9 +3827,9 @@ mod tests {
                 MdxPackage::parse(mdx_bytes, Some(pdx_bytes)).unwrap(),
                 rate,
                 mdx_options(false, settings),
-                Some(settings.fadeout_samples()),
             )
             .unwrap()
+            .finite_frames()
             .unwrap();
             let mut configured_mdx = Sequencer::create(
                 &mdx,
@@ -3970,11 +3967,15 @@ mod tests {
 
         for rate in [44_100, 48_000] {
             let options = MdxSequencerOptions {
-                loop_count: Some(2),
+                playback: PlaybackOptions {
+                    loop_count: Some(2),
+                    fadeout: None,
+                },
                 ..MdxSequencerOptions::default()
             };
-            let boundary = measure_mdx_duration_frames(package.clone(), rate, options, None)
+            let boundary = measure_mdx_duration_frames(package.clone(), rate, options)
                 .unwrap()
+                .finite_frames()
                 .unwrap() as usize;
             let mut finite = Sequencer::new(&mdx, rate, false).unwrap();
             let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));

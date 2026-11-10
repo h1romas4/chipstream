@@ -1,5 +1,7 @@
 use std::error::Error;
 
+#[cfg(feature = "okim6258")]
+use chipstream::sequencer::PlaybackOptions;
 use chipstream::sequencer::{Chip, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer};
 use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 #[cfg(feature = "okim6258")]
@@ -137,11 +139,10 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
         (pcm_package(true), AdpcmMode::Lpf),
     ] {
         let options = MdxSequencerOptions {
-            loop_count: Some(1),
             adpcm_mode: mode,
             ..Default::default()
         };
-        let document = to_vgm_document(&package, &options).unwrap();
+        let document = to_vgm_document(&package, &options.into()).unwrap();
         let mut reference = VgmSequencer::new(document, 48_000, 512).unwrap();
         let expected = render_vgm(&mut reference);
         assert!(
@@ -167,7 +168,10 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
 fn finite_and_infinite_loops_are_driven_incrementally() {
     let package = MdxPackage::parse(MDX, Some(PDX)).unwrap();
     let options = |loop_count| MdxSequencerOptions {
-        loop_count,
+        playback: PlaybackOptions {
+            loop_count,
+            fadeout: None,
+        },
         max_ticks: None,
         ..Default::default()
     };
@@ -178,7 +182,7 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
         &mut MdxSequencer::with_options(package.clone(), 44_100, 257, options(Some(2))).unwrap(),
     );
     let mut expected = VgmSequencer::new(
-        to_vgm_document(&package, &options(Some(2))).unwrap(),
+        to_vgm_document(&package, &options(Some(2)).into()).unwrap(),
         44_100,
         512,
     )
@@ -196,20 +200,15 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
 fn mdx_constructor_loop_defaults_are_explicit() {
     let package = MdxPackage::parse(MDX, None).unwrap();
     let once = render_mdx(&mut MdxSequencer::new(package.clone(), 44_100, 256).unwrap());
-    let options = MdxSequencerOptions {
-        loop_count: Some(1),
-        ..Default::default()
-    };
+    let options = MdxSequencerOptions::default();
     let explicit_once =
         render_mdx(&mut MdxSequencer::with_options(package.clone(), 44_100, 256, options).unwrap());
     assert_eq!(once, explicit_once);
 
-    assert_eq!(MdxSequencerOptions::default().loop_count, None);
+    assert_eq!(MdxSequencerOptions::default().playback.loop_count, Some(1));
     let mut default_options =
         MdxSequencer::with_options(package, 44_100, 256, MdxSequencerOptions::default()).unwrap();
-    while default_options.position_frames() <= once.len() {
-        assert!(default_options.render().unwrap().is_some());
-    }
+    assert_eq!(render_mdx(&mut default_options), once);
 }
 
 #[test]
@@ -284,7 +283,6 @@ fn invalid_inputs_limits_and_playback_errors_are_reported() {
     };
     assert!(MdxSequencer::with_options(fm_package(), 48_000, 128, options).is_err());
     let options = MdxSequencerOptions {
-        loop_count: Some(1),
         max_ticks: Some(1),
         ..Default::default()
     };

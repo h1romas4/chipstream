@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use chipstream::chip::{ChipError, ChipRegisterWrite, SoundChip};
+use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, SoundChipState};
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, Instance, MdxSequencer, VgmSequencer, VgmSequencerError,
 };
@@ -100,6 +100,9 @@ struct FakeChip {
     channels: usize,
     writes: Arc<Mutex<Vec<Chip>>>,
     dac_notifications: Option<(Instance, Arc<Mutex<Vec<(Instance, bool)>>>)>,
+    scheduled_checkpoint: Option<bool>,
+    stop_dac: bool,
+    schedule_trace: Option<(Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>)>,
 }
 
 impl FakeChip {
@@ -117,6 +120,9 @@ impl FakeChip {
             channels,
             writes,
             dac_notifications: None,
+            scheduled_checkpoint: None,
+            stop_dac: false,
+            schedule_trace: None,
         }
     }
 }
@@ -153,6 +159,61 @@ impl SoundChip for FakeChip {
         Ok(())
     }
 
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        if self.dac_notifications.is_some()
+            || self.scheduled_checkpoint.is_some()
+            || self.schedule_trace.is_some()
+        {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+
+    fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
+        Ok(Box::new(0_u8))
+    }
+
+    fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
+        if state.as_any().is::<u8>() {
+            Ok(())
+        } else {
+            Err(ChipError::InvalidStateSnapshot(self.chip.clone()))
+        }
+    }
+}
+
+impl ScheduledChip for FakeChip {
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        if let Some((instance, trace)) = &self.schedule_trace {
+            trace.lock().unwrap().push(("prepare", *instance, 0));
+        }
+        Ok(())
+    }
+
+    fn flush_scheduled_until(&mut self, frame: usize, _rate: u32) -> Result<(), ChipError> {
+        if let Some((instance, trace)) = &self.schedule_trace {
+            trace.lock().unwrap().push(("flush", *instance, frame));
+        }
+        Ok(())
+    }
+
+    fn supports_checkpoint(&self) -> bool {
+        self.scheduled_checkpoint.unwrap_or(false)
+    }
+
+    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
+        self.stop_dac
+            && matches!(write, ChipRegisterWrite::Okim6258(spec) if spec.register == 0 && spec.value & 1 != 0)
+    }
+
     fn set_dac_stream_playing_at(
         &mut self,
         playing: bool,
@@ -164,13 +225,80 @@ impl SoundChip for FakeChip {
         }
         Ok(())
     }
+}
 
-    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        samples.fill(0);
-        Ok(())
+#[test]
+fn scheduled_voices_prepare_before_shared_flush() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Ym2151, instance, 4_000_000);
     }
+    builder.add_vgm_command(WaitSamples(200));
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&trace);
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::Ym2151, move |config| {
+        let mut chip = FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        chip.schedule_trace = Some((config.instance(), Arc::clone(&captured)));
+        Ok(Box::new(chip))
+    });
+    let mut player =
+        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    assert!(player.render().unwrap().is_some());
+    let trace = trace.lock().unwrap();
+    assert_eq!(trace.len(), 4);
+    assert!(trace[..2].iter().all(|(event, _, _)| *event == "prepare"));
+    assert!(
+        trace[2..]
+            .iter()
+            .all(|(event, _, frame)| *event == "flush" && *frame == 64)
+    );
+    assert_ne!(trace[0].1, trace[1].1);
+    assert_ne!(trace[2].1, trace[3].1);
+}
 
-    fn reset(&mut self) {}
+#[test]
+fn scheduled_checkpoint_requires_explicit_support_and_replayable_dac_state() {
+    for (supported, stops_dac, expected) in [
+        (false, false, false),
+        (true, false, true),
+        (true, true, false),
+    ] {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
+        builder.add_vgm_command(WaitSamples(200));
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Okim6258, move |config| {
+            let mut chip = FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            chip.scheduled_checkpoint = Some(supported);
+            chip.stop_dac = stops_dac;
+            Ok(Box::new(chip))
+        });
+        let mut player =
+            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+        let checkpoint = player.checkpoint();
+        if expected {
+            let checkpoint = checkpoint.unwrap();
+            assert!(player.render().unwrap().is_some());
+            player.restore_checkpoint(&checkpoint).unwrap();
+            assert_eq!(player.position_frames(), 0);
+        } else {
+            assert!(matches!(
+                checkpoint,
+                Err(VgmSequencerError::Chip(
+                    ChipError::UnsupportedStateSnapshot(Chip::Okim6258)
+                ))
+            ));
+        }
+    }
 }
 
 #[test]

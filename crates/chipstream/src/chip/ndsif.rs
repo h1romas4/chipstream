@@ -14,7 +14,7 @@ use soundlog::chip::{Chip, Okim6258Spec};
 use soundlog::vgm::command::Instance;
 
 use crate::{
-    chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip},
+    chip::{ChipError, ChipRegisterWrite, SampleRate, ScheduledChip, SoundChip},
     sequencer::{ChipFactoryConfig, ChipFactoryRegistry},
 };
 
@@ -371,6 +371,25 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
         self.schedule_write(write, 0, self.output_rate, false)
     }
 
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        Some(self)
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        if !samples.len().is_multiple_of(self.channels) {
+            return Err(ChipError::InvalidBufferLength {
+                length: samples.len(),
+                channels: self.channels,
+            });
+        }
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -427,19 +446,6 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
             .finish_dac_stream(sample_frame, output_rate)
             .map_err(|error| external_error(&self.chip, error))
     }
-
-    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        if !samples.len().is_multiple_of(self.channels) {
-            return Err(ChipError::InvalidBufferLength {
-                length: samples.len(),
-                channels: self.channels,
-            });
-        }
-        samples.fill(0);
-        Ok(())
-    }
-
-    fn reset(&mut self) {}
 }
 
 /// NDSIF-backed SN76489 replacement that emits silence to the host PCM path.
@@ -587,6 +593,25 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
         self.schedule_write(write, 0, self.output_rate, false)
     }
 
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        Some(self)
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        if !samples.len().is_multiple_of(2) {
+            return Err(ChipError::InvalidBufferLength {
+                length: samples.len(),
+                channels: 2,
+            });
+        }
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -632,19 +657,6 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
             .flush_scheduled_until(sample_frame, output_rate)
             .map_err(|error| external_error(&Chip::Sn76489, error))
     }
-
-    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        if !samples.len().is_multiple_of(2) {
-            return Err(ChipError::InvalidBufferLength {
-                length: samples.len(),
-                channels: 2,
-            });
-        }
-        samples.fill(0);
-        Ok(())
-    }
-
-    fn reset(&mut self) {}
 }
 
 /// NDSIF-backed OKIM6258 replacement.
@@ -1040,6 +1052,19 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         self.schedule_write(write, 0, self.output_rate)
     }
 
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        Some(self)
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -1134,13 +1159,6 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         self.stream_finished = true;
         Ok(())
     }
-
-    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        samples.fill(0);
-        Ok(())
-    }
-
-    fn reset(&mut self) {}
 }
 
 /// Register an NDSIF OKIM6258 replacement factory.

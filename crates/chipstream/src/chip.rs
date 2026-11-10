@@ -175,89 +175,9 @@ pub trait SoundChip {
     /// changing state.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError>;
 
-    /// Apply a typed write at an absolute output-frame position.
-    ///
-    /// The frame position uses `output_rate` frames per second. Ordinary
-    /// emulators can use the default implementation; scheduled external
-    /// backends can override it to enqueue writes at the corresponding time.
-    fn apply_register_write_at(
-        &mut self,
-        write: ChipRegisterWrite,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), ChipError> {
-        self.apply_register_write(write)
-    }
-
-    /// Whether this backend requests VGM writes preceding the first positive wait
-    /// without the sequencer's normal write pacing.
-    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
-        Ok(false)
-    }
-
-    /// Apply a VGM write that precedes the first positive source wait.
-    fn apply_vgm_initial_write(
-        &mut self,
-        write: ChipRegisterWrite,
-        sample_frame: usize,
-        output_rate: u32,
-    ) -> Result<(), ChipError> {
-        self.apply_register_write_at(write, sample_frame, output_rate)
-    }
-
-    /// Mark the end of VGM initialization when the first positive wait begins.
-    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
-        Ok(())
-    }
-
-    /// Notify a backend of a DAC stream starting or stopping at an output frame.
-    ///
-    /// Ordinary chip emulators can ignore this notification; their playback
-    /// state is controlled by register writes.
-    fn set_dac_stream_playing_at(
-        &mut self,
-        _playing: bool,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), ChipError> {
-        Ok(())
-    }
-
-    /// Whether this applied OKIM6258 control write must stop its DAC streams.
-    ///
-    /// This is intended for backends whose source-playback model stops a DAC
-    /// stream when the chip receives STOP. Ordinary emulators return `false`.
-    /// Sequencer checkpoints are unavailable for backends that return `true`
-    /// for an OKIM6258 STOP write.
-    fn stops_dac_stream_on_write(&self, _write: &ChipRegisterWrite) -> bool {
-        false
-    }
-
-    /// Prepare this voice's scheduled events before any shared transport is flushed.
-    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
-        Ok(())
-    }
-
-    /// Commit scheduled external events through an absolute output frame.
-    ///
-    /// Sequencers call this after all chip voices have rendered a block, so
-    /// transports can order events from different voices before committing
-    /// them to a device.
-    fn flush_scheduled_until(
-        &mut self,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), ChipError> {
-        Ok(())
-    }
-
-    /// Finish a scheduled external stream at an absolute output frame.
-    fn finish_scheduled(
-        &mut self,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), ChipError> {
-        Ok(())
+    /// Optional timed-output extension for external or scheduled backends.
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        None
     }
 
     /// Write a contiguous portion of a chip's sample ROM.
@@ -296,6 +216,85 @@ pub trait SoundChip {
         Err(ChipError::UnsupportedStateSnapshot(
             self.chip_type().clone(),
         ))
+    }
+}
+
+/// Timed output and lifecycle operations for scheduled chip backends.
+///
+/// Frame positions are absolute and use the supplied output rate. Sequencers
+/// prepare every voice before flushing any shared transport. Implementations
+/// must not claim checkpoint support unless their scheduled state can be
+/// restored consistently with [`SoundChip::save_state`].
+pub trait ScheduledChip: SoundChip {
+    /// Apply a write at an output-frame position.
+    fn apply_register_write_at(
+        &mut self,
+        write: ChipRegisterWrite,
+        _frame: usize,
+        _rate: u32,
+    ) -> Result<(), ChipError> {
+        self.apply_register_write(write)
+    }
+
+    /// Whether pre-wait VGM writes use the initialization path.
+    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
+        Ok(false)
+    }
+
+    /// Apply a VGM write before the first positive wait.
+    fn apply_vgm_initial_write(
+        &mut self,
+        write: ChipRegisterWrite,
+        frame: usize,
+        rate: u32,
+    ) -> Result<(), ChipError> {
+        self.apply_register_write_at(write, frame, rate)
+    }
+
+    /// Finish the initial VGM writes before advancing time.
+    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Notify the backend of DAC stream playback state at an output frame.
+    fn set_dac_stream_playing_at(
+        &mut self,
+        _playing: bool,
+        _frame: usize,
+        _rate: u32,
+    ) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Whether an applied write stops DAC streams targeting this chip.
+    ///
+    /// Returning true for an OKIM6258 stop write prevents checkpointing,
+    /// because stream reconstruction does not replay this external effect.
+    fn stops_dac_stream_on_write(&self, _write: &ChipRegisterWrite) -> bool {
+        false
+    }
+
+    /// Whether scheduled state can be restored by a sequencer checkpoint.
+    ///
+    /// Defaults to false; `save_state` and `restore_state` must also support
+    /// the backend. A DAC-interrupting backend cannot currently opt in.
+    fn supports_checkpoint(&self) -> bool {
+        false
+    }
+
+    /// Prepare this voice before any shared transport is flushed.
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Commit scheduled events through an output frame.
+    fn flush_scheduled_until(&mut self, _frame: usize, _rate: u32) -> Result<(), ChipError> {
+        Ok(())
+    }
+
+    /// Finish scheduled output at an output frame.
+    fn finish_scheduled(&mut self, _frame: usize, _rate: u32) -> Result<(), ChipError> {
+        Ok(())
     }
 }
 
@@ -378,59 +377,8 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         (**self).apply_register_write(write)
     }
 
-    fn apply_register_write_at(
-        &mut self,
-        write: ChipRegisterWrite,
-        sample_frame: usize,
-        output_rate: u32,
-    ) -> Result<(), ChipError> {
-        (**self).apply_register_write_at(write, sample_frame, output_rate)
-    }
-
-    fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
-        (**self).wants_vgm_initialization()
-    }
-
-    fn apply_vgm_initial_write(
-        &mut self,
-        write: ChipRegisterWrite,
-        sample_frame: usize,
-        output_rate: u32,
-    ) -> Result<(), ChipError> {
-        (**self).apply_vgm_initial_write(write, sample_frame, output_rate)
-    }
-
-    fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
-        (**self).finish_vgm_initialization()
-    }
-
-    fn set_dac_stream_playing_at(
-        &mut self,
-        playing: bool,
-        sample_frame: usize,
-        output_rate: u32,
-    ) -> Result<(), ChipError> {
-        (**self).set_dac_stream_playing_at(playing, sample_frame, output_rate)
-    }
-
-    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
-        (**self).stops_dac_stream_on_write(write)
-    }
-
-    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
-        (**self).prepare_scheduled()
-    }
-
-    fn flush_scheduled_until(
-        &mut self,
-        sample_frame: usize,
-        output_rate: u32,
-    ) -> Result<(), ChipError> {
-        (**self).flush_scheduled_until(sample_frame, output_rate)
-    }
-
-    fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
-        (**self).finish_scheduled(sample_frame, output_rate)
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        (**self).scheduled()
     }
 
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {

@@ -30,8 +30,8 @@ use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions,
-    VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
-    measure_vgm_duration_frames,
+    PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
+    measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
 use ndsif_transport::{
     NdsifHardwareWorkers, NdsifHostTimeline, NdsifNd7Policy, NdsifRecorder, NdsifSerialTransport,
@@ -1436,6 +1436,12 @@ fn load_sequencer_with_factories(
     if settings.ay8910_ym2149 {
         register_ay_ym2149(&mut factories);
     }
+    let playback = PlaybackOptions {
+        loop_count: (settings.play_count > 0).then_some(settings.play_count),
+        fadeout: settings.fadeout_samples.map(|samples| {
+            Duration::from_secs_f64(f64::from(samples) / f64::from(FADEOUT_REFERENCE_RATE))
+        }),
+    };
     let bytes = read_path(path, MAX_FILE_BYTES)?;
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("mdx") => {
@@ -1457,26 +1463,22 @@ fn load_sequencer_with_factories(
             let package = MdxPackage::parse_owned(normalized.into_owned(), pdx)
                 .map_err(|error| format!("failed to parse MDX/PDX package: {error}"))?;
             let mut options = MdxSequencerOptions {
-                loop_count: (settings.play_count > 0).then_some(settings.play_count),
+                playback,
                 ..MdxSequencerOptions::default()
             };
             if settings.play_count == 0 {
                 options.max_ticks = None;
             }
-            let duration_frames = measure_mdx_duration_frames(
-                package.clone(),
-                settings.sample_rate,
-                options,
-                settings.fadeout_samples,
-            )
-            .map_err(|error| format!("failed to measure MDX duration: {error}"))?
-            .map(u64::from);
-            let player = MdxSequencer::with_options_and_fadeout_with_factories(
+            let duration_frames =
+                measure_mdx_duration_frames(package.clone(), settings.sample_rate, options)
+                    .map_err(|error| format!("failed to measure MDX duration: {error}"))?
+                    .finite_frames()
+                    .map(u64::from);
+            let player = MdxSequencer::with_options_with_factories(
                 package,
                 settings.sample_rate,
                 settings.chunk_frames,
                 options,
-                settings.fadeout_samples,
                 factories,
             )
             .map_err(|error| format!("failed to create MDX sequencer: {error}"))?;
@@ -1494,15 +1496,11 @@ fn load_sequencer_with_factories(
                 bytes,
                 extension.eq_ignore_ascii_case("vgz") || extension.eq_ignore_ascii_case("gz"),
             )?;
-            let play_count = (settings.play_count > 0).then_some(settings.play_count);
-            let duration_frames = measure_vgm_duration_frames(
-                &bytes,
-                settings.sample_rate,
-                play_count,
-                settings.fadeout_samples,
-            )
-            .map_err(|error| format!("failed to measure VGM duration: {error}"))?
-            .map(u64::from);
+            let duration_frames =
+                measure_vgm_duration_frames(&bytes, settings.sample_rate, playback)
+                    .map_err(|error| format!("failed to measure VGM duration: {error}"))?
+                    .finite_frames()
+                    .map(u64::from);
             let (metadata, warning) = match probe_vgm_bytes(&bytes) {
                 Ok(metadata) => (metadata, None),
                 Err(error @ MetadataError::InvalidGd3(_)) => {
@@ -1523,9 +1521,8 @@ fn load_sequencer_with_factories(
             player
                 .set_pwm_compatibility(true)
                 .map_err(|error| format!("failed to configure VGM playback: {error}"))?;
-            player.set_loop_count(play_count);
             player
-                .set_fadeout_samples(settings.fadeout_samples)
+                .set_playback_options(playback)
                 .map_err(|error| format!("failed to configure VGM playback: {error}"))?;
             Ok((Sequencer::Vgm(player), metadata, warning, duration_frames))
         }
@@ -2746,7 +2743,7 @@ mod tests {
             VgmSequencer::from_vgm(data.to_vec(), settings.sample_rate, settings.chunk_frames)
                 .unwrap();
         expected_player.set_loop_count(Some(settings.play_count));
-        expected_player.set_fadeout_samples(None).unwrap();
+        expected_player.set_fadeout(None).unwrap();
         let mut expected = Vec::new();
         while let Some(block) = expected_player.render().unwrap() {
             expected.extend_from_slice(block.frames());
@@ -2758,7 +2755,7 @@ mod tests {
         );
         if let Sequencer::Vgm(player) = &mut player {
             player.set_loop_count(Some(settings.play_count));
-            player.set_fadeout_samples(None).unwrap();
+            player.set_fadeout(None).unwrap();
         }
         let mut checkpoints = VecDeque::new();
         capture_checkpoint(&mut player, &mut checkpoints).unwrap();
@@ -2841,8 +2838,9 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../soundlog/assets/vgm/sn76489_a4.vgm");
         let data = fs::read(&path).unwrap();
         let expected_frames =
-            measure_vgm_duration_frames(&data, DEFAULT_SAMPLE_RATE, Some(1), None)
+            measure_vgm_duration_frames(&data, DEFAULT_SAMPLE_RATE, PlaybackOptions::default())
                 .unwrap()
+                .finite_frames()
                 .unwrap();
         let expected = checked_frame_time(u64::from(expected_frames), DEFAULT_SAMPLE_RATE).unwrap();
         let source = glib::Object::builder::<ChipstreamSrc>()

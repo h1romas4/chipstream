@@ -11,7 +11,7 @@ use soundlog::mdx::header::MdxHeader;
 use soundlog::meta::Gd3;
 use soundlog::vgm::header::VgmHeader;
 
-const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Standard metadata tags available from a VGM/VGZ or MDX file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub enum MetadataError {
     /// The input exceeds the metadata probe's byte limit.
     InputTooLarge {
         /// Maximum input size in bytes.
-        limit: u64,
+        limit: usize,
     },
 }
 
@@ -123,8 +123,8 @@ pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
 }
 
 /// Enforce the input-size limit before parsing metadata.
-fn check_size(bytes: &[u8], limit: u64) -> Result<(), MetadataError> {
-    if bytes.len() as u64 > limit {
+fn check_size(bytes: &[u8], limit: usize) -> Result<(), MetadataError> {
+    if bytes.len() > limit {
         return Err(MetadataError::InputTooLarge { limit });
     }
     Ok(())
@@ -150,9 +150,18 @@ mod tests {
     use soundlog::vgm::VgmBuilder;
 
     use super::{
-        TrackMetadata, VgmMetadataLanguage, probe_mdx_bytes, probe_vgm_bytes,
-        probe_vgm_bytes_with_language,
+        MetadataError, TrackMetadata, VgmMetadataLanguage, check_size, probe_mdx_bytes,
+        probe_vgm_bytes, probe_vgm_bytes_with_language,
     };
+
+    #[test]
+    fn input_size_limit_includes_the_boundary() {
+        assert!(check_size(&[0; 4], 4).is_ok());
+        assert!(matches!(
+            check_size(&[0; 5], 4),
+            Err(MetadataError::InputTooLarge { limit: 4 })
+        ));
+    }
 
     #[test]
     fn vgm_probe_prefers_english_tags_and_falls_back_to_original() {

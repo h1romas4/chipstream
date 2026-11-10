@@ -98,7 +98,9 @@ fn callback_timing_is_chunk_invariant_across_loops_and_fadeout() {
     let mut large = VgmSequencer::new(document(), 44_100, 512).unwrap();
     for player in [&mut small, &mut large] {
         player.set_loop_count(Some(2));
-        player.set_fadeout_samples(Some(150)).unwrap();
+        player
+            .set_fadeout(Some(std::time::Duration::from_secs_f64(150.0 / 44_100.0)))
+            .unwrap();
         player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
         player.track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0);
     }

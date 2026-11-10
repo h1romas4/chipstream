@@ -39,13 +39,15 @@ mod duration;
 mod event;
 mod factory;
 mod mdx;
+mod options;
 mod vgm;
 mod volume;
 
-pub use duration::{measure_mdx_duration_frames, measure_vgm_duration_frames};
+pub use duration::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
 pub use factory::{ChipFactoryConfig, ChipFactoryRegistry};
 pub use mdx::{MdxSequencer, MdxSequencerError, MdxSequencerOptions};
+pub use options::PlaybackOptions;
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;

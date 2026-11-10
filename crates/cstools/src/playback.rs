@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer,
-    VgmSequencerError,
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, PlaybackOptions,
+    VgmSequencer, VgmSequencerError,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -112,6 +112,12 @@ fn ym2149_clock_divider(header: &VgmHeader) -> Result<bool, ChipError> {
 impl Player {
     pub(super) fn new(input: Input, rate: u32, options: &Options) -> Result<Self> {
         options.validate(&input)?;
+        let playback = PlaybackOptions {
+            loop_count: options.loop_count,
+            fadeout: options
+                .fadeout_samples
+                .map(|samples| Duration::from_secs_f64(f64::from(samples) / 44_100.0)),
+        };
         Ok(match input {
             Input::Vgm(data) => {
                 let mut factories = ChipFactoryRegistry::new();
@@ -144,8 +150,7 @@ impl Player {
                     }
                 }
                 sequencer.set_pwm_compatibility(options.compat_vgm_pwm.unwrap_or(true))?;
-                sequencer.set_loop_count(options.loop_count);
-                sequencer.set_fadeout_samples(options.fadeout_samples)?;
+                sequencer.set_playback_options(playback)?;
                 if let Some(modifier) = options.loop_modifier {
                     sequencer.set_loop_modifier(modifier);
                 }
@@ -156,19 +161,13 @@ impl Player {
             }
             Input::Mdx(package) => {
                 let settings = MdxSequencerOptions {
-                    loop_count: options.loop_count,
+                    playback,
                     max_ticks: None,
                     ..MdxSequencerOptions::default()
                 };
                 Self::Mdx(
-                    MdxSequencer::with_options_and_fadeout(
-                        *package,
-                        rate,
-                        CHUNK_FRAMES,
-                        settings,
-                        options.fadeout_samples,
-                    )
-                    .context("failed to create MDX sequencer")?,
+                    MdxSequencer::with_options(*package, rate, CHUNK_FRAMES, settings)
+                        .context("failed to create MDX sequencer")?,
                 )
             }
         })
@@ -1514,7 +1513,10 @@ mod playback_tests {
             48_000,
             CHUNK_FRAMES,
             MdxSequencerOptions {
-                loop_count: Some(2),
+                playback: PlaybackOptions {
+                    loop_count: Some(2),
+                    fadeout: None,
+                },
                 max_ticks: None,
                 ..Default::default()
             },
@@ -1857,7 +1859,9 @@ mod playback_tests {
             for chunk in [1, 73, 1024, 4096] {
                 let mut player = VgmSequencer::from_vgm(data.clone(), 48_000, chunk).unwrap();
                 player.set_loop_count(Some(2));
-                player.set_fadeout_samples(Some(2111)).unwrap();
+                player
+                    .set_fadeout(Some(Duration::from_secs_f64(2111.0 / 44_100.0)))
+                    .unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());
@@ -1879,7 +1883,9 @@ mod playback_tests {
         fn short_fades_end_at_silence() {
             for samples in [1, 2] {
                 let mut player = VgmSequencer::from_vgm(fade_vgm(true), 48_000, 73).unwrap();
-                player.set_fadeout_samples(Some(samples)).unwrap();
+                player
+                    .set_fadeout(Some(Duration::from_secs_f64(f64::from(samples) / 44_100.0)))
+                    .unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());
@@ -1924,20 +1930,17 @@ mod playback_tests {
             let pdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
             let package = MdxPackage::parse(mdx, Some(pdx)).unwrap();
             let settings = MdxSequencerOptions {
-                loop_count: Some(2),
+                playback: PlaybackOptions {
+                    loop_count: Some(2),
+                    fadeout: Some(Duration::from_secs_f64(2111.0 / 44_100.0)),
+                },
                 max_ticks: None,
                 ..Default::default()
             };
             let mut reference = None;
             for chunk in [1, 73, 1024, 4096] {
-                let mut player = MdxSequencer::with_options_and_fadeout(
-                    package.clone(),
-                    48_000,
-                    chunk,
-                    settings,
-                    Some(2111),
-                )
-                .unwrap();
+                let mut player =
+                    MdxSequencer::with_options(package.clone(), 48_000, chunk, settings).unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());

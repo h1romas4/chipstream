@@ -6,7 +6,8 @@ use std::fmt;
 
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::convert::{
-    MdxConvertError, to_vgm_stream_generator, to_vgm_stream_generator_with_loop_marker,
+    AdpcmMode, MdxConvertError, MdxToVgmOptions, to_vgm_stream_generator,
+    to_vgm_stream_generator_with_loop_marker,
 };
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmStream;
@@ -16,12 +17,62 @@ use crate::audio::StereoBlock;
 use super::factory::ChipFactoryRegistry;
 use super::vgm::StreamFactory;
 use super::{
-    Chip, Instance, StateEvent, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
-    VgmStateTracker, VgmWriteCallbackTarget,
+    Chip, Instance, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerCheckpoint,
+    VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
 };
 
-/// Playback options for the incremental MDX driver.
-pub use soundlog::mdx::convert::MdxToVgmOptions as MdxSequencerOptions;
+/// Playback and driver options for the incremental MDX sequencer.
+///
+/// Defaults play one traversal with no fade. Conversion to soundlog's
+/// `MdxToVgmOptions` transfers driver settings and loop count, but not the
+/// sequencer's audio fade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MdxSequencerOptions {
+    /// Loop count and fade duration, shared with VGM playback.
+    pub playback: PlaybackOptions,
+    /// YM2151 master clock in Hz.
+    pub ym2151_clock: u32,
+    /// OKIM6258 master clock in Hz.
+    pub okim6258_clock: u32,
+    /// ADPCM processing mode.
+    pub adpcm_mode: AdpcmMode,
+    /// Maximum elapsed driver ticks; `None` disables the limit.
+    pub max_ticks: Option<u32>,
+    /// Maximum commands per tick; `None` disables the limit.
+    pub max_commands_per_tick: Option<u32>,
+    /// Maximum decoded PCM samples cached by the driver; `None` disables the limit.
+    pub max_decoded_pcm_samples: Option<u32>,
+}
+
+impl Default for MdxSequencerOptions {
+    fn default() -> Self {
+        let driver = MdxToVgmOptions::default();
+        Self {
+            playback: PlaybackOptions::default(),
+            ym2151_clock: driver.ym2151_clock,
+            okim6258_clock: driver.okim6258_clock,
+            adpcm_mode: driver.adpcm_mode,
+            max_ticks: driver.max_ticks,
+            max_commands_per_tick: driver.max_commands_per_tick,
+            max_decoded_pcm_samples: driver.max_decoded_pcm_samples,
+        }
+    }
+}
+
+impl From<MdxSequencerOptions> for MdxToVgmOptions {
+    fn from(options: MdxSequencerOptions) -> Self {
+        Self {
+            ym2151_clock: options.ym2151_clock,
+            okim6258_clock: options.okim6258_clock,
+            adpcm_mode: options.adpcm_mode,
+            loop_count: options.playback.loop_count,
+            max_ticks: options.max_ticks,
+            max_commands_per_tick: options.max_commands_per_tick,
+            max_decoded_pcm_samples: options.max_decoded_pcm_samples,
+            ..Self::default()
+        }
+    }
+}
 
 /// Failure to parse, initialize, or render an MDX package.
 #[derive(Debug)]
@@ -124,8 +175,7 @@ impl<'a> MdxSequencer<'a> {
 
     /// Play a parsed package once using the default playback limits.
     ///
-    /// Equivalent to [`Self::with_options`] with
-    /// `MdxSequencerOptions { loop_count: Some(1), ..Default::default() }`.
+    /// Equivalent to [`Self::with_options`] with default options.
     pub fn new(
         package: MdxPackage,
         output_rate: u32,
@@ -146,29 +196,26 @@ impl<'a> MdxSequencer<'a> {
         chunk_frames: usize,
         factories: ChipFactoryRegistry,
     ) -> Result<Self, MdxSequencerError> {
-        let options = MdxSequencerOptions {
-            loop_count: Some(1),
-            ..MdxSequencerOptions::default()
-        };
-        Self::with_options_and_fadeout_with_factories(
+        Self::with_options_with_factories(
             package,
             output_rate,
             chunk_frames,
-            options,
-            None,
+            MdxSequencerOptions::default(),
             factories,
         )
     }
 
     /// Play a parsed package with explicit driver options.
     ///
-    /// `loop_count` is applied by the MDX driver, not the VGM stream. Set
+    /// `playback.loop_count` is applied by the MDX driver, not the VGM stream. Set
     /// `max_ticks` to `None` for an indefinite loop without a time limit.
-    /// Unlike [`Self::new`], the default options use `loop_count: None`,
-    /// so a looped track repeats until a limit or another playback ending.
     /// `Some(n)` selects a finite number of traversals; `Some(0)` means one.
     /// For F1 loops, the intro and first traversal are followed by `n - 1`
     /// further traversals. Finite nested repeats are unaffected.
+    /// A configured fade begins at the selected loop boundary. Synchronized
+    /// F1 tracks use their shared boundary; other unbounded song loops use
+    /// their own boundaries. Embedded fades or natural endings can finish
+    /// playback earlier. The driver continues looping during the fade.
     ///
     /// The default tick limit is 100,000 (about 17 minutes at tempo t120).
     /// Command-per-tick and decoded-PCM limits are independently configurable.
@@ -195,52 +242,9 @@ impl<'a> MdxSequencer<'a> {
         options: MdxSequencerOptions,
         factories: ChipFactoryRegistry,
     ) -> Result<Self, MdxSequencerError> {
-        Self::with_options_and_fadeout_with_factories(
-            package,
-            output_rate,
-            chunk_frames,
-            options,
-            None,
-            factories,
-        )
-    }
-
-    /// Play with a linear fade after the selected MDX loop boundary.
-    ///
-    /// The duration uses 44,100 Hz samples. Zero disables the fade; infinite
-    /// playback and songs without a loop are unaffected. Embedded MDX
-    /// fadeouts may end playback earlier. Synchronized F1 tracks use their
-    /// shared boundary; an unbounded backward jump or count-zero repeat
-    /// starts the fade as soon as it reaches the configured count.
-    /// With other unbounded loops present, F1 tracks use independent track
-    /// limits. The driver continues an unbounded repeat during the fade rather
-    /// than playing the commands after it. Natural endings can finish earlier.
-    pub fn with_options_and_fadeout(
-        package: MdxPackage,
-        output_rate: u32,
-        chunk_frames: usize,
-        options: MdxSequencerOptions,
-        fadeout_samples: Option<u32>,
-    ) -> Result<Self, MdxSequencerError> {
-        Self::with_options_and_fadeout_with_factories(
-            package,
-            output_rate,
-            chunk_frames,
-            options,
-            fadeout_samples,
-            ChipFactoryRegistry::new(),
-        )
-    }
-
-    /// Play with a fadeout and external factories for selected chip types.
-    pub fn with_options_and_fadeout_with_factories(
-        package: MdxPackage,
-        output_rate: u32,
-        chunk_frames: usize,
-        options: MdxSequencerOptions,
-        fadeout_samples: Option<u32>,
-        factories: ChipFactoryRegistry,
-    ) -> Result<Self, MdxSequencerError> {
+        let fadeout_samples = super::options::fadeout_samples(options.playback.fadeout)
+            .map_err(MdxSequencerError::Playback)?;
+        let options: MdxToVgmOptions = options.into();
         if options.ym2151_clock == 0 || options.ym2151_clock > 0x3fff_ffff {
             return Err(MdxSequencerError::Conversion(
                 MdxConvertError::InvalidOptions("YM2151 clock must be in 1..=0x3fffffff Hz"),
