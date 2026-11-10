@@ -56,6 +56,10 @@ struct Args {
     #[arg(long, value_name = "BOOL")]
     compat_vgm_pwm: Option<bool>,
 
+    /// Approximate VGM AY8910 with YM2149 (default: true).
+    #[arg(long, value_name = "BOOL")]
+    ay8910_ym2149: Option<bool>,
+
     /// Do not display playback progress on standard output.
     #[arg(long)]
     no_progress: bool,
@@ -74,6 +78,7 @@ fn main() -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        ay8910_ym2149,
         no_progress,
     } = Args::parse();
     crate::play(PlayOptions {
@@ -88,6 +93,7 @@ fn main() -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        ay8910_ym2149,
         no_progress,
     })
 }
@@ -166,6 +172,32 @@ mod tests {
 
         let args = Args::try_parse_from(["csplay", "song.vgm", "--no-progress"]).unwrap();
         assert!(args.no_progress);
+    }
+
+    #[test]
+    fn ay8910_ym2149_option_accepts_explicit_booleans() {
+        for (arguments, expected) in [
+            (vec!["csplay", "song.vgm"], None),
+            (
+                vec!["csplay", "song.vgm", "--ay8910-ym2149", "true"],
+                Some(true),
+            ),
+            (
+                vec!["csplay", "song.vgm", "--ay8910-ym2149", "false"],
+                Some(false),
+            ),
+        ] {
+            assert_eq!(
+                Args::try_parse_from(arguments).unwrap().ay8910_ym2149,
+                expected
+            );
+        }
+        for arguments in [
+            vec!["csplay", "song.vgm", "--ay8910-ym2149"],
+            vec!["csplay", "song.vgm", "--ay8910-ym2149", "invalid"],
+        ] {
+            assert!(Args::try_parse_from(arguments).is_err());
+        }
     }
 
     #[test]

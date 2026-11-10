@@ -32,6 +32,8 @@ pub struct PlayOptions {
     pub loop_base: Option<i8>,
     /// Configure the VGM PWM workaround; `None` enables it by default.
     pub compat_vgm_pwm: Option<bool>,
+    /// Approximate VGM AY8910 with YM2149; `None` enables it by default.
+    pub ay8910_ym2149: Option<bool>,
     /// Suppress playback progress output for audio-device playback.
     pub no_progress: bool,
 }
@@ -50,6 +52,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        ay8910_ym2149,
         no_progress,
     } = options;
     if infinite && (output.is_some() || loop_count.is_some()) {
@@ -82,6 +85,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         loop_modifier,
         loop_base,
         compat_vgm_pwm,
+        ay8910_ym2149,
         ym2608_rhythm_rom,
     };
     match output {

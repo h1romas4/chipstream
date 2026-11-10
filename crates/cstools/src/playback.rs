@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use chipstream::audio::StereoBlock;
+use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
-    Chip, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer, VgmSequencerError,
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer,
+    VgmSequencerError,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -20,6 +22,7 @@ use soundlog::mdx::convert::{
     to_vgm_stream_generator_with_loop_marker,
 };
 use soundlog::vgm::command::VgmCommand;
+use soundlog::vgm::header::{Ay8910ChipType, VgmHeader};
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 use terminal_size::{Width, terminal_size};
 
@@ -37,6 +40,7 @@ pub struct Options {
     pub loop_modifier: Option<u8>,
     pub loop_base: Option<i8>,
     pub compat_vgm_pwm: Option<bool>,
+    pub ay8910_ym2149: Option<bool>,
     pub ym2608_rhythm_rom: Option<Vec<u8>>,
 }
 
@@ -80,13 +84,49 @@ pub(super) enum Player {
     Mdx(MdxSequencer<'static>),
 }
 
+fn ym2149_clock_divider(header: &VgmHeader) -> Result<bool, ChipError> {
+    let ym = matches!(
+        header.ay_chip_type,
+        Ay8910ChipType::Ym2149
+            | Ay8910ChipType::Ym3439
+            | Ay8910ChipType::Ymz284
+            | Ay8910ChipType::Ymz294
+    );
+    if (!ym
+        && !matches!(
+            header.ay_chip_type,
+            Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
+        ))
+        || header.ay8910_flags.discrete_output
+        || header.ay8910_flags.raw_output
+        || header.ay8910_flags.reserved != 0
+    {
+        return Err(ChipError::InvalidConfiguration {
+            chip: Chip::Ay8910,
+            reason: "YM2149 emulation does not support this AY variant or output flags",
+        });
+    }
+    Ok(ym && header.ay8910_flags.ym_pin26_low)
+}
+
 impl Player {
     pub(super) fn new(input: Input, rate: u32, options: &Options) -> Result<Self> {
         options.validate(&input)?;
         Ok(match input {
             Input::Vgm(data) => {
-                let mut sequencer = VgmSequencer::from_vgm(data, rate, CHUNK_FRAMES)
-                    .context("failed to create VGM sequencer")?;
+                let mut factories = ChipFactoryRegistry::new();
+                if options.ay8910_ym2149.unwrap_or(true) {
+                    factories.register(Chip::Ay8910, |config| {
+                        let divide_clock = ym2149_clock_divider(config.header())?;
+                        Ok(Box::new(YmfmChip::new_ym2149(
+                            config.clock(),
+                            divide_clock,
+                        )?))
+                    });
+                }
+                let mut sequencer =
+                    VgmSequencer::from_vgm_with_factories(data, rate, CHUNK_FRAMES, factories)
+                        .context("failed to create VGM sequencer")?;
                 if let Some(rom) = &options.ym2608_rhythm_rom {
                     sequencer
                         .set_ym2608_rhythm_rom(Instance::Primary, rom)
@@ -840,6 +880,31 @@ pub fn play(
 #[cfg(test)]
 mod playback_tests {
     use super::*;
+
+    #[test]
+    fn ym2149_adapter_validates_ay_types_flags_and_clock_divider() {
+        let bytes = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let mut header = soundlog::vgm::VgmDocument::try_from(bytes.as_slice())
+            .unwrap()
+            .header;
+        header.ay_chip_type = Ay8910ChipType::Ym2149;
+        assert_eq!(ym2149_clock_divider(&header).unwrap(), false);
+        header.ay8910_flags.ym_pin26_low = true;
+        assert_eq!(ym2149_clock_divider(&header).unwrap(), true);
+        header.ay_chip_type = Ay8910ChipType::Ay8910;
+        assert_eq!(ym2149_clock_divider(&header).unwrap(), false);
+        header.ay_chip_type = Ay8910ChipType::Ay8930;
+        assert!(ym2149_clock_divider(&header).is_err());
+        header.ay_chip_type = Ay8910ChipType::Ym2149;
+        header.ay8910_flags.discrete_output = true;
+        assert!(ym2149_clock_divider(&header).is_err());
+        header.ay8910_flags.discrete_output = false;
+        header.ay8910_flags.raw_output = true;
+        assert!(ym2149_clock_divider(&header).is_err());
+        header.ay8910_flags.raw_output = false;
+        header.ay8910_flags.reserved = 1;
+        assert!(ym2149_clock_divider(&header).is_err());
+    }
     use soundlog::mdx::package::MdxPackage;
     use soundlog::vgm::VgmBuilder;
     use soundlog::vgm::command::WaitSamples;
@@ -970,6 +1035,7 @@ mod playback_tests {
             loop_modifier: None,
             loop_base: None,
             compat_vgm_pwm: None,
+            ay8910_ym2149: None,
             ym2608_rhythm_rom: None,
         };
         let seek_target = AtomicU64::new(1100);
@@ -1003,6 +1069,7 @@ mod playback_tests {
             loop_modifier: None,
             loop_base: None,
             compat_vgm_pwm: None,
+            ay8910_ym2149: None,
             ym2608_rhythm_rom: None,
         };
         assert_eq!(count_samples(&data, &options).unwrap(), Some(90_300));
@@ -1021,6 +1088,7 @@ mod playback_tests {
             loop_modifier: None,
             loop_base: None,
             compat_vgm_pwm: None,
+            ay8910_ym2149: None,
             ym2608_rhythm_rom: None,
         };
         let data = Input::Mdx(Box::new(package));
@@ -1148,6 +1216,7 @@ mod playback_tests {
                 loop_modifier: None,
                 loop_base: None,
                 compat_vgm_pwm: None,
+                ay8910_ym2149: None,
                 ym2608_rhythm_rom: Some(rom.clone()),
                 fadeout_samples: None,
             };
@@ -1168,6 +1237,7 @@ mod playback_tests {
             loop_modifier: None,
             loop_base: None,
             compat_vgm_pwm: None,
+            ay8910_ym2149: None,
             ym2608_rhythm_rom: Some(rom),
             fadeout_samples: None,
         };
@@ -1218,6 +1288,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: Some(!disabled),
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1247,6 +1318,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1258,6 +1330,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1269,6 +1342,7 @@ mod playback_tests {
                     loop_modifier: Some(0x20),
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1280,6 +1354,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: Some(1),
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1312,6 +1387,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1343,6 +1419,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1370,6 +1447,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1389,6 +1467,7 @@ mod playback_tests {
             loop_modifier: None,
             loop_base: None,
             compat_vgm_pwm: None,
+            ay8910_ym2149: None,
             ym2608_rhythm_rom: None,
             fadeout_samples: None,
         };
@@ -1459,6 +1538,7 @@ mod playback_tests {
                     loop_modifier: None,
                     loop_base: None,
                     compat_vgm_pwm: None,
+                    ay8910_ym2149: None,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1489,6 +1569,7 @@ mod playback_tests {
                 loop_modifier: None,
                 loop_base: None,
                 compat_vgm_pwm: None,
+                ay8910_ym2149: None,
                 ym2608_rhythm_rom: None,
                 fadeout_samples: None,
             }

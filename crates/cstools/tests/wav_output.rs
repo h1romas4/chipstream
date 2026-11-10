@@ -6,6 +6,100 @@ fn cli() -> Command {
 }
 
 #[test]
+fn cli_renders_ay8910_using_ym2149() {
+    use chipstream::sequencer::{Chip, Instance};
+    use soundlog::chip::Ay8910Spec;
+    use soundlog::vgm::VgmBuilder;
+    use soundlog::vgm::command::WaitSamples;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("ay.vgm");
+    let mut builder = VgmBuilder::new();
+    builder.set_version(0x171);
+    builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+    for (register, value) in [(0, 255), (1, 0), (7, 0xfe), (8, 15)] {
+        builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(4410));
+    fs::write(&input, Vec::from(builder.finalize())).unwrap();
+    for (name, args, audible) in [
+        ("default", vec![], true),
+        ("enabled", vec!["--ay8910-ym2149", "true"], true),
+        ("disabled", vec!["--ay8910-ym2149", "false"], false),
+    ] {
+        let output = dir.path().join(format!("{name}.wav"));
+        let result = cli().arg(&input).arg(&output).args(args).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let has_audio = hound::WavReader::open(output)
+            .unwrap()
+            .samples::<i16>()
+            .any(|sample| sample.unwrap() != 0);
+        assert_eq!(has_audio, audible, "{name}");
+    }
+}
+
+#[test]
+fn cli_rejects_unsupported_ay_configuration_without_overwriting_output() {
+    use chipstream::sequencer::{Chip, Instance};
+    use soundlog::vgm::command::WaitSamples;
+    use soundlog::vgm::{VgmBuilder, VgmDocument};
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("unsupported.vgm");
+    let output = dir.path().join("output.wav");
+    let mut builder = VgmBuilder::new();
+    builder.set_version(0x171);
+    builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+    builder.add_vgm_command(WaitSamples(100));
+    let bytes = Vec::<u8>::from(builder.finalize());
+    let mut document = VgmDocument::try_from(bytes.as_slice()).unwrap();
+    document.header.ay8910_flags.raw_output = true;
+    fs::write(&input, Vec::from(document)).unwrap();
+    fs::write(&output, b"existing").unwrap();
+    let result = cli().arg(&input).arg(&output).output().unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("YM2149 emulation does not support"));
+    assert_eq!(fs::read(output).unwrap(), b"existing");
+}
+
+#[test]
+fn cli_renders_secondary_ay8910() {
+    use chipstream::sequencer::{Chip, Instance};
+    use soundlog::chip::Ay8910Spec;
+    use soundlog::vgm::VgmBuilder;
+    use soundlog::vgm::command::WaitSamples;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("dual.vgm");
+    let output = dir.path().join("dual.wav");
+    let mut builder = VgmBuilder::new();
+    builder.set_version(0x171);
+    builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+    builder.register_chip(Chip::Ay8910, Instance::Secondary, 1_792_000);
+    for (register, value) in [(0, 255), (1, 0), (7, 0xfe), (8, 15)] {
+        builder.add_chip_write(Instance::Secondary, Ay8910Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(4410));
+    fs::write(&input, Vec::from(builder.finalize())).unwrap();
+    let result = cli().arg(input).arg(&output).output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        hound::WavReader::open(output)
+            .unwrap()
+            .samples::<i16>()
+            .any(|sample| sample.unwrap() != 0)
+    );
+}
+
+#[test]
 fn cli_renders_mml_like_compiled_mdx() {
     let dir = tempfile::tempdir().unwrap();
     let mml = dir.path().join("song.MML");
@@ -365,6 +459,7 @@ fn library_rejects_conflicting_infinite_options() {
         loop_modifier: None,
         loop_base: None,
         compat_vgm_pwm: None,
+        ay8910_ym2149: None,
         no_progress: false,
     };
     assert!(
@@ -430,6 +525,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         loop_modifier: None,
         loop_base: None,
         compat_vgm_pwm: None,
+        ay8910_ym2149: None,
         no_progress: false,
     })
     .unwrap();

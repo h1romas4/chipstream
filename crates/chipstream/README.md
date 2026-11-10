@@ -197,19 +197,6 @@ To opt into YM2149 approximation, register a factory using
 must interpret and validate the VGM AY type and flags. The three YM2149 outputs
 are mixed as AY channels, including VGM per-channel stereo masks.
 
-For a complete [example](examples/ym2151_ym2149.rs) that renders a
-YM2151 + AY8910 VGM or VGZ to a 44.1 kHz, 16-bit stereo WAV using YM2151
-and YM2149, run:
-
-```sh
-cargo run -p chipstream --example ym2151_ym2149 -- song.vgz output.wav
-```
-
-The example renders one playthrough, approximates AY with YM2149, rejects
-unsupported AY variants and output flags, and does not overwrite existing
-files. Samples outside the 16-bit range are clipped. It uses `flate2` and
-`hound` as example-only development dependencies.
-
 YMFM-backed chip types can be replaced individually:
 
 | Chip type | Native outputs per frame |

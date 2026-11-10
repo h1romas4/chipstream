@@ -1068,8 +1068,6 @@ dependencies = [
 name = "chipstream"
 version = "0.1.0"
 dependencies = [
- "flate2",
- "hound",
  "ndsif",
  "soundlog",
  "ymfm-sys",
