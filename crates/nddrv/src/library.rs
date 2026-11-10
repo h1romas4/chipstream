@@ -405,10 +405,11 @@ pub enum MetadataLanguage {
     Original,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralSettings {
     pub vgm_metadata_language: MetadataLanguage,
+    pub ym2608_rhythm_rom: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1761,6 +1762,7 @@ mod tests {
             audio_sample_rate: Some(44_100),
             general: GeneralSettings {
                 vgm_metadata_language: MetadataLanguage::Original,
+                ym2608_rhythm_rom: Some(dir.path().join("rhythm.rom")),
             },
             vgm: VgmSettings {
                 ay8910_ym2149: true,

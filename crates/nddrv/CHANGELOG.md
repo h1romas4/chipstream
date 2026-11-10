@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Allow selecting a preferred YM2608 rhythm ROM in General settings.
 - Add a macOS application menu and Command+Q shortcut to quit, even after the
   window is closed.
 - Restore Music search text and tags on startup.

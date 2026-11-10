@@ -154,7 +154,12 @@ physical chip types.
   decompressed VGZ data are limited to 64 MiB.
 - **MDX:** A matching PDX sample bank is required when the MDX names one.
 - **YM2608 rhythm instruments:** Playback can use the optional
-  `ym2608_adpcm_rom.bin`, which is not included with the application.
+  rhythm ROM, which is not included with the application. Select a file in
+  **Settings > General > YM2608 rhythm ROM**; it takes priority and changes
+  apply to the next track. Clear the selection to search for
+  `ym2608_adpcm_rom.bin` beside the track, then in the working directory.
+  A selected missing, unreadable or empty file is reported as an error rather
+  than falling back. The ROM is used only for software YM2608 instances.
 
 Chip support depends on the file and available software emulation or connected
 hardware. Playback errors are shown in the application.

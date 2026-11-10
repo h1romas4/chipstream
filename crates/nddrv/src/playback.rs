@@ -57,6 +57,7 @@ pub struct Playback {
     control: Arc<PlaybackControl>,
     settings: PlaybackSettings,
     vgm_settings: VgmSettings,
+    ym2608_rhythm_rom: Option<PathBuf>,
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
     recording: Option<RecordingSettings>,
@@ -144,6 +145,7 @@ struct GainState {
 struct PlaybackControl {
     settings: PlaybackSettings,
     vgm_settings: VgmSettings,
+    ym2608_rhythm_rom: Option<PathBuf>,
     audio_output_device: Option<String>,
     audio_sample_rate: Option<u32>,
     cancel: AtomicBool,
@@ -174,6 +176,7 @@ impl PlaybackControl {
         Self {
             settings: PlaybackSettings::default(),
             vgm_settings: VgmSettings::default(),
+            ym2608_rhythm_rom: None,
             audio_output_device: None,
             audio_sample_rate: None,
             cancel: AtomicBool::new(false),
@@ -284,6 +287,7 @@ impl Playback {
             control: Arc::new(PlaybackControl::with_gains(volume.clone(), gains.clone())),
             settings: PlaybackSettings::default(),
             vgm_settings: VgmSettings::default(),
+            ym2608_rhythm_rom: None,
             audio_output_device: None,
             audio_sample_rate: None,
             recording: None,
@@ -307,6 +311,10 @@ impl Playback {
 
     pub fn set_vgm_settings(&mut self, settings: VgmSettings) {
         self.vgm_settings = settings;
+    }
+
+    pub fn set_ym2608_rhythm_rom(&mut self, path: Option<PathBuf>) {
+        self.ym2608_rhythm_rom = path;
     }
 
     pub fn active_vgm_settings(&self) -> VgmSettings {
@@ -350,6 +358,7 @@ impl Playback {
         let mut control = PlaybackControl::with_gains(self.volume.clone(), self.gains.clone());
         control.settings = self.settings;
         control.vgm_settings = self.vgm_settings;
+        control.ym2608_rhythm_rom = self.ym2608_rhythm_rom.clone();
         control.audio_output_device = self.audio_output_device.clone();
         control.audio_sample_rate = self.audio_sample_rate;
         self.control = Arc::new(control);
@@ -610,6 +619,11 @@ impl Drop for Playback {
 enum Sequencer {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+}
+
+struct RhythmRomPaths<'a> {
+    directory: &'a Path,
+    configured: Option<&'a Path>,
 }
 
 type VisualEvents = Rc<RefCell<Vec<(u8, Instance, usize, Vec<StateEvent>)>>>;
@@ -1417,7 +1431,10 @@ impl Sequencer {
             rate,
             looped,
             factories,
-            rom_directory,
+            RhythmRomPaths {
+                directory: rom_directory,
+                configured: None,
+            },
             routes,
             PlaybackSettings::default(),
         )
@@ -1428,7 +1445,7 @@ impl Sequencer {
         rate: u32,
         looped: bool,
         factories: ChipFactoryRegistry,
-        rom_directory: &Path,
+        rom_paths: RhythmRomPaths<'_>,
         routes: &[chipstream_ndsif::NdsifRoute],
         settings: PlaybackSettings,
     ) -> Result<Self> {
@@ -1437,7 +1454,7 @@ impl Sequencer {
             rate,
             looped,
             factories,
-            Some((rom_directory, routes)),
+            Some((rom_paths.directory, routes, rom_paths.configured)),
             settings,
         )
     }
@@ -1447,7 +1464,7 @@ impl Sequencer {
         rate: u32,
         looped: bool,
         factories: ChipFactoryRegistry,
-        rom: Option<(&Path, &[chipstream_ndsif::NdsifRoute])>,
+        rom: Option<(&Path, &[chipstream_ndsif::NdsifRoute], Option<&Path>)>,
         settings: PlaybackSettings,
     ) -> Result<Self> {
         let bytes = read_track(path)?;
@@ -1469,13 +1486,14 @@ impl Sequencer {
             };
             let mut sequencer =
                 VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
-            if let Some((directory, routes)) = rom {
+            if let Some((directory, routes, configured_rom)) = rom {
                 Self::configure_ym2608_rhythm_rom(
                     &mut sequencer,
                     ym2608_clock,
                     path,
                     directory,
                     routes,
+                    configured_rom,
                 )?;
             }
             sequencer.set_playback_options(mdx_options(looped, settings).playback)?;
@@ -1493,6 +1511,7 @@ impl Sequencer {
         track: &Path,
         directory: &Path,
         routes: &[chipstream_ndsif::NdsifRoute],
+        configured_rom: Option<&Path>,
     ) -> Result<()> {
         if clock & 0x3fff_ffff == 0 {
             return Ok(());
@@ -1509,14 +1528,22 @@ impl Sequencer {
         if instances.is_empty() {
             return Ok(());
         }
-        for path in [
-            track.with_file_name(YM2608_RHYTHM_ROM),
-            directory.join(YM2608_RHYTHM_ROM),
-        ] {
+        let paths = match configured_rom {
+            Some(path) => vec![path.to_path_buf()],
+            None => vec![
+                track.with_file_name(YM2608_RHYTHM_ROM),
+                directory.join(YM2608_RHYTHM_ROM),
+            ],
+        };
+        for path in paths {
             match std::fs::metadata(&path) {
                 Ok(metadata) if metadata.is_file() => {}
                 Ok(_) => bail!("YM2608 rhythm ROM is not a file: {}", path.display()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound && configured_rom.is_none() =>
+                {
+                    continue;
+                }
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("inspect YM2608 rhythm ROM {}", path.display()));
@@ -2052,7 +2079,10 @@ fn run_inner(
             config.sample_rate,
             looped,
             factories,
-            Path::new("."),
+            RhythmRomPaths {
+                directory: Path::new("."),
+                configured: control.ym2608_rhythm_rom.as_deref(),
+            },
             &plan.routes,
             control.settings,
         )?;
@@ -2071,7 +2101,10 @@ fn run_inner(
                 config.sample_rate,
                 looped,
                 factories,
-                Path::new("."),
+                RhythmRomPaths {
+                    directory: Path::new("."),
+                    configured: control.ym2608_rhythm_rom.as_deref(),
+                },
                 &[],
                 control.settings,
             )?,
@@ -3185,6 +3218,105 @@ mod tests {
     }
 
     #[test]
+    fn configured_ym2608_rom_takes_priority_and_reports_errors() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let music = dir.path().join("music");
+        let working = dir.path().join("working");
+        std::fs::create_dir(&music).unwrap();
+        std::fs::create_dir(&working).unwrap();
+        let chosen = dir.path().join("custom.rom");
+        std::fs::write(&chosen, [0x33; 8192]).unwrap();
+        std::fs::write(music.join(YM2608_RHYTHM_ROM), [0x11; 8192]).unwrap();
+        std::fs::write(working.join(YM2608_RHYTHM_ROM), [0x77; 8192]).unwrap();
+        for instance in [Instance::Primary, Instance::Secondary] {
+            let track = music.join(if instance == Instance::Primary {
+                "track.vgm"
+            } else {
+                "track.vgz"
+            });
+            let bytes = rhythm_vgm(instance);
+            let bytes = if instance == Instance::Secondary {
+                let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+                gzip.write_all(&bytes).unwrap();
+                gzip.finish().unwrap()
+            } else {
+                bytes
+            };
+            std::fs::write(&track, bytes).unwrap();
+            let render = |explicit: Option<&Path>, routes: &[chipstream_ndsif::NdsifRoute]| {
+                let mut player = Sequencer::for_playback_with_settings(
+                    &track,
+                    44_100,
+                    false,
+                    ChipFactoryRegistry::new(),
+                    RhythmRomPaths {
+                        directory: &working,
+                        configured: explicit,
+                    },
+                    routes,
+                    PlaybackSettings::default(),
+                )?;
+                let mut frames = Vec::new();
+                while let Some(block) = player.render()? {
+                    frames.extend_from_slice(block.frames());
+                }
+                Ok::<_, anyhow::Error>(frames)
+            };
+            let selected = render(Some(&chosen), &[]).unwrap();
+            let adjacent = render(None, &[]).unwrap();
+            assert_ne!(selected, adjacent);
+            let mut reference =
+                VgmSequencer::from_vgm(read_track(&track).unwrap(), 44_100, CHUNK_FRAMES).unwrap();
+            reference.set_loop_count(Some(2));
+            reference.set_loop_base(0);
+            reference.set_loop_modifier(0x10);
+            reference.set_fadeout(Some(Duration::from_secs(2))).unwrap();
+            reference
+                .set_ym2608_rhythm_rom(instance, &[0x33; 8192])
+                .unwrap();
+            let mut expected = Vec::new();
+            while let Some(block) = reference.render().unwrap() {
+                expected.extend_from_slice(block.frames());
+            }
+            assert_eq!(selected, expected);
+            let missing = dir.path().join("missing.rom");
+            assert!(
+                format!("{:#}", render(Some(&missing), &[]).unwrap_err())
+                    .contains("YM2608 rhythm ROM")
+            );
+            let empty = dir.path().join("empty.rom");
+            std::fs::write(&empty, []).unwrap();
+            assert!(format!("{:#}", render(Some(&empty), &[]).unwrap_err()).contains("empty"));
+            assert!(format!("{:#}", render(Some(&music), &[]).unwrap_err()).contains("not a file"));
+            let oversized = dir.path().join("large.rom");
+            let file = std::fs::File::create(&oversized).unwrap();
+            file.set_len(64 * 1024 * 1024 + 1).unwrap();
+            assert!(
+                format!("{:#}", render(Some(&oversized), &[]).unwrap_err()).contains("exceeds")
+            );
+            let route = chipstream_ndsif::NdsifRoute {
+                chip: Chip::Ym2608,
+                source: instance,
+                device: 0,
+                target: Instance::Primary,
+            };
+            if instance == Instance::Secondary {
+                assert!(render(Some(&missing), std::slice::from_ref(&route)).is_err());
+                let primary = chipstream_ndsif::NdsifRoute {
+                    source: Instance::Primary,
+                    ..route.clone()
+                };
+                assert!(render(Some(&missing), &[primary, route]).is_ok());
+            } else {
+                assert!(render(Some(&missing), &[route]).is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn first_presentation_uses_the_first_played_frame_and_device_latency() {
         let player = Playback::new();
         let control = player.control.clone();
@@ -3643,12 +3775,22 @@ mod tests {
             .set_chip_gain(Chip::Ym2203, GainPart::Ssg, 0.6)
             .unwrap();
         let preview_mute = FmMute::default();
+        player.set_ym2608_rhythm_rom(Some(PathBuf::from("first.rom")));
         assert!(preview_mute.set_muted(&Chip::Ym2151, Instance::Primary, 0, true));
         assert!(preview_mute.set_soloed(&Chip::Ym2151, Instance::Primary, 1, true));
         player.play(PathBuf::from("first.vgm"), true, Some(&preview_mute));
         let first_generation = player.generation;
         let (looped, first) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(looped);
+        assert_eq!(
+            first.ym2608_rhythm_rom.as_deref(),
+            Some(Path::new("first.rom"))
+        );
+        player.set_ym2608_rhythm_rom(Some(PathBuf::from("second.rom")));
+        assert_eq!(
+            first.ym2608_rhythm_rom.as_deref(),
+            Some(Path::new("first.rom"))
+        );
         assert!(first.fm_mute.is_muted(&Chip::Ym2151, Instance::Primary, 0));
         assert!(first.fm_mute.is_soloed(&Chip::Ym2151, Instance::Primary, 1));
         assert!(
@@ -3666,6 +3808,10 @@ mod tests {
         player.play(PathBuf::from("second.vgm"), false, None);
         let (looped, second) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(!looped);
+        assert_eq!(
+            second.ym2608_rhythm_rom.as_deref(),
+            Some(Path::new("second.rom"))
+        );
         assert!(first.cancel.load(Ordering::Relaxed));
         assert!(!second.paused.load(Ordering::Relaxed));
         assert!(!second.fm_mute.is_muted(&Chip::Ym2151, Instance::Primary, 0));

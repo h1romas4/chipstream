@@ -839,6 +839,66 @@ impl AppView {
                             }),
                     )
             });
+            let rom_view = view.clone();
+            let rom_field = SettingField::render(move |_, _, cx| {
+                let path = rom_view
+                    .upgrade()
+                    .and_then(|view| view.read(cx).config.general.ym2608_rhythm_rom.clone());
+                let tooltip = path.as_ref().map(|path| path.display().to_string());
+                let choose_view = rom_view.clone();
+                let clear_view = rom_view.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .w_full()
+                    .min_w_0()
+                    .pl_4()
+                    .child(
+                        div()
+                            .id("ym2608-rom-path")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis_start()
+                            .text_sm()
+                            .whitespace_nowrap()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone().unwrap_or_else(|| "Search the track folder, then the current working directory".into()))
+                                    .build(window, cx)
+                            })
+                            .child(path.as_ref().map_or_else(|| "Track / current directory".to_owned(), |path| path.display().to_string())),
+                    )
+                    .child(
+                        Button::new("ym2608-rom-choose")
+                            .flex_shrink_0()
+                            .icon(assets::IconName::FolderOpen)
+                            .ghost()
+                            .small()
+                            .tooltip("Choose YM2608 rhythm ROM")
+                            .accessibility_label("Choose YM2608 rhythm ROM")
+                            .on_click(move |_, _, cx| {
+                                let _ = choose_view.update(cx, |view, cx| view.choose_ym2608_rhythm_rom(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("ym2608-rom-clear")
+                            .flex_shrink_0()
+                            .icon(assets::IconName::CircleX)
+                            .ghost()
+                            .small()
+                            .tooltip("Clear YM2608 rhythm ROM selection")
+                            .accessibility_label("Clear YM2608 rhythm ROM selection")
+                            .disabled(path.is_none())
+                            .on_click(move |_, _, cx| {
+                                let _ = clear_view.update(cx, |view, cx| {
+                                    view.config.general.ym2608_rhythm_rom = None;
+                                    view.save();
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            });
             let language_get = view.clone();
             let language_set = view.clone();
             let language_field = SettingField::dropdown(
@@ -1045,10 +1105,11 @@ impl AppView {
                         .page(
                             SettingPage::new("General")
                                 .icon(assets::IconName::Settings)
-                                .group(SettingGroup::new().item(SettingItem::new(
-                                    "VGM metadata language",
-                                    language_field,
-                                ))),
+                                .group(SettingGroup::new().items([
+                                    SettingItem::new("VGM metadata language", language_field),
+                                    SettingItem::new("YM2608 rhythm ROM", rom_field)
+                                        .layout(Axis::Vertical),
+                                ])),
                         )
                         .page(
                             SettingPage::new("Playback")
@@ -1729,6 +1790,31 @@ impl AppView {
         .detach();
     }
 
+    fn choose_ym2608_rhythm_rom(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let selection = cx
+                .background_spawn(async { rfd::FileDialog::new().pick_file() })
+                .await;
+            if let Some(path) = selection {
+                let _ = this.update(cx, |view, cx| match path.canonicalize() {
+                    Ok(path) => {
+                        view.config.general.ym2608_rhythm_rom = Some(path);
+                        view.save();
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        view.pending_errors.push(error_notification(
+                            "Cannot open YM2608 rhythm ROM",
+                            format!("{}: {error}", path.display()),
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     fn stop_playback(&mut self, cx: &mut Context<Self>) {
         self.player.stop();
         self.recording_session = None;
@@ -1759,6 +1845,8 @@ impl AppView {
         if let Some(path) = self.config.playlist.get(index).cloned() {
             self.player.set_settings(self.config.playback);
             self.player.set_vgm_settings(self.config.vgm);
+            self.player
+                .set_ym2608_rhythm_rom(self.config.general.ym2608_rhythm_rom.clone());
             self.player
                 .set_audio_output_device(self.config.audio_output_device.clone());
             self.player
