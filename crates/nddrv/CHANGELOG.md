@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a macOS application menu and Command+Q shortcut to quit, even after the
+  window is closed.
 - Restore Music search text and tags on startup.
 - Show chip routing destinations in the Piano Roll Channels panel.
 - Separate routing sources, targets, adapters and playback plans without changing

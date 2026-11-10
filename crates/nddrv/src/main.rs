@@ -52,6 +52,16 @@ const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
 const DEVICE_DEFAULT_SAMPLE_RATE: &str = "device-default";
 
+#[cfg(target_os = "macos")]
+actions!(nddrv, [Quit]);
+
+#[cfg(target_os = "macos")]
+fn configure_app_menu(cx: &mut App) {
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.set_menus([Menu::new(APP_TITLE).items([MenuItem::action("Quit NDDRV", Quit)])]);
+}
+
 fn initial_window_bounds(visible: Bounds<Pixels>, requested: Size<Pixels>) -> Bounds<Pixels> {
     let window_size = requested.min(&visible.size);
     let origin = point(
@@ -7226,6 +7236,8 @@ impl Render for AppView {
 fn main() {
     application().with_assets(assets::AllAssets).run(|cx| {
         init(cx);
+        #[cfg(target_os = "macos")]
+        configure_app_menu(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
         let (config_path, config, config_error) = load_app_config();
