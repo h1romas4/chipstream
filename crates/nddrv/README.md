@@ -1,28 +1,28 @@
 # nddrv
 
-`nddrv` is a desktop music library and player for VGM, VGZ, and MDX files.
-It uses chipstream for software emulation and your system's default audio
-output. Experimental NanoDrive hardware routing is also available.
+NDDRV is a desktop music library and player for VGM, VGZ, and MDX files. It
+supports software emulation with chipstream and experimental NanoDrive hardware
+routing.
 
-## Download and Installation
+## Installation
 
-Prebuilt binaries are published on [GitHub Releases](https://github.com/h1romas4/chipstream/releases)
-under `nddrv-` tags. Downloads are available for Linux x86-64, Windows x86-64,
-and macOS (Apple Silicon and Intel). macOS downloads include an app bundle;
-Windows downloads include a standalone executable.
+### Prebuilt binaries
 
-The Windows and macOS binaries are not signed or notarized, so the operating
-system may show a security warning. Linux builds require compatible system
-libraries, including ALSA, PipeWire, and GPUI platform dependencies.
+Download an `nddrv-` release from [GitHub Releases](https://github.com/h1romas4/chipstream/releases).
 
-To build from source, install Rust and the platform prerequisites in the
+| Platform | Download | Notes |
+| --- | --- | --- |
+| Linux x86-64 | Archive | Requires compatible ALSA, PipeWire, and GPUI platform libraries. |
+| Windows x86-64 | Archive or standalone executable | Not signed; Windows may show a security warning. |
+| macOS, Apple Silicon or Intel | App bundle | Not signed or notarized; macOS may show a security warning. |
+
+### Build from source
+
+Install Rust and the prerequisites in the
 [GPUI Kit installation guide](https://gpui-kit.com/docs/installation/).
-
 On Linux, also install the PipeWire and ALSA development packages and libclang
 (for example, `libpipewire-0.3-dev`, `libasound2-dev`, and `libclang-dev` on
 Debian/Ubuntu).
-
-Then run:
 
 ```sh
 cargo run --release -p nddrv
@@ -30,160 +30,182 @@ cargo run --release -p nddrv
 
 ## Quick Start
 
-1. Choose **Add directory** in Library and select a folder containing music.
-2. Select a folder or **All tracks**, then use the search field to filter results.
-3. Double-click a track to add it to Playlist, or select tracks and press Enter.
+1. In Library, choose **Add directory** and select a folder containing music.
+2. Select a folder or **All tracks** and filter the Music list.
+3. Double-click a track, or select tracks and press Enter, to add them to Playlist.
 4. Use the Playlist transport to play, pause, stop, or change tracks.
+5. Use **Rescan** to refresh a registered folder after its contents change.
 
-Use **Rescan** to refresh a registered folder after its contents change.
+The window size and maximized state are restored on startup. When the primary
+display's available area is known, the window is centered and fitted to it;
+otherwise, placement is left to the window system.
 
-NDDRV restores the previous window size and maximized state on startup. The
-window is centered and fitted to the primary display's available area when
-that information is available. Otherwise, placement is left to the window
-system.
+## Library
 
-## Library Reference
+### Search
 
-The search field filters by title, artist, album, notes, or path. Add chip names
-or the `MDX` and `VGM` format tags to narrow results; `VGM` includes VGZ files.
-Use the clear button on the right to remove all search text and tags.
+| Search | Behavior |
+| --- | --- |
+| Text | Matches title, artist, album, notes, or path. |
+| Chip tags | Multiple chip tags require all listed chips. |
+| Format tags | `MDX` matches MDX files; `VGM` matches VGM and VGZ files. |
+| `NanoDrive` tag | Matches chips advertised by a connected device; does not guarantee hardware routing. |
+| Clear button | Removes all search text and tags. |
 
-The Music search text and tags are saved on exit and restored on startup.
-An invalid saved search is cleared with a notification. A restored NanoDrive
-tag remains active while disconnected, so it matches no tracks until a
-NanoDrive is connected.
+Search text and tags are saved on exit and restored on startup. An invalid saved
+search is cleared with a notification. A restored NanoDrive tag remains active
+while disconnected and matches no tracks until a NanoDrive is connected.
 
-For VGM/VGZ tracks, General settings select English or original-language
-metadata. English is the default, and missing fields fall back to the other
-language. Search matches either language; MDX metadata is unaffected.
-
-Multiple chip tags require all listed chips. When a NanoDrive is connected, the
-`NanoDrive` tag filters for tracks with chips advertised by the device; it does
-not guarantee that the track can be routed to hardware.
-
-Music and Playlist support multi-selection:
+### Selection and actions
 
 | Action | Control |
 | --- | --- |
 | Select a row | Click |
 | Add or remove a row from the selection | Ctrl-click (Command-click on macOS) |
 | Select a range | Shift-click |
-| Select all visible rows | Focus the list and press Ctrl+A (Command+A on macOS) |
+| Select all visible rows | Focus Music or Playlist and press Ctrl+A (Command+A on macOS) |
 | Add selected Music tracks to Playlist | Focus Music and press Enter |
 | Remove selected Playlist entries | Focus Playlist and press Delete |
+| Music context menu | Right-click a row to add selected tracks or copy its path. |
+| Playlist context menu | Right-click selected rows to remove them or clear the playlist. |
 
-Right-click a Music row to add selected tracks to Playlist or copy its path.
-Right-click selected Playlist rows to remove them or clear the playlist.
+Track Info shows available metadata and loads artwork from the track's folder.
 
-## Playback
+## Settings
 
-Playlist tracks play in order; previous and next do not wrap. With loop off,
-the default is two plays followed by a two-second fade. Enable loop to repeat
-indefinitely.
+Settings are organized into General, Playback, Recording, and VGM pages.
 
-The Playback settings button sets play count (1-99), fade-out (0-600 seconds),
-and the emulated audio output. **System default** follows the operating system;
-supported 44.1, 48, 96, and 192 kHz rates or **Device default** can be chosen.
-Settings are saved and apply to the next track. Changing the output device
-resets its sample rate to **Device default**. With NanoDrive routing, emulated
-chips use this output; hardware audio is separate.
+### General
 
-On Linux, playback and recording use PipeWire when it is available, and fall
-back to ALSA otherwise. With PipeWire, the device lists show its output and
-input devices, not individual application streams; recording also offers
-**System output (monitor)**. Enable
-**Show all audio devices** in either settings page to include ALSA devices and
-plugins. Without PipeWire, the default list instead shows common ALSA audio
-servers and representative hardware devices. This display choice lasts until
-Settings is closed; existing device selections remain available even when the
-list is filtered. Direct ALSA hardware devices can be
-busy while PipeWire or another application uses them. In that case, select
-**System default** or a PipeWire device and choose the desired device in the
-system sound settings.
+| Setting | Behavior |
+| --- | --- |
+| VGM metadata language | Choose English (default) or original-language VGM/VGZ metadata. Missing fields fall back to the other language; search matches both. MDX metadata is unaffected. |
+| YM2608 rhythm ROM | Select an optional ROM file for software YM2608 playback. See [YM2608 rhythm ROM](#ym2608-rhythm-rom). |
 
-In **Settings > VGM**, enable **Assign YM2149 to AY8910** to
-approximate AY8910-family VGM audio in software. It is off by default and
-changes apply to the next track. NanoDrive routes take priority per instance;
-unrouted instances use YM2149. AY8910 and YM2149 sound different, and AY8930,
-AY8914, raw/discrete output and reserved AY flags are not supported by this
-emulation. YM2149 clock division and per-channel stereo masks are supported.
-If a VGM has two AY instances and only one is routed to hardware, enable this
-option or route both instances; a partial hardware route without emulation is
-not playable. Music and Playlist support indicators reflect this setting and
-the track's AY variant and output flags.
+### Playback
 
-Track Info shows available metadata. Artwork is loaded from the track's folder.
+| Setting | Behavior |
+| --- | --- |
+| Play count | 1–99 plays; default: 2. |
+| Fade out (seconds) | 0–600 seconds; default: 2. |
+| Start delay (seconds) | 0–600 seconds; default: 0. |
+| Emulation audio device | Select the software-emulation output, or **System default**. NanoDrive audio is separate. |
+| Emulation sample rate | Select a supported 44.1, 48, 96, or 192 kHz rate, or **Device default**. Changing the output device resets this to **Device default**. |
+| Show all audio devices | Linux only. See [Linux audio devices](#linux-audio-devices). |
+
+Settings are saved and apply to the next track. Playlist tracks play in order;
+previous and next do not wrap. With loop off, playback uses the configured play
+count and fade. Enable loop to repeat indefinitely.
 
 ### Recording
 
-Recording is experimental. Enable it in Recording settings, choose an input
-device, input sample rate and WAV output folder, then use the record button in
-the playback controls. The selected input must receive the audio to be recorded;
-NanoDrive and software output may need external mixing or system loopback.
-The folder can be changed or cleared with the icons beside its path; a folder
-must be selected before recording.
-Recording starts before playback and saves a 16-bit WAV for each playlist track.
-The WAV uses the source filename and local timestamp; existing files are preserved
-with a numeric suffix.
-The start delay is included. Stopping or changing tracks saves the current file.
-Pausing playback does not pause the input recording. A notification reports each
-saved file; recoverable input interruptions may cause gaps or timing shifts and
-are reported as warnings. Other recording errors stop playback and are reported
-separately.
+Recording is experimental.
 
-### Piano Roll
+| Setting | Behavior |
+| --- | --- |
+| Enable recording (experimental) | Enables recording for the playback controls. |
+| Input audio device | Select the source to record, or **System default**. |
+| Input sample rate | Select an input rate or **Device default**. |
+| WAV output folder | Select or clear the folder using the icons beside the path. A folder is required for recording. |
+| Show all audio devices | Linux only. See [Linux audio devices](#linux-audio-devices). |
 
-Choose the piano icon to open the full-window Piano Roll. **Incoming** shows
-upcoming notes; **Trail** shows recent notes. The **Channels** panel controls
-which tracked voices are visible. Chip Gain adjusts software-emulated output;
-FM channels also provide mute and solo controls. These controls do not affect
-NanoDrive output.
+Use the record button in the playback controls after configuring these settings.
+The selected input must receive the audio to be recorded; NanoDrive and
+software output may need external mixing or system loopback.
 
-The Piano Roll visualizes selected pitched voices; it does not display every
-sound, such as PCM and noise. AY8910 and YM2149 tone channels are shown in
-both modes, including when routed to NanoDrive. Without an AY hardware route
-or enabled YM2149 emulation they are visual-only. Envelope-enabled
-tones are shown as active without simulating the envelope amplitude.
+| Recording behavior | Details |
+| --- | --- |
+| Output | One 16-bit WAV per playlist track, named with the source filename and local timestamp. Existing files are preserved with a numeric suffix. |
+| Timing | Recording starts before playback and includes the start delay. Pausing playback does not pause input recording. |
+| Stopping or changing tracks | Saves the current file. |
+| Notifications | Each saved file is reported. Recoverable input interruptions may cause gaps or timing shifts and are reported as warnings. Other recording errors stop playback and are reported separately. |
+
+### VGM
+
+| Setting | Behavior |
+| --- | --- |
+| Assign YM2149 to AY8910 | Off by default. Uses software YM2149 to approximate AY8910-family VGM audio; changes apply to the next track. |
+
+NanoDrive routes take priority per instance; unrouted instances use YM2149.
+AY8910 and YM2149 sound different. AY8930, AY8914, raw/discrete output, and
+reserved AY flags are not supported by this emulation. YM2149 clock division
+and per-channel stereo masks are supported.
+
+For a VGM with two AY instances and only one hardware route, enable emulation or
+route both instances. A partial hardware route without emulation is not
+playable. Music and Playlist support indicators reflect the setting and the
+track's AY variant and output flags.
+
+### Linux audio devices
+
+| Situation | Behavior |
+| --- | --- |
+| PipeWire available | Playback and recording use PipeWire. Lists contain output and input devices, not individual application streams. Recording also offers **System output (monitor)**. |
+| PipeWire unavailable | Playback and recording fall back to ALSA. The default list shows common audio servers and representative hardware devices. |
+| Show all audio devices | Includes ALSA devices and plugins. The display choice lasts until Settings is closed; existing selections remain available when filtered. |
+| Direct ALSA device is busy | Select **System default** or a PipeWire device and choose the desired device in system sound settings. PipeWire or another application may already be using the hardware. |
+
+## Piano Roll
+
+Open the full-window Piano Roll with the piano icon.
+
+| Control or display | Behavior |
+| --- | --- |
+| Incoming / Trail | Show upcoming / recent notes. |
+| Channels | Select which tracked voices are visible. |
+| Chip Gain | Adjusts software-emulated output. |
+| FM mute / solo | Controls FM channels; does not affect NanoDrive output. |
+
+The Piano Roll shows selected pitched voices, not every sound such as PCM and
+noise. AY8910 and YM2149 tone channels appear in both modes, including when
+routed to NanoDrive. Without an AY hardware route or enabled YM2149 emulation
+they are visual-only. Envelope-enabled tones are shown as active without
+simulating envelope amplitude. Chip Gain does not affect NanoDrive output.
 
 ## NanoDrive Routing
 
-NanoDrive routing is experimental. Open the routing page with the cable icon,
-select a serial port, and connect the device. Matching chip instances are routed
-automatically where possible. To change a route, select a sequencer chip and
-then a highlighted device or software-emulation target.
+NanoDrive routing is experimental.
 
-YM2149 tracks appear as AY8910 and can use a NanoDrive 7 AY route. The device
-uses YM2203 SSG rather than a physical YM2149, so the sound may differ. AY and
-YM2203 routes share physical chips and clocks; incompatible combinations are
-rejected. YM2149 clock-divider, raw and discrete-output flags are not supported.
+1. Open the routing page with the cable icon, select a serial port, and connect.
+2. Matching chip instances are routed automatically where possible.
+3. To change a route, select a sequencer chip and then a highlighted device or
+   software-emulation target.
 
-Hardware playback is best-effort and may not be sample-accurate. NanoDrive
-audio comes from the device and must be mixed externally with software output.
-Pause is unavailable while a hardware route is active. Unsupported or
-incompatible explicit routes stop playback rather than silently switching to
-emulation.
+| Topic | Behavior |
+| --- | --- |
+| Hardware audio | Comes from the device and must be mixed externally with software output. |
+| Timing | Best-effort; playback may not be sample-accurate. |
+| Pause | Unavailable while a hardware route is active. |
+| Invalid routes | Unsupported or incompatible explicit routes stop playback rather than silently switching to emulation. |
+| YM2149 | Tracks appear as AY8910 and can use a NanoDrive 7 AY route. The device uses YM2203 SSG rather than a physical YM2149, so the sound may differ. |
+| AY and YM2203 | Routes share physical chips and clocks; incompatible combinations are rejected. YM2149 clock-divider, raw, and discrete-output flags are not supported. |
 
-Internally, routing resolves each sequencer source to a hardware, software or
-silent target and an adapter. Hardware routes are converted to NDSIF routes;
-software assignments use the same plan for playback, preview and support
-indicators. This separation does not yet add conversions between different
-physical chip types.
+Internally, each sequencer source resolves to a hardware, software, or silent
+target and an adapter. Hardware routes become NDSIF routes; software assignments
+use the same plan for playback, preview, and support indicators. This separation
+does not yet add conversions between different physical chip types.
 
 ## Supported Files and Notes
 
-- **VGM / VGZ:** VGZ files are decompressed for playback. Input files and
-  decompressed VGZ data are limited to 64 MiB.
-- **MDX:** A matching PDX sample bank is required when the MDX names one.
-- **YM2608 rhythm instruments:** Playback can use the optional
-  rhythm ROM, which is not included with the application. Select a file in
-  **Settings > General > YM2608 rhythm ROM**; it takes priority and changes
-  apply to the next track. Clear the selection to search for
-  `ym2608_adpcm_rom.bin` beside the track, then in the working directory.
-  A selected missing, unreadable or empty file is reported as an error rather
-  than falling back. The ROM is used only for software YM2608 instances.
+| Format | Notes |
+| --- | --- |
+| VGM / VGZ | VGZ files are decompressed for playback. Input files and decompressed VGZ data are limited to 64 MiB. |
+| MDX | A matching PDX sample bank is required when the MDX names one. |
 
 Chip support depends on the file and available software emulation or connected
 hardware. Playback errors are shown in the application.
+
+### YM2608 rhythm ROM
+
+The optional rhythm ROM is not included with the application and is used only
+for software YM2608 instances.
+
+1. A file selected in **Settings > General > YM2608 rhythm ROM** takes priority.
+   Changes apply to the next track.
+2. Clear the selection to search for `ym2608_adpcm_rom.bin` beside the track,
+   then in the working directory.
+3. A selected missing, unreadable, or empty file is reported as an error rather
+   than falling back.
 
 ## License
 
