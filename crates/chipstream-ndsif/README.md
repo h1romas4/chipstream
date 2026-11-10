@@ -32,9 +32,9 @@ software fallback.
 use std::{cell::RefCell, rc::Rc};
 use chipstream::sequencer::ChipFactoryRegistry;
 use chipstream_ndsif::{
-  NdsifNd7Policy, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
+    NdsifNd7Policy, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
     create_automatic_transport_factories_with_policy,
-  create_routed_transport_factories_with_policy,
+    create_routed_transport_factories_with_policy,
 };
 
 fn factories<T: NdsifRoutingTransport + 'static>(
@@ -46,14 +46,14 @@ fn factories<T: NdsifRoutingTransport + 'static>(
     Ok(create_automatic_transport_factories_with_policy(transports, supports_ay, policy))
 }
 
-  fn routed_factories<T: NdsifRoutingTransport + 'static>(
+fn routed_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     routes: &[NdsifRoute],
     nd7_devices: &[usize],
-  ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
+) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
     let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
     create_routed_transport_factories_with_policy(transports, routes, policy)
-  }
+}
 ```
 
 Create a new policy for each playback: it retains selected routes to detect
@@ -181,24 +181,24 @@ use std::{num::NonZeroUsize, sync::{Arc, Mutex}, time::Duration};
 use chipstream::sequencer::VgmSequencer;
 use chipstream_ndsif::create_automatic_transport_factories;
 use ndsif_transport::{
-  NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport,
-  NdsifWorkerDevice,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport,
+    NdsifWorkerDevice,
 };
 
 fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers, Arc<NdsifHostTimeline>), Box<dyn std::error::Error>> {
-  let connection = NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), true,
-  )?;
-  let supports_ay = connection.capabilities().iter().any(|entry| entry.write_id == 0xa0);
-  let devices = [NdsifWorkerDevice::new(
-    Arc::new(Mutex::new(connection)), NonZeroUsize::new(16_384).unwrap(),
-  )?];
-  let recorders: Vec<_> = devices.iter().map(NdsifWorkerDevice::recorder).collect();
-  let factories = create_automatic_transport_factories(&recorders, supports_ay);
-  let player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
-  let timeline = Arc::new(NdsifHostTimeline::pending());
-  let workers = NdsifHardwareWorkers::start(&devices, Arc::clone(&timeline), NonZeroUsize::new(8).unwrap())?;
-  Ok((player, workers, timeline))
+    let connection = NdsifSerialTransport::open(
+        "/dev/ttyACM0", 115_200, Duration::from_millis(500), true,
+    )?;
+    let supports_ay = connection.capabilities().iter().any(|entry| entry.write_id == 0xa0);
+    let devices = [NdsifWorkerDevice::new(
+        Arc::new(Mutex::new(connection)), NonZeroUsize::new(16_384).unwrap(),
+    )?];
+    let recorders: Vec<_> = devices.iter().map(NdsifWorkerDevice::recorder).collect();
+    let factories = create_automatic_transport_factories(&recorders, supports_ay);
+    let player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+    let timeline = Arc::new(NdsifHostTimeline::pending());
+    let workers = NdsifHardwareWorkers::start(&devices, Arc::clone(&timeline), NonZeroUsize::new(8).unwrap())?;
+    Ok((player, workers, timeline))
 }
 ```
 

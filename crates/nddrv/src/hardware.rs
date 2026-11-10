@@ -239,7 +239,13 @@ mod tests {
                         None
                     }
                     Request::DacRegisterEvent { writes, .. } => {
-                        assert!(writes.chunks_exact(2).all(|write| write == [0x22, 0x08]));
+                        assert!(
+                            writes
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .all(|write| *write == [0x22, 0x08])
+                        );
                         events += (writes.len() / 2) as u32;
                         assert!(events - consumed_events <= u32::from(event_capacity));
                         if let Some(observed) = &observed_events {
@@ -1646,7 +1652,7 @@ mod tests {
         assert!(started.recv_timeout(Duration::from_millis(30)).is_err());
         timeline.start(Instant::now()).unwrap();
         started.recv_timeout(Duration::from_secs(1)).unwrap();
-        while let Some(_) = sequencer.render().unwrap() {
+        while sequencer.render().unwrap().is_some() {
             workers.enqueue(&cancelled).unwrap();
         }
         workers.enqueue(&cancelled).unwrap();

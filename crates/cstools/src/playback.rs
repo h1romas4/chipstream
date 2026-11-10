@@ -913,8 +913,7 @@ mod playback_tests {
     #[test]
     fn invalid_audio_output_device_id_is_rejected() {
         let error = audio_output_device(Some("not-a-device-id"))
-            .err()
-            .expect("invalid device ID should fail");
+            .expect_err("invalid device ID should fail");
         assert!(format!("{error:#}").contains("invalid audio output device ID"));
     }
 
@@ -925,11 +924,11 @@ mod playback_tests {
             .unwrap()
             .header;
         header.ay_chip_type = Ay8910ChipType::Ym2149;
-        assert_eq!(ym2149_clock_divider(&header).unwrap(), false);
+        assert!(!ym2149_clock_divider(&header).unwrap());
         header.ay8910_flags.ym_pin26_low = true;
-        assert_eq!(ym2149_clock_divider(&header).unwrap(), true);
+        assert!(ym2149_clock_divider(&header).unwrap());
         header.ay_chip_type = Ay8910ChipType::Ay8910;
-        assert_eq!(ym2149_clock_divider(&header).unwrap(), false);
+        assert!(!ym2149_clock_divider(&header).unwrap());
         header.ay_chip_type = Ay8910ChipType::Ay8930;
         assert!(ym2149_clock_divider(&header).is_err());
         header.ay_chip_type = Ay8910ChipType::Ym2149;

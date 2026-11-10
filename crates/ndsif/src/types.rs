@@ -25,8 +25,8 @@ pub struct RegisterWrites<'a>(&'a [u8]);
 impl<'a> RegisterWrites<'a> {
     /// Validate the count and framing of borrowed address/value pairs.
     pub(crate) fn decode(bytes: &'a [u8], maximum: usize) -> Result<Self, Error> {
-        let pairs = bytes.chunks_exact(2);
-        if bytes.is_empty() || !pairs.remainder().is_empty() || pairs.len() > maximum {
+        let (pairs, remainder) = bytes.as_chunks::<2>();
+        if bytes.is_empty() || !remainder.is_empty() || pairs.len() > maximum {
             return Err(Error::InvalidArgument);
         }
         Ok(Self(bytes))
@@ -46,7 +46,9 @@ impl<'a> RegisterWrites<'a> {
     /// Iterate over the decoded register pairs in wire order.
     pub fn iter(self) -> impl ExactSizeIterator<Item = RegisterWrite> + 'a {
         self.0
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| RegisterWrite::new(pair[0], pair[1]))
     }
 }

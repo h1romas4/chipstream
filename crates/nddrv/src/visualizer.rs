@@ -370,17 +370,26 @@ impl RollProjection {
     }
 }
 
-fn paint_roll(
-    window: &mut Window,
-    bounds: Bounds<Pixels>,
+struct RollPaint<'a> {
     position: u64,
     rate: u32,
-    notes: &[Note],
+    notes: &'a [Note],
     mode: RollMode,
     started: bool,
     scanned: u64,
-    hidden_channels: &HashSet<(u8, u8)>,
-) {
+    hidden_channels: &'a HashSet<(u8, u8)>,
+}
+
+fn paint_roll(window: &mut Window, bounds: Bounds<Pixels>, data: RollPaint<'_>) {
+    let RollPaint {
+        position,
+        rate,
+        notes,
+        mode,
+        started,
+        scanned,
+        hidden_channels,
+    } = data;
     let x = bounds.origin.x.as_f32();
     let y = bounds.origin.y.as_f32();
     let width = bounds.size.width.as_f32();
@@ -501,16 +510,25 @@ fn paint_roll(
     );
 }
 
+pub struct ViewPlayback {
+    pub playing: bool,
+    pub previewing: bool,
+    pub paused: bool,
+}
+
 pub fn view(
     title: String,
-    playing: bool,
-    previewing: bool,
-    paused: bool,
+    playback: ViewPlayback,
     mode: RollMode,
     hidden_channels: HashSet<(u8, u8)>,
     snapshot: Result<Snapshot, String>,
     playback_buttons: Div,
 ) -> Div {
+    let ViewPlayback {
+        playing,
+        previewing,
+        paused,
+    } = playback;
     let (snapshot, error) = match snapshot {
         Ok(snapshot) => (snapshot, None),
         Err(error) => (Snapshot::default(), Some(error)),
@@ -537,13 +555,15 @@ pub fn view(
                     paint_roll(
                         window,
                         bounds,
-                        position,
-                        rate,
-                        &notes,
-                        mode,
-                        started,
-                        scanned,
-                        &hidden_channels,
+                        RollPaint {
+                            position,
+                            rate,
+                            notes: &notes,
+                            mode,
+                            started,
+                            scanned,
+                            hidden_channels: &hidden_channels,
+                        },
                     )
                 },
             )

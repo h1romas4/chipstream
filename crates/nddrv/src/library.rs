@@ -112,10 +112,11 @@ impl Track {
     }
 
     fn with_original_metadata(mut self, metadata: TrackMetadata) -> Self {
-        for value in [&metadata.title, &metadata.artist, &metadata.album] {
-            if let Some(value) = value {
-                self.search_fields.push(value.to_lowercase());
-            }
+        for value in [&metadata.title, &metadata.artist, &metadata.album]
+            .into_iter()
+            .flatten()
+        {
+            self.search_fields.push(value.to_lowercase());
         }
         self.original_metadata = Some(metadata);
         self

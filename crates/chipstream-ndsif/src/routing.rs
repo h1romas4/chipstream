@@ -1367,7 +1367,7 @@ mod tests {
         let primary = route(Instance::Primary, 0, Instance::Primary);
         let secondary = route(Instance::Secondary, 0, Instance::Primary);
         assert_eq!(
-            validate_routes(0, &[primary.clone()]),
+            validate_routes(0, std::slice::from_ref(&primary)),
             Err(NdsifRoutingError::UnknownDevice(0))
         );
         assert!(matches!(

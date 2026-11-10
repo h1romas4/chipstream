@@ -63,6 +63,10 @@ impl<F: FnMut(&[u8])> CommandEncoder<F> {
     }
 
     /// Splits positioned register writes without changing their order or position.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve the public protocol API"
+    )]
     pub fn register_event(
         &mut self,
         stream_id: u8,

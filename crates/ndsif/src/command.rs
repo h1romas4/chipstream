@@ -55,10 +55,10 @@ pub struct DacRecords<'a>(&'a [u8]);
 impl<'a> DacRecords<'a> {
     /// Validate record framing, operation values, and the per-frame limit.
     fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
-        if bytes.is_empty() || bytes.len() % 4 != 0 || bytes.len() / 4 > MAX_DAC_RECORDS {
+        if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() / 4 > MAX_DAC_RECORDS {
             return Err(Error::InvalidLength);
         }
-        for record in bytes.chunks_exact(4) {
+        for record in bytes.as_chunks::<4>().0 {
             let kind = DacRecordKind::try_from(record[0])?;
             let value = record[1];
             let wait_ticks = u16::from_le_bytes([record[2], record[3]]);
@@ -85,7 +85,7 @@ impl<'a> DacRecords<'a> {
 
     /// Iterate over records in wire order.
     pub fn iter(self) -> impl ExactSizeIterator<Item = DacRecord> + 'a {
-        self.0.chunks_exact(4).map(|record| DacRecord {
+        self.0.as_chunks::<4>().0.iter().map(|record| DacRecord {
             kind: DacRecordKind::try_from(record[0]).expect("validated DAC record"),
             value: record[1],
             wait_ticks: u16::from_le_bytes([record[2], record[3]]),
@@ -499,7 +499,8 @@ impl Command<'_> {
                 payload[3..7].copy_from_slice(&sequence.to_le_bytes());
                 payload[7..15].copy_from_slice(&position.to_le_bytes());
                 let mut end_tick = position;
-                for (bytes, record) in payload[15..].chunks_exact_mut(4).zip(records) {
+                for (bytes, record) in payload[15..].as_chunks_mut::<4>().0.iter_mut().zip(records)
+                {
                     match record.kind {
                         DacRecordKind::Select if record.value & 0x7f != 0 => {
                             return Err(Error::InvalidArgument);
@@ -612,7 +613,7 @@ fn encode_writes(
     if writes.is_empty() || writes.len() > maximum {
         return Err(Error::InvalidArgument);
     }
-    for (pair, write) in output.chunks_exact_mut(2).zip(writes) {
+    for (pair, write) in output.as_chunks_mut::<2>().0.iter_mut().zip(writes) {
         pair[0] = write.address;
         pair[1] = write.value;
     }
@@ -837,7 +838,7 @@ impl<'a> Request<'a> {
                     payload: bytes,
                 });
             }
-            if bytes.len() < 4 || bytes.len() % 2 != 0 {
+            if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
                 return Err(Error::InvalidLength);
             }
             let writes = crate::types::RegisterWrites::decode(&bytes[2..], MAX_REGISTER_WRITES)?;
@@ -927,7 +928,7 @@ impl<'a> Request<'a> {
                 let data = &bytes[7..];
                 let event = match bytes[6] {
                     0 => {
-                        if data.len() < 5 || data.len() % 2 == 0 {
+                        if data.len() < 5 || data.len().is_multiple_of(2) {
                             return Err(Error::InvalidLength);
                         }
                         RequestEvent::Registers {
@@ -1131,7 +1132,9 @@ fn valid_dac_event_target(write_id: WriteId, instance: u8, page: u8, writes: &[u
         (0x52, 0, 0) | (0x53, 0, 1) if writes.len() >= 2 && writes.len().is_multiple_of(2) => {
             write_id.get() != 0x52
                 || writes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .all(|pair| !matches!(pair[0], 0x2a | 0x2b))
         }
         (0x50, 0, 0) | (0x30, 1, 0) => !writes.is_empty(),

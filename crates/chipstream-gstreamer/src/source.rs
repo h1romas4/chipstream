@@ -852,17 +852,17 @@ mod imp {
             let worker = thread::Builder::new()
                 .name("chipstream-render".to_owned())
                 .spawn(move || {
-                    render_file(
-                        PathBuf::from(location),
-                        settings.pdx_location.map(PathBuf::from),
+                    render_file(RenderWorker {
+                        location: PathBuf::from(location),
+                        pdx_location: settings.pdx_location.map(PathBuf::from),
                         render_settings,
                         ndsif_settings,
                         timeline,
                         cancelled,
                         duration,
                         sender,
-                        control_receiver,
-                    );
+                        controls: control_receiver,
+                    });
                 })
                 .map_err(|error| {
                     gst::error_msg!(
@@ -970,18 +970,31 @@ pub(super) fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     )
 }
 
-/// Run the render worker, forwarding metadata, audio, seek results, and errors.
-fn render_file(
+struct RenderWorker {
     location: PathBuf,
     pdx_location: Option<PathBuf>,
-    settings: RenderSettings,
+    render_settings: RenderSettings,
     ndsif_settings: NdsifSettings,
     timeline: Arc<NdsifHostTimeline>,
     cancelled: Arc<AtomicBool>,
     duration: Arc<Mutex<Option<gst::ClockTime>>>,
     sender: SyncSender<WorkerMessage>,
     controls: Receiver<WorkerControl>,
-) {
+}
+
+/// Run the render worker, forwarding metadata, audio, seek results, and errors.
+fn render_file(worker: RenderWorker) {
+    let RenderWorker {
+        location,
+        pdx_location,
+        render_settings: settings,
+        ndsif_settings,
+        timeline,
+        cancelled,
+        duration,
+        sender,
+        controls,
+    } = worker;
     let result =
         create_chip_factories(&ndsif_settings, timeline).and_then(|(factories, hardware)| {
             load_sequencer_with_factories(&location, pdx_location.as_deref(), settings, factories)
@@ -1136,14 +1149,16 @@ fn render_file(
             match seek_player(
                 &mut player,
                 &mut checkpoints,
-                &location,
-                pdx_location.as_deref(),
-                settings,
-                target_frame,
-                &cancelled,
                 &mut checkpointing_enabled,
                 &mut next_checkpoint_frame,
-                &output,
+                SeekRequest {
+                    location: &location,
+                    pdx_location: pdx_location.as_deref(),
+                    settings,
+                    target_frame,
+                    cancelled: &cancelled,
+                    output: &output,
+                },
             ) {
                 Ok((position, pending, reached_end)) => {
                     sender = output;
@@ -1336,19 +1351,33 @@ fn capture_checkpoint(
     Ok(())
 }
 
+struct SeekRequest<'a> {
+    location: &'a Path,
+    pdx_location: Option<&'a Path>,
+    settings: RenderSettings,
+    target_frame: u64,
+    cancelled: &'a AtomicBool,
+    output: &'a SyncSender<WorkerMessage>,
+}
+
+type SeekResult = (u64, Option<Vec<[f32; 2]>>, bool);
+
 /// Seek from a cached checkpoint or rebuild the player when necessary.
 fn seek_player(
     player: &mut Sequencer,
     checkpoints: &mut VecDeque<(usize, SequencerCheckpoint)>,
-    location: &Path,
-    pdx_location: Option<&Path>,
-    settings: RenderSettings,
-    target_frame: u64,
-    cancelled: &AtomicBool,
     checkpointing_enabled: &mut bool,
     next_checkpoint_frame: &mut usize,
-    output: &SyncSender<WorkerMessage>,
-) -> Result<(u64, Option<Vec<[f32; 2]>>, bool), String> {
+    request: SeekRequest<'_>,
+) -> Result<SeekResult, String> {
+    let SeekRequest {
+        location,
+        pdx_location,
+        settings,
+        target_frame,
+        cancelled,
+        output,
+    } = request;
     let target = usize::try_from(target_frame).map_err(|_| "seek target is too large")?;
     if nearest_checkpoint(checkpoints, target).is_none() {
         let (fresh, _, _, _) = load_sequencer(location, pdx_location, settings)?;
@@ -2564,7 +2593,9 @@ mod tests {
                         let map = buffer.map_readable().unwrap();
                         captured.lock().unwrap().extend(
                             map.as_slice()
-                                .chunks_exact(8)
+                                .as_chunks::<8>()
+                                .0
+                                .iter()
                                 .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap())),
                         );
                     }
@@ -2761,14 +2792,16 @@ mod tests {
         let (position, pending, reached_end) = seek_player(
             &mut player,
             &mut checkpoints,
-            Path::new("unused.vgm"),
-            None,
-            settings,
-            target_frame,
-            &cancelled,
             &mut checkpointing_enabled,
             &mut next_checkpoint_frame,
-            &output,
+            SeekRequest {
+                location: Path::new("unused.vgm"),
+                pdx_location: None,
+                settings,
+                target_frame,
+                cancelled: &cancelled,
+                output: &output,
+            },
         )
         .unwrap();
 

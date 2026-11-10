@@ -2188,10 +2188,9 @@ impl<'a> VgmSequencer<'a> {
             if voice.chip == Chip::Okim6258
                 && ((!playing && selector == DacStreamSelector::All)
                     || instances.contains(&voice.instance))
+                && let Some(scheduled) = voice.route.chip_mut().scheduled()
             {
-                if let Some(scheduled) = voice.route.chip_mut().scheduled() {
-                    scheduled.set_dac_stream_playing_at(playing, sample_frame, self.output_rate)?;
-                }
+                scheduled.set_dac_stream_playing_at(playing, sample_frame, self.output_rate)?;
             }
         }
         Ok(())

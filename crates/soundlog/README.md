@@ -101,13 +101,7 @@ for result in &mut callback_stream {
   `SetStreamData`, `SetStreamFrequency`, `StartStream`, `StartStreamFastCall`,
   `StopStream`) and will expand stream-generated writes into the output
   timeline at the correct sample positions.
-- Start and stop commands can optionally be emitted after processing with
-    `set_emit_stream_controls(true)`. Query configured targets using
-    `dac_stream_targets(DacStreamSelector::Stream(id))` for a start, or
-    `dac_stream_targets((&stop_command).into())` for a stop (including all-stream
-    stops). Targets remain available after stopping. Pass a `DacStreamTarget` to
-    `stop_dac_streams_for_target` to stop all matching streams without emitting a
-    command; a subsequent start can resume them. Both types are in `soundlog::vgm`.
+- Start and stop commands can optionally be emitted after processing with `set_emit_stream_controls(true)`. Query configured targets using `dac_stream_targets(DacStreamSelector::Stream(id))` for a start, or `dac_stream_targets((&stop_command).into())` for a stop (including all-stream stops). Targets remain available after stopping. Pass a `DacStreamTarget` to `stop_dac_streams_for_target` to stop all matching streams without emitting a command; a subsequent start can resume them. Both types are in `soundlog::vgm`.
 - It also supports YM2612 direct DAC writes and expands them into corresponding
   `Ym2612Port0Address2AWriteAndWaitN`, `SeekOffset` commands on the stream timeline.
 - While processing `Wait*` commands, the internal scheduler computes the outputs of the DAC stream

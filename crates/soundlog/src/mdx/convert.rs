@@ -3577,7 +3577,7 @@ mod tests {
         timing.tempo = 216;
         let (microseconds, _) = timing.advance_tick();
         assert_eq!(MdxToVgmOptions::default().max_ticks, Some(100_000));
-        assert_eq!(u32::from(microseconds) * 100_000, 1_024_000_000);
+        assert_eq!(microseconds * 100_000, 1_024_000_000);
     }
 
     #[test]

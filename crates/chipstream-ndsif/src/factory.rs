@@ -306,6 +306,8 @@ pub(super) fn validate_config(
     Ok(())
 }
 
+type SelectedTransport<T> = Option<(usize, Rc<RefCell<T>>)>;
+
 /// Find the first configured device supporting the requested chip and clock.
 fn find_transport<T: NdsifRoutingTransport>(
     transports: &[Rc<RefCell<T>>],
@@ -314,7 +316,7 @@ fn find_transport<T: NdsifRoutingTransport>(
     instance: u8,
     clock_hz: u32,
     oki_timing_clock: Option<u32>,
-) -> Result<Option<(usize, Rc<RefCell<T>>)>, ChipError> {
+) -> Result<SelectedTransport<T>, ChipError> {
     for (index, transport) in transports.iter().enumerate() {
         let device = transport.try_borrow().map_err(|_| ChipError::External {
             chip: chip.clone(),

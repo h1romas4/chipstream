@@ -641,8 +641,10 @@ mod tests {
         let last = graph.devices.last().unwrap();
         assert!(graph.height > graph.emulator_height);
         assert_eq!(graph.height, last.top + last.height);
-        assert!(TARGET_X + TARGET_WIDTH < SOURCE_X);
-        assert!(SOURCE_X + SOURCE_WIDTH < DEVICE_X);
+        let (target_x, target_width, source_x, source_width, device_x) =
+            std::hint::black_box((TARGET_X, TARGET_WIDTH, SOURCE_X, SOURCE_WIDTH, DEVICE_X));
+        assert!(target_x + target_width < source_x);
+        assert!(source_x + source_width < device_x);
         assert_eq!(DEVICE_X + DEVICE_WIDTH + 16., WIDTH);
     }
 }

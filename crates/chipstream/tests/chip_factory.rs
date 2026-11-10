@@ -94,15 +94,18 @@ fn state_callbacks_work_with_external_chip_factories() {
     ));
 }
 
+type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);
+type ScheduleTrace = (Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>);
+
 struct FakeChip {
     chip: Chip,
     clock: u32,
     channels: usize,
     writes: Arc<Mutex<Vec<Chip>>>,
-    dac_notifications: Option<(Instance, Arc<Mutex<Vec<(Instance, bool)>>>)>,
+    dac_notifications: Option<DacNotifications>,
     scheduled_checkpoint: Option<bool>,
     stop_dac: bool,
-    schedule_trace: Option<(Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>)>,
+    schedule_trace: Option<ScheduleTrace>,
 }
 
 impl FakeChip {

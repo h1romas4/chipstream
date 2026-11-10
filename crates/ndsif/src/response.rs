@@ -124,7 +124,9 @@ impl<'a> Capabilities<'a> {
     /// Iterate over the validated entries in wire order.
     pub fn entries(self) -> impl ExactSizeIterator<Item = CapabilityEntry> + 'a {
         self.entries
-            .chunks_exact(CAPABILITY_ENTRY_SIZE)
+            .as_chunks::<CAPABILITY_ENTRY_SIZE>()
+            .0
+            .iter()
             .map(|entry| decode_capability_entry(entry).expect("validated capability entry"))
     }
 }
@@ -155,10 +157,16 @@ fn decode_capability_entry(entry: &[u8]) -> Result<CapabilityEntry, Error> {
 
 /// Reject duplicate pages and inconsistent clocks for the same chip instance.
 fn validate_capability_entries(entries: &[u8]) -> Result<(), Error> {
-    let mut previous_entries = entries.chunks_exact(CAPABILITY_ENTRY_SIZE);
-    for (index, entry) in previous_entries.by_ref().enumerate() {
+    for (index, entry) in entries
+        .as_chunks::<CAPABILITY_ENTRY_SIZE>()
+        .0
+        .iter()
+        .enumerate()
+    {
         let current = decode_capability_entry(entry)?;
-        for previous in entries[..index * CAPABILITY_ENTRY_SIZE].chunks_exact(CAPABILITY_ENTRY_SIZE)
+        for previous in entries[..index * CAPABILITY_ENTRY_SIZE]
+            .as_chunks::<CAPABILITY_ENTRY_SIZE>()
+            .0
         {
             let previous = decode_capability_entry(previous)?;
             if current.write_id == previous.write_id
@@ -206,7 +214,7 @@ impl AudioStatus {
             return Err(Error::InvalidLength);
         }
         let mut values = [0; 10];
-        for (value, bytes) in values.iter_mut().zip(bytes.chunks_exact(4)) {
+        for (value, bytes) in values.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
             *value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         }
         let [
@@ -333,7 +341,10 @@ impl DacStatus {
             return Err(Error::InvalidLength);
         }
         let mut values = [0; 11];
-        for (value, bytes) in values.iter_mut().zip(bytes[4..48].chunks_exact(4)) {
+        for (value, bytes) in values
+            .iter_mut()
+            .zip(bytes[4..48].as_chunks::<4>().0.iter())
+        {
             *value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         }
         Ok(Self {
@@ -495,7 +506,9 @@ impl<'a> Response<'a> {
                         status.late_events,
                         status.max_event_lag,
                     ];
-                    for (bytes, value) in payload[1..41].chunks_exact_mut(4).zip(values) {
+                    for (bytes, value) in
+                        payload[1..41].as_chunks_mut::<4>().0.iter_mut().zip(values)
+                    {
                         bytes.copy_from_slice(&value.to_le_bytes());
                     }
                     41
@@ -529,10 +542,12 @@ impl<'a> Response<'a> {
                         status.late_dac,
                         status.max_late_us,
                     ];
-                    for (bytes, value) in payload[5..49].chunks_exact_mut(4).zip(values) {
+                    for (bytes, value) in
+                        payload[5..49].as_chunks_mut::<4>().0.iter_mut().zip(values)
+                    {
                         bytes.copy_from_slice(&value.to_le_bytes());
                     }
-                    for (bytes, value) in payload[49..73].chunks_exact_mut(8).zip([
+                    for (bytes, value) in payload[49..73].as_chunks_mut::<8>().0.iter_mut().zip([
                         status.accepted_tick,
                         status.played_tick,
                         status.executed_tick,

@@ -51,12 +51,11 @@ pub fn resize(image: Arc<RenderImage>, target: u32) -> Result<Arc<RenderImage>> 
             );
             for pixel in pixels.pixels_mut() {
                 let alpha = u32::from(pixel[3]);
-                if alpha != 0 {
-                    for channel in &mut pixel.0[..3] {
-                        *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-                    }
-                } else {
-                    pixel.0[..3].fill(0);
+                for channel in &mut pixel.0[..3] {
+                    *channel = (u32::from(*channel) * 255 + alpha / 2)
+                        .checked_div(alpha)
+                        .unwrap_or(0)
+                        .min(255) as u8;
                 }
             }
         }
@@ -117,7 +116,12 @@ mod tests {
         let resized = resize(render(pixels), 100).unwrap();
         let bytes = resized.as_bytes(0).unwrap();
         assert_eq!(&bytes[..4], &[10, 20, 200, 255]);
-        for pixel in bytes.chunks_exact(4).filter(|pixel| pixel[3] > 16) {
+        for pixel in bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] > 16)
+        {
             assert!(
                 pixel[0] < 20 && pixel[1] < 30 && pixel[2] > 180,
                 "{pixel:?}"

@@ -177,8 +177,7 @@ impl FmMute {
     }
 
     pub fn rhythm_channel(&self, chip: &Chip, instance: Instance, channel: u8) -> bool {
-        channel >= 6
-            && channel <= 8
+        (6..=8).contains(&channel)
             && matches!(
                 chip,
                 Chip::Ym2413

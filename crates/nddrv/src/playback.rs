@@ -251,7 +251,7 @@ impl PresentationClock {
             if before == 0 {
                 return Ok(0);
             }
-            if before % 2 != 0 {
+            if !before.is_multiple_of(2) {
                 std::hint::spin_loop();
                 continue;
             }
@@ -682,10 +682,10 @@ impl IdlePreview {
                     set_source_targets(&mut sources, &routing, plan_for_preview.as_ref());
                     run_preview(&path, rate, looped, &state, &state.cancel, Some(sources))
                 })();
-                if let Err(error) = result {
-                    if let Ok(mut preview) = state.preview.lock() {
-                        preview.error = Some(format!("{error:#}"));
-                    }
+                if let Err(error) = result
+                    && let Ok(mut preview) = state.preview.lock()
+                {
+                    preview.error = Some(format!("{error:#}"));
                 }
             })
             .context("start piano roll preview worker")?;
@@ -797,10 +797,10 @@ struct PreviewPanicGuard(Arc<PlaybackControl>);
 
 impl Drop for PreviewPanicGuard {
     fn drop(&mut self) {
-        if thread::panicking() {
-            if let Ok(mut preview) = self.0.preview.lock() {
-                preview.error = Some("preview worker panicked".into());
-            }
+        if thread::panicking()
+            && let Ok(mut preview) = self.0.preview.lock()
+        {
+            preview.error = Some("preview worker panicked".into());
         }
     }
 }
@@ -815,10 +815,10 @@ impl PreviewWorker {
             .name("piano-roll-preview".into())
             .spawn(move || {
                 let _panic_guard = PreviewPanicGuard(Arc::clone(&control));
-                if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop, None) {
-                    if let Ok(mut preview) = control.preview.lock() {
-                        preview.error = Some(format!("{error:#}"));
-                    }
+                if let Err(error) = run_preview(&path, rate, looped, &control, &worker_stop, None)
+                    && let Ok(mut preview) = control.preview.lock()
+                {
+                    preview.error = Some(format!("{error:#}"));
                 }
             })
             .context("start piano roll preview worker")?;
@@ -2249,10 +2249,10 @@ fn run_inner(
     drop(sequencer);
     if let Some((recorders, workers)) = hardware {
         drop(recorders);
-        if control.cancel.load(Ordering::Acquire) || control.first_presentation.get().is_none() {
-            if let Some(timeline) = control.hardware_timeline.get() {
-                timeline.cancel();
-            }
+        if (control.cancel.load(Ordering::Acquire) || control.first_presentation.get().is_none())
+            && let Some(timeline) = control.hardware_timeline.get()
+        {
+            timeline.cancel();
         }
         workers.finish()?;
     }
@@ -4234,11 +4234,13 @@ mod tests {
             loop {
                 let snapshot = preview.visual_snapshot(RollMode::Incoming).unwrap();
                 let sources = preview.gain_sources().unwrap();
-                if !snapshot.scanning && sources.is_some() {
+                if !snapshot.scanning
+                    && let Some(sources) = sources
+                {
                     assert!(!snapshot.notes.is_empty(), "{}", path.display());
                     assert_eq!(snapshot.position, 0);
                     assert!(!snapshot.started);
-                    assert!(sources.unwrap().iter().any(|source| {
+                    assert!(sources.iter().any(|source| {
                         source.chip == Chip::Ym2151
                             && source.instance == Instance::Primary
                             && source.hardware
@@ -4885,7 +4887,7 @@ mod tests {
                         &HashMap::from([(1, vec![capability])]),
                     );
                     let plan = session.playback_plan(&[device], settings).unwrap();
-                    assert_eq!(plan.routes, [route.clone()]);
+                    assert_eq!(plan.routes.as_slice(), std::slice::from_ref(&route));
                     assert_eq!(plan.nd7_devices, [0]);
                     plan.validate_nd7(&document.header, None).unwrap();
                     Some(plan)

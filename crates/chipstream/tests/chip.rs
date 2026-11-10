@@ -125,7 +125,7 @@ fn ym2149_emits_correct_pitch_and_honors_clock_divider() {
         chip.generate(&mut samples).unwrap();
         let mut previous = 0;
         let mut rising = 0;
-        for frame in samples.chunks_exact(3) {
+        for frame in samples.as_chunks::<3>().0 {
             if frame[0] > 0 && previous == 0 {
                 rising += 1;
             }

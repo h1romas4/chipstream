@@ -406,11 +406,10 @@ fn device_port(
                     .devices
                     .iter_mut()
                     .find(|device| device.id == id)
+                    && device.port != *port
                 {
-                    if device.port != *port {
-                        device.port = port.clone();
-                        view.save();
-                    }
+                    device.port = port.clone();
+                    view.save();
                 }
             }
             cx.notify();
@@ -5192,6 +5191,702 @@ fn playback_state_label(active: bool, paused: bool, waiting: bool) -> &'static s
     }
 }
 
+impl Render for AppView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == Page::Piano && self.playing.is_some() && !self.paused {
+            window.request_animation_frame();
+        }
+        let show_title_bar = !cfg!(target_os = "linux")
+            || matches!(window.window_decorations(), Decorations::Client { .. });
+        let playlist_width = self.config.playlist_width.unwrap_or_else(|| {
+            ((window.viewport_size().width.as_f32() - 52. - self.config.library_width) / 2.)
+                .clamp(library::MIN_PANEL_WIDTH, library::MAX_PANEL_WIDTH)
+        });
+        let keep_side_widths = window.viewport_size().width.as_f32()
+            >= 52. + 220. + self.config.library_width + playlist_width;
+        if self
+            .keep_side_widths
+            .is_some_and(|previous| previous != keep_side_widths)
+        {
+            // Reapply saved sizes when switching between constrained and fixed layouts.
+            self.panel_state.update(cx, |state, _| state.clear());
+        }
+        self.keep_side_widths = Some(keep_side_widths);
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if is_search_shortcut(&event.keystroke, view.page) {
+                    view.query.update(cx, |input, cx| input.focus(window, cx));
+                    cx.stop_propagation();
+                    return;
+                }
+                if is_stop_shortcut(&event.keystroke, view.page, view.playing.is_some()) {
+                    view.stop_playback(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if !is_play_shortcut(&event.keystroke, view.page, !view.config.playlist.is_empty()) {
+                    return;
+                }
+                if view.page != Page::Piano {
+                    view.focus.focus(window, cx);
+                }
+                view.page = Page::Piano;
+                if view.playing.is_none() {
+                    view.play(0, cx);
+                } else if view.paused && !view.playing_hardware {
+                    view.paused = false;
+                    view.player.set_paused(false);
+                    view.status = "Playing".into();
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .bg(rgb(0x111820))
+            .text_color(rgb(0xe4edf2))
+            .when(show_title_bar, |view| {
+                view.child(
+                    TitleBar::new()
+                        .bg(rgb(0x1b2530))
+                        .border_color(rgb(0x243441))
+                        .text_color(rgb(0xe4edf2))
+                        .on_close_window(cx.listener(|view, _, window, cx| {
+                            view.capture_window_settings(window);
+                            view.save_window_settings();
+                            view.save_music_search(cx);
+                            window.remove_window();
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(APP_TITLE),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .w(px(52.))
+                            .h_full()
+                            .bg(rgb(0x1b2530))
+                            .p_2()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                Button::new("library-icon")
+                                    .icon(assets::IconName::FolderOpen)
+                                    .tooltip("Library")
+                                    .accessibility_label("Library")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.focus.focus(window, cx);
+                                        view.page = Page::Library;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .child(
+                                        Button::new("piano-icon")
+                                            .icon(assets::IconName::Piano)
+                                            .tooltip("Piano roll")
+                                            .accessibility_label("Piano roll")
+                                            .toggled(self.page == Page::Piano)
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.focus.focus(window, cx);
+                                                view.page = Page::Piano;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(self.playing.is_some(), |node| {
+                                        node.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .size(px(8.))
+                                                .rounded_full()
+                                                .bg(rgb(ACCENT_COLOR)),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                Button::new("devices-icon")
+                                    .icon(assets::IconName::Cable)
+                                    .tooltip("Devices")
+                                    .accessibility_label("Devices")
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.page = Page::Devices;
+                                        view.refresh_ports(cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .when(self.page == Page::Piano, |container| {
+                                let snapshot = if self.playing.is_some() {
+                                    self.player
+                                        .visual_snapshot_with_preview(self.roll_mode, self.transition_preview.as_ref())
+                                        .map_err(|error| error.to_string())
+                                } else if let Some(error) = &self.idle_preview_error {
+                                    Err(format!("piano roll preview: {error}"))
+                                } else if let Some(preview) = self.current_idle_preview() {
+                                    preview
+                                        .visual_snapshot(self.roll_mode)
+                                        .map_err(|error| error.to_string())
+                                } else {
+                                    Ok(visualizer::Snapshot::default())
+                                };
+                                if self.piano_transition_pending
+                                    && piano_transition_ready(
+                                        snapshot.as_ref().map_err(|_| ()),
+                                        self.roll_mode,
+                                        self.gain_sources.is_some() || self.gain_sources_failed,
+                                        self.piano_title_pending,
+                                    )
+                                {
+                                    self.piano_transition_pending = false;
+                                }
+                                let transitioning = self.playing.is_some() && self.piano_transition_pending;
+                                if transitioning && self.paused {
+                                    window.request_animation_frame();
+                                }
+                                let snapshot = if transitioning {
+                                    Ok(visualizer::Snapshot::default())
+                                } else {
+                                    snapshot
+                                };
+                                if (self.paused || self.playing.is_none())
+                                    && snapshot.as_ref().is_ok_and(|snapshot| snapshot.scanning)
+                                {
+                                    window.request_animation_frame();
+                                }
+                                container.child(
+                                    div()
+                                        .relative()
+                                        .flex()
+                                        .size_full()
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .child(visualizer::view(
+                                                    self.piano_title(),
+                                                    visualizer::ViewPlayback {
+                                                        playing: self.playing.is_some(),
+                                                        previewing: self.playing.is_none() && !self.config.playlist.is_empty(),
+                                                        paused: self.paused,
+                                                    },
+                                                    self.roll_mode,
+                                                    self.roll_hidden_channels.clone(),
+                                                    snapshot,
+                                                    self.playback_buttons(cx),
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .bottom(px(16.))
+                                                        .right(px(28.))
+                                                        .flex()
+                                                        .gap_2()
+                                                        .child(
+                                                            Button::new("piano-incoming")
+                                                                .label("Incoming")
+                                                                .when(
+                                                                    self.roll_mode == visualizer::RollMode::Incoming,
+                                                                    |button| button.primary(),
+                                                                )
+                                                                .toggled(self.roll_mode == visualizer::RollMode::Incoming)
+                                                                .on_click(cx.listener(|view, _, _, cx| {
+                                                                    view.roll_mode = visualizer::RollMode::Incoming;
+                                                                    cx.notify();
+                                                                })),
+                                                        )
+                                                        .child(
+                                                            Button::new("piano-trail")
+                                                                .label("Trail")
+                                                                .when(
+                                                                    self.roll_mode == visualizer::RollMode::Trail,
+                                                                    |button| button.primary(),
+                                                                )
+                                                                .toggled(self.roll_mode == visualizer::RollMode::Trail)
+                                                                .on_click(cx.listener(|view, _, _, cx| {
+                                                                    view.roll_mode = visualizer::RollMode::Trail;
+                                                                    cx.notify();
+                                                                })),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(24.))
+                                                        .right(px(28.))
+                                                        .bottom(px(64.))
+                                                        .w(px(260.))
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap_2()
+                                                        .when(!transitioning, |panel| panel
+                                                            .child(self.piano_gain_panel(cx))
+                                                            .child(self.piano_channel_panel(cx))),
+                                                )
+                                        )
+                                        ,
+                                )
+                            })
+                            .when(self.page == Page::Library, |container| {
+                                container.child(
+                            h_resizable("main-panels")
+                                .with_state(&self.panel_state)
+                                .on_resize({
+                                    let view = cx.weak_entity();
+                                    move |state, _, cx| {
+                                        let sizes = state.read(cx).sizes();
+                                        if let [library, _, playlist] = sizes.as_slice() {
+                                            let (library, playlist) = (
+                                                library.as_f32().clamp(
+                                                    library::MIN_PANEL_WIDTH,
+                                                    library::MAX_PANEL_WIDTH,
+                                                ),
+                                                playlist.as_f32().clamp(
+                                                    library::MIN_PANEL_WIDTH,
+                                                    library::MAX_PANEL_WIDTH,
+                                                ),
+                                            );
+                                            let _ = view.update(cx, |view, cx| {
+                                                view.config.library_width = library;
+                                                view.config.playlist_width = Some(playlist);
+                                                view.save();
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                })
+                                .child(
+                                    resizable_panel()
+                                        .size(px(self.config.library_width))
+                                        .when(keep_side_widths, |panel| panel.fixed())
+                                        .size_range(
+                                            px(library::MIN_PANEL_WIDTH)
+                                                ..px(library::MAX_PANEL_WIDTH),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .w_full()
+                                                .h_full()
+                                                .p_3()
+                                                .gap_2()
+                                                .bg(rgb(0x17212b))
+                                                .child(div().text_lg().child("LIBRARY"))
+                                                .child(
+                                                    div()
+                                                        .id("all-tracks")
+                                                        .px_2()
+                                                        .py_1()
+                                                        .rounded_sm()
+                                                        .text_sm()
+                                                        .when(
+                                                            self.selected_directory.is_none(),
+                                                            |row| row.bg(rgb(0x304755)),
+                                                        )
+                                                        .hover(|style| style.bg(rgb(0x293a47)))
+                                                        .child("All tracks")
+                                                        .on_click(cx.listener(|view, _, _, cx| {
+                                                            view.selected_directory = None;
+                                                            view.update_filter(cx);
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .flex_1()
+                                                        .min_h_0()
+                                                        .overflow_hidden()
+                                                        .when(self.config.directories.is_empty(), |area| {
+                                                            area.justify_end().child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .items_center()
+                                                                    .flex_shrink_0()
+                                                                    .child(
+                                                                        Bubble::new()
+                                                                            .content(
+                                                                                BubbleContent::new()
+                                                                                    .bg(rgb(0x674080))
+                                                                                    .text_color(rgb(0xffffff)),
+                                                                            )
+                                                                            .w_full()
+                                                                            .max_w_full()
+                                                                            .child("Add a music folder."),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .text_color(rgb(0xc792ea))
+                                                                            .child(Icon::new(assets::IconName::ArrowDown).size_4()),
+                                                                    ),
+                                                            )
+                                                        })
+                                                        .when(!self.config.directories.is_empty(), |area| {
+                                                            area.child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_1()
+                                                                    .min_h_0()
+                                                                    .child(
+                                                                        uniform_list(
+                                                                            "directories",
+                                                                            self.visible_directories.len(),
+                                                                            cx.processor(
+                                                                                |view, range, _, cx| {
+                                                                                    view.directory_rows(
+                                                                                        range, cx,
+                                                                                    )
+                                                                                },
+                                                                            ),
+                                                                        )
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .h_full()
+                                                                        .track_scroll(&self.directory_scroll),
+                                                                    )
+                                                                    .child(scrollbar(
+                                                                        "directory-scrollbar",
+                                                                        &self.directory_scroll,
+                                                                    )),
+                                                            )
+                                                        }),
+                                                )
+                                                .child(
+                                                    Button::new("add-folder")
+                                                        .label("+ Add directory")
+                                                        .on_click(cx.listener(|view, _, _, cx| {
+                                                            view.add_directory(cx)
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new("rescan")
+                                                        .label(if self.scanning {
+                                                            "Scanning..."
+                                                        } else {
+                                                            "Rescan"
+                                                        })
+                                                        .on_click(cx.listener(|view, _, _, cx| {
+                                                            view.scan(ScanOrigin::Rescan, cx)
+                                                        })),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    resizable_panel().size_range(px(220.)..Pixels::MAX).child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .p_3()
+                                            .gap_2()
+                                            .child(div().text_lg().child("MUSIC"))
+                                            .child(self.search_input(window, cx))
+                                            .child(
+                                                div()
+                                                    .id("music-list-container")
+                                                    .track_focus(&self.track_focus)
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(|view, _, window, cx| {
+                                                            view.track_focus.focus(window, cx);
+                                                        }),
+                                                    )
+                                                    .on_key_down(cx.listener(
+                                                        |view, event: &KeyDownEvent, window, cx| {
+                                                            if !view.track_focus.is_focused(window) {
+                                                                return;
+                                                            }
+                                                            match list_key(&event.keystroke, DetailsSelection::Music) {
+                                                                Some(ListKey::SelectAll) => view.select_all_tracks(),
+                                                                Some(ListKey::Up) => view.move_track_selection(false, false),
+                                                                Some(ListKey::Down) => view.move_track_selection(true, false),
+                                                                Some(ListKey::ExtendUp) => view.move_track_selection(false, true),
+                                                                Some(ListKey::ExtendDown) => view.move_track_selection(true, true),
+                                                                Some(ListKey::Add) if !view.selected_tracks.is_empty() => view.add_selected_tracks(cx),
+                                                                _ => return,
+                                                            }
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .flex()
+                                                    .flex_1()
+                                                    .min_h_0()
+                                                    .child(
+                                                        uniform_list(
+                                                            "track-list",
+                                                            self.filtered_tracks.len(),
+                                                            cx.processor(|view, range, window, cx| {
+                                                                view.library_rows(range, window, cx)
+                                                            }),
+                                                        )
+                                                        .track_scroll(&self.library_scroll)
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .h_full(),
+                                                    )
+                                                    .child(scrollbar(
+                                                        "library-scrollbar",
+                                                        &self.library_scroll,
+                                                    )),
+                                            ),
+                                    ),
+                                )
+                                .child(
+                                    resizable_panel()
+                                        .size(px(playlist_width))
+                                        .when(keep_side_widths, |panel| panel.fixed())
+                                        .size_range(
+                                            px(library::MIN_PANEL_WIDTH)
+                                                ..px(library::MAX_PANEL_WIDTH),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .w_full()
+                                                .h_full()
+                                                .p_3()
+                                                .gap_2()
+                                                .bg(rgb(0x17212b))
+                                                .child(div().text_lg().child("PLAYLIST"))
+                                                .child(self.transport(cx))
+                                                .child(
+                                                    div()
+                                                        .id("playlist-list-container")
+                                                        .track_focus(&self.queue_focus)
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(|view, _, window, cx| {
+                                                                view.queue_focus.focus(window, cx);
+                                                            }),
+                                                        )
+                                                        .on_key_down(cx.listener(
+                                                            |view, event: &KeyDownEvent, window, cx| {
+                                                                if !view.queue_focus.is_focused(window) {
+                                                                    return;
+                                                                }
+                                                                match list_key(&event.keystroke, DetailsSelection::Playlist) {
+                                                                    Some(ListKey::SelectAll) => view.select_all_queue(),
+                                                                    Some(ListKey::Up) => view.move_queue_selection(false, false),
+                                                                    Some(ListKey::Down) => view.move_queue_selection(true, false),
+                                                                    Some(ListKey::ExtendUp) => view.move_queue_selection(false, true),
+                                                                    Some(ListKey::ExtendDown) => view.move_queue_selection(true, true),
+                                                                    Some(ListKey::Play) => {
+                                                                        let Some(index) = single_queue_selection(&view.selected_queue, view.config.playlist.len()) else {
+                                                                            return;
+                                                                        };
+                                                                        view.play(index, cx);
+                                                                    }
+                                                                    Some(ListKey::Delete) => view.delete_queue_selection(cx),
+                                                                    _ => return,
+                                                                }
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                        .flex()
+                                                        .flex_1()
+                                                        .min_h_0()
+                                                        .child(
+                                                            uniform_list(
+                                                                "queue-list",
+                                                                self.config.playlist.len(),
+                                                                cx.processor(
+                                                                    |view, range, window, cx| {
+                                                                        view.queue_rows(range, window, cx)
+                                                                    },
+                                                                ),
+                                                            )
+                                                            .track_scroll(&self.queue_scroll)
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .h_full(),
+                                                        )
+                                                        .child(scrollbar(
+                                                            "queue-scrollbar",
+                                                            &self.queue_scroll,
+                                                        )),
+                                                )
+                                                .child(self.track_details()),
+                                        ),
+                                ),
+                        )
+                            })
+                            .when(self.page == Page::Devices, |container| {
+                                container.child(self.devices_view(cx))
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0x243441))
+                    .text_sm()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(self.status.clone()),
+                    )
+                    .when_some(
+                        selection_status(
+                            self.details_selection,
+                            self.selected_tracks.len(),
+                            self.selected_queue.len(),
+                        ),
+                        |bar, status| {
+                            bar.child(div().flex_shrink_0().text_color(rgb(0xa6b6c3)).child(status))
+                        },
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(rgb(0xa6b6c3))
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                    )
+                    .when_some(self.update_available.clone(), |bar, version| {
+                        let url = format!(
+                            "https://github.com/h1romas4/chipstream/releases/tag/nddrv-v{version}"
+                        );
+                        let blue = ButtonCustomVariant::new(cx)
+                            .color(rgb(0x006cbe).into())
+                            .foreground(rgb(0xffffff).into())
+                            .hover(rgb(0x0078d4).into())
+                            .active(rgb(0x005a9e).into());
+                        bar.child(
+                            Button::new("update-available")
+                                .label(format!("Update available: v{version}"))
+                                .custom(blue)
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        )
+                    })
+                    .child(
+                        Button::new("settings")
+                            .icon(assets::IconName::Settings)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Settings")
+                            .accessibility_label("Settings")
+                            .on_click(cx.listener(|view, _, window, cx| view.open_settings(window, cx))),
+                    ),
+            )
+    }
+}
+
+fn main() {
+    application().with_assets(assets::AllAssets).run(|cx| {
+        init(cx);
+        #[cfg(target_os = "macos")]
+        configure_app_menu(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
+        Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
+        let (config_path, config, config_error) = load_app_config();
+        let visible = cx.primary_display().map(|display| display.visible_bounds());
+        let bounds = restored_window_bounds(visible, config.window);
+        let initial_size = bounds.get_bounds().size;
+        let window_settings = config.window.unwrap_or(WindowSettings {
+            width: initial_size.width.as_f32(),
+            height: initial_size.height.as_f32(),
+            maximized: false,
+        });
+        let options = WindowOptions {
+            window_bounds: Some(bounds),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some("nddrv".into()),
+            ..TitleBar::window_options()
+        };
+        open_window(options, cx, |window, cx| {
+            window.set_window_title(APP_TITLE);
+            cx.new(|cx| {
+                let mut app = AppView::new(
+                    window,
+                    cx,
+                    config_path,
+                    config,
+                    config_error,
+                    window_settings,
+                );
+                app.focus.focus(window, cx);
+                cx.observe_window_bounds(window, |view, _, _| {
+                    view.window_observation_pending = Some(Instant::now());
+                })
+                .detach();
+                let view = cx.weak_entity();
+                window.on_window_should_close(cx, move |window, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.player.stop_and_wait();
+                        view.recording_session = None;
+                        view.capture_window_settings(window);
+                        view.save_window_settings();
+                        view.save_music_search(cx);
+                    });
+                    true
+                });
+                let handle = window.window_handle();
+                cx.on_app_quit(move |view, cx| {
+                    view.player.stop_and_wait();
+                    if let Ok(Some(bounds)) = handle.update(cx, |_, window, _| {
+                        window.is_visible().then(|| window.window_bounds())
+                    }) {
+                        view.record_window_bounds(bounds);
+                    }
+                    view.save_window_settings();
+                    view.save_music_search(cx);
+                    async {}
+                })
+                .detach();
+                cx.on_release(|view, cx| {
+                    view.player.stop_and_wait();
+                    view.save_window_settings();
+                    view.save_music_search(cx);
+                })
+                .detach();
+                app.check_for_updates(cx);
+                if !app.config.directories.is_empty() {
+                    app.scan(ScanOrigin::Background, cx);
+                } else {
+                    app.load_playlist_metadata(ScanOrigin::Background, cx);
+                }
+                app
+            })
+        })
+        .expect("failed to open nddrv window");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -5545,7 +6240,6 @@ mod tests {
         let progress = super::ScanProgress {
             files: 12,
             errors: 2,
-            ..Default::default()
         };
         let errors = vec!["bad track".to_owned(), "missing directory".to_owned()];
         assert_eq!(
@@ -5702,18 +6396,18 @@ mod tests {
         );
         statuses.insert(1, DeviceStatus::Connected(vec![]));
         assert_eq!(
-            unsupported_chips(&[ay.clone()], &[first], &statuses, false),
+            unsupported_chips(std::slice::from_ref(&ay), &[first], &statuses, false),
             ["AY8910"]
         );
         assert_eq!(
-            unsupported_chips(&[pokey.clone()], &[], &statuses, false),
+            unsupported_chips(std::slice::from_ref(&pokey), &[], &statuses, false),
             ["POKEY"]
         );
         assert_eq!(
             unsupported_chips(&[ay.clone(), pokey, ym], &[], &statuses, true),
             ["POKEY"]
         );
-        assert!(unsupported_chips(&[dual_ay.clone()], &[], &statuses, true).is_empty());
+        assert!(unsupported_chips(std::slice::from_ref(&dual_ay), &[], &statuses, true).is_empty());
         let valid_route = Connection {
             chip: HardwareChip::Ay8910,
             source: ChipInstance::Primary,
@@ -5728,15 +6422,25 @@ mod tests {
             }]),
         );
         assert!(
-            unsupported_chips(&[dual_ay.clone()], &[valid_route.clone()], &statuses, true)
-                .is_empty()
+            unsupported_chips(
+                std::slice::from_ref(&dual_ay),
+                std::slice::from_ref(&valid_route),
+                &statuses,
+                true
+            )
+            .is_empty()
         );
         let incompatible = ChipTag {
             ym2149_compatible: [true, false],
             ..dual_ay
         };
         assert_eq!(
-            unsupported_chips(&[incompatible], &[valid_route.clone()], &statuses, true),
+            unsupported_chips(
+                &[incompatible],
+                std::slice::from_ref(&valid_route),
+                &statuses,
+                true
+            ),
             ["AY8910x2"]
         );
         statuses.insert(2, DeviceStatus::Disconnecting);
@@ -6618,698 +7322,4 @@ mod tests {
         assert_eq!(adjacent_track(Some(3), 3, false), None);
         assert_eq!(adjacent_track(Some(0), 0, true), None);
     }
-}
-
-impl Render for AppView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.page == Page::Piano && self.playing.is_some() && !self.paused {
-            window.request_animation_frame();
-        }
-        let show_title_bar = !cfg!(target_os = "linux")
-            || matches!(window.window_decorations(), Decorations::Client { .. });
-        let playlist_width = self.config.playlist_width.unwrap_or_else(|| {
-            ((window.viewport_size().width.as_f32() - 52. - self.config.library_width) / 2.)
-                .clamp(library::MIN_PANEL_WIDTH, library::MAX_PANEL_WIDTH)
-        });
-        let keep_side_widths = window.viewport_size().width.as_f32()
-            >= 52. + 220. + self.config.library_width + playlist_width;
-        if self
-            .keep_side_widths
-            .is_some_and(|previous| previous != keep_side_widths)
-        {
-            // Reapply saved sizes when switching between constrained and fixed layouts.
-            self.panel_state.update(cx, |state, _| state.clear());
-        }
-        self.keep_side_widths = Some(keep_side_widths);
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
-                if is_search_shortcut(&event.keystroke, view.page) {
-                    view.query.update(cx, |input, cx| input.focus(window, cx));
-                    cx.stop_propagation();
-                    return;
-                }
-                if is_stop_shortcut(&event.keystroke, view.page, view.playing.is_some()) {
-                    view.stop_playback(cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if !is_play_shortcut(&event.keystroke, view.page, !view.config.playlist.is_empty()) {
-                    return;
-                }
-                if view.page != Page::Piano {
-                    view.focus.focus(window, cx);
-                }
-                view.page = Page::Piano;
-                if view.playing.is_none() {
-                    view.play(0, cx);
-                } else if view.paused && !view.playing_hardware {
-                    view.paused = false;
-                    view.player.set_paused(false);
-                    view.status = "Playing".into();
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }))
-            .bg(rgb(0x111820))
-            .text_color(rgb(0xe4edf2))
-            .when(show_title_bar, |view| {
-                view.child(
-                    TitleBar::new()
-                        .bg(rgb(0x1b2530))
-                        .border_color(rgb(0x243441))
-                        .text_color(rgb(0xe4edf2))
-                        .on_close_window(cx.listener(|view, _, window, cx| {
-                            view.capture_window_settings(window);
-                            view.save_window_settings();
-                            view.save_music_search(cx);
-                            window.remove_window();
-                        }))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(APP_TITLE),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .w(px(52.))
-                            .h_full()
-                            .bg(rgb(0x1b2530))
-                            .p_2()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                Button::new("library-icon")
-                                    .icon(assets::IconName::FolderOpen)
-                                    .tooltip("Library")
-                                    .accessibility_label("Library")
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.focus.focus(window, cx);
-                                        view.page = Page::Library;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .relative()
-                                    .child(
-                                        Button::new("piano-icon")
-                                            .icon(assets::IconName::Piano)
-                                            .tooltip("Piano roll")
-                                            .accessibility_label("Piano roll")
-                                            .toggled(self.page == Page::Piano)
-                                            .on_click(cx.listener(|view, _, window, cx| {
-                                                view.focus.focus(window, cx);
-                                                view.page = Page::Piano;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .when(self.playing.is_some(), |node| {
-                                        node.child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .right_0()
-                                                .size(px(8.))
-                                                .rounded_full()
-                                                .bg(rgb(ACCENT_COLOR)),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                Button::new("devices-icon")
-                                    .icon(assets::IconName::Cable)
-                                    .tooltip("Devices")
-                                    .accessibility_label("Devices")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.page = Page::Devices;
-                                        view.refresh_ports(cx);
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .when(self.page == Page::Piano, |container| {
-                                let snapshot = if self.playing.is_some() {
-                                    self.player
-                                        .visual_snapshot_with_preview(self.roll_mode, self.transition_preview.as_ref())
-                                        .map_err(|error| error.to_string())
-                                } else if let Some(error) = &self.idle_preview_error {
-                                    Err(format!("piano roll preview: {error}"))
-                                } else if let Some(preview) = self.current_idle_preview() {
-                                    preview
-                                        .visual_snapshot(self.roll_mode)
-                                        .map_err(|error| error.to_string())
-                                } else {
-                                    Ok(visualizer::Snapshot::default())
-                                };
-                                if self.piano_transition_pending
-                                    && piano_transition_ready(
-                                        snapshot.as_ref().map_err(|_| ()),
-                                        self.roll_mode,
-                                        self.gain_sources.is_some() || self.gain_sources_failed,
-                                        self.piano_title_pending,
-                                    )
-                                {
-                                    self.piano_transition_pending = false;
-                                }
-                                let transitioning = self.playing.is_some() && self.piano_transition_pending;
-                                if transitioning && self.paused {
-                                    window.request_animation_frame();
-                                }
-                                let snapshot = if transitioning {
-                                    Ok(visualizer::Snapshot::default())
-                                } else {
-                                    snapshot
-                                };
-                                if (self.paused || self.playing.is_none())
-                                    && snapshot.as_ref().is_ok_and(|snapshot| snapshot.scanning)
-                                {
-                                    window.request_animation_frame();
-                                }
-                                container.child(
-                                    div()
-                                        .relative()
-                                        .flex()
-                                        .size_full()
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .h_full()
-                                                .child(visualizer::view(
-                                                    self.piano_title(),
-                                                    self.playing.is_some(),
-                                                    self.playing.is_none() && !self.config.playlist.is_empty(),
-                                                    self.paused,
-                                                    self.roll_mode,
-                                                    self.roll_hidden_channels.clone(),
-                                                    snapshot,
-                                                    self.playback_buttons(cx),
-                                                ))
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .bottom(px(16.))
-                                                        .right(px(28.))
-                                                        .flex()
-                                                        .gap_2()
-                                                        .child(
-                                                            Button::new("piano-incoming")
-                                                                .label("Incoming")
-                                                                .when(
-                                                                    self.roll_mode == visualizer::RollMode::Incoming,
-                                                                    |button| button.primary(),
-                                                                )
-                                                                .toggled(self.roll_mode == visualizer::RollMode::Incoming)
-                                                                .on_click(cx.listener(|view, _, _, cx| {
-                                                                    view.roll_mode = visualizer::RollMode::Incoming;
-                                                                    cx.notify();
-                                                                })),
-                                                        )
-                                                        .child(
-                                                            Button::new("piano-trail")
-                                                                .label("Trail")
-                                                                .when(
-                                                                    self.roll_mode == visualizer::RollMode::Trail,
-                                                                    |button| button.primary(),
-                                                                )
-                                                                .toggled(self.roll_mode == visualizer::RollMode::Trail)
-                                                                .on_click(cx.listener(|view, _, _, cx| {
-                                                                    view.roll_mode = visualizer::RollMode::Trail;
-                                                                    cx.notify();
-                                                                })),
-                                                        ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .top(px(24.))
-                                                        .right(px(28.))
-                                                        .bottom(px(64.))
-                                                        .w(px(260.))
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap_2()
-                                                        .when(!transitioning, |panel| panel
-                                                            .child(self.piano_gain_panel(cx))
-                                                            .child(self.piano_channel_panel(cx))),
-                                                )
-                                        )
-                                        ,
-                                )
-                            })
-                            .when(self.page == Page::Library, |container| {
-                                container.child(
-                            h_resizable("main-panels")
-                                .with_state(&self.panel_state)
-                                .on_resize({
-                                    let view = cx.weak_entity();
-                                    move |state, _, cx| {
-                                        let sizes = state.read(cx).sizes();
-                                        if let [library, _, playlist] = sizes.as_slice() {
-                                            let (library, playlist) = (
-                                                library.as_f32().clamp(
-                                                    library::MIN_PANEL_WIDTH,
-                                                    library::MAX_PANEL_WIDTH,
-                                                ),
-                                                playlist.as_f32().clamp(
-                                                    library::MIN_PANEL_WIDTH,
-                                                    library::MAX_PANEL_WIDTH,
-                                                ),
-                                            );
-                                            let _ = view.update(cx, |view, cx| {
-                                                view.config.library_width = library;
-                                                view.config.playlist_width = Some(playlist);
-                                                view.save();
-                                                cx.notify();
-                                            });
-                                        }
-                                    }
-                                })
-                                .child(
-                                    resizable_panel()
-                                        .size(px(self.config.library_width))
-                                        .when(keep_side_widths, |panel| panel.fixed())
-                                        .size_range(
-                                            px(library::MIN_PANEL_WIDTH)
-                                                ..px(library::MAX_PANEL_WIDTH),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .w_full()
-                                                .h_full()
-                                                .p_3()
-                                                .gap_2()
-                                                .bg(rgb(0x17212b))
-                                                .child(div().text_lg().child("LIBRARY"))
-                                                .child(
-                                                    div()
-                                                        .id("all-tracks")
-                                                        .px_2()
-                                                        .py_1()
-                                                        .rounded_sm()
-                                                        .text_sm()
-                                                        .when(
-                                                            self.selected_directory.is_none(),
-                                                            |row| row.bg(rgb(0x304755)),
-                                                        )
-                                                        .hover(|style| style.bg(rgb(0x293a47)))
-                                                        .child("All tracks")
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.selected_directory = None;
-                                                            view.update_filter(cx);
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .flex_1()
-                                                        .min_h_0()
-                                                        .overflow_hidden()
-                                                        .when(self.config.directories.is_empty(), |area| {
-                                                            area.justify_end().child(
-                                                                div()
-                                                                    .flex()
-                                                                    .flex_col()
-                                                                    .items_center()
-                                                                    .flex_shrink_0()
-                                                                    .child(
-                                                                        Bubble::new()
-                                                                            .content(
-                                                                                BubbleContent::new()
-                                                                                    .bg(rgb(0x674080))
-                                                                                    .text_color(rgb(0xffffff)),
-                                                                            )
-                                                                            .w_full()
-                                                                            .max_w_full()
-                                                                            .child("Add a music folder."),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .text_color(rgb(0xc792ea))
-                                                                            .child(Icon::new(assets::IconName::ArrowDown).size_4()),
-                                                                    ),
-                                                            )
-                                                        })
-                                                        .when(!self.config.directories.is_empty(), |area| {
-                                                            area.child(
-                                                                div()
-                                                                    .flex()
-                                                                    .flex_1()
-                                                                    .min_h_0()
-                                                                    .child(
-                                                                        uniform_list(
-                                                                            "directories",
-                                                                            self.visible_directories.len(),
-                                                                            cx.processor(
-                                                                                |view, range, _, cx| {
-                                                                                    view.directory_rows(
-                                                                                        range, cx,
-                                                                                    )
-                                                                                },
-                                                                            ),
-                                                                        )
-                                                                        .flex_1()
-                                                                        .min_w_0()
-                                                                        .h_full()
-                                                                        .track_scroll(&self.directory_scroll),
-                                                                    )
-                                                                    .child(scrollbar(
-                                                                        "directory-scrollbar",
-                                                                        &self.directory_scroll,
-                                                                    )),
-                                                            )
-                                                        }),
-                                                )
-                                                .child(
-                                                    Button::new("add-folder")
-                                                        .label("+ Add directory")
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.add_directory(cx)
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("rescan")
-                                                        .label(if self.scanning {
-                                                            "Scanning..."
-                                                        } else {
-                                                            "Rescan"
-                                                        })
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.scan(ScanOrigin::Rescan, cx)
-                                                        })),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    resizable_panel().size_range(px(220.)..Pixels::MAX).child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h_full()
-                                            .p_3()
-                                            .gap_2()
-                                            .child(div().text_lg().child("MUSIC"))
-                                            .child(self.search_input(window, cx))
-                                            .child(
-                                                div()
-                                                    .id("music-list-container")
-                                                    .track_focus(&self.track_focus)
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        cx.listener(|view, _, window, cx| {
-                                                            view.track_focus.focus(window, cx);
-                                                        }),
-                                                    )
-                                                    .on_key_down(cx.listener(
-                                                        |view, event: &KeyDownEvent, window, cx| {
-                                                            if !view.track_focus.is_focused(window) {
-                                                                return;
-                                                            }
-                                                            match list_key(&event.keystroke, DetailsSelection::Music) {
-                                                                Some(ListKey::SelectAll) => view.select_all_tracks(),
-                                                                Some(ListKey::Up) => view.move_track_selection(false, false),
-                                                                Some(ListKey::Down) => view.move_track_selection(true, false),
-                                                                Some(ListKey::ExtendUp) => view.move_track_selection(false, true),
-                                                                Some(ListKey::ExtendDown) => view.move_track_selection(true, true),
-                                                                Some(ListKey::Add) if !view.selected_tracks.is_empty() => view.add_selected_tracks(cx),
-                                                                _ => return,
-                                                            }
-                                                            cx.stop_propagation();
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                    .flex()
-                                                    .flex_1()
-                                                    .min_h_0()
-                                                    .child(
-                                                        uniform_list(
-                                                            "track-list",
-                                                            self.filtered_tracks.len(),
-                                                            cx.processor(|view, range, window, cx| {
-                                                                view.library_rows(range, window, cx)
-                                                            }),
-                                                        )
-                                                        .track_scroll(&self.library_scroll)
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .h_full(),
-                                                    )
-                                                    .child(scrollbar(
-                                                        "library-scrollbar",
-                                                        &self.library_scroll,
-                                                    )),
-                                            ),
-                                    ),
-                                )
-                                .child(
-                                    resizable_panel()
-                                        .size(px(playlist_width))
-                                        .when(keep_side_widths, |panel| panel.fixed())
-                                        .size_range(
-                                            px(library::MIN_PANEL_WIDTH)
-                                                ..px(library::MAX_PANEL_WIDTH),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .w_full()
-                                                .h_full()
-                                                .p_3()
-                                                .gap_2()
-                                                .bg(rgb(0x17212b))
-                                                .child(div().text_lg().child("PLAYLIST"))
-                                                .child(self.transport(cx))
-                                                .child(
-                                                    div()
-                                                        .id("playlist-list-container")
-                                                        .track_focus(&self.queue_focus)
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            cx.listener(|view, _, window, cx| {
-                                                                view.queue_focus.focus(window, cx);
-                                                            }),
-                                                        )
-                                                        .on_key_down(cx.listener(
-                                                            |view, event: &KeyDownEvent, window, cx| {
-                                                                if !view.queue_focus.is_focused(window) {
-                                                                    return;
-                                                                }
-                                                                match list_key(&event.keystroke, DetailsSelection::Playlist) {
-                                                                    Some(ListKey::SelectAll) => view.select_all_queue(),
-                                                                    Some(ListKey::Up) => view.move_queue_selection(false, false),
-                                                                    Some(ListKey::Down) => view.move_queue_selection(true, false),
-                                                                    Some(ListKey::ExtendUp) => view.move_queue_selection(false, true),
-                                                                    Some(ListKey::ExtendDown) => view.move_queue_selection(true, true),
-                                                                    Some(ListKey::Play) => {
-                                                                        let Some(index) = single_queue_selection(&view.selected_queue, view.config.playlist.len()) else {
-                                                                            return;
-                                                                        };
-                                                                        view.play(index, cx);
-                                                                    }
-                                                                    Some(ListKey::Delete) => view.delete_queue_selection(cx),
-                                                                    _ => return,
-                                                                }
-                                                                cx.stop_propagation();
-                                                                cx.notify();
-                                                            },
-                                                        ))
-                                                        .flex()
-                                                        .flex_1()
-                                                        .min_h_0()
-                                                        .child(
-                                                            uniform_list(
-                                                                "queue-list",
-                                                                self.config.playlist.len(),
-                                                                cx.processor(
-                                                                    |view, range, window, cx| {
-                                                                        view.queue_rows(range, window, cx)
-                                                                    },
-                                                                ),
-                                                            )
-                                                            .track_scroll(&self.queue_scroll)
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .h_full(),
-                                                        )
-                                                        .child(scrollbar(
-                                                            "queue-scrollbar",
-                                                            &self.queue_scroll,
-                                                        )),
-                                                )
-                                                .child(self.track_details()),
-                                        ),
-                                ),
-                        )
-                            })
-                            .when(self.page == Page::Devices, |container| {
-                                container.child(self.devices_view(cx))
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x243441))
-                    .text_sm()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(self.status.clone()),
-                    )
-                    .when_some(
-                        selection_status(
-                            self.details_selection,
-                            self.selected_tracks.len(),
-                            self.selected_queue.len(),
-                        ),
-                        |bar, status| {
-                            bar.child(div().flex_shrink_0().text_color(rgb(0xa6b6c3)).child(status))
-                        },
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_color(rgb(0xa6b6c3))
-                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
-                    )
-                    .when_some(self.update_available.clone(), |bar, version| {
-                        let url = format!(
-                            "https://github.com/h1romas4/chipstream/releases/tag/nddrv-v{version}"
-                        );
-                        let blue = ButtonCustomVariant::new(cx)
-                            .color(rgb(0x006cbe).into())
-                            .foreground(rgb(0xffffff).into())
-                            .hover(rgb(0x0078d4).into())
-                            .active(rgb(0x005a9e).into());
-                        bar.child(
-                            Button::new("update-available")
-                                .label(format!("Update available: v{version}"))
-                                .custom(blue)
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
-                        )
-                    })
-                    .child(
-                        Button::new("settings")
-                            .icon(assets::IconName::Settings)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Settings")
-                            .accessibility_label("Settings")
-                            .on_click(cx.listener(|view, _, window, cx| view.open_settings(window, cx))),
-                    ),
-            )
-    }
-}
-
-fn main() {
-    application().with_assets(assets::AllAssets).run(|cx| {
-        init(cx);
-        #[cfg(target_os = "macos")]
-        configure_app_menu(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
-        Theme::global_mut(cx).notification.placement = Anchor::BottomRight;
-        let (config_path, config, config_error) = load_app_config();
-        let visible = cx.primary_display().map(|display| display.visible_bounds());
-        let bounds = restored_window_bounds(visible, config.window);
-        let initial_size = bounds.get_bounds().size;
-        let window_settings = config.window.unwrap_or(WindowSettings {
-            width: initial_size.width.as_f32(),
-            height: initial_size.height.as_f32(),
-            maximized: false,
-        });
-        let options = WindowOptions {
-            window_bounds: Some(bounds),
-            window_decorations: Some(WindowDecorations::Client),
-            app_id: Some("nddrv".into()),
-            ..TitleBar::window_options()
-        };
-        open_window(options, cx, |window, cx| {
-            window.set_window_title(APP_TITLE);
-            cx.new(|cx| {
-                let mut app = AppView::new(
-                    window,
-                    cx,
-                    config_path,
-                    config,
-                    config_error,
-                    window_settings,
-                );
-                app.focus.focus(window, cx);
-                cx.observe_window_bounds(window, |view, _, _| {
-                    view.window_observation_pending = Some(Instant::now());
-                })
-                .detach();
-                let view = cx.weak_entity();
-                window.on_window_should_close(cx, move |window, cx| {
-                    let _ = view.update(cx, |view, cx| {
-                        view.player.stop_and_wait();
-                        view.recording_session = None;
-                        view.capture_window_settings(window);
-                        view.save_window_settings();
-                        view.save_music_search(cx);
-                    });
-                    true
-                });
-                let handle = window.window_handle();
-                cx.on_app_quit(move |view, cx| {
-                    view.player.stop_and_wait();
-                    if let Ok(Some(bounds)) = handle.update(cx, |_, window, _| {
-                        window.is_visible().then(|| window.window_bounds())
-                    }) {
-                        view.record_window_bounds(bounds);
-                    }
-                    view.save_window_settings();
-                    view.save_music_search(cx);
-                    async {}
-                })
-                .detach();
-                cx.on_release(|view, cx| {
-                    view.player.stop_and_wait();
-                    view.save_window_settings();
-                    view.save_music_search(cx);
-                })
-                .detach();
-                app.check_for_updates(cx);
-                if !app.config.directories.is_empty() {
-                    app.scan(ScanOrigin::Background, cx);
-                } else {
-                    app.load_playlist_metadata(ScanOrigin::Background, cx);
-                }
-                app
-            })
-        })
-        .expect("failed to open nddrv window");
-    });
 }

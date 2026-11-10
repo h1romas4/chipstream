@@ -97,7 +97,7 @@ fn decoder_handles_split_concatenated_and_expired_frames() {
         "the split frame is not lost"
     );
     assert_eq!(
-        Request::decode(&received[2].as_ref().unwrap()),
+        Request::decode(received[2].as_ref().unwrap()),
         Ok(Request::Reset)
     );
 
