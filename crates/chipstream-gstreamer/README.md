@@ -25,6 +25,7 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | `chunk-frames` | uint | 512 | Stereo frames per output buffer (64–8192) |
 | `play-count` | uint | 2 | Total traversals; `0` repeats indefinitely |
 | `fadeout-seconds` | double | 2.0 | Fade after the final loop point; `0` disables it (maximum 3600) |
+| `ay8910-ym2149` | boolean | true | Emulate AY8910-compatible VGM sources using YM2149 |
 | `ndsif-port` | string | — | Optional NDSIF serial port; unset uses emulation for every chip |
 | `ndsif-ports` | string | — | Optional comma-separated serial ports; compatible chips use the first matching device |
 | `ndsif-baud-rate` | uint | 115200 | NDSIF serial baud rate |
@@ -39,6 +40,12 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | No loop point | Plays to the natural end; embedded MDX fadeout may end playback earlier |
 | Infinite playback (`play-count=0`) | `fadeout-seconds` is not applied |
 | Adjacent `ym2608_adpcm_rom.bin` | Automatically loaded for VGM/VGZ and applied to each YM2608 instance |
+
+AY8910 software playback is an approximation using YM2149. YM-family clock
+divider flags are honored. Unsupported AY variants, raw or discrete output,
+and reserved flags fail playback. Set `ay8910-ym2149=false` to disable this
+approximation; AY sources without a hardware route are then silent. Hardware
+routes take precedence and keep their own compatibility restrictions.
 
 Example URI: `chipstream:///music/game%20theme.vgm`
 

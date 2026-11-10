@@ -24,8 +24,10 @@ use gstreamer_base as gst_base;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::vgm::header::Ay8910ChipType;
 
 use chipstream::audio::StereoBlock;
+use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions,
     VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, measure_mdx_duration_frames,
@@ -66,6 +68,7 @@ struct Settings {
     chunk_frames: u32,
     play_count: u32,
     fadeout_seconds: f64,
+    ay8910_ym2149: bool,
     ndsif_port: Option<String>,
     ndsif_ports: Option<String>,
     ndsif_baud_rate: u32,
@@ -89,6 +92,7 @@ impl Default for Settings {
             chunk_frames: DEFAULT_CHUNK_FRAMES,
             play_count: DEFAULT_PLAY_COUNT,
             fadeout_seconds: DEFAULT_FADEOUT_SECONDS,
+            ay8910_ym2149: true,
             ndsif_port: None,
             ndsif_ports: None,
             ndsif_baud_rate: DEFAULT_NDSIF_BAUD_RATE,
@@ -120,6 +124,7 @@ struct RenderSettings {
     chunk_frames: usize,
     play_count: u32,
     fadeout_samples: Option<u32>,
+    ay8910_ym2149: bool,
 }
 
 enum WorkerMessage {
@@ -313,6 +318,12 @@ mod imp {
                         .default_value(DEFAULT_FADEOUT_SECONDS)
                         .flags(mutable_ready)
                         .build(),
+                    glib::ParamSpecBoolean::builder("ay8910-ym2149")
+                        .nick("AY8910 YM2149 emulation")
+                        .blurb("Emulate AY8910-compatible sources using YM2149")
+                        .default_value(true)
+                        .flags(mutable_ready)
+                        .build(),
                     glib::ParamSpecString::builder("ndsif-port")
                         .nick("NDSIF serial port")
                         .blurb("Optional serial port connected to a NanoDrive NDSIF device")
@@ -371,6 +382,9 @@ mod imp {
                 "fadeout-seconds" => {
                     settings.fadeout_seconds = value.get().expect("fadeout-seconds is a double")
                 }
+                "ay8910-ym2149" => {
+                    settings.ay8910_ym2149 = value.get().expect("ay8910-ym2149 is a boolean")
+                }
                 "ndsif-port" => settings.ndsif_port = value.get().expect("ndsif-port is a string"),
                 "ndsif-ports" => {
                     settings.ndsif_ports = value.get().expect("ndsif-ports is a string")
@@ -402,6 +416,7 @@ mod imp {
                 "chunk-frames" => settings.chunk_frames.to_value(),
                 "play-count" => settings.play_count.to_value(),
                 "fadeout-seconds" => settings.fadeout_seconds.to_value(),
+                "ay8910-ym2149" => settings.ay8910_ym2149.to_value(),
                 "ndsif-port" => settings.ndsif_port.to_value(),
                 "ndsif-ports" => settings.ndsif_ports.to_value(),
                 "ndsif-baud-rate" => settings.ndsif_baud_rate.to_value(),
@@ -819,6 +834,7 @@ mod imp {
                 chunk_frames: settings.chunk_frames as usize,
                 play_count: settings.play_count,
                 fadeout_samples: fadeout_samples(settings.fadeout_seconds),
+                ay8910_ym2149: settings.ay8910_ym2149,
             };
             let ndsif_settings = NdsifSettings {
                 port: settings.ndsif_port.clone(),
@@ -1415,8 +1431,11 @@ fn load_sequencer_with_factories(
     path: &Path,
     pdx_location: Option<&Path>,
     settings: RenderSettings,
-    factories: ChipFactoryRegistry,
+    mut factories: ChipFactoryRegistry,
 ) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
+    if settings.ay8910_ym2149 {
+        register_ay_ym2149(&mut factories);
+    }
     let bytes = read_path(path, MAX_FILE_BYTES)?;
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("mdx") => {
@@ -1515,6 +1534,37 @@ fn load_sequencer_with_factories(
             path.display()
         )),
     }
+}
+
+fn register_ay_ym2149(factories: &mut ChipFactoryRegistry) {
+    factories.register_fallback(Chip::Ay8910, |config| {
+        let header = config.header();
+        let ym = matches!(
+            header.ay_chip_type,
+            Ay8910ChipType::Ym2149
+                | Ay8910ChipType::Ym3439
+                | Ay8910ChipType::Ymz284
+                | Ay8910ChipType::Ymz294
+        );
+        if (!ym
+            && !matches!(
+                header.ay_chip_type,
+                Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
+            ))
+            || header.ay8910_flags.discrete_output
+            || header.ay8910_flags.raw_output
+            || header.ay8910_flags.reserved != 0
+        {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Ay8910,
+                reason: "YM2149 emulation does not support this AY variant or output flags",
+            });
+        }
+        Ok(Box::new(YmfmChip::new_ym2149(
+            config.clock(),
+            ym && header.ay8910_flags.ym_pin26_low,
+        )?))
+    });
 }
 
 /// Create hardware factories for the configured serial ports, if any.
@@ -2403,12 +2453,14 @@ mod tests {
             DEFAULT_NDSIF_TIMEOUT_MS
         );
         assert!(defaults.property::<bool>("ndsif-reset"));
+        assert!(defaults.property::<bool>("ay8910-ym2149"));
         assert_eq!(defaults.property::<Option<String>>("ndsif-port"), None);
         assert_eq!(defaults.property::<Option<String>>("ndsif-ports"), None);
 
         let configured = glib::Object::builder::<ChipstreamSrc>()
             .property("play-count", 3_u32)
             .property("fadeout-seconds", 0.5_f64)
+            .property("ay8910-ym2149", false)
             .property("ndsif-port", "/dev/ttyUSB0")
             .property("ndsif-baud-rate", 230_400_u32)
             .property("ndsif-timeout-ms", 1_000_u32)
@@ -2416,6 +2468,7 @@ mod tests {
             .build();
         assert_eq!(configured.property::<u32>("play-count"), 3);
         assert_eq!(configured.property::<f64>("fadeout-seconds"), 0.5);
+        assert!(!configured.property::<bool>("ay8910-ym2149"));
         assert_eq!(
             configured.property::<Option<String>>("ndsif-port"),
             Some("/dev/ttyUSB0".to_owned())
@@ -2432,6 +2485,158 @@ mod tests {
         assert!(!configured.property::<bool>("ndsif-reset"));
         assert_eq!(fadeout_samples(2.0), Some(88_200));
         assert_eq!(fadeout_samples(0.0), None);
+    }
+
+    #[test]
+    fn ay_ym2149_pipeline_honors_property_and_divider() {
+        use soundlog::chip::Ay8910Spec;
+
+        gst::init().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "chipstream-gstreamer-ay-{}-{}.vgm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (enabled, chip_type, divider, secondary, raw_output, expected) in [
+            (None, Ay8910ChipType::Ym2149, false, false, false, Some(437)),
+            (
+                Some(true),
+                Ay8910ChipType::Ym2149,
+                true,
+                false,
+                false,
+                Some(219),
+            ),
+            (
+                Some(true),
+                Ay8910ChipType::Ay8910,
+                true,
+                false,
+                false,
+                Some(437),
+            ),
+            (
+                Some(true),
+                Ay8910ChipType::Ym2149,
+                false,
+                true,
+                false,
+                Some(437),
+            ),
+            (
+                Some(false),
+                Ay8910ChipType::Ym2149,
+                false,
+                false,
+                false,
+                Some(0),
+            ),
+            (None, Ay8910ChipType::Ym2149, false, false, true, None),
+        ] {
+            let mut builder = VgmBuilder::new();
+            builder.set_version(0x171);
+            builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+            let instance = if secondary {
+                builder.register_chip(Chip::Ay8910, Instance::Secondary, 1_792_000);
+                Instance::Secondary
+            } else {
+                Instance::Primary
+            };
+            for (register, value) in [(0, 255), (1, 0), (7, 0xfe), (8, 15)] {
+                builder.add_chip_write(instance, Ay8910Spec { register, value });
+            }
+            builder.add_vgm_command(WaitSamples(44_100));
+            let mut document = builder.finalize();
+            document.header.ay_chip_type = chip_type;
+            document.header.ay8910_flags.ym_pin26_low = divider;
+            document.header.ay8910_flags.raw_output = raw_output;
+            fs::write(&path, Vec::<u8>::from(document)).unwrap();
+
+            let source = glib::Object::builder::<ChipstreamSrc>()
+                .property("location", path.to_string_lossy().as_ref())
+                .property("sample-rate", 44_100_u32)
+                .property("play-count", 1_u32)
+                .property("fadeout-seconds", 0.0_f64)
+                .build();
+            if let Some(enabled) = enabled {
+                source.set_property("ay8910-ym2149", enabled);
+            }
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&samples);
+            source.static_pad("src").unwrap().add_probe(
+                gst::PadProbeType::BUFFER,
+                move |_, info| {
+                    if let Some(buffer) = info.buffer() {
+                        let map = buffer.map_readable().unwrap();
+                        captured.lock().unwrap().extend(
+                            map.as_slice()
+                                .chunks_exact(8)
+                                .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap())),
+                        );
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            );
+            let sink = gst::ElementFactory::make("fakesink")
+                .property("sync", false)
+                .property("async", false)
+                .build()
+                .unwrap();
+            let pipeline = gst::Pipeline::new();
+            pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
+            source.link(&sink).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let message = pipeline
+                .bus()
+                .unwrap()
+                .timed_pop_filtered(
+                    gst::ClockTime::from_seconds(10),
+                    &[gst::MessageType::Eos, gst::MessageType::Error],
+                )
+                .expect("pipeline should finish");
+            pipeline.set_state(gst::State::Null).unwrap();
+            if let Some(expected) = expected {
+                assert_eq!(message.type_(), gst::MessageType::Eos, "{message:?}");
+                let samples = samples.lock().unwrap();
+                assert!(samples.len() >= 44_000);
+                let peak = samples.iter().copied().fold(0.0_f32, f32::max);
+                let mut previous = false;
+                let mut rising = 0;
+                for sample in &samples[100..44_000] {
+                    let high = *sample > peak / 2.0;
+                    rising += usize::from(high && !previous);
+                    previous = high;
+                }
+                assert!((rising as isize - expected).abs() <= 2, "{rising}");
+                assert_eq!(peak > 0.001, expected != 0);
+            } else {
+                assert_eq!(message.type_(), gst::MessageType::Error, "{message:?}");
+            }
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ay_ym2149_fallback_preserves_existing_factory_errors() {
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Ay8910, |_| {
+            Err(ChipError::InvalidConfiguration {
+                chip: Chip::Ay8910,
+                reason: "hardware route rejected",
+            })
+        });
+        register_ay_ym2149(&mut factories);
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        builder.add_vgm_command(WaitSamples(441));
+        let error =
+            VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories)
+                .err()
+                .expect("existing factory error should propagate");
+        assert!(error.to_string().contains("hardware route rejected"));
     }
 
     #[test]
@@ -2535,6 +2740,7 @@ mod tests {
             chunk_frames: 512,
             play_count: 1,
             fadeout_samples: None,
+            ay8910_ym2149: true,
         };
         let mut expected_player =
             VgmSequencer::from_vgm(data.to_vec(), settings.sample_rate, settings.chunk_frames)
@@ -2708,6 +2914,7 @@ mod tests {
             chunk_frames: 256,
             play_count: 1,
             fadeout_samples: None,
+            ay8910_ym2149: true,
         };
         let (mut sequencer, _, _, _) = load_sequencer(&input_path, None, settings).unwrap();
         let mut has_audio = false;
