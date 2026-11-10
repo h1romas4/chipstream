@@ -1249,14 +1249,15 @@ impl AppView {
                                     SettingItem::new("Play count", loop_field),
                                     SettingItem::new("Fade out (seconds)", fade_field),
                                     SettingItem::new("Start delay (seconds)", delay_field),
-                                    SettingItem::new("Emulation audio device", output_field),
-                                    SettingItem::new("Emulation sample rate", sample_rate_field),
                                 ].into_iter().chain(cfg!(target_os = "linux").then(|| {
                                     SettingItem::new(
                                         "Show all audio devices",
                                         show_all_audio_devices_field(show_all_audio_devices.clone()),
                                     )
-                                })))),
+                                })).chain([
+                                    SettingItem::new("Emulation audio device", output_field),
+                                    SettingItem::new("Emulation sample rate", sample_rate_field),
+                                ]))),
                         )
                         .page(
                             SettingPage::new("Recording")
@@ -1267,16 +1268,17 @@ impl AppView {
                                         "Enable recording (experimental)",
                                         recording_field,
                                     ),
-                                    SettingItem::new("Input audio device", input_field),
-                                    SettingItem::new("Input sample rate", input_rate_field),
-                                    SettingItem::new("WAV output folder", folder_field)
-                                        .layout(Axis::Vertical),
                                 ].into_iter().chain(cfg!(target_os = "linux").then(|| {
                                     SettingItem::new(
                                         "Show all audio devices",
                                         show_all_audio_devices_field(show_all_audio_devices.clone()),
                                     )
-                                })))),
+                                })).chain([
+                                    SettingItem::new("Input audio device", input_field),
+                                    SettingItem::new("Input sample rate", input_rate_field),
+                                    SettingItem::new("WAV output folder", folder_field)
+                                        .layout(Axis::Vertical),
+                                ]))),
                         )
                         .page(
                             SettingPage::new("VGM")
