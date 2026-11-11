@@ -524,6 +524,7 @@ const DEFAULT_MAX_STREAM_STEPS_PER_WAIT: u32 = 1_000_000;
 const DEFAULT_MAX_DATA_BLOCK_COUNT: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Result of attempting to read the next command from a VGM stream.
 pub enum StreamResult {
     /// A complete command was parsed successfully.
     Command(VgmCommand),

@@ -332,17 +332,24 @@ impl From<u8> for BitPackingSubType {
 /// Uncompressed PCM/ADPCM stream data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UncompressedStream {
+    /// Chip format represented by the block.
     pub chip_type: StreamChipType,
+    /// Raw PCM or ADPCM payload.
     pub data: Vec<u8>,
 }
 
 /// Bit-packing compression data and parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitPackingCompression {
+    /// Number of bits in each decompressed value.
     pub bits_decompressed: u8,
+    /// Number of bits in each packed value.
     pub bits_compressed: u8,
+    /// Transformation applied to each packed value.
     pub sub_type: BitPackingSubType,
+    /// Value added to decoded values for the `Copy` and `ShiftLeft` modes.
     pub add_value: u16,
+    /// Packed input data; replaced by decompressed bytes after `decompress`.
     pub data: Vec<u8>,
 }
 
@@ -439,10 +446,15 @@ impl BitPackingCompression {
 /// DPCM compression data and parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DpcmCompression {
+    /// Number of bits in each decompressed value.
     pub bits_decompressed: u8,
+    /// Number of bits in each packed delta index.
     pub bits_compressed: u8,
+    /// Reserved format byte.
     pub reserved: u8,
+    /// Initial accumulator value before applying deltas.
     pub start_value: u16,
+    /// Packed input data; replaced by decompressed bytes after `decompress`.
     pub data: Vec<u8>,
 }
 
@@ -498,53 +510,81 @@ impl DpcmCompression {
 /// Compressed stream data block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressedStream {
+    /// Chip format represented by the block.
     pub chip_type: StreamChipType,
+    /// Compression algorithm used for the payload.
     pub compression_type: CompressionType,
+    /// Expected size of the data after decompression, in bytes.
     pub uncompressed_size: u32,
+    /// Parameters and compressed payload for the selected algorithm.
     pub compression: CompressedStreamData,
 }
 
 /// Compression-specific data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompressedStreamData {
+    /// Bit-packing compressed data and its decoding parameters.
     BitPacking(BitPackingCompression),
+    /// DPCM compressed data and its decoding parameters.
     Dpcm(DpcmCompression),
-    Unknown { compression_type: u8, data: Vec<u8> },
+    /// Unsupported compression algorithm with its raw payload.
+    Unknown {
+        /// Unrecognized compression type byte.
+        compression_type: u8,
+        /// Compressed payload preserved without interpretation.
+        data: Vec<u8>,
+    },
 }
 
 /// Decompression table (data block type 0x7F).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecompressionTable {
+    /// Compression algorithm for which this table is defined.
     pub compression_type: CompressionType,
+    /// Compression algorithm-specific table subtype.
     pub sub_type: u8,
+    /// Bit width of decompressed values.
     pub bits_decompressed: u8,
+    /// Bit width of compressed indices.
     pub bits_compressed: u8,
+    /// Number of entries in the table.
     pub value_count: u16,
+    /// Encoded table values.
     pub table_data: Vec<u8>,
 }
 
 /// ROM/RAM dump data block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RomRamDump {
+    /// Chip memory represented by the block.
     pub chip_type: RomRamChipType,
+    /// Declared size of the ROM or RAM image, in bytes.
     pub rom_size: u32,
+    /// Destination address for the image.
     pub start_address: u32,
+    /// ROM or RAM payload bytes.
     pub data: Vec<u8>,
 }
 
 /// RAM write block (16-bit addressing).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RamWrite16 {
+    /// Chip memory targeted by the block.
     pub chip_type: RamWrite16ChipType,
+    /// 16-bit destination address.
     pub start_address: u16,
+    /// Bytes written starting at `start_address`.
     pub data: Vec<u8>,
 }
 
 /// RAM write block (32-bit addressing).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RamWrite32 {
+    /// Chip memory targeted by the block.
     pub chip_type: RamWrite32ChipType,
+    /// 32-bit destination address.
     pub start_address: u32,
+    /// Bytes written starting at `start_address`.
     pub data: Vec<u8>,
 }
 

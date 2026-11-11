@@ -32,7 +32,10 @@ pub(crate) const VGM_MAX_HEADER_SIZE: u32 = 0x100;
 /// Each entry is a tuple of `(Instance, Chip, clock_hz)` indicating whether the chip
 /// is a primary or secondary instance, which chip type it is, and its clock frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChipInstances(pub Vec<(Instance, chip::Chip, f32)>);
+pub struct ChipInstances(
+    /// Chip instances as `(instance, chip type, clock in hertz)` tuples.
+    pub Vec<(Instance, chip::Chip, f32)>,
+);
 
 impl ChipInstances {
     /// Returns an iterator over the chip instances.
@@ -72,78 +75,151 @@ impl<'a> IntoIterator for &'a ChipInstances {
 /// Enum identifying header fields and their on-disk offsets.
 #[derive(Copy, Clone, Debug)]
 pub enum VgmHeaderField {
+    /// File identifier (`Vgm `).
     Ident,
+    /// Offset to the end of the file.
     EofOffset,
+    /// VGM format version.
     Version,
+    /// SN76489 clock frequency.
     Sn76489Clock,
+    /// YM2413 clock frequency.
     Ym2413Clock,
+    /// Offset from header position 0x14 to the GD3 metadata chunk.
     Gd3Offset,
+    /// Total playback duration in samples.
     TotalSamples,
+    /// Offset from header position 0x1C to the loop point.
     LoopOffset,
+    /// Loop duration in samples.
     LoopSamples,
+    /// Recording sample rate.
     SampleRate,
+    /// SN76489 noise-generator feedback setting.
     Sn76489Feedback,
+    /// SN76489 noise-generator shift-register width.
     Sn76489ShiftRegisterWidth,
+    /// SN76489 playback flags.
     Sn76489Flags,
+    /// YM2612 clock frequency.
     Ym2612Clock,
+    /// YM2151 clock frequency.
     Ym2151Clock,
+    /// Offset to the VGM command data.
     DataOffset,
+    /// Sega PCM clock frequency.
     SegaPcmClock,
+    /// Sega PCM interface register setting.
     SpcmInterface,
+    /// RF5C68 clock frequency.
     Rf5c68Clock,
+    /// YM2203 clock frequency.
     Ym2203Clock,
+    /// YM2608 clock frequency.
     Ym2608Clock,
+    /// YM2610B clock frequency.
     Ym2610bClock,
+    /// YM3812 clock frequency.
     Ym3812Clock,
+    /// YM3526 clock frequency.
     Ym3526Clock,
+    /// Y8950 clock frequency.
     Y8950Clock,
+    /// YMF262 clock frequency.
     Ymf262Clock,
+    /// YMF278B clock frequency.
     Ymf278bClock,
+    /// YMF271 clock frequency.
     Ymf271Clock,
+    /// YMZ280B clock frequency.
     Ymz280bClock,
+    /// RF5C164 clock frequency.
     Rf5c164Clock,
+    /// PWM clock frequency.
     PwmClock,
+    /// AY-3-8910 clock frequency.
     Ay8910Clock,
+    /// AY-3-8910-compatible chip model.
     Ay8910ChipType,
+    /// AY-3-8910 output flags.
     Ay8910Flags,
+    /// YM2203 embedded PSG flags.
     Ym2203Ay8910Flags,
+    /// YM2608 embedded PSG flags.
     Ym2608Ay8910Flags,
+    /// Volume modifier.
     VolumeModifier,
+    /// Reserved byte at header offset 0x7D.
     Reserved7D,
+    /// Loop base adjustment.
     LoopBase,
+    /// Loop modifier.
     LoopModifier,
+    /// Game Boy DMG clock frequency.
     GbDmgClock,
+    /// NES APU clock frequency.
     NesApuClock,
+    /// MultiPCM clock frequency.
     MultipcmClock,
+    /// uPD7759 clock frequency.
     Upd7759Clock,
+    /// OKIM6258 clock frequency.
     Okim6258Clock,
+    /// OKIM6258 playback flags.
     Okim6258Flags,
+    /// K054539 playback flags.
     K054539Flags,
+    /// C140 chip model.
     C140ChipType,
+    /// OKIM6295 clock frequency.
     Okim6295Clock,
+    /// K051649 clock frequency.
     K051649Clock,
+    /// K054539 clock frequency.
     K054539Clock,
+    /// HuC6280 clock frequency.
     Huc6280Clock,
+    /// C140 clock frequency.
     C140Clock,
+    /// Reserved byte at header offset 0x97.
     Reserved97,
+    /// K053260 clock frequency.
     K053260Clock,
+    /// POKEY clock frequency.
     PokeyClock,
+    /// QSound clock frequency.
     QsoundClock,
+    /// SCSP clock frequency.
     ScspClock,
+    /// Offset from header position 0xBC to the extra header.
     ExtraHeaderOffset,
+    /// WonderSwan clock frequency.
     WonderSwan,
+    /// Virtual Boy VSU clock frequency.
     Vsu,
+    /// SAA1099 clock frequency.
     Saa1099,
+    /// ES5503 clock frequency.
     Es5503,
+    /// ES5506 clock frequency.
     Es5506,
+    /// ES5503 output-channel count.
     Es5503OutputChannels,
+    /// ES5506 output-channel count.
     Es5506OutputChannels,
+    /// C352 clock divider.
     C352ClockDivider,
+    /// X1-010 clock frequency.
     X1_010,
+    /// C352 clock frequency.
     C352,
+    /// GA20 clock frequency.
     Ga20,
+    /// Mikey clock frequency.
     Mikey,
+    /// Reserved bytes at offsets 0xE8-0xEF.
     ReservedE8EF,
+    /// Reserved bytes at offsets 0xF0-0xFF.
     ReservedF0FF,
 }
 
@@ -535,6 +611,7 @@ impl From<K054539Flags> for u8 {
 }
 
 impl VgmHeaderField {
+    /// Return the byte offset of this field in a VGM header.
     pub fn offset(self) -> usize {
         match self {
             VgmHeaderField::Ident => 0x00,
@@ -818,78 +895,151 @@ impl VgmHeaderField {
 #[derive(Debug, Clone, PartialEq)]
 /// VGM file header fields and utilities for serialization.
 pub struct VgmHeader {
+    /// Four-byte VGM file identifier.
     pub ident: [u8; 4],
+    /// File length minus four bytes.
     pub eof_offset: u32,
+    /// VGM format version, encoded as a packed hexadecimal version.
     pub version: u32,
+    /// SN76489 clock frequency in hertz; the high bit indicates a dual chip.
     pub sn76489_clock: u32,
+    /// YM2413 clock frequency in hertz; the high bit indicates a dual chip.
     pub ym2413_clock: u32,
+    /// Offset from header position 0x14 to the GD3 chunk.
     pub gd3_offset: u32,
+    /// Total playback duration in samples.
     pub total_samples: u32,
+    /// Offset from header position 0x1C to the loop point.
     pub loop_offset: u32,
+    /// Playback duration of the loop in samples.
     pub loop_samples: u32,
+    /// Recording sample rate in hertz.
     pub sample_rate: u32,
+    /// SN76489 noise-generator feedback configuration.
     pub sn76489_feedback: Sn76489Feedback,
+    /// SN76489 noise-generator shift-register width.
     pub sn76489_shift_register_width: Sn76489ShiftRegisterWidth,
+    /// SN76489-specific playback flags.
     pub sn76489_flags: Sn76489Flags,
+    /// YM2612 clock frequency in hertz; the high bit indicates a dual chip.
     pub ym2612_clock: u32,
+    /// YM2151 clock frequency in hertz; the high bit indicates a dual chip.
     pub ym2151_clock: u32,
+    /// Offset from header position 0x34 to the command data.
     pub data_offset: u32,
+    /// Sega PCM clock frequency in hertz.
     pub sega_pcm_clock: u32,
+    /// Sega PCM interface register setting.
     pub spcm_interface: u32,
+    /// RF5C68 clock frequency in hertz.
     pub rf5c68_clock: u32,
+    /// YM2203 clock frequency in hertz.
     pub ym2203_clock: u32,
+    /// YM2608 clock frequency in hertz.
     pub ym2608_clock: u32,
+    /// YM2610B clock frequency in hertz.
     pub ym2610b_clock: u32,
+    /// YM3812 clock frequency in hertz.
     pub ym3812_clock: u32,
+    /// YM3526 clock frequency in hertz.
     pub ym3526_clock: u32,
+    /// Y8950 clock frequency in hertz.
     pub y8950_clock: u32,
+    /// YMF262 clock frequency in hertz.
     pub ymf262_clock: u32,
+    /// YMF278B clock frequency in hertz.
     pub ymf278b_clock: u32,
+    /// YMF271 clock frequency in hertz.
     pub ymf271_clock: u32,
+    /// YMZ280B clock frequency in hertz.
     pub ymz280b_clock: u32,
+    /// RF5C164 clock frequency in hertz.
     pub rf5c164_clock: u32,
+    /// PWM clock frequency in hertz.
     pub pwm_clock: u32,
+    /// AY-3-8910 clock frequency in hertz.
     pub ay8910_clock: u32,
+    /// AY-3-8910-compatible chip model.
     pub ay_chip_type: Ay8910ChipType,
+    /// AY-3-8910 output flags.
     pub ay8910_flags: Ay8910Flags,
+    /// YM2203 embedded PSG output flags.
     pub ym2203_ay8910_flags: Ym2203AyFlags,
+    /// YM2608 embedded PSG output flags.
     pub ym2608_ay8910_flags: Ym2608AyFlags,
+    /// Volume modifier from the header.
     pub volume_modifier: u8,
+    /// Reserved header byte at offset 0x7D.
     pub reserved_7d: u8,
+    /// Loop base adjustment.
     pub loop_base: i8,
+    /// Loop modifier.
     pub loop_modifier: u8,
+    /// Game Boy DMG clock frequency in hertz.
     pub gb_dmg_clock: u32,
+    /// NES APU clock frequency in hertz.
     pub nes_apu_clock: u32,
+    /// MultiPCM clock frequency in hertz.
     pub multipcm_clock: u32,
+    /// uPD7759 clock frequency in hertz.
     pub upd7759_clock: u32,
+    /// OKIM6258 clock frequency in hertz.
     pub okim6258_clock: u32,
+    /// OKIM6258 playback flags.
     pub okim6258_flags: Okim6258Flags,
+    /// K054539 playback flags.
     pub k054539_flags: K054539Flags,
+    /// C140 chip model.
     pub c140_chip_type: C140ChipType,
+    /// OKIM6295 clock frequency in hertz.
     pub okim6295_clock: u32,
+    /// K051649 clock frequency in hertz.
     pub k051649_clock: u32,
+    /// K054539 clock frequency in hertz.
     pub k054539_clock: u32,
+    /// HuC6280 clock frequency in hertz.
     pub huc6280_clock: u32,
+    /// C140 clock frequency in hertz.
     pub c140_clock: u32,
+    /// Reserved header byte at offset 0x97.
     pub reserved_97: u8,
+    /// K053260 clock frequency in hertz.
     pub k053260_clock: u32,
+    /// POKEY clock frequency in hertz.
     pub pokey_clock: u32,
+    /// QSound clock frequency in hertz.
     pub qsound_clock: u32,
+    /// SCSP clock frequency in hertz.
     pub scsp_clock: u32,
+    /// Offset from header position 0xBC to the VGM 1.70+ extra header.
     pub extra_header_offset: u32,
+    /// WonderSwan clock frequency in hertz.
     pub wonderswan_clock: u32,
+    /// Virtual Boy VSU clock frequency in hertz.
     pub vsu_clock: u32,
+    /// SAA1099 clock frequency in hertz.
     pub saa1099_clock: u32,
+    /// ES5503 clock frequency in hertz.
     pub es5503_clock: u32,
+    /// ES5506 clock frequency in hertz.
     pub es5506_clock: u32,
+    /// ES5503 output-channel count.
     pub es5503_output_channels: u8,
+    /// ES5506 output-channel count.
     pub es5506_output_channels: u8,
+    /// C352 clock divider.
     pub c352_clock_divider: u8,
+    /// X1-010 clock frequency in hertz.
     pub x1_010_clock: u32,
+    /// C352 clock frequency in hertz.
     pub c352_clock: u32,
+    /// GA20 clock frequency in hertz.
     pub ga20_clock: u32,
+    /// Mikey clock frequency in hertz.
     pub mikey_clock: u32,
+    /// Reserved bytes at offsets 0xE8-0xEF.
     pub reserved_e8_ef: [u8; 8],
+    /// Reserved bytes at offsets 0xF0-0xFF.
     pub reserved_f0_ff: [u8; 16],
 }
 
@@ -1835,47 +1985,89 @@ impl TryFrom<&[u8]> for VgmHeader {
 /// also preserves unknown/extension values via `Unknown(u8)`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ChipId {
+    /// SN76489 programmable sound generator.
     Sn76489,
+    /// YM2413 FM synthesizer.
     Ym2413,
+    /// YM2612 FM synthesizer.
     Ym2612,
+    /// YM2151 FM synthesizer.
     Ym2151,
+    /// Sega PCM playback chip.
     SegaPcm,
+    /// Ricoh RF5C68 PCM chip.
     Rf5c68,
+    /// YM2203 FM and PSG synthesizer.
     Ym2203,
+    /// YM2608 FM, PSG, and ADPCM synthesizer.
     Ym2608,
+    /// YM2610 FM and ADPCM synthesizer.
     Ym2610,
+    /// YM3812 OPL2 FM synthesizer.
     Ym3812,
+    /// YM3526 OPL FM synthesizer.
     Ym3526,
+    /// Y8950 FM and ADPCM synthesizer.
     Y8950,
+    /// YMF262 OPL3 FM synthesizer.
     Ymf262,
+    /// YMF278B OPL4 FM and PCM synthesizer.
     Ymf278b,
+    /// YMF271 OPX synthesizer.
     Ymf271,
+    /// YMZ280B PCM chip.
     Ymz280b,
+    /// Ricoh RF5C164 PCM chip.
     Rf5c164,
+    /// Sega PWM audio device.
     Pwm,
+    /// AY-3-8910 programmable sound generator.
     Ay8910,
+    /// Game Boy DMG audio processing unit.
     GbDmg,
+    /// Nintendo Entertainment System audio processing unit.
     NesApu,
+    /// Yamaha MultiPCM chip.
     MultiPcm,
+    /// Yamaha uPD7759 ADPCM chip.
     Upd7759,
+    /// OKI MSM6258 ADPCM chip.
     Okim6258,
+    /// OKI MSM6295 ADPCM chip.
     Okim6295,
+    /// Konami K051649 SCC sound chip.
     K051649,
+    /// Konami K054539 PCM chip.
     K054539,
+    /// Hudson Soft HuC6280 audio unit.
     Huc6280,
+    /// Namco C140 PCM chip.
     C140,
+    /// Konami K053260 PCM chip.
     K053260,
+    /// Atari POKEY sound chip.
     Pokey,
+    /// Capcom QSound chip.
     Qsound,
+    /// Sega Saturn SCSP sound chip.
     Scsp,
+    /// WonderSwan audio processing unit.
     WonderSwan,
+    /// Virtual Boy VSU audio processing unit.
     Vsu,
+    /// Philips SAA1099 sound chip.
     Saa1099,
+    /// Ensoniq ES5503 DOC sound chip.
     Es5503,
+    /// Ensoniq ES5506 sound chip.
     Es5506,
+    /// Setia X1-010 PCM chip.
     X1010,
+    /// Namco C352 PCM chip.
     C352,
+    /// Irem GA20 PCM chip.
     Ga20,
+    /// Atari Lynx Mikey sound chip.
     Mikey,
     /// Unknown or vendor-specific raw value
     Unknown(u8),
@@ -2029,6 +2221,7 @@ pub struct ChipClock {
 }
 
 impl ChipClock {
+    /// Create a chip-clock entry from its decoded fields.
     pub fn new(chip_id: ChipId, instance: Instance, clock: u32) -> Self {
         ChipClock {
             chip_id,
@@ -2037,6 +2230,7 @@ impl ChipClock {
         }
     }
 
+    /// Decode a chip-clock entry from its raw chip identifier and clock.
     pub fn from_raw(raw_chip_id: u8, clock: u32) -> Self {
         let instance = if (raw_chip_id & 0x80) != 0 {
             Instance::Secondary

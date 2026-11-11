@@ -17,17 +17,29 @@ use crate::binutil::{read_slice, read_u16_le_at, read_u32_le_at};
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, PartialEq)]
+/// GD3 metadata associated with a VGM file.
 pub struct Gd3 {
+    /// English track title.
     pub track_name_en: Option<String>,
+    /// Original-language track title.
     pub track_name_origin: Option<String>,
+    /// English game title.
     pub game_name_en: Option<String>,
+    /// Original-language game title.
     pub game_name_origin: Option<String>,
+    /// English system name.
     pub system_name_en: Option<String>,
+    /// Original-language system name.
     pub system_name_origin: Option<String>,
+    /// English author or composer name.
     pub author_name_en: Option<String>,
+    /// Original-language author or composer name.
     pub author_name_origin: Option<String>,
+    /// Release date text.
     pub release_date: Option<String>,
+    /// Name of the VGM creator or ripper.
     pub creator: Option<String>,
+    /// Additional notes.
     pub notes: Option<String>,
     /// The Gd3 chunk version (as the raw u32 the chunk stores, e.g. 0x00000100 for 1.00)
     pub version: u32,
@@ -55,6 +67,7 @@ impl Default for Gd3 {
 }
 
 impl Gd3 {
+    /// Serialize the metadata as a complete GD3 chunk.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
 

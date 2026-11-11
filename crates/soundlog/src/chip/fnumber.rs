@@ -63,18 +63,30 @@ const A4_HZ: f32 = 440.0f32;
 /// - `error_cents`: error in cents from the target frequency.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FNumber {
+    /// Integer F-number programmed into the chip.
     pub f_num: u32,
+    /// Frequency block programmed into the chip.
     pub block: u8,
+    /// Frequency produced by this F-number and block, in hertz.
     pub actual_freq_hz: f32,
+    /// Absolute difference between the produced and target frequencies, in hertz.
     pub error_hz: f32,
+    /// Difference between the produced and target frequencies, in cents.
     pub error_cents: f32,
 }
 
 /// Simple error enum used by F-number utilities.
 #[derive(Debug)]
 pub enum FNumberError {
+    /// An input frequency or chip configuration is invalid.
     InvalidInput,
-    ExcessiveBits { param: &'static str, bits: u32 },
+    /// A bit-width parameter exceeds the supported range.
+    ExcessiveBits {
+        /// Name of the parameter whose width is invalid.
+        param: &'static str,
+        /// Requested width in bits.
+        bits: u32,
+    },
 }
 
 impl std::fmt::Display for FNumberError {

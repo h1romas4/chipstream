@@ -38,9 +38,13 @@ use std::vec;
 /// call `VgmDocument::to_bytes()` to obtain the serialized VGM file
 /// bytes suitable for writing to disk.
 pub struct VgmDocument {
+    /// Parsed or constructed VGM header.
     pub header: VgmHeader,
+    /// Optional extended header.
     pub extra_header: Option<VgmExtraHeader>,
+    /// Commands in playback order.
     pub commands: Vec<VgmCommand>,
+    /// Optional GD3 metadata chunk.
     pub gd3: Option<Gd3>,
 }
 

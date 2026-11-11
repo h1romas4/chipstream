@@ -17,9 +17,13 @@ pub enum ParseError {
     ///   (for example `"header_size"` or `"gd3_start"`) where the access
     ///   was attempted.
     OffsetOutOfRange {
+        /// Index that was attempted to be accessed.
         offset: usize,
+        /// Number of bytes required by the read or write.
         needed: usize,
+        /// Length of the available buffer in bytes.
         available: usize,
+        /// Optional description of the logical location.
         context: Option<String>,
     },
 
@@ -44,12 +48,17 @@ pub enum ParseError {
 
     /// A text field contains invalid UTF-16.
     InvalidUtf16 {
+        /// Name of the field that could not be decoded.
         field: &'static str,
+        /// Underlying UTF-16 decoding error.
         source: std::string::FromUtf16Error,
     },
 
     /// A variable-length field is missing its required terminator.
-    MissingTerminator { field: &'static str },
+    MissingTerminator {
+        /// Name of the field whose terminator is missing.
+        field: &'static str,
+    },
 
     /// A command generator failed, retaining its original error and source chain.
     ///
@@ -73,9 +82,13 @@ pub enum ParseError {
     /// A bit width is outside the inclusive range supported by an operation.
     /// `field` identifies the parameter; `bits`, `min`, and `max` are bit counts.
     InvalidBitWidth {
+        /// Name of the parameter with the invalid width.
         field: &'static str,
+        /// Requested width in bits.
         bits: usize,
+        /// Minimum supported width in bits.
         min: usize,
+        /// Maximum supported width in bits.
         max: usize,
     },
 
@@ -89,32 +102,53 @@ pub enum ParseError {
     /// `operation` is the method name without parentheses. `source` is
     /// `"buffer"`, `"file"`, `"document"`, or `"generator"`.
     UnsupportedStreamOperation {
+        /// Name of the unsupported operation.
         operation: &'static str,
+        /// Stream source kind that does not support the operation.
         source: &'static str,
     },
 
     /// Adding a chunk would exceed the parsing buffer size limit.
     /// All sizes are byte counts, and the rejected chunk does not change the buffer.
     BufferSizeExceeded {
+        /// Buffer size before adding the rejected chunk.
         current_size: usize,
+        /// Maximum allowed buffer size.
         limit: usize,
+        /// Size of the chunk that was rejected.
         attempted_size: usize,
     },
 
     /// Too many VGM commands were processed without advancing sample time.
-    CommandLimitExceeded { limit: u32 },
+    CommandLimitExceeded {
+        /// Maximum number of commands permitted without advancing sample time.
+        limit: u32,
+    },
 
     /// Too many DAC stream steps were processed during one input wait.
-    StreamStepLimitExceeded { limit: u32 },
+    StreamStepLimitExceeded {
+        /// Maximum DAC stream steps permitted during one input wait.
+        limit: u32,
+    },
 
     /// Processing another data block would exceed the configured count limit.
-    DataBlockCountExceeded { current_count: usize, limit: usize },
+    DataBlockCountExceeded {
+        /// Number of data blocks processed so far.
+        current_count: usize,
+        /// Maximum permitted number of data blocks.
+        limit: usize,
+    },
 
     /// An opcode byte was not recognized by the parser.
     ///
     /// - `opcode` is the raw opcode byte that was invalid.
     /// - `offset` is the position in the input where the opcode was found.
-    UnknownOpcode { opcode: u8, offset: usize },
+    UnknownOpcode {
+        /// Unrecognized command byte.
+        opcode: u8,
+        /// Byte offset where the command was found.
+        offset: usize,
+    },
 
     /// Data inconsistency or validation error.
     ///
@@ -128,8 +162,11 @@ pub enum ParseError {
     /// - `limit` is the maximum allowed size.
     /// - `attempted_size` is the size of the block that would exceed the limit.
     DataBlockSizeExceeded {
+        /// Total size of data blocks accumulated so far.
         current_size: usize,
+        /// Maximum permitted total data-block size.
         limit: usize,
+        /// Size of the block that would exceed the limit.
         attempted_size: usize,
     },
 }

@@ -2,8 +2,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/mmlx.svg)](https://crates.io/crates/mmlx) [![docs.rs](https://docs.rs/mmlx/badge.svg)](https://docs.rs/mmlx)
 
-`mmlx` parses MML source and compiles it into typed documents supported by
-[`mmlx`]. It currently supports MXDRV MML input and MDX output.
+`mmlx` parses MXDRV MML source and compiles it into typed MDX documents using
+[`soundlog`](https://crates.io/crates/soundlog).
 
 The crate keeps parsing and compilation separate, so applications can inspect
 or format the parsed document before generating MDX data.
@@ -155,7 +155,7 @@ C $P [[gab>c<]2]2
 Enable `source-map` for position-aware parsing and compilation:
 
 ```toml
-mmlx = { version = "0.2.0", features = ["source-map"] }
+mmlx = { version = "0.3", features = ["source-map"] }
 ```
 
 Locate MML commands, metadata, and voice definitions in the source, report

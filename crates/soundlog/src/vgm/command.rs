@@ -28,7 +28,9 @@ pub use crate::vgm::header::ChipId;
 /// it as a small struct containing both pieces of information.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct DacStreamChipType {
+    /// Chip identified by the command.
     pub chip_id: ChipId,
+    /// Primary or secondary instance of the chip.
     pub instance: Instance,
 }
 
@@ -82,7 +84,9 @@ impl From<DacStreamChipType> for u8 {
 /// Chip instance identifier for VGM commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instance {
+    /// The primary instance of a chip.
     Primary = 0x0,
+    /// The secondary instance of a chip.
     Secondary = 0x1,
 }
 
@@ -111,74 +115,143 @@ impl From<Instance> for usize {
 #[derive(Debug, Clone, PartialEq)]
 /// All supported VGM commands and per-chip write variants.
 pub enum VgmCommand {
+    /// Set the AY-3-8910 stereo output mask.
     AY8910StereoMask(Ay8910StereoMask),
+    /// Wait for the specified number of samples.
     WaitSamples(WaitSamples),
+    /// Wait 735 samples.
     Wait735Samples(Wait735Samples),
+    /// Wait 882 samples.
     Wait882Samples(Wait882Samples),
+    /// Mark the end of the VGM command stream.
     EndOfData(EndOfData),
+    /// Define a data block.
     DataBlock(Box<DataBlock>),
+    /// Write data to chip PCM RAM.
     PcmRamWrite(Box<PcmRamWrite>),
+    /// Wait for one to sixteen samples.
     WaitNSample(WaitNSample),
+    /// Write YM2612 DAC data and wait for the encoded sample count.
     YM2612Port0Address2AWriteAndWaitN(Ym2612Port0Address2AWriteAndWaitN),
+    /// Configure a DAC stream's destination chip and register.
     SetupStreamControl(SetupStreamControl),
+    /// Associate a DAC stream with a data bank and step parameters.
     SetStreamData(SetStreamData),
+    /// Set a DAC stream's playback frequency.
     SetStreamFrequency(SetStreamFrequency),
+    /// Start DAC stream playback.
     StartStream(StartStream),
+    /// Stop DAC stream playback.
     StopStream(StopStream),
+    /// Start a data-block playback call.
     StartStreamFastCall(StartStreamFastCall),
+    /// Select an offset in the YM2612 PCM data bank.
     SeekOffset(SeekOffset),
+    /// Write a byte to an SN76489-family PSG.
     Sn76489Write(Instance, chip::PsgSpec),
+    /// Write to a YM2413 register.
     Ym2413Write(Instance, chip::Ym2413Spec),
+    /// Write to a YM2612 register.
     Ym2612Write(Instance, chip::Ym2612Spec),
+    /// Write to a YM2151 register.
     Ym2151Write(Instance, chip::Ym2151Spec),
+    /// Write to Sega PCM.
     SegaPcmWrite(Instance, chip::SegaPcmSpec),
+    /// Write an 8-bit value to RF5C68.
     Rf5c68U8Write(Instance, chip::Rf5c68U8Spec),
+    /// Write an 8-bit value to RF5C68 using a 16-bit offset.
     Rf5c68U16Write(Instance, chip::Rf5c68U16Spec),
+    /// Write to a YM2203 register.
     Ym2203Write(Instance, chip::Ym2203Spec),
+    /// Write to a YM2608 register.
     Ym2608Write(Instance, chip::Ym2608Spec),
+    /// Write to a YM2610B register.
     Ym2610bWrite(Instance, chip::Ym2610Spec),
+    /// Write to a YM3812 register.
     Ym3812Write(Instance, chip::Ym3812Spec),
+    /// Write to a YM3526 register.
     Ym3526Write(Instance, chip::Ym3526Spec),
+    /// Write to a Y8950 register.
     Y8950Write(Instance, chip::Y8950Spec),
+    /// Write to a YMF262 register.
     Ymf262Write(Instance, chip::Ymf262Spec),
+    /// Write to a YMF278B register.
     Ymf278bWrite(Instance, chip::Ymf278bSpec),
+    /// Write to a YMF271 register.
     Ymf271Write(Instance, chip::Ymf271Spec),
+    /// Write to a Konami SCC register.
     Scc1Write(Instance, chip::Scc1Spec),
+    /// Write to a YMZ280B register.
     Ymz280bWrite(Instance, chip::Ymz280bSpec),
+    /// Write an 8-bit value to RF5C164.
     Rf5c164U8Write(Instance, chip::Rf5c164U8Spec),
+    /// Write an 8-bit value to RF5C164 using a 16-bit offset.
     Rf5c164U16Write(Instance, chip::Rf5c164U16Spec),
+    /// Write to PWM.
     PwmWrite(Instance, chip::PwmSpec),
+    /// Write to an AY-3-8910 register.
     Ay8910Write(Instance, chip::Ay8910Spec),
+    /// Write to a Game Boy DMG audio register.
     GbDmgWrite(Instance, chip::GbDmgSpec),
+    /// Write to the NES APU.
     NesApuWrite(Instance, chip::NesApuSpec),
+    /// Write to MultiPCM.
     MultiPcmWrite(Instance, chip::MultiPcmSpec),
+    /// Set a MultiPCM channel's sample bank.
     MultiPcmBankWrite(Instance, chip::MultiPcmBankSpec),
+    /// Write to uPD7759.
     Upd7759Write(Instance, chip::Upd7759Spec),
+    /// Write to OKIM6258.
     Okim6258Write(Instance, chip::Okim6258Spec),
+    /// Write to OKIM6295.
     Okim6295Write(Instance, chip::Okim6295Spec),
+    /// Write to K054539.
     K054539Write(Instance, chip::K054539Spec),
+    /// Write to HuC6280.
     Huc6280Write(Instance, chip::Huc6280Spec),
+    /// Write to C140.
     C140Write(Instance, chip::C140Spec),
+    /// Write to K053260.
     K053260Write(Instance, chip::K053260Spec),
+    /// Write to POKEY.
     PokeyWrite(Instance, chip::PokeySpec),
+    /// Write to QSound.
     QsoundWrite(Instance, chip::QsoundSpec),
+    /// Write to SCSP.
     ScspWrite(Instance, chip::ScspSpec),
+    /// Write to WonderSwan audio memory.
     WonderSwanWrite(Instance, chip::WonderSwanSpec),
+    /// Write to a WonderSwan audio register.
     WonderSwanRegWrite(Instance, chip::WonderSwanRegSpec),
+    /// Write to Virtual Boy VSU.
     VsuWrite(Instance, chip::VsuSpec),
+    /// Write to SAA1099.
     Saa1099Write(Instance, chip::Saa1099Spec),
+    /// Write to ES5503.
     Es5503Write(Instance, chip::Es5503Spec),
+    /// Write an 8-bit value to ES5506.
     Es5506BEWrite(Instance, chip::Es5506U8Spec),
+    /// Write a 16-bit value to ES5506.
     Es5506D6Write(Instance, chip::Es5506U16Spec),
+    /// Write to X1-010.
     X1010Write(Instance, chip::X1010Spec),
+    /// Write to C352.
     C352Write(Instance, chip::C352Spec),
+    /// Write to GA20.
     Ga20Write(Instance, chip::Ga20Spec),
+    /// Write to Mikey.
     MikeyWrite(Instance, chip::MikeySpec),
+    /// Write to the Game Gear PSG.
     GameGearPsgWrite(Instance, chip::GameGearPsgSpec),
+    /// Preserve a reserved command with one operand.
     ReservedU8Write(ReservedU8),
+    /// Preserve a reserved command with two operands.
     ReservedU16Write(ReservedU16),
+    /// Preserve a reserved command with three operands.
     ReservedU24Write(ReservedU24),
+    /// Preserve a reserved command with four operands.
     ReservedU32Write(ReservedU32),
+    /// Preserve an unknown command opcode.
     UnknownCommand(UnknownSpec),
 }
 
@@ -213,6 +286,7 @@ pub struct Ay8910StereoMask {
 }
 
 impl Ay8910StereoMask {
+    /// Decode the on-disk stereo mask byte.
     pub fn from_mask(mask: u8) -> Self {
         Self {
             chip_instance: if mask & 0x80 == 0 {
@@ -230,6 +304,7 @@ impl Ay8910StereoMask {
         }
     }
 
+    /// Encode this stereo mask as an on-disk byte.
     pub fn to_mask(&self) -> u8 {
         let inst_bit = (usize::from(self.chip_instance) as u8) & 1;
         (inst_bit << 7)
@@ -257,7 +332,10 @@ impl From<Ay8910StereoMask> for u8 {
 
 /// Wait n samples, n can range from 0 to 65535 (approx 1.49 seconds).
 #[derive(Debug, Clone, PartialEq)]
-pub struct WaitSamples(pub u16);
+pub struct WaitSamples(
+    /// Number of samples to wait.
+    pub u16,
+);
 
 /// wait 735 samples (60th of a second), a shortcut for 0x61 0xdf 0x02
 #[derive(Debug, Clone, PartialEq)]
@@ -283,10 +361,15 @@ pub struct EndOfData;
 /// stream/block as end-of-data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
+    /// Data-block marker byte, commonly `0x66` for player compatibility.
     pub marker: u8,
+    /// Chip instance selector encoded in the size's high bit.
     pub chip_instance: u8,
+    /// VGM data-block type byte.
     pub data_type: u8,
+    /// Payload size in bytes.
     pub size: u32,
+    /// Data-block payload.
     pub data: Vec<u8>,
 }
 
@@ -314,28 +397,42 @@ pub struct DataBlock {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct PcmRamWrite {
+    /// PCM RAM write marker byte.
     pub marker: u8,
+    /// Target chip format.
     pub chip_type: StreamChipType,
+    /// Source address in the data bank.
     pub read_offset: u32,
+    /// Destination address in chip RAM.
     pub write_offset: u32,
+    /// Number of bytes to write.
     pub size: u32,
+    /// PCM data to write.
     pub data: Vec<u8>,
 }
 
 /// VGM opcode 0x7n: wait n+1 samples, where n is stored as-is (0..=15).
 /// The actual number of samples waited is `self.0 + 1`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WaitNSample(pub u8);
+pub struct WaitNSample(
+    /// Encoded count; playback waits for this value plus one sample.
+    pub u8,
+);
 
 /// YM2612 port 0 address 2A write from the data bank,
 /// then wait n samples; n can range from 0 to 15.
 /// Note that the wait is n, NOT n+1.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Ym2612Port0Address2AWriteAndWaitN(pub u8);
+pub struct Ym2612Port0Address2AWriteAndWaitN(
+    /// Number of samples to wait after the DAC write.
+    pub u8,
+);
 
 /// Stream identifier for DAC stream commands.
 pub type StreamId = u8;
+/// Identifier of a VGM data bank used by DAC stream commands.
 pub type DataBankId = u8;
+/// Identifier of a VGM data block used by fast-call commands.
 pub type BlockId = u16;
 
 /// DAC Stream Control Write: Setup Stream Control
@@ -359,25 +456,35 @@ pub type BlockId = u16;
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupStreamControl {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
+    /// Target chip and instance.
     pub chip_type: DacStreamChipType,
+    /// Register port used by the target chip.
     pub write_port: u8,
+    /// Register address used for each stream data write.
     pub write_command: u8,
 }
 
 /// DAC Stream Control Write: Set Stream Data
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStreamData {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
+    /// Data bank containing the stream samples.
     pub data_bank_id: DataBankId,
+    /// Number of bytes to advance between samples.
     pub step_size: u8,
+    /// Initial byte offset within each step.
     pub step_base: u8,
 }
 
 /// DAC Stream Control Write: Set Stream Frequency
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetStreamFrequency {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
+    /// Playback frequency in samples per second.
     pub frequency: u32,
 }
 
@@ -400,15 +507,20 @@ pub struct SetStreamFrequency {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStream {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
+    /// Signed offset from the beginning of the selected data bank.
     pub data_start_offset: i32,
+    /// Playback length interpretation and flags.
     pub length_mode: LengthMode,
+    /// Length in the units selected by `length_mode`.
     pub data_length: u32,
 }
 
 /// DAC Stream Control Write: Stop Stream
 #[derive(Debug, Clone, PartialEq)]
 pub struct StopStream {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
 }
 
@@ -430,8 +542,11 @@ pub struct StopStream {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartStreamFastCall {
+    /// DAC stream identifier.
     pub stream_id: StreamId,
+    /// Data-block identifier to play.
     pub block_id: BlockId,
+    /// Playback direction and looping flags.
     pub flags: StartStreamFastCallFlags,
 }
 
@@ -451,7 +566,9 @@ pub struct StartStreamFastCall {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartStreamFastCallFlags {
+    /// Play samples in reverse order.
     pub reverse: bool,
+    /// Restart playback when the block ends.
     pub looped: bool,
 }
 
@@ -479,34 +596,48 @@ impl From<StartStreamFastCallFlags> for u8 {
 /// one operand, reserved for future use
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReservedU8 {
+    /// Reserved command opcode.
     pub opcode: u8,
+    /// Command operand.
     pub dd: u8,
 }
 
 /// two operands, reserved for future use (Note: was one operand only til v1.60)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReservedU16 {
+    /// Reserved command opcode.
     pub opcode: u8,
+    /// First command operand.
     pub dd1: u8,
+    /// Second command operand.
     pub dd2: u8,
 }
 
 /// three operands, reserved for future use
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReservedU24 {
+    /// Reserved command opcode.
     pub opcode: u8,
+    /// First command operand.
     pub dd1: u8,
+    /// Second command operand.
     pub dd2: u8,
+    /// Third command operand.
     pub dd3: u8,
 }
 
 /// three operands, reserved for future use
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReservedU32 {
+    /// Reserved command opcode.
     pub opcode: u8,
+    /// First command operand.
     pub dd1: u8,
+    /// Second command operand.
     pub dd2: u8,
+    /// Third command operand.
     pub dd3: u8,
+    /// Fourth command operand.
     pub dd4: u8,
 }
 
@@ -514,32 +645,49 @@ pub struct ReservedU32 {
 /// Only stores the opcode byte; payload (if any) is left uninterpreted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnknownSpec {
+    /// Unrecognized command opcode.
     pub opcode: u8,
+    /// Byte offset of the opcode in the input stream.
     pub offset: usize,
 }
 
 /// Seek to offset dddddddd (Intel byte order)
 /// in PCM data bank of data block type 0 (YM2612).
 #[derive(Debug, Clone, PartialEq)]
-pub struct SeekOffset(pub u32);
+pub struct SeekOffset(
+    /// Byte offset in the YM2612 PCM data bank.
+    pub u32,
+);
 
 /// Length mode for DAC stream StartStream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthMode {
+    /// Ignore the requested length.
     Ignore {
+        /// Play in reverse order.
         reverse: bool,
+        /// Restart playback when it reaches the end.
         looped: bool,
     },
+    /// Interpret the requested length as a command count.
     CommandCount {
+        /// Play in reverse order.
         reverse: bool,
+        /// Restart playback when it reaches the end.
         looped: bool,
     },
+    /// Interpret the requested length in milliseconds.
     Milliseconds {
+        /// Play in reverse order.
         reverse: bool,
+        /// Restart playback when it reaches the end.
         looped: bool,
     },
+    /// Play until the end of the data.
     PlayUntilEnd {
+        /// Play in reverse order.
         reverse: bool,
+        /// Restart playback when it reaches the end.
         looped: bool,
     },
     /// Unknown representation; preserves raw byte so round-tripping doesn't lose flags or reserved bits.

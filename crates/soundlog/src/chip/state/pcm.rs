@@ -406,6 +406,7 @@ impl_pcm_chip_u8_u8!(
 // PWM (register: u8, value: u32)
 // PWM uses lower 24 bits of a 32-bit value; track as u32 in storage.
 #[derive(Debug, Clone)]
+/// Register state tracker for the PWM audio device.
 pub struct PwmState {
     /// Register storage (u8 register -> u32 value)
     registers: ArrayStorage<u32, 256>,
