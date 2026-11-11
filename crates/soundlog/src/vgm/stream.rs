@@ -62,6 +62,7 @@ pub enum DacStreamSelector {
 }
 
 impl From<&StopStream> for DacStreamSelector {
+    /// Interpret the stop command's all-streams marker.
     fn from(stop: &StopStream) -> Self {
         if stop.stream_id == 0xff {
             Self::All
@@ -204,8 +205,9 @@ struct StreamState {
     /// Byte offset in the data bank where this stream's playback begins.
     /// Forward playback starts here; reverse playback uses this as its lower bound.
     start_data_pos: usize,
-    /// Sample position and accumulated stream phase at the last rate change.
+    /// Sample position at the last rate change.
     timing_sample: usize,
+    /// Accumulated stream phase at the last rate change, in 1/44,100 steps.
     timing_phase: u128,
     /// The step index (0-based) of the last byte that was emitted to the chip.
     /// `None` means no byte has been emitted yet since the stream was started.
@@ -225,8 +227,11 @@ struct StreamSnapshot {
     data_bank_id: u8,
     /// Chip write target.
     chip_id: ChipId,
+    /// Target chip instance.
     instance: Instance,
+    /// Target write port.
     write_port: u8,
+    /// Target register or write command.
     write_command: u8,
     /// Bytes advanced per step.
     step_size: u8,
@@ -240,8 +245,9 @@ struct StreamSnapshot {
     data_length: u32,
     /// Total byte length of the data bank (pre-fetched to avoid re-borrowing).
     data_bank_end: usize,
-    /// Sample position and accumulated stream phase at the last rate change.
+    /// Sample position at the last rate change.
     timing_sample: usize,
+    /// Accumulated stream phase at the last rate change, in 1/44,100 steps.
     timing_phase: u128,
     /// Step index of the last byte already emitted (`None` = nothing emitted yet).
     last_emitted_step: Option<usize>,
@@ -551,6 +557,7 @@ struct StreamBudget {
 }
 
 impl Default for StreamBudget {
+    /// Initialize the default limits with zero usage.
     fn default() -> Self {
         Self {
             max_data_block_size: DEFAULT_MAX_DATA_BLOCK_SIZE,
@@ -885,6 +892,7 @@ pub struct VgmStream {
     pending_data_block: Option<DataBlock>,
     /// DAC stream states indexed by stream ID
     stream_states: HashMap<u8, StreamState>,
+    /// Whether to emit processed DAC stream start and stop commands.
     emit_stream_controls: bool,
     /// Current sample position (at 44100 Hz)
     current_sample: usize,
@@ -1491,6 +1499,7 @@ impl VgmStream {
         }
     }
 
+    /// Emit the next YM2612 PCM byte and schedule the command's wait.
     fn handle_ym2612_port0_address_2a_write_and_wait_n(
         &mut self,
         cmd: &Ym2612Port0Address2AWriteAndWaitN,
@@ -3017,6 +3026,7 @@ impl VgmStream {
 }
 
 impl Default for VgmStream {
+    /// Create an empty, incrementally fed stream.
     fn default() -> Self {
         Self::new()
     }
@@ -3026,6 +3036,7 @@ impl Default for VgmStream {
 impl Iterator for VgmStream {
     type Item = Result<StreamResult, ParseError>;
 
+    /// Return the next stream result or parsing error.
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_command() {
             Ok(stream_result) => Some(Ok(stream_result)),
@@ -3040,6 +3051,7 @@ mod tests {
     use crate::vgm::detail::CompressionType;
 
     #[test]
+    /// Check that consumed input is compacted only after reaching the threshold.
     fn buffer_compaction_waits_until_half_is_consumed() {
         let mut stream = VgmStream::new();
         stream.push_chunk(&[0x70; 16]).unwrap();
@@ -3068,6 +3080,7 @@ mod tests {
     }
 
     #[test]
+    /// Check that table-based decompression respects cumulative size limits.
     fn table_based_compression_counts_decoded_output_atomically() {
         for compression_type in [0, 1] {
             for limit in [200, 284] {
