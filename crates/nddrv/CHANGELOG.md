@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
 
 - Allow selecting a preferred YM2608 rhythm ROM in General settings.
 - Align ROM and recording folder path controls and allow clearing the WAV output folder.
