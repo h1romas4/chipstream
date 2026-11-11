@@ -2,6 +2,14 @@
 
 Serial transport and scheduled playback for NanoDrive NDSIF devices. 
 
+For higher-level `chipstream` integration, use
+[`chipstream-ndsif`](../chipstream-ndsif/README.md). It builds on this crate to
+provide automatic or explicit chip routing, hardware-backed chip adapters,
+and optional NanoDrive shared-resource validation.
+
+Use `ndsif-transport`
+directly when you need serial transport, custom scheduling, or device workers.
+
 ## Supported Devices
 
 | Device | Repository |

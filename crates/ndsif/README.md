@@ -27,6 +27,11 @@ and remains an RC extension, not a requirement for every NDSIF device.
 | Argument validation, batch encoding, and transaction correlation | Playback scheduling, synthesis, or ADPCM encoding |
 | Audio timing and local stream-position/status tracking | |
 
+For serial I/O, device capability discovery, chipstream integration, and
+scheduled playback on supported NanoDrive devices, use
+[`ndsif-transport`](../ndsif-transport/README.md). It builds on this crate's
+protocol codecs and provides the transport and scheduling layer.
+
 `AudioStreamState` tracks host-side protocol state; it does not communicate with
 the device. Request and response payloads borrow caller-owned data or frames.
 
