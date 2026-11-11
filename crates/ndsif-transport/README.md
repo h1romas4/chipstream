@@ -2,6 +2,14 @@
 
 Serial transport and scheduled playback for NanoDrive NDSIF devices. 
 
+## Supported Devices
+
+| Device | Repository |
+|---|---|
+| NanoDrive8 | [Fujix1/NanoDrive8](https://github.com/Fujix1/NanoDrive8) |
+| NanoDrive7 | [Fujix1/NanoDrive7](https://github.com/Fujix1/NanoDrive7) |
+| NanoDrive6 | [Fujix1/NanoDrive6](https://github.com/Fujix1/NanoDrive6) |
+
 ## Direct Control
 
 Open `NdsifSerialTransport`, configure a supported chip, and queue events

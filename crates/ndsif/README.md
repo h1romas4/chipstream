@@ -1,15 +1,21 @@
 # ndsif
 
-Allocation-free `no_std` Rust codec for the NDSIF v1 draft.
+Allocation-free `no_std` Rust codec for NanoDrive NDSIF devices, implementing the NDSIF v1 draft.
 
 The v1 draft shares wire version `01` with the previous b protocol but is not
 wire-compatible. Select the profile explicitly at the transport boundary.
 
 API revision: 40. Frame wire version: `01`.
-Device firmware: [NanoDrive6](https://github.com/Fujix1/NanoDrive6),
-[NanoDrive8](https://github.com/Fujix1/NanoDrive8).
 The optional timed DAC profile follows [NanoDrive6 NDSIF API section 9](https://github.com/Fujix1/NanoDrive6/blob/main/NDSIF_API.md)
 and remains an RC extension, not a requirement for every NDSIF device.
+
+## Supported Devices
+
+| Device | Repository |
+|---|---|
+| NanoDrive8 | [Fujix1/NanoDrive8](https://github.com/Fujix1/NanoDrive8) |
+| NanoDrive7 | [Fujix1/NanoDrive7](https://github.com/Fujix1/NanoDrive7) |
+| NanoDrive6 | [Fujix1/NanoDrive6](https://github.com/Fujix1/NanoDrive6) |
 
 ## Scope
 

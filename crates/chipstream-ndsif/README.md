@@ -8,6 +8,14 @@ Hardware-backed chips produce **silence in the host PCM buffer**. Their audio
 comes from the physical device and must be played or captured separately.
 Emulated chips continue to produce host PCM.
 
+## Supported Devices
+
+| Device | Repository |
+|---|---|
+| NanoDrive8 | [Fujix1/NanoDrive8](https://github.com/Fujix1/NanoDrive8) |
+| NanoDrive7 | [Fujix1/NanoDrive7](https://github.com/Fujix1/NanoDrive7) |
+| NanoDrive6 | [Fujix1/NanoDrive6](https://github.com/Fujix1/NanoDrive6) |
+
 ## Choose an API
 
 | Use case | API |
