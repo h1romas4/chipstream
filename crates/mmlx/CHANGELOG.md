@@ -2,9 +2,13 @@
 
 ## v0.3.0 (unreleased)
 
+### Added
+
+- [x] Add: Expand single-line MML macros in track commands, with original-source diagnostics and source maps.
+
 ### Changed
 
-- [x] Change: Update the soundlog dependency from 0.15.0 to the 0.16.0 development series.
+- [x] Change: Update the soundlog dependency from 0.15.0 to 0.16.0.
 
 ## v0.2.0
 

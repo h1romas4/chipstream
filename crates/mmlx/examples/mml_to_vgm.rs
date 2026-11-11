@@ -25,9 +25,10 @@ fn main() -> Result<(), Box<dyn Error>> {
   /* CON FL OP */
       2,  7, 15
 }
-A t120 @1 l8 [[cdef]2]2
-B t120 @1 l8 [[efga]2]2
-C t120 @1 l8 [[gab>c<]2]2
+$P = { t120 @1 l8 }
+A $P [[cdef]2]2
+B $P [[efga]2]2
+C $P [[gab>c<]2]2
 "#;
 
     let parsed = mmlx::mdx::parse(source)?;

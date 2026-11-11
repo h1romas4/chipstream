@@ -15,6 +15,8 @@ use pest_derive::Parser;
 use crate::diagnostic::Diagnostic;
 use crate::source::Span;
 
+mod preprocess;
+
 #[derive(Parser)]
 #[grammar = "mdx/mml.pest"]
 struct MmlParser;
@@ -408,6 +410,10 @@ impl std::error::Error for ParseError {}
 
 pub(super) enum ParseFailure {
     Syntax(Box<pest::error::Error<Rule>>),
+    Macro {
+        span: Span,
+        message: String,
+    },
     RepeatDepthExceeded {
         span: Span,
     },
@@ -434,6 +440,13 @@ impl ParseFailure {
     fn into_legacy(self, source: &str) -> ParseError {
         match self {
             Self::Syntax(error) => ParseError::Syntax(format_syntax_error(&error, source)),
+            Self::Macro { span, message } => {
+                let position = ParsePosition::from_span(source, span);
+                ParseError::Syntax(format!(
+                    "MML macro error at line {}, column {}: {message}",
+                    position.line_number, position.column
+                ))
+            }
             Self::RepeatDepthExceeded { span } => {
                 let position = ParsePosition::from_span(source, span);
                 ParseError::RepeatDepthExceeded {
@@ -509,6 +522,7 @@ impl ParseFailure {
                 };
                 Diagnostic::error("mmlx.syntax", message, span)
             }
+            Self::Macro { span, message } => Diagnostic::error("mmlx.macro", message, Some(span)),
             Self::Repeat { span, message, .. } => {
                 Diagnostic::error("mmlx.repeat", message, Some(span))
             }
@@ -546,11 +560,12 @@ impl ParseFailure {
 ///
 /// Whitespace and comments accepted by the grammar are ignored. The returned
 /// document retains metadata, voice definitions, tracks, and typed commands;
-/// it does not compile the commands into MDX bytes.
+/// macro calls are expanded into commands before parsing. It does not compile
+/// the commands into MDX bytes.
 ///
 /// # Errors
 ///
-/// Returns [`ParseError::Syntax`] when the source does not match the grammar or
+/// Returns [`ParseError::Syntax`] for invalid syntax or macro definitions and
 /// [`ParseError::InvalidValue`] when a parsed value violates a command range.
 /// Returns [`ParseError::RepeatDepthExceeded`] when nesting exceeds
 /// [`super::MAX_REPEAT_DEPTH`].
@@ -583,6 +598,20 @@ pub(super) fn parse_internal(
     if source.len() > u32::MAX as usize {
         return Err(ParseFailure::SourceTooLarge);
     }
+    let Some(expansion) = preprocess::expand(source)? else {
+        return parse_expanded(source, positions);
+    };
+    let result = parse_expanded(&expansion.text, positions.as_deref_mut());
+    if let Some(positions) = positions {
+        expansion.remap_sources(positions);
+    }
+    result.map_err(|error| expansion.remap_error(error, source))
+}
+
+fn parse_expanded(
+    source: &str,
+    mut positions: Option<&mut MmlSourceMap>,
+) -> Result<MmlDocument, ParseFailure> {
     let mut document = MmlDocument {
         title: None,
         pcm_file: None,

@@ -13,6 +13,7 @@
 //! PDX filename. Split notes share their originating command range. Synthetic
 //! output, including inserted PCM mode and track terminators, has no source range.
 //! Output maps identify the primary origin, not every contributing state change.
+//! Expanded macro commands identify the macro call in the original source.
 //! See [`crate::frontend`] for shared ownership and memory characteristics.
 //!
 //! # Examples
@@ -53,14 +54,15 @@ pub type ParsedMml<'source> = MappedAst<'source, MmlDocument, SyntaxMap>;
 /// A finalized soundlog MDX document and output map borrowing the original source.
 pub type CompiledMdx<'source> = Compiled<'source, MdxDocument, MdxLocation>;
 
-/// Parse once, borrowing the input and retaining separate syntax ranges.
+/// Parse, borrowing the input and retaining separate syntax ranges.
 ///
-/// Does not copy the input or construct a line index. The returned artifact
-/// must not outlive `source`; its AST and syntax map are owned allocations.
+/// Macro expansion uses a temporary input copy; no line index is constructed.
+/// The returned artifact must not outlive `source`; its AST and syntax map are
+/// owned allocations.
 ///
 /// # Errors
 ///
-/// Returns a [`Diagnostic`] for invalid syntax, repeat structure, numeric values,
+/// Returns a [`Diagnostic`] for invalid macros, syntax, repeat structure, numeric values,
 /// nesting beyond [`super::MAX_REPEAT_DEPTH`], or input larger than `u32::MAX` bytes.
 /// A diagnostic range, when available,
 /// addresses the original UTF-8 source; source lines are not copied into errors.

@@ -1,7 +1,13 @@
 // Parser definition for the MXDRV MDX MML dialect.
 document = { SOI ~ line* ~ EOI }
+macro_fragment = { SOI ~ command* ~ EOI }
 
-line = { title | pcmfile | voice | track | comment | block_comment | blank }
+line = { title | pcmfile | voice | macro_definition | track | comment | block_comment | blank }
+
+macro_definition = { "$" ~ macro_name ~ "=" ~ "{" ~ macro_body ~ "}" ~ (comment | NEWLINE | &EOI) }
+macro_name = @{ 'A'..'Z' }
+macro_body = @{ (("/*" ~ (!("*/" | NEWLINE) ~ ANY)* ~ "*/") | !("}" | NEWLINE) ~ ANY)* }
+macro_call = @{ "$" ~ ('A'..'Z') }
 
 title = { ^"#title" ~ string ~ NEWLINE? }
 pcmfile = { ^"#pcmfile" ~ string ~ NEWLINE? }
@@ -27,6 +33,7 @@ channel = @{ ('A'..'H' | 'P'..'W')+ }
 
 command = _{
 	block_comment
+	| macro_call
 	| repeat_start | repeat_end
 	| pitch_lfo_on | pitch_lfo_off | volume_lfo_on | volume_lfo_off
 	| opm_lfo_on | opm_lfo_off

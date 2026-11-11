@@ -7,6 +7,52 @@ fn nested_repeat_source(depth: usize) -> String {
 }
 
 #[test]
+fn macros_expand_to_complete_track_commands() {
+    let source = "$A={o4 [c4 d8]2}\n$B={v8 e4}\nAB $A $B\nA $A\n";
+    let expanded = "AB o4 [c4 d8]2 v8 e4\nA o4 [c4 d8]2\n";
+    assert_eq!(mdx::parse(source).unwrap(), mdx::parse(expanded).unwrap());
+    assert_eq!(
+        compile_source(source).to_bytes().unwrap(),
+        compile_source(expanded).to_bytes().unwrap()
+    );
+    assert_eq!(
+        mdx::parse("$A={}\r\n$B={c4}\r\nA $A$B\r\n").unwrap(),
+        mdx::parse("A c4\r\n").unwrap()
+    );
+}
+
+#[test]
+fn macros_reject_invalid_definitions_and_references() {
+    for (source, message) in [
+        ("A $A\n$A={c4}", "not defined"),
+        ("$A={c}\n$A={d}\nA $A", "already defined"),
+        ("$A={c}\n$B={$A}\nA $B", "nested macro"),
+        ("$A={[c}\nA $A", "repeat"),
+        ("$A={c]}\nA $A", "repeat"),
+        ("$A={t}\nA $A", "expected"),
+        ("#title \"x\" $A={c}\nA $A", "own line"),
+        ("$A={c}$B={d}\nA $A", "expected"),
+    ] {
+        let error = mdx::parse(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{source}: {error}");
+    }
+}
+
+#[test]
+fn macros_do_not_expand_in_comments_or_strings() {
+    let source = "#title \"$A\"\n; $B\n/* $C */\n$A={c4 /* $D } */ d4} ; $F\nA $A /* $E */\n";
+    let expanded = "#title \"$A\"\n; $B\n/* $C */\nA c4 /* $D } */ d4 /* $E */\n";
+    assert_eq!(mdx::parse(source).unwrap(), mdx::parse(expanded).unwrap());
+}
+
+#[test]
+fn macro_expansion_is_size_limited() {
+    let source = format!("$A={{{}}}\nA {}", "c".repeat(8192), "$A".repeat(2049));
+    let error = mdx::parse(&source).unwrap_err();
+    assert!(error.to_string().contains("size limit"));
+}
+
+#[test]
 fn repeat_depth_limits_parsed_sources() {
     for depth in [0, 1, mdx::MAX_REPEAT_DEPTH - 1, mdx::MAX_REPEAT_DEPTH] {
         let source = nested_repeat_source(depth);
@@ -73,6 +119,56 @@ mod frontend {
     use super::*;
     use mmlx::diagnostic::Severity;
     use mmlx::mdx::frontend::{self, MdxLocation};
+
+    #[test]
+    fn macro_expansion_maps_commands_and_errors_to_original_source() {
+        let source = "#title \"\u{65e5}\"\n$A={o4 [c4 d8]2}\nA $A r4\nA $A\n";
+        let parsed = frontend::parse(source).unwrap();
+        let commands = parsed.syntax().commands(0).unwrap();
+        assert_eq!(commands[0].position.text(source), Some("$A"));
+        assert_eq!(commands[1].position.text(source), Some("$A"));
+        assert_eq!(commands[1].body[0].position.text(source), Some("$A"));
+        assert_eq!(commands[1].full_span().text(source), Some("$A"));
+        assert_eq!(commands[2].position.text(source), Some("r4"));
+        assert_ne!(commands[0].position, commands[3].position);
+        assert!(
+            parsed
+                .syntax()
+                .arguments()
+                .iter()
+                .any(|argument| argument.span.text(source) == Some("$A"))
+        );
+        let compiled = frontend::compile(&parsed).unwrap();
+        assert_eq!(
+            compiled
+                .source_map()
+                .get(&MdxLocation::TrackCommand { track: 0, index: 1 })
+                .unwrap()
+                .text(source),
+            Some("$A")
+        );
+
+        for (source, code, token) in [
+            ("$A={c}\nA $B", "mmlx.macro", "$B"),
+            ("$A={c}\n$A={d}\nA $A", "mmlx.macro", "A"),
+            ("$A={$B}\nA $A", "mmlx.macro", "$B"),
+            ("$A={o9}\nA $A", "mmlx.invalid-value", "9"),
+            ("$A={c}\nA $A ?", "mmlx.syntax", ""),
+        ] {
+            let error = frontend::parse(source).unwrap_err();
+            assert_eq!(error.code, code, "{source}: {error}");
+            assert_eq!(
+                error.span.unwrap().text(source),
+                Some(token),
+                "{source}: {error}"
+            );
+        }
+        let source = "$A={o0 c}\nA $A";
+        let parsed = frontend::parse(source).unwrap();
+        let error = frontend::compile(&parsed).unwrap_err();
+        assert_eq!(error.code, "mmlx.mdx.invalid-value");
+        assert_eq!(error.span.unwrap().text(source), Some("$A"));
+    }
 
     #[test]
     fn repeat_depth_limits_mapped_sources_and_preserves_positions() {

@@ -51,6 +51,26 @@ as `CompileError`. The compiler returns a typed MDX document; call its
 Repeat nesting is limited to 64 levels by [`MAX_REPEAT_DEPTH`](mdx::MAX_REPEAT_DEPTH)
 in both parsing and compilation. Deeper sources and edited ASTs return errors.
 
+## Macros
+
+Define a macro on its own line and use it in a track's command sequence:
+
+```mml
+$A={o4 [c4 d8]2}
+A t120 $A e4
+B $A
+```
+
+Names are uppercase `A` through `Z`. A definition must precede its uses;
+redefinition and references to undefined macros are errors. The body must be a
+single-line, complete sequence of supported commands with balanced repeats.
+Macro references inside a body are not supported. Comments and quoted strings
+are not expanded. The parsed AST contains expanded commands, not macro calls.
+
+Expansion is limited to 16 MiB, or the original source size when larger. With
+`source-map`, expanded commands and their output map to the macro call in the
+original source; errors in a definition point to the definition instead.
+
 The accepted syntax and command coverage follow the MXDRV MML dialect
 implemented by this crate. Parsing successfully does not guarantee that every
 command can be compiled to MDX.
@@ -86,9 +106,10 @@ fn main() -> Result<(), Box<dyn Error>> {
   /* CON FL OP */
       2,  7, 15
 }
-A t120 @1 l8 [[cdef]2]2
-B t120 @1 l8 [[efga]2]2
-C t120 @1 l8 [[gab>c<]2]2
+$P = { t120 @1 l8 }
+A $P [[cdef]2]2
+B $P [[efga]2]2
+C $P [[gab>c<]2]2
 "#;
     let parsed = mmlx::mdx::parse(source)?;
     let mdx = mmlx::mdx::compile(&parsed)?;
