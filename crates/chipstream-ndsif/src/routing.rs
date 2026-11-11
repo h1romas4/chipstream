@@ -87,15 +87,28 @@ pub enum NdsifRoutingError {
     /// The route refers to a device index outside the supplied device list.
     UnknownDevice(usize),
     /// Two device indices refer to the same shared transport.
-    DuplicateDevice { first: usize, second: usize },
+    DuplicateDevice {
+        /// First index that points to the shared transport.
+        first: usize,
+        /// Second index that points to the same transport.
+        second: usize,
+    },
     /// The chip has no NDSIF adapter.
     UnsupportedChip(Chip),
     /// A source has more than one destination.
-    DuplicateSource { chip: Chip, instance: Instance },
+    DuplicateSource {
+        /// Chip type of the source assigned more than once.
+        chip: Chip,
+        /// Instance of the source assigned more than once.
+        instance: Instance,
+    },
     /// More than one source targets the same physical chip instance.
     DuplicateTarget {
+        /// Device index receiving duplicate routes.
         device: usize,
+        /// Chip type on the physical target.
         chip: Chip,
+        /// Physical chip instance receiving duplicate routes.
         instance: Instance,
     },
 }
