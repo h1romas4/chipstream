@@ -9,32 +9,32 @@
   - [ ] Doc: NES APU Mapping
   - [ ] Doc: GBDMG Mapping
 
-## v0.16.0 (unreleased)
+## v0.16.0
 
 ### Breaking API Changes
 
-- [x] Change: Change `MdxPlaybackCheckLimits::max_ticks` and `max_commands` from `u64` to `u32`; update typed values and check that they fit the new range.
+- Change: Change `MdxPlaybackCheckLimits::max_ticks` and `max_commands` from `u64` to `u32`; update typed values and check that they fit the new range.
 
 ### Added
 
-- [x] Add: Optionally emit DAC stream start and stop commands, query their configured targets with `DacStreamSelector`, and stop streams by `DacStreamTarget`.
-- [x] Add: Configure callback-stream tracking with a caller-provided state through `VgmCallbackStream::track_state_with` and configure SN76489 clock-divider and zero-period behavior with `Sn76489State::with_config`.
-- [x] Add: Expose VGM fadeout and initial-timestamp state, and an MDX streaming loop-boundary marker for audio players.
-- [x] Add: `mdx::compat::normalize_mdx_for_playback` decodes optional LZ-compressed MDX bodies before normalizing MXDRV16y track stubs.
-- [x] Add: Parse VGM extra headers independently and scan commands without copying data blocks.
+- Add: Optionally emit DAC stream start and stop commands, query their configured targets with `DacStreamSelector`, and stop streams by `DacStreamTarget`.
+- Add: Configure callback-stream tracking with a caller-provided state through `VgmCallbackStream::track_state_with` and configure SN76489 clock-divider and zero-period behavior with `Sn76489State::with_config`.
+- Add: Expose VGM fadeout and initial-timestamp state, and an MDX streaming loop-boundary marker for audio players.
+- Add: `mdx::compat::normalize_mdx_for_playback` decodes optional LZ-compressed MDX bodies before normalizing MXDRV16y track stubs.
+- Add: Parse VGM extra headers independently and scan commands without copying data blocks.
 
 ### Fixed
 
-- [x] Fix: Track AY8910 tone key transitions using mixer, volume, and envelope selection rather than mixer alone.
-- [x] Fix: Track SN76489 latch-only pitch changes.
-- [x] Fix: Apply the reset volume LFO level before MDX key-on when an LFO delay is configured.
-- [x] Fix: Preserve DAC stream timing and fractional phase across frequency changes.
-- [x] Fix: Honor forward MDX jumps when a finite loop count is configured.
-- [x] Fix: Resolve VGM document loop positions correctly when an extra header is present.
-- [x] Fix: Write the raw MDX noise-control operand (`0xed`) to YM2151 register `0x0f`, including the noise-enable bit.
-- [x] Fix: Use the correct dual-chip and chip-variant flags in VGM header clocks, and preserve the flags when setting clocks.
-- [x] Fix: Parse and serialize SegaPCM addresses in little-endian order and use the correct byte for secondary-chip selection.
-- [x] Fix: Read the VGM volume modifier for version 1.50 and later when header space is available.
+- Fix: Track AY8910 tone key transitions using mixer, volume, and envelope selection rather than mixer alone.
+- Fix: Track SN76489 latch-only pitch changes.
+- Fix: Apply the reset volume LFO level before MDX key-on when an LFO delay is configured.
+- Fix: Preserve DAC stream timing and fractional phase across frequency changes.
+- Fix: Honor forward MDX jumps when a finite loop count is configured.
+- Fix: Resolve VGM document loop positions correctly when an extra header is present.
+- Fix: Write the raw MDX noise-control operand (`0xed`) to YM2151 register `0x0f`, including the noise-enable bit.
+- Fix: Use the correct dual-chip and chip-variant flags in VGM header clocks, and preserve the flags when setting clocks.
+- Fix: Parse and serialize SegaPCM addresses in little-endian order and use the correct byte for secondary-chip selection.
+- Fix: Read the VGM volume modifier for version 1.50 and later when header space is available.
 
 ## v0.15.0
 
