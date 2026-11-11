@@ -25,7 +25,7 @@ On Linux, also install the PipeWire and ALSA development packages and libclang
 Debian/Ubuntu).
 
 ```sh
-cargo run --release -p nddrv
+cargo install --git https://github.com/h1romas4/chipstream --bin nddrv --locked --force nddrv
 ```
 
 ## Quick Start

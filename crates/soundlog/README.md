@@ -1,5 +1,7 @@
 # soundlog
 
+[![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
+
 soundlog — builder, parser and stream-processor for retro sound-chip register-write logs
 
 `soundlog` is a small crate for building and parsing register-write

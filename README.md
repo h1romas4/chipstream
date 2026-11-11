@@ -1,6 +1,6 @@
 # chipstream
 
-![](https://github.com/h1romas4/chipstream/workflows/Build/badge.svg) [![crates.io](https://img.shields.io/crates/v/soundlog.svg)](https://crates.io/crates/soundlog) [![docs.rs](https://docs.rs/soundlog/badge.svg)](https://docs.rs/soundlog)
+![](https://github.com/h1romas4/chipstream/workflows/Build/badge.svg)
 
 `chipstream` is a toolkit suite for running and working with retro sound chips.
 This repository is organized as a monorepo containing multiple crates and provides
@@ -27,43 +27,14 @@ utilities for building and parsing register-write logs such as the VGM
 
 ## Installation
 
-Install the `soundlog` binary from this repository with Cargo:
-
 Rust 1.97.1 or later is required.
-
-To build the VGM player and play a file:
-
-```bash
-cargo run --release -p cstools --bin csplay -- example.vgm
-```
-
-Linux builds require ALSA development headers; see the
-[cstools README](crates/cstools/README.md).
-
-```bash
-cargo install --git https://github.com/h1romas4/chipstream --bin soundlog --locked --force soundlog-cli
-```
-
-Optionally install the GUI inspector:
-
-```bash
-cargo install --git https://github.com/h1romas4/chipstream --bin soundlog-inspector --locked --force soundlog-gui
-```
-
-### NDDRV
-
-Install the NDDRV desktop player:
-
-```bash
-cargo install --git https://github.com/h1romas4/chipstream --bin nddrv --locked --force nddrv
-```
-
-For platform prerequisites, including ALSA development libraries on Linux, see
-the [NDDRV README](crates/nddrv/README.md).
 
 ### soundlog
 
-`soundlog --help`
+```bash
+cargo install --git https://github.com/h1romas4/chipstream --bin soundlog --locked --force soundlog-cli
+soundlog --help
+```
 
 ```bash
 Command-line tools for soundlog.
@@ -85,11 +56,14 @@ Options:
   -V, --version  Print version
 ```
 
-For detailed usage instructions, please refer to [crates/soundlog-cli](https://github.com/h1romas4/chipstream/blob/main/crates/soundlog-cli/README.md).
+### NDDRV
 
-### soundlog-inspector
+Install the NDDRV desktop player:
 
-For GUI usage instructions, please refer to [crates/soundlog-gui](crates/soundlog-gui/README.md).
+```bash
+cargo install --git https://github.com/h1romas4/chipstream --bin nddrv --locked --force nddrv
+nddrv
+```
 
 ## License
 
