@@ -19,6 +19,7 @@ use ndsif::{
 use crate::NdsifTransportError;
 use crate::session::SerialSession;
 
+/// Reject invalid serial-port, baud-rate, and timeout settings before opening.
 fn validate_config(
     path: &str,
     baud_rate: u32,
@@ -87,11 +88,13 @@ impl NdsifOutputGain {
 }
 
 impl Default for NdsifOutputGain {
+    /// Create a gain initialized to unity.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Compare fixed clocks using the protocol's parts-per-million tolerance.
 fn fixed_clock_matches(fixed_hz: u32, requested_hz: u32) -> bool {
     fixed_hz != 0
         && u64::from(fixed_hz.abs_diff(requested_hz)) * PARTS_PER_MILLION
@@ -222,6 +225,7 @@ impl NdsifHostTimeline {
             .map_err(|_| "NDSIF output gain is already configured".into())
     }
 
+    /// Calculate current output attenuation from the gain and fade timelines.
     fn fade_attenuation(&self, now: Instant) -> Result<Option<u8>, String> {
         if self.is_cancelled() {
             return Ok(None);
@@ -450,6 +454,7 @@ impl NdsifSerialTransport {
         self.update_output_volume(true)
     }
 
+    /// Send a changed attenuation when its rate limit permits.
     fn update_output_volume(&mut self, force: bool) -> Result<(), String> {
         let now = Instant::now();
         let Some(attenuation) = self
@@ -472,6 +477,7 @@ impl NdsifSerialTransport {
         self.send_output_attenuation(attenuation, now)
     }
 
+    /// Apply attenuation to the device and update the cached volume state.
     fn send_output_attenuation(&mut self, attenuation: u8, now: Instant) -> Result<(), String> {
         self.output_volume_modified = true;
         self.request_typed(Command::SetOutputVolume {
@@ -1044,10 +1050,12 @@ impl NdsifSerialTransport {
 }
 
 impl NdsifTransport for NdsifSerialTransport {
+    /// Report whether a timed-DAC stream can handle VGM initialization writes.
     fn supports_vgm_initialization(&self) -> bool {
         self.timed_dac_stream.is_some() && self.audio_stream.is_none()
     }
 
+    /// Validate device support and configure the requested chip clock.
     fn configure_chip(
         &mut self,
         write_id: WriteId,
@@ -1119,16 +1127,19 @@ impl NdsifTransport for NdsifSerialTransport {
         Ok(())
     }
 
+    /// Queue a register write for a later scheduled flush.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
         self.pending.push(PendingEvent::Register(event));
         Ok(())
     }
 
+    /// Queue a raw PSG write for a later scheduled flush.
     fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
         self.pending.push(PendingEvent::Psg(event));
         Ok(())
     }
 
+    /// Queue a YM2612 initialization register write on the timed-DAC path.
     fn schedule_vgm_initial_register_write(
         &mut self,
         event: NdsifRegisterEvent,
@@ -1136,14 +1147,17 @@ impl NdsifTransport for NdsifSerialTransport {
         self.schedule_timed_dac_initial_event(PendingEvent::Register(event))
     }
 
+    /// Queue an initialization PSG write on the timed-DAC path.
     fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
         self.schedule_timed_dac_initial_event(PendingEvent::Psg(event))
     }
 
+    /// Complete timed-DAC setup and submit buffered initialization writes.
     fn finish_vgm_initialization(&mut self) -> Result<(), String> {
         self.finish_timed_dac_initialization(true)
     }
 
+    /// Validate and initialize the device's OKIM6258 audio stream.
     fn configure_audio_stream(
         &mut self,
         instance: u8,
@@ -1192,11 +1206,13 @@ impl NdsifTransport for NdsifSerialTransport {
         Ok(())
     }
 
+    /// Queue one ADPCM byte for the configured stream.
     fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
         self.pending.push(PendingEvent::Data(event));
         Ok(())
     }
 
+    /// Queue an audio control event, recording clock changes when needed.
     fn schedule_audio_control(&mut self, event: NdsifAudioControlEvent) -> Result<(), String> {
         if let NdsifAudioControl::Clock { clock_hz, .. } = event.control {
             if let Some(capability) = self.capability(WriteId::OKIM6258, event.instance)
@@ -1220,6 +1236,7 @@ impl NdsifTransport for NdsifSerialTransport {
         Ok(())
     }
 
+    /// Process queued events through the requested output frame.
     fn flush_scheduled_until(
         &mut self,
         sample_frame: usize,
@@ -1408,6 +1425,7 @@ impl NdsifTransport for NdsifSerialTransport {
         Ok(())
     }
 
+    /// Force the configured audio stream to start when it is ready.
     fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
         if self.audio_stream.as_ref().is_some_and(|stream| {
             stream.start_mode != AudioStartMode::Automatic && !stream.state.started()
@@ -1417,6 +1435,7 @@ impl NdsifTransport for NdsifSerialTransport {
         self.start_stream_if_ready(true)
     }
 
+    /// Flush pending audio work and finish the configured stream.
     fn finish_audio_stream(
         &mut self,
         instance: u8,
@@ -1434,12 +1453,14 @@ impl NdsifTransport for NdsifSerialTransport {
         self.start_stream_if_ready(true)
     }
 
+    /// Finish the timed-DAC stream at the requested frame.
     fn finish_dac_stream(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), String> {
         self.finish_timed_dac_stream(sample_frame, output_rate)
     }
 }
 
 impl Drop for NdsifSerialTransport {
+    /// Reset configured hardware and restore modified output volume if possible.
     fn drop(&mut self) {
         if !self.configured_chip && !self.output_volume_modified {
             return;

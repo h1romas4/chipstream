@@ -114,6 +114,7 @@ pub enum NdsifRoutingError {
 }
 
 impl fmt::Display for NdsifRoutingError {
+    /// Format the invalid route configuration.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownDevice(index) => write!(f, "unknown NDSIF device index {index}"),
@@ -220,6 +221,7 @@ pub fn create_routed_transport_factories_with_policy<T: NdsifRoutingTransport + 
     routed_factories_with_policy(devices.to_vec(), routes, policy)
 }
 
+/// Resolve the protocol write identifier for a chip and target instance.
 fn route_write_id(chip: &Chip, target: Instance) -> Option<WriteId> {
     match chip {
         Chip::Sn76489 => Some(match target {
@@ -231,6 +233,7 @@ fn route_write_id(chip: &Chip, target: Instance) -> Option<WriteId> {
     }
 }
 
+/// Reject invalid device indices, unsupported chips, and duplicate targets.
 fn validate_routes(device_count: usize, routes: &[NdsifRoute]) -> Result<(), NdsifRoutingError> {
     for (index, route) in routes.iter().enumerate() {
         if route.device >= device_count {
@@ -261,6 +264,7 @@ fn validate_routes(device_count: usize, routes: &[NdsifRoute]) -> Result<(), Nds
     Ok(())
 }
 
+/// Build explicit route factories with the default direct policy.
 fn routed_factories<T: NdsifRoutingTransport + 'static>(
     devices: Vec<Rc<RefCell<T>>>,
     routes: &[NdsifRoute],
@@ -268,6 +272,7 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
     routed_factories_with_policy(devices, routes, NdsifDirectPolicy)
 }
 
+/// Validate transports and routes, then register their chip factories.
 fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
     devices: Vec<Rc<RefCell<T>>>,
     routes: &[NdsifRoute],

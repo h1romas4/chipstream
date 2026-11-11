@@ -194,10 +194,12 @@ pub trait NdsifRoutingTransport: NdsifTransport {
 }
 
 impl NdsifRoutingTransport for NdsifSerialTransport {
+    /// Delegate clock support checks to the connected device.
     fn supports_route_clock(&self, write_id: WriteId, instance: u8, clock: u32) -> bool {
         self.supports_clock(write_id, instance, clock)
     }
 
+    /// Delegate audio support checks to the connected device.
     fn supports_route_audio(&self, instance: u8, clock: u32) -> bool {
         self.supports_audio_stream(instance, clock)
     }

@@ -170,24 +170,35 @@ impl Okim6295 {
 }
 
 impl SoundChip for Okim6295 {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::Okim6295
     }
+
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
+
+    /// Return the floored native sample rate.
     fn sample_rate(&self) -> u32 {
         self.sample_rate_ratio().floor_hz()
     }
+
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(
             self.clock,
             NonZeroU32::new(if self.pin7 { 132 } else { 165 }).unwrap(),
         )
     }
+
+    /// Return the mono channel count.
     fn channels(&self) -> usize {
         1
     }
+
+    /// Apply a validated OKIM6295 command or register write.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         if bank != 0 {
@@ -225,24 +236,32 @@ impl SoundChip for Okim6295 {
         }
         Ok(())
     }
+
+    /// Copy bytes into the OKIM6295 sample ROM.
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         write_rom_data(&mut self.rom, start, data)
     }
+
+    /// Render mono samples into the caller's buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         for sample in buffer {
             *sample = self.tick();
         }
         Ok(())
     }
+
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset voices and pending command state.
     fn reset(&mut self) {
         self.voices = [Voice::default(); 4];
         self.command = None;

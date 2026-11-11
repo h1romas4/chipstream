@@ -97,30 +97,45 @@ impl SegaPcm {
 }
 
 impl SoundChip for SegaPcm {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::SegaPcm
     }
+
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
+
+    /// Return the floored native sample rate.
     fn sample_rate(&self) -> u32 {
         self.clock / 128
     }
+
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(self.clock, NonZeroU32::new(128).unwrap())
     }
+
+    /// Return the stereo channel count.
     fn channels(&self) -> usize {
         2
     }
+
+    /// Apply a register write to Sega PCM RAM.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         let address = (usize::from(bank) << 8) | usize::from(register);
         self.ram[address & 0x7ff] = value;
         Ok(())
     }
+
+    /// Copy bytes into Sega PCM sample ROM.
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         write_rom_data(&mut self.rom, start, data)
     }
+
+    /// Render stereo samples into the caller's buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if !buffer.len().is_multiple_of(2) {
             return Err(ChipError::InvalidBufferLength {
@@ -133,15 +148,19 @@ impl SoundChip for SegaPcm {
         }
         Ok(())
     }
+
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset registers and interpolation state.
     fn reset(&mut self) {
         self.ram = [0xff; 0x800];
         self.fraction = [0; 16];

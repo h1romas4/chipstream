@@ -107,6 +107,7 @@ pub(crate) fn is_timed_dac_data_register(event: &NdsifRegisterEvent) -> bool {
         && matches!(event.write.address, 0x2a | 0x2b)
 }
 
+/// Convert a reported timed-DAC fault state into a descriptive error.
 fn check_timed_dac_fault(status: DacStatus) -> Result<(), String> {
     if status.fault != 0 || status.state == 3 {
         return Err(format!(
@@ -483,6 +484,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Encode, send, and account for one bounded timed-DAC chunk.
     fn flush_timed_dac_chunk(
         &mut self,
         due: Vec<PendingEvent>,
@@ -1028,6 +1030,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Queue host register events at tick zero before starting the DAC profile.
     fn prepare_timed_dac_host_startup(&mut self) -> Result<(), String> {
         loop {
             let Some(stream) = self.timed_dac_stream.as_ref() else {
@@ -1072,6 +1075,7 @@ impl NdsifSerialTransport {
         self.start_timed_dac_after_ping(minimum_lead_ticks)
     }
 
+    /// Start the DAC profile and verify its initial device status.
     fn start_timed_dac_after_ping(&mut self, minimum_lead_ticks: u32) -> Result<(), String> {
         self.request(Command::DacStart {
             profile: DAC_PROFILE_YM2612,
@@ -1103,6 +1107,7 @@ impl NdsifSerialTransport {
         Ok(())
     }
 
+    /// Return an error if the playback timeline has been cancelled.
     fn check_timed_dac_cancellation(&self) -> Result<(), String> {
         if self.timed_dac_stream.as_ref().is_some_and(|stream| {
             stream
@@ -1460,6 +1465,7 @@ impl NdsifSerialTransport {
         self.drain_timed_dac()
     }
 
+    /// Poll and service the timed-DAC stream until it drains or times out.
     fn drain_timed_dac(&mut self) -> Result<(), String> {
         let deadline = Instant::now() + DAC_DRAIN_TIMEOUT;
         loop {

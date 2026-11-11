@@ -18,6 +18,7 @@ pub struct PlaybackOptions {
 }
 
 impl Default for PlaybackOptions {
+    /// Default to one traversal with no fade.
     fn default() -> Self {
         Self {
             loop_count: Some(1),

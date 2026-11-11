@@ -90,6 +90,7 @@ pub enum NdsifTransportError {
 }
 
 impl fmt::Display for NdsifTransportError {
+    /// Format the transport failure and its operation context.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyPort => f.write_str("NDSIF serial port cannot be empty"),
@@ -141,6 +142,7 @@ impl fmt::Display for NdsifTransportError {
 }
 
 impl Error for NdsifTransportError {
+    /// Expose the underlying device, serial, I/O, or protocol error.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Device { source, .. } => Some(source.as_ref()),

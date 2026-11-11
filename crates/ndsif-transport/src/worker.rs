@@ -56,6 +56,7 @@ impl NdsifWorkerDevice {
 pub struct NdsifWorkerError(String);
 
 impl fmt::Display for NdsifWorkerError {
+    /// Format the worker failure.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
@@ -424,6 +425,7 @@ impl NdsifHardwareWorkers {
         Ok(prepare)
     }
 
+    /// Retry a bounded-channel send while observing cancellation and failures.
     fn send(
         &self,
         worker: &DeviceWorker,
@@ -519,6 +521,7 @@ impl NdsifHardwareWorkers {
         result
     }
 
+    /// Join all worker threads and combine their failures.
     fn join(&mut self) -> Result<(), NdsifWorkerError> {
         let mut failures = Vec::new();
         for worker in self.threads.drain(..) {
@@ -537,6 +540,7 @@ impl NdsifHardwareWorkers {
 }
 
 impl Drop for NdsifHardwareWorkers {
+    /// Cancel pending work and join worker threads unless already finished.
     fn drop(&mut self) {
         if !self.joined {
             self.timeline.cancel();

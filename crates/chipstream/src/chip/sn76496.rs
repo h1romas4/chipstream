@@ -27,6 +27,7 @@ pub struct Sn76496Config {
 }
 
 impl Default for Sn76496Config {
+    /// Return the default SN76496 noise and stereo configuration.
     fn default() -> Self {
         Self {
             shift_width: 16,
@@ -200,24 +201,35 @@ impl Sn76496 {
 }
 
 impl SoundChip for Sn76496 {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::Sn76489
     }
+
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
+
+    /// Return the floored native sample rate.
     fn sample_rate(&self) -> u32 {
         self.sample_rate_ratio().floor_hz()
     }
+
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(
             self.clock,
             NonZeroU32::new(if self.config.divider_8 { 16 } else { 2 }).unwrap(),
         )
     }
+
+    /// Return the stereo channel count.
     fn channels(&self) -> usize {
         2
     }
+
+    /// Apply an SN76496 PSG or stereo-mask write.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         if bank != 0 {
@@ -238,6 +250,8 @@ impl SoundChip for Sn76496 {
         }
         Ok(())
     }
+
+    /// Render stereo samples into the caller's buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if !buffer.len().is_multiple_of(2) {
             return Err(ChipError::InvalidBufferLength {
@@ -250,15 +264,19 @@ impl SoundChip for Sn76496 {
         }
         Ok(())
     }
+
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset registers, tone counters, and noise state.
     fn reset(&mut self) {
         self.registers = [0; 8];
         self.selected = if self.config.frequency_zero_is_1024 {

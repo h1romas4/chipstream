@@ -120,6 +120,7 @@ impl SerialSession {
         Ok(())
     }
 
+    /// Retain a completed status request so late replies can be correlated.
     fn store_retired_status(&mut self, request: ndsif::Frame) -> Result<(), NdsifTransportError> {
         while self
             .retired_status
@@ -149,6 +150,7 @@ impl SerialSession {
         self.decoder.expire_partial_frame();
     }
 
+    /// Match and store an asynchronous DAC status frame when applicable.
     fn capture_dac_status(&mut self, frame: ndsif::Frame) -> Result<bool, NdsifTransportError> {
         if let Some(index) = self
             .retired_status
@@ -233,6 +235,7 @@ impl SerialSession {
         result
     }
 
+    /// Encode and write a command using an unused transaction identifier.
     fn send(&mut self, command: Command<'_>) -> Result<ndsif::Frame, NdsifTransportError> {
         let mut transaction_id = self.transaction_id;
         while self
@@ -271,6 +274,7 @@ impl SerialSession {
         Ok(request)
     }
 
+    /// Send a command and wait for its correlated response.
     fn request_inner(
         &mut self,
         command: Command<'_>,

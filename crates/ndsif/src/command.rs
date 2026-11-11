@@ -96,6 +96,7 @@ impl<'a> DacRecords<'a> {
 impl TryFrom<u8> for DacRecordKind {
     type Error = Error;
 
+    /// Decode a DAC record kind from its wire value.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Dac),

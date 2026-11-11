@@ -164,6 +164,7 @@ pub enum VgmSequencerError {
 }
 
 impl fmt::Display for VgmSequencerError {
+    /// Format the VGM playback failure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidChunkSize => write!(f, "output chunk size must be nonzero"),
@@ -241,6 +242,7 @@ impl fmt::Display for VgmSequencerError {
 }
 
 impl Error for VgmSequencerError {
+    /// Return the underlying parse, chip, routing, or audio error.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Parse(e) => Some(e),
@@ -253,21 +255,25 @@ impl Error for VgmSequencerError {
 }
 
 impl From<soundlog::ParseError> for VgmSequencerError {
+    /// Wrap a soundlog parse failure.
     fn from(e: soundlog::ParseError) -> Self {
         Self::Parse(e)
     }
 }
 impl From<ChipError> for VgmSequencerError {
+    /// Wrap a chip backend failure.
     fn from(e: ChipError) -> Self {
         Self::Chip(e)
     }
 }
 impl From<RouteError> for VgmSequencerError {
+    /// Wrap a chip-routing failure.
     fn from(e: RouteError) -> Self {
         Self::Route(e)
     }
 }
 impl From<AudioError> for VgmSequencerError {
+    /// Wrap an audio-processing failure.
     fn from(e: AudioError) -> Self {
         Self::Audio(e)
     }
@@ -312,6 +318,7 @@ impl Memory {
     }
 }
 
+/// Record Game Gear PSG stereo-mask writes for each chip instance.
 fn observe_psg_stereo(stereo: &mut [bool; 2], command: &VgmCommand) {
     if let VgmCommand::GameGearPsgWrite(instance, spec) = command
         && spec.value != 0xff
@@ -736,6 +743,7 @@ fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
     }
 }
 
+/// Reset a reconstructed stream to the sequencer's playback defaults.
 fn reset_replay_stream(stream: &mut VgmStream, loop_base: i8, loop_modifier: u8) {
     stream.reset();
     stream.set_loop_count(Some(1));
@@ -745,6 +753,7 @@ fn reset_replay_stream(stream: &mut VgmStream, loop_base: i8, loop_modifier: u8)
     stream.set_emit_stream_controls(true);
 }
 
+/// Replay a fixed number of commands while restoring saved stream settings.
 fn replay_stream(
     stream: &mut VgmStream,
     steps: usize,
@@ -1368,6 +1377,7 @@ impl<'a> VgmSequencer<'a> {
         self.set_fadeout_samples(super::options::fadeout_samples(fadeout)?)
     }
 
+    /// Apply and record the fade duration for future stream reconstruction.
     fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
         self.configure_fadeout(samples, None)?;
         let samples = samples.filter(|samples| *samples != 0);
@@ -2225,6 +2235,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Notify OKIM6258 adapters when a matching DAC stream starts or stops.
     fn notify_dac_stream(
         &mut self,
         selector: DacStreamSelector,

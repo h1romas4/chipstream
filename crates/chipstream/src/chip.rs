@@ -297,6 +297,7 @@ pub trait SoundChipState: Any {
 }
 
 impl<T: Any> SoundChipState for T {
+    /// Expose the concrete value for type-checked state restoration.
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -337,58 +338,72 @@ pub(crate) fn restore_cloned_state<T: Clone + Any>(
 }
 
 impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
+    /// Forward the chip type query to the boxed backend.
     fn chip_type(&self) -> &Chip {
         (**self).chip_type()
     }
 
+    /// Forward the clock query to the boxed backend.
     fn clock(&self) -> u32 {
         (**self).clock()
     }
 
+    /// Forward the sample-rate query to the boxed backend.
     fn sample_rate(&self) -> u32 {
         (**self).sample_rate()
     }
 
+    /// Forward the exact sample-rate query to the boxed backend.
     fn sample_rate_ratio(&self) -> SampleRate {
         (**self).sample_rate_ratio()
     }
 
+    /// Forward the channel-count query to the boxed backend.
     fn channels(&self) -> usize {
         (**self).channels()
     }
 
+    /// Forward the host-output capability query to the boxed backend.
     fn has_no_audio_output(&self) -> bool {
         (**self).has_no_audio_output()
     }
 
+    /// Forward the stereo mute query to the boxed backend.
     fn stereo_mute(&self) -> Option<StereoMute> {
         (**self).stereo_mute()
     }
 
+    /// Forward a typed register write to the boxed backend.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         (**self).apply_register_write(write)
     }
 
+    /// Forward access to the scheduled-chip interface.
     fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
         (**self).scheduled()
     }
 
+    /// Forward ROM writes to the boxed backend.
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         (**self).write_rom(start, data)
     }
 
+    /// Forward sample generation to the boxed backend.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         (**self).generate(buffer)
     }
 
+    /// Forward reset to the boxed backend.
     fn reset(&mut self) {
         (**self).reset()
     }
 
+    /// Forward state capture to the boxed backend.
     fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
         (**self).save_state()
     }
 
+    /// Forward state restoration to the boxed backend.
     fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
         (**self).restore_state(state)
     }
@@ -484,6 +499,7 @@ pub enum ChipError {
 }
 
 impl fmt::Display for ChipError {
+    /// Format the chip operation failure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedChip(chip) => write!(f, "unsupported chip: {chip:?}"),

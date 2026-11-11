@@ -51,6 +51,7 @@ pub enum MetadataError {
 }
 
 impl fmt::Display for MetadataError {
+    /// Format the metadata parsing error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidData(message) => f.write_str(message),

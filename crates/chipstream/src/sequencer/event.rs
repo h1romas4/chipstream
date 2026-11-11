@@ -27,12 +27,15 @@ mod private {
 /// position, and optional state changes. A callback can be registered for
 /// each write specification supported by chipstream.
 pub trait VgmWriteCallbackTarget: private::WriteCallbackSealed + Sized + 'static {
+    /// Check whether a dynamic write has this specification's variant.
     #[doc(hidden)]
     fn matches(write: &ChipRegisterWrite) -> bool;
 
+    /// Clone this specification from a matching dynamic write.
     #[doc(hidden)]
     fn from_write(write: &ChipRegisterWrite) -> Option<Self>;
 
+    /// Wrap this specification in its dynamic write variant.
     #[doc(hidden)]
     fn into_write(self) -> ChipRegisterWrite;
 }
@@ -42,10 +45,12 @@ macro_rules! impl_write_callback_target {
         impl private::WriteCallbackSealed for $spec {}
 
         impl VgmWriteCallbackTarget for $spec {
+            /// Test whether a dynamic write has this specification's variant.
             fn matches(write: &ChipRegisterWrite) -> bool {
                 matches!(write, ChipRegisterWrite::$variant(_))
             }
 
+            /// Clone this specification from a matching dynamic write.
             fn from_write(write: &ChipRegisterWrite) -> Option<Self> {
                 match write {
                     ChipRegisterWrite::$variant(spec) => Some(spec.clone()),
@@ -53,6 +58,7 @@ macro_rules! impl_write_callback_target {
                 }
             }
 
+            /// Wrap this specification in its dynamic write variant.
             fn into_write(self) -> ChipRegisterWrite {
                 ChipRegisterWrite::$variant(self)
             }
@@ -136,9 +142,13 @@ pub(super) struct PendingWriteEvent {
 }
 
 trait WriteCallback {
+    /// Identify the callback's concrete write specification.
     fn target_type_id(&self) -> TypeId;
+    /// Check whether this callback accepts a dynamic write.
     fn matches(&self, write: &ChipRegisterWrite) -> bool;
+    /// Report whether the callback only tracks state changes.
     fn state_only(&self) -> bool;
+    /// Invoke the callback with the typed write and any state events.
     fn call(
         &mut self,
         instance: Instance,
@@ -155,8 +165,11 @@ struct TypedWriteCallback<C, F> {
 }
 
 trait WriteFilter {
+    /// Identify the filter's concrete write specification.
     fn target_type_id(&self) -> TypeId;
+    /// Check whether this filter accepts a dynamic write.
     fn matches(&self, write: &ChipRegisterWrite) -> bool;
+    /// Transform a matching dynamic write.
     fn apply(
         &mut self,
         instance: Instance,
@@ -175,14 +188,17 @@ where
     C: VgmWriteCallbackTarget,
     F: FnMut(Instance, C, usize) -> C,
 {
+    /// Identify the filter's target write type.
     fn target_type_id(&self) -> TypeId {
         TypeId::of::<C>()
     }
 
+    /// Check whether the typed filter accepts this write.
     fn matches(&self, write: &ChipRegisterWrite) -> bool {
         C::matches(write)
     }
 
+    /// Apply the typed filter and convert its result back to a dynamic write.
     fn apply(
         &mut self,
         instance: Instance,
@@ -203,18 +219,22 @@ where
     C: VgmWriteCallbackTarget,
     F: FnMut(Instance, C, usize, Option<Vec<StateEvent>>),
 {
+    /// Identify the callback's target write type.
     fn target_type_id(&self) -> TypeId {
         TypeId::of::<C>()
     }
 
+    /// Check whether the typed callback accepts this write.
     fn matches(&self, write: &ChipRegisterWrite) -> bool {
         C::matches(write)
     }
 
+    /// Report whether this callback is registered only for state tracking.
     fn state_only(&self) -> bool {
         self.state_only
     }
 
+    /// Invoke the callback after converting the dynamic write to its type.
     fn call(
         &mut self,
         instance: Instance,
@@ -235,6 +255,7 @@ pub(super) struct CallbackRegistry<'a> {
 }
 
 impl Default for CallbackRegistry<'_> {
+    /// Create an empty callback registry.
     fn default() -> Self {
         Self {
             callbacks: Vec::new(),

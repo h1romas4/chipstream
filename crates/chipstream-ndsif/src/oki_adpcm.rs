@@ -52,6 +52,7 @@ impl OkiAdpcmState {
         low | (high << 4)
     }
 
+    /// Encode one signed sample as a four-bit OKI ADPCM code.
     fn encode_nibble(&mut self, target: i32) -> u8 {
         let target = target.clamp(-self.limit, self.limit - 1);
         let mut difference = target - self.signal;

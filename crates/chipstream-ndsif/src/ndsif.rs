@@ -165,38 +165,47 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
+    /// Hardware output is external; host PCM is silent.
     fn has_no_audio_output(&self) -> bool {
         true
     }
 
+    /// Return the chip type configured for this adapter.
     fn chip_type(&self) -> &Chip {
         &self.chip
     }
 
+    /// Return the configured chip clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
 
+    /// Return the floored native sample rate in hertz.
     fn sample_rate(&self) -> u32 {
         self.sample_rate.floor_hz()
     }
 
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Return the host-side channel count for this chip.
     fn channels(&self) -> usize {
         self.channels
     }
 
+    /// Schedule an untimed write at output frame zero.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         self.schedule_write(write, 0, self.output_rate, false)
     }
 
+    /// Expose the adapter's frame-aware scheduling interface.
     fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
         Some(self)
     }
 
+    /// Fill a valid host buffer with silence.
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
         if !samples.len().is_multiple_of(self.channels) {
             return Err(ChipError::InvalidBufferLength {
@@ -208,10 +217,12 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
         Ok(())
     }
 
+    /// No local chip state needs resetting.
     fn reset(&mut self) {}
 }
 
 impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
+    /// Schedule a register write at its absolute output frame.
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -221,6 +232,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
         self.schedule_write(write, sample_frame, output_rate, false)
     }
 
+    /// Check whether the transport supports YM2612 initialization batching.
     fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
         if self.chip != Chip::Ym2612 {
             return Ok(false);
@@ -232,6 +244,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
             .supports_vgm_initialization())
     }
 
+    /// Schedule an initial VGM register write through the transport's init path.
     fn apply_vgm_initial_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -241,6 +254,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
         self.schedule_write(write, frame, rate, true)
     }
 
+    /// Complete the transport's buffered VGM initialization sequence.
     fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
         self.transport
             .try_borrow_mut()
@@ -249,6 +263,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
             .map_err(|error| external_error(&self.chip, error))
     }
 
+    /// Send queued events through the requested output frame.
     fn flush_scheduled_until(
         &mut self,
         sample_frame: usize,
@@ -261,6 +276,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
             .map_err(|error| external_error(&self.chip, error))
     }
 
+    /// Finalize any pending transport-side DAC stream work.
     fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
         self.transport
             .try_borrow_mut()
@@ -383,38 +399,47 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
+    /// Hardware output is external; host PCM is silent.
     fn has_no_audio_output(&self) -> bool {
         true
     }
 
+    /// Return the SN76489 chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::Sn76489
     }
 
+    /// Return the configured chip clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
 
+    /// Return the floored native sample rate in hertz.
     fn sample_rate(&self) -> u32 {
         self.sample_rate.floor_hz()
     }
 
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Return the stereo channel count.
     fn channels(&self) -> usize {
         2
     }
 
+    /// Schedule an untimed PSG write at output frame zero.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         self.schedule_write(write, 0, self.output_rate, false)
     }
 
+    /// Expose the adapter's frame-aware scheduling interface.
     fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
         Some(self)
     }
 
+    /// Fill a valid stereo host buffer with silence.
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
         if !samples.len().is_multiple_of(2) {
             return Err(ChipError::InvalidBufferLength {
@@ -426,10 +451,12 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
         Ok(())
     }
 
+    /// No local chip state needs resetting.
     fn reset(&mut self) {}
 }
 
 impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
+    /// Schedule a PSG write at its absolute output frame.
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -439,6 +466,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
         self.schedule_write(write, sample_frame, output_rate, false)
     }
 
+    /// Check whether the transport supports VGM initialization batching.
     fn wants_vgm_initialization(&self) -> Result<bool, ChipError> {
         Ok(self
             .transport
@@ -447,6 +475,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
             .supports_vgm_initialization())
     }
 
+    /// Schedule an initial VGM PSG write through the transport's init path.
     fn apply_vgm_initial_write(
         &mut self,
         write: ChipRegisterWrite,
@@ -456,6 +485,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
         self.schedule_write(write, frame, rate, true)
     }
 
+    /// Complete the transport's buffered VGM initialization sequence.
     fn finish_vgm_initialization(&mut self) -> Result<(), ChipError> {
         self.transport
             .try_borrow_mut()
@@ -464,6 +494,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
             .map_err(|error| external_error(&Chip::Sn76489, error))
     }
 
+    /// Send queued events through the requested output frame.
     fn flush_scheduled_until(
         &mut self,
         sample_frame: usize,
@@ -704,6 +735,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         }
     }
 
+    /// Apply a coalesced clock or divider change at its scheduled position.
     fn commit_timing(&mut self) -> Result<(), ChipError> {
         let Some(pending) = self.pending_timing.take() else {
             return Ok(());
@@ -801,6 +833,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
         Ok(())
     }
 
+    /// Encode source ADPCM or silence up to the frame's byte position.
     fn render_until(&mut self, sample_frame: usize, sample_rate: u32) -> Result<(), ChipError> {
         let target = self.position_for_frame(sample_frame, sample_rate)?.get();
         let index = self
@@ -838,23 +871,28 @@ enum Okim6258Event {
 }
 
 impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
+    /// Hardware output is external; host PCM is silent.
     fn has_no_audio_output(&self) -> bool {
         true
     }
 
+    /// Return the OKIM6258 chip type.
     fn chip_type(&self) -> &Chip {
         static CHIP: Chip = Chip::Okim6258;
         &CHIP
     }
 
+    /// Return the configured chip clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
 
+    /// Return the floored native sample rate in hertz.
     fn sample_rate(&self) -> u32 {
         self.clock / self.divider as u32
     }
 
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(
             self.clock,
@@ -862,27 +900,33 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         )
     }
 
+    /// Return the mono channel count.
     fn channels(&self) -> usize {
         1
     }
 
+    /// Process an untimed register write at output frame zero.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         self.schedule_write(write, 0, self.output_rate)
     }
 
+    /// Expose the adapter's frame-aware scheduling interface.
     fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
         Some(self)
     }
 
+    /// Fill the host buffer with silence.
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
         samples.fill(0);
         Ok(())
     }
 
+    /// No local chip state needs resetting.
     fn reset(&mut self) {}
 }
 
 impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
+    /// Process a register write at its absolute output frame.
     fn apply_register_write_at(
         &mut self,
         write: ChipRegisterWrite,
@@ -892,6 +936,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
         self.schedule_write(write, sample_frame, output_rate)
     }
 
+    /// Start or stop the device's DAC stream at the requested frame.
     fn set_dac_stream_playing_at(
         &mut self,
         playing: bool,
@@ -908,6 +953,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
         )
     }
 
+    /// Report whether a stop write terminates the active DAC stream.
     fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
         matches!(
             write,
@@ -916,10 +962,12 @@ impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
         )
     }
 
+    /// Commit any deferred timing change before scheduled transport work.
     fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
         self.commit_timing()
     }
 
+    /// Render and submit queued data through the requested output frame.
     fn flush_scheduled_until(
         &mut self,
         sample_frame: usize,
@@ -940,6 +988,7 @@ impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
         Ok(())
     }
 
+    /// Flush the stream and send its final zero-pair control.
     fn finish_scheduled(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), ChipError> {
         self.commit_timing()?;
         if self.stream_finished {

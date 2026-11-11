@@ -64,6 +64,7 @@ impl YmfmChip {
         Self::ym2149_native_clock(clock, divide_clock).map(|_| ())
     }
 
+    /// Convert a YM2149 input clock to ymfm's required native clock.
     fn ym2149_native_clock(clock: u32, divide_clock: bool) -> Result<u32, ChipError> {
         let minimum = if divide_clock { 16 } else { 8 };
         if clock < minimum {
@@ -160,22 +161,27 @@ impl YmfmChip {
 }
 
 impl SoundChip for YmfmChip {
+    /// Report the chip type configured in the YMFM backend.
     fn chip_type(&self) -> &Chip {
         &self.chip_type
     }
 
+    /// Return the configured input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
 
+    /// Return the backend's native sample rate.
     fn sample_rate(&self) -> u32 {
         self.inner.sample_rate()
     }
 
+    /// Return the backend's output channel count.
     fn channels(&self) -> usize {
         self.inner.channels() as usize
     }
 
+    /// Apply a validated register write to YMFM.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         if self.chip_type == Chip::Ay8910 && register > 0x0f {
@@ -199,6 +205,7 @@ impl SoundChip for YmfmChip {
         Ok(())
     }
 
+    /// Generate native samples into the caller's buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if !buffer.len().is_multiple_of(self.channels()) {
             return Err(ChipError::InvalidBufferLength {
@@ -215,6 +222,7 @@ impl SoundChip for YmfmChip {
         Ok(())
     }
 
+    /// Capture the native backend and wrapper configuration.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         let native = self
             .inner
@@ -230,6 +238,7 @@ impl SoundChip for YmfmChip {
         }))
     }
 
+    /// Restore the backend after validating snapshot type and configuration.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let Some(state) = state.as_any().downcast_ref::<YmfmStateSnapshot>() else {
             return Err(super::ChipError::InvalidStateSnapshot(
@@ -252,6 +261,7 @@ impl SoundChip for YmfmChip {
         Ok(())
     }
 
+    /// Reset the YMFM backend.
     fn reset(&mut self) {
         self.inner.pin_mut().reset();
     }

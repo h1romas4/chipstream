@@ -45,6 +45,7 @@ pub struct MdxSequencerOptions {
 }
 
 impl Default for MdxSequencerOptions {
+    /// Build options from the MDX driver's defaults.
     fn default() -> Self {
         let driver = MdxToVgmOptions::default();
         Self {
@@ -60,6 +61,7 @@ impl Default for MdxSequencerOptions {
 }
 
 impl From<MdxSequencerOptions> for MdxToVgmOptions {
+    /// Transfer MDX driver settings and loop count to the converter.
     fn from(options: MdxSequencerOptions) -> Self {
         Self {
             ym2151_clock: options.ym2151_clock,
@@ -88,6 +90,7 @@ pub enum MdxSequencerError {
 }
 
 impl fmt::Display for MdxSequencerError {
+    /// Format the MDX playback failure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Compatibility(error) => {
@@ -101,6 +104,7 @@ impl fmt::Display for MdxSequencerError {
 }
 
 impl Error for MdxSequencerError {
+    /// Return the underlying parse, conversion, or playback error.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Compatibility(_) => None,

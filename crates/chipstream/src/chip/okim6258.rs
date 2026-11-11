@@ -236,18 +236,22 @@ impl Okim6258 {
 }
 
 impl SoundChip for Okim6258 {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::Okim6258
     }
 
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
 
+    /// Return the native sample rate in hertz.
     fn sample_rate(&self) -> u32 {
         self.clock / self.divider.value()
     }
 
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(
             self.clock,
@@ -255,10 +259,12 @@ impl SoundChip for Okim6258 {
         )
     }
 
+    /// Return the mono channel count.
     fn channels(&self) -> usize {
         1
     }
 
+    /// Report which stereo outputs are enabled by the pan register.
     fn stereo_mute(&self) -> Option<StereoMute> {
         Some(StereoMute {
             left: self.pan_mask & 1 != 0,
@@ -266,6 +272,7 @@ impl SoundChip for Okim6258 {
         })
     }
 
+    /// Apply an OKIM6258 register write and update its decoder state.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         if bank != 0 {
@@ -308,6 +315,7 @@ impl SoundChip for Okim6258 {
         Ok(())
     }
 
+    /// Decode samples into the caller's mono buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if self.status & STATUS_PLAYING == 0 {
             buffer.fill(0);
@@ -327,15 +335,18 @@ impl SoundChip for Okim6258 {
         Ok(())
     }
 
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset the decoder and stop playback.
     fn reset(&mut self) {
         self.signal = -2;
         self.step = 0;

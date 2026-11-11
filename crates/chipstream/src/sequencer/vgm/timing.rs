@@ -65,6 +65,7 @@ struct ClockChanges {
 }
 
 impl Default for ClockChanges {
+    /// Initialize byte-wise clock bounds to include any future writes.
     fn default() -> Self {
         Self {
             low: [u8::MAX; 4],

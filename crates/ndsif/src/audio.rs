@@ -37,10 +37,12 @@ impl AudioPositionClock {
         })
     }
 
+    /// Return the common denominator for the clock-to-position fraction.
     fn denominator(&self) -> u128 {
         u128::from(self.output_rate) * DIVIDER_LCM * 2
     }
 
+    /// Compute the accumulated numerator at an output frame.
     fn numerator_at(&self, frame: usize, output_rate: u32) -> Result<u128, Error> {
         if output_rate != self.output_rate || frame < self.frame {
             return Err(Error::InvalidArgument);

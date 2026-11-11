@@ -33,6 +33,7 @@ pub trait ChipWrite<S>: SoundChip {
 }
 
 impl<S, C: ChipWrite<S> + ?Sized> ChipWrite<S> for Box<C> {
+    /// Forward typed writes through a boxed backend.
     fn apply_typed_write(&mut self, spec: S) -> Result<(), ChipError> {
         (**self).apply_typed_write(spec)
     }
@@ -86,6 +87,7 @@ macro_rules! define_writes {
 
         $(
             impl ChipWrite<$spec> for dyn SoundChip + '_ {
+                /// Validate the target chip and apply the typed write.
                 fn apply_typed_write(&mut self, spec: $spec) -> Result<(), ChipError> {
                     let write = ChipRegisterWrite::$variant(spec);
                     let expected = write.chip();
@@ -162,6 +164,7 @@ impl ChipRegisterWrite {
 macro_rules! typed_write {
     ($backend:ty, $spec:ty, $variant:ident) => {
         impl ChipWrite<$spec> for $backend {
+            /// Convert the specification to a dynamic write and apply it.
             fn apply_typed_write(&mut self, spec: $spec) -> Result<(), ChipError> {
                 self.apply_register_write(ChipRegisterWrite::$variant(spec))
             }

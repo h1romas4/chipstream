@@ -48,6 +48,7 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// Format the protocol or transport error for diagnostics.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PayloadTooLong { length } => {

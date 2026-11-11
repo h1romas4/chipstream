@@ -68,6 +68,7 @@ pub enum AudioError {
 }
 
 impl fmt::Display for AudioError {
+    /// Format the audio processing error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSampleRate => write!(f, "sample rate must be nonzero"),

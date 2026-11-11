@@ -262,6 +262,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
     factories
 }
 
+/// Ask the policy for options after assembling the active source route.
 fn select_route(
     policy: &RefCell<impl NdsifRoutePolicy>,
     device: usize,

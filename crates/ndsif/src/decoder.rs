@@ -80,6 +80,7 @@ impl Decoder {
 }
 
 impl Default for Decoder {
+    /// Create a decoder with the default frame timeout.
     fn default() -> Self {
         Self::new()
     }

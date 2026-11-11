@@ -384,6 +384,7 @@ impl NdsifSerialTransport {
         self.start_audio_after_ping(instance, clock, divider)
     }
 
+    /// Start audio after a ping and verify that the device entered running state.
     fn start_audio_after_ping(
         &mut self,
         instance: u8,

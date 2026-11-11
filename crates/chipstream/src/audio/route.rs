@@ -154,6 +154,7 @@ pub enum RouteError {
 }
 
 impl fmt::Display for RouteError {
+    /// Format the routing or chip-generation error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSampleRate => write!(f, "chip reported a zero sample rate"),
@@ -168,6 +169,7 @@ impl fmt::Display for RouteError {
 }
 
 impl Error for RouteError {
+    /// Return the underlying chip error when one is present.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Chip(error) => Some(error),

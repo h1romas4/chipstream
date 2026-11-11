@@ -33,6 +33,7 @@ pub enum MessageType {
 impl TryFrom<u8> for MessageType {
     type Error = Error;
 
+    /// Decode a message type from its wire value.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::NoResponse),
@@ -203,6 +204,7 @@ impl EncodedFrame {
 }
 
 impl AsRef<[u8]> for EncodedFrame {
+    /// Borrow the encoded frame bytes, including delimiters.
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
     }

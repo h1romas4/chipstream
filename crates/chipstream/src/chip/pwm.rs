@@ -124,18 +124,27 @@ impl Pwm {
 }
 
 impl SoundChip for Pwm {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::Pwm
     }
+
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
+
+    /// Return the PWM output rate.
     fn sample_rate(&self) -> u32 {
         RATE
     }
+
+    /// Return the stereo channel count.
     fn channels(&self) -> usize {
         2
     }
+
+    /// Apply a validated PWM register write.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.parts_for(self.chip_type())?;
         if bank != 0 {
@@ -176,6 +185,8 @@ impl SoundChip for Pwm {
         }
         Ok(())
     }
+
+    /// Render stereo samples from the PWM FIFOs.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if !buffer.len().is_multiple_of(2) {
             return Err(ChipError::InvalidBufferLength {
@@ -188,15 +199,19 @@ impl SoundChip for Pwm {
         }
         Ok(())
     }
+
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset control registers, FIFOs, and timer state.
     fn reset(&mut self) {
         self.control = 0;
         self.cycle = 0;

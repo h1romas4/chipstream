@@ -38,6 +38,7 @@ pub enum ClockMode {
 impl TryFrom<u8> for ClockMode {
     type Error = Error;
 
+    /// Decode the advertised clock mode.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Unknown),

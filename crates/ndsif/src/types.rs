@@ -121,6 +121,7 @@ impl WriteId {
 impl TryFrom<u8> for WriteId {
     type Error = Error;
 
+    /// Validate and construct a protocol write identifier.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         if value < 0x30 {
             return Err(Error::InvalidArgument);
@@ -141,6 +142,7 @@ pub enum OkiClock {
 
 impl TryFrom<u32> for OkiClock {
     type Error = Error;
+    /// Accept only clocks supported by the NDSIF audio profile.
     fn try_from(value: u32) -> Result<Self, Error> {
         match value {
             4_000_000 => Ok(Self::Mhz4),
@@ -164,6 +166,7 @@ pub enum Divider {
 
 impl TryFrom<u16> for Divider {
     type Error = Error;
+    /// Decode a supported OKIM6258 clock divider.
     fn try_from(value: u16) -> Result<Self, Error> {
         match value {
             512 => Ok(Self::Div512),
@@ -268,6 +271,7 @@ impl AudioSampleConverter {
 
 impl TryFrom<u8> for Pan {
     type Error = Error;
+    /// Decode the output-channel selection.
     fn try_from(value: u8) -> Result<Self, Error> {
         match value {
             0 => Ok(Self::Both),
@@ -291,6 +295,7 @@ pub enum ZeroPair {
 
 impl TryFrom<u8> for ZeroPair {
     type Error = Error;
+    /// Decode the supported END repetition byte.
     fn try_from(value: u8) -> Result<Self, Error> {
         match value {
             0x80 => Ok(Self::Byte80),

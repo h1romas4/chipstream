@@ -32,6 +32,7 @@ pub trait NdsifRoutePolicy {
 pub struct NdsifDirectPolicy;
 
 impl NdsifRoutePolicy for NdsifDirectPolicy {
+    /// Accept the route without additional policy checks.
     fn select(&mut self, _: &NdsifRoute, _: u32) -> Result<NdsifRouteOptions, String> {
         Ok(NdsifRouteOptions::default())
     }
@@ -71,6 +72,7 @@ impl NdsifNd7Policy {
 }
 
 impl NdsifRoutePolicy for NdsifNd7Policy {
+    /// Validate NanoDrive 7 resource sharing and select its AY compatibility.
     fn select(&mut self, route: &NdsifRoute, clock: u32) -> Result<NdsifRouteOptions, String> {
         if self.devices.contains(&route.device) {
             self.validator.add(route, clock)?;

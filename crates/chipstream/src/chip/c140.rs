@@ -244,29 +244,44 @@ impl C140 {
 }
 
 impl SoundChip for C140 {
+    /// Report the emulated chip type.
     fn chip_type(&self) -> &Chip {
         &Chip::C140
     }
+
+    /// Return the input clock in hertz.
     fn clock(&self) -> u32 {
         self.clock
     }
+
+    /// Return the floored native sample rate.
     fn sample_rate(&self) -> u32 {
         self.clock / 576
     }
+
+    /// Return the exact native sample-rate ratio.
     fn sample_rate_ratio(&self) -> SampleRate {
         SampleRate::from_ratio(self.clock, NonZeroU32::new(576).unwrap())
     }
+
+    /// Return the stereo channel count.
     fn channels(&self) -> usize {
         2
     }
+
+    /// Apply a validated C140 register write.
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
         let (bank, register, value) = write.byte_parts_for(self.chip_type())?;
         self.write_address((usize::from(bank) << 8) | usize::from(register), value);
         Ok(())
     }
+
+    /// Copy bytes into the C140 sample ROM.
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         write_rom_data(&mut self.rom, start, data)
     }
+
+    /// Render stereo samples into the caller's buffer.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         if !buffer.len().is_multiple_of(2) {
             return Err(ChipError::InvalidBufferLength {
@@ -279,15 +294,19 @@ impl SoundChip for C140 {
         }
         Ok(())
     }
+
+    /// Capture a clone of the chip state.
     fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, super::ChipError> {
         Ok(super::save_cloned_state(self))
     }
 
+    /// Restore a state snapshot after validating its concrete type.
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), super::ChipError> {
         let chip = self.chip_type().clone();
         super::restore_cloned_state(self, state, chip)
     }
 
+    /// Reset registers, voices, and the noise generator.
     fn reset(&mut self) {
         self.registers = [0; 0x200];
         self.voices = [Voice::default(); 24];

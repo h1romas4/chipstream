@@ -70,6 +70,7 @@ impl NdsifRecordingTransport {
         }
     }
 
+    /// Append an operation unless the recorder has failed or reached its limit.
     fn record(&mut self, operation: Operation) -> Result<(), String> {
         if self.failed || self.operations.len() == self.limit.get() {
             self.failed = true;
@@ -103,6 +104,7 @@ impl NdsifRecordingTransport {
     }
 }
 
+/// Estimate the command and event budget needed to prebuffer timed DAC work.
 fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) -> (usize, usize) {
     let mut dac_writes = 0_usize;
     let mut events = 0_usize;
@@ -176,10 +178,12 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
 }
 
 impl NdsifRoutingTransport for NdsifRecordingTransport {
+    /// Check a chip clock against the recorder's capability snapshot.
     fn supports_route_clock(&self, write_id: WriteId, instance: u8, clock: u32) -> bool {
         supports_cached_clock(&self.capabilities, write_id, instance, clock)
     }
 
+    /// Check audio support against the recorder's capability snapshot.
     fn supports_route_audio(&self, instance: u8, clock: u32) -> bool {
         supports_cached_audio(
             &self.capabilities,
@@ -192,10 +196,12 @@ impl NdsifRoutingTransport for NdsifRecordingTransport {
 }
 
 impl NdsifTransport for NdsifRecordingTransport {
+    /// Report whether VGM initialization can use the timed-DAC path.
     fn supports_vgm_initialization(&self) -> bool {
         self.timed_dac_supported && self.primary_ym2612 && !self.audio_configured
     }
 
+    /// Record chip configuration and update initialization eligibility.
     fn configure_chip(&mut self, id: WriteId, instance: u8, clock: u32) -> Result<(), String> {
         self.record(Operation::ConfigureChip(id, instance, clock))?;
         if id == WriteId::YM2612 && instance == 0 {
@@ -204,14 +210,17 @@ impl NdsifTransport for NdsifRecordingTransport {
         Ok(())
     }
 
+    /// Record a scheduled register write.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
         self.record(Operation::Register(event))
     }
 
+    /// Record a scheduled PSG write.
     fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
         self.record(Operation::Psg(event))
     }
 
+    /// Record a register write from VGM initialization.
     fn schedule_vgm_initial_register_write(
         &mut self,
         event: NdsifRegisterEvent,
@@ -219,10 +228,12 @@ impl NdsifTransport for NdsifRecordingTransport {
         self.record(Operation::InitialRegister(event))
     }
 
+    /// Record a PSG write from VGM initialization.
     fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
         self.record(Operation::InitialPsg(event))
     }
 
+    /// Record completion of the VGM initialization sequence once.
     fn finish_vgm_initialization(&mut self) -> Result<(), String> {
         if !self.vgm_initialization_finished {
             self.record(Operation::FinishVgmInitialization)?;
@@ -231,6 +242,7 @@ impl NdsifTransport for NdsifRecordingTransport {
         Ok(())
     }
 
+    /// Record audio-stream configuration and mark audio as configured.
     fn configure_audio_stream(
         &mut self,
         instance: u8,
@@ -243,26 +255,32 @@ impl NdsifTransport for NdsifRecordingTransport {
         Ok(())
     }
 
+    /// Record one scheduled ADPCM byte.
     fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
         self.record(Operation::Adpcm(event))
     }
 
+    /// Record one scheduled audio control.
     fn schedule_audio_control(&mut self, event: NdsifAudioControlEvent) -> Result<(), String> {
         self.record(Operation::AudioControl(event))
     }
 
+    /// Record a request to flush through an output frame.
     fn flush_scheduled_until(&mut self, frame: usize, rate: u32) -> Result<(), String> {
         self.record(Operation::Flush(frame, rate))
     }
 
+    /// Record the start of an audio stream.
     fn start_audio_stream(&mut self, instance: u8) -> Result<(), String> {
         self.record(Operation::StartAudio(instance))
     }
 
+    /// Record the end of an audio stream.
     fn finish_audio_stream(&mut self, instance: u8, frame: usize, rate: u32) -> Result<(), String> {
         self.record(Operation::FinishAudio(instance, frame, rate))
     }
 
+    /// Record the end of the DAC stream.
     fn finish_dac_stream(&mut self, frame: usize, rate: u32) -> Result<(), String> {
         self.record(Operation::FinishDac(frame, rate))
     }
@@ -354,6 +372,7 @@ pub struct NdsifRecordingError {
 }
 
 impl fmt::Display for NdsifRecordingError {
+    /// Format the per-batch operation-limit error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -375,6 +394,7 @@ pub struct NdsifReplayError {
 }
 
 impl fmt::Display for NdsifReplayError {
+    /// Format the failed operation index and target error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "NDSIF operation {} failed: {}", self.index, self.message)
     }

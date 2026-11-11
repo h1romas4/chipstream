@@ -35,6 +35,7 @@ impl Gain {
 }
 
 impl StereoEffect for Gain {
+    /// Apply this gain equally to both channels.
     fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError> {
         apply_gains(block, [self.gain; 2])
     }
@@ -70,6 +71,7 @@ impl StereoBalance {
 }
 
 impl StereoEffect for StereoBalance {
+    /// Attenuate the side opposite the selected balance.
     fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError> {
         apply_gains(
             block,
