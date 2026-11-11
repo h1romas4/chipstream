@@ -147,3 +147,7 @@ plugin; these environment variables alone are not sufficient.
 export GST_PLUGIN_PATH=/home/hiromasa/.local/lib/chipstream
 export TMS_BACKEND=gstreamer
 ```
+
+## License
+
+BSD-3-Clause License
