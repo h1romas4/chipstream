@@ -633,7 +633,9 @@ impl Voice {
 /// guaranteed real-time safe. After a rendering error, create a new sequencer.
 pub struct VgmSequencer<'a> {
     stream: VgmStream,
-    stream_factory: StreamFactory,
+    stream_factory: Option<StreamFactory>,
+    initial_loop_base: i8,
+    initial_loop_modifier: u8,
     stream_steps: usize,
     stream_settings: Vec<(usize, StreamSetting)>,
     voices: Vec<Voice>,
@@ -734,6 +736,46 @@ fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
     }
 }
 
+fn reset_replay_stream(stream: &mut VgmStream, loop_base: i8, loop_modifier: u8) {
+    stream.reset();
+    stream.set_loop_count(Some(1));
+    stream.set_loop_base(loop_base);
+    stream.set_loop_modifier(loop_modifier);
+    stream.set_fadeout_samples(None);
+    stream.set_emit_stream_controls(true);
+}
+
+fn replay_stream(
+    stream: &mut VgmStream,
+    steps: usize,
+    settings: &[(usize, StreamSetting)],
+) -> Result<(), VgmSequencerError> {
+    let mut setting_index = 0;
+    for step in 0..=steps {
+        while settings
+            .get(setting_index)
+            .is_some_and(|(at, _)| *at == step)
+        {
+            apply_stream_setting(stream, &settings[setting_index].1);
+            setting_index += 1;
+        }
+        if step == steps {
+            break;
+        }
+        let result = stream
+            .next()
+            .ok_or(VgmSequencerError::UnexpectedEnd)?
+            .map_err(VgmSequencerError::Parse)?;
+        if matches!(result, StreamResult::EndOfStream) && step + 1 != steps {
+            return Err(VgmSequencerError::UnexpectedEnd);
+        }
+    }
+    if setting_index != settings.len() {
+        return Err(VgmSequencerError::CheckpointMismatch);
+    }
+    Ok(())
+}
+
 impl<'a> VgmSequencer<'a> {
     /// Create a sequencer from a borrowed uncompressed VGM file.
     ///
@@ -780,7 +822,7 @@ impl<'a> VgmSequencer<'a> {
         mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
-        let data = Arc::new(data.into());
+        let data = data.into();
         let header = VgmHeader::from_bytes(&data)?;
         let extra = header.extra_header_from_bytes(&data)?;
         let mut timing = Timing::new(&Self::supported_clocks(&header));
@@ -804,14 +846,8 @@ impl<'a> VgmSequencer<'a> {
             output_rate,
             &mut factories,
         )?;
-        let replay_data = Arc::clone(&data);
-        let stream = VgmStream::from_vgm_shared(Arc::clone(&data))?;
-        let stream_factory: StreamFactory = Box::new(move || {
-            VgmStream::from_vgm_shared(Arc::clone(&replay_data))
-                .map(|stream| (stream, None))
-                .map_err(|error| error.to_string())
-        });
-        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
+        let stream = VgmStream::from_vgm(data)?;
+        Self::from_parts(stream, None, voices, output_rate, chunk_frames)
     }
 
     /// Extract clocks for supported chips, including legacy header aliases.
@@ -1159,16 +1195,8 @@ impl<'a> VgmSequencer<'a> {
             output_rate,
             &mut factories,
         )?;
-        let document = Arc::new(document);
-        let replay_document = Arc::clone(&document);
-        let stream = VgmStream::from_document_shared(Arc::clone(&document));
-        let stream_factory: StreamFactory = Box::new(move || {
-            Ok((
-                VgmStream::from_document_shared(Arc::clone(&replay_document)),
-                None,
-            ))
-        });
-        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
+        let stream = VgmStream::from_document(document);
+        Self::from_parts(stream, None, voices, output_rate, chunk_frames)
     }
 
     /// Create a sequencer for an MDX-generated stream using a synthesized header.
@@ -1203,7 +1231,13 @@ impl<'a> VgmSequencer<'a> {
             output_rate,
             &mut factories,
         )?;
-        Self::from_parts(stream, stream_factory, voices, output_rate, chunk_frames)
+        Self::from_parts(
+            stream,
+            Some(stream_factory),
+            voices,
+            output_rate,
+            chunk_frames,
+        )
     }
 
     /// Reject zero output rates and chunk sizes before allocating voices.
@@ -1267,15 +1301,19 @@ impl<'a> VgmSequencer<'a> {
     /// Initialize playback state from an existing stream and constructed voices.
     fn from_parts(
         mut stream: VgmStream,
-        stream_factory: StreamFactory,
+        stream_factory: Option<StreamFactory>,
         voices: Vec<Voice>,
         output_rate: u32,
         chunk_frames: usize,
     ) -> Result<Self, VgmSequencerError> {
+        let initial_loop_base = stream.loop_base();
+        let initial_loop_modifier = stream.loop_modifier();
         stream.set_emit_stream_controls(true);
         Ok(Self {
             stream,
             stream_factory,
+            initial_loop_base,
+            initial_loop_modifier,
             stream_steps: 0,
             stream_settings: Vec::new(),
             voices,
@@ -1694,39 +1732,57 @@ impl<'a> VgmSequencer<'a> {
             return Err(VgmSequencerError::CheckpointMismatch);
         }
 
-        let (mut stream, marker) =
-            (self.stream_factory)().map_err(VgmSequencerError::StreamReconstruction)?;
-        stream.set_emit_stream_controls(true);
-        let mut setting_index = 0;
-        for step in 0..=checkpoint.stream_steps {
-            while checkpoint
-                .stream_settings
-                .get(setting_index)
-                .is_some_and(|(at, _)| *at == step)
-            {
-                apply_stream_setting(&mut stream, &checkpoint.stream_settings[setting_index].1);
-                setting_index += 1;
+        let (mut replacement, marker) = if let Some(factory) = &self.stream_factory {
+            let (mut stream, marker) =
+                factory().map_err(VgmSequencerError::StreamReconstruction)?;
+            stream.set_emit_stream_controls(true);
+            (Some(stream), marker)
+        } else {
+            reset_replay_stream(
+                &mut self.stream,
+                self.initial_loop_base,
+                self.initial_loop_modifier,
+            );
+            (None, None)
+        };
+        let stream = replacement.as_mut().unwrap_or(&mut self.stream);
+        if let Err(error) =
+            replay_stream(stream, checkpoint.stream_steps, &checkpoint.stream_settings)
+        {
+            if replacement.is_none() {
+                reset_replay_stream(
+                    &mut self.stream,
+                    self.initial_loop_base,
+                    self.initial_loop_modifier,
+                );
+                if replay_stream(&mut self.stream, self.stream_steps, &self.stream_settings)
+                    .is_err()
+                {
+                    self.failed = true;
+                }
             }
-            if step == checkpoint.stream_steps {
-                break;
-            }
-            let result = stream
-                .next()
-                .ok_or(VgmSequencerError::UnexpectedEnd)?
-                .map_err(VgmSequencerError::Parse)?;
-            if matches!(result, StreamResult::EndOfStream) && step + 1 != checkpoint.stream_steps {
-                return Err(VgmSequencerError::UnexpectedEnd);
-            }
-        }
-        if setting_index != checkpoint.stream_settings.len() {
-            return Err(VgmSequencerError::CheckpointMismatch);
+            return Err(error);
         }
 
         for (memory, saved) in unique_memories(&self.voices).iter().zip(&checkpoint.memory) {
             *memory.borrow_mut() = saved.clone();
         }
         for (voice, saved) in self.voices.iter_mut().zip(&checkpoint.voices) {
-            voice.route.chip_mut().restore_state(saved.state.as_ref())?;
+            if let Err(error) = voice.route.chip_mut().restore_state(saved.state.as_ref()) {
+                if replacement.is_none() {
+                    reset_replay_stream(
+                        &mut self.stream,
+                        self.initial_loop_base,
+                        self.initial_loop_modifier,
+                    );
+                    if replay_stream(&mut self.stream, self.stream_steps, &self.stream_settings)
+                        .is_err()
+                    {
+                        self.failed = true;
+                    }
+                }
+                return Err(error.into());
+            }
             voice.tracker = saved.tracker.clone();
             voice.matrix = saved.matrix.clone();
             voice.resampler.restore_state(&saved.resampler);
@@ -1743,7 +1799,9 @@ impl<'a> VgmSequencer<'a> {
             voice.write_cooldown = saved.write_cooldown;
         }
 
-        self.stream = stream;
+        if let Some(stream) = replacement {
+            self.stream = stream;
+        }
         self.stream_steps = checkpoint.stream_steps;
         self.stream_settings.clone_from(&checkpoint.stream_settings);
         self.mdx_loop_marker = marker;

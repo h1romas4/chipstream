@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [x] Breaking change: Remove `VgmStream::from_vgm_shared` and `from_document_shared`; streams now own their input directly.
 - [x] Breaking change: Use `DacStreamSelector` and `DacStreamTarget` for DAC stream target queries and target-based stopping, replacing raw IDs and tuples. Stream control notifications remain opt-in.
 - [x] Breaking change: Change `MdxPlaybackCheckLimits::max_ticks` and `max_commands` from `u64` to `u32`; update typed values and check that they fit the new range.
 - [x] Fix: Track AY8910 tone key transitions using mixer, volume, and envelope selection rather than mixer alone.

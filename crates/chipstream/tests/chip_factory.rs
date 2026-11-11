@@ -104,6 +104,7 @@ struct FakeChip {
     writes: Arc<Mutex<Vec<Chip>>>,
     dac_notifications: Option<DacNotifications>,
     scheduled_checkpoint: Option<bool>,
+    restore_fails: bool,
     stop_dac: bool,
     schedule_trace: Option<ScheduleTrace>,
 }
@@ -124,6 +125,7 @@ impl FakeChip {
             writes,
             dac_notifications: None,
             scheduled_checkpoint: None,
+            restore_fails: false,
             stop_dac: false,
             schedule_trace: None,
         }
@@ -185,7 +187,7 @@ impl SoundChip for FakeChip {
     }
 
     fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
-        if state.as_any().is::<u8>() {
+        if !self.restore_fails && state.as_any().is::<u8>() {
             Ok(())
         } else {
             Err(ChipError::InvalidStateSnapshot(self.chip.clone()))
@@ -228,6 +230,42 @@ impl ScheduledChip for FakeChip {
         }
         Ok(())
     }
+}
+
+#[test]
+fn failed_chip_restore_preserves_vgm_stream_position() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    for _ in 0..10 {
+        builder.add_vgm_command(WaitSamples(128));
+    }
+    let bytes: Vec<u8> = builder.finalize().into();
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::Ym2151, |config| {
+        let mut chip = FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        chip.restore_fails = true;
+        Ok(Box::new(chip))
+    });
+    let mut player =
+        VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
+    let mut expected = VgmSequencer::from_vgm(bytes, 44_100, 64).unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    for _ in 0..4 {
+        assert_eq!(player.render().unwrap(), expected.render().unwrap());
+    }
+    let sample = player.current_sample();
+    let position = player.position_frames();
+    assert!(matches!(
+        player.restore_checkpoint(&checkpoint),
+        Err(VgmSequencerError::Chip(_))
+    ));
+    assert_eq!(player.current_sample(), sample);
+    assert_eq!(player.position_frames(), position);
+    assert_eq!(player.render().unwrap(), expected.render().unwrap());
 }
 
 #[test]

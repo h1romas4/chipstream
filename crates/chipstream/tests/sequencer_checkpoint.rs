@@ -78,6 +78,41 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
 }
 
 #[test]
+fn checkpoint_restores_header_loop_settings_after_later_changes() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(400));
+    builder.set_loop_index(0);
+    let mut document = builder.finalize();
+    document.header.loop_base = 0;
+    document.header.loop_modifier = 0x20;
+
+    for from_file in [false, true] {
+        let mut player = if from_file {
+            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 64).unwrap()
+        } else {
+            VgmSequencer::new(document.clone(), 44_100, 64).unwrap()
+        };
+        player.set_loop_count(Some(2));
+        assert!(player.render().unwrap().is_some());
+        let checkpoint = player.checkpoint().unwrap();
+        let mut expected = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            expected.push(block);
+        }
+        player.set_loop_count(Some(1));
+        player.set_loop_base(3);
+        player.set_loop_modifier(0x10);
+        player.restore_checkpoint(&checkpoint).unwrap();
+        let mut actual = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            actual.push(block);
+        }
+        assert_eq!(actual, expected);
+        assert!(actual.len() > 15);
+    }
+}
+
+#[test]
 fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
     use soundlog::chip::{Chip, Ym2612Spec};
     use soundlog::vgm::command::{
@@ -140,23 +175,30 @@ fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
     builder.add_vgm_command(start);
     builder.add_vgm_command(WaitSamples(1024));
 
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 128).unwrap();
-    let first = player.render().unwrap().unwrap();
-    assert!(first.frames().iter().flatten().any(|sample| *sample != 0.0));
-    let checkpoint = player.checkpoint().unwrap();
-    let expected = player.render().unwrap();
-    assert!(player.render().unwrap().is_some());
-    let block = player.render().unwrap().unwrap();
-    let next = player.render().unwrap();
+    let document = builder.finalize();
+    for from_file in [false, true] {
+        let mut player = if from_file {
+            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 128).unwrap()
+        } else {
+            VgmSequencer::new(document.clone(), 44_100, 128).unwrap()
+        };
+        let first = player.render().unwrap().unwrap();
+        assert!(first.frames().iter().flatten().any(|sample| *sample != 0.0));
+        let checkpoint = player.checkpoint().unwrap();
+        let expected = player.render().unwrap();
+        assert!(player.render().unwrap().is_some());
+        let block = player.render().unwrap().unwrap();
+        let next = player.render().unwrap();
 
-    player.restore_checkpoint(&checkpoint).unwrap();
-    assert_eq!(player.render().unwrap(), expected);
-    player.seek_to_frame(&checkpoint, 400).unwrap();
-    assert_eq!(
-        player.render().unwrap().unwrap().frames(),
-        &block.frames()[16..]
-    );
-    assert_eq!(player.render().unwrap(), next);
+        player.restore_checkpoint(&checkpoint).unwrap();
+        assert_eq!(player.render().unwrap(), expected);
+        player.seek_to_frame(&checkpoint, 400).unwrap();
+        assert_eq!(
+            player.render().unwrap().unwrap().frames(),
+            &block.frames()[16..]
+        );
+        assert_eq!(player.render().unwrap(), next);
+    }
 }
 
 #[test]

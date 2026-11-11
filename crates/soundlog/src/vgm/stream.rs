@@ -27,7 +27,6 @@ use crate::vgm::header::{ChipId, VgmHeader, VgmHeaderField};
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 /// Minimum buffer capacity (in bytes) at which we consider shrinking the
 /// parser's internal byte buffer. The shrink logic avoids attempting to reduce
@@ -111,8 +110,8 @@ enum VgmStreamSource {
     },
     /// Pre-parsed commands from a VgmDocument.
     Document {
-        /// Shared parsed document, reused when rebuilding parser state.
-        document: Arc<VgmDocument>,
+        /// Parsed document owned by the stream.
+        document: Box<VgmDocument>,
         /// Current command index
         current_index: usize,
         /// Loop point command index (None if no loop)
@@ -135,7 +134,7 @@ enum VgmStreamSource {
     /// required, so memory usage is roughly the file size only.
     File {
         /// Complete raw VGM file (including header).
-        data: Arc<Vec<u8>>,
+        data: Vec<u8>,
         /// Absolute byte offset of the first command (0x34 + data_offset).
         command_start: usize,
         /// Current parse position within `data`.
@@ -1038,17 +1037,12 @@ impl VgmStream {
     /// let stream = VgmStream::from_document(doc);
     /// ```
     pub fn from_document(document: VgmDocument) -> Self {
-        Self::from_document_shared(Arc::new(document))
-    }
-
-    /// Create a document-backed stream sharing parsed VGM data.
-    pub fn from_document_shared(document: Arc<VgmDocument>) -> Self {
         let loop_index = Self::calculate_loop_index(&document);
         let loop_base = document.header.loop_base;
         let loop_modifier = document.header.loop_modifier;
         Self {
             source: VgmStreamSource::Document {
-                document,
+                document: Box::new(document),
                 current_index: 0,
                 loop_index,
             },
@@ -1143,14 +1137,7 @@ impl VgmStream {
     /// }
     /// ```
     pub fn from_vgm(data: impl Into<Vec<u8>>) -> Result<Self, ParseError> {
-        Self::from_vgm_shared(Arc::new(data.into()))
-    }
-
-    /// Create a raw-file stream sharing an owned VGM byte buffer.
-    ///
-    /// This is useful when a caller needs to rebuild parser state for
-    /// checkpoints without duplicating a potentially large data-block payload.
-    pub fn from_vgm_shared(data: Arc<Vec<u8>>) -> Result<Self, ParseError> {
+        let data = data.into();
         let header = VgmHeader::from_bytes(&data)?;
 
         // Absolute byte offset of the first command.
@@ -1353,7 +1340,7 @@ impl VgmStream {
                 current_index,
                 ..
             } => {
-                let doc_ref: &VgmDocument = document.as_ref();
+                let doc_ref: &VgmDocument = document;
                 if *current_index < doc_ref.commands.len() {
                     let cmd = doc_ref.commands[*current_index].clone();
                     *current_index += 1;
