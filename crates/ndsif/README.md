@@ -1,21 +1,19 @@
 # ndsif
 
 NDSIF is a retro sound-chip playback interface developed by the NanoDrive
-Project. This crate provides an allocation-free `no_std` Rust codec
-implementing the NDSIF v1 draft.
+Project.
 
-The v1 draft shares wire version `01` with the previous b protocol but is not
-wire-compatible. Select the profile explicitly at the transport boundary.
-
-API revision: 40. Frame wire version: `01`.
-The optional timed DAC profile follows [NanoDrive6 NDSIF API section 9](https://github.com/Fujix1/NanoDrive6/blob/main/NDSIF_API.md)
-and remains an RC extension, not a requirement for every NDSIF device.
+This crate provides an allocation-free `no_std` Rust codec
+implementing the NDSIF v1. It does not communicate with devices; use
+[`ndsif-transport`](https://crates.io/crates/ndsif-transport) for serial
+access to physical NanoDrive hardware.
 
 ## NDSIF overview
 
 NDSIF defines messages between a host and NanoDrive firmware for controlling
 sound-chip register writes and device-side audio playback. The protocol is
-transport-independent; `ndsif-transport` provides serial communication.
+transport-independent; [`ndsif-transport`](https://crates.io/crates/ndsif-transport)
+provides serial communication.
 
 Each frame carries a message type, command ID, transaction ID, payload length,
 payload, and CRC-16 checksum. On the wire, the frame is COBS-encoded and
@@ -51,7 +49,7 @@ checked through capability discovery before use.
 
 For serial I/O, device capability discovery, chipstream integration, and
 scheduled playback on supported NanoDrive devices, use
-[`ndsif-transport`](../ndsif-transport/README.md). It builds on this crate's
+[`ndsif-transport`](https://crates.io/crates/ndsif-transport). It builds on this crate's
 protocol codecs and provides the transport and scheduling layer.
 
 `AudioStreamState` tracks host-side protocol state; it does not communicate with
