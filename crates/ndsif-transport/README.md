@@ -1,14 +1,11 @@
 # ndsif-transport
 
-Serial transport and scheduled playback for NanoDrive NDSIF devices. 
+NDSIF is a retro sound-chip playback interface developed by the NanoDrive
+Project. This crate provides serial transport and scheduled playback for
+NanoDrive devices that support NDSIF.
 
-For higher-level `chipstream` integration, use
-[`chipstream-ndsif`](../chipstream-ndsif/README.md). It builds on this crate to
-provide automatic or explicit chip routing, hardware-backed chip adapters,
-and optional NanoDrive shared-resource validation.
-
-Use `ndsif-transport`
-directly when you need serial transport, custom scheduling, or device workers.
+Use `ndsif-transport` directly when you need serial transport, custom
+scheduling, or device workers.
 
 ## Supported Devices
 

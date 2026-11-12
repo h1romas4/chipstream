@@ -1,6 +1,8 @@
 # ndsif
 
-Allocation-free `no_std` Rust codec for NanoDrive NDSIF devices, implementing the NDSIF v1 draft.
+NDSIF is a retro sound-chip playback interface developed by the NanoDrive
+Project. This crate provides an allocation-free `no_std` Rust codec
+implementing the NDSIF v1 draft.
 
 The v1 draft shares wire version `01` with the previous b protocol but is not
 wire-compatible. Select the profile explicitly at the transport boundary.
@@ -8,6 +10,26 @@ wire-compatible. Select the profile explicitly at the transport boundary.
 API revision: 40. Frame wire version: `01`.
 The optional timed DAC profile follows [NanoDrive6 NDSIF API section 9](https://github.com/Fujix1/NanoDrive6/blob/main/NDSIF_API.md)
 and remains an RC extension, not a requirement for every NDSIF device.
+
+## NDSIF overview
+
+NDSIF defines messages between a host and NanoDrive firmware for controlling
+sound-chip register writes and device-side audio playback. The protocol is
+transport-independent; `ndsif-transport` provides serial communication.
+
+Each frame carries a message type, command ID, transaction ID, payload length,
+payload, and CRC-16 checksum. On the wire, the frame is COBS-encoded and
+surrounded by zero delimiters. The decoded payload is limited to 256 bytes.
+Requests that expect a reply are correlated by their command and transaction
+IDs; no-response commands do not require a reply. This correlation does not
+provide retransmission or duplicate suppression.
+
+The command set includes device information and capability queries, immediate
+register writes, and ADPCM streaming with events positioned by byte offset.
+Hosts should use the device's advertised capabilities to select supported chip
+instances, pages, clocks, and stream limits rather than infer support from the
+product name. The YM2612 timed DAC profile is an optional extension and must be
+checked through capability discovery before use.
 
 ## Supported Devices
 
@@ -183,3 +205,7 @@ stream.record_data_accepted(BytePosition::new(0), 32)?;
 assert!(stream.event_is_ready(position));
 # Ok::<(), Error>(())
 ```
+
+## License
+
+BSD-3-Clause License
