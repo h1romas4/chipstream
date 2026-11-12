@@ -18,6 +18,38 @@ scheduling, or device workers.
 | NanoDrive7 | [Fujix1/NanoDrive7](https://github.com/Fujix1/NanoDrive7) |
 | NanoDrive6 | [Fujix1/NanoDrive6](https://github.com/Fujix1/NanoDrive6) |
 
+## Device information and reset
+
+Open the serial transport, request the device model and firmware with
+`device_info()`, then lower the output volume before resetting it.
+
+Stop playback before resetting. On devices with output-volume control,
+`reset_for_reuse()` restores normal volume (0 dB attenuation) after reset;
+lower the gain first to reduce the pop.
+
+```rust,no_run
+use std::sync::Arc;
+use std::time::Duration;
+use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
+
+let mut device = NdsifSerialTransport::open(
+    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
+)?;
+let info = device.device_info()?;
+println!("{} ({})", info.model, info.firmware);
+let gain = Arc::new(NdsifOutputGain::new());
+gain.set(0.25)?;
+let timeline = Arc::new(NdsifHostTimeline::pending());
+timeline.set_output_gain(gain)?;
+if device.set_output_fade_timeline(timeline)? {
+    // Lower the device output before resetting.
+    device.initialize_output_volume()?;
+}
+// Sends RESET, then restores modified output volume to normal.
+device.reset_for_reuse()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Direct Control
 
 Open `NdsifSerialTransport`, configure a supported chip, and queue events
@@ -55,39 +87,9 @@ serial bandwidth, scheduling, and clock drift.
 
 ## Recording and Workers
 
-`NdsifRecordingTransport` records bounded batches without serial I/O. Replay
-each batch in order on the matching device:
-
-```rust,no_run
-use std::{num::NonZeroUsize, time::Duration};
-use ndsif::{RegisterWrite, WriteId};
-use ndsif_transport::{
-    NdsifRecordingTransport, NdsifRegisterEvent, NdsifSerialTransport, NdsifTransport,
-};
-
-let mut device = NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
-)?;
-let mut recorder = NdsifRecordingTransport::new(&device, NonZeroUsize::new(1024).unwrap());
-recorder.configure_chip(WriteId::YM2151, 0, 3_579_545)?;
-recorder.schedule_register_write(NdsifRegisterEvent {
-    write_id: WriteId::YM2151,
-    instance: 0,
-    page: 0,
-    write: RegisterWrite::new(0x1b, 0),
-    sample_frame: 0,
-    sample_rate: 44_100,
-})?;
-recorder.flush_scheduled_until(1, 44_100)?;
-recorder.take_batch()?.replay(&mut device)?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-Device-specific failures can occur during replay. A recorder that exceeds its
-operation limit must be discarded.
-
-For worker-based playback, pair each shared connection with a recorder. This
-example starts hardware-only playback 100 ms in the future:
+Record ADPCM data and its end event in a bounded batch, then send it through a
+device worker. Replace the sample bytes and end repetition value with values
+appropriate for your encoded stream.
 
 ```rust,no_run
 use std::{
@@ -95,39 +97,61 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
-use ndsif::{RegisterWrite, WriteId};
+use ndsif::{BytePosition, Divider, ZeroPair};
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent,
-    NdsifSerialTransport, NdsifTransport, NdsifWorkerDevice,
+    NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport, NdsifTransport,
+    NdsifWorkerDevice,
 };
 
+const RATE: u32 = 44_100;
+const PREBUFFER_FRAMES: usize = 4_410;
+const END_FRAME: usize = 6_000;
+// Share the serial connection with the worker that will perform device I/O.
 let connection = Arc::new(Mutex::new(NdsifSerialTransport::open(
     "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
 )?));
 let device = NdsifWorkerDevice::new(Arc::clone(&connection), NonZeroUsize::new(1024).unwrap())?;
 let recorder = device.recorder();
-recorder.borrow_mut().configure_chip(WriteId::YM2151, 0, 3_579_545)?;
+// Record stream setup before starting the worker so it can configure the device.
+recorder.borrow_mut().configure_audio_stream(0, 4_000_000, Divider::Div1024, RATE)?;
 
+// Workers replay recorded batches; the timeline coordinates when audio starts.
 let timeline = Arc::new(NdsifHostTimeline::pending());
 let workers = NdsifHardwareWorkers::start(
     std::slice::from_ref(&device), Arc::clone(&timeline), NonZeroUsize::new(8).unwrap(),
 )?;
+// Replace this placeholder with encoded OKIM6258 ADPCM bytes.
+let adpcm_data = [0_u8; 256];
 {
     let mut recorder = recorder.borrow_mut();
-    recorder.schedule_register_write(NdsifRegisterEvent {
-        write_id: WriteId::YM2151,
+    // Positions identify bytes; END_FRAME is the frame horizon for this batch.
+    for (position, value) in adpcm_data.into_iter().enumerate() {
+        recorder.schedule_adpcm_data(NdsifAdpcmEvent {
+            instance: 0,
+            position: BytePosition::new(position as u32),
+            sample_frame: END_FRAME,
+            sample_rate: RATE,
+            value,
+        })?;
+    }
+    // End the stream after its final byte, then flush all recorded data.
+    recorder.schedule_audio_control(NdsifAudioControlEvent {
         instance: 0,
-        page: 0,
-        write: RegisterWrite::new(0x1b, 0),
-        sample_frame: 0,
-        sample_rate: 44_100,
+        position: BytePosition::new(adpcm_data.len() as u32),
+        sample_frame: END_FRAME,
+        sample_rate: RATE,
+        control: NdsifAudioControl::End(ZeroPair::Byte80),
     })?;
-    recorder.flush_scheduled_until(1, 44_100)?;
+    recorder.finish_audio_stream(0, END_FRAME, RATE)?;
 }
+// Send the batch and provide a cancellation flag for shutdown or errors.
 let cancelled = AtomicBool::new(false);
 workers.enqueue(&cancelled)?;
-workers.check()?;
+// Set a future presentation time, then verify enough audio is buffered to start.
 timeline.start(Instant::now() + Duration::from_millis(100))?;
+workers.prepare_audio(PREBUFFER_FRAMES, RATE, &cancelled)?;
+// Drain queued work and join the device thread before resetting the transport.
 workers.finish()?;
 drop(recorder);
 drop(device);
@@ -135,17 +159,14 @@ connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Each worker retains its own recorder, regardless of device order. For host
-audio, buffer enough PCM and start the timeline at its estimated presentation
-time. Use `enqueue_prebuffer` to bound startup for timed DAC data and call
-`prepare_audio` if the initial span was not prepared automatically.
+`prepare_audio` verifies the prebuffer before starting at the shared timeline.
+Replay can report device-specific errors; discard a recorder after its
+operation limit is exceeded.
 
-The worker manager retains its recorders on the calling thread and cannot be
-sent to another thread. Device I/O runs on separate worker threads. Start or
-cancel a pending timeline before calling `finish`; dropping workers cancels
-the timeline. Drop the workers, recorders, and worker devices before resetting
-or reclaiming the connections. Never reset a transport while it is in use.
-If `reset_for_reuse` fails, close the connection instead of reusing it.
+The manager and recorders stay on the calling
+thread; device I/O runs on worker threads. Start or cancel the timeline before
+`finish` (dropping workers cancels it). Drop workers and transport handles
+before resetting connections; close a connection if `reset_for_reuse` fails.
 
 `NdsifSerialTransport::open` returns `NdsifTransportError` for invalid
 configuration or serial, I/O, protocol, and initialization failures. Errors
