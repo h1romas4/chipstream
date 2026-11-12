@@ -4,7 +4,8 @@ NDSIF is a retro sound-chip playback interface developed by the NanoDrive
 Project.
 
 This crate provides an allocation-free `no_std` Rust codec
-implementing the NDSIF v1. It does not communicate with devices; use
+implementing the NDSIF v1 for both host and guest implementations. It does
+not communicate with devices; use
 [`ndsif-transport`](https://crates.io/crates/ndsif-transport) for serial
 access to physical NanoDrive hardware.
 
@@ -203,6 +204,10 @@ stream.record_data_accepted(BytePosition::new(0), 32)?;
 assert!(stream.event_is_ready(position));
 # Ok::<(), Error>(())
 ```
+
+Use this crate on either side of an NDSIF connection to encode and decode
+protocol messages. Transport I/O and device-specific state management are left
+to the application.
 
 ## License
 
