@@ -85,6 +85,18 @@ perform I/O or configure the device. Hardware audio is emitted by the device,
 not into host PCM. Timing is best-effort and can be affected by latency,
 serial bandwidth, scheduling, and clock drift.
 
+## Synchronous and worker I/O
+
+Direct `NdsifSerialTransport` calls perform I/O synchronously on the calling
+thread. `NdsifHardwareWorkers` instead runs one I/O thread per device and
+accepts recorded batches from the calling thread.
+
+Use only one I/O model at a time for each serial connection. While a worker is
+active, do not access its connection directly: synchronous calls can contend
+with worker I/O and bypass batch ordering. To switch modes, stop and drop the
+workers and their device handles first; call `reset_for_reuse()` only after
+playback has stopped.
+
 ## Recording and Workers
 
 Record ADPCM data and its end event in a bounded batch, then send it through a
@@ -97,11 +109,11 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
-use ndsif::{BytePosition, Divider, ZeroPair};
+use ndsif::{BytePosition, Divider, RegisterWrite, WriteId, ZeroPair};
 use ndsif_transport::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent,
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport, NdsifTransport,
-    NdsifWorkerDevice,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent, NdsifSerialTransport,
+    NdsifTransport, NdsifWorkerDevice,
 };
 
 const RATE: u32 = 44_100;
@@ -113,8 +125,12 @@ let connection = Arc::new(Mutex::new(NdsifSerialTransport::open(
 )?));
 let device = NdsifWorkerDevice::new(Arc::clone(&connection), NonZeroUsize::new(1024).unwrap())?;
 let recorder = device.recorder();
-// Record stream setup before starting the worker so it can configure the device.
-recorder.borrow_mut().configure_audio_stream(0, 4_000_000, Divider::Div1024, RATE)?;
+// Record both chip configurations before starting the worker.
+{
+    let mut recorder = recorder.borrow_mut();
+    recorder.configure_chip(WriteId::YM2151, 0, 3_579_545)?;
+    recorder.configure_audio_stream(0, 4_000_000, Divider::Div1024, RATE)?;
+}
 
 // Workers replay recorded batches; the timeline coordinates when audio starts.
 let timeline = Arc::new(NdsifHostTimeline::pending());
@@ -125,6 +141,15 @@ let workers = NdsifHardwareWorkers::start(
 let adpcm_data = [0_u8; 256];
 {
     let mut recorder = recorder.borrow_mut();
+    // Queue an ordinary YM2151 register write alongside the ADPCM stream.
+    recorder.schedule_register_write(NdsifRegisterEvent {
+        write_id: WriteId::YM2151,
+        instance: 0,
+        page: 0,
+        write: RegisterWrite::new(0x20, 0xc7),
+        sample_frame: 0,
+        sample_rate: RATE,
+    })?;
     // Positions identify bytes; END_FRAME is the frame horizon for this batch.
     for (position, value) in adpcm_data.into_iter().enumerate() {
         recorder.schedule_adpcm_data(NdsifAdpcmEvent {
@@ -163,14 +188,106 @@ connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
 Replay can report device-specific errors; discard a recorder after its
 operation limit is exceeded.
 
-The manager and recorders stay on the calling
-thread; device I/O runs on worker threads. Start or cancel the timeline before
+`NdsifHardwareWorkers` starts one I/O thread per device; its manager and
+recorders stay on the calling thread. Start or cancel the timeline before
 `finish` (dropping workers cancels it). Drop workers and transport handles
 before resetting connections; close a connection if `reset_for_reuse` fails.
 
 `NdsifSerialTransport::open` returns `NdsifTransportError` for invalid
 configuration or serial, I/O, protocol, and initialization failures. Errors
 crossing `NdsifTransport` are reported as `String`.
+
+## YM2612 timed DAC
+
+Regular scheduled writes are paced against host output frames and sent over
+serial on a best-effort basis. On devices advertising the timed DAC profile,
+primary YM2612 writes to registers `0x2A` and `0x2B` are instead buffered for
+execution on the device's DAC clock. The scheduling API is the same, but timed
+DAC playback requires prebuffering and coordinated startup.
+
+The timed DAC profile is optional. Check that the device advertises support
+before configuring YM2612. Replace the sample waveform with your PCM data.
+
+```rust,no_run
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex, atomic::AtomicBool},
+    time::{Duration, Instant},
+};
+use ndsif::{RegisterWrite, WriteId};
+use ndsif_transport::{
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent,
+    NdsifSerialTransport, NdsifTransport, NdsifWorkerDevice,
+};
+
+const RATE: u32 = 44_100;
+const PREBUFFER_FRAMES: usize = 441;
+const END_FRAME: usize = 441;
+let transport = NdsifSerialTransport::open(
+    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
+)?;
+if !transport.supports_timed_dac() {
+    return Err("device does not support the timed DAC profile".into());
+}
+
+// Configure the primary YM2612 before starting its device worker.
+let connection = Arc::new(Mutex::new(transport));
+let device = NdsifWorkerDevice::new(Arc::clone(&connection), NonZeroUsize::new(1024).unwrap())?;
+let recorder = device.recorder();
+recorder.borrow_mut().configure_chip(WriteId::YM2612, 0, 7_670_454)?;
+
+let timeline = Arc::new(NdsifHostTimeline::pending());
+let workers = NdsifHardwareWorkers::start(
+    std::slice::from_ref(&device), Arc::clone(&timeline), NonZeroUsize::new(8).unwrap(),
+)?;
+let waveform = [
+    0x80, 0x98, 0xb0, 0xc0, 0xb0, 0x98, 0x80, 0x68,
+    0x50, 0x40, 0x50, 0x68, 0x80, 0x98, 0xb0, 0xc0,
+];
+{
+    let mut recorder = recorder.borrow_mut();
+    // Enable YM2612 DAC output, then schedule PCM samples on register 0x2A.
+    recorder.schedule_register_write(NdsifRegisterEvent {
+        write_id: WriteId::YM2612,
+        instance: 0,
+        page: 0,
+        write: RegisterWrite::new(0x2b, 0x80),
+        sample_frame: 0,
+        sample_rate: RATE,
+    })?;
+    for (index, value) in waveform.into_iter().cycle().take(32).enumerate() {
+        recorder.schedule_register_write(NdsifRegisterEvent {
+            write_id: WriteId::YM2612,
+            instance: 0,
+            page: 0,
+            write: RegisterWrite::new(0x2a, value),
+            sample_frame: index * 2,
+            sample_rate: RATE,
+        })?;
+    }
+    // Disable DAC output and seal the timed stream after the sample data.
+    recorder.schedule_register_write(NdsifRegisterEvent {
+        write_id: WriteId::YM2612,
+        instance: 0,
+        page: 0,
+        write: RegisterWrite::new(0x2b, 0x00),
+        sample_frame: END_FRAME,
+        sample_rate: RATE,
+    })?;
+    recorder.flush_scheduled_until(END_FRAME, RATE)?;
+    recorder.finish_dac_stream(END_FRAME, RATE)?;
+}
+
+let cancelled = AtomicBool::new(false);
+workers.enqueue(&cancelled)?;
+workers.prepare_audio(PREBUFFER_FRAMES, RATE, &cancelled)?;
+timeline.start(Instant::now() + Duration::from_millis(100))?;
+workers.finish()?;
+drop(recorder);
+drop(device);
+connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ## License
 
