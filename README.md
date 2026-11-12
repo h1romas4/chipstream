@@ -9,19 +9,19 @@ utilities for building and parsing register-write logs such as the VGM
 
 ## Crates
 
-| Crate | Type | Description | Documentation |
-| --- | --- | --- | --- |
-| `chipstream` | `lib` | Sound-chip emulation and device-independent VGM/MDX playback. | [README](crates/chipstream/README.md) |
-| `chipstream-ndsif` | `lib` | NDSIF hardware adapters and routing for chipstream. | [README](crates/chipstream-ndsif/README.md) |
-| `chipstream-gstreamer` | `plugin` | GStreamer source for VGM/MDX playback through chipstream. | [README](crates/chipstream-gstreamer/README.md) |
-| `cstools` | `bin` | VGM/VGZ, MDX, and MML player using chipstream. | [README](crates/cstools/README.md) |
-| `nddrv` | `bin` | Desktop VGM/VGZ and MDX library and player using GPUI Kit. | [README](crates/nddrv/README.md) |
-| `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) |
-| `ndsif` | `lib` | I/O-independent, allocation-free NDSIF protocol codec. | [README](crates/ndsif/README.md) |
-| `ndsif-transport` | `lib` | Serial NDSIF transport and scheduled playback. | [README](crates/ndsif-transport/README.md) |
-| `soundlog` | `lib` | Parses and builds sound logs and converts MDX playback to VGM commands. | [README](crates/soundlog/README.md) |
-| `soundlog-cli` | `bin` | Command-line tools for working with soundlog-supported formats. | [README](crates/soundlog-cli/README.md) |
-| `soundlog-gui` | `bin` | `soundlog-inspector` GUI for inspecting soundlog-supported audio files. | [README](crates/soundlog-gui/README.md) |
+| Crate | Type | Description | Documentation | crates.io |
+| --- | --- | --- | --- | --- |
+| `chipstream` | `lib` | Sound-chip emulation and device-independent VGM/MDX playback. | [README](crates/chipstream/README.md) | - |
+| `chipstream-ndsif` | `lib` | NDSIF hardware adapters and routing for chipstream. | [README](crates/chipstream-ndsif/README.md) | - |
+| `chipstream-gstreamer` | `plugin` | GStreamer source for VGM/MDX playback through chipstream. | [README](crates/chipstream-gstreamer/README.md) | - |
+| `cstools` | `bin` | VGM/VGZ, MDX, and MML player using chipstream. | [README](crates/cstools/README.md) | - |
+| `nddrv` | `bin` | Desktop VGM/VGZ and MDX library and player using GPUI Kit. | [README](crates/nddrv/README.md) | - |
+| `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) | [0.3.0](https://crates.io/crates/mmlx/0.3.0) |
+| `ndsif` | `lib` | I/O-independent, allocation-free NDSIF protocol codec. | [README](crates/ndsif/README.md) | - |
+| `ndsif-transport` | `lib` | Serial NDSIF transport and scheduled playback. | [README](crates/ndsif-transport/README.md) | - |
+| `soundlog` | `lib` | Parses and builds sound logs and converts MDX playback to VGM commands. | [README](crates/soundlog/README.md) | [0.16.0](https://crates.io/crates/soundlog/0.16.0) |
+| `soundlog-cli` | `bin` | Command-line tools for working with soundlog-supported formats. | [README](crates/soundlog-cli/README.md) | - |
+| `soundlog-gui` | `bin` | `soundlog-inspector` GUI for inspecting soundlog-supported audio files. | [README](crates/soundlog-gui/README.md) | - |
 
 ## Quick Start
 
