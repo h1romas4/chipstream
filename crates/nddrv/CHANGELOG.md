@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reduce noise in emulated OKIM6258 VGM playback.
 - Add master-volume control to the Piano Roll.
 - Show the composer below the track title in the Piano Roll.
 - Mute NanoDrive outputs before resetting between tracks to reduce reset noise.
