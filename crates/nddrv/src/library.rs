@@ -358,6 +358,7 @@ pub struct DirectoryEntry {
     pub root: PathBuf,
     pub depth: usize,
     pub has_children: bool,
+    pub track_count: usize,
 }
 
 pub struct ScanResult {
@@ -789,6 +790,7 @@ pub fn scan_with_progress(
                     root: directory.clone(),
                     depth: 0,
                     has_children: false,
+                    track_count: 0,
                 });
                 errors.push(format!("{}: {error}", directory.display()));
                 report(ScanProgress {
@@ -809,6 +811,7 @@ pub fn scan_with_progress(
                 root: directory.clone(),
                 depth: 0,
                 has_children: false,
+                track_count: 0,
             });
             errors.push(format!("{}: {error}", directory.display()));
             report(ScanProgress {
@@ -845,6 +848,7 @@ pub fn scan_with_progress(
                     root: directory.clone(),
                     depth,
                     has_children: false,
+                    track_count: 0,
                 });
                 continue;
             }
@@ -891,7 +895,17 @@ pub fn scan_with_progress(
         .flat_map(|track| track.path.ancestors().skip(1))
         .collect();
     tree.retain(|entry| track_directories.contains(entry.path.as_path()));
+    let mut track_counts = HashMap::<PathBuf, usize>::new();
+    for track in &tracks {
+        for directory in track.path.ancestors().skip(1) {
+            *track_counts.entry(directory.to_path_buf()).or_default() += 1;
+        }
+    }
     for index in 0..tree.len() {
+        tree[index].track_count = track_counts
+            .get(&tree[index].path)
+            .copied()
+            .unwrap_or_default();
         tree[index].has_children = tree
             .get(index + 1)
             .is_some_and(|next| next.depth > tree[index].depth);
@@ -1222,6 +1236,19 @@ mod tests {
         assert!(result.errors.is_empty(), "{:?}", result.errors);
         assert_eq!(result.tracks.len(), 4);
         assert_eq!(result.directories.len(), 5);
+        assert_eq!(
+            result
+                .directories
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.track_count))
+                .collect::<HashMap<_, _>>(),
+            HashMap::from([
+                (root.clone(), 4),
+                (album.clone(), 2),
+                (nested.clone(), 1),
+                (sibling.clone(), 1),
+            ])
+        );
         assert!(!result.directories.iter().any(|entry| entry.path == empty));
         assert!(
             result

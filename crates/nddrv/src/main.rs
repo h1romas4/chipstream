@@ -3756,10 +3756,26 @@ impl AppView {
                                 Tooltip::new(tooltip.clone()).build(window, cx)
                             }),
                     )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .ml_2()
+                            .text_sm()
+                            .text_color(rgb(0xa6b6c3))
+                            .child(entry.track_count.to_string()),
+                    )
                     .when(entry.depth == 0, |row| {
                         row.child(
                             Button::new(SharedString::from(format!("directory-remove-{index}")))
-                                .label("×")
+                                .icon(assets::IconName::CircleX)
+                                .ghost()
+                                .ml_1()
+                                .mr_0()
+                                .w(px(28.))
+                                .h(px(28.))
+                                .p_0()
+                                .tooltip("Remove directory")
+                                .accessibility_label("Remove directory")
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     cx.stop_propagation();
                                     view.remove_directory(&root, cx);
@@ -5886,6 +5902,8 @@ impl Render for AppView {
                                                         .id("all-tracks")
                                                         .px_2()
                                                         .py_1()
+                                                        .flex()
+                                                        .items_center()
                                                         .rounded_sm()
                                                         .text_sm()
                                                         .when(
@@ -5893,7 +5911,19 @@ impl Render for AppView {
                                                             |row| row.bg(rgb(0x304755)),
                                                         )
                                                         .hover(|style| style.bg(rgb(0x293a47)))
-                                                        .child("All tracks")
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .child("All tracks"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_shrink_0()
+                                                                .ml_2()
+                                                                .text_color(rgb(0xa6b6c3))
+                                                                .child(self.tracks.len().to_string()),
+                                                        )
                                                         .on_click(cx.listener(|view, _, _, cx| {
                                                             view.selected_directory = None;
                                                             view.update_filter(cx);

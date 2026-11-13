@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show Library track counts and refine the remove button.
 - Align Piano Roll panel bottom padding.
 - Prevent early PSG notes during NanoDrive 6 playback start delay.
 - Set playback fade-out and start delay in milliseconds.
