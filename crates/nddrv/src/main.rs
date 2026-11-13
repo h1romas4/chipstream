@@ -2407,6 +2407,8 @@ impl AppView {
 
     fn piano_gain_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         let mut rows = Vec::new();
+        let mut chip_rows = 0;
+        let mut slider_rows = 0;
         let mut seen = HashSet::new();
         if let Some(sources) = self.piano_sources() {
             for source in sources {
@@ -2420,9 +2422,12 @@ impl AppView {
                     other.chip == source.chip && !other.hardware && !other.visual_only
                 });
                 let name = Track::chip_name(&source.chip);
+                chip_rows += 1;
                 rows.push(
                     div()
                         .flex()
+                        .h(px(20.))
+                        .flex_shrink_0()
                         .items_center()
                         .justify_between()
                         .gap_1()
@@ -2466,6 +2471,7 @@ impl AppView {
                 }
                 for (part, label) in parts {
                     if let Some(control) = self.gain_controls.get(&(source.chip.clone(), part)) {
+                        slider_rows += 1;
                         let value = match control.slider.read(cx).value() {
                             SliderValue::Single(value) => value,
                             SliderValue::Range(_, _) => {
@@ -2475,6 +2481,8 @@ impl AppView {
                         rows.push(
                             div()
                                 .flex()
+                                .h(px(24.))
+                                .flex_shrink_0()
                                 .items_center()
                                 .gap_2()
                                 .child(
@@ -2512,7 +2520,7 @@ impl AppView {
         } else {
             "No playable chip outputs"
         };
-        let height = (rows.len() as f32 * 31. + 72.).min(400.);
+        let height = piano_gain_panel_height(chip_rows, slider_rows);
         div()
             .id("piano-chip-gains")
             .w_full()
@@ -2533,9 +2541,23 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("CHIP GAIN"))
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(0x64eadc))
+                            .child("CHIP GAIN"),
+                    )
                     .when(rows.is_empty(), |panel| {
-                        panel.child(div().text_xs().text_color(rgb(0x82a8bb)).child(empty))
+                        panel.child(
+                            div()
+                                .h(px(20.))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(rgb(0x82a8bb))
+                                .child(empty),
+                        )
                     })
                     .children(rows),
             )
@@ -4994,6 +5016,16 @@ fn piano_route_label(source: &GainSource) -> Option<(String, String)> {
     }
 }
 
+fn piano_gain_panel_height(chip_rows: usize, slider_rows: usize) -> f32 {
+    // Two borders, vertical padding, a 20px heading, and an 8px gap per row.
+    let rows = if chip_rows == 0 && slider_rows == 0 {
+        28.
+    } else {
+        chip_rows as f32 * 28. + slider_rows as f32 * 32.
+    };
+    (46. + rows).min(400.)
+}
+
 fn piano_gain_route_label(chip: &Chip, sources: &[GainSource]) -> Option<(String, String)> {
     let sources: Vec<_> = sources
         .iter()
@@ -6225,12 +6257,23 @@ mod tests {
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_play_shortcut, is_search_shortcut, is_select_all,
         is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
-        list_selection_target, music_format, notification_copy_text, piano_transition_ready,
-        playback_state_label, remove_playlist_entries, renumber_connected_devices,
-        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, single_queue_selection,
-        unsupported_chips, update_selection_order, update_window_settings,
+        list_selection_target, music_format, notification_copy_text, piano_gain_panel_height,
+        piano_transition_ready, playback_state_label, remove_playlist_entries,
+        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
+        scan_progress_text, search_terms, select_for_context, select_item, select_range,
+        selection_status, single_queue_selection, unsupported_chips, update_selection_order,
+        update_window_settings,
     };
+
+    #[test]
+    fn chip_gain_panel_fits_rows_and_caps_height() {
+        assert_eq!(piano_gain_panel_height(0, 0), 74.);
+        assert_eq!(piano_gain_panel_height(1, 0), 74.);
+        assert_eq!(piano_gain_panel_height(1, 1), 106.);
+        assert_eq!(piano_gain_panel_height(2, 2), 166.);
+        assert_eq!(piano_gain_panel_height(1, 3), 170.);
+        assert_eq!(piano_gain_panel_height(20, 20), 400.);
+    }
 
     #[test]
     fn linux_audio_device_options_preserve_access_and_saved_selections() {
