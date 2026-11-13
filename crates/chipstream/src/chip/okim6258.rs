@@ -10,8 +10,7 @@
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;
 
-use super::oki_adpcm::{INDEX_SHIFT, difference_table};
-use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, StereoMute};
+use super::{ChipError, ChipRegisterWrite, Okim6258Adpcm, SampleRate, SoundChip, StereoMute};
 
 const COMMAND_STOP: u8 = 1 << 0;
 const COMMAND_PLAY: u8 = 1 << 1;
@@ -78,9 +77,7 @@ pub struct Okim6258 {
     pan_mask: u8,
     data_in: u8,
     nibble_shift: u8,
-    signal: i32,
-    step: usize,
-    diff_lookup: [[i32; 16]; 49],
+    adpcm: Okim6258Adpcm,
 }
 
 impl Okim6258 {
@@ -96,9 +93,7 @@ impl Okim6258 {
             pan_mask: 0,
             data_in: 0,
             nibble_shift: 0,
-            signal: -2,
-            step: 0,
-            diff_lookup: difference_table(),
+            adpcm: Okim6258Adpcm::new(),
         })
     }
 
@@ -164,8 +159,7 @@ impl Okim6258 {
         if data & COMMAND_PLAY != 0 {
             if self.status & STATUS_PLAYING == 0 {
                 self.status |= STATUS_PLAYING;
-                self.signal = -2;
-                self.step = 0;
+                self.adpcm.reset();
                 self.nibble_shift = 0;
             }
         } else {
@@ -180,12 +174,10 @@ impl Okim6258 {
 
     /// Decode one ADPCM nibble and advance the predictor.
     fn clock_adpcm(&mut self, nibble: u8) -> i32 {
-        self.signal =
-            (self.signal + self.diff_lookup[self.step][usize::from(nibble)]).clamp(-2048, 2047);
-        self.step = (self.step as i32 + INDEX_SHIFT[usize::from(nibble & 7)]).clamp(0, 48) as usize;
+        let signal = self.adpcm.decode_low_nibble(nibble);
         let output = match self.output_bits {
-            OutputBits::Bits10 => self.signal & !3,
-            OutputBits::Bits12 => self.signal,
+            OutputBits::Bits10 => signal & !3,
+            OutputBits::Bits12 => signal,
         };
         output << 4
     }
@@ -294,8 +286,7 @@ impl SoundChip for Okim6258 {
 
     /// Reset the decoder and stop playback.
     fn reset(&mut self) {
-        self.signal = -2;
-        self.step = 0;
+        self.adpcm.reset();
         self.status = 0;
     }
 }

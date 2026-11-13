@@ -29,6 +29,8 @@ use soundlog::chip::Chip;
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
 #[cfg(feature = "okim6258")]
+pub use oki_adpcm::Okim6258Adpcm;
+#[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "okim6258")]
 pub use okim6258_stream::Okim6258Stream;

@@ -527,8 +527,8 @@ pub struct NdsifOkim6258<T> {
     next_byte_position: u32,
     timeline: Vec<AudioPositionClock>,
     pending_timing: Option<PendingOkiTiming>,
-    source_decoder: super::oki_adpcm::OkiAdpcmState,
-    output_decoder: super::oki_adpcm::OkiAdpcmState,
+    source_decoder: chipstream::chip::Okim6258Adpcm,
+    output_decoder: chipstream::chip::Okim6258Adpcm,
     source_playing: bool,
     source_data: VecDeque<u8>,
     transport: Rc<RefCell<T>>,
@@ -610,8 +610,8 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             next_byte_position: 0,
             timeline: vec![timeline],
             pending_timing: None,
-            source_decoder: super::oki_adpcm::OkiAdpcmState::new(12),
-            output_decoder: super::oki_adpcm::OkiAdpcmState::new(12),
+            source_decoder: chipstream::chip::Okim6258Adpcm::new(),
+            output_decoder: chipstream::chip::Okim6258Adpcm::new(),
             source_playing: false,
             source_data: VecDeque::new(),
             transport,
@@ -996,10 +996,10 @@ impl<T: NdsifTransport> ScheduledChip for NdsifOkim6258<T> {
         }
         self.render_until(sample_frame, output_rate)?;
         for _ in 0..32 {
-            let value = self.output_decoder.encode_zero_byte();
+            let value = super::oki_adpcm::encode_zero_byte(&mut self.output_decoder);
             self.schedule_data(sample_frame, output_rate, value)?;
         }
-        let pair = ZeroPair::try_from(self.output_decoder.zero_pair())
+        let pair = ZeroPair::try_from(super::oki_adpcm::zero_pair(&self.output_decoder))
             .map_err(|error| external_error(&Chip::Okim6258, error.to_string()))?;
         {
             let mut transport = self.transport.try_borrow_mut().map_err(|_| {

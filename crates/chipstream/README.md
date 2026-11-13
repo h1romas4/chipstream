@@ -195,6 +195,8 @@ The `chip` module provides `YmfmChip` and, with their respective features,
 the `chipstream-ndsif` software fallback use
 [`Okim6258Stream`](src/chip/okim6258_stream.rs) for ordered byte delivery.
 See its API documentation for queue, underrun, and stop behavior.
+`Okim6258Adpcm` provides the shared 12-bit predictor and encoder separately
+from chip registers and stream delivery.
 
 ### External chip backends
 
