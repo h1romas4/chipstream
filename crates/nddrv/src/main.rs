@@ -2161,6 +2161,8 @@ impl AppView {
 
     fn piano_channel_panel(&self, cx: &Context<Self>) -> impl IntoElement {
         let mut rows = Vec::new();
+        let mut chip_rows = 0;
+        let mut channel_rows = 0;
         if let Some(sources) = self.piano_sources() {
             for source in sources {
                 let Some((index, total)) = visualizer::tracked_chip(&source.chip) else {
@@ -2178,9 +2180,12 @@ impl AppView {
                         ""
                     }
                 );
+                chip_rows += 1;
                 rows.push(
                     div()
                         .flex()
+                        .h(px(20.))
+                        .flex_shrink_0()
                         .items_center()
                         .justify_between()
                         .gap_1()
@@ -2263,8 +2268,11 @@ impl AppView {
                     } else {
                         format!("FM {}", channel + 1)
                     };
+                    channel_rows += 1;
                     let mut row = div()
                         .flex()
+                        .h(px(25.))
+                        .flex_shrink_0()
                         .items_center()
                         .gap_1()
                         .children(swatches)
@@ -2372,11 +2380,7 @@ impl AppView {
         } else {
             "No tracked channels"
         };
-        let height = if rows.is_empty() {
-            76.
-        } else {
-            rows.len() as f32 * 29. + 44.
-        };
+        let height = piano_channel_panel_height(chip_rows, channel_rows);
         div()
             .id("piano-channels")
             .w_full()
@@ -2397,9 +2401,23 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("CHANNELS"))
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(0x64eadc))
+                            .child("CHANNELS"),
+                    )
                     .when(rows.is_empty(), |panel| {
-                        panel.child(div().text_xs().text_color(rgb(0x82a8bb)).child(empty))
+                        panel.child(
+                            div()
+                                .h(px(20.))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(rgb(0x82a8bb))
+                                .child(empty),
+                        )
                     })
                     .children(rows),
             )
@@ -2583,7 +2601,7 @@ impl AppView {
         div()
             .id("piano-master-volume")
             .w_full()
-            .h(px(90.))
+            .h(px(78.))
             .flex_shrink_0()
             .overflow_hidden()
             .rounded(px(8.))
@@ -2599,6 +2617,8 @@ impl AppView {
                     .gap_2()
                     .child(
                         div()
+                            .h(px(20.))
+                            .flex_shrink_0()
                             .text_xs()
                             .text_color(rgb(0x64eadc))
                             .child("MASTER VOLUME"),
@@ -2606,6 +2626,8 @@ impl AppView {
                     .child(
                         div()
                             .flex()
+                            .h(px(24.))
+                            .flex_shrink_0()
                             .items_center()
                             .gap_2()
                             .child(
@@ -5026,6 +5048,15 @@ fn piano_gain_panel_height(chip_rows: usize, slider_rows: usize) -> f32 {
     (46. + rows).min(400.)
 }
 
+fn piano_channel_panel_height(chip_rows: usize, channel_rows: usize) -> f32 {
+    let rows = if chip_rows == 0 && channel_rows == 0 {
+        24.
+    } else {
+        chip_rows as f32 * 24. + channel_rows as f32 * 29.
+    };
+    46. + rows
+}
+
 fn piano_gain_route_label(chip: &Chip, sources: &[GainSource]) -> Option<(String, String)> {
     let sources: Vec<_> = sources
         .iter()
@@ -6257,12 +6288,12 @@ mod tests {
         connection_action, details_target, ends_folder_group, inclusive_range,
         initial_window_bounds, is_play_shortcut, is_search_shortcut, is_select_all,
         is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
-        list_selection_target, music_format, notification_copy_text, piano_gain_panel_height,
-        piano_transition_ready, playback_state_label, remove_playlist_entries,
-        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
-        scan_progress_text, search_terms, select_for_context, select_item, select_range,
-        selection_status, single_queue_selection, unsupported_chips, update_selection_order,
-        update_window_settings,
+        list_selection_target, music_format, notification_copy_text, piano_channel_panel_height,
+        piano_gain_panel_height, piano_transition_ready, playback_state_label,
+        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
+        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
+        select_range, selection_status, single_queue_selection, unsupported_chips,
+        update_selection_order, update_window_settings,
     };
 
     #[test]
@@ -6273,6 +6304,14 @@ mod tests {
         assert_eq!(piano_gain_panel_height(2, 2), 166.);
         assert_eq!(piano_gain_panel_height(1, 3), 170.);
         assert_eq!(piano_gain_panel_height(20, 20), 400.);
+    }
+
+    #[test]
+    fn channel_panel_fits_header_and_channel_rows() {
+        assert_eq!(piano_channel_panel_height(0, 0), 70.);
+        assert_eq!(piano_channel_panel_height(1, 0), 70.);
+        assert_eq!(piano_channel_panel_height(1, 4), 186.);
+        assert_eq!(piano_channel_panel_height(2, 8), 326.);
     }
 
     #[test]
