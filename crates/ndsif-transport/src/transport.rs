@@ -56,6 +56,7 @@ const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const PACING_CANCEL_INTERVAL: Duration = Duration::from_millis(2);
 const VOLUME_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+const SILENT_OUTPUT_ATTENUATION: u8 = 96;
 const FIXED_CLOCK_TOLERANCE_PPM: u64 = 10;
 const PARTS_PER_MILLION: u64 = 1_000_000;
 
@@ -526,6 +527,14 @@ impl NdsifSerialTransport {
     /// Returns an error if the reset fails or a supported stream is not idle
     /// after the reset.
     pub fn reset_for_reuse(&mut self) -> Result<(), NdsifTransportError> {
+        if self.output_volume_supported {
+            self.request_typed(Command::SetOutputVolume {
+                attenuation: SILENT_OUTPUT_ATTENUATION,
+                response: true,
+            })?;
+            self.output_volume_modified = true;
+            self.output_attenuation = SILENT_OUTPUT_ATTENUATION;
+        }
         self.request_typed(Command::Reset)?;
         if self.output_volume_modified {
             self.request_typed(Command::SetOutputVolume {

@@ -210,6 +210,12 @@ fn output_volume_initialization_sends_current_gain_despite_cached_values() {
         let frame = read_device_frame(&mut device, &mut decoder);
         assert_eq!(
             ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 96 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
             ndsif::Request::Reset
         );
         reply_to_device_frame(&mut device, &frame, Reply::Complete);
@@ -255,6 +261,12 @@ fn failed_output_volume_initialization_is_reported_and_restored() {
             ndsif::Request::SetOutputVolume { attenuation: 0 }
         );
         reply_to_device_frame(&mut device, &frame, Reply::Rejected);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 96 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
         let frame = read_device_frame(&mut device, &mut decoder);
         assert_eq!(
             ndsif::Request::decode(&frame).unwrap(),
@@ -311,24 +323,21 @@ fn output_fade_is_capability_gated_and_restored_after_cancellation() {
     let (release, wait) = std::sync::mpsc::channel();
     let fake = std::thread::spawn(move || {
         let mut decoder = ndsif::Decoder::new();
-        for expected in [Some(false), None, Some(true)] {
-            let frame = read_device_frame(&mut device, &mut decoder);
-            match expected {
-                Some(false) => assert!(matches!(
-                    ndsif::Request::decode(&frame).unwrap(),
-                    ndsif::Request::SetOutputVolume {
-                        attenuation: 1..=96
-                    }
-                )),
-                Some(true) => assert_eq!(
-                    ndsif::Request::decode(&frame).unwrap(),
-                    ndsif::Request::SetOutputVolume { attenuation: 0 }
-                ),
-                None => assert_eq!(
-                    ndsif::Request::decode(&frame).unwrap(),
-                    ndsif::Request::Reset
-                ),
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert!(matches!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume {
+                attenuation: 1..=96
             }
+        ));
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        for expected in [
+            ndsif::Request::SetOutputVolume { attenuation: 96 },
+            ndsif::Request::Reset,
+            ndsif::Request::SetOutputVolume { attenuation: 0 },
+        ] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            assert_eq!(ndsif::Request::decode(&frame).unwrap(), expected);
             reply_to_device_frame(&mut device, &frame, Reply::Complete);
         }
         wait.recv().unwrap();
@@ -359,6 +368,12 @@ fn output_fade_rejection_is_reported_and_requires_restoration() {
         let mut decoder = ndsif::Decoder::new();
         let frame = read_device_frame(&mut device, &mut decoder);
         reply_to_device_frame(&mut device, &frame, Reply::Rejected);
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 96 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
         let frame = read_device_frame(&mut device, &mut decoder);
         assert_eq!(
             ndsif::Request::decode(&frame).unwrap(),
@@ -414,6 +429,33 @@ fn closing_after_a_volume_change_resets_and_restores_output() {
 
 #[cfg(unix)]
 #[test]
+fn reset_for_reuse_mutes_before_reset_and_restores_output() {
+    let (mut transport, mut device) = test_transport();
+    transport.output_volume_supported = true;
+    let (release, wait) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        for request in [
+            ndsif::Request::SetOutputVolume { attenuation: 96 },
+            ndsif::Request::Reset,
+            ndsif::Request::SetOutputVolume { attenuation: 0 },
+        ] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            assert_eq!(ndsif::Request::decode(&frame).unwrap(), request);
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        wait.recv().unwrap();
+    });
+
+    transport.reset_for_reuse().unwrap();
+    assert!(!transport.output_volume_modified);
+    assert_eq!(transport.output_attenuation, 0);
+    release.send(()).unwrap();
+    worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn live_gain_changes_are_combined_with_an_active_fade() {
     let (mut transport, mut device) = test_transport();
     transport.output_volume_supported = true;
@@ -441,6 +483,12 @@ fn live_gain_changes_are_combined_with_an_active_fade() {
             values.push(attenuation);
             reply_to_device_frame(&mut device, &frame, Reply::Complete);
         }
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert_eq!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::SetOutputVolume { attenuation: 96 }
+        );
+        reply_to_device_frame(&mut device, &frame, Reply::Complete);
         let frame = read_device_frame(&mut device, &mut decoder);
         assert_eq!(
             ndsif::Request::decode(&frame).unwrap(),

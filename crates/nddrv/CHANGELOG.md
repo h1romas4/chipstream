@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Mute NanoDrive outputs before resetting between tracks to reduce reset noise.
+
 ## v0.11.0
 
 - Allow selecting a preferred YM2608 rhythm ROM in General settings.

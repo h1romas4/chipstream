@@ -21,32 +21,23 @@ scheduling, or device workers.
 
 ## Device information and reset
 
-Open the serial transport, request the device model and firmware with
-`device_info()`, then lower the output volume before resetting it.
+Open the serial transport and request the device model and firmware with
+`device_info()`.
 
 Stop playback before resetting. On devices with output-volume control,
-`reset_for_reuse()` restores normal volume (0 dB attenuation) after reset;
-lower the gain first to reduce the pop.
+`reset_for_reuse()` temporarily sets maximum attenuation (silence) before
+resetting, then restores normal volume (0 dB attenuation).
 
 ```rust,no_run
-use std::sync::Arc;
 use std::time::Duration;
-use ndsif_transport::{NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
+use ndsif_transport::NdsifSerialTransport;
 
 let mut device = NdsifSerialTransport::open(
     "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
 )?;
 let info = device.device_info()?;
 println!("{} ({})", info.model, info.firmware);
-let gain = Arc::new(NdsifOutputGain::new());
-gain.set(0.25)?;
-let timeline = Arc::new(NdsifHostTimeline::pending());
-timeline.set_output_gain(gain)?;
-if device.set_output_fade_timeline(timeline)? {
-    // Lower the device output before resetting.
-    device.initialize_output_volume()?;
-}
-// Sends RESET, then restores modified output volume to normal.
+// Mutes capable devices, sends RESET, then restores normal volume.
 device.reset_for_reuse()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
