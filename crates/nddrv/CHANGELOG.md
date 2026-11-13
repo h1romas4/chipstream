@@ -4,6 +4,7 @@
 
 - Show Library track counts and refine the remove button.
 - Show a subtle animated meter for the playing track in Music and Playlist.
+- Nudge the Playlist Routing row down slightly.
 - Align Piano Roll panel bottom padding.
 - Prevent early PSG notes during NanoDrive 6 playback start delay.
 - Set playback fade-out and start delay in milliseconds.

@@ -3672,6 +3672,7 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .mt_1()
                     .child(div().text_sm().child("Routing"))
                     .child(
                         div().flex().flex_wrap().gap_1().children(
