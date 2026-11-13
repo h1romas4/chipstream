@@ -125,14 +125,16 @@ at frame 0:
 ```rust,no_run
 use std::time::Duration;
 use ndsif::{RegisterWrite, WriteId};
-use ndsif_transport::{NdsifRegisterEvent, NdsifSerialTransport, NdsifTransport};
+use ndsif_transport::{
+    NdsifRegisterEvent, NdsifSerialConfig, NdsifSerialTransport, NdsifTransport,
+};
 
-let mut device = NdsifSerialTransport::open(
-    "/dev/ttyACM0",
-    115_200,
-    Duration::from_millis(500),
-    false,
-)?;
+let mut device = NdsifSerialTransport::open(NdsifSerialConfig {
+    port: "/dev/ttyACM0".to_owned(),
+    baud_rate: 115_200,
+    response_timeout: Duration::from_millis(500),
+    reset_device: false,
+})?;
 let output_rate = 44_100;
 device.configure_chip(WriteId::YM2151, 0, 3_579_545)?;
 device.schedule_register_write(NdsifRegisterEvent {
@@ -189,14 +191,17 @@ use std::{num::NonZeroUsize, sync::{Arc, Mutex}, time::Duration};
 use chipstream::sequencer::VgmSequencer;
 use chipstream_ndsif::create_automatic_transport_factories;
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialConfig, NdsifSerialTransport,
     NdsifWorkerDevice,
 };
 
 fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers, Arc<NdsifHostTimeline>), Box<dyn std::error::Error>> {
-    let connection = NdsifSerialTransport::open(
-        "/dev/ttyACM0", 115_200, Duration::from_millis(500), true,
-    )?;
+    let connection = NdsifSerialTransport::open(NdsifSerialConfig {
+        port: "/dev/ttyACM0".to_owned(),
+        baud_rate: 115_200,
+        response_timeout: Duration::from_millis(500),
+        reset_device: true,
+    })?;
     let supports_ay = connection.capabilities().iter().any(|entry| entry.write_id == 0xa0);
     let devices = [NdsifWorkerDevice::new(
         Arc::new(Mutex::new(connection)), NonZeroUsize::new(16_384).unwrap(),

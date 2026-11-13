@@ -3,31 +3,18 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::time::Duration;
 
 use chipstream::chip::{
     ChipError, ClockDivider, Okim6258, OutputBits, Sn76496, Sn76496Config, YmfmChip,
 };
 use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
+use ndsif_transport::NdsifSerialConfig;
 
 use crate::{
     NdsifDirectPolicy, NdsifOkim6258, NdsifRoute, NdsifRouteOptions, NdsifRoutePolicy,
     NdsifRoutingTransport, NdsifSerialTransport, NdsifSn76489, NdsifSoundChip, NdsifTransportError,
 };
-
-/// Serial connection and reset options for an NDSIF device.
-#[derive(Debug, Clone)]
-pub struct NdsifSerialConfig {
-    /// Path to the serial device.
-    pub port: String,
-    /// Serial baud rate.
-    pub baud_rate: u32,
-    /// Timeout for each request/response transaction.
-    pub response_timeout: Duration,
-    /// Reset the device before querying capabilities.
-    pub reset_device: bool,
-}
 
 /// Open configured NDSIF devices and register hardware-backed factories.
 ///
@@ -48,7 +35,7 @@ pub fn create_chip_factories(
 ) -> Result<ChipFactoryRegistry, NdsifTransportError> {
     let mut ports = HashSet::with_capacity(configs.len());
     for config in configs {
-        validate_config(&config.port, config.baud_rate, config.response_timeout)?;
+        config.validate()?;
         if !ports.insert(&config.port) {
             return Err(NdsifTransportError::DuplicatePort {
                 port: config.port.clone(),
@@ -58,10 +45,7 @@ pub fn create_chip_factories(
     let mut transports = Vec::with_capacity(configs.len());
     for config in configs {
         transports.push(Rc::new(RefCell::new(NdsifSerialTransport::open(
-            &config.port,
-            config.baud_rate,
-            config.response_timeout,
-            config.reset_device,
+            config.clone(),
         )?)));
     }
 
@@ -283,28 +267,6 @@ fn select_route(
         .map_err(|_| error("NDSIF route policy is already borrowed".to_owned()))?
         .select(&route, config.clock())
         .map_err(error)
-}
-
-/// Reject invalid serial settings before opening any device.
-pub(super) fn validate_config(
-    path: &str,
-    baud_rate: u32,
-    timeout: Duration,
-) -> Result<(), NdsifTransportError> {
-    if path.trim().is_empty() {
-        return Err(NdsifTransportError::EmptyPort);
-    }
-    if baud_rate == 0 {
-        return Err(NdsifTransportError::InvalidBaudRate {
-            port: path.to_owned(),
-        });
-    }
-    if timeout.is_zero() {
-        return Err(NdsifTransportError::InvalidTimeout {
-            port: path.to_owned(),
-        });
-    }
-    Ok(())
 }
 
 type SelectedTransport<T> = Option<(usize, Rc<RefCell<T>>)>;

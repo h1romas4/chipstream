@@ -35,7 +35,8 @@ use chipstream::sequencer::{
 };
 use chipstream_ndsif::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialTransport, NdsifWorkerDevice,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialConfig, NdsifSerialTransport,
+    NdsifWorkerDevice,
 };
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -1607,12 +1608,12 @@ fn create_chip_factories(
     let mut supports_ay = false;
     let mut nd7_devices = Vec::new();
     for (index, port) in ports.into_iter().enumerate() {
-        let mut transport = NdsifSerialTransport::open(
-            &port,
-            settings.baud_rate,
-            Duration::from_millis(u64::from(settings.timeout_ms)),
-            settings.reset_device,
-        )
+        let mut transport = NdsifSerialTransport::open(NdsifSerialConfig {
+            port: port.clone(),
+            baud_rate: settings.baud_rate,
+            response_timeout: Duration::from_millis(u64::from(settings.timeout_ms)),
+            reset_device: settings.reset_device,
+        })
         .map_err(|error| format!("NDSIF device {port}: {error}"))?;
         supports_ay |= transport
             .capabilities()

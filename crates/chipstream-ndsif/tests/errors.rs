@@ -42,19 +42,24 @@ fn factory_validates_all_configs_before_opening_any_device() {
 
 #[test]
 fn direct_open_validates_and_preserves_serial_error_source() {
+    let mut invalid = config("");
     assert!(matches!(
-        NdsifSerialTransport::open("", 115_200, Duration::from_secs(1), false),
+        NdsifSerialTransport::open(invalid.clone()),
         Err(NdsifTransportError::EmptyPort)
     ));
+    invalid = config("port");
+    invalid.baud_rate = 0;
     assert!(matches!(
-        NdsifSerialTransport::open("port", 0, Duration::from_secs(1), false),
+        NdsifSerialTransport::open(invalid.clone()),
         Err(NdsifTransportError::InvalidBaudRate { port }) if port == "port"
     ));
+    invalid.baud_rate = 115_200;
+    invalid.response_timeout = Duration::ZERO;
     assert!(matches!(
-        NdsifSerialTransport::open("port", 115_200, Duration::ZERO, false),
+        NdsifSerialTransport::open(invalid),
         Err(NdsifTransportError::InvalidTimeout { port }) if port == "port"
     ));
-    let error = match NdsifSerialTransport::open("\0", 115_200, Duration::from_millis(100), false) {
+    let error = match NdsifSerialTransport::open(config("\0")) {
         Ok(_) => panic!("a port containing a NUL cannot be opened"),
         Err(error) => error,
     };
@@ -99,7 +104,9 @@ where
             }
         }
     });
-    let result = NdsifSerialTransport::open(&path, 115_200, Duration::from_secs(2), false);
+    let mut settings = config(&path);
+    settings.response_timeout = Duration::from_secs(2);
+    let result = NdsifSerialTransport::open(settings);
     release.send(()).unwrap();
     worker.join().unwrap();
     let error = match result {
@@ -167,7 +174,9 @@ fn initialization_reports_timeout_with_command_and_transaction() {
 
     let (_device, port) = serialport::TTYPort::pair().unwrap();
     let path = port.name().unwrap();
-    let error = match NdsifSerialTransport::open(&path, 115_200, Duration::from_millis(30), false) {
+    let mut settings = config(&path);
+    settings.response_timeout = Duration::from_millis(30);
+    let error = match NdsifSerialTransport::open(settings) {
         Err(error) => error,
         Ok(_) => panic!("an unresponsive device must time out"),
     };
@@ -244,13 +253,9 @@ fn fixed_clock_routing_and_connection_reuse_work_through_serial_transport() {
         }
         wait.recv().unwrap();
     });
-    let transport = NdsifSerialTransport::open(
-        &port.name().unwrap(),
-        115_200,
-        Duration::from_secs(2),
-        false,
-    )
-    .unwrap();
+    let mut settings = config(&port.name().unwrap());
+    settings.response_timeout = Duration::from_secs(2);
+    let transport = NdsifSerialTransport::open(settings).unwrap();
     let shared = Rc::new(RefCell::new(transport));
     let route = NdsifRoute {
         chip: Chip::Ym2413,

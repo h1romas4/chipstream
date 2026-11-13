@@ -17,5 +17,7 @@ pub use scheduled::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent,
     NdsifRoutingTransport, NdsifTransport,
 };
-pub use transport::{NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialTransport};
+pub use transport::{
+    NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialConfig, NdsifSerialTransport,
+};
 pub use worker::{NdsifHardwareWorkers, NdsifRecorder, NdsifWorkerDevice, NdsifWorkerError};

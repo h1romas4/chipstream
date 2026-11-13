@@ -41,6 +41,30 @@ fn validate_config(
     Ok(())
 }
 
+/// Serial connection and initialization settings for an NDSIF device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NdsifSerialConfig {
+    /// Path to the serial device.
+    pub port: String,
+    /// Serial baud rate.
+    pub baud_rate: u32,
+    /// Timeout for each request/response transaction.
+    pub response_timeout: Duration,
+    /// Reset the device before querying capabilities.
+    pub reset_device: bool,
+}
+
+impl NdsifSerialConfig {
+    /// Validate the serial connection settings without opening the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the port, baud rate, or response timeout is invalid.
+    pub fn validate(&self) -> Result<(), NdsifTransportError> {
+        validate_config(&self.port, self.baud_rate, self.response_timeout)
+    }
+}
+
 mod audio;
 mod dac;
 #[cfg(test)]
@@ -561,24 +585,23 @@ impl NdsifSerialTransport {
 
     /// Open a serial device, discover capabilities, and verify its streams are idle.
     ///
-    /// During initialization no reset is issued unless `reset_device` is true.
+    /// During initialization no reset is issued unless `config.reset_device` is true.
     ///
     /// # Errors
     ///
     /// Returns a typed configuration error, or a [`NdsifTransportError::Device`]
     /// identifying the port and preserving the initialization failure.
-    pub fn open(
-        path: &str,
-        baud_rate: u32,
-        timeout: Duration,
-        reset_device: bool,
-    ) -> Result<Self, NdsifTransportError> {
-        validate_config(path, baud_rate, timeout)?;
-        Self::open_device(path, baud_rate, timeout, reset_device).map_err(|source| {
-            NdsifTransportError::Device {
-                port: path.to_owned(),
-                source: Box::new(source),
-            }
+    pub fn open(config: NdsifSerialConfig) -> Result<Self, NdsifTransportError> {
+        config.validate()?;
+        Self::open_device(
+            &config.port,
+            config.baud_rate,
+            config.response_timeout,
+            config.reset_device,
+        )
+        .map_err(|source| NdsifTransportError::Device {
+            port: config.port,
+            source: Box::new(source),
         })
     }
 

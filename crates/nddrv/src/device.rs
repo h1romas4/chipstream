@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use ndsif::CapabilityEntry;
-use ndsif_transport::NdsifSerialTransport;
+use ndsif_transport::{NdsifSerialConfig, NdsifSerialTransport};
 
 use crate::routing::Device;
 
@@ -48,12 +48,12 @@ impl DeviceService<NdsifSerialTransport> {
     pub fn new() -> Self {
         Self::with_connector(
             |device| {
-                let mut transport = NdsifSerialTransport::open(
-                    &device.port,
-                    BAUD_RATE,
-                    Duration::from_millis(500),
-                    false,
-                )
+                let mut transport = NdsifSerialTransport::open(NdsifSerialConfig {
+                    port: device.port.clone(),
+                    baud_rate: BAUD_RATE,
+                    response_timeout: Duration::from_millis(500),
+                    reset_device: false,
+                })
                 .map_err(|error| error.to_string())?;
                 let info = transport.device_info().map_err(|error| error.to_string())?;
                 if info.model.trim().is_empty() {

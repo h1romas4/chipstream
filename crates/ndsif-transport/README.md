@@ -30,11 +30,14 @@ resetting, then restores normal volume (0 dB attenuation).
 
 ```rust,no_run
 use std::time::Duration;
-use ndsif_transport::NdsifSerialTransport;
+use ndsif_transport::{NdsifSerialConfig, NdsifSerialTransport};
 
-let mut device = NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
-)?;
+let mut device = NdsifSerialTransport::open(NdsifSerialConfig {
+    port: "/dev/ttyACM0".to_owned(),
+    baud_rate: 115_200,
+    response_timeout: Duration::from_millis(500),
+    reset_device: false,
+})?;
 let info = device.device_info()?;
 println!("{} ({})", info.model, info.firmware);
 // Mutes capable devices, sends RESET, then restores normal volume.
@@ -53,11 +56,16 @@ frame timeline monotonically.
 ```rust,no_run
 use std::time::Duration;
 use ndsif::{RegisterWrite, WriteId};
-use ndsif_transport::{NdsifRegisterEvent, NdsifSerialTransport, NdsifTransport};
+use ndsif_transport::{
+    NdsifRegisterEvent, NdsifSerialConfig, NdsifSerialTransport, NdsifTransport,
+};
 
-let mut device = NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
-)?;
+let mut device = NdsifSerialTransport::open(NdsifSerialConfig {
+    port: "/dev/ttyACM0".to_owned(),
+    baud_rate: 115_200,
+    response_timeout: Duration::from_millis(500),
+    reset_device: false,
+})?;
 device.configure_chip(WriteId::YM2151, 0, 3_579_545)?;
 device.schedule_register_write(NdsifRegisterEvent {
     write_id: WriteId::YM2151,
@@ -104,17 +112,22 @@ use std::{
 use ndsif::{BytePosition, Divider, RegisterWrite, WriteId, ZeroPair};
 use ndsif_transport::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent,
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent, NdsifSerialTransport,
-    NdsifTransport, NdsifWorkerDevice,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent, NdsifSerialConfig,
+    NdsifSerialTransport, NdsifTransport, NdsifWorkerDevice,
 };
 
 const RATE: u32 = 44_100;
 const PREBUFFER_FRAMES: usize = 4_410;
 const END_FRAME: usize = 6_000;
 // Share the serial connection with the worker that will perform device I/O.
-let connection = Arc::new(Mutex::new(NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
-)?));
+let connection = Arc::new(Mutex::new(
+    NdsifSerialTransport::open(NdsifSerialConfig {
+        port: "/dev/ttyACM0".to_owned(),
+        baud_rate: 115_200,
+        response_timeout: Duration::from_millis(500),
+        reset_device: false,
+    })?,
+));
 let device = NdsifWorkerDevice::new(Arc::clone(&connection), NonZeroUsize::new(1024).unwrap())?;
 let recorder = device.recorder();
 // Record both chip configurations before starting the worker.
@@ -208,16 +221,19 @@ use std::{
 };
 use ndsif::{RegisterWrite, WriteId};
 use ndsif_transport::{
-    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent,
+    NdsifHardwareWorkers, NdsifHostTimeline, NdsifRegisterEvent, NdsifSerialConfig,
     NdsifSerialTransport, NdsifTransport, NdsifWorkerDevice,
 };
 
 const RATE: u32 = 44_100;
 const PREBUFFER_FRAMES: usize = 441;
 const END_FRAME: usize = 441;
-let transport = NdsifSerialTransport::open(
-    "/dev/ttyACM0", 115_200, Duration::from_millis(500), false,
-)?;
+let transport = NdsifSerialTransport::open(NdsifSerialConfig {
+    port: "/dev/ttyACM0".to_owned(),
+    baud_rate: 115_200,
+    response_timeout: Duration::from_millis(500),
+    reset_device: false,
+})?;
 if !transport.supports_timed_dac() {
     return Err("device does not support the timed DAC profile".into());
 }
