@@ -43,7 +43,8 @@ impl NdsifTransport for DebugTransport {
         clock_hz: u32,
     ) -> Result<(), String> {
         println!(
-            "configure chip=0x{:02x} instance={instance} clock={clock_hz} Hz",
+            "{:>8} | configure chip=0x{:02x} instance={instance} clock={clock_hz} Hz",
+            "-",
             write_id.get()
         );
         Ok(())
@@ -64,7 +65,8 @@ impl NdsifTransport for DebugTransport {
         output_rate: u32,
     ) -> Result<(), String> {
         println!(
-            "configure ADPCM stream instance={instance} clock={clock_hz} Hz divider={divider:?} output_rate={output_rate} Hz"
+            "{:>8} | configure ADPCM stream instance={instance} clock={clock_hz} Hz divider={divider:?} output_rate={output_rate} Hz",
+            "-"
         );
         Ok(())
     }
@@ -98,7 +100,7 @@ impl NdsifTransport for DebugTransport {
         for event in self.pending.drain(..split) {
             match event {
                 PendingEvent::Register(event) => println!(
-                    "write frame={} rate={} chip=0x{:02x} instance={} page={} register=0x{:02x} value=0x{:02x}",
+                    "{:>8} | write rate={} chip=0x{:02x} instance={} page={} register=0x{:02x} value=0x{:02x}",
                     event.sample_frame,
                     event.sample_rate,
                     event.write_id.get(),
@@ -108,7 +110,7 @@ impl NdsifTransport for DebugTransport {
                     event.write.value,
                 ),
                 PendingEvent::Adpcm(event) => println!(
-                    "ADPCM frame_horizon={} rate={} instance={} byte_position={} data=0x{:02x}",
+                    "{:>8} | ADPCM rate={} instance={} byte_position={} data=0x{:02x}",
                     event.sample_frame,
                     event.sample_rate,
                     event.instance,
@@ -116,7 +118,7 @@ impl NdsifTransport for DebugTransport {
                     event.value,
                 ),
                 PendingEvent::AudioControl(event) => println!(
-                    "audio_control frame={} rate={} instance={} byte_position={} control={:?}",
+                    "{:>8} | audio_control rate={} instance={} byte_position={} control={:?}",
                     event.sample_frame,
                     event.sample_rate,
                     event.instance,
@@ -130,7 +132,7 @@ impl NdsifTransport for DebugTransport {
 
     /// Print that playback of the configured stream has started.
     fn start_audio_stream(&mut self, instance: u8) -> Result<(), String> {
-        println!("start ADPCM stream instance={instance}");
+        println!("{:>8} | start ADPCM stream instance={instance}", "-");
         Ok(())
     }
 
@@ -141,7 +143,7 @@ impl NdsifTransport for DebugTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
-        println!("finish ADPCM stream instance={instance} frame={sample_frame} rate={output_rate}");
+        println!("{sample_frame:>8} | finish ADPCM stream instance={instance} rate={output_rate}");
         Ok(())
     }
 }
