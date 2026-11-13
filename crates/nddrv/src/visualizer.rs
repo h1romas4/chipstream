@@ -518,6 +518,7 @@ pub struct ViewPlayback {
 
 pub fn view(
     title: String,
+    artist: Option<String>,
     playback: ViewPlayback,
     mode: RollMode,
     hidden_channels: HashSet<(u8, u8)>,
@@ -594,6 +595,19 @@ pub fn view(
                             .child(title),
                     ),
                 )
+                .when_some(artist, |header, artist| {
+                    header.child(
+                        div()
+                            .pr(px(268.))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_sm()
+                            .text_color(rgb(0x9ab3c1))
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(format!("Composer · {artist}")),
+                    )
+                })
                 .child(div().text_sm().text_color(rgb(0x82a8bb)).child(if paused {
                     "PAUSED"
                 } else if playing {

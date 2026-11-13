@@ -3191,6 +3191,26 @@ impl AppView {
             .unwrap_or_else(|| Track::format_display_title(path, &Default::default()))
     }
 
+    fn piano_artist(&self) -> Option<String> {
+        let path = if let Some(index) = self.playing {
+            self.config.playlist.get(index)
+        } else {
+            self.config.playlist.first()
+        }?;
+        let track = self
+            .track_by_path
+            .get(path)
+            .map(|&index| &self.tracks[index])
+            .or_else(|| self.playlist_tracks.get(path))?;
+        track
+            .metadata_for(self.config.general.vgm_metadata_language)
+            .artist
+            .as_deref()
+            .map(str::trim)
+            .filter(|artist| !artist.is_empty())
+            .map(str::to_owned)
+    }
+
     fn playback_buttons(&self, cx: &mut Context<Self>) -> Div {
         let active = self.playing.is_some();
         let play_label = if active && self.playing_hardware {
@@ -5618,6 +5638,7 @@ impl Render for AppView {
                                                 .h_full()
                                                 .child(visualizer::view(
                                                     self.piano_title(),
+                                                    self.piano_artist(),
                                                     visualizer::ViewPlayback {
                                                         playing: self.playing.is_some(),
                                                         previewing: self.playing.is_none() && !self.config.playlist.is_empty(),
