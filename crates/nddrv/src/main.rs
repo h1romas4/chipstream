@@ -271,6 +271,41 @@ fn track_title(
         )
 }
 
+fn playback_level_meter(list: &'static str, index: usize, animated: bool) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("{list}-level-meter-{index}")))
+        .flex()
+        .flex_shrink_0()
+        .items_end()
+        .gap(px(2.))
+        .w(px(14.))
+        .h(px(14.))
+        .children((0..4).map(move |bar_index| {
+            let phase = bar_index as f32 * 1.5;
+            let bar = div()
+                .id(SharedString::from(format!(
+                    "{list}-level-meter-{index}-bar-{bar_index}"
+                )))
+                .w(px(2.))
+                .h(px([4., 8., 5., 10.][bar_index]))
+                .rounded_sm()
+                .bg(rgb(ACCENT_COLOR));
+            if animated {
+                bar.with_animation(
+                    SharedString::from(format!("{list}-level-meter-{index}-{bar_index}")),
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    move |bar, progress| {
+                        let level = (progress * std::f32::consts::TAU + phase).sin().abs();
+                        bar.h(px(3. + level * 8.))
+                    },
+                )
+                .into_any_element()
+            } else {
+                bar.into_any_element()
+            }
+        }))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Library,
@@ -4429,12 +4464,17 @@ impl AppView {
         });
         let cursor = list_cursor_index(current, self.filtered_tracks.len());
         let routing_plan = routing::RoutingPlan::new(self.routing.connections(), self.config.vgm);
+        let playing_path = self
+            .playing
+            .and_then(|index| self.config.playlist.get(index));
+        let meter_animated = !self.paused && !self.waiting_for_start;
         range
             .map(|index| {
                 let track = &self.tracks[self.filtered_tracks[index]];
                 let path = track.path.clone();
                 let click_path = path.clone();
                 let menu_path = path.clone();
+                let playing = playing_path == Some(&path);
                 let selected = self.selected_tracks.contains(&path);
                 let focused = self.track_focus.is_focused(window) && cursor == Some(index);
                 let view = cx.weak_entity();
@@ -4535,6 +4575,13 @@ impl AppView {
                                         dimmed,
                                         title_tooltip,
                                     )))
+                                    .when(playing, |row| {
+                                        row.child(playback_level_meter(
+                                            "music",
+                                            index,
+                                            meter_animated,
+                                        ))
+                                    })
                                     .when(!track.chips.is_empty(), |row| {
                                         row.child(
                                             div()
@@ -4832,8 +4879,11 @@ impl AppView {
                             .text_sm()
                             .text_color(rgb(if playing { 0x7de0d6 } else { 0x8195a3 }))
                             .when(playing, |marker| {
-                                marker
-                                    .child(gpui_kit::component::Icon::from(assets::IconName::Play))
+                                marker.child(playback_level_meter(
+                                    "playlist",
+                                    index,
+                                    !self.paused && !self.waiting_for_start,
+                                ))
                             })
                             .when(!playing, |marker| marker.child(format!("{:02}", index + 1))),
                     )
