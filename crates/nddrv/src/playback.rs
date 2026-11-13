@@ -475,7 +475,7 @@ impl Playback {
     }
 
     fn waiting_for_start_at(&self, now: Instant) -> bool {
-        self.control.settings.start_delay_seconds > 0
+        self.control.settings.start_delay_millis > 0
             && self
                 .control
                 .first_presentation
@@ -582,7 +582,7 @@ impl Playback {
             }
         };
         let leading_silence = if mode == RollMode::Incoming {
-            let total = u64::from(self.control.settings.start_delay_seconds) * u64::from(rate);
+            let total = self.control.settings.start_delay_frames(rate);
             total.saturating_sub(self.control.silence_clock.position(now, rate)?)
         } else {
             0
@@ -732,7 +732,7 @@ impl IdlePreview {
     pub fn visual_snapshot(&self, mode: RollMode) -> Result<Snapshot> {
         self.snapshot_at(mode, 0, false).map(|snapshot| {
             let silence = if mode == RollMode::Incoming {
-                u64::from(self.control.settings.start_delay_seconds) * u64::from(snapshot.rate)
+                self.control.settings.start_delay_frames(snapshot.rate)
             } else {
                 0
             };
@@ -749,7 +749,7 @@ impl IdlePreview {
                 .context("piano roll preview position overflow")?
         };
         let leading_silence = if live.rate == 0 {
-            u64::from(self.control.settings.start_delay_seconds) * u64::from(rate)
+            self.control.settings.start_delay_frames(rate)
         } else {
             u64::try_from(
                 u128::from(live.leading_silence) * u128::from(rate) / u128::from(live.rate),
@@ -874,7 +874,7 @@ fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions 
             } else {
                 Some(settings.loop_count)
             },
-            fadeout: (!looped).then(|| Duration::from_secs(u64::from(settings.fadeout_seconds))),
+            fadeout: (!looped).then(|| Duration::from_millis(u64::from(settings.fadeout_millis))),
         },
         max_ticks: if looped {
             None
@@ -1658,7 +1658,7 @@ impl Sequencer {
                 .schedule_output_fade(
                     start,
                     rate,
-                    Duration::from_secs(u64::from(control.settings.fadeout_seconds)),
+                    Duration::from_millis(u64::from(control.settings.fadeout_millis)),
                 )
                 .map_err(anyhow::Error::msg)?;
             *scheduled = true;
@@ -1736,8 +1736,7 @@ impl AudioConsumer {
         let volume = self.control.volume.get();
         let mut played = 0;
         let mut silence = 0_u64;
-        let total_silence =
-            u64::from(self.control.settings.start_delay_seconds) * u64::from(self.rate);
+        let total_silence = self.control.settings.start_delay_frames(self.rate);
         let silence_start = total_silence.saturating_sub(self.silence_remaining);
         let mut needs_origin = self.control.first_presentation.get().is_none();
         for (frame_index, frame) in out.chunks_mut(self.channels).enumerate() {
@@ -1877,8 +1876,7 @@ fn stream<T: SizedSample + FromSample<f32>>(
         bail!("audio device has no channels");
     }
     let errors = events.clone();
-    let silence_remaining =
-        u64::from(control.settings.start_delay_seconds) * u64::from(config.sample_rate);
+    let silence_remaining = control.settings.start_delay_frames(config.sample_rate);
     let mut consumer = AudioConsumer {
         rx,
         events,
@@ -3381,7 +3379,7 @@ mod tests {
         Arc::get_mut(&mut player.control)
             .unwrap()
             .settings
-            .start_delay_seconds = 1;
+            .start_delay_millis = 1000;
         let control = player.control.clone();
         let timeline = Arc::new(NdsifHostTimeline::pending());
         assert!(control.hardware_timeline.set(Arc::clone(&timeline)).is_ok());
@@ -3434,6 +3432,39 @@ mod tests {
     }
 
     #[test]
+    fn fractional_second_delay_is_sample_accurate() {
+        let mut player = Playback::new();
+        Arc::get_mut(&mut player.control)
+            .unwrap()
+            .settings
+            .start_delay_millis = 125;
+        let control = player.control.clone();
+        let (sender, receiver) = mpsc::channel();
+        let (events, _) = mpsc::channel();
+        sender.send(Block::Audio(vec![[0.25, 0.5]])).unwrap();
+        let mut consumer = AudioConsumer {
+            rx: receiver,
+            events,
+            control: control.clone(),
+            frames: Vec::new(),
+            position: 0,
+            ended: false,
+            channels: 2,
+            rate: 44_100,
+            silence_remaining: control.settings.start_delay_frames(44_100),
+        };
+        let now = Instant::now();
+        let mut output = vec![1.0_f32; (5513 + 1) * 2];
+        consumer.fill_at(&mut output, now, Duration::ZERO);
+        assert!(output[..5513 * 2].iter().all(|sample| *sample == 0.0));
+        assert_eq!(&output[5513 * 2..], &[0.25, 0.5]);
+        assert_eq!(
+            control.first_presentation.get(),
+            Some(&(now + Duration::from_secs_f64(5513.0 / 44_100.0)))
+        );
+    }
+
+    #[test]
     fn incoming_piano_roll_tracks_the_presented_leading_silence() {
         use soundlog::chip::event::{StateEvent, ToneInfo};
 
@@ -3441,7 +3472,7 @@ mod tests {
         Arc::get_mut(&mut player.control)
             .unwrap()
             .settings
-            .start_delay_seconds = 1;
+            .start_delay_millis = 1000;
         let control = player.control.clone();
         control.sample_rate.store(4, Ordering::Relaxed);
         {
@@ -3512,7 +3543,7 @@ mod tests {
         )
         .unwrap();
         let settings = PlaybackSettings {
-            start_delay_seconds: 2,
+            start_delay_millis: 2000,
             ..PlaybackSettings::default()
         };
         let preview =
@@ -3971,8 +4002,8 @@ mod tests {
 
             let settings = PlaybackSettings {
                 loop_count: 3,
-                fadeout_seconds: 1,
-                start_delay_seconds: 0,
+                fadeout_millis: 125,
+                start_delay_millis: 0,
             };
             let mut configured_vgm = Sequencer::create(
                 &vgm,
@@ -5608,13 +5639,13 @@ mod tests {
             PlaybackSettings::default(),
             PlaybackSettings {
                 loop_count: 3,
-                fadeout_seconds: 1,
-                start_delay_seconds: 0,
+                fadeout_millis: 1000,
+                start_delay_millis: 0,
             },
             PlaybackSettings {
                 loop_count: 1,
-                fadeout_seconds: 0,
-                start_delay_seconds: 0,
+                fadeout_millis: 0,
+                start_delay_millis: 0,
             },
         ] {
             for rate in [8_000, 44_100, 48_000] {

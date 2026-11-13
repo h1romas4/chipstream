@@ -418,12 +418,11 @@ pub struct VgmSettings {
     pub ay8910_ym2149: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PlaybackSettings {
     pub loop_count: u32,
-    pub fadeout_seconds: u32,
-    pub start_delay_seconds: u32,
+    pub fadeout_millis: u32,
+    pub start_delay_millis: u32,
 }
 
 impl PlaybackSettings {
@@ -431,17 +430,22 @@ impl PlaybackSettings {
         if !(1..=99).contains(&self.loop_count) {
             bail!("playback loop count must be between 1 and 99");
         }
-        if self.fadeout_seconds > 600 {
-            bail!("playback fadeout must be between 0 and 600 seconds");
+        if self.fadeout_millis > 600_000 {
+            bail!("playback fadeout must be between 0 and 600000 milliseconds");
         }
-        if self.start_delay_seconds > 600 {
-            bail!("playback start delay must be between 0 and 600 seconds");
+        if self.start_delay_millis > 600_000 {
+            bail!("playback start delay must be between 0 and 600000 milliseconds");
         }
         Ok(())
     }
 
     pub fn fadeout_samples(self) -> u32 {
-        self.fadeout_seconds * 44_100
+        u32::try_from((u64::from(self.fadeout_millis) * 44_100 + 500) / 1000)
+            .expect("validated fadeout fits in VGM samples")
+    }
+
+    pub fn start_delay_frames(self, rate: u32) -> u64 {
+        (u64::from(self.start_delay_millis) * u64::from(rate) + 500) / 1000
     }
 }
 
@@ -449,9 +453,56 @@ impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {
             loop_count: 2,
-            fadeout_seconds: 2,
-            start_delay_seconds: 0,
+            fadeout_millis: 2000,
+            start_delay_millis: 0,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PlaybackSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct StoredPlaybackSettings {
+            loop_count: Option<u32>,
+            fadeout_millis: Option<u32>,
+            start_delay_millis: Option<u32>,
+            fadeout_seconds: Option<u32>,
+            start_delay_seconds: Option<u32>,
+        }
+
+        fn duration<E: serde::de::Error>(
+            millis: Option<u32>,
+            seconds: Option<u32>,
+            default: u32,
+        ) -> Result<u32, E> {
+            match (millis, seconds) {
+                (Some(_), Some(_)) => Err(E::custom(
+                    "duration specified in both milliseconds and seconds",
+                )),
+                (Some(millis), None) => Ok(millis),
+                (None, Some(seconds)) => seconds
+                    .checked_mul(1000)
+                    .ok_or_else(|| E::custom("duration in seconds is too large")),
+                (None, None) => Ok(default),
+            }
+        }
+
+        let stored = StoredPlaybackSettings::deserialize(deserializer)?;
+        let default = Self::default();
+        Ok(Self {
+            loop_count: stored.loop_count.unwrap_or(default.loop_count),
+            fadeout_millis: duration(
+                stored.fadeout_millis,
+                stored.fadeout_seconds,
+                default.fadeout_millis,
+            )?,
+            start_delay_millis: duration(
+                stored.start_delay_millis,
+                stored.start_delay_seconds,
+                default.start_delay_millis,
+            )?,
+        })
     }
 }
 
@@ -1031,23 +1082,23 @@ mod tests {
         for playback in [
             PlaybackSettings {
                 loop_count: 0,
-                fadeout_seconds: 2,
-                start_delay_seconds: 0,
+                fadeout_millis: 2000,
+                start_delay_millis: 0,
             },
             PlaybackSettings {
                 loop_count: 100,
-                fadeout_seconds: 2,
-                start_delay_seconds: 0,
+                fadeout_millis: 2000,
+                start_delay_millis: 0,
             },
             PlaybackSettings {
                 loop_count: 2,
-                fadeout_seconds: 601,
-                start_delay_seconds: 0,
+                fadeout_millis: 600_001,
+                start_delay_millis: 0,
             },
             PlaybackSettings {
                 loop_count: 2,
-                fadeout_seconds: 2,
-                start_delay_seconds: 601,
+                fadeout_millis: 2000,
+                start_delay_millis: 600_001,
             },
         ] {
             let config = Config {
@@ -1061,8 +1112,8 @@ mod tests {
         let config = Config {
             playback: PlaybackSettings {
                 loop_count: 1,
-                fadeout_seconds: 0,
-                start_delay_seconds: 3,
+                fadeout_millis: 125,
+                start_delay_millis: 375,
             },
             ..Config::default()
         };
@@ -1070,7 +1121,7 @@ mod tests {
         assert_eq!(load_config(&path).unwrap().playback, config.playback);
         let config = Config {
             playback: PlaybackSettings {
-                start_delay_seconds: 600,
+                start_delay_millis: 600_000,
                 ..PlaybackSettings::default()
             },
             ..Config::default()
@@ -1079,10 +1130,54 @@ mod tests {
         assert_eq!(load_config(&path).unwrap().playback, config.playback);
         fs::write(
             &path,
-            r#"{"directories":[],"playlist":[],"playback":{"loop_count":3,"fadeout_seconds":4}}"#,
+            r#"{"directories":[],"playlist":[],"playback":{"loop_count":3,"fadeout_seconds":4,"start_delay_seconds":3}}"#,
         )
         .unwrap();
-        assert_eq!(load_config(&path).unwrap().playback.start_delay_seconds, 0);
+        let migrated = load_config(&path).unwrap().playback;
+        assert_eq!(migrated.fadeout_millis, 4000);
+        assert_eq!(migrated.start_delay_millis, 3000);
+        save_config(&path, &load_config(&path).unwrap()).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("\"fadeout_millis\""));
+        assert!(!saved.contains("\"fadeout_seconds\""));
+        assert_eq!(load_config(&path).unwrap().playback, migrated);
+
+        fs::write(&path, r#"{"playback":{"fadeout_seconds":4294967295}}"#).unwrap();
+        assert!(load_config(&path).is_err());
+        fs::write(
+            &path,
+            r#"{"playback":{"fadeout_seconds":1,"fadeout_millis":1000}}"#,
+        )
+        .unwrap();
+        assert!(load_config(&path).is_err());
+    }
+
+    #[test]
+    fn playback_milliseconds_convert_to_rounded_frames() {
+        let settings = PlaybackSettings {
+            fadeout_millis: 125,
+            start_delay_millis: 125,
+            ..PlaybackSettings::default()
+        };
+        assert_eq!(settings.fadeout_samples(), 5513);
+        assert_eq!(settings.start_delay_frames(44_100), 5513);
+        assert_eq!(settings.start_delay_frames(48_000), 6000);
+        assert_eq!(settings.start_delay_frames(0), 0);
+        let one_ms = PlaybackSettings {
+            fadeout_millis: 1,
+            start_delay_millis: 1,
+            ..settings
+        };
+        assert_eq!(one_ms.fadeout_samples(), 44);
+        assert_eq!(one_ms.start_delay_frames(44_100), 44);
+        assert_eq!(one_ms.start_delay_frames(48_000), 48);
+        let maximum = PlaybackSettings {
+            fadeout_millis: 600_000,
+            start_delay_millis: 600_000,
+            ..settings
+        };
+        assert_eq!(maximum.fadeout_samples(), 26_460_000);
+        assert_eq!(maximum.start_delay_frames(48_000), 28_800_000);
     }
 
     #[test]
@@ -1754,8 +1849,8 @@ mod tests {
             routing: crate::routing::RoutingConfig::default(),
             playback: PlaybackSettings {
                 loop_count: 3,
-                fadeout_seconds: 5,
-                start_delay_seconds: 4,
+                fadeout_millis: 5000,
+                start_delay_millis: 4000,
             },
             recording: RecordingSettings::default(),
             audio_output_device: Some("alsa:device-test".into()),

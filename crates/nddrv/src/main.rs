@@ -1071,40 +1071,40 @@ impl AppView {
             let fade_field = SettingField::number_input(
                 NumberFieldOptions {
                     min: 0.,
-                    max: 600.,
+                    max: 600_000.,
                     step: 1.,
                 },
                 move |cx| {
-                    fade_get.upgrade().map_or(2., |view| {
-                        view.read(cx).config.playback.fadeout_seconds as f64
+                    fade_get.upgrade().map_or(2000., |view| {
+                        view.read(cx).config.playback.fadeout_millis as f64
                     })
                 },
                 move |value, cx| {
                     let _ = fade_set.update(cx, |view, cx| {
-                        view.config.playback.fadeout_seconds = value.round() as u32;
+                        view.config.playback.fadeout_millis = value.round() as u32;
                         view.save();
                         view.sync_idle_preview(cx);
                         cx.notify();
                     });
                 },
             )
-            .default_value(2.);
+            .default_value(2000.);
             let delay_get = view.clone();
             let delay_set = view.clone();
             let delay_field = SettingField::number_input(
                 NumberFieldOptions {
                     min: 0.,
-                    max: 600.,
+                    max: 600_000.,
                     step: 1.,
                 },
                 move |cx| {
                     delay_get.upgrade().map_or(0., |view| {
-                        view.read(cx).config.playback.start_delay_seconds as f64
+                        view.read(cx).config.playback.start_delay_millis as f64
                     })
                 },
                 move |value, cx| {
                     let _ = delay_set.update(cx, |view, cx| {
-                        view.config.playback.start_delay_seconds = value.round() as u32;
+                        view.config.playback.start_delay_millis = value.round() as u32;
                         view.save();
                         view.sync_idle_preview(cx);
                         cx.notify();
@@ -1247,8 +1247,8 @@ impl AppView {
                                 .icon(assets::IconName::Play)
                                 .group(SettingGroup::new().items([
                                     SettingItem::new("Play count", loop_field),
-                                    SettingItem::new("Fade out (seconds)", fade_field),
-                                    SettingItem::new("Start delay (seconds)", delay_field),
+                                    SettingItem::new("Fade out (ms)", fade_field),
+                                    SettingItem::new("Start delay (ms)", delay_field),
                                 ].into_iter().chain(cfg!(target_os = "linux").then(|| {
                                     SettingItem::new(
                                         "Show all audio devices",
@@ -2011,7 +2011,7 @@ impl AppView {
             };
             self.status = "Playing".into();
             self.playing = Some(index);
-            self.waiting_for_start = self.config.playback.start_delay_seconds > 0;
+            self.waiting_for_start = self.config.playback.start_delay_millis > 0;
             if !use_transition {
                 self.gain_sources = None;
             }
@@ -3434,8 +3434,8 @@ impl AppView {
                         "Loop indefinitely".to_string()
                     } else {
                         format!(
-                            "Play {} times, then fade out for {} seconds",
-                            self.config.playback.loop_count, self.config.playback.fadeout_seconds
+                            "Play {} times, then fade out for {} ms",
+                            self.config.playback.loop_count, self.config.playback.fadeout_millis
                         )
                     })
                     .accessibility_label("Follow song loop points")

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Set playback fade-out and start delay in milliseconds.
 - Reduce noise in emulated OKIM6258 VGM playback.
 - Add master-volume control to the Piano Roll.
 - Show the composer below the track title in the Piano Roll.

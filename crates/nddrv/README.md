@@ -87,8 +87,8 @@ Settings are organized into General, Playback, Recording, and VGM pages.
 | Setting | Behavior |
 | --- | --- |
 | Play count | 1–99 plays; default: 2. |
-| Fade out (seconds) | 0–600 seconds; default: 2. |
-| Start delay (seconds) | 0–600 seconds; default: 0. |
+| Fade out (ms) | 0–600,000 ms; default: 2,000. |
+| Start delay (ms) | 0–600,000 ms; default: 0. |
 | Emulation audio device | Select the software-emulation output, or **System default**. NanoDrive audio is separate. |
 | Emulation sample rate | Select a supported 44.1, 48, 96, or 192 kHz rate, or **Device default**. Changing the output device resets this to **Device default**. |
 | Show all audio devices | Linux only. See [Linux audio devices](#linux-audio-devices). |
