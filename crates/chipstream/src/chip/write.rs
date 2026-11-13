@@ -9,8 +9,6 @@ use soundlog::vgm::command::{Instance, VgmCommand};
 
 #[cfg(feature = "c140")]
 use super::C140;
-#[cfg(feature = "okim6258")]
-use super::Okim6258;
 #[cfg(feature = "okim6295")]
 use super::Okim6295;
 #[cfg(feature = "pwm")]
@@ -20,6 +18,8 @@ use super::SegaPcm;
 #[cfg(feature = "sn76496")]
 use super::Sn76496;
 use super::{ChipError, SoundChip, YmfmChip};
+#[cfg(feature = "okim6258")]
+use super::{Okim6258, Okim6258Stream};
 
 /// Applies a chip-specific write to a compatible sound chip.
 ///
@@ -184,6 +184,8 @@ typed_write!(C140, C140Spec, C140);
 typed_write!(Pwm, PwmSpec, Pwm);
 #[cfg(feature = "okim6258")]
 typed_write!(Okim6258, Okim6258Spec, Okim6258);
+#[cfg(feature = "okim6258")]
+typed_write!(Okim6258Stream, Okim6258Spec, Okim6258);
 #[cfg(feature = "okim6295")]
 typed_write!(Okim6295, Okim6295Spec, Okim6295);
 typed_write!(YmfmChip, Ym2413Spec, Ym2413);

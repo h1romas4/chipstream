@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use chipstream::chip::{
-    ChipError, ClockDivider, Okim6258, OutputBits, Sn76496, Sn76496Config, YmfmChip,
+    ChipError, ClockDivider, Okim6258, Okim6258Stream, OutputBits, Sn76496, Sn76496Config, YmfmChip,
 };
 use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
@@ -229,7 +229,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
         }
 
         let flags = &config.header().okim6258_flags;
-        let mut chip = Okim6258::new_for_vgm(config.clock())?;
+        let mut chip = Okim6258::new(config.clock())?;
         chip.set_divider(match flags.clock_divider {
             0 => ClockDivider::Div1024,
             1 => ClockDivider::Div768,
@@ -240,7 +240,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
         } else {
             OutputBits::Bits10
         });
-        Ok(Box::new(chip))
+        Ok(Box::new(Okim6258Stream::new(chip)))
     });
 
     factories

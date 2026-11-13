@@ -188,6 +188,145 @@ fn chunks_preserve_oki_pan_rate_and_duration() {
 }
 
 #[test]
+#[cfg(feature = "okim6258")]
+fn vgm_okim6258_matches_explicit_normal_decoder() {
+    use chipstream::chip::{ClockDivider, Okim6258, OutputBits};
+    use chipstream::sequencer::ChipFactoryRegistry;
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    for (register, value) in [(0, 2), (1, 0x21), (1, 0x43)] {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(200));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 1,
+            value: 0x87,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(300));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(100));
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 2;
+    document.header.okim6258_flags.output_12bit = true;
+
+    for rate in [44_100, 48_000] {
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Okim6258, |config| {
+            let mut chip = Okim6258::new(config.clock())?;
+            chip.set_divider(ClockDivider::Div512)?;
+            chip.set_output_bits(OutputBits::Bits12);
+            Ok(Box::new(chip))
+        });
+        let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
+        let mut direct =
+            VgmSequencer::new_with_factories(document.clone(), rate, 127, factories).unwrap();
+        let actual = render_all(&mut builtin);
+        assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert_eq!(actual, render_all(&mut direct));
+    }
+}
+
+#[test]
+#[cfg(feature = "okim6258")]
+fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
+    use chipstream::chip::{ClockDivider, Okim6258, OutputBits};
+    use chipstream::sequencer::ChipFactoryRegistry;
+    use soundlog::vgm::command::{
+        DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+        StartStreamFastCall, StartStreamFastCallFlags,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+    use soundlog::vgm::header::ChipId;
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Okim6258Adpcm,
+        data: [0x13, 0x93, 0x31, 0xb1, 0x70, 0x89, 0x28, 0x2a]
+            .into_iter()
+            .cycle()
+            .take(4096)
+            .collect(),
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 7,
+        chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+        write_port: 0,
+        write_command: 1,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 7,
+        data_bank_id: 4,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 7,
+        frequency: 7813,
+    });
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0,
+            value: 2,
+        },
+    );
+    builder.add_vgm_command(StartStreamFastCall {
+        stream_id: 7,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(24_000));
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 2;
+    document.header.okim6258_flags.output_12bit = true;
+
+    for rate in [44_100, 48_000] {
+        let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
+        let mut large = VgmSequencer::new(document.clone(), rate, 1024).unwrap();
+        let expected = render_all(&mut large);
+        assert_eq!(render_all(&mut builtin), expected);
+
+        let mut checkpointed = VgmSequencer::new(document.clone(), rate, 127).unwrap();
+        checkpointed.render().unwrap();
+        let checkpoint = checkpointed.checkpoint().unwrap();
+        let continuation = render_all(&mut checkpointed);
+        checkpointed.restore_checkpoint(&checkpoint).unwrap();
+        assert_eq!(render_all(&mut checkpointed), continuation);
+
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Okim6258, |config| {
+            let mut chip = Okim6258::new(config.clock())?;
+            chip.set_divider(ClockDivider::Div512)?;
+            chip.set_output_bits(OutputBits::Bits12);
+            Ok(Box::new(chip))
+        });
+        let mut latch =
+            VgmSequencer::new_with_factories(document.clone(), rate, 127, factories).unwrap();
+        let latch_audio = render_all(&mut latch);
+        let max_difference = expected
+            .iter()
+            .zip(latch_audio)
+            .map(|(a, b)| (a[0] - b[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_difference > 0.001, "difference: {max_difference}");
+    }
+}
+
+#[test]
 #[cfg(feature = "sn76496")]
 fn sn76489_vgm_produces_audio() {
     let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");

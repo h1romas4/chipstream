@@ -24,6 +24,77 @@ use soundlog::{
     vgm::{VgmBuilder, command::WaitSamples},
 };
 
+#[test]
+fn automatic_okim6258_emulation_fallback_matches_builtin_decoder() {
+    use soundlog::vgm::command::{
+        DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+        StartStreamFastCall, StartStreamFastCallFlags,
+    };
+    use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
+    use soundlog::vgm::header::ChipId;
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    for (register, value) in [(0, 2), (1, 0x21), (1, 0x43)] {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(300));
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Okim6258Adpcm,
+        data: vec![0x71, 0x28, 0x93, 0x64, 0x19, 0xa2],
+    });
+    builder.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+        write_port: 0,
+        write_command: 1,
+    });
+    builder.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 4,
+        step_size: 1,
+        step_base: 0,
+    });
+    builder.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 5208,
+    });
+    builder.add_vgm_command(StartStreamFastCall {
+        stream_id: 0,
+        block_id: 0,
+        flags: StartStreamFastCallFlags {
+            reverse: false,
+            looped: false,
+        },
+    });
+    builder.add_vgm_command(WaitSamples(300));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 1,
+            value: 0x87,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(300));
+    let mut document = builder.finalize();
+    document.header.okim6258_flags.clock_divider = 1;
+    document.header.okim6258_flags.output_12bit = true;
+
+    let factories = chipstream_ndsif::create_chip_factories(&[]).unwrap();
+    let mut builtin = VgmSequencer::new(document.clone(), 48_000, 31).unwrap();
+    let mut fallback = VgmSequencer::new_with_factories(document, 48_000, 127, factories).unwrap();
+    let render = |player: &mut VgmSequencer| {
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let expected = render(&mut builtin);
+    assert!(expected.iter().flatten().any(|sample| sample.abs() > 0.001));
+    assert_eq!(render(&mut fallback), expected);
+}
+
 #[derive(Default)]
 struct FakeTransport {
     configured: Vec<(WriteId, u8, u32)>,

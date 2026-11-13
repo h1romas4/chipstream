@@ -900,7 +900,9 @@ pub struct VgmStream {
     /// Whether a positive source wait has begun since the stream was reset.
     initial_wait_started: bool,
     /// Pending stream write commands to emit
-    pending_stream_writes: Vec<VgmCommand>,
+    pending_stream_writes: Vec<(u8, VgmCommand)>,
+    /// Origin of the last iterator result, if it was a DAC-stream write.
+    last_stream_write_id: Option<u8>,
     /// Pending wait time that hasn't been emitted yet (in samples)
     pending_wait: Option<u16>,
     /// Fadeout grace period in samples after loop end (None = no fadeout)
@@ -996,6 +998,7 @@ impl VgmStream {
             current_sample: 0,
             initial_wait_started: false,
             pending_stream_writes: Vec::new(),
+            last_stream_write_id: None,
             pending_wait: None,
             fadeout_samples: None,
             fadeout_remaining_samples: None,
@@ -1251,7 +1254,8 @@ impl VgmStream {
     fn next_command(&mut self) -> Result<StreamResult, ParseError> {
         loop {
             if !self.pending_stream_writes.is_empty() {
-                let cmd = self.pending_stream_writes.remove(0);
+                let (stream_id, cmd) = self.pending_stream_writes.remove(0);
+                self.last_stream_write_id = Some(stream_id);
                 return Ok(StreamResult::Command(cmd));
             }
 
@@ -1666,6 +1670,14 @@ impl VgmStream {
     /// ```
     pub fn current_sample(&self) -> usize {
         self.current_sample
+    }
+
+    /// Source stream ID of the most recent DAC-stream-generated write.
+    ///
+    /// Returns `None` for raw chip commands, waits, errors, and before the
+    /// first result. The value describes only the most recent call to `next`.
+    pub fn last_stream_write_id(&self) -> Option<u8> {
+        self.last_stream_write_id
     }
 
     /// Return whether no positive source wait has begun since construction or reset.
@@ -2559,7 +2571,7 @@ impl VgmStream {
                             snapshot.write_command,
                             data,
                         ) {
-                            self.pending_stream_writes.push(cmd);
+                            self.pending_stream_writes.push((stream_id, cmd));
                         }
                         // Record that this step has been emitted regardless of whether
                         // create_stream_write_command_static produced a command (the
@@ -2622,7 +2634,8 @@ impl VgmStream {
                     wait_until_write.min(u16::MAX as usize) as u16,
                 ))));
             } else if !self.pending_stream_writes.is_empty() {
-                let cmd = self.pending_stream_writes.remove(0);
+                let (stream_id, cmd) = self.pending_stream_writes.remove(0);
+                self.last_stream_write_id = Some(stream_id);
                 return Ok(StreamResult::Command(cmd));
             }
         }
@@ -3039,6 +3052,7 @@ impl Iterator for VgmStream {
 
     /// Return the next stream result or parsing error.
     fn next(&mut self) -> Option<Self::Item> {
+        self.last_stream_write_id = None;
         match self.next_command() {
             Ok(stream_result) => Some(Ok(stream_result)),
             Err(e) => Some(Err(e)),
@@ -3049,7 +3063,81 @@ impl Iterator for VgmStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chip::{Chip, Okim6258Spec};
+    use crate::vgm::VgmBuilder;
     use crate::vgm::detail::CompressionType;
+
+    #[test]
+    fn generated_writes_expose_their_stream_id_without_marking_raw_writes() {
+        use crate::vgm::command::{
+            DacStreamChipType, SetStreamData, SetStreamFrequency, SetupStreamControl,
+            StartStreamFastCall, StartStreamFastCallFlags,
+        };
+        use crate::vgm::detail::{StreamChipType, UncompressedStream};
+
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+        builder.attach_data_block(UncompressedStream {
+            chip_type: StreamChipType::Okim6258Adpcm,
+            data: vec![0x21, 0x43, 0x65],
+        });
+        builder.add_vgm_command(SetupStreamControl {
+            stream_id: 7,
+            chip_type: DacStreamChipType::new(ChipId::Okim6258, Instance::Primary),
+            write_port: 0,
+            write_command: 1,
+        });
+        builder.add_vgm_command(SetStreamData {
+            stream_id: 7,
+            data_bank_id: 4,
+            step_size: 1,
+            step_base: 0,
+        });
+        builder.add_vgm_command(SetStreamFrequency {
+            stream_id: 7,
+            frequency: 7813,
+        });
+        builder.add_vgm_command(StartStreamFastCall {
+            stream_id: 7,
+            block_id: 0,
+            flags: StartStreamFastCallFlags {
+                reverse: false,
+                looped: false,
+            },
+        });
+        builder.add_vgm_command(WaitSamples(30));
+        builder.add_chip_write(
+            Instance::Primary,
+            Okim6258Spec {
+                register: 1,
+                value: 0xfe,
+            },
+        );
+        let mut stream = VgmStream::from_document(builder.finalize());
+        assert_eq!(stream.last_stream_write_id(), None);
+        let mut generated = Vec::new();
+        let mut raw = false;
+        loop {
+            let result = stream.next().unwrap().unwrap();
+            match result {
+                StreamResult::Command(VgmCommand::Okim6258Write(_, spec)) if spec.value == 0xfe => {
+                    assert_eq!(stream.last_stream_write_id(), None);
+                    raw = true;
+                }
+                StreamResult::Command(VgmCommand::Okim6258Write(_, spec)) => {
+                    assert_eq!(stream.last_stream_write_id(), Some(7));
+                    generated.push(spec.value);
+                }
+                StreamResult::EndOfStream => {
+                    assert_eq!(stream.last_stream_write_id(), None);
+                    break;
+                }
+                _ => assert_eq!(stream.last_stream_write_id(), None),
+            }
+        }
+        assert_eq!(generated, [0x21, 0x43, 0x65]);
+        assert!(raw);
+    }
 
     #[test]
     /// Check that consumed input is compacted only after reaching the threshold.

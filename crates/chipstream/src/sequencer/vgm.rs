@@ -35,7 +35,7 @@ use crate::chip::SegaPcm;
 use crate::chip::{C140, C140Type};
 use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChipState, YmfmChip};
 #[cfg(feature = "okim6258")]
-use crate::chip::{ClockDivider, Okim6258, OutputBits};
+use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 #[cfg(feature = "sn76496")]
 use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
@@ -409,6 +409,7 @@ impl Voice {
         sample_frame: usize,
         output_rate: u32,
         vgm_initial: bool,
+        dac_stream_id: Option<u8>,
         context: &mut EventContext<'_, '_>,
     ) -> Result<bool, VgmSequencerError> {
         let (bank, register, value) = write.parts();
@@ -428,6 +429,9 @@ impl Voice {
                 scheduled.apply_register_write_at(write, sample_frame, output_rate)?;
             }
             stop_stream
+        } else if let Some(stream_id) = dac_stream_id {
+            chip.apply_dac_stream_write(write, stream_id)?;
+            false
         } else {
             chip.apply_register_write(write)?;
             false
@@ -549,6 +553,7 @@ impl Voice {
                 sample_frame,
                 output_rate,
                 false,
+                None,
                 context,
             )?;
             self.write_cooldown = self.write_interval;
@@ -1020,7 +1025,7 @@ impl<'a> VgmSequencer<'a> {
                 feature_backend!("okim6258", chip, {
                     let flags = &header.okim6258_flags;
                     // The MAME-backed vgm2wav compatibility path also ignores this selector.
-                    let mut oki = Okim6258::new_for_vgm(clock)?;
+                    let mut oki = Okim6258::new(clock)?;
                     oki.set_divider(match flags.clock_divider {
                         0 => ClockDivider::Div1024,
                         1 => ClockDivider::Div768,
@@ -1031,7 +1036,7 @@ impl<'a> VgmSequencer<'a> {
                     } else {
                         OutputBits::Bits10
                     });
-                    Box::new(oki)
+                    Box::new(Okim6258Stream::new(oki))
                 })
             } else {
                 let shared = Rc::clone(&memory);
@@ -2257,9 +2262,17 @@ impl<'a> VgmSequencer<'a> {
             if voice.chip == Chip::Okim6258
                 && ((!playing && selector == DacStreamSelector::All)
                     || instances.contains(&voice.instance))
-                && let Some(scheduled) = voice.route.chip_mut().scheduled()
             {
-                scheduled.set_dac_stream_playing_at(playing, sample_frame, self.output_rate)?;
+                let chip = voice.route.chip_mut();
+                if let Some(scheduled) = chip.scheduled() {
+                    scheduled.set_dac_stream_playing_at(playing, sample_frame, self.output_rate)?;
+                } else if !playing {
+                    let stream_id = match selector {
+                        DacStreamSelector::All => None,
+                        DacStreamSelector::Stream(id) => Some(id),
+                    };
+                    chip.stop_dac_stream(stream_id)?;
+                }
             }
         }
         Ok(())
@@ -2274,6 +2287,7 @@ impl<'a> VgmSequencer<'a> {
     ) -> Result<(), VgmSequencerError> {
         let chip = write.chip();
         let source_initial = self.stream.is_initial_timestamp();
+        let dac_stream_id = self.stream.last_stream_write_id();
         if let Some(voice) = self
             .voices
             .iter_mut()
@@ -2306,6 +2320,7 @@ impl<'a> VgmSequencer<'a> {
                     sample_frame,
                     self.output_rate,
                     vgm_initial,
+                    dac_stream_id,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,
@@ -2337,6 +2352,7 @@ impl<'a> VgmSequencer<'a> {
                     sample_frame,
                     self.output_rate,
                     false,
+                    None,
                     &mut EventContext {
                         callbacks: &self.callbacks,
                         events: &mut self.events,

@@ -188,7 +188,13 @@ chip.generate(&mut samples)?;
 ```
 
 The `chip` module provides `YmfmChip` and, with their respective features,
-`Okim6258`, `Okim6295`, `Sn76496`, `SegaPcm`, `Pwm`, and `C140`.
+`Okim6258`, `Okim6258Stream`, `Okim6295`, `Sn76496`, `SegaPcm`, `Pwm`, and
+`C140`.
+
+`Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
+the `chipstream-ndsif` software fallback use
+[`Okim6258Stream`](src/chip/okim6258_stream.rs) for ordered byte delivery.
+See its API documentation for queue, underrun, and stop behavior.
 
 ### External chip backends
 

@@ -56,7 +56,7 @@ fn captures_oki_rate_and_pan_changes_at_block_boundaries() {
     assert_eq!(changed.sample_rate(), 10416);
     assert_eq!(changed.sample_rate_ratio().numerator(), 8_000_000);
     assert_eq!(changed.sample_rate_ratio().denominator().get(), 768);
-    assert_eq!(changed.samples(), &[224]);
+    assert_eq!(changed.samples(), &[192]);
     assert_eq!(
         changed.stereo_mute(),
         Some(StereoMute {

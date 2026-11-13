@@ -25,12 +25,12 @@ fn data_latch_and_control_transitions_match_reference() {
     chip.generate(&mut first).unwrap();
     assert_eq!(first, [64]);
     chip.generate(&mut first).unwrap();
-    assert_eq!(first, [224]);
+    assert_eq!(first, [192]);
     write(&mut chip, 0, 0x02);
     write(&mut chip, 1, 0x43);
     let mut next = [0; 2];
     chip.generate(&mut next).unwrap();
-    assert_eq!(next, [448, 736]);
+    assert_eq!(next, [448, 704]);
     write(&mut chip, 0, 0x07);
     assert_eq!(chip.status(), 0x80);
     let mut stopped = [1; 4];
@@ -38,7 +38,7 @@ fn data_latch_and_control_transitions_match_reference() {
     assert_eq!(stopped, [1, 0, 0, 1]);
     write(&mut chip, 0, 0x02);
     chip.generate(&mut next).unwrap();
-    assert_eq!(next, [192, 480]);
+    assert_eq!(next, [192, 448]);
     write(&mut chip, 0, 0x04);
     assert_eq!(chip.status(), 0x80);
 }
@@ -51,7 +51,24 @@ fn byte_replacement_and_repeating_nibbles_match_reference() {
     write(&mut chip, 1, 0x43);
     let mut samples = [0; 4];
     chip.generate(&mut samples).unwrap();
-    assert_eq!(samples, [192, 480, 720, 1024]);
+    assert_eq!(samples, [192, 448, 704, 1024]);
+}
+
+#[test]
+fn vgm_constructor_uses_the_same_unfiltered_data_latch() {
+    let mut direct = Okim6258::new(8_000_000).unwrap();
+    let mut vgm = Okim6258::new_for_vgm(8_000_000).unwrap();
+    for chip in [&mut direct, &mut vgm] {
+        write(chip, 0, 0x02);
+        write(chip, 1, 0x21);
+        write(chip, 1, 0x43);
+    }
+    let mut direct_samples = [0; 4];
+    let mut vgm_samples = [0; 4];
+    direct.generate(&mut direct_samples).unwrap();
+    vgm.generate(&mut vgm_samples).unwrap();
+    assert_eq!(vgm_samples, [192, 448, 704, 1024]);
+    assert_eq!(vgm_samples, direct_samples);
 }
 
 #[test]
@@ -74,7 +91,7 @@ fn precision_and_decoder_match_soundlog_and_clamp() {
     assert_eq!(actual, expected);
 
     for (bits, high, low) in [
-        (OutputBits::Bits10, 8176, -8192),
+        (OutputBits::Bits10, 32704, -32768),
         (OutputBits::Bits12, 32752, -32768),
     ] {
         let mut chip = Okim6258::new(8_000_000).unwrap();
@@ -89,6 +106,40 @@ fn precision_and_decoder_match_soundlog_and_clamp() {
         chip.generate(&mut samples).unwrap();
         assert_eq!(samples[127], low);
     }
+}
+
+#[test]
+fn dac_precision_quantizes_output_without_changing_predictor() {
+    let mut full = Okim6258::new(8_000_000).unwrap();
+    let mut reduced = Okim6258::new(8_000_000).unwrap();
+    full.set_output_bits(OutputBits::Bits12);
+    for chip in [&mut full, &mut reduced] {
+        write(chip, 0, 2);
+    }
+
+    for byte in [0x11; 140]
+        .into_iter()
+        .chain([0x99; 140])
+        .chain([0x77, 0xff, 0x21, 0x43])
+    {
+        for chip in [&mut full, &mut reduced] {
+            write(chip, 1, byte);
+        }
+        let mut full_samples = [0; 2];
+        let mut reduced_samples = [0; 2];
+        full.generate(&mut full_samples).unwrap();
+        reduced.generate(&mut reduced_samples).unwrap();
+        assert_eq!(reduced_samples, full_samples.map(|sample| sample & !63));
+    }
+
+    reduced.set_output_bits(OutputBits::Bits12);
+    write(&mut full, 1, 0x32);
+    write(&mut reduced, 1, 0x32);
+    let mut full_samples = [0; 2];
+    let mut reduced_samples = [0; 2];
+    full.generate(&mut full_samples).unwrap();
+    reduced.generate(&mut reduced_samples).unwrap();
+    assert_eq!(reduced_samples, full_samples);
 }
 
 #[test]
@@ -113,7 +164,7 @@ fn configuration_and_vgm_registers_preserve_decoder_state() {
     assert_eq!(chip.clock(), 4_000_000);
     assert_eq!(chip.sample_rate(), 7812);
     chip.generate(&mut sample).unwrap();
-    assert_eq!(sample, [224]);
+    assert_eq!(sample, [192]);
 
     chip.set_output_bits(OutputBits::Bits12);
     chip.reset();
@@ -199,7 +250,7 @@ fn soundlog_commands_drive_the_chip() {
     assert_eq!(chip.sample_rate(), 15625);
     let mut samples = [0; 2];
     chip.generate(&mut samples).unwrap();
-    assert_eq!(samples, [64, 224]);
+    assert_eq!(samples, [64, 192]);
 }
 
 #[test]

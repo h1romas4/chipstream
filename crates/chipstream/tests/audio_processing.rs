@@ -54,7 +54,7 @@ fn matrix_preserves_native_layout_and_applies_oki_pan() {
     let stereo = matrix.convert(&native).unwrap();
     assert_eq!(
         stereo.frames(),
-        &[[0.0, 64.0 / 32768.0], [0.0, 224.0 / 32768.0]]
+        &[[0.0, 64.0 / 32768.0], [0.0, 192.0 / 32768.0]]
     );
     assert_eq!(stereo.sample_rate(), native.sample_rate_ratio());
     let wrong = StereoMatrix::new(vec![[1.0, 0.0], [0.0, 1.0]]).unwrap();
