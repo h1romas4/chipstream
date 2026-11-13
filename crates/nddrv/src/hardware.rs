@@ -994,11 +994,14 @@ mod tests {
         workers.finish().unwrap();
         drop(recorders);
         lease.release().unwrap();
-        for _ in 0..2 {
+        let mut restored = Vec::new();
+        for _ in 0..4 {
             let (id, value, _) = received.recv_timeout(Duration::from_secs(1)).unwrap();
             assert!(id == 1 || id == 2);
-            assert_eq!(value, 0);
+            restored.push((id, value));
         }
+        restored.sort_unstable();
+        assert_eq!(restored, [(1, 0), (1, 96), (2, 0), (2, 96)]);
         for release in [release1, release2, release3] {
             release.send(()).unwrap();
         }
@@ -1110,6 +1113,7 @@ mod tests {
         workers.finish().unwrap();
         drop(recorders);
         lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         release.send(()).unwrap();
         fake.join().unwrap();
@@ -1147,6 +1151,7 @@ mod tests {
         workers.finish().unwrap();
         drop(recorders);
         lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         release.send(()).unwrap();
         fake.join().unwrap();
@@ -1176,6 +1181,7 @@ mod tests {
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         drop(recorders);
         lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 96);
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().1, 0);
         release.send(()).unwrap();
         fake.join().unwrap();
@@ -1249,6 +1255,7 @@ mod tests {
         drop(sequencer);
         drop(recorders);
         lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 96);
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         release.send(()).unwrap();
         fake.join().unwrap();
@@ -1312,6 +1319,7 @@ mod tests {
         workers.finish().unwrap();
         drop(recorders);
         lease.release().unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 96);
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap().0, 0);
         release.send(()).unwrap();
         fake.join().unwrap();
