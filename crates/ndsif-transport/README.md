@@ -222,7 +222,9 @@ if !transport.supports_timed_dac() {
     return Err("device does not support the timed DAC profile".into());
 }
 
-// Configure the primary YM2612 before starting its device worker.
+// Unlike the previous OKIM6258 example, this uses YM2612's timed-DAC profile:
+// samples are timed register writes, not AudioData bytes and AudioEvents.
+// Configure the chip directly; no configure_audio_stream call is needed.
 let connection = Arc::new(Mutex::new(transport));
 let device = NdsifWorkerDevice::new(Arc::clone(&connection), NonZeroUsize::new(1024).unwrap())?;
 let recorder = device.recorder();
@@ -238,7 +240,7 @@ let waveform = [
 ];
 {
     let mut recorder = recorder.borrow_mut();
-    // Enable YM2612 DAC output, then schedule PCM samples on register 0x2A.
+    // Enable YM2612 DAC output with 0x2B, then send each PCM sample via 0x2A.
     recorder.schedule_register_write(NdsifRegisterEvent {
         write_id: WriteId::YM2612,
         instance: 0,
@@ -257,7 +259,8 @@ let waveform = [
             sample_rate: RATE,
         })?;
     }
-    // Disable DAC output and seal the timed stream after the sample data.
+    // Disable DAC output and seal the timed-DAC stream. Unlike the prior
+    // example, finish_dac_stream replaces finish_audio_stream here.
     recorder.schedule_register_write(NdsifRegisterEvent {
         write_id: WriteId::YM2612,
         instance: 0,
