@@ -2575,7 +2575,12 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("MASTER VOLUME"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x64eadc))
+                            .child("MASTER VOLUME"),
+                    )
                     .child(
                         div()
                             .flex()
