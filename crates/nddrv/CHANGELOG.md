@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add master-volume control to the Piano Roll.
 - Show the composer below the track title in the Piano Roll.
 - Mute NanoDrive outputs before resetting between tracks to reduce reset noise.
 

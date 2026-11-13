@@ -2541,6 +2541,71 @@ impl AppView {
             )
     }
 
+    fn piano_master_volume_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+        let volume_mode = if self.playing.is_some() {
+            self.displayed_volume_mode
+        } else {
+            VolumeMode::Master
+        };
+        let (mode_label, accessibility_label) = match volume_mode {
+            VolumeMode::Master => ("Master", "Master volume"),
+            VolumeMode::SoftwareOnly => {
+                ("Software (ND fixed)", "Software volume (NanoDrive fixed)")
+            }
+            VolumeMode::Preparing => ("Checking ND", "Checking NanoDrive volume"),
+        };
+        let value = match self.volume.read(cx).value() {
+            SliderValue::Single(value) => value,
+            SliderValue::Range(_, _) => unreachable!("master volume is a single slider"),
+        };
+        div()
+            .id("piano-master-volume")
+            .w_full()
+            .h(px(90.))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(0x284452))
+            .bg(rgba(0x0b1623ed))
+            .child(
+                div()
+                    .size_full()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_xs().text_color(rgb(0x64eadc)).child("MASTER VOLUME"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(78.))
+                                    .text_xs()
+                                    .text_color(rgb(0x82a8bb))
+                                    .child(mode_label),
+                            )
+                            .child(
+                                Slider::new(&self.volume)
+                                    .accessibility_label(accessibility_label)
+                                    .bg(rgb(ACCENT_COLOR))
+                                    .flex_1(),
+                            )
+                            .child(
+                                div()
+                                    .w(px(38.))
+                                    .text_right()
+                                    .text_xs()
+                                    .text_color(rgb(0xd3eeee))
+                                    .child(format!("{value:.0}%")),
+                            ),
+                    ),
+            )
+    }
+
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window_observation_ready(
             window.is_visible(),
@@ -5694,6 +5759,7 @@ impl Render for AppView {
                                                         .flex_col()
                                                         .gap_2()
                                                         .when(!transitioning, |panel| panel
+                                                            .child(self.piano_master_volume_panel(cx))
                                                             .child(self.piano_gain_panel(cx))
                                                             .child(self.piano_channel_panel(cx))),
                                                 )
