@@ -300,6 +300,24 @@ connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Examples
+
+The debug example implements `NdsifTransport` without a device and prints
+scheduled register writes and ADPCM stream data when they are flushed. Run it
+on any platform:
+
+```sh
+cargo run -p ndsif-transport --example debug_transport
+```
+
+On Unix, the virtual-device example exercises `NdsifSerialTransport` itself
+through a pseudo-terminal pair. A software device responds to initialization
+and receives a YM2151 register write, so no physical NanoDrive is needed:
+
+```sh
+cargo run -p ndsif-transport --example virtual_device
+```
+
 ## License
 
 BSD-3-Clause License

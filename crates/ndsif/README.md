@@ -209,6 +209,15 @@ Use this crate on either side of an NDSIF connection to encode and decode
 protocol messages. Transport I/O and device-specific state management are left
 to the application.
 
+## Examples
+
+Run the loopback example to exercise fragmented frame decoding and request/
+response correlation without a device:
+
+```sh
+cargo run -p ndsif --example loopback
+```
+
 ## License
 
 BSD-3-Clause License
