@@ -2700,6 +2700,92 @@ fn dense_first_dac_chunk_uses_ordered_host_startup_before_start() {
 
 #[cfg(unix)]
 #[test]
+fn host_startup_defers_key_on_and_psg_writes_until_playback() {
+    let (mut transport, mut device) = test_transport();
+    let mut stream = TimedDacStream::new(DacCapabilities {
+        profile: DAC_PROFILE_YM2612,
+        revision: 40,
+        ticks_per_second: DAC_TICKS_PER_SECOND,
+        record_capacity: 32,
+        event_capacity: 8,
+        max_records: 16,
+        record_bytes: 4,
+        max_dac_late_us: 0,
+    });
+    stream.output_rate = Some(44_100);
+    for (address, value) in [(0x22, 1), (0x28, 0xf0), (0x22, 2)] {
+        stream
+            .host_events
+            .push_back(PendingEvent::Register(NdsifRegisterEvent {
+                write_id: WriteId::YM2612,
+                instance: 0,
+                page: 0,
+                write: ndsif::RegisterWrite::new(address, value),
+                sample_frame: 0,
+                sample_rate: 44_100,
+            }));
+    }
+    stream
+        .host_events
+        .push_back(PendingEvent::Psg(NdsifPsgEvent {
+            write_id: WriteId::SN76489,
+            instance: 0,
+            page: 0,
+            value: 0x90,
+            sample_frame: 0,
+            sample_rate: 44_100,
+        }));
+    transport.timed_dac_stream = Some(stream);
+    transport.prepare_timed_dac_host_startup().unwrap();
+    let frame = read_device_frame(&mut device, &mut ndsif::Decoder::new());
+    match ndsif::Request::decode(&frame).unwrap() {
+        ndsif::Request::WriteRegisters { writes, .. } => {
+            assert_eq!(
+                writes.iter().collect::<Vec<_>>(),
+                [ndsif::RegisterWrite::new(0x22, 1)]
+            );
+        }
+        other => panic!("unexpected startup request: {other:?}"),
+    }
+    let pending = &transport.timed_dac_stream.as_ref().unwrap().host_events;
+    assert_eq!(pending.len(), 3);
+    assert!(matches!(&pending[0], PendingEvent::Register(event) if event.write.address == 0x28));
+    assert!(matches!(&pending[2], PendingEvent::Psg(event) if event.value == 0x90));
+    let stream = transport.timed_dac_stream.as_mut().unwrap();
+    stream.started = true;
+    stream.sealed = true;
+    stream.started_at = Some(Instant::now());
+    stream.last_status_check = Some(Instant::now());
+    transport.service_timed_dac_host_events(false).unwrap();
+    let mut decoder = ndsif::Decoder::new();
+    let register = read_device_frame(&mut device, &mut decoder);
+    match ndsif::Request::decode(&register).unwrap() {
+        ndsif::Request::WriteRegisters { writes, .. } => assert_eq!(
+            writes.iter().collect::<Vec<_>>(),
+            [
+                ndsif::RegisterWrite::new(0x28, 0xf0),
+                ndsif::RegisterWrite::new(0x22, 2),
+            ]
+        ),
+        other => panic!("unexpected register request: {other:?}"),
+    }
+    let psg = read_device_frame(&mut device, &mut decoder);
+    match ndsif::Request::decode(&psg).unwrap() {
+        ndsif::Request::WriteBytes { bytes, .. } => assert_eq!(bytes, [0x90]),
+        other => panic!("unexpected PSG request: {other:?}"),
+    }
+    assert!(
+        transport
+            .timed_dac_stream
+            .as_ref()
+            .unwrap()
+            .host_events
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn async_timed_dac_status_retries_and_accepts_late_older_reply() {
     let (mut transport, mut device) = test_transport();
     transport.timed_dac_stream = Some(TimedDacStream::new(DacCapabilities {
@@ -2902,6 +2988,16 @@ fn timed_dac_vgm_initialization_without_wait_does_not_emit_keys_or_dac_values() 
             })
             .unwrap();
     }
+    transport
+        .schedule_vgm_initial_psg_write(NdsifPsgEvent {
+            write_id: WriteId::SN76489,
+            instance: 0,
+            page: 0,
+            sample_frame: 0,
+            sample_rate: 44_100,
+            value: 0x90,
+        })
+        .unwrap();
     transport.finish_timed_dac_initialization(false).unwrap();
     let frame = read_device_frame(&mut device, &mut ndsif::Decoder::new());
     match ndsif::Request::decode(&frame).unwrap() {
@@ -2929,7 +3025,7 @@ fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
         revision: 40,
         ticks_per_second: DAC_TICKS_PER_SECOND,
         record_capacity: 32,
-        event_capacity: 8,
+        event_capacity: 16,
         max_records: 16,
         record_bytes: 4,
         max_dac_late_us: 0,
@@ -2954,9 +3050,19 @@ fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
                     ));
                 }
                 ndsif::Request::WriteBytes { bytes, .. } => commands.push(("psg", bytes.to_vec())),
-                ndsif::Request::DacRegisterEvent { writes, tick, .. } => {
+                ndsif::Request::DacRegisterEvent {
+                    writes,
+                    tick,
+                    write_id,
+                    ..
+                } => {
                     assert_eq!(tick, 0);
-                    commands.push(("event", writes.to_vec()));
+                    let name = if write_id == WriteId::SN76489 {
+                        "psg-event"
+                    } else {
+                        "event"
+                    };
+                    commands.push((name, writes.to_vec()));
                 }
                 ndsif::Request::DacData { records, .. } => {
                     let records: Vec<_> = records
@@ -2984,8 +3090,11 @@ fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
             [
                 ("write", vec![0x22, 1]),
                 ("write", vec![0x22, 2]),
-                ("psg", vec![0x90]),
                 ("event", vec![0x28, 0xf1, 0x28, 0x00]),
+                (
+                    "psg-event",
+                    vec![0x9f, 0x96, 0x80, 0x0f, 0xbf, 0xb6, 0xa0, 0x14]
+                ),
                 ("data", vec![]),
             ]
         );
@@ -3012,16 +3121,18 @@ fn timed_dac_vgm_initialization_preserves_configuration_and_final_keys() {
             })
             .unwrap();
     }
-    transport
-        .schedule_vgm_initial_psg_write(NdsifPsgEvent {
-            write_id: WriteId::SN76489,
-            instance: 0,
-            page: 0,
-            sample_frame: 0,
-            sample_rate: 44_100,
-            value: 0x90,
-        })
-        .unwrap();
+    for value in [0x9f, 0x96, 0x80, 0x0f, 0xbf, 0xb6, 0xa0, 0x14] {
+        transport
+            .schedule_vgm_initial_psg_write(NdsifPsgEvent {
+                write_id: WriteId::SN76489,
+                instance: 0,
+                page: 0,
+                sample_frame: 0,
+                sample_rate: 44_100,
+                value,
+            })
+            .unwrap();
+    }
     transport.finish_vgm_initialization().unwrap();
     transport.finish_vgm_initialization().unwrap();
     transport.flush_scheduled_until(1, 44_100).unwrap();

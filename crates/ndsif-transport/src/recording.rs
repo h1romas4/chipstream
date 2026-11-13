@@ -143,7 +143,7 @@ fn timed_dac_prebuffer_usage(operations: &[Operation], ticks_per_second: u32) ->
                     record_event_tick(event.sample_frame, event.sample_rate);
                 }
             }
-            Operation::Psg(event) => {
+            Operation::Psg(event) | Operation::InitialPsg(event) => {
                 events = events.saturating_add(1);
                 record_event_tick(event.sample_frame, event.sample_rate);
             }
@@ -439,6 +439,25 @@ mod tests {
         }
         recorder.flush_scheduled_until(660, 44_100).unwrap();
         assert_eq!(recorder.timed_dac_prebuffer_usage(44_100), (7, 3));
+    }
+
+    #[test]
+    fn timed_dac_prebuffer_counts_initial_psg_events() {
+        let mut recorder = recorder(8);
+        for value in [0x9f, 0x96, 0x80, 0x0f] {
+            recorder
+                .schedule_vgm_initial_psg_write(NdsifPsgEvent {
+                    write_id: WriteId::SN76489,
+                    instance: 0,
+                    page: 0,
+                    value,
+                    sample_frame: 0,
+                    sample_rate: 44_100,
+                })
+                .unwrap();
+        }
+        recorder.flush_scheduled_until(100, 44_100).unwrap();
+        assert_eq!(recorder.timed_dac_prebuffer_usage(44_100), (3, 4));
     }
 
     #[derive(Default)]

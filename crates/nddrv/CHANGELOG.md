@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prevent early PSG notes during NanoDrive 6 playback start delay.
 - Set playback fade-out and start delay in milliseconds.
 - Reduce noise in emulated OKIM6258 VGM playback.
 - Add master-volume control to the Piano Roll.

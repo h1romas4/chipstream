@@ -228,6 +228,15 @@ impl TimedDacStream {
     }
 }
 
+fn is_safe_timed_dac_host_startup_event(event: &PendingEvent) -> bool {
+    matches!(
+        event,
+        PendingEvent::Register(register)
+            if register.write_id == WriteId::YM2612
+                && !(register.page == 0 && register.write.address == 0x28)
+    )
+}
+
 impl NdsifSerialTransport {
     pub(super) fn schedule_timed_dac_initial_event(
         &mut self,
@@ -258,6 +267,7 @@ impl NdsifSerialTransport {
         stream.initial_finished = true;
         let events = std::mem::take(&mut stream.initial_events);
         let mut keys: [Option<(usize, NdsifRegisterEvent)>; 8] = std::array::from_fn(|_| None);
+        let mut psg = Vec::new();
         let mut dac = None;
         let mut index = 0;
         while index < events.len() {
@@ -306,38 +316,21 @@ impl NdsifSerialTransport {
                         writes: &writes,
                     })?;
                 }
-                PendingEvent::Psg(first) => {
-                    let mut bytes = Vec::new();
-                    while index < events.len() && bytes.len() < ndsif::MAX_REGISTER_BYTES {
-                        let PendingEvent::Psg(next) = &events[index] else {
-                            break;
-                        };
-                        if next.write_id != first.write_id
-                            || next.instance != first.instance
-                            || next.page != first.page
-                        {
-                            break;
-                        }
-                        bytes.push(next.value);
-                        index += 1;
-                    }
-                    self.request_timed_dac(Command::WriteBytes {
-                        write_id: first.write_id,
-                        instance: first.instance,
-                        page: first.page,
-                        bytes: &bytes,
-                    })?;
+                PendingEvent::Psg(_) => {
+                    psg.push((index, events[index].clone()));
+                    index += 1;
                 }
                 _ => return Err("invalid NDSIF timed DAC initialization event".into()),
             }
         }
         if has_wait {
-            let mut keys: Vec<_> = keys.into_iter().flatten().collect();
-            keys.sort_by_key(|(index, _)| *index);
-            self.pending.extend(
+            psg.extend(
                 keys.into_iter()
-                    .map(|(_, event)| PendingEvent::Register(event)),
+                    .flatten()
+                    .map(|(index, event)| (index, PendingEvent::Register(event))),
             );
+            psg.sort_by_key(|(index, _)| *index);
+            self.pending.extend(psg.into_iter().map(|(_, event)| event));
             if let Some(event) = dac {
                 self.pending.push(PendingEvent::Register(event));
             }
@@ -929,6 +922,9 @@ impl NdsifSerialTransport {
             let Some(first) = stream.host_events.front() else {
                 break;
             };
+            if startup && !is_safe_timed_dac_host_startup_event(first) {
+                break;
+            }
             let first_tick = ticks_for_frame(
                 first.sample_frame(),
                 stream
@@ -968,6 +964,7 @@ impl NdsifSerialTransport {
                 if writes.len() + bytes.len() >= budget
                     || (writes.len() * 2 + bytes.len() + width) > available
                     || ticks_for_frame(event.sample_frame(), rate, ticks_per_second)? > now_tick
+                    || (startup && !is_safe_timed_dac_host_startup_event(event))
                 {
                     break;
                 }
@@ -1031,7 +1028,7 @@ impl NdsifSerialTransport {
     }
 
     /// Queue host register events at tick zero before starting the DAC profile.
-    fn prepare_timed_dac_host_startup(&mut self) -> Result<(), String> {
+    pub(super) fn prepare_timed_dac_host_startup(&mut self) -> Result<(), String> {
         loop {
             let Some(stream) = self.timed_dac_stream.as_ref() else {
                 return Ok(());
@@ -1040,6 +1037,7 @@ impl NdsifSerialTransport {
                 return Ok(());
             };
             if stream.events_sent != 0
+                || !is_safe_timed_dac_host_startup_event(event)
                 || ticks_for_frame(
                     event.sample_frame(),
                     stream.output_rate.ok_or_else(|| {

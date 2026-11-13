@@ -193,6 +193,9 @@ connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
 Replay can report device-specific errors; discard a recorder after its
 operation limit is exceeded.
 
+On the YM2612 timed-DAC path, initial PSG writes and FM key events are
+scheduled at playback start rather than sent during prebuffering.
+
 `NdsifHardwareWorkers` starts one I/O thread per device; its manager and
 recorders stay on the calling thread. Start or cancel the timeline before
 `finish` (dropping workers cancels it). Drop workers and transport handles
