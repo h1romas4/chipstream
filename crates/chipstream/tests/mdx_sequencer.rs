@@ -2,7 +2,9 @@ use std::error::Error;
 
 #[cfg(feature = "okim6258")]
 use chipstream::sequencer::PlaybackOptions;
-use chipstream::sequencer::{Chip, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer};
+use chipstream::sequencer::{
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer,
+};
 use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 #[cfg(feature = "okim6258")]
 use soundlog::mdx::command::MdxAdpcmOrNoiseFrequency;
@@ -33,6 +35,31 @@ fn render_vgm(player: &mut VgmSequencer<'_>) -> Vec<[f32; 2]> {
         frames.extend_from_slice(block.frames());
     }
     frames
+}
+
+fn mdx_reference_factories() -> ChipFactoryRegistry {
+    let factories = ChipFactoryRegistry::new();
+    #[cfg(feature = "okim6258")]
+    let factories = {
+        let mut factories = factories;
+        factories.register(Chip::Okim6258, |config| {
+            use chipstream::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
+            let mut chip = Okim6258::new(config.clock())?;
+            chip.set_divider(match config.header().okim6258_flags.clock_divider {
+                0 => ClockDivider::Div1024,
+                1 => ClockDivider::Div768,
+                _ => ClockDivider::Div512,
+            })?;
+            chip.set_output_bits(if config.header().okim6258_flags.output_12bit {
+                OutputBits::Bits12
+            } else {
+                OutputBits::Bits10
+            });
+            Ok(Box::new(Okim6258Stream::new(chip)))
+        });
+        factories
+    };
+    factories
 }
 
 #[test]
@@ -143,7 +170,9 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
             ..Default::default()
         };
         let document = to_vgm_document(&package, &options.into()).unwrap();
-        let mut reference = VgmSequencer::new(document, 48_000, 512).unwrap();
+        let mut reference =
+            VgmSequencer::new_with_factories(document, 48_000, 512, mdx_reference_factories())
+                .unwrap();
         let expected = render_vgm(&mut reference);
         assert!(
             expected
@@ -181,10 +210,11 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
     let twice = render_mdx(
         &mut MdxSequencer::with_options(package.clone(), 44_100, 257, options(Some(2))).unwrap(),
     );
-    let mut expected = VgmSequencer::new(
+    let mut expected = VgmSequencer::new_with_factories(
         to_vgm_document(&package, &options(Some(2)).into()).unwrap(),
         44_100,
         512,
+        mdx_reference_factories(),
     )
     .unwrap();
     assert_eq!(twice, render_vgm(&mut expected));

@@ -194,6 +194,10 @@ The `chip` module provides `YmfmChip` and, with their respective features,
 `Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
 the `chipstream-ndsif` software fallback use
 [`Okim6258Stream`](src/chip/okim6258_stream.rs) for ordered byte delivery.
+VGM software playback applies a 20 Hz high-pass filter to the decoded output
+to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
+The same mono filter is available independently as `audio::DcBlocker`.
+
 See its API documentation for queue, underrun, and stop behavior.
 `Okim6258Adpcm` provides the shared 12-bit predictor and encoder separately
 from chip registers and stream delivery.

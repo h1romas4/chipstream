@@ -33,12 +33,14 @@
 //! ```
 
 mod buffer;
+mod dc_blocker;
 mod effect;
 mod mixer;
 mod resampler;
 mod route;
 
 pub use buffer::{AudioError, StereoBlock, StereoMatrix};
+pub use dc_blocker::DcBlocker;
 pub use effect::{Gain, StereoBalance, StereoEffect};
 pub use mixer::StereoMixer;
 pub use resampler::StereoResampler;

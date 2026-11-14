@@ -333,6 +333,7 @@ struct VoiceConfig {
     clock: u32,
     dual: bool,
     sn76489_stereo_used: bool,
+    vgm_dc_blocker: bool,
 }
 
 struct Voice {
@@ -857,6 +858,7 @@ impl<'a> VgmSequencer<'a> {
             extra.as_ref(),
             &timing,
             psg_stereo,
+            true,
             output_rate,
             &mut factories,
         )?;
@@ -937,7 +939,10 @@ impl<'a> VgmSequencer<'a> {
             clock,
             dual,
             sn76489_stereo_used,
+            vgm_dc_blocker,
         } = config;
+        #[cfg(not(feature = "okim6258"))]
+        let _ = vgm_dc_blocker;
         let profile = TimingProfile::for_chip(&chip);
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
@@ -1036,7 +1041,12 @@ impl<'a> VgmSequencer<'a> {
                     } else {
                         OutputBits::Bits10
                     });
-                    Box::new(Okim6258Stream::new(oki))
+                    let stream = Okim6258Stream::new(oki);
+                    Box::new(if vgm_dc_blocker {
+                        stream.with_dc_blocker()
+                    } else {
+                        stream
+                    })
                 })
             } else {
                 let shared = Rc::clone(&memory);
@@ -1206,6 +1216,7 @@ impl<'a> VgmSequencer<'a> {
             document.extra_header.as_ref(),
             &timing,
             psg_stereo,
+            true,
             output_rate,
             &mut factories,
         )?;
@@ -1242,6 +1253,7 @@ impl<'a> VgmSequencer<'a> {
             None,
             &timing,
             [false; 2],
+            false,
             output_rate,
             &mut factories,
         )?;
@@ -1271,6 +1283,7 @@ impl<'a> VgmSequencer<'a> {
         extra: Option<&VgmExtraHeader>,
         timing: &Timing,
         psg_stereo: [bool; 2],
+        vgm_dc_blocker: bool,
         output_rate: u32,
         factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
@@ -1302,6 +1315,7 @@ impl<'a> VgmSequencer<'a> {
                         clock,
                         dual: raw & 0x4000_0000 != 0,
                         sn76489_stereo_used: chip == Chip::Sn76489 && psg_stereo[instance as usize],
+                        vgm_dc_blocker,
                     },
                     timing,
                     output_rate,

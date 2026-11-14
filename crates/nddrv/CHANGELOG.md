@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reduce DC-related clicks in emulated OKIM6258 VGM playback.
 - Show Library track counts and refine the remove button.
 - Show a subtle animated meter for the playing track in Music and Playlist.
 - Nudge the Playlist Routing row down slightly.

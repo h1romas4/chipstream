@@ -131,7 +131,7 @@ fn add_oki_data(builder: &mut VgmBuilder, instance: Instance, count: usize) {
             instance,
             Okim6258Spec {
                 register: 1,
-                value: 0x71,
+                value: 0x78,
             },
         );
     }
@@ -189,8 +189,8 @@ fn chunks_preserve_oki_pan_rate_and_duration() {
 
 #[test]
 #[cfg(feature = "okim6258")]
-fn vgm_okim6258_matches_explicit_normal_decoder() {
-    use chipstream::chip::{ClockDivider, Okim6258, OutputBits};
+fn vgm_okim6258_matches_explicit_dc_filtered_decoder() {
+    use chipstream::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
     use chipstream::sequencer::ChipFactoryRegistry;
 
     let mut builder = VgmBuilder::new();
@@ -225,7 +225,7 @@ fn vgm_okim6258_matches_explicit_normal_decoder() {
             let mut chip = Okim6258::new(config.clock())?;
             chip.set_divider(ClockDivider::Div512)?;
             chip.set_output_bits(OutputBits::Bits12);
-            Ok(Box::new(chip))
+            Ok(Box::new(Okim6258Stream::new(chip).with_dc_blocker()))
         });
         let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
         let mut direct =

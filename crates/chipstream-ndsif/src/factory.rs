@@ -4,9 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use chipstream::chip::{
-    ChipError, ClockDivider, Okim6258, Okim6258Stream, OutputBits, Sn76496, Sn76496Config, YmfmChip,
-};
+use chipstream::chip::{ChipError, Sn76496, Sn76496Config, YmfmChip};
 use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
 use ndsif::WriteId;
 use ndsif_transport::NdsifSerialConfig;
@@ -214,7 +212,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
 
     let oki_transports = Rc::clone(&transports);
     let oki_policy = Rc::clone(&policy);
-    factories.register(Chip::Okim6258, move |config| {
+    factories.register_optional(Chip::Okim6258, move |config| {
         let instance = instance_number(config.instance());
         if let Some((device, transport)) = find_transport(
             &oki_transports,
@@ -225,22 +223,9 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
             Some(config.clock()),
         )? {
             select_route(&oki_policy, device, config)?;
-            return Ok(Box::new(NdsifOkim6258::new(config, transport)?));
+            return Ok(Some(Box::new(NdsifOkim6258::new(config, transport)?)));
         }
-
-        let flags = &config.header().okim6258_flags;
-        let mut chip = Okim6258::new(config.clock())?;
-        chip.set_divider(match flags.clock_divider {
-            0 => ClockDivider::Div1024,
-            1 => ClockDivider::Div768,
-            _ => ClockDivider::Div512,
-        })?;
-        chip.set_output_bits(if flags.output_12bit {
-            OutputBits::Bits12
-        } else {
-            OutputBits::Bits10
-        });
-        Ok(Box::new(Okim6258Stream::new(chip)))
+        Ok(None)
     });
 
     factories

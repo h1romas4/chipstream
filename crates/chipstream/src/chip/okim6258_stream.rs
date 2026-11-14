@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 
 use soundlog::chip::{Chip, Okim6258Spec};
 
+use crate::audio::DcBlocker;
+
 use super::{
     ChipError, ChipRegisterWrite, Okim6258, SampleRate, SoundChip, SoundChipState, StereoMute,
     restore_cloned_state, save_cloned_state,
@@ -22,8 +24,8 @@ const MAX_PENDING_BYTES: usize = 65_536;
 /// Before the first stream write, the wrapped chip's latch behavior applies.
 ///
 /// The queue is bounded to 65,536 bytes; overflow returns a configuration
-/// error rather than dropping input. This adapter does not alter the decoder's
-/// gain, precision, or register behavior.
+/// error rather than dropping input. The optional 20 Hz DC blocker affects
+/// output samples only and does not change the ADPCM predictor or registers.
 #[derive(Clone)]
 pub struct Okim6258Stream {
     chip: Okim6258,
@@ -31,6 +33,7 @@ pub struct Okim6258Stream {
     active: bool,
     high_nibble: bool,
     held_sample: i32,
+    dc_blocker: Option<DcBlocker>,
 }
 
 impl Okim6258Stream {
@@ -42,7 +45,17 @@ impl Okim6258Stream {
             active: false,
             high_nibble: false,
             held_sample: 0,
+            dc_blocker: None,
         }
+    }
+
+    /// Enable a 20 Hz first-order high-pass filter on the decoded output.
+    ///
+    /// The filter runs at the chip's native sample rate, before stereo pan
+    /// and resampling. It is disabled by default.
+    pub fn with_dc_blocker(mut self) -> Self {
+        self.dc_blocker = Some(DcBlocker::new());
+        self
     }
 
     fn clear_stream(&mut self) {
@@ -90,6 +103,11 @@ impl SoundChip for Okim6258Stream {
         if clear {
             self.clear_stream();
         }
+        if self.chip.status() != 0
+            && let Some(filter) = &mut self.dc_blocker
+        {
+            filter.reset();
+        }
         Ok(())
     }
 
@@ -128,20 +146,29 @@ impl SoundChip for Okim6258Stream {
     }
 
     fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        if !self.active {
-            return self.chip.generate(samples);
-        }
-        for sample in samples {
-            if !self.high_nibble {
-                let Some((_, value)) = self.pending.pop_front() else {
-                    *sample = self.held_sample;
-                    continue;
-                };
-                self.chip.write(Okim6258Spec { register: 1, value })?;
+        if self.active {
+            for sample in samples.iter_mut() {
+                if !self.high_nibble {
+                    let Some((_, value)) = self.pending.pop_front() else {
+                        *sample = self.held_sample;
+                        continue;
+                    };
+                    self.chip.write(Okim6258Spec { register: 1, value })?;
+                }
+                self.chip.generate(std::slice::from_mut(sample))?;
+                self.held_sample = *sample;
+                self.high_nibble = !self.high_nibble;
             }
-            self.chip.generate(std::slice::from_mut(sample))?;
-            self.held_sample = *sample;
-            self.high_nibble = !self.high_nibble;
+        } else {
+            self.chip.generate(samples)?;
+        }
+        if let Some(filter) = &mut self.dc_blocker {
+            filter
+                .process(samples, self.chip.sample_rate_ratio())
+                .map_err(|_| ChipError::InvalidConfiguration {
+                    chip: Chip::Okim6258,
+                    reason: "DC blocker requires a nonzero native sample rate",
+                })?;
         }
         Ok(())
     }
@@ -149,6 +176,9 @@ impl SoundChip for Okim6258Stream {
     fn reset(&mut self) {
         self.chip.reset();
         self.clear_stream();
+        if let Some(filter) = &mut self.dc_blocker {
+            filter.reset();
+        }
     }
 
     fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
@@ -164,6 +194,48 @@ impl SoundChip for Okim6258Stream {
 mod tests {
     use super::*;
     use crate::chip::OutputBits;
+
+    #[test]
+    fn dc_blocker_filters_stream_and_direct_writes_without_changing_decoder_state() {
+        let mut raw = Okim6258Stream::new(Okim6258::new(8_000_000).unwrap());
+        let mut filtered = raw.clone().with_dc_blocker();
+        let mut reference_filter = DcBlocker::default();
+        for chip in [&mut raw, &mut filtered] {
+            write(chip, 0, 2);
+            for byte in [0x71, 0x94, 0x35, 0xb2] {
+                stream(chip, byte).unwrap();
+            }
+        }
+        for length in [1, 7, 64] {
+            let mut expected = vec![0; length];
+            let mut actual = expected.clone();
+            raw.generate(&mut expected).unwrap();
+            reference_filter
+                .process(&mut expected, raw.sample_rate_ratio())
+                .unwrap();
+            filtered.generate(&mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
+        for chip in [&mut raw, &mut filtered] {
+            write(chip, 1, 0x79);
+            write(chip, 0x0c, 2);
+        }
+        let snapshot = filtered.save_state().unwrap();
+        let mut expected = [0; 128];
+        let mut actual = [0; 128];
+        raw.generate(&mut expected).unwrap();
+        reference_filter
+            .process(&mut expected, raw.sample_rate_ratio())
+            .unwrap();
+        filtered.generate(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        filtered.restore_state(snapshot.as_ref()).unwrap();
+        filtered.generate(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        write(&mut filtered, 0, 1);
+        filtered.generate(&mut actual).unwrap();
+        assert_eq!(actual, [0; 128]);
+    }
 
     fn write(chip: &mut Okim6258Stream, register: u8, value: u8) {
         chip.write(Okim6258Spec { register, value }).unwrap();
