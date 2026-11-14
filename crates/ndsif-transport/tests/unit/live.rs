@@ -245,6 +245,38 @@ fn live_requires_explicit_reset_and_independent_feature_bits() {
 }
 
 #[test]
+fn ordered_session_mutes_and_unmutes_without_resequencing() {
+    let (mut transport, mut device) = test_transport();
+    transport.control_features = CONTROL_FEATURE_ORDERED_LIVE;
+    transport.output_volume_supported = true;
+    set_targets(&mut transport);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let frame = read_device_frame(&mut device, &mut decoder);
+        reply_to_device_frame(
+            &mut device,
+            &frame,
+            Reply::OrderedLiveCapabilities(ordered_caps(5)),
+        );
+        for expected in [96, 0] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            assert_eq!(frame.command_id(), 3);
+            assert_eq!(frame.payload(), &[expected]);
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        done_rx.recv().unwrap();
+    });
+    let mut live = transport.begin_ordered_live().unwrap();
+    live.set_output_muted(true).unwrap();
+    live.set_output_muted(false).unwrap();
+    assert_eq!(live.sequence, 0);
+    done_tx.send(()).unwrap();
+    worker.join().unwrap();
+    transport.output_volume_modified = false;
+}
+
+#[test]
 fn unknown_ordered_revision_is_rejected() {
     let (mut transport, mut device) = test_transport();
     transport.control_features = CONTROL_FEATURE_ORDERED_LIVE;

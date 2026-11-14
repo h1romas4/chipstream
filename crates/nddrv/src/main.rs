@@ -5,6 +5,7 @@ mod device;
 mod fm_mute;
 mod hardware;
 mod library;
+mod mame;
 mod patchbay;
 mod playback;
 mod recording;
@@ -599,6 +600,11 @@ struct AppView {
     scanning_ports: bool,
     routing: routing::SessionRouting,
     selected_source: Option<(routing::HardwareChip, routing::ChipInstance)>,
+    mame_mode: bool,
+    mame_plugin: mame::Plugin,
+    mame_device: Option<u64>,
+    mame_server: Option<mame::Server>,
+    mame_status: &'static str,
     tracks: Vec<Track>,
     track_by_path: HashMap<PathBuf, usize>,
     filtered_tracks: Vec<usize>,
@@ -1051,6 +1057,34 @@ impl AppView {
                             }),
                     )
             });
+            let mame_view = view.clone();
+            let mame_home_field = SettingField::render(move |_, _, cx| {
+                let path = mame_view.upgrade().and_then(|view| view.read(cx).config.general.mame_home.clone());
+                let choose_view = mame_view.clone();
+                let clear_view = mame_view.clone();
+                div().flex().items_center().gap_2().w_full().min_w_0().pl_4()
+                    .child(setting_path_display(
+                        "mame-home-path", path.as_deref(), "Not set",
+                        "Select the directory containing the MAME executable", cx,
+                    ))
+                    .child(Button::new("mame-home-choose").flex_shrink_0()
+                        .icon(assets::IconName::FolderOpen).ghost().small()
+                        .tooltip("Choose MAME HOME").accessibility_label("Choose MAME HOME")
+                        .on_click(move |_, _, cx| {
+                            let _ = choose_view.update(cx, |view, cx| view.choose_mame_home(cx));
+                        }))
+                    .child(Button::new("mame-home-clear").flex_shrink_0()
+                        .icon(assets::IconName::CircleX).ghost().small()
+                        .tooltip("Clear MAME HOME").accessibility_label("Clear MAME HOME")
+                        .disabled(path.is_none())
+                        .on_click(move |_, _, cx| {
+                            let _ = clear_view.update(cx, |view, cx| {
+                                view.config.general.mame_home = None;
+                                view.save();
+                                cx.notify();
+                            });
+                        }))
+            });
             let language_get = view.clone();
             let language_set = view.clone();
             let language_field = SettingField::dropdown(
@@ -1275,6 +1309,8 @@ impl AppView {
                                     SettingItem::new("VGM metadata language", language_field),
                                     SettingItem::new("YM2608 rhythm ROM", rom_field)
                                         .layout(Axis::Vertical),
+                                    SettingItem::new("MAME HOME", mame_home_field)
+                                        .layout(Axis::Vertical),
                                 ])),
                         )
                         .page(
@@ -1455,6 +1491,11 @@ impl AppView {
             scanning_ports: false,
             routing: routing::SessionRouting::default(),
             selected_source: None,
+            mame_mode: false,
+            mame_plugin: mame::Plugin::NanoDrive6,
+            mame_device: None,
+            mame_server: None,
+            mame_status: "Stopped",
             tracks: Vec::new(),
             track_by_path: HashMap::new(),
             filtered_tracks: Vec::new(),
@@ -1994,6 +2035,31 @@ impl AppView {
         .detach();
     }
 
+    fn choose_mame_home(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let selection = cx
+                .background_spawn(async { rfd::FileDialog::new().pick_folder() })
+                .await;
+            if let Some(path) = selection {
+                let _ = this.update(cx, |view, cx| match path.canonicalize() {
+                    Ok(path) => {
+                        view.config.general.mame_home = Some(path);
+                        view.save();
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        view.pending_errors.push(error_notification(
+                            "Cannot open MAME HOME",
+                            format!("{}: {error}", path.display()),
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     fn stop_playback(&mut self, cx: &mut Context<Self>) {
         self.player.stop();
         self.recording_session = None;
@@ -2005,6 +2071,15 @@ impl AppView {
     }
 
     fn play(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.mame_server.is_some() {
+            self.recording_session = None;
+            self.pending_errors.push(error_notification(
+                "MAME server is running",
+                "Stop the MAME server before playback.",
+            ));
+            cx.notify();
+            return;
+        }
         if self.device_status.values().any(|status| {
             matches!(
                 status,
@@ -2706,6 +2781,48 @@ impl AppView {
             self.save_window_settings();
             cx.notify();
         }
+        let mut mame_events = Vec::new();
+        if let Some(server) = self.mame_server.as_ref() {
+            loop {
+                match server.events.try_recv() {
+                    Ok(event @ mame::ServerEvent::Finished(_)) => {
+                        mame_events.push(event);
+                        break;
+                    }
+                    Ok(event) => mame_events.push(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        mame_events.push(mame::ServerEvent::Finished(Err(
+                            "MAME server worker stopped unexpectedly".into(),
+                        )));
+                        break;
+                    }
+                }
+            }
+        }
+        for event in mame_events {
+            match event {
+                mame::ServerEvent::Waiting if self.mame_status != "Stopping..." => {
+                    self.mame_status = "Waiting for MAME"
+                }
+                mame::ServerEvent::Connected if self.mame_status != "Stopping..." => {
+                    self.mame_status = "Connected"
+                }
+                mame::ServerEvent::Warning(message) => self
+                    .pending_errors
+                    .push(error_notification("MAME bridge", message)),
+                mame::ServerEvent::Finished(result) => {
+                    self.mame_server = None;
+                    self.mame_status = "Stopped";
+                    if let Err(message) = result {
+                        self.pending_errors
+                            .push(error_notification("MAME server error", message));
+                    }
+                }
+                _ => {}
+            }
+            cx.notify();
+        }
         while let Ok(event) = self.device_service.events.try_recv() {
             match event {
                 device::DeviceEvent::Connected(id, model, capabilities) => {
@@ -3393,7 +3510,7 @@ impl AppView {
                     .icon(assets::IconName::SkipBack)
                     .tooltip("Previous track")
                     .accessibility_label("Previous track")
-                    .disabled(previous.is_none())
+                    .disabled(previous.is_none() || self.mame_server.is_some())
                     .on_click(cx.listener(move |view, _, _, cx| {
                         if let Some(index) = previous {
                             view.play(index, cx);
@@ -3407,7 +3524,8 @@ impl AppView {
                     .accessibility_label(play_label)
                     .custom(accent)
                     .disabled(
-                        (!active && self.config.playlist.is_empty())
+                        self.mame_server.is_some()
+                            || (!active && self.config.playlist.is_empty())
                             || (active && self.playing_hardware),
                     )
                     .on_click(cx.listener(|view, _, _, cx| {
@@ -3440,7 +3558,9 @@ impl AppView {
                             .accessibility_label("Record and play")
                             .toggled(self.recording_session.is_some())
                             .disabled(
-                                self.config.playlist.is_empty() || self.recording_session.is_some(),
+                                self.config.playlist.is_empty()
+                                    || self.recording_session.is_some()
+                                    || self.mame_server.is_some(),
                             )
                             .when(self.recording_session.is_some(), |button| {
                                 button.bg(rgb(0x9c3d46)).text_color(rgb(0xffe7e7))
@@ -3466,7 +3586,7 @@ impl AppView {
                     .icon(assets::IconName::SkipForward)
                     .tooltip("Next track")
                     .accessibility_label("Next track")
-                    .disabled(next.is_none())
+                    .disabled(next.is_none() || self.mame_server.is_some())
                     .on_click(cx.listener(move |view, _, _, cx| {
                         if let Some(index) = next {
                             view.play(index, cx);
@@ -3906,10 +4026,10 @@ impl AppView {
     }
 
     fn connect_device(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.playing.is_some() {
+        if self.playing.is_some() || self.mame_server.is_some() {
             self.pending_errors.push(error_notification(
                 "NanoDrive error",
-                "Stop playback before changing devices.",
+                "Stop playback or the MAME server before changing devices.",
             ));
             cx.notify();
             return;
@@ -4448,8 +4568,152 @@ impl AppView {
                     .flex_col()
                     .p_4()
                     .gap_3()
-                    .child(self.routing_view(cx)),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().child("Input"))
+                            .child(
+                                Button::new("routing-input-sequencer")
+                                    .label("Sequencer")
+                                    .toggled(!self.mame_mode)
+                                    .disabled(self.mame_server.is_some())
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        if view.mame_server.is_some() {
+                                            return;
+                                        }
+                                        view.mame_mode = false;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("routing-input-mame")
+                                    .label("MAME")
+                                    .toggled(self.mame_mode)
+                                    .disabled(self.mame_server.is_some())
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        if view.mame_server.is_some() {
+                                            return;
+                                        }
+                                        view.mame_mode = true;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(if self.mame_mode {
+                        self.mame_view(cx)
+                    } else {
+                        self.routing_view(cx)
+                    }),
             )
+    }
+
+    fn mame_view(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.mame_server.is_some();
+        let selected = self.mame_device.and_then(|id| {
+            self.config
+                .routing
+                .devices
+                .iter()
+                .find(|device| device.id == id)
+                .filter(|device| {
+                    matches!(
+                        self.device_status.get(&device.id),
+                        Some(DeviceStatus::Connected(_))
+                    )
+                })
+        });
+        let nodes = self
+            .config
+            .routing
+            .devices
+            .iter()
+            .filter(|device| {
+                matches!(
+                    self.device_status.get(&device.id),
+                    Some(DeviceStatus::Connected(_))
+                )
+            })
+            .map(|device| {
+                let id = device.id;
+                let name = if device.name.is_empty() {
+                    device.port.clone()
+                } else {
+                    device.name.clone()
+                };
+                Button::new(("mame-device", id as usize))
+                    .label(name)
+                    .toggled(self.mame_device == Some(id))
+                    .disabled(busy)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.mame_device = Some(id);
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>();
+        let title = match self.mame_plugin {
+            mame::Plugin::NanoDrive6 => "YM2612 + SN76489",
+            mame::Plugin::NanoDrive8 => "YM2151",
+        };
+        let destination = selected.map_or("Select a connected NanoDrive", |device| {
+            device.name.as_str()
+        });
+        div().flex().flex_col().gap_3()
+            .child(div().text_lg().child("ROUTING CONNECTIONS"))
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_sm().child("MAME plugin"))
+                .child(Button::new("mame-plugin-nd6").label("NanoDrive 6")
+                    .toggled(self.mame_plugin == mame::Plugin::NanoDrive6)
+                    .disabled(busy)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.mame_plugin = mame::Plugin::NanoDrive6;
+                        cx.notify();
+                    })))
+                .child(Button::new("mame-plugin-nd8").label("NanoDrive 8")
+                    .toggled(self.mame_plugin == mame::Plugin::NanoDrive8)
+                    .disabled(busy)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.mame_plugin = mame::Plugin::NanoDrive8;
+                        cx.notify();
+                    }))))
+            .child(div().flex().flex_wrap().items_center().gap_2()
+                .child(div().text_sm().child("NanoDrive"))
+                .children(nodes)
+                .when(selected.is_none(), |row| row.child(div().text_sm().text_color(rgb(0xf2a968))
+                    .child("Connect a device in Sequencer mode, then select it here."))))
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_sm().child(format!("MAME [{title}]  →  {destination}")))
+                .child(div().text_sm().text_color(rgb(0xa6b6c3)).child("(other audio: MAME)")))
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_sm().child(format!("{} · 127.0.0.1:32151", self.mame_status)))
+                .child(Button::new("mame-start").label("Start").disabled(busy || selected.is_none() || self.playing.is_some())
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if let Some(id) = view.mame_device {
+                            if view.playing.is_some() || view.mame_server.is_some() { return; }
+                            if view.mame_plugin == mame::Plugin::NanoDrive8 && view.config.general.mame_home.is_none() {
+                                view.pending_errors.push(error_notification(
+                                    "MAME HOME not set",
+                                    "Select the MAME directory in Settings > General.",
+                                ));
+                                cx.notify();
+                                return;
+                            }
+                            view.mame_status = "Starting...";
+                            view.mame_server = Some(mame::Server::start(view.device_service.playback_handle(), id, view.mame_plugin, view.config.general.mame_home.clone()));
+                            cx.notify();
+                        }
+                    })))
+                .child(Button::new("mame-stop").label("Stop").disabled(!busy || self.mame_status == "Stopping...")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if let Some(server) = &view.mame_server {
+                            server.stop();
+                            view.mame_status = "Stopping...";
+                            cx.notify();
+                        }
+                    }))))
+            .child(div().text_sm().text_color(rgb(0xa6b6c3))
+                .child("Start the server before MAME. MAME audio remains enabled and may be heard alongside NanoDrive."))
     }
 
     fn library_rows(

@@ -419,6 +419,29 @@ impl NdsifSerialTransport {
         self.output_volume_supported
     }
 
+    /// Mute or unmute device output immediately.
+    ///
+    /// This changes the device-wide attenuation. Reset restores normal output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if output-volume control is unavailable or the device
+    /// rejects or fails the command.
+    pub fn set_output_muted(&mut self, muted: bool) -> Result<(), NdsifTransportError> {
+        if !self.output_volume_supported {
+            return Err(NdsifTransportError::UnsupportedOutputVolume);
+        }
+        let attenuation = if muted { SILENT_OUTPUT_ATTENUATION } else { 0 };
+        self.output_volume_modified = true;
+        self.request_typed(Command::SetOutputVolume {
+            attenuation,
+            response: true,
+        })?;
+        self.output_attenuation = attenuation;
+        self.last_volume_update = Some(Instant::now());
+        Ok(())
+    }
+
     /// Enable best-effort scheduled output fading on a capable device.
     ///
     /// Call before playback starts. Devices without output-volume support are

@@ -5025,6 +5025,7 @@ dependencies = [
  "ndsif-transport",
  "pipewire",
  "rfd",
+ "roxmltree 0.21.2",
  "semver",
  "serde",
  "serde_json",

@@ -411,6 +411,7 @@ pub enum MetadataLanguage {
 pub struct GeneralSettings {
     pub vgm_metadata_language: MetadataLanguage,
     pub ym2608_rhythm_rom: Option<PathBuf>,
+    pub mame_home: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1885,6 +1886,7 @@ mod tests {
             general: GeneralSettings {
                 vgm_metadata_language: MetadataLanguage::Original,
                 ym2608_rhythm_rom: Some(dir.path().join("rhythm.rom")),
+                mame_home: Some(dir.path().join("mame")),
             },
             vgm: VgmSettings {
                 ay8910_ym2149: true,

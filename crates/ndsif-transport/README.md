@@ -312,6 +312,7 @@ exclusive live session:
   PSG writes are not ordered against DAC records.
 - `begin_ordered_live()`: profile 3 revisions 4 and 5. PSG requires revision 5
   and an advertised PSG target. `status()` is diagnostic, not a playback fence.
+  `set_output_muted()` controls device-wide output when supported.
 
 Waits use 44,100 ticks per second; the first wait must be zero. Preserve
 repeated writes and obey the advertised frame limits. Sends are unacknowledged:

@@ -73,6 +73,8 @@ pub enum NdsifTransportError {
     },
     /// Capability pagination failed to advance.
     InvalidCapabilitiesPagination,
+    /// Device-wide output attenuation is not supported.
+    UnsupportedOutputVolume,
     /// The device did not advertise the requested optional live profile.
     UnsupportedLiveProfile {
         /// Profile identifier.
@@ -141,6 +143,9 @@ impl fmt::Display for NdsifTransportError {
             }
             Self::InvalidCapabilitiesPagination => {
                 f.write_str("NDSIF capabilities pagination did not advance")
+            }
+            Self::UnsupportedOutputVolume => {
+                f.write_str("NDSIF device does not advertise output-volume control")
             }
             Self::UnsupportedLiveProfile { profile } => {
                 write!(f, "NDSIF device does not advertise live profile {profile}")

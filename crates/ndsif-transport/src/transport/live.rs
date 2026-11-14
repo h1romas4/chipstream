@@ -401,6 +401,35 @@ impl NdsifOrderedLiveSession<'_> {
         self.capabilities
     }
 
+    /// Maximum payload size advertised by the device.
+    pub fn max_payload(&self) -> u16 {
+        self.transport.max_payload
+    }
+
+    /// Return whether device-wide output mute is available.
+    pub fn supports_output_volume(&self) -> bool {
+        self.transport.supports_output_volume()
+    }
+
+    /// Mute or unmute the device immediately, independently of queued writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if mute is unsupported or the command fails. A failed
+    /// command makes the session unsuitable for reuse until reset.
+    pub fn set_output_muted(&mut self, muted: bool) -> Result<(), NdsifTransportError> {
+        if self.poisoned {
+            return Err(NdsifTransportError::LiveWriteIndeterminate);
+        }
+        if !self.transport.supports_output_volume() {
+            return Err(NdsifTransportError::UnsupportedOutputVolume);
+        }
+        self.poisoned = true;
+        self.transport.set_output_muted(muted)?;
+        self.poisoned = false;
+        Ok(())
+    }
+
     /// Send one unacknowledged ordered frame. The first wait must be zero.
     ///
     /// Records must fit both the advertised record count and payload size.

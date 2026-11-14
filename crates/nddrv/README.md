@@ -81,6 +81,7 @@ Settings are organized into General, Playback, Recording, and VGM pages.
 | --- | --- |
 | VGM metadata language | Choose English (default) or original-language VGM/VGZ metadata. Missing fields fall back to the other language; search matches both. MDX metadata is unaffected. |
 | YM2608 rhythm ROM | Select an optional ROM file for software YM2608 playback. See [YM2608 rhythm ROM](#ym2608-rhythm-rom). |
+| MAME HOME | Select the directory containing the MAME executable used to query YM2151 clocks for the ND8 plugin. Changes apply when the MAME server starts. |
 
 ### Playback
 
@@ -184,6 +185,29 @@ Internally, each sequencer source resolves to a hardware, software, or silent
 target and an adapter. Hardware routes become NDSIF routes; software assignments
 use the same plan for playback, preview, and support indicators. This separation
 does not yet add conversions between different physical chip types.
+
+### MAME input
+
+Connect a NanoDrive in Sequencer mode, then select **MAME**, the matching
+plugin, and one connected device. Start the server before starting MAME.
+The listener is local (`127.0.0.1:32151`) and accepts one MAME connection at
+a time. Stop the server before normal playback or changing devices. Closing
+MAME returns the server to its waiting state.
+
+Copy `assets/mame-plugins/nanodrive6` or `nanodrive8` from the source
+distribution into MAME's `plugins` directory and enable the matching plugin.
+The ND6 plugin uses ordered live profile 3 revision 5 for YM2612 and PSG;
+the ND8 plugin uses YM2151. For ND8, set **MAME HOME** to the directory
+containing the executable used to run MAME. NDDRV runs `-listxml` from that
+directory to discover the clock; it does not inspect the MAME process. Use the
+same MAME version for playback and clock discovery. The executable must be
+named `mame` or `mame64` (on Windows, `mame.exe` or `mame64.exe`); if both
+names refer to different executables, choose a directory containing only one.
+
+MAME continues to produce its own audio, which can be heard alongside
+NanoDrive output. Timing is best-effort; fast-forward and clock correction
+can drop DAC samples. Device output mute on MAME pause requires hardware
+volume control. Errors and unsupported capabilities are reported in NDDRV.
 
 ## Supported Files and Notes
 
