@@ -196,7 +196,7 @@ does not yet add conversions between different physical chip types.
 For example, to play a Mega Drive title with NanoDrive 6:
 
 ```sh
-mame -plugin nanodrive6 megadriv [softname]
+mame -plugin nanodrive6 megadrij [softname]
 ```
 
 Replace `[softname]` with an installed software name. The example in NDDRV can

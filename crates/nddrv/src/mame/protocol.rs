@@ -37,7 +37,7 @@ impl Plugin {
 
     pub fn launch_example(self) -> &'static str {
         match self {
-            Self::NanoDrive6 => "mame -plugin nanodrive6 megadriv [softname]",
+            Self::NanoDrive6 => "mame -plugin nanodrive6 megadrij [softname]",
             Self::NanoDrive8 => "mame -plugin nanodrive8 [machine]",
         }
     }
@@ -254,7 +254,7 @@ mod tests {
     fn launch_examples_match_the_plugin_route() {
         assert_eq!(
             Plugin::NanoDrive6.launch_example(),
-            "mame -plugin nanodrive6 megadriv [softname]"
+            "mame -plugin nanodrive6 megadrij [softname]"
         );
         assert_eq!(
             Plugin::NanoDrive8.launch_example(),
