@@ -8,6 +8,41 @@ pub enum Plugin {
     NanoDrive8,
 }
 
+impl Plugin {
+    pub fn for_device(
+        model: &str,
+        capabilities: &[ndsif::CapabilityEntry],
+    ) -> Result<Self, &'static str> {
+        let supports = |write_id, page| {
+            capabilities.iter().any(|entry| {
+                entry.write_id == write_id
+                    && entry.instance == 0
+                    && entry.page == page
+                    && entry.features & 1 != 0
+            })
+        };
+        let nd6 = supports(0x52, 0) && supports(0x53, 1) && supports(0x50, 0);
+        let nd8 = supports(0x54, 0);
+        match (nd6, nd8) {
+            (true, false) => Ok(Self::NanoDrive6),
+            (false, true) => Ok(Self::NanoDrive8),
+            (true, true) => match model {
+                "NanoDrive 6" | "NanoDrive 6.1" => Ok(Self::NanoDrive6),
+                "NanoDrive 8" => Ok(Self::NanoDrive8),
+                _ => Err("Cannot determine the MAME route for this device."),
+            },
+            (false, false) => Err("This device does not support a MAME route."),
+        }
+    }
+
+    pub fn launch_example(self) -> &'static str {
+        match self {
+            Self::NanoDrive6 => "mame -plugin nanodrive6 megadriv [softname]",
+            Self::NanoDrive8 => "mame -plugin nanodrive8 [machine]",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     Reset,
@@ -170,6 +205,62 @@ fn decode_one(plugin: Plugin, bytes: &[u8]) -> Result<Option<(Event, usize)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_route_from_connected_device_capabilities() {
+        let entry = |write_id, page| ndsif::CapabilityEntry {
+            write_id,
+            instance: 0,
+            page,
+            features: 1,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let nd6 = [entry(0x52, 0), entry(0x53, 1), entry(0x50, 0)];
+        let nd8 = [entry(0x54, 0)];
+        assert_eq!(
+            Plugin::for_device("NanoDrive 6.1", &nd6),
+            Ok(Plugin::NanoDrive6)
+        );
+        assert_eq!(
+            Plugin::for_device("NanoDrive 8", &nd8),
+            Ok(Plugin::NanoDrive8)
+        );
+        assert_eq!(Plugin::for_device("Other", &nd8), Ok(Plugin::NanoDrive8));
+        assert!(Plugin::for_device("NanoDrive 6", &nd6[..2]).is_err());
+        let mut no_write = nd8;
+        no_write[0].features = 0;
+        assert!(Plugin::for_device("NanoDrive 8", &no_write).is_err());
+        let mut secondary = nd8;
+        secondary[0].instance = 1;
+        assert!(Plugin::for_device("NanoDrive 8", &secondary).is_err());
+        let mut wrong_page = nd6;
+        wrong_page[1].page = 0;
+        assert!(Plugin::for_device("NanoDrive 6", &wrong_page).is_err());
+        let both = [nd6[0], nd6[1], nd6[2], nd8[0]];
+        assert_eq!(
+            Plugin::for_device("NanoDrive 6", &both),
+            Ok(Plugin::NanoDrive6)
+        );
+        assert_eq!(
+            Plugin::for_device("NanoDrive 8", &both),
+            Ok(Plugin::NanoDrive8)
+        );
+        assert!(Plugin::for_device("Other", &both).is_err());
+        assert!(Plugin::for_device("NanoDrive 8", &[]).is_err());
+    }
+
+    #[test]
+    fn launch_examples_match_the_plugin_route() {
+        assert_eq!(
+            Plugin::NanoDrive6.launch_example(),
+            "mame -plugin nanodrive6 megadriv [softname]"
+        );
+        assert_eq!(
+            Plugin::NanoDrive8.launch_example(),
+            "mame -plugin nanodrive8 [machine]"
+        );
+    }
 
     #[test]
     fn decodes_fragmented_and_concatenated_nd6_messages() {

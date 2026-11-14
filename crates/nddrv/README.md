@@ -81,7 +81,6 @@ Settings are organized into General, Playback, Recording, and VGM pages.
 | --- | --- |
 | VGM metadata language | Choose English (default) or original-language VGM/VGZ metadata. Missing fields fall back to the other language; search matches both. MDX metadata is unaffected. |
 | YM2608 rhythm ROM | Select an optional ROM file for software YM2608 playback. See [YM2608 rhythm ROM](#ym2608-rhythm-rom). |
-| MAME HOME | Select the directory containing the MAME executable used to query YM2151 clocks for the ND8 plugin. Changes apply when the MAME server starts. |
 
 ### Playback
 
@@ -188,26 +187,32 @@ does not yet add conversions between different physical chip types.
 
 ### MAME input
 
-Connect a NanoDrive in Sequencer mode, then select **MAME**, the matching
-plugin, and one connected device. Start the server before starting MAME.
-The listener is local (`127.0.0.1:32151`) and accepts one MAME connection at
-a time. Stop the server before normal playback or changing devices. Closing
-MAME returns the server to its waiting state.
+1. Connect a NanoDrive and select **MAME** on the routing page. A compatible
+   device is selected automatically; you can choose another connected device.
+2. Select your **MAME directory** and choose **Install MAME plugins**. This
+   replaces existing files with the same names.
+3. Start the server, then launch MAME using the example shown in NDDRV.
 
-Copy `assets/mame-plugins/nanodrive6` or `nanodrive8` from the source
-distribution into MAME's `plugins` directory and enable the matching plugin.
-The ND6 plugin uses ordered live profile 3 revision 5 for YM2612 and PSG;
-the ND8 plugin uses YM2151. For ND8, set **MAME HOME** to the directory
-containing the executable used to run MAME. NDDRV runs `-listxml` from that
-directory to discover the clock; it does not inspect the MAME process. Use the
-same MAME version for playback and clock discovery. The executable must be
-named `mame` or `mame64` (on Windows, `mame.exe` or `mame64.exe`); if both
-names refer to different executables, choose a directory containing only one.
+For example, to play a Mega Drive title with NanoDrive 6:
 
-MAME continues to produce its own audio, which can be heard alongside
-NanoDrive output. Timing is best-effort; fast-forward and clock correction
-can drop DAC samples. Device output mute on MAME pause requires hardware
-volume control. Errors and unsupported capabilities are reported in NDDRV.
+```sh
+mame -plugin nanodrive6 megadriv [softname]
+```
+
+Replace `[softname]` with an installed software name. The example in NDDRV can
+be copied and includes the appropriate plugin for the selected device.
+
+Stop the server before normal playback or changing devices. MAME audio remains
+enabled and may be heard alongside NanoDrive output. Timing is best-effort;
+fast-forward can drop DAC samples. Muting on pause requires hardware volume
+control.
+
+For NanoDrive 8, select the directory of the MAME version you use to play. It
+must contain one executable named `mame` or `mame64` (Windows: `mame.exe` or
+`mame64.exe`).
+
+The bundled plugins include Fujix's BSD 3-Clause license, installed alongside
+each plugin.
 
 ## Supported Files and Notes
 

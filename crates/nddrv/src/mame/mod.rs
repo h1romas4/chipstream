@@ -1,6 +1,7 @@
 //! MAME plugin listener and device bridge.
 
 mod clock;
+mod install;
 mod protocol;
 #[cfg(all(test, unix))]
 mod tests;
@@ -21,10 +22,11 @@ use ndsif_transport::{
 };
 
 use crate::device::DeviceHandle;
+pub use install::install as install_plugins;
 pub use protocol::Plugin;
 use protocol::{Decoder, Event};
 
-const ADDRESS: &str = "127.0.0.1:32151";
+pub const ADDRESS: &str = "127.0.0.1:32151";
 const POLL: Duration = Duration::from_millis(20);
 
 #[derive(Debug)]
@@ -129,7 +131,7 @@ fn run(
                 transport.reset_for_reuse()?;
             }
             Plugin::NanoDrive8 => {
-                clock::mame_executable(mame_home.context("Set MAME HOME in Settings > General")?)?;
+                clock::mame_executable(mame_home.context("Set MAME HOME in Routing > MAME")?)?;
                 if !transport.capabilities().iter().any(|entry| {
                     entry.write_id == WriteId::YM2151.get()
                         && entry.instance == 0
@@ -168,7 +170,7 @@ fn run(
                     events,
                     |_, name, tag, stop| {
                         clock::ym2151_clock(
-                            mame_home.context("Set MAME HOME in Settings > General")?,
+                            mame_home.context("Set MAME HOME in Routing > MAME")?,
                             name,
                             tag,
                             stop,

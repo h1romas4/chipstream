@@ -7,10 +7,10 @@ use crate::routing::{ChipInstance, Device, HardwareChip, RoutingPlan, SoftwareTa
 
 pub const WIDTH: f32 = DEVICE_X + DEVICE_WIDTH + 16.;
 pub const SOURCE_X: f32 = 336.;
-pub const SOURCE_WIDTH: f32 = 180.;
+pub const SOURCE_WIDTH: f32 = DEVICE_WIDTH;
 pub const TARGET_X: f32 = 16.;
 pub const TARGET_WIDTH: f32 = 200.;
-pub const DEVICE_X: f32 = 620.;
+pub const DEVICE_X: f32 = 740.;
 pub const DEVICE_WIDTH: f32 = 300.;
 pub const HEADER: f32 = 40.;
 pub const DEVICE_HEADER: f32 = 104.;
@@ -102,6 +102,23 @@ pub struct Graph {
     pub cables: Vec<Cable>,
     pub emulator_height: f32,
     pub height: f32,
+}
+
+impl Graph {
+    pub fn mame_cable(&self, selected_device: Option<u64>) -> Option<Cable> {
+        let device = self
+            .devices
+            .iter()
+            .find(|device| device.connected && Some(device.id) == selected_device)?;
+        Some(Cable {
+            source_x: SOURCE_X + SOURCE_WIDTH,
+            source_y: HEADER + ROW / 2.,
+            target_x: DEVICE_X,
+            target_y: device.top + 20.,
+            hardware: true,
+            available: true,
+        })
+    }
 }
 
 pub fn row_y(index: usize) -> f32 {
@@ -334,6 +351,15 @@ mod tests {
         assert_eq!(graph.devices[1].extra_labels, ["No chips advertised"]);
         let cable = graph.cables.iter().find(|cable| cable.hardware).unwrap();
         assert_eq!(cable.target_y, first.endpoints[0].y + ROW / 2.);
+        assert!(graph.mame_cable(None).is_none());
+        assert!(graph.mame_cable(Some(3)).is_none());
+        assert_eq!(graph.mame_cable(Some(1)).unwrap().target_y, first.top + 20.);
+        assert_eq!(
+            graph.mame_cable(Some(2)).unwrap().target_y,
+            graph.devices[1].top + 20.
+        );
+        let disconnected = build(&devices, &HashMap::new(), &routes);
+        assert!(disconnected.mame_cable(Some(1)).is_none());
     }
 
     #[test]
@@ -645,6 +671,7 @@ mod tests {
             std::hint::black_box((TARGET_X, TARGET_WIDTH, SOURCE_X, SOURCE_WIDTH, DEVICE_X));
         assert!(target_x + target_width < source_x);
         assert!(source_x + source_width < device_x);
+        assert_eq!(SOURCE_WIDTH, DEVICE_WIDTH);
         assert_eq!(DEVICE_X + DEVICE_WIDTH + 16., WIDTH);
     }
 }

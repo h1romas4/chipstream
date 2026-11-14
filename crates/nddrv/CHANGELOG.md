@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add MAME input support for NanoDrive 6 and 8, with built-in plugin installation.
 - Reduce DC-related clicks in emulated OKIM6258 VGM playback.
 - Show Library track counts and refine the remove button.
 - Show a subtle animated meter for the playing track in Music and Playlist.

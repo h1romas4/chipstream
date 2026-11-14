@@ -343,6 +343,28 @@ fn connection_action(status: Option<&DeviceStatus>) -> (assets::IconName, &'stat
     }
 }
 
+fn preferred_mame_device(
+    devices: &[routing::Device],
+    statuses: &HashMap<u64, DeviceStatus>,
+    models: &HashMap<u64, String>,
+) -> Option<u64> {
+    let connected = devices
+        .iter()
+        .filter_map(|device| match statuses.get(&device.id) {
+            Some(DeviceStatus::Connected(capabilities)) => Some((device.id, capabilities)),
+            _ => None,
+        });
+    connected
+        .clone()
+        .find(|(id, capabilities)| {
+            models
+                .get(id)
+                .is_some_and(|model| mame::Plugin::for_device(model, capabilities).is_ok())
+        })
+        .or_else(|| connected.into_iter().next())
+        .map(|(id, _)| id)
+}
+
 fn can_remove_device(
     id: u64,
     devices: &[routing::Device],
@@ -601,10 +623,12 @@ struct AppView {
     routing: routing::SessionRouting,
     selected_source: Option<(routing::HardwareChip, routing::ChipInstance)>,
     mame_mode: bool,
-    mame_plugin: mame::Plugin,
     mame_device: Option<u64>,
     mame_server: Option<mame::Server>,
     mame_status: &'static str,
+    mame_address: Entity<InputState>,
+    mame_nd6_command: Entity<InputState>,
+    mame_nd8_command: Entity<InputState>,
     tracks: Vec<Track>,
     track_by_path: HashMap<PathBuf, usize>,
     filtered_tracks: Vec<usize>,
@@ -1057,34 +1081,6 @@ impl AppView {
                             }),
                     )
             });
-            let mame_view = view.clone();
-            let mame_home_field = SettingField::render(move |_, _, cx| {
-                let path = mame_view.upgrade().and_then(|view| view.read(cx).config.general.mame_home.clone());
-                let choose_view = mame_view.clone();
-                let clear_view = mame_view.clone();
-                div().flex().items_center().gap_2().w_full().min_w_0().pl_4()
-                    .child(setting_path_display(
-                        "mame-home-path", path.as_deref(), "Not set",
-                        "Select the directory containing the MAME executable", cx,
-                    ))
-                    .child(Button::new("mame-home-choose").flex_shrink_0()
-                        .icon(assets::IconName::FolderOpen).ghost().small()
-                        .tooltip("Choose MAME HOME").accessibility_label("Choose MAME HOME")
-                        .on_click(move |_, _, cx| {
-                            let _ = choose_view.update(cx, |view, cx| view.choose_mame_home(cx));
-                        }))
-                    .child(Button::new("mame-home-clear").flex_shrink_0()
-                        .icon(assets::IconName::CircleX).ghost().small()
-                        .tooltip("Clear MAME HOME").accessibility_label("Clear MAME HOME")
-                        .disabled(path.is_none())
-                        .on_click(move |_, _, cx| {
-                            let _ = clear_view.update(cx, |view, cx| {
-                                view.config.general.mame_home = None;
-                                view.save();
-                                cx.notify();
-                            });
-                        }))
-            });
             let language_get = view.clone();
             let language_set = view.clone();
             let language_field = SettingField::dropdown(
@@ -1309,8 +1305,6 @@ impl AppView {
                                     SettingItem::new("VGM metadata language", language_field),
                                     SettingItem::new("YM2608 rhythm ROM", rom_field)
                                         .layout(Axis::Vertical),
-                                    SettingItem::new("MAME HOME", mame_home_field)
-                                        .layout(Axis::Vertical),
                                 ])),
                         )
                         .page(
@@ -1389,6 +1383,21 @@ impl AppView {
             let mut input =
                 InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive");
             input.set_value(search_content, window, cx);
+            input
+        });
+        let mame_address = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(mame::ADDRESS, window, cx);
+            input
+        });
+        let mame_nd6_command = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(mame::Plugin::NanoDrive6.launch_example(), window, cx);
+            input
+        });
+        let mame_nd8_command = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(mame::Plugin::NanoDrive8.launch_example(), window, cx);
             input
         });
         let subscription =
@@ -1492,10 +1501,12 @@ impl AppView {
             routing: routing::SessionRouting::default(),
             selected_source: None,
             mame_mode: false,
-            mame_plugin: mame::Plugin::NanoDrive6,
             mame_device: None,
             mame_server: None,
             mame_status: "Stopped",
+            mame_address,
+            mame_nd6_command,
+            mame_nd8_command,
             tracks: Vec::new(),
             track_by_path: HashMap::new(),
             filtered_tracks: Vec::new(),
@@ -2043,6 +2054,14 @@ impl AppView {
             if let Some(path) = selection {
                 let _ = this.update(cx, |view, cx| match path.canonicalize() {
                     Ok(path) => {
+                        if view.mame_server.is_some() {
+                            view.pending_errors.push(error_notification(
+                                "Cannot change MAME HOME",
+                                "Stop the MAME server before changing MAME HOME.",
+                            ));
+                            cx.notify();
+                            return;
+                        }
                         view.config.general.mame_home = Some(path);
                         view.save();
                         cx.notify();
@@ -2814,6 +2833,9 @@ impl AppView {
                 mame::ServerEvent::Finished(result) => {
                     self.mame_server = None;
                     self.mame_status = "Stopped";
+                    if self.mame_route().is_none() {
+                        self.select_preferred_mame_device();
+                    }
                     if let Err(message) = result {
                         self.pending_errors
                             .push(error_notification("MAME server error", message));
@@ -2843,6 +2865,7 @@ impl AppView {
                     self.save();
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
+                    self.select_preferred_mame_device();
                     self.refresh_routing(false);
                     self.suggestion_index = 0;
                     self.update_filter(cx);
@@ -2859,6 +2882,7 @@ impl AppView {
                 device::DeviceEvent::Disconnected(id) => {
                     self.device_status.remove(&id);
                     self.device_models.remove(&id);
+                    self.select_preferred_mame_device();
                     if renumber_connected_devices(
                         &mut self.config.routing.devices,
                         &self.device_models,
@@ -2876,6 +2900,7 @@ impl AppView {
                     );
                     self.device_status.remove(&id);
                     self.device_models.remove(&id);
+                    self.select_preferred_mame_device();
                     if renumber_connected_devices(
                         &mut self.config.routing.devices,
                         &self.device_models,
@@ -2909,6 +2934,7 @@ impl AppView {
                 device::DeviceEvent::Busy(id, error, capabilities) => {
                     self.device_status
                         .insert(id, DeviceStatus::Connected(capabilities));
+                    self.select_preferred_mame_device();
                     self.suggestion_index = 0;
                     self.update_filter(cx);
                     self.pending_errors
@@ -4175,6 +4201,7 @@ impl AppView {
 
     fn routing_view(&self, cx: &mut Context<Self>) -> Div {
         let editable = self.playing.is_none()
+            && self.mame_server.is_none()
             && !self.device_status.values().any(|status| {
                 matches!(
                     status,
@@ -4198,18 +4225,51 @@ impl AppView {
                 .left(px(patchbay::SOURCE_X))
                 .top(px(0.))
                 .w(px(patchbay::SOURCE_WIDTH))
-                .h(px(graph.emulator_height))
+                .when(!self.mame_mode, |panel| panel.h(px(graph.emulator_height)))
                 .rounded_md()
                 .border_1()
                 .border_color(rgb(0x30414d))
                 .bg(rgb(0x1b2933))
                 .child(
                     div()
-                        .px_3()
-                        .py_2()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Sequencer"),
+                        .px_2()
+                        .py_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .child(
+                            Button::new("routing-input-sequencer")
+                                .label("Sequencer")
+                                .small()
+                                .toggled(!self.mame_mode)
+                                .when(!self.mame_mode, |button| button.primary())
+                                .when(self.mame_mode, |button| button.ghost())
+                                .disabled(self.mame_server.is_some())
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    if view.mame_server.is_none() {
+                                        view.mame_mode = false;
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("routing-input-mame")
+                                .label("MAME")
+                                .small()
+                                .toggled(self.mame_mode)
+                                .when(self.mame_mode, |button| button.primary())
+                                .when(!self.mame_mode, |button| button.ghost())
+                                .disabled(self.mame_server.is_some())
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    if view.mame_server.is_none() {
+                                        view.mame_mode = true;
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
                 )
+                .when(self.mame_mode, |panel| panel.child(self.mame_view(cx)))
                 .into_any_element(),
             div()
                 .absolute()
@@ -4228,10 +4288,25 @@ impl AppView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Emulation"),
                 )
+                .when(self.mame_mode, |panel| {
+                    panel.child(
+                        div()
+                            .px_3()
+                            .text_sm()
+                            .text_color(rgb(0xa6b6c3))
+                            .child("Audio is played by MAME."),
+                    )
+                })
                 .into_any_element(),
         ];
         let mut nodes = Vec::new();
-        for (index, source) in graph.sources.iter().copied().enumerate() {
+        for (index, source) in graph
+            .sources
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|_| !self.mame_mode)
+        {
             let y = patchbay::row_y(index);
             let hardware = match source {
                 patchbay::Source::Hardware(chip, instance) => Some((chip, instance)),
@@ -4451,6 +4526,7 @@ impl AppView {
                 let chip = endpoint.chip;
                 let instance = endpoint.instance;
                 let compatible = editable
+                    && !self.mame_mode
                     && endpoint.available
                     && self
                         .selected_source
@@ -4512,12 +4588,23 @@ impl AppView {
                 nodes.push(node.into_any_element());
             }
         }
-        let cables = graph.cables;
+        let cables = if self.mame_mode {
+            graph
+                .mame_cable(self.mame_route().and_then(Result::ok).and(self.mame_device))
+                .into_iter()
+                .collect()
+        } else {
+            graph.cables
+        };
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_shrink_0().text_lg().whitespace_nowrap().child("ROUTING CONNECTIONS"))
-                .when(self.playing.is_some(), |row| {
-                    let message = "Stop playback to edit connections.";
+                .when(self.playing.is_some() || self.mame_server.is_some(), |row| {
+                    let message = if self.mame_server.is_some() {
+                        "Stop the MAME server to edit devices."
+                    } else {
+                        "Stop playback to edit connections."
+                    };
                     row.child(div().id("routing-edit-warning").ml_4().min_w_0().text_sm()
                         .text_color(rgb(0xf2a968)).overflow_hidden().text_ellipsis().whitespace_nowrap()
                         .tooltip(move |window, cx| Tooltip::new(message).build(window, cx))
@@ -4528,8 +4615,11 @@ impl AppView {
                         .disabled(!editable)
                         .on_click(cx.listener(|view, _, window, cx| view.add_empty_device(window, cx)))))
                 }))
-            .child(div().mb_1().text_sm().text_color(rgb(0xa6b6c3)).child(
-                "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."))
+            .child(div().mb_1().text_sm().text_color(rgb(0xa6b6c3)).child(if self.mame_mode {
+                "A connected NanoDrive is routed automatically. Start the server before MAME."
+            } else {
+                "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."
+            }))
             .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
                 .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))
                     .child(canvas(
@@ -4568,62 +4658,130 @@ impl AppView {
                     .flex_col()
                     .p_4()
                     .gap_3()
+                    .child(self.routing_view(cx)),
+            )
+    }
+
+    fn select_preferred_mame_device(&mut self) {
+        if self.mame_server.is_none() {
+            self.mame_device = preferred_mame_device(
+                &self.config.routing.devices,
+                &self.device_status,
+                &self.device_models,
+            );
+        }
+    }
+
+    fn mame_route(&self) -> Option<Result<mame::Plugin, &'static str>> {
+        let id = self.mame_device?;
+        if !self
+            .config
+            .routing
+            .devices
+            .iter()
+            .any(|device| device.id == id)
+        {
+            return None;
+        }
+        let Some(DeviceStatus::Connected(capabilities)) = self.device_status.get(&id) else {
+            return None;
+        };
+        Some(match self.device_models.get(&id) {
+            Some(model) => mame::Plugin::for_device(model, capabilities),
+            None => Err("NanoDrive model information is unavailable."),
+        })
+    }
+
+    fn mame_home_controls(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.mame_server.is_some();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .mt_2()
+                    .mb_1()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("MAME directory (MAME HOME)"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(setting_path_display(
+                        "mame-home-path",
+                        self.config.general.mame_home.as_deref(),
+                        "Not set",
+                        "Select the directory containing the MAME executable",
+                        cx,
+                    ))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_sm().child("Input"))
-                            .child(
-                                Button::new("routing-input-sequencer")
-                                    .label("Sequencer")
-                                    .toggled(!self.mame_mode)
-                                    .disabled(self.mame_server.is_some())
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        if view.mame_server.is_some() {
-                                            return;
-                                        }
-                                        view.mame_mode = false;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("routing-input-mame")
-                                    .label("MAME")
-                                    .toggled(self.mame_mode)
-                                    .disabled(self.mame_server.is_some())
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        if view.mame_server.is_some() {
-                                            return;
-                                        }
-                                        view.mame_mode = true;
-                                        cx.notify();
-                                    })),
-                            ),
+                        Button::new("mame-home-choose")
+                            .icon(assets::IconName::FolderOpen)
+                            .ghost()
+                            .small()
+                            .tooltip("Choose MAME directory")
+                            .accessibility_label("Choose MAME directory")
+                            .disabled(busy)
+                            .on_click(cx.listener(|view, _, _, cx| view.choose_mame_home(cx))),
                     )
-                    .child(if self.mame_mode {
-                        self.mame_view(cx)
-                    } else {
-                        self.routing_view(cx)
-                    }),
+                    .child(
+                        Button::new("mame-home-clear")
+                            .icon(assets::IconName::CircleX)
+                            .ghost()
+                            .small()
+                            .tooltip("Clear MAME directory")
+                            .accessibility_label("Clear MAME directory")
+                            .disabled(busy || self.config.general.mame_home.is_none())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if view.mame_server.is_none() {
+                                    view.config.general.mame_home = None;
+                                    view.save();
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            )
+            .child(
+                Button::new("mame-install-plugins")
+                    .label("Install MAME plugins")
+                    .small()
+                    .disabled(busy || self.config.general.mame_home.is_none())
+                    .tooltip("Install bundled plugins, replacing existing plugin files")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if view.mame_server.is_some() {
+                            return;
+                        }
+                        let Some(home) = view.config.general.mame_home.as_deref() else {
+                            return;
+                        };
+                        match mame::install_plugins(home) {
+                            Ok(()) => window.push_notification(
+                                Notification::success(format!(
+                                    "Installed NanoDrive plugins in {}",
+                                    home.join("plugins").display()
+                                ))
+                                .title("MAME plugins installed"),
+                                cx,
+                            ),
+                            Err(error) => window.push_notification(
+                                error_notification(
+                                    "MAME plugin installation failed",
+                                    format!("{error:#}"),
+                                ),
+                                cx,
+                            ),
+                        }
+                    })),
             )
     }
 
     fn mame_view(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.mame_server.is_some();
-        let selected = self.mame_device.and_then(|id| {
-            self.config
-                .routing
-                .devices
-                .iter()
-                .find(|device| device.id == id)
-                .filter(|device| {
-                    matches!(
-                        self.device_status.get(&device.id),
-                        Some(DeviceStatus::Connected(_))
-                    )
-                })
-        });
+        let route = self.mame_route();
         let nodes = self
             .config
             .routing
@@ -4644,7 +4802,10 @@ impl AppView {
                 };
                 Button::new(("mame-device", id as usize))
                     .label(name)
+                    .small()
+                    .w_full()
                     .toggled(self.mame_device == Some(id))
+                    .when(self.mame_device == Some(id), |button| button.primary())
                     .disabled(busy)
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.mame_device = Some(id);
@@ -4652,68 +4813,171 @@ impl AppView {
                     }))
             })
             .collect::<Vec<_>>();
-        let title = match self.mame_plugin {
-            mame::Plugin::NanoDrive6 => "YM2612 + SN76489",
-            mame::Plugin::NanoDrive8 => "YM2151",
-        };
-        let destination = selected.map_or("Select a connected NanoDrive", |device| {
-            device.name.as_str()
-        });
-        div().flex().flex_col().gap_3()
-            .child(div().text_lg().child("ROUTING CONNECTIONS"))
-            .child(div().flex().items_center().gap_2()
-                .child(div().text_sm().child("MAME plugin"))
-                .child(Button::new("mame-plugin-nd6").label("NanoDrive 6")
-                    .toggled(self.mame_plugin == mame::Plugin::NanoDrive6)
-                    .disabled(busy)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.mame_plugin = mame::Plugin::NanoDrive6;
-                        cx.notify();
-                    })))
-                .child(Button::new("mame-plugin-nd8").label("NanoDrive 8")
-                    .toggled(self.mame_plugin == mame::Plugin::NanoDrive8)
-                    .disabled(busy)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.mame_plugin = mame::Plugin::NanoDrive8;
-                        cx.notify();
-                    }))))
-            .child(div().flex().flex_wrap().items_center().gap_2()
-                .child(div().text_sm().child("NanoDrive"))
-                .children(nodes)
-                .when(selected.is_none(), |row| row.child(div().text_sm().text_color(rgb(0xf2a968))
-                    .child("Connect a device in Sequencer mode, then select it here."))))
-            .child(div().flex().items_center().gap_2()
-                .child(div().text_sm().child(format!("MAME [{title}]  →  {destination}")))
-                .child(div().text_sm().text_color(rgb(0xa6b6c3)).child("(other audio: MAME)")))
-            .child(div().flex().items_center().gap_2()
-                .child(div().text_sm().child(format!("{} · 127.0.0.1:32151", self.mame_status)))
-                .child(Button::new("mame-start").label("Start").disabled(busy || selected.is_none() || self.playing.is_some())
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(id) = view.mame_device {
-                            if view.playing.is_some() || view.mame_server.is_some() { return; }
-                            if view.mame_plugin == mame::Plugin::NanoDrive8 && view.config.general.mame_home.is_none() {
-                                view.pending_errors.push(error_notification(
-                                    "MAME HOME not set",
-                                    "Select the MAME directory in Settings > General.",
-                                ));
-                                cx.notify();
-                                return;
-                            }
-                            view.mame_status = "Starting...";
-                            view.mame_server = Some(mame::Server::start(view.device_service.playback_handle(), id, view.mame_plugin, view.config.general.mame_home.clone()));
-                            cx.notify();
-                        }
-                    })))
-                .child(Button::new("mame-stop").label("Stop").disabled(!busy || self.mame_status == "Stopping...")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(server) = &view.mame_server {
-                            server.stop();
-                            view.mame_status = "Stopping...";
-                            cx.notify();
-                        }
-                    }))))
-            .child(div().text_sm().text_color(rgb(0xa6b6c3))
-                .child("Start the server before MAME. MAME audio remains enabled and may be heard alongside NanoDrive."))
+        let has_devices = !nodes.is_empty();
+        div()
+            .px_2()
+            .pb_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .mt_2()
+                    .mb_1()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Output NanoDrive"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .min_h(px(48.))
+                    .gap_1()
+                    .children(nodes)
+                    .when(route.is_none(), |row| {
+                        row.child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0xf2a968))
+                                .child(if has_devices {
+                                    "Select a connected NanoDrive."
+                                } else {
+                                    "Connect a NanoDrive using the controls on the right."
+                                }),
+                        )
+                    }),
+            )
+            .when_some(route.and_then(Result::err), |panel, message| {
+                panel.child(div().text_sm().text_color(rgb(0xf2a968)).child(message))
+            })
+            .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))
+            .child(
+                div()
+                    .mt_2()
+                    .mb_1()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("MAME bridge server"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.mame_address)
+                                .readonly(true)
+                                .small()
+                                .w_full(),
+                        ),
+                    )
+                    .child(
+                        Button::new("mame-server-toggle")
+                            .icon(if busy {
+                                assets::IconName::Square
+                            } else {
+                                assets::IconName::Play
+                            })
+                            .small()
+                            .tooltip(if busy {
+                                "Stop MAME server"
+                            } else {
+                                "Start MAME server"
+                            })
+                            .accessibility_label(if busy {
+                                "Stop MAME server"
+                            } else {
+                                "Start MAME server"
+                            })
+                            .disabled(if busy {
+                                self.mame_status == "Stopping..."
+                            } else {
+                                !matches!(route, Some(Ok(_))) || self.playing.is_some()
+                            })
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if let Some(server) = &view.mame_server {
+                                    server.stop();
+                                    view.mame_status = "Stopping...";
+                                    cx.notify();
+                                    return;
+                                }
+                                if let Some(id) = view.mame_device {
+                                    if view.playing.is_some() || view.mame_server.is_some() {
+                                        return;
+                                    }
+                                    let Some(Ok(plugin)) = view.mame_route() else {
+                                        return;
+                                    };
+                                    if plugin == mame::Plugin::NanoDrive8
+                                        && view.config.general.mame_home.is_none()
+                                    {
+                                        view.pending_errors.push(error_notification(
+                                            "MAME HOME not set",
+                                            "Select the MAME directory in Routing > MAME.",
+                                        ));
+                                        cx.notify();
+                                        return;
+                                    }
+                                    view.mame_status = "Starting...";
+                                    view.mame_server = Some(mame::Server::start(
+                                        view.device_service.playback_handle(),
+                                        id,
+                                        plugin,
+                                        view.config.general.mame_home.clone(),
+                                    ));
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xa6b6c3))
+                    .child(self.mame_status),
+            )
+            .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))
+            .child(self.mame_home_controls(cx))
+            .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))
+            .child(
+                div()
+                    .mt_2()
+                    .mb_1()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("MAME launch command"),
+            )
+            .when_some(route.and_then(Result::ok), |panel, plugin| {
+                let command = match plugin {
+                    mame::Plugin::NanoDrive6 => &self.mame_nd6_command,
+                    mame::Plugin::NanoDrive8 => &self.mame_nd8_command,
+                };
+                panel.child(Input::new(command).readonly(true).small().w_full())
+            })
+            .when(!matches!(route, Some(Ok(_))), |panel| {
+                panel
+                    .child(
+                        Input::new(&self.mame_nd6_command)
+                            .readonly(true)
+                            .small()
+                            .w_full(),
+                    )
+                    .child(
+                        Input::new(&self.mame_nd8_command)
+                            .readonly(true)
+                            .small()
+                            .w_full(),
+                    )
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xa6b6c3))
+                    .child("MAME audio remains enabled."),
+            )
     }
 
     fn library_rows(
@@ -6036,14 +6300,37 @@ impl Render for AppView {
                                     }),
                             )
                             .child(
-                                Button::new("devices-icon")
-                                    .icon(assets::IconName::Cable)
-                                    .tooltip("Devices")
-                                    .accessibility_label("Devices")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.page = Page::Devices;
-                                        view.refresh_ports(cx);
-                                    })),
+                                div()
+                                    .relative()
+                                    .child(
+                                        Button::new("devices-icon")
+                                            .icon(assets::IconName::Cable)
+                                            .tooltip(if self.mame_server.is_some() && self.mame_status != "Starting..." {
+                                                "Devices · MAME server running"
+                                            } else {
+                                                "Devices"
+                                            })
+                                            .accessibility_label(if self.mame_server.is_some() && self.mame_status != "Starting..." {
+                                                "Devices, MAME server running"
+                                            } else {
+                                                "Devices"
+                                            })
+                                            .on_click(cx.listener(|view, _, _, cx| {
+                                                view.page = Page::Devices;
+                                                view.refresh_ports(cx);
+                                            })),
+                                    )
+                                    .when(self.mame_server.is_some() && self.mame_status != "Starting...", |node| {
+                                        node.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .size(px(8.))
+                                                .rounded_full()
+                                                .bg(rgb(ACCENT_COLOR)),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -6635,11 +6922,50 @@ mod tests {
         is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
         list_selection_target, music_format, notification_copy_text, piano_channel_panel_height,
         piano_gain_panel_height, piano_transition_ready, playback_state_label,
-        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
-        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, single_queue_selection, unsupported_chips,
-        update_selection_order, update_window_settings,
+        preferred_mame_device, remove_playlist_entries, renumber_connected_devices,
+        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
+        select_for_context, select_item, select_range, selection_status, single_queue_selection,
+        unsupported_chips, update_selection_order, update_window_settings,
     };
+
+    #[test]
+    fn mame_automatic_selection_prefers_first_compatible_connected_device() {
+        let devices: Vec<_> = (1..=3)
+            .map(|id| crate::routing::Device {
+                id,
+                name: format!("NanoDrive {id}"),
+                port: format!("port{id}"),
+                baud_rate: 115_200,
+            })
+            .collect();
+        let ym2151 = ndsif::CapabilityEntry {
+            write_id: 0x54,
+            instance: 0,
+            page: 0,
+            features: 1,
+            clock_mode: ndsif::ClockMode::Variable,
+            fixed_clock_hz: 0,
+        };
+        let models = HashMap::from([
+            (1, "Other".to_owned()),
+            (2, "NanoDrive 8".to_owned()),
+            (3, "NanoDrive 8".to_owned()),
+        ]);
+        let mut statuses = HashMap::new();
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), None);
+        statuses.insert(3, DeviceStatus::Connected(vec![ym2151]));
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), Some(3));
+        statuses.insert(1, DeviceStatus::Connected(vec![]));
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), Some(3));
+        statuses.insert(2, DeviceStatus::Connected(vec![ym2151]));
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), Some(2));
+        statuses.remove(&2);
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), Some(3));
+        statuses.remove(&3);
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), Some(1));
+        statuses.insert(1, DeviceStatus::Disconnecting);
+        assert_eq!(preferred_mame_device(&devices, &statuses, &models), None);
+    }
 
     #[test]
     fn chip_gain_panel_fits_rows_and_caps_height() {
