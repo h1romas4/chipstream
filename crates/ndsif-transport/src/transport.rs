@@ -67,6 +67,8 @@ impl NdsifSerialConfig {
 
 mod audio;
 mod dac;
+mod live;
+pub use live::{NdsifLiveDacSession, NdsifOrderedLiveSession};
 #[cfg(test)]
 #[path = "../tests/unit/transport.rs"]
 mod tests;
@@ -359,6 +361,10 @@ pub struct NdsifSerialTransport {
     output_volume_modified: bool,
     presentation_volume_synchronized: bool,
     timed_dac_capabilities: Option<DacCapabilities>,
+    control_features: u16,
+    max_payload: u16,
+    live_reset_ready: bool,
+    live_needs_reset: bool,
     configured_chip: bool,
     audio_stream: Option<AudioStream>,
     timed_dac_stream: Option<TimedDacStream>,
@@ -530,6 +536,9 @@ impl NdsifSerialTransport {
         &mut self,
         timeline: Arc<NdsifHostTimeline>,
     ) -> Result<(), NdsifTransportError> {
+        if self.live_needs_reset {
+            return Err(NdsifTransportError::LiveResetRequired);
+        }
         if self.wall_clock_origin.is_some() || self.host_timeline.is_some() {
             return Err(NdsifTransportError::HostTimelineAlreadySet);
         }
@@ -551,6 +560,8 @@ impl NdsifSerialTransport {
     /// Returns an error if the reset fails or a supported stream is not idle
     /// after the reset.
     pub fn reset_for_reuse(&mut self) -> Result<(), NdsifTransportError> {
+        self.live_reset_ready = false;
+        self.live_needs_reset = true;
         if self.output_volume_supported {
             self.request_typed(Command::SetOutputVolume {
                 attenuation: SILENT_OUTPUT_ATTENUATION,
@@ -580,6 +591,8 @@ impl NdsifSerialTransport {
         self.last_volume_update = None;
         self.presentation_volume_synchronized = false;
         self.configured_chip = false;
+        self.live_needs_reset = false;
+        self.live_reset_ready = true;
         Ok(())
     }
 
@@ -636,6 +649,10 @@ impl NdsifSerialTransport {
             output_volume_modified: false,
             presentation_volume_synchronized: false,
             timed_dac_capabilities: None,
+            control_features: 0,
+            max_payload: 0,
+            live_reset_ready: reset_device,
+            live_needs_reset: false,
             configured_chip: false,
             audio_stream: None,
             timed_dac_stream: None,
@@ -699,6 +716,12 @@ impl NdsifSerialTransport {
             };
             self.data_capacity = capabilities.data_capacity;
             self.event_capacity = capabilities.event_capacity;
+            self.max_payload = if offset == 0 {
+                capabilities.max_payload
+            } else {
+                self.max_payload.min(capabilities.max_payload)
+            };
+            self.control_features |= capabilities.control_features;
             self.output_volume_supported |=
                 capabilities.control_features & CONTROL_FEATURE_OUTPUT_VOLUME != 0;
             timed_dac_supported |= capabilities.control_features & CONTROL_FEATURE_DAC_PROFILE != 0;
@@ -1094,6 +1117,7 @@ impl NdsifTransport for NdsifSerialTransport {
         instance: u8,
         clock_hz: u32,
     ) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         let capability = self.capability(write_id, instance).ok_or_else(|| {
             format!(
                 "NDSIF does not support chip 0x{:02x} instance {instance}",
@@ -1161,12 +1185,14 @@ impl NdsifTransport for NdsifSerialTransport {
 
     /// Queue a register write for a later scheduled flush.
     fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.pending.push(PendingEvent::Register(event));
         Ok(())
     }
 
     /// Queue a raw PSG write for a later scheduled flush.
     fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.pending.push(PendingEvent::Psg(event));
         Ok(())
     }
@@ -1176,16 +1202,19 @@ impl NdsifTransport for NdsifSerialTransport {
         &mut self,
         event: NdsifRegisterEvent,
     ) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.schedule_timed_dac_initial_event(PendingEvent::Register(event))
     }
 
     /// Queue an initialization PSG write on the timed-DAC path.
     fn schedule_vgm_initial_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.schedule_timed_dac_initial_event(PendingEvent::Psg(event))
     }
 
     /// Complete timed-DAC setup and submit buffered initialization writes.
     fn finish_vgm_initialization(&mut self) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.finish_timed_dac_initialization(true)
     }
 
@@ -1197,6 +1226,7 @@ impl NdsifTransport for NdsifSerialTransport {
         divider: Divider,
         output_rate: u32,
     ) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         if self.host_timeline.is_some() {
             return Err(format!(
                 "{}: OKIM6258 audio stream is not supported with host-paced playback",
@@ -1240,12 +1270,14 @@ impl NdsifTransport for NdsifSerialTransport {
 
     /// Queue one ADPCM byte for the configured stream.
     fn schedule_adpcm_data(&mut self, event: NdsifAdpcmEvent) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.pending.push(PendingEvent::Data(event));
         Ok(())
     }
 
     /// Queue an audio control event, recording clock changes when needed.
     fn schedule_audio_control(&mut self, event: NdsifAudioControlEvent) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         if let NdsifAudioControl::Clock { clock_hz, .. } = event.control {
             if let Some(capability) = self.capability(WriteId::OKIM6258, event.instance)
                 && !supports_cached_clock(
@@ -1274,6 +1306,7 @@ impl NdsifTransport for NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.check_audio_cancellation()?;
         if self.audio_stream.as_ref().is_some_and(|stream| {
             stream.start_mode == AudioStartMode::Attempted && !stream.state.started()
@@ -1459,6 +1492,7 @@ impl NdsifTransport for NdsifSerialTransport {
 
     /// Force the configured audio stream to start when it is ready.
     fn start_audio_stream(&mut self, _instance: u8) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         if self.audio_stream.as_ref().is_some_and(|stream| {
             stream.start_mode != AudioStartMode::Automatic && !stream.state.started()
         }) {
@@ -1474,6 +1508,7 @@ impl NdsifTransport for NdsifSerialTransport {
         sample_frame: usize,
         output_rate: u32,
     ) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.flush_scheduled_until(sample_frame, output_rate)?;
         if self
             .audio_stream
@@ -1487,6 +1522,7 @@ impl NdsifTransport for NdsifSerialTransport {
 
     /// Finish the timed-DAC stream at the requested frame.
     fn finish_dac_stream(&mut self, sample_frame: usize, output_rate: u32) -> Result<(), String> {
+        self.ensure_scheduled_mode()?;
         self.finish_timed_dac_stream(sample_frame, output_rate)
     }
 }

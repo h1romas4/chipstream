@@ -9,6 +9,7 @@ pub mod command;
 pub mod decoder;
 pub mod error;
 pub mod frame;
+pub mod live;
 pub mod response;
 pub mod types;
 
@@ -28,10 +29,16 @@ pub use frame::{
     EncodedFrame, Frame, MAX_COBS_SIZE, MAX_ENCODED_SIZE, MAX_PAYLOAD_SIZE, MAX_RAW_SIZE,
     MessageType, PROTOCOL_VERSION,
 };
+pub use live::{
+    LIVE_DAC_PROFILE, LIVE_TICKS_PER_SECOND, LiveDacCapabilities, LiveDacRecord, LiveDacRecords,
+    MAX_LIVE_DAC_RECORDS, MAX_ORDERED_LIVE_RECORDS, ORDERED_LIVE_PROFILE, OrderedLiveCapabilities,
+    OrderedLiveRecord, OrderedLiveRecords, OrderedLiveStatus, OrderedLiveWrite,
+};
 pub use response::{
-    AudioStatus, CAPABILITY_ENTRY_SIZE, CONTROL_FEATURE_DAC_PROFILE, CONTROL_FEATURE_OUTPUT_VOLUME,
-    Capabilities, CapabilityEntry, ClockMode, DacCapabilities, DacStatus, DeviceInfo,
-    MAX_CAPABILITY_ENTRIES, Reply, Response, Status,
+    AudioStatus, CAPABILITY_ENTRY_SIZE, CONTROL_FEATURE_DAC_PROFILE, CONTROL_FEATURE_LIVE_DAC,
+    CONTROL_FEATURE_ORDERED_LIVE, CONTROL_FEATURE_OUTPUT_VOLUME, Capabilities, CapabilityEntry,
+    ClockMode, DacCapabilities, DacStatus, DeviceInfo, MAX_CAPABILITY_ENTRIES, Reply, Response,
+    Status,
 };
 pub use types::{
     AudioSampleConverter, AudioTiming, BytePosition, Divider, OkiClock, Pan, RegisterWrite,

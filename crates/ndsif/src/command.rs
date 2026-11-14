@@ -4,8 +4,10 @@
 //! supports the command or whether its current stream state permits it.
 
 use crate::{
-    BytePosition, Divider, EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, OkiClock,
-    Pan, RegisterWrite, WriteId, ZeroPair,
+    BytePosition, Divider, EncodedFrame, Error, Frame, LIVE_DAC_PROFILE, LiveDacRecord,
+    LiveDacRecords, MAX_LIVE_DAC_RECORDS, MAX_ORDERED_LIVE_RECORDS, MAX_PAYLOAD_SIZE, MessageType,
+    ORDERED_LIVE_PROFILE, OkiClock, OrderedLiveRecord, OrderedLiveRecords, Pan, RegisterWrite,
+    WriteId, ZeroPair,
 };
 
 /// Maximum immediate address/value pairs in one frame.
@@ -282,6 +284,29 @@ pub enum Command<'a> {
         /// Raw write bytes, bounded by [`MAX_DAC_EVENT_BYTES`].
         writes: &'a [u8],
     },
+    /// Request a page of draft live-DAC capabilities.
+    GetLiveDacCapabilities {
+        /// Target entry offset.
+        offset: u16,
+    },
+    /// Send live-DAC records without an acknowledgement.
+    LiveDacData {
+        /// YM2612 instance.
+        instance: u8,
+        /// Nonempty DAC records.
+        records: &'a [LiveDacRecord],
+    },
+    /// Request draft ordered-live capabilities.
+    GetOrderedLiveCapabilities,
+    /// Send ordered-live records without an acknowledgement.
+    OrderedLiveData {
+        /// Frame sequence number.
+        sequence: u32,
+        /// Nonempty records, bounded by the payload and record limits.
+        records: &'a [OrderedLiveRecord],
+    },
+    /// Request an ordered-live diagnostic snapshot.
+    GetOrderedLiveStatus,
 }
 
 impl Command<'_> {
@@ -304,6 +329,11 @@ impl Command<'_> {
             Self::DacEnd { .. } => 0x1b,
             Self::DacStatus { .. } => 0x1c,
             Self::DacRegisterEvent { .. } => 0x1d,
+            Self::GetLiveDacCapabilities { .. } => 0x1e,
+            Self::LiveDacData { .. } => 0x1f,
+            Self::GetOrderedLiveCapabilities => 0x21,
+            Self::OrderedLiveData { .. } => 0x22,
+            Self::GetOrderedLiveStatus => 0x23,
             Self::WriteRegisters { write_id, .. } | Self::WriteBytes { write_id, .. } => {
                 write_id.get()
             }
@@ -321,6 +351,9 @@ impl Command<'_> {
             | Self::GetDacCapabilities
             | Self::DacStart { .. }
             | Self::DacStatus { .. } => true,
+            Self::GetLiveDacCapabilities { .. }
+            | Self::GetOrderedLiveCapabilities
+            | Self::GetOrderedLiveStatus => true,
             Self::SetOutputVolume { response, .. } | Self::SetChipClock { response, .. } => {
                 *response
             }
@@ -331,7 +364,9 @@ impl Command<'_> {
             | Self::AudioStart { .. }
             | Self::DacData { .. }
             | Self::DacEnd { .. }
-            | Self::DacRegisterEvent { .. } => false,
+            | Self::DacRegisterEvent { .. }
+            | Self::LiveDacData { .. }
+            | Self::OrderedLiveData { .. } => false,
         }
     }
 
@@ -371,6 +406,34 @@ impl Command<'_> {
             Self::GetCapabilities { offset } => {
                 payload[..2].copy_from_slice(&offset.to_le_bytes());
                 2
+            }
+            Self::GetLiveDacCapabilities { offset } => {
+                payload[..2].copy_from_slice(&offset.to_le_bytes());
+                2
+            }
+            Self::GetOrderedLiveCapabilities | Self::GetOrderedLiveStatus => 0,
+            Self::LiveDacData { instance, records } => {
+                if records.is_empty() || records.len() > MAX_LIVE_DAC_RECORDS {
+                    return Err(Error::InvalidArgument);
+                }
+                payload[..3].copy_from_slice(&[LIVE_DAC_PROFILE, WriteId::YM2612.get(), instance]);
+                for (bytes, record) in payload[3..].as_chunks_mut::<5>().0.iter_mut().zip(records) {
+                    bytes[..4].copy_from_slice(&record.wait_ticks.to_le_bytes());
+                    bytes[4] = record.value;
+                }
+                3 + records.len() * 5
+            }
+            Self::OrderedLiveData { sequence, records } => {
+                if records.is_empty() || records.len() > MAX_ORDERED_LIVE_RECORDS {
+                    return Err(Error::InvalidArgument);
+                }
+                payload[0] = ORDERED_LIVE_PROFILE;
+                payload[1..5].copy_from_slice(&sequence.to_le_bytes());
+                let mut length = 5;
+                for record in records {
+                    length += record.encode(&mut payload[length..])?;
+                }
+                length
             }
             Self::WriteRegisters {
                 write_id,
@@ -792,6 +855,29 @@ pub enum Request<'a> {
         /// Borrowed raw write bytes.
         writes: &'a [u8],
     },
+    /// Request a page of draft live-DAC capabilities.
+    GetLiveDacCapabilities {
+        /// Target entry offset.
+        offset: u16,
+    },
+    /// Validated live-DAC records for a YM2612 instance.
+    LiveDacData {
+        /// Target instance.
+        instance: u8,
+        /// Borrowed DAC records.
+        records: LiveDacRecords<'a>,
+    },
+    /// Request draft ordered-live capabilities.
+    GetOrderedLiveCapabilities,
+    /// Validated ordered-live records.
+    OrderedLiveData {
+        /// Frame sequence number.
+        sequence: u32,
+        /// Borrowed ordered records.
+        records: OrderedLiveRecords<'a>,
+    },
+    /// Request an ordered-live diagnostic snapshot.
+    GetOrderedLiveStatus,
     /// An unrecognized command, preserved without interpreting its payload.
     Unknown {
         /// Request message type.
@@ -854,9 +940,11 @@ impl<'a> Request<'a> {
             return Err(Error::InvalidMessageType(message_type as u8));
         }
         let expected_type = match command_id {
-            0x00..=0x02 | 0x05 | 0x13 | 0x18 | 0x1a | 0x1c => Some(MessageType::Request),
+            0x00..=0x02 | 0x05 | 0x13 | 0x18 | 0x1a | 0x1c | 0x1e | 0x21 | 0x23 => {
+                Some(MessageType::Request)
+            }
             0x03..=0x04 => None,
-            0x10..=0x12 | 0x19 | 0x1b | 0x1d => Some(MessageType::NoResponse),
+            0x10..=0x12 | 0x19 | 0x1b | 0x1d | 0x1f | 0x22 => Some(MessageType::NoResponse),
             _ => None,
         };
         if expected_type.is_some_and(|expected| message_type != expected) {
@@ -1069,6 +1157,44 @@ impl<'a> Request<'a> {
                     page,
                     writes,
                 })
+            }
+            (MessageType::Request, 0x1e) => {
+                require_length(bytes, 2)?;
+                Ok(Self::GetLiveDacCapabilities {
+                    offset: u16::from_le_bytes([bytes[0], bytes[1]]),
+                })
+            }
+            (MessageType::NoResponse, 0x1f) => {
+                if bytes.len() < 3 {
+                    return Err(Error::InvalidLength);
+                }
+                if bytes[0] != LIVE_DAC_PROFILE || bytes[1] != WriteId::YM2612.get() {
+                    return Err(Error::InvalidArgument);
+                }
+                Ok(Self::LiveDacData {
+                    instance: bytes[2],
+                    records: LiveDacRecords::decode(&bytes[3..])?,
+                })
+            }
+            (MessageType::Request, 0x21) => {
+                require_length(bytes, 0)?;
+                Ok(Self::GetOrderedLiveCapabilities)
+            }
+            (MessageType::NoResponse, 0x22) => {
+                if bytes.len() < 5 {
+                    return Err(Error::InvalidLength);
+                }
+                if bytes[0] != ORDERED_LIVE_PROFILE {
+                    return Err(Error::InvalidArgument);
+                }
+                Ok(Self::OrderedLiveData {
+                    sequence: read_u32(&bytes[1..5]),
+                    records: OrderedLiveRecords::decode(&bytes[5..])?,
+                })
+            }
+            (MessageType::Request, 0x23) => {
+                require_length(bytes, 0)?;
+                Ok(Self::GetOrderedLiveStatus)
             }
             _ => Ok(Self::Unknown {
                 message_type,

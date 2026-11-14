@@ -3,7 +3,10 @@
 //! Correlation checks compare request and response identifiers; a completed
 //! response is not a readback or proof of a physical chip's state.
 
-use crate::{EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, StatusFlags};
+use crate::{
+    EncodedFrame, Error, Frame, LiveDacCapabilities, MAX_PAYLOAD_SIZE, MessageType,
+    OrderedLiveCapabilities, OrderedLiveStatus, StatusFlags,
+};
 
 /// Completion status carried by a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +77,10 @@ pub const MAX_CAPABILITY_ENTRIES: usize = (MAX_PAYLOAD_SIZE - 14) / CAPABILITY_E
 pub const CONTROL_FEATURE_OUTPUT_VOLUME: u16 = 1 << 0;
 /// Control feature bit indicating timed DAC profile discovery is supported.
 pub const CONTROL_FEATURE_DAC_PROFILE: u16 = 1 << 1;
+/// Draft live-DAC profile discovery capability.
+pub const CONTROL_FEATURE_LIVE_DAC: u16 = 1 << 2;
+/// Draft ordered-live profile discovery capability.
+pub const CONTROL_FEATURE_ORDERED_LIVE: u16 = 1 << 3;
 const CONFIGURABLE_CLOCK_FEATURE: u8 = 1 << 2;
 
 /// One page of device capabilities, borrowing its encoded entries.
@@ -400,6 +407,12 @@ pub enum Reply<'a> {
     DacCapabilities(DacCapabilities),
     /// Timed DAC status.
     DacStatus(DacStatus),
+    /// Draft live-DAC capability page.
+    LiveDacCapabilities(LiveDacCapabilities<'a>),
+    /// Draft ordered-live capabilities.
+    OrderedLiveCapabilities(OrderedLiveCapabilities),
+    /// Ordered-live diagnostic snapshot.
+    OrderedLiveStatus(OrderedLiveStatus),
     /// Unrecognized command response payload.
     Unknown(&'a [u8]),
 }
@@ -557,6 +570,17 @@ impl<'a> Response<'a> {
                     }
                     73
                 }
+                Reply::LiveDacCapabilities(capabilities) => {
+                    let length = capabilities.encode(&mut payload[1..]);
+                    LiveDacCapabilities::decode(&payload[1..1 + length])?;
+                    1 + length
+                }
+                Reply::OrderedLiveCapabilities(capabilities) => {
+                    let length = capabilities.encode(&mut payload[1..]);
+                    OrderedLiveCapabilities::decode(&payload[1..1 + length])?;
+                    1 + length
+                }
+                Reply::OrderedLiveStatus(status) => 1 + status.encode(&mut payload[1..]),
             }
         };
         let frame = Frame::new(
@@ -616,6 +640,9 @@ impl<'a> Response<'a> {
                 0x13 => Reply::AudioStatus(AudioStatus::decode(body)?),
                 0x18 => Reply::DacCapabilities(DacCapabilities::decode(body)?),
                 0x1c => Reply::DacStatus(DacStatus::decode(body)?),
+                0x1e => Reply::LiveDacCapabilities(LiveDacCapabilities::decode(body)?),
+                0x21 => Reply::OrderedLiveCapabilities(OrderedLiveCapabilities::decode(body)?),
+                0x23 => Reply::OrderedLiveStatus(OrderedLiveStatus::decode(body)?),
                 _ => Reply::Unknown(body),
             }
         };

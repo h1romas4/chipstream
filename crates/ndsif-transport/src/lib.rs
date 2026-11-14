@@ -18,6 +18,7 @@ pub use scheduled::{
     NdsifRoutingTransport, NdsifTransport,
 };
 pub use transport::{
-    NdsifDeviceInfo, NdsifHostTimeline, NdsifOutputGain, NdsifSerialConfig, NdsifSerialTransport,
+    NdsifDeviceInfo, NdsifHostTimeline, NdsifLiveDacSession, NdsifOrderedLiveSession,
+    NdsifOutputGain, NdsifSerialConfig, NdsifSerialTransport,
 };
 pub use worker::{NdsifHardwareWorkers, NdsifRecorder, NdsifWorkerDevice, NdsifWorkerError};

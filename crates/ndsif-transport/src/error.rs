@@ -73,6 +73,25 @@ pub enum NdsifTransportError {
     },
     /// Capability pagination failed to advance.
     InvalidCapabilitiesPagination,
+    /// The device did not advertise the requested optional live profile.
+    UnsupportedLiveProfile {
+        /// Profile identifier.
+        profile: u8,
+    },
+    /// A live capability or diagnostic response is inconsistent or unsupported.
+    InvalidLiveCapabilities {
+        /// Explanation of the invalid response.
+        reason: &'static str,
+    },
+    /// Live and scheduled playback cannot be mixed without a successful reset.
+    LiveResetRequired,
+    /// An invalid live operation or record was requested.
+    InvalidLiveOperation {
+        /// Explanation of the invalid operation.
+        reason: &'static str,
+    },
+    /// A failed live write may have partially reached the device.
+    LiveWriteIndeterminate,
     /// A DAC status reply referred to a different profile.
     UnexpectedDacProfile {
         /// Profile returned by the device.
@@ -123,6 +142,24 @@ impl fmt::Display for NdsifTransportError {
             Self::InvalidCapabilitiesPagination => {
                 f.write_str("NDSIF capabilities pagination did not advance")
             }
+            Self::UnsupportedLiveProfile { profile } => {
+                write!(f, "NDSIF device does not advertise live profile {profile}")
+            }
+            Self::InvalidLiveCapabilities { reason } => {
+                write!(
+                    f,
+                    "invalid or unsupported NDSIF live capabilities: {reason}"
+                )
+            }
+            Self::LiveResetRequired => f.write_str(
+                "NDSIF live and scheduled playback require a successful reset before switching",
+            ),
+            Self::InvalidLiveOperation { reason } => {
+                write!(f, "invalid NDSIF live operation: {reason}")
+            }
+            Self::LiveWriteIndeterminate => f.write_str(
+                "NDSIF live write may have partially succeeded; reset or close the device",
+            ),
             Self::UnexpectedDacProfile { profile } => write!(
                 f,
                 "NDSIF returned DAC profile {profile} status while profile 1 was requested"

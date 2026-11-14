@@ -303,6 +303,25 @@ connection.lock().map_err(|_| "device lock poisoned")?.reset_for_reuse()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Draft live playback
+
+Reset the device, configure clocks with `configure_live_clock`, then open an
+exclusive live session:
+
+- `begin_live_dac(instance)`: profile 2 revision 1. Immediate register and
+  PSG writes are not ordered against DAC records.
+- `begin_ordered_live()`: profile 3 revisions 4 and 5. PSG requires revision 5
+  and an advertised PSG target. `status()` is diagnostic, not a playback fence.
+
+Waits use 44,100 ticks per second; the first wait must be zero. Preserve
+repeated writes and obey the advertised frame limits. Sends are unacknowledged:
+success confirms serial I/O, not device acceptance. Profile 2 can drop full
+frames; profile 3 can apply backpressure. Do not retry an uncertain write.
+
+Dropping a session does not stop playback. Stop the producer and call
+`reset_for_reuse()` after an I/O failure or before switching playback modes;
+close the device if reset fails.
+
 ## Examples
 
 The debug example implements `NdsifTransport` without a device and prints

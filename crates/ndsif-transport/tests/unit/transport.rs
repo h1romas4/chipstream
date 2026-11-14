@@ -5,7 +5,7 @@ use super::*;
 use ndsif::{DacRecord, DacRecordKind, DacStatus};
 
 #[cfg(unix)]
-fn test_transport() -> (NdsifSerialTransport, serialport::TTYPort) {
+pub(super) fn test_transport() -> (NdsifSerialTransport, serialport::TTYPort) {
     use serialport::SerialPort;
 
     let (mut device, mut port) = serialport::TTYPort::pair().unwrap();
@@ -24,6 +24,10 @@ fn test_transport() -> (NdsifSerialTransport, serialport::TTYPort) {
             output_volume_modified: false,
             presentation_volume_synchronized: false,
             timed_dac_capabilities: None,
+            control_features: 0,
+            max_payload: 256,
+            live_reset_ready: true,
+            live_needs_reset: false,
             configured_chip: false,
             audio_stream: None,
             timed_dac_stream: None,
@@ -61,7 +65,7 @@ fn pending_host_timeline_waits_for_start_and_can_be_cancelled() {
 }
 
 #[cfg(unix)]
-fn read_device_frame(
+pub(super) fn read_device_frame(
     device: &mut serialport::TTYPort,
     decoder: &mut ndsif::Decoder,
 ) -> ndsif::Frame {
@@ -77,7 +81,11 @@ fn read_device_frame(
 }
 
 #[cfg(unix)]
-fn reply_to_device_frame(device: &mut serialport::TTYPort, frame: &ndsif::Frame, reply: Reply<'_>) {
+pub(super) fn reply_to_device_frame(
+    device: &mut serialport::TTYPort,
+    frame: &ndsif::Frame,
+    reply: Reply<'_>,
+) {
     use std::io::Write;
 
     let response = Response::for_request(frame, reply)

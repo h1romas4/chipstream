@@ -45,6 +45,7 @@ checked through capability discovery before use.
 | `no_std`, allocation-free framing, CRC, and incremental decoding | Serial I/O, retries, or capability discovery |
 | Typed commands, responses, capabilities, and audio-stream messages | Remote-device state validation |
 | YM2612 timed DAC profile 1 commands and status codecs | DAC playback scheduling or VGM stream expansion |
+| Draft live DAC profile 2 and ordered live profile 3 codecs | Live clock conversion, pacing, or device acceptance guarantees |
 | Argument validation, batch encoding, and transaction correlation | Playback scheduling, synthesis, or ADPCM encoding |
 | Audio timing and local stream-position/status tracking | |
 
@@ -55,6 +56,31 @@ protocol codecs and provides the transport and scheduling layer.
 
 `AudioStreamState` tracks host-side protocol state; it does not communicate with
 the device. Request and response payloads borrow caller-owned data or frames.
+
+## Draft live profiles
+
+The optional live profiles are independent of timed DAC profile 1. Discover
+them separately using `CONTROL_FEATURE_LIVE_DAC` and
+`CONTROL_FEATURE_ORDERED_LIVE`. The stable `SPEC_REVISION` remains 40; these
+live profiles are draft extensions. Profile 2 uses revision 1. Profile 3
+revision 4 supports YM2612 writes, while revision 5 additionally supports
+SN76489 PSG writes.
+
+`LiveDacRecord` and `OrderedLiveRecord` store waits in 44,100 Hz ticks.
+Profile 2 waits refer to the preceding DAC value; profile 3 waits refer to the
+preceding ordered write of any kind. The first wait is zero. Zero waits and
+repeated values must be retained. The caller converts source timestamps,
+checks their ordering and overflow, obeys device capability limits, and uses
+RESET before switching profiles.
+
+`LiveDacData` and `OrderedLiveData` have no response. A successfully encoded or
+sent frame is not proof that the device accepted or played it. Profile 2 may
+drop an entire frame if its FIFO is full; profile 3 may apply transport
+backpressure instead. An empty FIFO is not an underflow fault. Profile 3
+sequence numbers start at zero and wrap at `u32::MAX`. Its optional status is
+a diagnostic snapshot, not a physical playback-completion fence. Immediate
+FM writes are not ordered relative to profile 2 DAC writes; profile 3 keeps
+all supported writes in a single ordered timeline.
 
 ## Framing and commands
 
