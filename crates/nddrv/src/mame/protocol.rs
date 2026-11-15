@@ -2,6 +2,8 @@
 
 use anyhow::{Result, bail};
 
+use crate::routing::{ChipInstance, HardwareChip};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plugin {
     NanoDrive6,
@@ -9,6 +11,23 @@ pub enum Plugin {
 }
 
 impl Plugin {
+    pub fn supported_systems(self) -> &'static [&'static str] {
+        match self {
+            Self::NanoDrive6 => &["Sega System C2", "Mega Drive"],
+            Self::NanoDrive8 => &["YM2151-based systems"],
+        }
+    }
+
+    pub fn output_chips(self) -> &'static [(HardwareChip, ChipInstance)] {
+        match self {
+            Self::NanoDrive6 => &[
+                (HardwareChip::Ym2612, ChipInstance::Primary),
+                (HardwareChip::Sn76489, ChipInstance::Primary),
+            ],
+            Self::NanoDrive8 => &[(HardwareChip::Ym2151, ChipInstance::Primary)],
+        }
+    }
+
     pub fn for_device(
         model: &str,
         capabilities: &[ndsif::CapabilityEntry],
@@ -207,6 +226,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mame_plugins_route_to_their_supported_sound_chips() {
+        assert_eq!(
+            Plugin::NanoDrive6.output_chips(),
+            &[
+                (HardwareChip::Ym2612, ChipInstance::Primary),
+                (HardwareChip::Sn76489, ChipInstance::Primary),
+            ]
+        );
+        assert_eq!(
+            Plugin::NanoDrive8.output_chips(),
+            &[(HardwareChip::Ym2151, ChipInstance::Primary)]
+        );
+    }
+
+    #[test]
     fn selects_route_from_connected_device_capabilities() {
         let entry = |write_id, page| ndsif::CapabilityEntry {
             write_id,
@@ -252,6 +286,14 @@ mod tests {
 
     #[test]
     fn launch_examples_match_the_plugin_route() {
+        assert_eq!(
+            Plugin::NanoDrive6.supported_systems(),
+            ["Sega System C2", "Mega Drive"]
+        );
+        assert_eq!(
+            Plugin::NanoDrive8.supported_systems(),
+            ["YM2151-based systems"]
+        );
         assert_eq!(
             Plugin::NanoDrive6.launch_example(),
             "mame -plugin nanodrive6 megadrij [softname]"

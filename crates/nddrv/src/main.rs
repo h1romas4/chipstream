@@ -194,6 +194,26 @@ fn chip_tag(chip: &ChipTag, dimmed: bool) -> Div {
         .child(chip.label())
 }
 
+fn mame_system_row(system: &str) -> Div {
+    div()
+        .w_full()
+        .h(px(patchbay::ROW))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .ml_4()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .text_color(rgb(0xe4edf2))
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(system.to_owned()),
+        )
+}
+
 fn music_format(path: &Path) -> &'static str {
     library::track_format(path)
 }
@@ -4396,6 +4416,27 @@ impl AppView {
             &self.device_status,
             &routing_plan,
         );
+        let mame_route = self.mame_route();
+        let mame_plugin = mame_route
+            .as_ref()
+            .and_then(|route| route.as_ref().ok())
+            .copied();
+        let mame_systems = mame_plugin
+            .map(mame::Plugin::supported_systems)
+            .unwrap_or_default();
+        let mame_system_hint = mame_route
+            .as_ref()
+            .and_then(|route| route.as_ref().err())
+            .copied()
+            .unwrap_or("Connect a NanoDrive.");
+        let target_height = if self.mame_mode {
+            patchbay::HEADER
+                + patchbay::ROW * mame_systems.len().max(1) as f32
+                + patchbay::MAME_SYSTEM_GAP * mame_systems.len().saturating_sub(1) as f32
+                + 16.
+        } else {
+            graph.emulator_height
+        };
         let mut panels = vec![
             div()
                 .absolute()
@@ -4410,7 +4451,7 @@ impl AppView {
                 .child(
                     div()
                         .px_2()
-                        .py_1()
+                        .h(px(patchbay::HEADER))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -4453,7 +4494,7 @@ impl AppView {
                 .left(px(patchbay::TARGET_X))
                 .top(px(0.))
                 .w(px(patchbay::TARGET_WIDTH))
-                .h(px(graph.emulator_height))
+                .h(px(target_height))
                 .rounded_md()
                 .border_1()
                 .border_color(rgb(0x30414d))
@@ -4461,22 +4502,58 @@ impl AppView {
                 .child(
                     div()
                         .px_3()
-                        .py_2()
+                        .h(px(patchbay::HEADER))
+                        .flex()
+                        .items_center()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Emulation"),
+                        .child(if self.mame_mode { "MAME" } else { "Emulation" }),
                 )
                 .when(self.mame_mode, |panel| {
                     panel.child(
                         div()
-                            .px_3()
-                            .text_sm()
-                            .text_color(rgb(0xa6b6c3))
-                            .child("Audio is played by MAME."),
+                            .px_2()
+                            .pb_2()
+                            .flex()
+                            .flex_col()
+                            .gap(px(patchbay::MAME_SYSTEM_GAP))
+                            .when(mame_systems.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .w_full()
+                                        .h(px(patchbay::ROW))
+                                        .min_w_0()
+                                        .flex()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .text_color(rgb(0xa6b6c3))
+                                        .child(mame_system_hint),
+                                )
+                            })
+                            .children(mame_systems.iter().map(|system| mame_system_row(system))),
                     )
                 })
                 .into_any_element(),
         ];
         let mut nodes = Vec::new();
+        if self.mame_mode {
+            for index in 0..mame_systems.len() {
+                nodes.push(
+                    div()
+                        .absolute()
+                        .left(px(patchbay::TARGET_X + patchbay::TARGET_WIDTH - 4.))
+                        .top(px(
+                            patchbay::mame_system_row_y(index) + (patchbay::ROW - 8.) / 2.
+                        ))
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(rgb(ACCENT_COLOR))
+                        .into_any_element(),
+                );
+            }
+        }
         for (index, source) in graph
             .sources
             .iter()
@@ -4766,10 +4843,18 @@ impl AppView {
             }
         }
         let cables = if self.mame_mode {
-            graph
-                .mame_cable(self.mame_route().and_then(Result::ok).and(self.mame_device))
-                .into_iter()
-                .collect()
+            let selected_device = mame_plugin.and(self.mame_device);
+            let mut cables = graph.mame_device_cables(
+                selected_device,
+                mame_plugin.map_or(&[], mame::Plugin::output_chips),
+            );
+            let mame_connected = self.mame_server.is_some() && self.mame_status == "Connected";
+            cables.extend(graph.mame_system_cables(
+                selected_device,
+                mame_systems.len(),
+                mame_connected,
+            ));
+            cables
         } else {
             graph.cables
         };
@@ -4814,8 +4899,14 @@ impl AppView {
                                 path.cubic_bezier_to(end, point(start.x + control_offset, start.y),
                                     point(end.x - control_offset, end.y));
                                 if let Ok(path) = path.build() {
-                                    window.paint_path(path, rgb(if !cable.available { 0xf2a968 }
-                                        else if cable.hardware { ACCENT_COLOR } else { 0x466370 }));
+                                    let color = if !cable.available {
+                                        0xf2a968
+                                    } else if cable.highlighted {
+                                        ACCENT_COLOR
+                                    } else {
+                                        0x466370
+                                    };
+                                    window.paint_path(path, rgb(color));
                                 }
                             }
                         }

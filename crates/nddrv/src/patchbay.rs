@@ -15,6 +15,7 @@ pub const DEVICE_WIDTH: f32 = 300.;
 pub const HEADER: f32 = 40.;
 pub const DEVICE_HEADER: f32 = 104.;
 pub const ROW: f32 = 30.;
+pub const MAME_SYSTEM_GAP: f32 = 4.;
 const GAP: f32 = 16.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +94,7 @@ pub struct Cable {
     pub target_y: f32,
     pub hardware: bool,
     pub available: bool,
+    pub highlighted: bool,
 }
 
 #[derive(Debug)]
@@ -105,20 +107,68 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn mame_cable(&self, selected_device: Option<u64>) -> Option<Cable> {
-        let device = self
+    pub fn mame_device_cables(
+        &self,
+        selected_device: Option<u64>,
+        chips: &[(HardwareChip, ChipInstance)],
+    ) -> Vec<Cable> {
+        let Some(device) = self
             .devices
             .iter()
-            .find(|device| device.connected && Some(device.id) == selected_device)?;
-        Some(Cable {
-            source_x: SOURCE_X + SOURCE_WIDTH,
-            source_y: HEADER + ROW / 2.,
-            target_x: DEVICE_X,
-            target_y: device.top + 20.,
-            hardware: true,
-            available: true,
-        })
+            .find(|device| device.connected && Some(device.id) == selected_device)
+        else {
+            return Vec::new();
+        };
+        chips
+            .iter()
+            .filter_map(|(chip, instance)| {
+                let endpoint = device
+                    .endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.chip == *chip && endpoint.instance == *instance)?;
+                Some(Cable {
+                    source_x: SOURCE_X + SOURCE_WIDTH - 16.,
+                    source_y: HEADER / 2.,
+                    target_x: DEVICE_X,
+                    target_y: endpoint.y + ROW / 2.,
+                    hardware: true,
+                    available: endpoint.available,
+                    highlighted: true,
+                })
+            })
+            .collect()
     }
+
+    pub fn mame_system_cables(
+        &self,
+        selected_device: Option<u64>,
+        system_count: usize,
+        highlighted: bool,
+    ) -> Vec<Cable> {
+        if system_count == 0
+            || !self
+                .devices
+                .iter()
+                .any(|device| device.connected && Some(device.id) == selected_device)
+        {
+            return Vec::new();
+        }
+        (0..system_count)
+            .map(|index| Cable {
+                source_x: TARGET_X + TARGET_WIDTH,
+                source_y: mame_system_row_y(index) + ROW / 2.,
+                target_x: SOURCE_X + 16.,
+                target_y: HEADER / 2.,
+                hardware: true,
+                available: true,
+                highlighted,
+            })
+            .collect()
+    }
+}
+
+pub fn mame_system_row_y(index: usize) -> f32 {
+    HEADER + (ROW + MAME_SYSTEM_GAP) * index as f32
 }
 
 pub fn row_y(index: usize) -> f32 {
@@ -243,6 +293,7 @@ pub fn build(
                     target_y: endpoint.y + ROW / 2.,
                     hardware: true,
                     available: endpoint.available,
+                    highlighted: true,
                 }
             } else {
                 Cable {
@@ -252,6 +303,7 @@ pub fn build(
                     target_y: row_y(index) + ROW / 2.,
                     hardware: false,
                     available: true,
+                    highlighted: false,
                 }
             }
         })
@@ -351,15 +403,46 @@ mod tests {
         assert_eq!(graph.devices[1].extra_labels, ["No chips advertised"]);
         let cable = graph.cables.iter().find(|cable| cable.hardware).unwrap();
         assert_eq!(cable.target_y, first.endpoints[0].y + ROW / 2.);
-        assert!(graph.mame_cable(None).is_none());
-        assert!(graph.mame_cable(Some(3)).is_none());
-        assert_eq!(graph.mame_cable(Some(1)).unwrap().target_y, first.top + 20.);
-        assert_eq!(
-            graph.mame_cable(Some(2)).unwrap().target_y,
-            graph.devices[1].top + 20.
+        let mame_cables =
+            graph.mame_device_cables(Some(1), &[(HardwareChip::Ym2151, ChipInstance::Primary)]);
+        assert_eq!(mame_cables.len(), 1);
+        assert_eq!(mame_cables[0].source_x, SOURCE_X + SOURCE_WIDTH - 16.);
+        assert_eq!(mame_cables[0].target_x, DEVICE_X);
+        assert_eq!(mame_cables[0].target_y, first.endpoints[0].y + ROW / 2.);
+        assert!(mame_cables[0].highlighted);
+        assert!(graph.mame_device_cables(None, &[]).is_empty());
+        assert!(graph.mame_device_cables(Some(3), &[]).is_empty());
+        assert!(
+            graph
+                .mame_device_cables(Some(2), &[(HardwareChip::Ym2151, ChipInstance::Primary)])
+                .is_empty()
         );
+        let system_cables = graph.mame_system_cables(Some(1), 2, false);
+        assert_eq!(system_cables.len(), 2);
+        assert!(system_cables.iter().all(|cable| !cable.highlighted));
+        assert_eq!(system_cables[0].source_x, TARGET_X + TARGET_WIDTH);
+        assert_eq!(system_cables[0].source_y, HEADER + ROW / 2.);
+        assert_eq!(
+            system_cables[1].source_y,
+            HEADER + ROW + MAME_SYSTEM_GAP + ROW / 2.
+        );
+        assert_eq!(system_cables[0].target_x, SOURCE_X + 16.);
+        assert_eq!(system_cables[0].target_y, HEADER / 2.);
+        let active_system_cables = graph.mame_system_cables(Some(1), 2, true);
+        assert!(active_system_cables.iter().all(|cable| cable.highlighted));
+        assert!(graph.mame_system_cables(None, 2, false).is_empty());
+        assert!(graph.mame_system_cables(Some(3), 2, false).is_empty());
         let disconnected = build(&devices, &HashMap::new(), &routes);
-        assert!(disconnected.mame_cable(Some(1)).is_none());
+        assert!(
+            disconnected
+                .mame_device_cables(Some(1), &[(HardwareChip::Ym2151, ChipInstance::Primary)])
+                .is_empty()
+        );
+        assert!(
+            disconnected
+                .mame_system_cables(Some(1), 2, false)
+                .is_empty()
+        );
     }
 
     #[test]
