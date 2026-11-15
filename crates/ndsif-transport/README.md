@@ -1,15 +1,17 @@
 # ndsif-transport
 
 NDSIF is a retro sound-chip playback interface developed by the NanoDrive
-Project.
+Project for controlling real, physical sound chips through NanoDrive devices.
 
-This crate provides serial transport and scheduled playback for
-physical NanoDrive devices that support NDSIF. If you provide
-your own transport or only need the protocol codec,
-use [`ndsif`](https://crates.io/crates/ndsif) instead.
+For an overview of the NDSIF protocol,
+see the [`ndsif` documentation](https://crates.io/crates/ndsif).
 
-Use `ndsif-transport` directly when you need serial transport, custom
-scheduling, or device workers.
+This crate provides serial transport and scheduled playback for physical
+NanoDrive devices that support NDSIF. 
+
+If you provide your own transport or only need the protocol codec, use
+[`ndsif`](https://crates.io/crates/ndsif) instead. Use `ndsif-transport` directly
+when you need serial transport, custom scheduling, or device workers.
 
 ## Supported Devices
 

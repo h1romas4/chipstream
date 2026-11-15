@@ -1,11 +1,12 @@
 # ndsif
 
 NDSIF is a retro sound-chip playback interface developed by the NanoDrive
-Project.
+Project to control real, physical sound chips through NanoDrive devices.
 
 This crate provides an allocation-free `no_std` Rust codec
-implementing the NDSIF v1 for both host and guest implementations. It does
-not communicate with devices; use
+implementing the NDSIF v1 for both host and guest implementations.
+
+It does not communicate with devices; use
 [`ndsif-transport`](https://crates.io/crates/ndsif-transport) for serial
 access to physical NanoDrive hardware.
 
@@ -56,31 +57,6 @@ protocol codecs and provides the transport and scheduling layer.
 
 `AudioStreamState` tracks host-side protocol state; it does not communicate with
 the device. Request and response payloads borrow caller-owned data or frames.
-
-## Draft live profiles
-
-The optional live profiles are independent of timed DAC profile 1. Discover
-them separately using `CONTROL_FEATURE_LIVE_DAC` and
-`CONTROL_FEATURE_ORDERED_LIVE`. The stable `SPEC_REVISION` remains 40; these
-live profiles are draft extensions. Profile 2 uses revision 1. Profile 3
-revision 4 supports YM2612 writes, while revision 5 additionally supports
-SN76489 PSG writes.
-
-`LiveDacRecord` and `OrderedLiveRecord` store waits in 44,100 Hz ticks.
-Profile 2 waits refer to the preceding DAC value; profile 3 waits refer to the
-preceding ordered write of any kind. The first wait is zero. Zero waits and
-repeated values must be retained. The caller converts source timestamps,
-checks their ordering and overflow, obeys device capability limits, and uses
-RESET before switching profiles.
-
-`LiveDacData` and `OrderedLiveData` have no response. A successfully encoded or
-sent frame is not proof that the device accepted or played it. Profile 2 may
-drop an entire frame if its FIFO is full; profile 3 may apply transport
-backpressure instead. An empty FIFO is not an underflow fault. Profile 3
-sequence numbers start at zero and wrap at `u32::MAX`. Its optional status is
-a diagnostic snapshot, not a physical playback-completion fence. Immediate
-FM writes are not ordered relative to profile 2 DAC writes; profile 3 keeps
-all supported writes in a single ordered timeline.
 
 ## Framing and commands
 
@@ -234,6 +210,31 @@ assert!(stream.event_is_ready(position));
 Use this crate on either side of an NDSIF connection to encode and decode
 protocol messages. Transport I/O and device-specific state management are left
 to the application.
+
+## Draft live profiles
+
+The optional live profiles are independent of timed DAC profile 1. Discover
+them separately using `CONTROL_FEATURE_LIVE_DAC` and
+`CONTROL_FEATURE_ORDERED_LIVE`. The stable `SPEC_REVISION` remains 40; these
+live profiles are draft extensions. Profile 2 uses revision 1. Profile 3
+revision 4 supports YM2612 writes, while revision 5 additionally supports
+SN76489 PSG writes.
+
+`LiveDacRecord` and `OrderedLiveRecord` store waits in 44,100 Hz ticks.
+Profile 2 waits refer to the preceding DAC value; profile 3 waits refer to the
+preceding ordered write of any kind. The first wait is zero. Zero waits and
+repeated values must be retained. The caller converts source timestamps,
+checks their ordering and overflow, obeys device capability limits, and uses
+RESET before switching profiles.
+
+`LiveDacData` and `OrderedLiveData` have no response. A successfully encoded or
+sent frame is not proof that the device accepted or played it. Profile 2 may
+drop an entire frame if its FIFO is full; profile 3 may apply transport
+backpressure instead. An empty FIFO is not an underflow fault. Profile 3
+sequence numbers start at zero and wrap at `u32::MAX`. Its optional status is
+a diagnostic snapshot, not a physical playback-completion fence. Immediate
+FM writes are not ordered relative to profile 2 DAC writes; profile 3 keeps
+all supported writes in a single ordered timeline.
 
 ## Examples
 
