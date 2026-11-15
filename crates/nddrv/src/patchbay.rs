@@ -142,10 +142,10 @@ impl Graph {
     pub fn mame_system_cables(
         &self,
         selected_device: Option<u64>,
-        system_count: usize,
+        connected_systems: &[bool],
         highlighted: bool,
     ) -> Vec<Cable> {
-        if system_count == 0
+        if !connected_systems.iter().any(|connected| *connected)
             || !self
                 .devices
                 .iter()
@@ -153,8 +153,11 @@ impl Graph {
         {
             return Vec::new();
         }
-        (0..system_count)
-            .map(|index| Cable {
+        connected_systems
+            .iter()
+            .enumerate()
+            .filter(|(_, connected)| **connected)
+            .map(|(index, _)| Cable {
                 source_x: TARGET_X + TARGET_WIDTH,
                 source_y: mame_system_row_y(index) + ROW / 2.,
                 target_x: SOURCE_X + 16.,
@@ -417,7 +420,7 @@ mod tests {
                 .mame_device_cables(Some(2), &[(HardwareChip::Ym2151, ChipInstance::Primary)])
                 .is_empty()
         );
-        let system_cables = graph.mame_system_cables(Some(1), 2, false);
+        let system_cables = graph.mame_system_cables(Some(1), &[true, true, false], false);
         assert_eq!(system_cables.len(), 2);
         assert!(system_cables.iter().all(|cable| !cable.highlighted));
         assert_eq!(system_cables[0].source_x, TARGET_X + TARGET_WIDTH);
@@ -428,10 +431,29 @@ mod tests {
         );
         assert_eq!(system_cables[0].target_x, SOURCE_X + 16.);
         assert_eq!(system_cables[0].target_y, HEADER / 2.);
-        let active_system_cables = graph.mame_system_cables(Some(1), 2, true);
+        let active_system_cables = graph.mame_system_cables(Some(1), &[true, true, false], true);
         assert!(active_system_cables.iter().all(|cable| cable.highlighted));
-        assert!(graph.mame_system_cables(None, 2, false).is_empty());
-        assert!(graph.mame_system_cables(Some(3), 2, false).is_empty());
+        let nd8_system_cables = graph.mame_system_cables(Some(1), &[false, false, true], false);
+        assert_eq!(nd8_system_cables.len(), 1);
+        assert_eq!(
+            nd8_system_cables[0].source_y,
+            HEADER + 2. * (ROW + MAME_SYSTEM_GAP) + ROW / 2.
+        );
+        assert!(
+            graph
+                .mame_system_cables(Some(1), &[false, false, false], false)
+                .is_empty()
+        );
+        assert!(
+            graph
+                .mame_system_cables(None, &[true, true], false)
+                .is_empty()
+        );
+        assert!(
+            graph
+                .mame_system_cables(Some(3), &[true, true], false)
+                .is_empty()
+        );
         let disconnected = build(&devices, &HashMap::new(), &routes);
         assert!(
             disconnected
@@ -440,7 +462,7 @@ mod tests {
         );
         assert!(
             disconnected
-                .mame_system_cables(Some(1), 2, false)
+                .mame_system_cables(Some(1), &[true, true], false)
                 .is_empty()
         );
     }

@@ -4421,14 +4421,13 @@ impl AppView {
             .as_ref()
             .and_then(|route| route.as_ref().ok())
             .copied();
-        let mame_systems = mame_plugin
-            .map(mame::Plugin::supported_systems)
-            .unwrap_or_default();
-        let mame_system_hint = mame_route
-            .as_ref()
-            .and_then(|route| route.as_ref().err())
-            .copied()
-            .unwrap_or("Connect a NanoDrive.");
+        let mame_systems = mame::Plugin::all_systems();
+        let connected_systems = mame_systems
+            .iter()
+            .map(|system| {
+                mame_plugin.is_some_and(|plugin| plugin.supported_systems().contains(system))
+            })
+            .collect::<Vec<_>>();
         let target_height = if self.mame_mode {
             patchbay::HEADER
                 + patchbay::ROW * mame_systems.len().max(1) as f32
@@ -4473,7 +4472,7 @@ impl AppView {
                         )
                         .child(
                             Button::new("routing-input-mame")
-                                .label("MAME")
+                                .label("MAME Bridge")
                                 .small()
                                 .toggled(self.mame_mode)
                                 .when(self.mame_mode, |button| button.primary())
@@ -4516,22 +4515,6 @@ impl AppView {
                             .flex()
                             .flex_col()
                             .gap(px(patchbay::MAME_SYSTEM_GAP))
-                            .when(mame_systems.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .w_full()
-                                        .h(px(patchbay::ROW))
-                                        .min_w_0()
-                                        .flex()
-                                        .items_center()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_xs()
-                                        .text_color(rgb(0xa6b6c3))
-                                        .child(mame_system_hint),
-                                )
-                            })
                             .children(mame_systems.iter().map(|system| mame_system_row(system))),
                     )
                 })
@@ -4851,7 +4834,7 @@ impl AppView {
             let mame_connected = self.mame_server.is_some() && self.mame_status == "Connected";
             cables.extend(graph.mame_system_cables(
                 selected_device,
-                mame_systems.len(),
+                &connected_systems,
                 mame_connected,
             ));
             cables
@@ -4972,7 +4955,7 @@ impl AppView {
                     .mb_1()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("MAME directory (MAME HOME)"),
+                    .child("MAME HOME directory"),
             )
             .child(
                 div()

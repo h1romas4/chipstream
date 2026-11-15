@@ -11,6 +11,10 @@ pub enum Plugin {
 }
 
 impl Plugin {
+    pub fn all_systems() -> &'static [&'static str] {
+        &["Sega System C2", "Mega Drive", "YM2151-based systems"]
+    }
+
     pub fn supported_systems(self) -> &'static [&'static str] {
         match self {
             Self::NanoDrive6 => &["Sega System C2", "Mega Drive"],
@@ -224,6 +228,14 @@ fn decode_one(plugin: Plugin, bytes: &[u8]) -> Result<Option<(Event, usize)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_all_mame_systems_independent_of_device_selection() {
+        assert_eq!(
+            Plugin::all_systems(),
+            &["Sega System C2", "Mega Drive", "YM2151-based systems"]
+        );
+    }
 
     #[test]
     fn mame_plugins_route_to_their_supported_sound_chips() {
