@@ -195,6 +195,19 @@ fn chip_tag(chip: &ChipTag, dimmed: bool) -> Div {
         .child(chip.label())
 }
 
+fn system_tag(system: String) -> Div {
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .py(px(2.))
+        .rounded_md()
+        .bg(rgb(0x3e2f24))
+        .text_xs()
+        .text_color(rgb(0xe0c3a0))
+        .whitespace_nowrap()
+        .child(system)
+}
+
 fn mame_system_row(system: &str) -> Div {
     div()
         .w_full()
@@ -3549,6 +3562,18 @@ impl AppView {
         });
         let metadata =
             track.map(|track| track.metadata_for(self.config.general.vgm_metadata_language));
+        let system_metadata_language =
+            if matches!(self.details_selection, DetailsSelection::Playlist) {
+                MetadataLanguage::English
+            } else {
+                self.config.general.vgm_metadata_language
+            };
+        let system_name = track
+            .map(|track| track.metadata_for(system_metadata_language))
+            .and_then(|metadata| metadata.system_name.as_deref())
+            .map(str::trim)
+            .filter(|system| !system.is_empty())
+            .map(str::to_owned);
         let title = path.map(|path| {
             metadata
                 .and_then(|metadata| metadata.title.clone())
@@ -3687,12 +3712,23 @@ impl AppView {
                                                             .child("Chips"),
                                                     )
                                                     .child(
-                                                        div().flex().flex_wrap().gap_1().children(
-                                                            track
-                                                                .chips
-                                                                .iter()
-                                                                .map(|chip| chip_tag(chip, false)),
-                                                        ),
+                                                        div()
+                                                            .flex()
+                                                            .flex_wrap()
+                                                            .gap_1()
+                                                            .children(
+                                                                track.chips.iter().map(|chip| {
+                                                                    chip_tag(chip, false)
+                                                                }),
+                                                            )
+                                                            .when_some(
+                                                                system_name,
+                                                                |row, system_name| {
+                                                                    row.child(system_tag(
+                                                                        system_name,
+                                                                    ))
+                                                                },
+                                                            ),
                                                     ),
                                             )
                                         },
@@ -5421,18 +5457,7 @@ impl AppView {
                             .gap_2()
                             .min_w_0()
                             .when_some(system_name, |row, system_name| {
-                                row.child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .px_2()
-                                        .py(px(2.))
-                                        .rounded_md()
-                                        .bg(rgb(0x3e2f24))
-                                        .text_xs()
-                                        .text_color(rgb(0xe0c3a0))
-                                        .whitespace_nowrap()
-                                        .child(system_name),
-                                )
+                                row.child(system_tag(system_name))
                             })
                             .child(
                                 div()
@@ -5838,6 +5863,16 @@ impl AppView {
                 let metadata = track.map_or(&fallback_metadata, |track| {
                     track.metadata_for(self.config.general.vgm_metadata_language)
                 });
+                let system_name = track
+                    .and_then(|track| {
+                        track
+                            .metadata_for(MetadataLanguage::English)
+                            .system_name
+                            .as_deref()
+                    })
+                    .map(str::trim)
+                    .filter(|system| !system.is_empty())
+                    .map(str::to_owned);
                 let unsupported = track
                     .map(|track| {
                         unsupported_chips_with_plan(
@@ -5919,6 +5954,7 @@ impl AppView {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
+                            .gap_1()
                             .child(
                                 div()
                                     .flex()
@@ -5958,12 +5994,25 @@ impl AppView {
                             )
                             .child(
                                 div()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_sm()
-                                    .text_color(rgb(0xa6b6c3))
-                                    .child(artist),
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .text_sm()
+                                            .text_color(rgb(0xa6b6c3))
+                                            .child(artist),
+                                    )
+                                    .when_some(system_name, |row, system_name| {
+                                        row.child(system_tag(system_name))
+                                    }),
                             ),
                     )
                     .context_menu(move |menu, _, cx| {
