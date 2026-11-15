@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "I/O-independent NDSIF v1 protocol codec for NanoDrive"
 authors = ["h1romas4 <h1romas4@gmail.com>"]
-license = "MIT"
+license = "BSD-3-Clause"
 repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 
