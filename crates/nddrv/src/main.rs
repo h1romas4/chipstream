@@ -1782,15 +1782,12 @@ impl AppView {
     }
 
     fn toggle_album_collapsed(&mut self, directory: PathBuf) {
+        let scroll_position = self.library_scroll.logical_scroll_top();
         if !self.collapsed_albums.remove(&directory) {
             self.collapsed_albums.insert(directory.clone());
         }
         self.rebuild_music_rows();
-        if let Some(index) = self.music_rows.iter().position(|row| {
-            matches!(row, MusicListRow::Album { directory: row_directory, .. } if row_directory == &directory)
-        }) {
-            self.library_scroll.scroll_to_reveal_item(index);
-        }
+        self.library_scroll.scroll_to(scroll_position);
     }
 
     fn set_all_albums_collapsed(&mut self, collapsed: bool) {
