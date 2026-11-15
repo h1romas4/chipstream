@@ -4187,6 +4187,7 @@ impl AppView {
                     .when(selected, |row| row.bg(rgb(0x304755)))
                     .hover(|style| style.bg(rgb(0x293a47)))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        view.collapsed_albums.clear();
                         view.selected_directory = Some(path.clone());
                         view.update_filter(cx);
                         cx.notify();
