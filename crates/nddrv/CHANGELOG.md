@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Pass MAME's YM2151 clock through the NanoDrive 8 bridge, including 4,026,987 Hz.
+
 ## v0.12.0
 
 - Add MAME input support for NanoDrive 6 and 8, with built-in plugin installation.

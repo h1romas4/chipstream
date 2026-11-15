@@ -38,18 +38,22 @@ fn test_connection(
                             0 => Reply::Complete,
                             1 => Reply::Ping(frame.payload()),
                             3 => Reply::Complete,
+                            4 => {
+                                frames_tx.send(frame.clone()).unwrap();
+                                Reply::Complete
+                            }
                             5 => {
                                 let mut entries = Vec::new();
                                 let chips = match plugin {
                                     Plugin::NanoDrive6 => vec![
-                                        (0x52, 0, 7_670_454_u32),
-                                        (0x53, 1, 7_670_454),
-                                        (0x50, 0, 3_579_545),
+                                        (0x52, 0, 7_670_454_u32, 1, 1),
+                                        (0x53, 1, 7_670_454, 1, 1),
+                                        (0x50, 0, 3_579_545, 1, 1),
                                     ],
-                                    Plugin::NanoDrive8 => vec![(0x54, 0, 4_000_000)],
+                                    Plugin::NanoDrive8 => vec![(0x54, 0, 0_u32, 5, 2)],
                                 };
-                                for (id, page, clock) in chips {
-                                    entries.extend_from_slice(&[id, 0, page, 1, 1]);
+                                for (id, page, clock, features, clock_mode) in chips {
+                                    entries.extend_from_slice(&[id, 0, page, features, clock_mode]);
                                     entries.extend_from_slice(&clock.to_le_bytes());
                                 }
                                 let caps = Capabilities::new(
@@ -201,10 +205,19 @@ fn nd8_plugin_stream_reaches_ym2151_device() {
         &events,
         |pid, name, tag, _| {
             assert_eq!((pid, name, tag), (42, "abc", ":ym"));
-            Ok(4_000_000)
+            Ok(4_026_987)
         },
     )
     .unwrap();
+    let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        Request::decode(&frame).unwrap(),
+        Request::SetChipClock {
+            write_id: WriteId::YM2151,
+            instance: 0,
+            hz: 4_026_987,
+        }
+    ));
     let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
     let Request::WriteRegisters {
         write_id, writes, ..
