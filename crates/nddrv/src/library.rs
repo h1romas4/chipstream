@@ -17,6 +17,7 @@ use soundlog::vgm::header::VgmHeader;
 use walkdir::WalkDir;
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const SYSTEM_SEARCH_TAG_PREFIX: &str = "system:";
 const YMFM_CHIPS: [Chip; 11] = [
     Chip::Ym2413,
     Chip::Ym2151,
@@ -96,6 +97,16 @@ impl Track {
                 .to_lowercase(),
             metadata.album.as_deref().unwrap_or_default().to_lowercase(),
             metadata
+                .system_name
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase(),
+            metadata
+                .release_date
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase(),
+            metadata
                 .comment
                 .as_deref()
                 .unwrap_or_default()
@@ -112,9 +123,15 @@ impl Track {
     }
 
     fn with_original_metadata(mut self, metadata: TrackMetadata) -> Self {
-        for value in [&metadata.title, &metadata.artist, &metadata.album]
-            .into_iter()
-            .flatten()
+        for value in [
+            &metadata.title,
+            &metadata.artist,
+            &metadata.album,
+            &metadata.system_name,
+            &metadata.release_date,
+        ]
+        .into_iter()
+        .flatten()
         {
             self.search_fields.push(value.to_lowercase());
         }
@@ -268,6 +285,71 @@ impl Track {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderGroupMetadata {
+    pub title: String,
+    pub system_name: Option<String>,
+    pub release_date: Option<String>,
+}
+
+fn consistent_folder_value<'a>(
+    tracks: &'a [Track],
+    directory: &Path,
+    value: impl Fn(&'a Track) -> Option<&'a str>,
+) -> Option<String> {
+    let mut result: Option<String> = None;
+    for track in tracks
+        .iter()
+        .filter(|track| track.path.parent() == Some(directory))
+    {
+        let Some(candidate) = value(track)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if result
+            .as_deref()
+            .is_some_and(|result| !result.eq_ignore_ascii_case(candidate))
+        {
+            return None;
+        }
+        result.get_or_insert_with(|| candidate.to_owned());
+    }
+    result
+}
+
+pub fn folder_group_metadata(
+    tracks: &[Track],
+    directory: &Path,
+    language: MetadataLanguage,
+) -> FolderGroupMetadata {
+    let title = consistent_folder_value(tracks, directory, |track| {
+        track.metadata_for(language).album.as_deref()
+    })
+    .unwrap_or_else(|| {
+        directory
+            .file_name()
+            .unwrap_or(directory.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    });
+    let system_name = consistent_folder_value(tracks, directory, |track| {
+        track
+            .metadata_for(MetadataLanguage::English)
+            .system_name
+            .as_deref()
+    });
+    let release_date = consistent_folder_value(tracks, directory, |track| {
+        track.metadata.release_date.as_deref()
+    });
+    FolderGroupMetadata {
+        title,
+        system_name,
+        release_date,
+    }
+}
+
 pub fn filter_indices(tracks: &[Track], query: &str, directory: Option<&Path>) -> Vec<usize> {
     let query = query.trim().to_lowercase();
     tracks
@@ -312,11 +394,28 @@ pub fn filter_indices_with_tags(
     directory: Option<&Path>,
     tags: &[String],
 ) -> Vec<usize> {
-    let (formats, chips): (Vec<_>, Vec<_>) = tags
+    let (formats, other_tags): (Vec<_>, Vec<_>) = tags
         .iter()
         .cloned()
         .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM"));
+    let (systems, chips): (Vec<_>, Vec<_>) = other_tags
+        .into_iter()
+        .partition(|tag| system_search_tag_value(tag).is_some());
     let mut indices = filter_indices_with_chips(tracks, query, directory, &chips);
+    if !systems.is_empty() {
+        indices.retain(|&index| {
+            systems.iter().all(|tag| {
+                let Some(system) = system_search_tag_value(tag) else {
+                    return false;
+                };
+                tracks[index]
+                    .metadata
+                    .system_name
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(system))
+            })
+        });
+    }
     if !formats.is_empty() {
         indices.retain(|&index| {
             formats
@@ -325,6 +424,12 @@ pub fn filter_indices_with_tags(
         });
     }
     indices
+}
+
+fn system_search_tag_value(tag: &str) -> Option<&str> {
+    tag.get(..SYSTEM_SEARCH_TAG_PREFIX.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(SYSTEM_SEARCH_TAG_PREFIX))?;
+    tag.get(SYSTEM_SEARCH_TAG_PREFIX.len()..)
 }
 
 pub fn filter_indices_for_music(
@@ -976,6 +1081,69 @@ mod tests {
     }
 
     #[test]
+    fn folder_group_metadata_uses_consistent_values_and_folder_fallback() {
+        let directory = PathBuf::from("/music/sonic");
+        let tracks = vec![
+            Track::new(
+                directory.join("one.vgm"),
+                TrackMetadata {
+                    album: Some("Sonic".into()),
+                    system_name: Some("Mega Drive".into()),
+                    release_date: Some("1991".into()),
+                    ..Default::default()
+                },
+                vec![],
+            )
+            .with_original_metadata(TrackMetadata {
+                album: Some("ソニック".into()),
+                system_name: Some("メガドライブ".into()),
+                ..Default::default()
+            }),
+            Track::new(
+                directory.join("two.vgm"),
+                TrackMetadata {
+                    album: Some("Sonic".into()),
+                    system_name: Some("mega drive".into()),
+                    release_date: Some("1991".into()),
+                    ..Default::default()
+                },
+                vec![],
+            )
+            .with_original_metadata(TrackMetadata {
+                album: Some("ソニック".into()),
+                system_name: Some("メガドライブ".into()),
+                ..Default::default()
+            }),
+        ];
+        let english = folder_group_metadata(&tracks, &directory, MetadataLanguage::English);
+        assert_eq!(english.title, "Sonic");
+        assert_eq!(english.system_name.as_deref(), Some("Mega Drive"));
+        assert_eq!(english.release_date.as_deref(), Some("1991"));
+        let original = folder_group_metadata(&tracks, &directory, MetadataLanguage::Original);
+        assert_eq!(original.title, "ソニック");
+        assert_eq!(original.system_name.as_deref(), Some("Mega Drive"));
+        assert_eq!(original.release_date.as_deref(), Some("1991"));
+
+        let inconsistent = vec![
+            tracks[0].clone(),
+            Track::new(
+                directory.join("two.vgm"),
+                TrackMetadata {
+                    album: Some("Another game".into()),
+                    system_name: Some("Other platform".into()),
+                    release_date: Some("1992".into()),
+                    ..Default::default()
+                },
+                vec![],
+            ),
+        ];
+        let fallback = folder_group_metadata(&inconsistent, &directory, MetadataLanguage::English);
+        assert_eq!(fallback.title, "sonic");
+        assert_eq!(fallback.system_name, None);
+        assert_eq!(fallback.release_date, None);
+    }
+
+    #[test]
     fn scan_orders_by_directory_then_filename_not_metadata_title() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1375,6 +1543,8 @@ mod tests {
                     title: Some("Opening".into()),
                     artist: Some("Composer".into()),
                     album: Some("Album".into()),
+                    system_name: Some("Mega Drive".into()),
+                    release_date: Some("1991".into()),
                     comment: Some("Loop notes".into()),
                 },
                 vec![],
@@ -1392,6 +1562,8 @@ mod tests {
         assert_eq!(filter_indices(&tracks, " cOmPoSeR ", None), vec![0, 1]);
         assert_eq!(filter_indices(&tracks, "opening", None), vec![0]);
         assert_eq!(filter_indices(&tracks, "album", None), vec![0]);
+        assert_eq!(filter_indices(&tracks, "mega drive", None), vec![0]);
+        assert_eq!(filter_indices(&tracks, "1991", None), vec![0]);
         assert_eq!(filter_indices(&tracks, "notes", None), vec![0]);
         assert_eq!(filter_indices(&tracks, "SECOND.MDX", None), vec![1]);
         assert!(filter_indices(&tracks, "openingcomposer", None).is_empty());
@@ -1456,6 +1628,14 @@ mod tests {
                 PathBuf::from(path),
                 TrackMetadata {
                     title: Some(title.into()),
+                    system_name: Some(
+                        if path.to_ascii_lowercase().ends_with(".mdx") {
+                            "Sharp X68000"
+                        } else {
+                            "Mega Drive"
+                        }
+                        .into(),
+                    ),
                     ..Default::default()
                 },
                 vec![ChipTag::new(&chip)],
@@ -1482,6 +1662,19 @@ mod tests {
                 &["MDX".into(), "YM2151".into()]
             ),
             [2]
+        );
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "", None, &["system:sharp x68000".into()]),
+            [2, 3]
+        );
+        assert_eq!(
+            filter_indices_with_tags(
+                &tracks,
+                "",
+                None,
+                &["MDX".into(), "system:Sharp X68000".into()]
+            ),
+            [2, 3]
         );
         assert!(
             filter_indices_with_tags(&tracks, "", None, &["VGM".into(), "OKIM6258".into()])

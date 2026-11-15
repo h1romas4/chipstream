@@ -198,8 +198,55 @@ fn music_format(path: &Path) -> &'static str {
     library::track_format(path)
 }
 
-fn ends_folder_group(path: &Path, next: Option<&Path>) -> bool {
-    next.is_some_and(|next| path.parent() != next.parent())
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MusicListRow {
+    Album {
+        directory: PathBuf,
+        artwork_track: PathBuf,
+        visible_track_count: usize,
+        total_track_count: usize,
+    },
+    Track {
+        filtered_index: usize,
+    },
+}
+
+fn build_music_list_rows<'a>(
+    track_paths: impl IntoIterator<Item = &'a Path>,
+    filtered_tracks: &[usize],
+) -> Vec<MusicListRow> {
+    let track_paths = track_paths.into_iter().collect::<Vec<_>>();
+    let mut total_counts = HashMap::<PathBuf, usize>::new();
+    for path in &track_paths {
+        if let Some(directory) = path.parent() {
+            *total_counts.entry(directory.to_path_buf()).or_default() += 1;
+        }
+    }
+    let mut visible_counts = HashMap::<PathBuf, usize>::new();
+    for &track_index in filtered_tracks {
+        if let Some(directory) = track_paths[track_index].parent() {
+            *visible_counts.entry(directory.to_path_buf()).or_default() += 1;
+        }
+    }
+
+    let mut rows = Vec::with_capacity(filtered_tracks.len());
+    let mut previous_directory: Option<PathBuf> = None;
+    for (filtered_index, &track_index) in filtered_tracks.iter().enumerate() {
+        let path = track_paths[track_index];
+        if let Some(directory) = path.parent() {
+            if previous_directory.as_deref() != Some(directory) {
+                rows.push(MusicListRow::Album {
+                    directory: directory.to_path_buf(),
+                    artwork_track: path.to_path_buf(),
+                    visible_track_count: visible_counts[directory],
+                    total_track_count: total_counts[directory],
+                });
+                previous_directory = Some(directory.to_path_buf());
+            }
+        }
+        rows.push(MusicListRow::Track { filtered_index });
+    }
+    rows
 }
 
 fn keep_preview_sources(
@@ -238,6 +285,7 @@ fn track_title(
     metadata: &TrackMetadata,
     dimmed: bool,
     tooltip: String,
+    show_game: bool,
 ) -> Stateful<Div> {
     let (game, title) = Track::display_title_parts(path, metadata);
     div()
@@ -249,18 +297,20 @@ fn track_title(
         .font_weight(FontWeight::SEMIBOLD)
         .when(dimmed, |label| label.text_color(rgb(0x82919b)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .when_some(game, |row, game| {
-            row.child(
-                div()
-                    .min_w_0()
-                    .max_w(relative(1.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .child(game.to_owned()),
-            )
-            .child(div().flex_shrink_0().child(" / "))
+        .when(show_game, |row| {
+            row.when_some(game, |row, game| {
+                row.child(
+                    div()
+                        .min_w_0()
+                        .max_w(relative(1.0))
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(game.to_owned()),
+                )
+                .child(div().flex_shrink_0().child(" / "))
+            })
         })
         .child(
             div()
@@ -632,6 +682,7 @@ struct AppView {
     tracks: Vec<Track>,
     track_by_path: HashMap<PathBuf, usize>,
     filtered_tracks: Vec<usize>,
+    music_rows: Vec<MusicListRow>,
     selected_tracks: HashSet<PathBuf>,
     selected_queue: HashSet<usize>,
     track_anchor: Option<PathBuf>,
@@ -650,17 +701,22 @@ struct AppView {
     details_artwork_error: bool,
     details_artwork_size: u32,
     details_request: u64,
+    album_artwork: HashMap<(PathBuf, u32), Arc<RenderImage>>,
+    album_artwork_loading: HashSet<(PathBuf, u32)>,
+    album_artwork_loaded: HashSet<(PathBuf, u32)>,
+    album_artwork_generation: u64,
     directories: Vec<DirectoryEntry>,
     visible_directories: Vec<usize>,
     expanded_directories: HashMap<PathBuf, HashSet<PathBuf>>,
     selected_directory: Option<PathBuf>,
-    library_scroll: UniformListScrollHandle,
+    library_scroll: ListState,
     queue_scroll: UniformListScrollHandle,
     directory_scroll: UniformListScrollHandle,
     panel_state: Entity<ResizableState>,
     keep_side_widths: Option<bool>,
     query: Entity<InputState>,
     available_chips: Vec<&'static str>,
+    available_systems: Vec<String>,
     suggestion_index: usize,
     suggestions_hidden: bool,
     _subscription: Subscription,
@@ -1380,8 +1436,8 @@ impl AppView {
             None => (InputContent::new(""), None),
         };
         let query = cx.new(|cx| {
-            let mut input =
-                InputState::new(window, cx).placeholder("Filter text, chip, format or NanoDrive");
+            let mut input = InputState::new(window, cx)
+                .placeholder("Filter text, system, chip, format or NanoDrive");
             input.set_value(search_content, window, cx);
             input
         });
@@ -1414,7 +1470,7 @@ impl AppView {
                     InputEvent::Blur => {}
                     InputEvent::PressEnter { .. } => {
                         if let Some((_, chips)) = view.chip_suggestions(window, cx)
-                            && let Some(chip) = chips.get(view.suggestion_index).copied()
+                            && let Some(chip) = chips.get(view.suggestion_index).cloned()
                         {
                             view.accept_chip(chip, window, cx);
                         }
@@ -1510,6 +1566,7 @@ impl AppView {
             tracks: Vec::new(),
             track_by_path: HashMap::new(),
             filtered_tracks: Vec::new(),
+            music_rows: Vec::new(),
             selected_tracks: HashSet::new(),
             selected_queue: HashSet::new(),
             track_anchor: None,
@@ -1528,17 +1585,22 @@ impl AppView {
             details_artwork_error: false,
             details_artwork_size: 0,
             details_request: 0,
+            album_artwork: HashMap::new(),
+            album_artwork_loading: HashSet::new(),
+            album_artwork_loaded: HashSet::new(),
+            album_artwork_generation: 0,
             directories: Vec::new(),
             visible_directories: Vec::new(),
             expanded_directories,
             selected_directory: None,
-            library_scroll: UniformListScrollHandle::default(),
+            library_scroll: ListState::new(0, ListAlignment::Top, px(100.)),
             queue_scroll: UniformListScrollHandle::default(),
             directory_scroll: UniformListScrollHandle::default(),
             panel_state: cx.new(|_| ResizableState::default()),
             keep_side_widths: None,
             query,
             available_chips: Vec::new(),
+            available_systems: Vec::new(),
             suggestion_index: 0,
             suggestions_hidden: false,
             _subscription: subscription,
@@ -1649,6 +1711,12 @@ impl AppView {
             &chips,
             &nanodrive_chips(&self.device_status),
         );
+        self.music_rows = build_music_list_rows(
+            self.tracks.iter().map(|track| track.path.as_path()),
+            &self.filtered_tracks,
+        );
+        self.library_scroll
+            .reset_with_uniform_height(self.music_rows.len(), px(68.));
         if !self.selected_tracks.is_empty() || self.track_anchor.is_some() {
             let visible: HashSet<_> = self
                 .filtered_tracks
@@ -1666,14 +1734,12 @@ impl AppView {
                 self.track_anchor = None;
             }
         }
-        self.library_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        if !self.music_rows.is_empty() {
+            self.library_scroll.scroll_to_reveal_item(0);
+        }
     }
 
-    fn chip_suggestions(
-        &self,
-        window: &Window,
-        cx: &App,
-    ) -> Option<(Range<usize>, Vec<&'static str>)> {
+    fn chip_suggestions(&self, window: &Window, cx: &App) -> Option<(Range<usize>, Vec<String>)> {
         let input = self.query.read(cx);
         if !input.focus_handle(cx).is_focused(window) || self.suggestions_hidden {
             return None;
@@ -1683,11 +1749,12 @@ impl AppView {
             input.cursor(),
             input.tokens(),
             &self.available_chips,
+            &self.available_systems,
             has_connected_nanodrive(&self.device_status),
         )
     }
 
-    fn accept_chip(&mut self, chip: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    fn accept_chip(&mut self, chip: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some((range, suggestions)) = self.chip_suggestions(window, cx) else {
             return;
         };
@@ -1695,8 +1762,13 @@ impl AppView {
             return;
         }
         let result = self.query.update(cx, |input, cx| {
-            let result =
-                input.replace_range_with_token(range, InlineToken::new(chip, chip), window, cx);
+            let label = search_suggestion_label(&chip).to_owned();
+            let result = input.replace_range_with_token(
+                range,
+                InlineToken::new(chip.clone(), label),
+                window,
+                cx,
+            );
             input.focus(window, cx);
             result
         });
@@ -1746,7 +1818,10 @@ impl AppView {
                         let id = token.token().id();
                         let ymfm = ChipTag::is_ymfm_name(id.as_ref());
                         let format = matches!(id.as_ref(), "MDX" | "VGM" | "NanoDrive");
-                        let (background, foreground) = if format {
+                        let system = id.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX);
+                        let (background, foreground) = if system {
+                            (0x3e2f24, 0xe0c3a0)
+                        } else if format {
                             (0x4a606d, 0xe7f1f3)
                         } else {
                             chip_colors(ymfm)
@@ -1755,7 +1830,7 @@ impl AppView {
                             InputToken::new(token).when(!token.is_selected(), |tag| {
                                 tag.bg(rgb(background))
                                     .text_color(rgb(foreground))
-                                    .border_color(rgb(if format || ymfm {
+                                    .border_color(rgb(if format || ymfm || system {
                                         background
                                     } else {
                                         0xb77ad4
@@ -1776,20 +1851,34 @@ impl AppView {
                         .border_1()
                         .border_color(rgb(0x485969))
                         .children(chips.into_iter().enumerate().map(|(index, chip)| {
+                            let label = search_suggestion_label(&chip).to_owned();
+                            let kind = search_suggestion_kind(&chip);
+                            let suggestion = chip;
                             div()
-                                .id(SharedString::from(format!("chip-suggestion-{chip}")))
+                                .id(SharedString::from(format!("search-suggestion-{index}")))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
                                 .px_2()
                                 .py_1()
                                 .rounded_sm()
                                 .cursor_pointer()
                                 .when(index == self.suggestion_index, |row| row.bg(rgb(0x39495a)))
                                 .hover(|style| style.bg(rgb(0x39495a)))
-                                .child(chip)
+                                .child(div().min_w_0().text_ellipsis().child(label))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_xs()
+                                        .text_color(rgb(0xa6b6c3))
+                                        .child(kind),
+                                )
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, cx| {
                                         cx.stop_propagation();
-                                        view.accept_chip(chip, window, cx);
+                                        view.accept_chip(suggestion.clone(), window, cx);
                                     }),
                                 )
                         })),
@@ -1938,6 +2027,7 @@ impl AppView {
                     return;
                 }
                 view.scanning = false;
+                view.clear_album_artwork(cx);
                 view.tracks = result.tracks;
                 view.track_by_path = track_by_path;
                 view.available_chips = view
@@ -1947,6 +2037,18 @@ impl AppView {
                     .collect();
                 view.available_chips.sort_unstable();
                 view.available_chips.dedup();
+                view.available_systems = view
+                    .tracks
+                    .iter()
+                    .filter_map(|track| track.metadata.system_name.as_deref())
+                    .map(str::trim)
+                    .filter(|system| !system.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                view.available_systems
+                    .sort_unstable_by_key(|system| system.to_lowercase());
+                view.available_systems
+                    .dedup_by(|left, right| left.eq_ignore_ascii_case(right));
                 view.directories = result.directories;
                 for directory in &view.directories {
                     if directory.depth == 0 {
@@ -3189,6 +3291,81 @@ impl AppView {
         for error in std::mem::take(&mut self.pending_errors) {
             window.push_notification(error, cx);
         }
+    }
+
+    fn clear_album_artwork(&mut self, cx: &mut Context<Self>) {
+        self.album_artwork_generation = self.album_artwork_generation.wrapping_add(1);
+        self.album_artwork_loading.clear();
+        self.album_artwork_loaded.clear();
+        for (_, image) in self.album_artwork.drain() {
+            cx.drop_image(image, None);
+        }
+    }
+
+    fn ensure_album_artwork(
+        &mut self,
+        directory: PathBuf,
+        track_path: PathBuf,
+        size: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (directory.clone(), size);
+        if self.album_artwork_loaded.contains(&key)
+            || !self.album_artwork_loading.insert(key.clone())
+        {
+            return;
+        }
+        let generation = self.album_artwork_generation;
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async move { library::find_artwork(&track_path) })
+                .await;
+            let result = match found {
+                Ok(None) => Ok(None),
+                Ok(Some(path)) => {
+                    let load = this.update(cx, |view, cx| {
+                        if view.album_artwork_generation != generation {
+                            return None;
+                        }
+                        let future: std::pin::Pin<
+                            Box<dyn std::future::Future<Output = _> + Send + 'static>,
+                        > = Box::pin(ImgResourceLoader::load(path.into(), cx));
+                        Some(future)
+                    });
+                    match load {
+                        Ok(Some(load)) => match cx.background_spawn(load).await {
+                            Ok(image) => cx
+                                .background_spawn(async move { artwork::resize(image, size) })
+                                .await
+                                .map(Some)
+                                .map_err(|error| error.to_string()),
+                            Err(error) => Err(error.to_string()),
+                        },
+                        _ => return,
+                    }
+                }
+                Err(error) => Err(format!("{error:#}")),
+            };
+            let _ = this.update(cx, |view, cx| {
+                if view.album_artwork_generation != generation {
+                    return;
+                }
+                view.album_artwork_loading.remove(&key);
+                view.album_artwork_loaded.insert(key.clone());
+                match result {
+                    Ok(Some(image)) => {
+                        view.album_artwork.insert(key, image);
+                    }
+                    Ok(None) => {}
+                    Err(error) => view.pending_errors.push(error_notification(
+                        "Artwork error",
+                        format!("{}: {error}", directory.display()),
+                    )),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn refresh_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4980,12 +5157,166 @@ impl AppView {
             )
     }
 
-    fn library_rows(
+    fn library_row(&mut self, index: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        match self.music_rows[index].clone() {
+            MusicListRow::Album {
+                directory,
+                artwork_track,
+                visible_track_count,
+                total_track_count,
+            } => self.album_row(
+                index,
+                directory,
+                artwork_track,
+                visible_track_count,
+                total_track_count,
+                window,
+                cx,
+            ),
+            MusicListRow::Track { filtered_index } => {
+                self.library_track_row(filtered_index, window, cx)
+            }
+        }
+    }
+
+    fn album_row(
         &mut self,
-        range: Range<usize>,
+        index: usize,
+        directory: PathBuf,
+        artwork_track: PathBuf,
+        visible_track_count: usize,
+        total_track_count: usize,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    ) -> AnyElement {
+        let artwork_size = artwork::target_size(window.scale_factor());
+        self.ensure_album_artwork(directory.clone(), artwork_track.clone(), artwork_size, cx);
+        let artwork = self
+            .album_artwork
+            .get(&(directory.clone(), artwork_size))
+            .cloned();
+        let has_artwork = artwork.is_some();
+        let artwork_loading = self
+            .album_artwork_loading
+            .contains(&(directory.clone(), artwork_size));
+        let metadata = library::folder_group_metadata(
+            &self.tracks,
+            &directory,
+            self.config.general.vgm_metadata_language,
+        );
+        let count = if visible_track_count == total_track_count {
+            format!("{total_track_count} tracks")
+        } else {
+            format!("{visible_track_count} of {total_track_count} tracks")
+        };
+        let system_name = metadata.system_name;
+        let mut details = Vec::new();
+        if let Some(release_date) = metadata.release_date {
+            details.push(release_date);
+        }
+        details.push(count);
+        let details = details.join(" · ");
+        div()
+            .id(SharedString::from(format!("album-row-{index}")))
+            .w_full()
+            .h(px(86.))
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_2()
+            .bg(rgb(0x111820))
+            .child(
+                div()
+                    .w(px(78.))
+                    .h(px(78.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .rounded_md()
+                    .bg(rgb(0x304755))
+                    .when_some(artwork, |cover, artwork| {
+                        cover.child(
+                            img(artwork)
+                                .id(SharedString::from(format!("album-art-{index}")))
+                                .w_full()
+                                .h_full()
+                                .with_fallback(|| {
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(0xa6b6c3))
+                                        .child("NO ART")
+                                        .into_any_element()
+                                }),
+                        )
+                    })
+                    .when(!has_artwork, |cover| {
+                        cover.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(if artwork_loading { 0xa6b6c3 } else { 0x718c9a }))
+                                .child(if artwork_loading { "..." } else { "NO ART" }),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_size(px(19.6))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(metadata.title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .when_some(system_name, |row, system_name| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .py(px(2.))
+                                        .rounded_md()
+                                        .bg(rgb(0x3e2f24))
+                                        .text_xs()
+                                        .text_color(rgb(0xe0c3a0))
+                                        .whitespace_nowrap()
+                                        .child(system_name),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_xs()
+                                    .text_color(rgb(0xa6b6c3))
+                                    .child(details),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn library_track_row(
+        &mut self,
+        index: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let current = self.track_selection_order.last().and_then(|path| {
             self.filtered_tracks
                 .iter()
@@ -4997,202 +5328,178 @@ impl AppView {
             .playing
             .and_then(|index| self.config.playlist.get(index));
         let meter_animated = !self.paused && !self.waiting_for_start;
-        range
-            .map(|index| {
-                let track = &self.tracks[self.filtered_tracks[index]];
-                let path = track.path.clone();
-                let click_path = path.clone();
-                let menu_path = path.clone();
-                let playing = playing_path == Some(&path);
-                let selected = self.selected_tracks.contains(&path);
-                let focused = self.track_focus.is_focused(window) && cursor == Some(index);
-                let view = cx.weak_entity();
-                let metadata = track.metadata_for(self.config.general.vgm_metadata_language);
-                let title = track.display_title_for(self.config.general.vgm_metadata_language);
-                let artist = metadata.artist.as_deref().unwrap_or_default();
-                let unsupported =
-                    unsupported_chips_with_plan(&track.chips, &routing_plan, &self.device_status);
-                let dimmed = !unsupported.is_empty();
-                let unsupported_tooltip = format!(
-                    "No software or routed hardware support: {}",
-                    unsupported.join(", ")
-                );
-                let title_tooltip = if dimmed {
-                    format!("{title}\n{unsupported_tooltip}")
+        let track = &self.tracks[self.filtered_tracks[index]];
+        let path = track.path.clone();
+        let click_path = path.clone();
+        let menu_path = path.clone();
+        let playing = playing_path == Some(&path);
+        let selected = self.selected_tracks.contains(&path);
+        let focused = self.track_focus.is_focused(window) && cursor == Some(index);
+        let view = cx.weak_entity();
+        let metadata = track.metadata_for(self.config.general.vgm_metadata_language);
+        let title = track.display_title_for(self.config.general.vgm_metadata_language);
+        let artist = metadata.artist.as_deref().unwrap_or_default();
+        let unsupported =
+            unsupported_chips_with_plan(&track.chips, &routing_plan, &self.device_status);
+        let dimmed = !unsupported.is_empty();
+        let unsupported_tooltip = format!(
+            "No software or routed hardware support: {}",
+            unsupported.join(", ")
+        );
+        let title_tooltip = if dimmed {
+            format!("{title}\n{unsupported_tooltip}")
+        } else {
+            title
+        };
+        let chip_list = track
+            .chips
+            .iter()
+            .map(|chip| chip.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        div()
+            .id(SharedString::from(format!("track-row-{index}")))
+            .w_full()
+            .h(px(68.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .pl_6()
+            .pr_2()
+            .py_2()
+            .when(selected, |row| row.bg(rgb(0x304755)))
+            .when(focused, |row| row.bg(rgb(0x456672)))
+            .when(!focused, |row| row.hover(|style| style.bg(rgb(0x293a47))))
+            .when(dimmed, |row| {
+                row.tooltip(move |window, cx| {
+                    Tooltip::new(unsupported_tooltip.clone()).build(window, cx)
+                })
+            })
+            .on_click(cx.listener(move |view, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    view.config.playlist.push(click_path.clone());
+                    view.status = "Added to playlist".into();
+                    view.save();
                 } else {
-                    title
-                };
-                let next_path = self
-                    .filtered_tracks
-                    .get(index + 1)
-                    .map(|&next| self.tracks[next].path.as_path());
-                let folder_boundary = ends_folder_group(&track.path, next_path);
-                let chip_list = track
-                    .chips
-                    .iter()
-                    .map(|chip| chip.label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    let modifiers = event.modifiers();
+                    let toggle = modifiers.control || modifiers.platform;
+                    let anchor = view
+                        .track_anchor
+                        .as_ref()
+                        .filter(|_| modifiers.shift)
+                        .and_then(|anchor| {
+                            view.filtered_tracks
+                                .iter()
+                                .position(|&track| &view.tracks[track].path == anchor)
+                        });
+                    if let Some(anchor) = anchor {
+                        select_range(
+                            &mut view.selected_tracks,
+                            inclusive_range(anchor, index)
+                                .map(|row| view.tracks[view.filtered_tracks[row]].path.clone()),
+                            toggle,
+                        );
+                    } else {
+                        select_item(&mut view.selected_tracks, click_path.clone(), toggle);
+                        view.track_anchor = Some(click_path.clone());
+                    }
+                    view.update_track_selection_order(Some(&click_path));
+                }
+                cx.notify();
+            }))
+            .child(
                 div()
-                    .id(SharedString::from(format!("track-row-{index}")))
-                    .w_full()
-                    .h(px(68.))
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(rgb(if folder_boundary { 0x718c9a } else { 0x303b45 }))
-                    .when(selected, |row| row.bg(rgb(0x304755)))
-                    .when(focused, |row| row.bg(rgb(0x456672)))
-                    .when(!focused, |row| row.hover(|style| style.bg(rgb(0x293a47))))
-                    .when(dimmed, |row| {
-                        row.tooltip(move |window, cx| {
-                            Tooltip::new(unsupported_tooltip.clone()).build(window, cx)
-                        })
-                    })
-                    .on_click(cx.listener(move |view, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            view.config.playlist.push(click_path.clone());
-                            view.status = "Added to playlist".into();
-                            view.save();
-                        } else {
-                            let modifiers = event.modifiers();
-                            let toggle = modifiers.control || modifiers.platform;
-                            let anchor = view
-                                .track_anchor
-                                .as_ref()
-                                .filter(|_| modifiers.shift)
-                                .and_then(|anchor| {
-                                    view.filtered_tracks
-                                        .iter()
-                                        .position(|&track| &view.tracks[track].path == anchor)
-                                });
-                            if let Some(anchor) = anchor {
-                                select_range(
-                                    &mut view.selected_tracks,
-                                    inclusive_range(anchor, index).map(|row| {
-                                        view.tracks[view.filtered_tracks[row]].path.clone()
-                                    }),
-                                    toggle,
-                                );
-                            } else {
-                                select_item(&mut view.selected_tracks, click_path.clone(), toggle);
-                                view.track_anchor = Some(click_path.clone());
-                            }
-                            view.update_track_selection_order(Some(&click_path));
-                        }
-                        cx.notify();
-                    }))
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .py_2()
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .flex_1()
+                            .items_center()
+                            .gap_2()
                             .min_w_0()
+                            .child(div().flex_1().min_w_0().child(track_title(
+                                SharedString::from(format!("track-title-{index}")),
+                                &track.path,
+                                metadata,
+                                dimmed,
+                                title_tooltip,
+                                false,
+                            )))
+                            .when(playing, |row| {
+                                row.child(playback_level_meter("music", index, meter_animated))
+                            })
+                            .when(!track.chips.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!("chips-{index}")))
+                                        .flex()
+                                        .flex_shrink_0()
+                                        .max_w(relative(0.35))
+                                        .overflow_hidden()
+                                        .items_center()
+                                        .gap_1()
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(chip_list.clone()).build(window, cx)
+                                        })
+                                        .children(
+                                            track.chips.iter().map(|chip| chip_tag(chip, dimmed)),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
+                                    .w(px(48.))
+                                    .flex_shrink_0()
                                     .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .min_w_0()
-                                    .child(div().flex_1().min_w_0().child(track_title(
-                                        SharedString::from(format!("track-title-{index}")),
-                                        &track.path,
-                                        metadata,
-                                        dimmed,
-                                        title_tooltip,
-                                    )))
-                                    .when(playing, |row| {
-                                        row.child(playback_level_meter(
-                                            "music",
-                                            index,
-                                            meter_animated,
-                                        ))
-                                    })
-                                    .when(!track.chips.is_empty(), |row| {
-                                        row.child(
-                                            div()
-                                                .id(SharedString::from(format!("chips-{index}")))
-                                                .flex()
-                                                .flex_shrink_0()
-                                                .max_w(relative(0.35))
-                                                .overflow_hidden()
-                                                .items_center()
-                                                .gap_1()
-                                                .tooltip(move |window, cx| {
-                                                    Tooltip::new(chip_list.clone())
-                                                        .build(window, cx)
-                                                })
-                                                .children(
-                                                    track
-                                                        .chips
-                                                        .iter()
-                                                        .map(|chip| chip_tag(chip, dimmed)),
-                                                ),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .w(px(48.))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .justify_center()
-                                            .rounded_md()
-                                            .bg(rgb(if dimmed { 0x303d48 } else { 0x4a606d }))
-                                            .text_color(rgb(if dimmed {
-                                                0x8c9ca6
-                                            } else {
-                                                0xe7f1f3
-                                            }))
-                                            .text_xs()
-                                            .whitespace_nowrap()
-                                            .child(music_format(&track.path)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(rgb(if dimmed { 0x303d48 } else { 0x4a606d }))
+                                    .text_color(rgb(if dimmed { 0x8c9ca6 } else { 0xe7f1f3 }))
+                                    .text_xs()
                                     .whitespace_nowrap()
-                                    .text_sm()
-                                    .text_color(rgb(if dimmed { 0x778893 } else { 0xa6b6c3 }))
-                                    .child(artist.to_owned()),
+                                    .child(music_format(&track.path)),
                             ),
                     )
-                    .context_menu(move |menu, _, cx| {
-                        let single = view
-                            .update(cx, |view, cx| {
-                                let (changed, single) = select_for_context(
-                                    &mut view.selected_tracks,
-                                    menu_path.clone(),
-                                );
-                                if changed {
-                                    view.track_anchor = Some(menu_path.clone());
-                                }
-                                view.update_track_selection_order(Some(&menu_path));
-                                cx.notify();
-                                single
-                            })
-                            .unwrap_or(false);
-                        let add_view = view.clone();
-                        let menu =
-                            menu.item(PopupMenuItem::new("Add selected to playlist").on_click(
-                                move |_, _, cx| {
-                                    let _ = add_view
-                                        .update(cx, |view, cx| view.add_selected_tracks(cx));
-                                },
-                            ));
-                        if single {
-                            menu.item(copy_path_menu_item(menu_path.clone(), view.clone()))
-                        } else {
-                            menu
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .text_color(rgb(if dimmed { 0x778893 } else { 0xa6b6c3 }))
+                            .child(artist.to_owned()),
+                    ),
+            )
+            .context_menu(move |menu, _, cx| {
+                let single = view
+                    .update(cx, |view, cx| {
+                        let (changed, single) =
+                            select_for_context(&mut view.selected_tracks, menu_path.clone());
+                        if changed {
+                            view.track_anchor = Some(menu_path.clone());
                         }
+                        view.update_track_selection_order(Some(&menu_path));
+                        cx.notify();
+                        single
                     })
-                    .into_any_element()
+                    .unwrap_or(false);
+                let add_view = view.clone();
+                let menu = menu.item(PopupMenuItem::new("Add selected to playlist").on_click(
+                    move |_, _, cx| {
+                        let _ = add_view.update(cx, |view, cx| view.add_selected_tracks(cx));
+                    },
+                ));
+                if single {
+                    menu.item(copy_path_menu_item(menu_path.clone(), view.clone()))
+                } else {
+                    menu
+                }
             })
-            .collect()
+            .into_any_element()
     }
 
     fn select_all_tracks(&mut self) {
@@ -5242,8 +5549,11 @@ impl AppView {
         );
         self.track_anchor = Some(self.tracks[self.filtered_tracks[anchor]].path.clone());
         self.update_track_selection_order(Some(&path));
-        self.library_scroll
-            .scroll_to_item(index, ScrollStrategy::Nearest);
+        if let Some(row) = self.music_rows.iter().position(
+            |row| matches!(row, MusicListRow::Track { filtered_index } if *filtered_index == index),
+        ) {
+            self.library_scroll.scroll_to_reveal_item(row);
+        }
     }
 
     fn update_track_selection_order(&mut self, touched: Option<&PathBuf>) {
@@ -5434,6 +5744,7 @@ impl AppView {
                                         metadata,
                                         false,
                                         title,
+                                        true,
                                     ))
                                     .when(!unsupported.is_empty(), |row| {
                                         row.child(
@@ -5884,12 +6195,20 @@ fn restore_music_search(value: &serde_json::Value) -> Result<InputContent, Strin
     {
         return Err("search text contains control characters".into());
     }
-    let mut content = InputContent::new(saved.text);
+    let text = saved.text;
+    let mut content = InputContent::new(text.clone());
     for token in saved.tokens {
+        let token_text = text
+            .get(token.start..token.end)
+            .ok_or_else(|| "invalid search token range".to_owned())?;
+        let label = search_suggestion_label(&token.id);
+        if token_text != label && token_text != token.id {
+            return Err("search token text does not match its tag".into());
+        }
         content = content
             .with_token(
                 token.start..token.end,
-                InlineToken::new(token.id.clone(), token.id),
+                InlineToken::new(token.id.clone(), token_text.to_owned()).with_label(label),
             )
             .map_err(|error| format!("invalid search token: {error:?}"))?;
     }
@@ -5901,8 +6220,9 @@ fn chip_suggestions(
     cursor: usize,
     tokens: &[InlineTokenSpan],
     chips: &[&'static str],
+    systems: &[String],
     nanodrive_connected: bool,
-) -> Option<(Range<usize>, Vec<&'static str>)> {
+) -> Option<(Range<usize>, Vec<String>)> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
     }
@@ -5932,11 +6252,20 @@ fn chip_suggestions(
             .into_iter()
             .chain(nanodrive_connected.then_some("NanoDrive"))
             .chain(chips.iter().copied())
-            .filter(|chip| {
-                chip.to_lowercase().starts_with(&fragment)
+            .map(str::to_owned)
+            .chain(
+                systems
+                    .iter()
+                    .map(|system| format!("{}{system}", library::SYSTEM_SEARCH_TAG_PREFIX)),
+            )
+            .filter(|tag| {
+                (search_suggestion_label(tag)
+                    .to_lowercase()
+                    .starts_with(&fragment)
+                    || tag.to_lowercase().starts_with(&fragment))
                     && !tokens
                         .iter()
-                        .any(|token| token.token().id().as_ref() == *chip)
+                        .any(|token| token.token().id().as_ref() == tag)
             })
             .take(8)
             .collect();
@@ -5955,6 +6284,23 @@ fn chip_suggestions(
         }
     }
     None
+}
+
+fn search_suggestion_label(tag: &str) -> &str {
+    tag.strip_prefix(library::SYSTEM_SEARCH_TAG_PREFIX)
+        .unwrap_or(tag)
+}
+
+fn search_suggestion_kind(tag: &str) -> &'static str {
+    if tag.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX) {
+        "System"
+    } else if matches!(tag, "MDX" | "VGM") {
+        "Format"
+    } else if tag == "NanoDrive" {
+        "Device"
+    } else {
+        "Chip"
+    }
 }
 
 fn select_item<T: Eq + Hash>(selection: &mut HashSet<T>, item: T, toggle: bool) {
@@ -6658,14 +7004,12 @@ impl Render for AppView {
                                                     .flex_1()
                                                     .min_h_0()
                                                     .child(
-                                                        uniform_list(
-                                                            "track-list",
-                                                            self.filtered_tracks.len(),
-                                                            cx.processor(|view, range, window, cx| {
-                                                                view.library_rows(range, window, cx)
+                                                        list(
+                                                            self.library_scroll.clone(),
+                                                            cx.processor(|view, index, window, cx| {
+                                                                view.library_row(index, window, cx)
                                                             }),
                                                         )
-                                                        .track_scroll(&self.library_scroll)
                                                         .flex_1()
                                                         .min_w_0()
                                                         .h_full(),
@@ -6915,9 +7259,9 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, Page, ScanOrigin, adjacent_track,
-        can_remove_device, capability_labels, chip_colors, chip_suggestions, clipboard_track_path,
-        connection_action, details_target, ends_folder_group, inclusive_range,
+        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, MusicListRow, Page, ScanOrigin,
+        adjacent_track, build_music_list_rows, can_remove_device, capability_labels, chip_colors,
+        chip_suggestions, clipboard_track_path, connection_action, details_target, inclusive_range,
         initial_window_bounds, is_play_shortcut, is_search_shortcut, is_select_all,
         is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
         list_selection_target, music_format, notification_copy_text, piano_channel_panel_height,
@@ -7797,17 +8141,32 @@ mod tests {
     }
 
     #[test]
-    fn music_folder_separator_uses_next_visible_track() {
-        use std::path::Path;
-
-        let first = Path::new("/music/game/a.vgm");
-        let same_folder = Path::new("/music/game/c.vgm");
-        let nested_folder = Path::new("/music/game/other/d.vgm");
-        let other_folder = Path::new("/music/other/e.vgm");
-        assert!(!ends_folder_group(first, Some(same_folder)));
-        assert!(ends_folder_group(same_folder, Some(nested_folder)));
-        assert!(ends_folder_group(nested_folder, Some(other_folder)));
-        assert!(!ends_folder_group(other_folder, None));
+    fn music_list_rows_group_only_tracks_remaining_after_filtering() {
+        let paths = [
+            PathBuf::from("/music/game/a.vgm"),
+            PathBuf::from("/music/game/b.vgm"),
+            PathBuf::from("/music/other/c.vgm"),
+        ];
+        let rows = build_music_list_rows(paths.iter().map(PathBuf::as_path), &[1, 2]);
+        assert_eq!(
+            rows,
+            vec![
+                MusicListRow::Album {
+                    directory: PathBuf::from("/music/game"),
+                    artwork_track: paths[1].clone(),
+                    visible_track_count: 1,
+                    total_track_count: 2,
+                },
+                MusicListRow::Track { filtered_index: 0 },
+                MusicListRow::Album {
+                    directory: PathBuf::from("/music/other"),
+                    artwork_track: paths[2].clone(),
+                    visible_track_count: 1,
+                    total_track_count: 1,
+                },
+                MusicListRow::Track { filtered_index: 1 },
+            ]
+        );
     }
 
     #[test]
@@ -8216,56 +8575,112 @@ mod tests {
     #[test]
     fn chip_suggestions_match_at_the_cursor_and_skip_existing_tokens() {
         let chips = ["Sega PCM", "YM2151", "YM2612"];
+        let systems = vec!["Mega Drive".to_owned(), "Sharp X68000".to_owned()];
         assert_eq!(
-            chip_suggestions("game ym", 7, &[], &chips, false),
-            Some((5..7, vec!["YM2151", "YM2612"]))
+            chip_suggestions("game ym", 7, &[], &chips, &systems, false),
+            Some((5..7, vec!["YM2151".into(), "YM2612".into()]))
         );
         assert_eq!(
-            chip_suggestions("game Sega P", 11, &[], &chips, false),
-            Some((5..11, vec!["Sega PCM"]))
+            chip_suggestions("game Sega P", 11, &[], &chips, &systems, false),
+            Some((5..11, vec!["Sega PCM".into()]))
         );
         assert_eq!(
-            chip_suggestions("ym2612", 2, &[], &chips, false),
-            Some((0..6, vec!["YM2151", "YM2612"]))
+            chip_suggestions("ym2612", 2, &[], &chips, &systems, false),
+            Some((0..6, vec!["YM2151".into(), "YM2612".into()]))
+        );
+        assert_eq!(
+            chip_suggestions("system:sha", 10, &[], &chips, &systems, false),
+            Some((0..10, vec!["system:Sharp X68000".into()]))
+        );
+        assert_eq!(
+            chip_suggestions("sharp", 5, &[], &chips, &systems, false),
+            Some((0..5, vec!["system:Sharp X68000".into()]))
         );
         let content = InputContent::new("YM2151ym")
             .with_token(0..6, InlineToken::new("YM2151", "YM2151"))
             .unwrap();
         assert_eq!(
-            chip_suggestions(content.text(), 8, content.tokens(), &chips, false),
-            Some((6..8, vec!["YM2612"]))
+            chip_suggestions(content.text(), 8, content.tokens(), &chips, &systems, false),
+            Some((6..8, vec!["YM2612".into()]))
         );
         assert_eq!(
-            chip_suggestions(content.text(), 3, content.tokens(), &chips, false),
+            chip_suggestions(content.text(), 3, content.tokens(), &chips, &systems, false),
             None
         );
-        assert_eq!(chip_suggestions("音", 1, &[], &chips, false), None);
         assert_eq!(
-            chip_suggestions("vg", 2, &[], &chips, false),
-            Some((0..2, vec!["VGM"]))
+            chip_suggestions("音", 1, &[], &chips, &systems, false),
+            None
         );
         assert_eq!(
-            chip_suggestions("md", 2, &[], &chips, false),
-            Some((0..2, vec!["MDX"]))
+            chip_suggestions("vg", 2, &[], &chips, &systems, false),
+            Some((0..2, vec!["VGM".into()]))
+        );
+        assert_eq!(
+            chip_suggestions("md", 2, &[], &chips, &systems, false),
+            Some((0..2, vec!["MDX".into()]))
         );
         let content = InputContent::new("VGMvg")
             .with_token(0..3, InlineToken::new("VGM", "VGM"))
             .unwrap();
         assert_eq!(
-            chip_suggestions(content.text(), 5, content.tokens(), &chips, false),
+            chip_suggestions(content.text(), 5, content.tokens(), &chips, &systems, false),
             None
         );
-        assert_eq!(chip_suggestions("nano", 4, &[], &chips, false), None);
         assert_eq!(
-            chip_suggestions("nano", 4, &[], &chips, true),
-            Some((0..4, vec!["NanoDrive"]))
+            chip_suggestions("nano", 4, &[], &chips, &systems, false),
+            None
+        );
+        assert_eq!(
+            chip_suggestions("nano", 4, &[], &chips, &systems, true),
+            Some((0..4, vec!["NanoDrive".into()]))
         );
         let content = InputContent::new("NanoDrivenano")
             .with_token(0..9, InlineToken::new("NanoDrive", "NanoDrive"))
             .unwrap();
         assert_eq!(
-            chip_suggestions(content.text(), 13, content.tokens(), &chips, true),
+            chip_suggestions(content.text(), 13, content.tokens(), &chips, &systems, true),
             None
+        );
+    }
+
+    #[test]
+    fn system_suggestions_show_names_without_the_internal_prefix() {
+        assert_eq!(
+            super::search_suggestion_label("system:Sharp X68000"),
+            "Sharp X68000"
+        );
+        assert_eq!(
+            super::search_suggestion_kind("system:Sharp X68000"),
+            "System"
+        );
+        assert_eq!(super::search_suggestion_kind("YM2151"), "Chip");
+        assert_eq!(super::search_suggestion_kind("VGM"), "Format");
+    }
+
+    #[test]
+    fn system_search_tokens_restore_with_the_bare_system_label() {
+        let content = InputContent::new("Sharp X68000")
+            .with_token(
+                0..12,
+                InlineToken::new("system:Sharp X68000", "Sharp X68000"),
+            )
+            .unwrap();
+        let restored =
+            super::restore_music_search(&super::snapshot_music_search(&content)).unwrap();
+        assert_eq!(restored, content);
+        assert_eq!(
+            search_terms(restored.text(), restored.tokens()),
+            (String::new(), vec!["system:Sharp X68000".into()])
+        );
+
+        let legacy = serde_json::json!({
+            "text": "system:Sharp X68000",
+            "tokens": [{"start": 0, "end": 19, "id": "system:Sharp X68000"}]
+        });
+        let restored = super::restore_music_search(&legacy).unwrap();
+        assert_eq!(
+            restored.tokens()[0].token().label().as_ref(),
+            "Sharp X68000"
         );
     }
 

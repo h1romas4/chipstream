@@ -22,6 +22,10 @@ pub struct TrackMetadata {
     pub artist: Option<String>,
     /// Normalized game or album name, if available.
     pub album: Option<String>,
+    /// Normalized system or platform name, if available.
+    pub system_name: Option<String>,
+    /// Release date text from the source metadata, if available.
+    pub release_date: Option<String>,
     /// Normalized comment or notes, if available.
     pub comment: Option<String>,
 }
@@ -105,6 +109,8 @@ pub fn probe_vgm_bytes_with_language(
         title: choose(gd3.track_name_en, gd3.track_name_origin),
         artist: choose(gd3.author_name_en, gd3.author_name_origin),
         album: choose(gd3.game_name_en, gd3.game_name_origin),
+        system_name: choose(gd3.system_name_en, gd3.system_name_origin),
+        release_date: nonempty(gd3.release_date.unwrap_or_default()),
         comment: nonempty(gd3.notes.unwrap_or_default()),
     })
 }
@@ -119,6 +125,7 @@ pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
 
     Ok(TrackMetadata {
         title: nonempty(header.title),
+        system_name: Some("Sharp X68000".to_owned()),
         ..TrackMetadata::default()
     })
 }
@@ -171,7 +178,9 @@ mod tests {
             track_name_en: Some(" English Title ".to_owned()),
             track_name_origin: Some("Original Title".to_owned()),
             game_name_origin: Some("Game".to_owned()),
+            system_name_en: Some("Sega Genesis".to_owned()),
             author_name_origin: Some("Composer".to_owned()),
+            release_date: Some("1991".to_owned()),
             notes: Some(" Notes ".to_owned()),
             ..Gd3::default()
         });
@@ -183,6 +192,8 @@ mod tests {
                 title: Some("English Title".to_owned()),
                 artist: Some("Composer".to_owned()),
                 album: Some("Game".to_owned()),
+                system_name: Some("Sega Genesis".to_owned()),
+                release_date: Some("1991".to_owned()),
                 comment: Some("Notes".to_owned()),
             }
         );
@@ -196,6 +207,8 @@ mod tests {
             track_name_origin: Some(" Original Title ".into()),
             game_name_en: Some("English Game".into()),
             game_name_origin: Some("  ".into()),
+            system_name_en: Some("English System".into()),
+            system_name_origin: Some("Original System".into()),
             author_name_origin: Some("Composer".into()),
             ..Gd3::default()
         });
@@ -204,6 +217,7 @@ mod tests {
             probe_vgm_bytes_with_language(&bytes, VgmMetadataLanguage::Original).unwrap();
         assert_eq!(metadata.title.as_deref(), Some("Original Title"));
         assert_eq!(metadata.album.as_deref(), Some("English Game"));
+        assert_eq!(metadata.system_name.as_deref(), Some("Original System"));
         assert_eq!(metadata.artist.as_deref(), Some("Composer"));
     }
 
@@ -213,9 +227,8 @@ mod tests {
         builder.set_title("MDX Song");
         let bytes = builder.finalize().unwrap().to_bytes().unwrap();
 
-        assert_eq!(
-            probe_mdx_bytes(&bytes).unwrap().title.as_deref(),
-            Some("MDX Song")
-        );
+        let metadata = probe_mdx_bytes(&bytes).unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("MDX Song"));
+        assert_eq!(metadata.system_name.as_deref(), Some("Sharp X68000"));
     }
 }

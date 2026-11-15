@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Group Music tracks by folder with artwork, English system names, and release-date details.
+- Show system names as tags, enlarge album headers, and preserve Music track row height.
+- Set MDX system metadata to Sharp X68000 and support system tags in Music search.
 - Pass MAME's YM2151 clock through the NanoDrive 8 bridge, including 4,026,987 Hz.
 
 ## v0.12.0
