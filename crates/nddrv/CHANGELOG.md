@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Group Music tracks by folder with artwork, English system names, and release-date details.
+- Add per-album collapse controls, a folder toggle, and shortcuts to expand or collapse all albums.
+- Use a matching charcoal background behind album and details artwork.
 - Show system names as tags, enlarge album headers, and preserve Music track row height.
 - Set MDX system metadata to Sharp X68000 and support system tags in Music search.
 - Show all MAME systems in the Routing patchbay and connect supported systems to the selected NanoDrive.

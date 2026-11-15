@@ -53,6 +53,7 @@ use library::{
 use playback::{Event, GainPart, GainSource, IdlePreview, Playback, VolumeMode};
 
 const ACCENT_COLOR: u32 = 0x2fb3aa;
+const ARTWORK_BACKGROUND_COLOR: u32 = 0x181818;
 const APP_TITLE: &str = "NDDRV";
 const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
@@ -234,6 +235,7 @@ enum MusicListRow {
 fn build_music_list_rows<'a>(
     track_paths: impl IntoIterator<Item = &'a Path>,
     filtered_tracks: &[usize],
+    collapsed_albums: &HashSet<PathBuf>,
 ) -> Vec<MusicListRow> {
     let track_paths = track_paths.into_iter().collect::<Vec<_>>();
     let mut total_counts = HashMap::<PathBuf, usize>::new();
@@ -253,6 +255,7 @@ fn build_music_list_rows<'a>(
     let mut previous_directory: Option<PathBuf> = None;
     for (filtered_index, &track_index) in filtered_tracks.iter().enumerate() {
         let path = track_paths[track_index];
+        let mut collapsed = false;
         if let Some(directory) = path.parent() {
             if previous_directory.as_deref() != Some(directory) {
                 rows.push(MusicListRow::Album {
@@ -263,10 +266,22 @@ fn build_music_list_rows<'a>(
                 });
                 previous_directory = Some(directory.to_path_buf());
             }
+            collapsed = collapsed_albums.contains(directory);
         }
-        rows.push(MusicListRow::Track { filtered_index });
+        if !collapsed {
+            rows.push(MusicListRow::Track { filtered_index });
+        }
     }
     rows
+}
+
+fn visible_music_track_indices(rows: &[MusicListRow]) -> Vec<usize> {
+    rows.iter()
+        .filter_map(|row| match row {
+            MusicListRow::Track { filtered_index } => Some(*filtered_index),
+            MusicListRow::Album { .. } => None,
+        })
+        .collect()
 }
 
 fn keep_preview_sources(
@@ -703,6 +718,7 @@ struct AppView {
     track_by_path: HashMap<PathBuf, usize>,
     filtered_tracks: Vec<usize>,
     music_rows: Vec<MusicListRow>,
+    collapsed_albums: HashSet<PathBuf>,
     selected_tracks: HashSet<PathBuf>,
     selected_queue: HashSet<usize>,
     track_anchor: Option<PathBuf>,
@@ -1587,6 +1603,7 @@ impl AppView {
             track_by_path: HashMap::new(),
             filtered_tracks: Vec::new(),
             music_rows: Vec::new(),
+            collapsed_albums: HashSet::new(),
             selected_tracks: HashSet::new(),
             selected_queue: HashSet::new(),
             track_anchor: None,
@@ -1731,12 +1748,7 @@ impl AppView {
             &chips,
             &nanodrive_chips(&self.device_status),
         );
-        self.music_rows = build_music_list_rows(
-            self.tracks.iter().map(|track| track.path.as_path()),
-            &self.filtered_tracks,
-        );
-        self.library_scroll
-            .reset_with_uniform_height(self.music_rows.len(), px(68.));
+        self.rebuild_music_rows();
         if !self.selected_tracks.is_empty() || self.track_anchor.is_some() {
             let visible: HashSet<_> = self
                 .filtered_tracks
@@ -1757,6 +1769,56 @@ impl AppView {
         if !self.music_rows.is_empty() {
             self.library_scroll.scroll_to_reveal_item(0);
         }
+    }
+
+    fn rebuild_music_rows(&mut self) {
+        self.music_rows = build_music_list_rows(
+            self.tracks.iter().map(|track| track.path.as_path()),
+            &self.filtered_tracks,
+            &self.collapsed_albums,
+        );
+        self.library_scroll
+            .reset_with_uniform_height(self.music_rows.len(), px(68.));
+    }
+
+    fn toggle_album_collapsed(&mut self, directory: PathBuf) {
+        if !self.collapsed_albums.remove(&directory) {
+            self.collapsed_albums.insert(directory.clone());
+        }
+        self.rebuild_music_rows();
+        if let Some(index) = self.music_rows.iter().position(|row| {
+            matches!(row, MusicListRow::Album { directory: row_directory, .. } if row_directory == &directory)
+        }) {
+            self.library_scroll.scroll_to_reveal_item(index);
+        }
+    }
+
+    fn set_all_albums_collapsed(&mut self, collapsed: bool) {
+        self.collapsed_albums.clear();
+        if collapsed {
+            self.collapsed_albums.extend(
+                self.tracks
+                    .iter()
+                    .filter_map(|track| track.path.parent().map(Path::to_path_buf)),
+            );
+        }
+        self.rebuild_music_rows();
+        if !self.music_rows.is_empty() {
+            self.library_scroll.scroll_to_reveal_item(0);
+        }
+    }
+
+    fn all_albums_collapsed(&self) -> bool {
+        let mut found_album = false;
+        for track in &self.tracks {
+            if let Some(directory) = track.path.parent() {
+                found_album = true;
+                if !self.collapsed_albums.contains(directory) {
+                    return false;
+                }
+            }
+        }
+        found_album
     }
 
     fn chip_suggestions(&self, window: &Window, cx: &App) -> Option<(Range<usize>, Vec<String>)> {
@@ -1809,6 +1871,7 @@ impl AppView {
         div()
             .flex()
             .flex_col()
+            .w_full()
             .min_w_0()
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 let Some((_, chips)) = view.chip_suggestions(window, cx) else {
@@ -3552,7 +3615,7 @@ impl AppView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .bg(rgb(0x243441))
+                                        .bg(rgb(ARTWORK_BACKGROUND_COLOR))
                                         .when_some(artwork, |node, artwork| {
                                             node.child(
                                                 img(artwork)
@@ -5290,10 +5353,13 @@ impl AppView {
         }
         details.push(count);
         let details = details.join(" · ");
+        let collapsed = self.collapsed_albums.contains(&directory);
+        let toggle_directory = directory.clone();
         div()
             .id(SharedString::from(format!("album-row-{index}")))
             .w_full()
             .h(px(86.))
+            .relative()
             .flex()
             .items_center()
             .gap_3()
@@ -5309,7 +5375,7 @@ impl AppView {
                     .justify_center()
                     .overflow_hidden()
                     .rounded_md()
-                    .bg(rgb(0x304755))
+                    .bg(rgb(ARTWORK_BACKGROUND_COLOR))
                     .when_some(artwork, |cover, artwork| {
                         cover.child(
                             img(artwork)
@@ -5340,6 +5406,7 @@ impl AppView {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
+                    .pr_8()
                     .gap_1()
                     .child(
                         div()
@@ -5381,6 +5448,36 @@ impl AppView {
                                     .child(details),
                             ),
                     ),
+            )
+            .child(
+                Button::new(("album-collapse", index))
+                    .icon(if collapsed {
+                        assets::IconName::FolderClosed
+                    } else {
+                        assets::IconName::FolderOpen
+                    })
+                    .ghost()
+                    .small()
+                    .w(px(28.))
+                    .h(px(28.))
+                    .p_0()
+                    .absolute()
+                    .right(px(8.))
+                    .top(px((86. - 28.) / 2.))
+                    .tooltip(if collapsed {
+                        "Expand album tracks"
+                    } else {
+                        "Collapse album tracks"
+                    })
+                    .accessibility_label(if collapsed {
+                        "Expand album tracks"
+                    } else {
+                        "Collapse album tracks"
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.toggle_album_collapsed(toggle_directory.clone());
+                        cx.notify();
+                    })),
             )
             .into_any_element()
     }
@@ -5577,27 +5674,33 @@ impl AppView {
     }
 
     fn select_all_tracks(&mut self) {
+        let visible = visible_music_track_indices(&self.music_rows);
         select_range(
             &mut self.selected_tracks,
-            self.filtered_tracks
+            visible
                 .iter()
-                .map(|&index| self.tracks[index].path.clone()),
+                .map(|&index| self.tracks[self.filtered_tracks[index]].path.clone()),
             false,
         );
         if self.track_anchor.is_none() {
-            self.track_anchor = self
-                .filtered_tracks
+            self.track_anchor = visible
                 .first()
-                .map(|&index| self.tracks[index].path.clone());
+                .map(|&index| self.tracks[self.filtered_tracks[index]].path.clone());
         }
         self.update_track_selection_order(None);
     }
 
     fn move_track_selection(&mut self, down: bool, extend: bool) {
+        let visible = visible_music_track_indices(&self.music_rows);
         let current = self.track_selection_order.last().and_then(|path| {
             self.filtered_tracks
                 .iter()
                 .position(|&index| &self.tracks[index].path == path)
+                .and_then(|index| {
+                    visible
+                        .iter()
+                        .position(|&visible_index| visible_index == index)
+                })
         });
         let anchor = self
             .track_anchor
@@ -5607,24 +5710,37 @@ impl AppView {
                 self.filtered_tracks
                     .iter()
                     .position(|&index| &self.tracks[index].path == path)
+                    .and_then(|index| {
+                        visible
+                            .iter()
+                            .position(|&visible_index| visible_index == index)
+                    })
             });
-        let current = list_cursor_index(current, self.filtered_tracks.len());
+        let current = list_cursor_index(current, visible.len());
         let Some((index, anchor)) =
-            list_selection_target(current, anchor, self.filtered_tracks.len(), down, extend)
+            list_selection_target(current, anchor, visible.len(), down, extend)
         else {
             return;
         };
-        let path = self.tracks[self.filtered_tracks[index]].path.clone();
+        let filtered_index = visible[index];
+        let anchor_filtered_index = visible[anchor];
+        let path = self.tracks[self.filtered_tracks[filtered_index]]
+            .path
+            .clone();
         select_range(
             &mut self.selected_tracks,
             inclusive_range(anchor, index)
-                .map(|row| self.tracks[self.filtered_tracks[row]].path.clone()),
+                .map(|row| self.tracks[self.filtered_tracks[visible[row]]].path.clone()),
             false,
         );
-        self.track_anchor = Some(self.tracks[self.filtered_tracks[anchor]].path.clone());
+        self.track_anchor = Some(
+            self.tracks[self.filtered_tracks[anchor_filtered_index]]
+                .path
+                .clone(),
+        );
         self.update_track_selection_order(Some(&path));
         if let Some(row) = self.music_rows.iter().position(
-            |row| matches!(row, MusicListRow::Track { filtered_index } if *filtered_index == index),
+            |row| matches!(row, MusicListRow::Track { filtered_index: row_index } if *row_index == filtered_index),
         ) {
             self.library_scroll.scroll_to_reveal_item(row);
         }
@@ -6449,6 +6565,8 @@ fn is_stop_shortcut(keystroke: &Keystroke, page: Page, active: bool) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 enum ListKey {
     SelectAll,
+    CollapseAllAlbums,
+    ExpandAllAlbums,
     Up,
     Down,
     ExtendUp,
@@ -6463,6 +6581,18 @@ fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
         return Some(ListKey::SelectAll);
     }
     let modifiers = keystroke.modifiers;
+    if matches!(list, DetailsSelection::Music)
+        && (modifiers.control || modifiers.platform)
+        && modifiers.shift
+        && !modifiers.alt
+        && !modifiers.function
+    {
+        return match keystroke.key.as_str() {
+            "left" => Some(ListKey::CollapseAllAlbums),
+            "right" => Some(ListKey::ExpandAllAlbums),
+            _ => None,
+        };
+    }
     if modifiers.control || modifiers.platform || modifiers.alt || modifiers.function {
         return None;
     }
@@ -7045,7 +7175,58 @@ impl Render for AppView {
                                             .p_3()
                                             .gap_2()
                                             .child(div().text_lg().child("MUSIC"))
-                                            .child(self.search_input(window, cx))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .child(self.search_input(window, cx)),
+                                                    )
+                                                    .child(
+                                                        Button::new("toggle-all-albums")
+                                                            .icon(if self.all_albums_collapsed() {
+                                                                assets::IconName::FolderClosed
+                                                            } else {
+                                                                assets::IconName::FolderOpen
+                                                            })
+                                                            .ghost()
+                                                            .small()
+                                                            .w(px(28.))
+                                                            .h(px(28.))
+                                                            .p_0()
+                                                            .disabled(
+                                                                !self
+                                                                    .tracks
+                                                                    .iter()
+                                                                    .any(|track| track.path.parent().is_some()),
+                                                            )
+                                                            .tooltip(if self.all_albums_collapsed() {
+                                                                "Expand all albums"
+                                                            } else {
+                                                                "Collapse all albums"
+                                                            })
+                                                            .accessibility_label(if self
+                                                                .all_albums_collapsed()
+                                                            {
+                                                                "Expand all albums"
+                                                            } else {
+                                                                "Collapse all albums"
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                |view, _, _, cx| {
+                                                                    let collapse =
+                                                                        !view.all_albums_collapsed();
+                                                                    view.set_all_albums_collapsed(collapse);
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    )
+                                            )
                                             .child(
                                                 div()
                                                     .id("music-list-container")
@@ -7063,6 +7244,8 @@ impl Render for AppView {
                                                             }
                                                             match list_key(&event.keystroke, DetailsSelection::Music) {
                                                                 Some(ListKey::SelectAll) => view.select_all_tracks(),
+                                                                Some(ListKey::CollapseAllAlbums) => view.set_all_albums_collapsed(true),
+                                                                Some(ListKey::ExpandAllAlbums) => view.set_all_albums_collapsed(false),
                                                                 Some(ListKey::Up) => view.move_track_selection(false, false),
                                                                 Some(ListKey::Down) => view.move_track_selection(true, false),
                                                                 Some(ListKey::ExtendUp) => view.move_track_selection(false, true),
@@ -7344,6 +7527,7 @@ mod tests {
         reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
         select_for_context, select_item, select_range, selection_status, single_queue_selection,
         unsupported_chips, update_selection_order, update_window_settings,
+        visible_music_track_indices,
     };
 
     #[test]
@@ -8103,6 +8287,20 @@ mod tests {
     #[test]
     fn list_shortcuts_are_scoped_to_the_focused_list_and_ignore_modifiers() {
         let key = |value: &'static str, list| list_key(&Keystroke::parse(value).unwrap(), list);
+        for key_name in ["ctrl-shift-left", "cmd-shift-left"] {
+            assert_eq!(
+                key(key_name, DetailsSelection::Music),
+                Some(ListKey::CollapseAllAlbums)
+            );
+            assert_eq!(key(key_name, DetailsSelection::Playlist), None);
+        }
+        for key_name in ["ctrl-shift-right", "cmd-shift-right"] {
+            assert_eq!(
+                key(key_name, DetailsSelection::Music),
+                Some(ListKey::ExpandAllAlbums)
+            );
+            assert_eq!(key(key_name, DetailsSelection::Playlist), None);
+        }
         for list in [DetailsSelection::Music, DetailsSelection::Playlist] {
             assert_eq!(key("up", list), Some(ListKey::Up));
             assert_eq!(key("down", list), Some(ListKey::Down));
@@ -8221,7 +8419,8 @@ mod tests {
             PathBuf::from("/music/game/b.vgm"),
             PathBuf::from("/music/other/c.vgm"),
         ];
-        let rows = build_music_list_rows(paths.iter().map(PathBuf::as_path), &[1, 2]);
+        let rows =
+            build_music_list_rows(paths.iter().map(PathBuf::as_path), &[1, 2], &HashSet::new());
         assert_eq!(
             rows,
             vec![
@@ -8241,6 +8440,31 @@ mod tests {
                 MusicListRow::Track { filtered_index: 1 },
             ]
         );
+
+        let collapsed_rows = build_music_list_rows(
+            paths.iter().map(PathBuf::as_path),
+            &[1, 2],
+            &HashSet::from([PathBuf::from("/music/game")]),
+        );
+        assert_eq!(
+            collapsed_rows,
+            vec![
+                MusicListRow::Album {
+                    directory: PathBuf::from("/music/game"),
+                    artwork_track: paths[1].clone(),
+                    visible_track_count: 1,
+                    total_track_count: 2,
+                },
+                MusicListRow::Album {
+                    directory: PathBuf::from("/music/other"),
+                    artwork_track: paths[2].clone(),
+                    visible_track_count: 1,
+                    total_track_count: 1,
+                },
+                MusicListRow::Track { filtered_index: 1 },
+            ]
+        );
+        assert_eq!(visible_music_track_indices(&collapsed_rows), [1]);
     }
 
     #[test]
