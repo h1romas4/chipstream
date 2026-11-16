@@ -50,7 +50,7 @@ pub enum OutputBits {
     Bits12 = 12,
 }
 
-/// OKIM6258 4-bit ADPCM decoder with mono native-rate output.
+/// OKIM6258 ADPCM decoder with mono native-rate output.
 ///
 /// Data writes replace a one-byte latch and restart decoding from its low
 /// nibble. Playback alternates its low and high nibbles until the next write.
@@ -58,8 +58,6 @@ pub enum OutputBits {
 /// range. The predictor uses 12-bit precision regardless of DAC precision;
 /// the 10-bit DAC discards the two least significant bits. The default clock
 /// divider is `/1024` and DAC precision is 10 bits.
-/// VGM 3-bit selection flags use the 4-bit compatibility decoder; native
-/// 3-bit ADPCM decoding is not implemented.
 ///
 /// Register 0 is control, 1 is data, 2 is the VGM pan mask, `0x08..=0x0b`
 /// are little-endian clock bytes, and `0x0c` selects the divider. Writes to

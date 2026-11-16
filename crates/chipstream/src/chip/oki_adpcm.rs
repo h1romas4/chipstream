@@ -4,6 +4,7 @@
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
 
 pub(super) const INDEX_SHIFT: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
+const INDEX_SHIFT_3BIT: [i32; 4] = [-1, -1, 2, 4];
 
 /// Stateful OKIM6258 4-bit ADPCM encoder and decoder.
 ///
@@ -56,10 +57,26 @@ impl Okim6258Adpcm {
     /// Decode the low four bits and return the updated predictor.
     pub fn decode_low_nibble(&mut self, value: u8) -> i32 {
         let nibble = value & 0x0f;
-        self.signal =
-            (self.signal + self.differences[self.step][usize::from(nibble)]).clamp(-2048, 2047);
-        self.step = (self.step as i32 + INDEX_SHIFT[usize::from(nibble & 7)]).clamp(0, 48) as usize;
-        self.signal
+        self.advance(
+            self.differences[self.step][usize::from(nibble)],
+            INDEX_SHIFT[usize::from(nibble & 7)],
+        )
+    }
+
+    /// Decode a three-bit code (sign bit 2, two magnitude bits).
+    pub(super) fn decode_3bit_code(&mut self, value: u8) -> i32 {
+        let code = value & 0x07;
+        let magnitude = code & 0x03;
+        let step = STEPS[self.step];
+        let difference = step / 4
+            + if magnitude & 1 != 0 { step / 2 } else { 0 }
+            + if magnitude & 2 != 0 { step } else { 0 };
+        let difference = if code & 0x04 != 0 {
+            -difference
+        } else {
+            difference
+        };
+        self.advance(difference, INDEX_SHIFT_3BIT[usize::from(magnitude)])
     }
 
     /// Decode a byte into two predictor values, low nibble first.
@@ -79,7 +96,7 @@ impl Okim6258Adpcm {
         low | (high << 4)
     }
 
-    fn encode_nibble(&mut self, target: i32) -> u8 {
+    pub(super) fn encode_nibble(&mut self, target: i32) -> u8 {
         let mut difference = target.clamp(-2048, 2047) - self.signal;
         let mut nibble = 0;
         if difference < 0 {
@@ -100,6 +117,12 @@ impl Okim6258Adpcm {
         }
         self.decode_low_nibble(nibble);
         nibble
+    }
+
+    fn advance(&mut self, difference: i32, index_shift: i32) -> i32 {
+        self.signal = (self.signal + difference).clamp(-2048, 2047);
+        self.step = (self.step as i32 + index_shift).clamp(0, 48) as usize;
+        self.signal
     }
 }
 
@@ -174,6 +197,27 @@ mod tests {
         assert_eq!(pair.signal(), -2);
         assert_eq!(pair.step_index(), 0);
         assert_eq!(pair.decode_low_nibble(0xf1), 4);
+    }
+
+    #[cfg(feature = "okim6258")]
+    #[test]
+    fn okim6258_three_bit_codes_use_two_magnitude_bits() {
+        let expected = [
+            (2, 0),
+            (10, 0),
+            (18, 2),
+            (26, 4),
+            (-6, 0),
+            (-14, 0),
+            (-22, 2),
+            (-30, 4),
+        ];
+        for (code, (signal, step)) in expected.into_iter().enumerate() {
+            let mut decoder = Okim6258Adpcm::new();
+            assert_eq!(decoder.decode_3bit_code(code as u8), signal);
+            assert_eq!(decoder.signal(), signal);
+            assert_eq!(decoder.step_index(), step);
+        }
     }
 
     #[cfg(feature = "okim6258")]

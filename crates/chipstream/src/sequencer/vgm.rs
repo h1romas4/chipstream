@@ -31,11 +31,11 @@ use crate::chip::Okim6295;
 use crate::chip::Pwm;
 #[cfg(feature = "segapcm")]
 use crate::chip::SegaPcm;
+#[cfg(feature = "okim6258")]
+use crate::chip::{AdpcmBits, ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 #[cfg(feature = "c140")]
 use crate::chip::{C140, C140Type};
 use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChipState, YmfmChip};
-#[cfg(feature = "okim6258")]
-use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 #[cfg(feature = "sn76496")]
 use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
@@ -103,7 +103,7 @@ pub enum VgmSequencerError {
         /// Required Cargo feature name.
         feature: &'static str,
     },
-    /// Native OKIM6258 3-bit ADPCM decoding is unsupported.
+    /// The requested OKIM6258 ADPCM configuration is unsupported.
     UnsupportedOkiAdpcm,
     /// A ROM or RAM data block is invalid.
     InvalidRomBlock,
@@ -185,7 +185,7 @@ impl fmt::Display for VgmSequencerError {
                     "{chip:?} playback requires the chipstream feature '{feature}'"
                 )
             }
-            Self::UnsupportedOkiAdpcm => write!(f, "OKIM6258 3-bit ADPCM is not implemented"),
+            Self::UnsupportedOkiAdpcm => write!(f, "unsupported OKIM6258 ADPCM configuration"),
             Self::InvalidRomBlock => write!(f, "invalid VGM ROM/RAM block"),
             Self::RomTooLarge => write!(f, "VGM chip memory exceeds the supported size"),
             Self::UnexpectedEnd => write!(f, "VGM command stream ended without an end command"),
@@ -611,9 +611,8 @@ impl Voice {
 /// OKIM6258 pan and rate changes, SN76489 header settings and Game Gear
 /// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
 /// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
-/// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag is accepted
-/// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
-/// behavior; native 3-bit ADPCM decoding is not implemented.
+/// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag selects
+/// three-bit decoding followed by four-bit ADPCM re-encoding.
 ///
 /// Register write pacing is determined by the device timing profile. YMFM
 /// writes are queued per chip instance and applied in order, at most one per
@@ -1029,7 +1028,6 @@ impl<'a> VgmSequencer<'a> {
             } else if chip == Chip::Okim6258 {
                 feature_backend!("okim6258", chip, {
                     let flags = &header.okim6258_flags;
-                    // The MAME-backed vgm2wav compatibility path also ignores this selector.
                     let mut oki = Okim6258::new(clock)?;
                     oki.set_divider(match flags.clock_divider {
                         0 => ClockDivider::Div1024,
@@ -1041,7 +1039,11 @@ impl<'a> VgmSequencer<'a> {
                     } else {
                         OutputBits::Bits10
                     });
-                    let stream = Okim6258Stream::new(oki);
+                    let stream = Okim6258Stream::new(oki).with_adpcm_bits(if flags.adpcm_3bit_select {
+                        AdpcmBits::Bits3
+                    } else {
+                        AdpcmBits::Bits4
+                    });
                     Box::new(if vgm_dc_blocker {
                         stream.with_dc_blocker()
                     } else {
