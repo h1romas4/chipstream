@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.14.0
+
 - Handle Music album shortcuts throughout the Library screen.
 - Support Ctrl+F and Cmd+F for Library search.
 - Add a keyboard shortcuts dialog beside the Settings button.
