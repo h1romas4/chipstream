@@ -4519,6 +4519,12 @@ impl AppView {
                 mame_plugin.is_some_and(|plugin| plugin.supported_systems().contains(system))
             })
             .collect::<Vec<_>>();
+        let connected_device_count = graph
+            .devices
+            .iter()
+            .filter(|device| device.connected)
+            .count();
+        let mame_connector_y = patchbay::mame_server_connector_y(connected_device_count);
         let target_height = if self.mame_mode {
             patchbay::HEADER
                 + patchbay::ROW * mame_systems.len().max(1) as f32
@@ -4613,6 +4619,26 @@ impl AppView {
         ];
         let mut nodes = Vec::new();
         if self.mame_mode {
+            let mame_connected = self.mame_server.is_some() && self.mame_status == "Connected";
+            for x in [
+                patchbay::MAME_LEFT_CONNECTOR_X,
+                patchbay::MAME_RIGHT_CONNECTOR_X,
+            ] {
+                nodes.push(
+                    div()
+                        .absolute()
+                        .left(px(x - 4.))
+                        .top(px(mame_connector_y - 4.))
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(rgb(if mame_connected {
+                            ACCENT_COLOR
+                        } else {
+                            0x6a8e9c
+                        }))
+                        .into_any_element(),
+                );
+            }
             for index in 0..mame_systems.len() {
                 nodes.push(
                     div()
@@ -5146,6 +5172,7 @@ impl AppView {
                     .label(name)
                     .small()
                     .w_full()
+                    .h(px(patchbay::MAME_DEVICE_BUTTON_HEIGHT))
                     .toggled(self.mame_device == Some(id))
                     .when(self.mame_device == Some(id), |button| button.primary())
                     .disabled(busy)
@@ -5164,47 +5191,51 @@ impl AppView {
             .gap_2()
             .child(
                 div()
-                    .mt_2()
-                    .mb_1()
+                    .h(px(patchbay::MAME_OUTPUT_HEADER_HEIGHT))
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Output NanoDrive"),
             )
             .child(
                 div()
+                    .h(px(patchbay::mame_output_devices_height(nodes.len())))
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .min_h(px(48.))
-                    .gap_1()
+                    .gap(px(patchbay::MAME_DEVICE_BUTTON_GAP))
                     .children(nodes)
-                    .when(route.is_none(), |row| {
+                    .when(!has_devices, |row| {
                         row.child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .text_color(rgb(0xf2a968))
-                                .child(if has_devices {
-                                    "Select a connected NanoDrive."
-                                } else {
-                                    "Connect a NanoDrive using the controls on the right."
-                                }),
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child("Connect a NanoDrive using the controls on the right."),
                         )
                     }),
             )
-            .when_some(route.and_then(Result::err), |panel, message| {
-                panel.child(div().text_sm().text_color(rgb(0xf2a968)).child(message))
-            })
-            .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))
             .child(
                 div()
-                    .mt_2()
-                    .mb_1()
+                    .h(px(patchbay::MAME_DIVIDER_HEIGHT))
+                    .w_full()
+                    .bg(rgb(0x30414d)),
+            )
+            .child(
+                div()
+                    .h(px(patchbay::MAME_SERVER_HEADER_HEIGHT))
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("MAME bridge server"),
             )
             .child(
                 div()
+                    .h(px(patchbay::MAME_SERVER_ROW_HEIGHT))
+                    .px_2()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -5281,6 +5312,9 @@ impl AppView {
                     .text_color(rgb(0xa6b6c3))
                     .child(self.mame_status),
             )
+            .when_some(route.and_then(Result::err), |panel, message| {
+                panel.child(div().text_sm().text_color(rgb(0xf2a968)).child(message))
+            })
             .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))
             .child(self.mame_home_controls(cx))
             .child(div().w_full().h(px(1.)).bg(rgb(0x30414d)))

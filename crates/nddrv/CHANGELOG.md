@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Always show English system names in TRACK INFO.
+- Add connection points on both sides of the MAME Bridge routing node.
 
 ## v0.13.0
 

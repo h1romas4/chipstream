@@ -16,7 +16,36 @@ pub const HEADER: f32 = 40.;
 pub const DEVICE_HEADER: f32 = 104.;
 pub const ROW: f32 = 30.;
 pub const MAME_SYSTEM_GAP: f32 = 4.;
+pub const MAME_OUTPUT_HEADER_HEIGHT: f32 = 20.;
+pub const MAME_OUTPUT_MIN_HEIGHT: f32 = 48.;
+pub const MAME_DEVICE_BUTTON_HEIGHT: f32 = 28.;
+pub const MAME_DEVICE_BUTTON_GAP: f32 = 4.;
+pub const MAME_SERVER_HEADER_HEIGHT: f32 = 20.;
+pub const MAME_SERVER_ROW_HEIGHT: f32 = 32.;
+pub const MAME_DIVIDER_HEIGHT: f32 = 1.;
+pub const MAME_VIEW_GAP: f32 = 8.;
+pub const MAME_LEFT_CONNECTOR_X: f32 = SOURCE_X;
+pub const MAME_RIGHT_CONNECTOR_X: f32 = SOURCE_X + SOURCE_WIDTH;
 const GAP: f32 = 16.;
+
+pub fn mame_output_devices_height(device_count: usize) -> f32 {
+    let rows = MAME_DEVICE_BUTTON_HEIGHT * device_count as f32
+        + MAME_DEVICE_BUTTON_GAP * device_count.saturating_sub(1) as f32;
+    MAME_OUTPUT_MIN_HEIGHT.max(rows)
+}
+
+pub fn mame_server_connector_y(device_count: usize) -> f32 {
+    HEADER
+        + MAME_OUTPUT_HEADER_HEIGHT
+        + MAME_VIEW_GAP
+        + mame_output_devices_height(device_count)
+        + MAME_VIEW_GAP
+        + MAME_DIVIDER_HEIGHT
+        + MAME_VIEW_GAP
+        + MAME_SERVER_HEADER_HEIGHT
+        + MAME_VIEW_GAP
+        + MAME_SERVER_ROW_HEIGHT / 2.
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -112,6 +141,12 @@ impl Graph {
         selected_device: Option<u64>,
         chips: &[(HardwareChip, ChipInstance)],
     ) -> Vec<Cable> {
+        let connector_y = mame_server_connector_y(
+            self.devices
+                .iter()
+                .filter(|device| device.connected)
+                .count(),
+        );
         let Some(device) = self
             .devices
             .iter()
@@ -127,8 +162,8 @@ impl Graph {
                     .iter()
                     .find(|endpoint| endpoint.chip == *chip && endpoint.instance == *instance)?;
                 Some(Cable {
-                    source_x: SOURCE_X + SOURCE_WIDTH - 16.,
-                    source_y: HEADER / 2.,
+                    source_x: MAME_RIGHT_CONNECTOR_X,
+                    source_y: connector_y,
                     target_x: DEVICE_X,
                     target_y: endpoint.y + ROW / 2.,
                     hardware: true,
@@ -145,6 +180,12 @@ impl Graph {
         connected_systems: &[bool],
         highlighted: bool,
     ) -> Vec<Cable> {
+        let connector_y = mame_server_connector_y(
+            self.devices
+                .iter()
+                .filter(|device| device.connected)
+                .count(),
+        );
         if !connected_systems.iter().any(|connected| *connected)
             || !self
                 .devices
@@ -160,8 +201,8 @@ impl Graph {
             .map(|(index, _)| Cable {
                 source_x: TARGET_X + TARGET_WIDTH,
                 source_y: mame_system_row_y(index) + ROW / 2.,
-                target_x: SOURCE_X + 16.,
-                target_y: HEADER / 2.,
+                target_x: MAME_LEFT_CONNECTOR_X,
+                target_y: connector_y,
                 hardware: true,
                 available: true,
                 highlighted,
@@ -409,7 +450,11 @@ mod tests {
         let mame_cables =
             graph.mame_device_cables(Some(1), &[(HardwareChip::Ym2151, ChipInstance::Primary)]);
         assert_eq!(mame_cables.len(), 1);
-        assert_eq!(mame_cables[0].source_x, SOURCE_X + SOURCE_WIDTH - 16.);
+        assert_eq!(MAME_LEFT_CONNECTOR_X, SOURCE_X);
+        assert_eq!(MAME_RIGHT_CONNECTOR_X, SOURCE_X + SOURCE_WIDTH);
+        assert_eq!(mame_cables[0].source_x, MAME_RIGHT_CONNECTOR_X);
+        assert_eq!(mame_cables[0].source_y, mame_server_connector_y(2));
+        assert_eq!(mame_cables[0].source_y, 189.);
         assert_eq!(mame_cables[0].target_x, DEVICE_X);
         assert_eq!(mame_cables[0].target_y, first.endpoints[0].y + ROW / 2.);
         assert!(mame_cables[0].highlighted);
@@ -429,8 +474,9 @@ mod tests {
             system_cables[1].source_y,
             HEADER + ROW + MAME_SYSTEM_GAP + ROW / 2.
         );
-        assert_eq!(system_cables[0].target_x, SOURCE_X + 16.);
-        assert_eq!(system_cables[0].target_y, HEADER / 2.);
+        assert_eq!(system_cables[0].target_x, MAME_LEFT_CONNECTOR_X);
+        assert_eq!(system_cables[0].target_y, mame_server_connector_y(2));
+        assert_eq!(system_cables[0].target_y, 189.);
         let active_system_cables = graph.mame_system_cables(Some(1), &[true, true, false], true);
         assert!(active_system_cables.iter().all(|cable| cable.highlighted));
         let nd8_system_cables = graph.mame_system_cables(Some(1), &[false, false, true], false);
@@ -465,6 +511,16 @@ mod tests {
                 .mame_system_cables(Some(1), &[true, true], false)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn mame_server_connector_tracks_output_device_rows() {
+        assert_eq!(mame_output_devices_height(0), 48.);
+        assert_eq!(mame_output_devices_height(1), 48.);
+        assert_eq!(mame_output_devices_height(2), 60.);
+        assert_eq!(mame_server_connector_y(0), 177.);
+        assert_eq!(mame_server_connector_y(1), 177.);
+        assert_eq!(mame_server_connector_y(2), 189.);
     }
 
     #[test]
