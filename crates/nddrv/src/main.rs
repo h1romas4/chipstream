@@ -58,6 +58,7 @@ const APP_TITLE: &str = "NDDRV";
 const INITIAL_WINDOW_SIZE: Size<Pixels> = size(px(1600.), px(900.));
 const SYSTEM_DEFAULT_AUDIO_DEVICE: &str = "system-default";
 const DEVICE_DEFAULT_SAMPLE_RATE: &str = "device-default";
+const LIBRARY_SCAN_NOTIFICATION_DURATION: Duration = Duration::from_millis(2_500);
 
 #[cfg(target_os = "macos")]
 actions!(nddrv, [Quit]);
@@ -804,6 +805,7 @@ struct AppView {
     displayed_scan_progress: Option<ScanProgress>,
     scan_progress_updated_at: Option<Instant>,
     completed_scan_notification: Option<(usize, Vec<String>)>,
+    library_scan_notification_expires_at: Option<Instant>,
     _poll: Task<()>,
 }
 
@@ -1689,6 +1691,7 @@ impl AppView {
             displayed_scan_progress: None,
             scan_progress_updated_at: None,
             completed_scan_notification: None,
+            library_scan_notification_expires_at: None,
             _poll: poll,
         }
     }
@@ -2097,6 +2100,7 @@ impl AppView {
         self.displayed_scan_progress = None;
         self.scan_progress_updated_at = None;
         self.completed_scan_notification = None;
+        self.library_scan_notification_expires_at = None;
         self.scanning = true;
         self.status = "Scanning directories...".into();
         cx.notify();
@@ -3164,9 +3168,17 @@ impl AppView {
             }
             cx.notify();
         }
+        if self
+            .library_scan_notification_expires_at
+            .is_some_and(|expires_at| Instant::now() >= expires_at)
+        {
+            window.remove_notification::<LibraryScanNotification>(cx);
+            self.library_scan_notification_expires_at = None;
+        }
         if let Some((count, errors)) = self.completed_scan_notification.take() {
             self.scan_notification_shown = false;
-            let notification = if errors.is_empty() {
+            let successful = errors.is_empty();
+            let notification = if successful {
                 let message = format!("{count} tracks found");
                 let copy_text: SharedString =
                     notification_copy_text("Library scan complete", &message, None).into();
@@ -3180,6 +3192,10 @@ impl AppView {
                 error_details_notification("Library scan completed with errors", summary, errors)
             };
             window.push_notification(notification.id::<LibraryScanNotification>(), cx);
+            if successful {
+                self.library_scan_notification_expires_at =
+                    Some(Instant::now() + LIBRARY_SCAN_NOTIFICATION_DURATION);
+            }
         } else if let Some((progress, origin)) = &self.scan_progress {
             let progress = *progress.lock().expect("scan progress mutex poisoned");
             let action = scan_progress_action(
