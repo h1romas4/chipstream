@@ -13,15 +13,17 @@ use super::{
 
 const MAX_PENDING_BYTES: usize = 65_536;
 
-/// Adapts DAC-stream writes to the native two-nibble OKIM6258 cadence.
+/// Adapts ADPCM writes to the native two-nibble OKIM6258 cadence.
 ///
 /// Stream bytes are consumed in order, two native samples per byte. When no
 /// byte is available, the last decoded sample is held without advancing the
 /// predictor. Direct data writes retain the underlying latch behavior and
-/// discard pending stream bytes. Chip playback stop clears the stream state.
+/// discard pending stream bytes by default. [`Self::with_direct_write_queue`]
+/// instead queues direct writes alongside DAC-stream writes. Chip playback
+/// stop clears the stream state.
 /// Stopping a DAC stream discards queued bytes with that stream ID, or all
 /// queued bytes for stop-all; a partially decoded byte finishes first.
-/// Before the first stream write, the wrapped chip's latch behavior applies.
+/// Before the first queued write, the wrapped chip's latch behavior applies.
 ///
 /// The queue is bounded to 65,536 bytes; overflow returns a configuration
 /// error rather than dropping input. The optional 20 Hz DC blocker affects
@@ -29,10 +31,11 @@ const MAX_PENDING_BYTES: usize = 65_536;
 #[derive(Clone)]
 pub struct Okim6258Stream {
     chip: Okim6258,
-    pending: VecDeque<(u8, u8)>,
+    pending: VecDeque<(Option<u8>, u8)>,
     active: bool,
     high_nibble: bool,
     held_sample: i32,
+    queue_direct_writes: bool,
     dc_blocker: Option<DcBlocker>,
 }
 
@@ -45,8 +48,18 @@ impl Okim6258Stream {
             active: false,
             high_nibble: false,
             held_sample: 0,
+            queue_direct_writes: false,
             dc_blocker: None,
         }
+    }
+
+    /// Queue direct data writes while playing, preserving their order with
+    /// DAC-stream writes. Writes while stopped retain the chip's latch behavior.
+    ///
+    /// Disabled by default. Stream-stop commands do not discard direct writes.
+    pub fn with_direct_write_queue(mut self) -> Self {
+        self.queue_direct_writes = true;
+        self
     }
 
     /// Enable a 20 Hz first-order high-pass filter on the decoded output.
@@ -63,6 +76,18 @@ impl Okim6258Stream {
         self.active = false;
         self.high_nibble = false;
         self.held_sample = 0;
+    }
+
+    fn enqueue(&mut self, stream_id: Option<u8>, value: u8) -> Result<(), ChipError> {
+        if self.pending.len() >= MAX_PENDING_BYTES {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Okim6258,
+                reason: "OKIM6258 stream input queue capacity exceeded",
+            });
+        }
+        self.pending.push_back((stream_id, value));
+        self.active = true;
+        Ok(())
     }
 }
 
@@ -92,6 +117,12 @@ impl SoundChip for Okim6258Stream {
     }
 
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
+        if self.queue_direct_writes
+            && self.chip.status() == 0
+            && let ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, value }) = write
+        {
+            return self.enqueue(None, value);
+        }
         let clear = match &write {
             ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, .. }) => true,
             ChipRegisterWrite::Okim6258(Okim6258Spec { register: 0, value }) => {
@@ -125,23 +156,16 @@ impl SoundChip for Okim6258Stream {
                         value,
                     }));
             }
-            if self.pending.len() >= MAX_PENDING_BYTES {
-                return Err(ChipError::InvalidConfiguration {
-                    chip: Chip::Okim6258,
-                    reason: "OKIM6258 stream input queue capacity exceeded",
-                });
-            }
-            self.pending.push_back((stream_id, value));
-            self.active = true;
-            Ok(())
+            self.enqueue(Some(stream_id), value)
         } else {
             self.apply_register_write(write)
         }
     }
 
     fn stop_dac_stream(&mut self, stream_id: Option<u8>) -> Result<(), ChipError> {
-        self.pending
-            .retain(|(id, _)| stream_id.is_some_and(|stream_id| *id != stream_id));
+        self.pending.retain(|(id, _)| {
+            id.is_none() || stream_id.is_some_and(|stream_id| *id != Some(stream_id))
+        });
         Ok(())
     }
 
@@ -309,6 +333,101 @@ mod tests {
     }
 
     #[test]
+    fn queued_direct_writes_preserve_order_and_survive_stream_stops() {
+        for stream_id in [Some(0), None] {
+            let mut raw = Okim6258::new(8_000_000).unwrap();
+            raw.set_output_bits(OutputBits::Bits12);
+            let mut chip = Okim6258Stream::new(raw.clone()).with_direct_write_queue();
+            write(&mut chip, 0, 2);
+            raw.write(Okim6258Spec {
+                register: 0,
+                value: 2,
+            })
+            .unwrap();
+            write(&mut chip, 1, 0x71);
+            let mut actual = [0; 4];
+            chip.generate(&mut actual[..1]).unwrap();
+            stream(&mut chip, 0xf2).unwrap();
+            write(&mut chip, 1, 0x43);
+            stream(&mut chip, 0x12).unwrap();
+            chip.stop_dac_stream(stream_id).unwrap();
+            let snapshot = chip.save_state().unwrap();
+            chip.generate(&mut actual[1..]).unwrap();
+
+            let mut expected = [0; 4];
+            for (byte, samples) in [0x71, 0x43].into_iter().zip(expected.chunks_mut(2)) {
+                raw.write(Okim6258Spec {
+                    register: 1,
+                    value: byte,
+                })
+                .unwrap();
+                raw.generate(samples).unwrap();
+            }
+            assert_eq!(actual, expected);
+            chip.restore_state(snapshot.as_ref()).unwrap();
+            let mut restored = [0; 3];
+            chip.generate(&mut restored).unwrap();
+            assert_eq!(restored, actual[1..]);
+        }
+    }
+
+    #[test]
+    fn queued_direct_and_stream_writes_are_decoded_in_arrival_order() {
+        let mut raw = Okim6258::new(8_000_000).unwrap();
+        raw.set_output_bits(OutputBits::Bits12);
+        let mut chip = Okim6258Stream::new(raw.clone()).with_direct_write_queue();
+        write(&mut chip, 0, 2);
+        raw.write(Okim6258Spec {
+            register: 0,
+            value: 2,
+        })
+        .unwrap();
+        stream(&mut chip, 0x71).unwrap();
+        write(&mut chip, 1, 0xf2);
+        stream(&mut chip, 0x43).unwrap();
+        let mut actual = [0; 6];
+        chip.generate(&mut actual).unwrap();
+        let mut expected = [0; 6];
+        for (byte, samples) in [0x71, 0xf2, 0x43].into_iter().zip(expected.chunks_mut(2)) {
+            raw.write(Okim6258Spec {
+                register: 1,
+                value: byte,
+            })
+            .unwrap();
+            raw.generate(samples).unwrap();
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn queued_direct_writes_stop_and_report_overflow() {
+        let mut chip =
+            Okim6258Stream::new(Okim6258::new(8_000_000).unwrap()).with_direct_write_queue();
+        write(&mut chip, 0, 2);
+        for _ in 0..MAX_PENDING_BYTES {
+            write(&mut chip, 1, 0x21);
+        }
+        assert!(matches!(
+            chip.write(Okim6258Spec {
+                register: 1,
+                value: 0x43
+            }),
+            Err(ChipError::InvalidConfiguration {
+                chip: Chip::Okim6258,
+                ..
+            })
+        ));
+        write(&mut chip, 0, 1);
+        let mut samples = [1; 4];
+        chip.generate(&mut samples).unwrap();
+        assert_eq!(samples, [0; 4]);
+        write(&mut chip, 0, 2);
+        write(&mut chip, 1, 0x43);
+        chip.generate(&mut samples).unwrap();
+        assert_ne!(samples, [0; 4]);
+    }
+
+    #[test]
     fn snapshot_preserves_partial_byte_and_queue() {
         let mut chip = Okim6258Stream::new(Okim6258::new(8_000_000).unwrap());
         write(&mut chip, 0, 2);
@@ -340,7 +459,7 @@ mod tests {
         )
         .unwrap();
         chip.stop_dac_stream(Some(0)).unwrap();
-        assert_eq!(chip.pending, VecDeque::from([(1, 0x43)]));
+        assert_eq!(chip.pending, VecDeque::from([(Some(1), 0x43)]));
         assert!(chip.high_nibble);
         chip.generate(&mut [0; 3]).unwrap();
         assert!(chip.pending.is_empty());

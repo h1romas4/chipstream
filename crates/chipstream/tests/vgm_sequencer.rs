@@ -185,6 +185,13 @@ fn chunks_preserve_oki_pan_rate_and_duration() {
     );
     assert!(a[3000..].iter().all(|f| f[0].abs() < 0.00001));
     assert!(a[3000..].iter().any(|f| f[1].abs() > 0.001));
+
+    let mut checkpointed = VgmSequencer::new(oki_document(), 48_000, 31).unwrap();
+    checkpointed.render().unwrap();
+    let checkpoint = checkpointed.checkpoint().unwrap();
+    let continuation = render_all(&mut checkpointed);
+    checkpointed.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(render_all(&mut checkpointed), continuation);
 }
 
 #[test]
@@ -225,7 +232,11 @@ fn vgm_okim6258_matches_explicit_dc_filtered_decoder() {
             let mut chip = Okim6258::new(config.clock())?;
             chip.set_divider(ClockDivider::Div512)?;
             chip.set_output_bits(OutputBits::Bits12);
-            Ok(Box::new(Okim6258Stream::new(chip).with_dc_blocker()))
+            Ok(Box::new(
+                Okim6258Stream::new(chip)
+                    .with_direct_write_queue()
+                    .with_dc_blocker(),
+            ))
         });
         let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
         let mut direct =
@@ -233,6 +244,17 @@ fn vgm_okim6258_matches_explicit_dc_filtered_decoder() {
         let actual = render_all(&mut builtin);
         assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
         assert_eq!(actual, render_all(&mut direct));
+
+        let mut latch_factories = ChipFactoryRegistry::new();
+        latch_factories.register(Chip::Okim6258, |config| {
+            let mut chip = Okim6258::new(config.clock())?;
+            chip.set_divider(ClockDivider::Div512)?;
+            chip.set_output_bits(OutputBits::Bits12);
+            Ok(Box::new(Okim6258Stream::new(chip).with_dc_blocker()))
+        });
+        let mut latch =
+            VgmSequencer::new_with_factories(document.clone(), rate, 127, latch_factories).unwrap();
+        assert_ne!(actual, render_all(&mut latch));
     }
 }
 

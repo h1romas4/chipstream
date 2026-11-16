@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix noise in emulated OKIM6258 VGM playback with direct data writes.
 - Always show English system names in TRACK INFO.
 - Add connection points on both sides of the MAME Bridge routing node.
 

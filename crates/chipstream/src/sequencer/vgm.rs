@@ -333,7 +333,7 @@ struct VoiceConfig {
     clock: u32,
     dual: bool,
     sn76489_stereo_used: bool,
-    vgm_dc_blocker: bool,
+    vgm_input: bool,
 }
 
 struct Voice {
@@ -614,6 +614,9 @@ impl Voice {
 /// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag is accepted
 /// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
 /// behavior; native 3-bit ADPCM decoding is not implemented.
+/// The built-in OKIM6258 backend queues direct data and DAC-stream writes in
+/// arrival order and applies a 20 Hz DC blocker. The queue is bounded; an
+/// overflow returns an error. Custom backends define their own behavior.
 ///
 /// Register write pacing is determined by the device timing profile. YMFM
 /// writes are queued per chip instance and applied in order, at most one per
@@ -939,10 +942,10 @@ impl<'a> VgmSequencer<'a> {
             clock,
             dual,
             sn76489_stereo_used,
-            vgm_dc_blocker,
+            vgm_input,
         } = config;
         #[cfg(not(feature = "okim6258"))]
-        let _ = vgm_dc_blocker;
+        let _ = vgm_input;
         let profile = TimingProfile::for_chip(&chip);
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
@@ -1042,8 +1045,8 @@ impl<'a> VgmSequencer<'a> {
                         OutputBits::Bits10
                     });
                     let stream = Okim6258Stream::new(oki);
-                    Box::new(if vgm_dc_blocker {
-                        stream.with_dc_blocker()
+                    Box::new(if vgm_input {
+                        stream.with_direct_write_queue().with_dc_blocker()
                     } else {
                         stream
                     })
@@ -1283,7 +1286,7 @@ impl<'a> VgmSequencer<'a> {
         extra: Option<&VgmExtraHeader>,
         timing: &Timing,
         psg_stereo: [bool; 2],
-        vgm_dc_blocker: bool,
+        vgm_input: bool,
         output_rate: u32,
         factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
@@ -1315,7 +1318,7 @@ impl<'a> VgmSequencer<'a> {
                         clock,
                         dual: raw & 0x4000_0000 != 0,
                         sn76489_stereo_used: chip == Chip::Sn76489 && psg_stereo[instance as usize],
-                        vgm_dc_blocker,
+                        vgm_input,
                     },
                     timing,
                     output_rate,
