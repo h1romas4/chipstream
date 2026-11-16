@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fix: Interpret the VGM OKIM6258 ADPCM select bit correctly (set = 4-bit, clear = 3-bit).
+
 ## Planned
 
 - [ ] Add: Initial XGM format support (`xgm` feature).

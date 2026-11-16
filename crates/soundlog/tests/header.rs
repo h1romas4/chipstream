@@ -26,6 +26,17 @@ fn clock_variant_and_dual_chip_flags_are_independent() {
 }
 
 #[test]
+fn okim6258_adpcm_bit_select_matches_vgm_flag_semantics() {
+    let three_bit = Okim6258Flags::from(0x02);
+    assert!(three_bit.adpcm_3bit_select);
+    assert_eq!(u8::from(three_bit), 0x02);
+
+    let four_bit = Okim6258Flags::from(0x06);
+    assert!(!four_bit.adpcm_3bit_select);
+    assert_eq!(u8::from(four_bit), 0x06);
+}
+
+#[test]
 fn test_chipid_masks_paired_bit() {
     // Known chip id 0x02 => Ym2612. If bit 7 is set in the on-disk byte,
     // ChipId::from_u8 should still return the canonical variant.

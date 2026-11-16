@@ -404,7 +404,7 @@ impl From<C140ChipType> for u8 {
 pub struct Okim6258Flags {
     /// bits 0-1: Clock Divider (values select divider; common dividers: 1024, 768, 512, 512)
     pub clock_divider: u8,
-    /// bit  2: 3/4-bit ADPCM select (default is 4-bit; may not be fully supported)
+    /// bit  2: ADPCM bit depth select (0 = 3-bit, 1 = 4-bit)
     pub adpcm_3bit_select: bool,
     /// bit  3: 10/12-bit output select (default is 10-bit)
     pub output_12bit: bool,
@@ -415,7 +415,7 @@ pub struct Okim6258Flags {
 impl From<u8> for Okim6258Flags {
     fn from(value: u8) -> Self {
         let clock_divider = value & 0x03;
-        let adpcm_3bit_select = (value & (1 << 2)) != 0;
+        let adpcm_3bit_select = (value & (1 << 2)) == 0;
         let output_12bit = (value & (1 << 3)) != 0;
         let reserved = value >> 4;
         Okim6258Flags {
@@ -430,7 +430,7 @@ impl From<u8> for Okim6258Flags {
 impl From<Okim6258Flags> for u8 {
     fn from(flags: Okim6258Flags) -> Self {
         let mut value = flags.clock_divider & 0x03;
-        if flags.adpcm_3bit_select {
+        if !flags.adpcm_3bit_select {
             value |= 1 << 2;
         }
         if flags.output_12bit {
