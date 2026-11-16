@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Always show English system names in TRACK INFO.
+
 ## v0.13.0
 
 - Group Music tracks by folder with artwork, English system names, and release-date details.

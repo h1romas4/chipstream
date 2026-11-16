@@ -3562,14 +3562,8 @@ impl AppView {
         });
         let metadata =
             track.map(|track| track.metadata_for(self.config.general.vgm_metadata_language));
-        let system_metadata_language =
-            if matches!(self.details_selection, DetailsSelection::Playlist) {
-                MetadataLanguage::English
-            } else {
-                self.config.general.vgm_metadata_language
-            };
         let system_name = track
-            .map(|track| track.metadata_for(system_metadata_language))
+            .map(|track| track.metadata_for(MetadataLanguage::English))
             .and_then(|metadata| metadata.system_name.as_deref())
             .map(str::trim)
             .filter(|system| !system.is_empty())
