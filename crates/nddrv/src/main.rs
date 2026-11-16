@@ -956,6 +956,58 @@ fn audio_sample_rate_options(
 }
 
 impl AppView {
+    fn open_shortcuts_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let show_quit_shortcut = cfg!(target_os = "macos");
+        window.open_dialog(cx, move |dialog, _, _| {
+            let mut content = div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(shortcut_section(
+                    "Playback and search",
+                    &[
+                        ("Ctrl+F / Cmd+F", "Focus Library search"),
+                        ("F5", "Play or resume (Library / Piano)"),
+                        ("Shift+F5", "Stop playback (Library / Piano)"),
+                    ],
+                ))
+                .child(shortcut_section(
+                    "Focused list",
+                    &[
+                        ("Ctrl+A / Cmd+A", "Select all"),
+                        ("Up / Down", "Move selection"),
+                        ("Shift+Up / Shift+Down", "Extend selection"),
+                        ("Enter (Music)", "Add selected tracks to Playlist"),
+                        ("Enter (Playlist)", "Play selected track"),
+                        ("Delete (Playlist)", "Remove selected tracks"),
+                    ],
+                ))
+                .child(shortcut_section(
+                    "Music albums",
+                    &[
+                        ("Ctrl/Cmd+Shift+Left", "Collapse all albums"),
+                        ("Ctrl/Cmd+Shift+Right", "Expand all albums"),
+                    ],
+                ))
+                .child(shortcut_section(
+                    "Search suggestions",
+                    &[
+                        ("Up / Down", "Move through suggestions"),
+                        ("Esc", "Dismiss suggestions"),
+                    ],
+                ));
+            if show_quit_shortcut {
+                content =
+                    content.child(shortcut_section("Application", &[("Cmd+Q", "Quit NDDRV")]));
+            }
+            dialog
+                .title("Keyboard shortcuts")
+                .width(px(520.))
+                .centered()
+                .child(content.p_3())
+        });
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let output_devices = match playback::audio_output_devices() {
             Ok(devices) => devices,
@@ -6664,8 +6716,7 @@ fn is_search_shortcut(keystroke: &Keystroke, page: Page) -> bool {
     let modifiers = keystroke.modifiers;
     page == Page::Library
         && keystroke.key == "f"
-        && modifiers.control
-        && !modifiers.platform
+        && (modifiers.control || modifiers.platform)
         && !modifiers.alt
         && !modifiers.shift
         && !modifiers.function
@@ -6739,6 +6790,54 @@ fn list_key(keystroke: &Keystroke, list: DetailsSelection) -> Option<ListKey> {
         ("delete", DetailsSelection::Playlist) if !modifiers.shift => Some(ListKey::Delete),
         _ => None,
     }
+}
+
+fn global_music_album_shortcut(keystroke: &Keystroke, page: Page) -> Option<ListKey> {
+    if page != Page::Library {
+        return None;
+    }
+    match list_key(keystroke, DetailsSelection::Music) {
+        Some(ListKey::CollapseAllAlbums) => Some(ListKey::CollapseAllAlbums),
+        Some(ListKey::ExpandAllAlbums) => Some(ListKey::ExpandAllAlbums),
+        _ => None,
+    }
+}
+
+fn shortcut_section(title: &'static str, rows: &[(&'static str, &'static str)]) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .pb_1()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(0x64eadc))
+                .child(title),
+        )
+        .children(rows.iter().map(|(keys, description)| {
+            div()
+                .flex()
+                .items_center()
+                .gap_4()
+                .py_1()
+                .child(
+                    div()
+                        .w(px(190.))
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(rgb(0xb9e9e7))
+                        .child(*keys),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .text_color(rgb(0xa6b6c3))
+                        .child(*description),
+                )
+        }))
 }
 
 fn single_queue_selection(selection: &HashSet<usize>, len: usize) -> Option<usize> {
@@ -6881,6 +6980,17 @@ impl Render for AppView {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if let Some(action) = global_music_album_shortcut(&event.keystroke, view.page) {
+                    let collapsed = match action {
+                        ListKey::CollapseAllAlbums => true,
+                        ListKey::ExpandAllAlbums => false,
+                        _ => return,
+                    };
+                    view.set_all_albums_collapsed(collapsed);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if is_search_shortcut(&event.keystroke, view.page) {
                     view.query.update(cx, |input, cx| input.focus(window, cx));
                     cx.stop_propagation();
@@ -7376,8 +7486,6 @@ impl Render for AppView {
                                                             }
                                                             match list_key(&event.keystroke, DetailsSelection::Music) {
                                                                 Some(ListKey::SelectAll) => view.select_all_tracks(),
-                                                                Some(ListKey::CollapseAllAlbums) => view.set_all_albums_collapsed(true),
-                                                                Some(ListKey::ExpandAllAlbums) => view.set_all_albums_collapsed(false),
                                                                 Some(ListKey::Up) => view.move_track_selection(false, false),
                                                                 Some(ListKey::Down) => view.move_track_selection(true, false),
                                                                 Some(ListKey::ExtendUp) => view.move_track_selection(false, true),
@@ -7546,6 +7654,17 @@ impl Render for AppView {
                         )
                     })
                     .child(
+                        Button::new("keyboard-shortcuts")
+                            .label("?")
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Keyboard shortcuts")
+                            .accessibility_label("Keyboard shortcuts")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open_shortcuts_dialog(window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("settings")
                             .icon(assets::IconName::Settings)
                             .ghost()
@@ -7650,16 +7769,16 @@ mod tests {
     use super::{
         ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, MusicListRow, Page, ScanOrigin,
         adjacent_track, build_music_list_rows, can_remove_device, capability_labels, chip_colors,
-        chip_suggestions, clipboard_track_path, connection_action, details_target, inclusive_range,
-        initial_window_bounds, is_play_shortcut, is_search_shortcut, is_select_all,
-        is_stop_shortcut, keep_preview_sources, list_cursor_index, list_key, list_selection_step,
-        list_selection_target, music_format, notification_copy_text, piano_channel_panel_height,
-        piano_gain_panel_height, piano_transition_ready, playback_state_label,
-        preferred_mame_device, remove_playlist_entries, renumber_connected_devices,
-        reported_scan_errors, restored_window_bounds, scan_progress_text, search_terms,
-        select_for_context, select_item, select_range, selection_status, single_queue_selection,
-        unsupported_chips, update_selection_order, update_window_settings,
-        visible_music_track_indices,
+        chip_suggestions, clipboard_track_path, connection_action, details_target,
+        global_music_album_shortcut, inclusive_range, initial_window_bounds, is_play_shortcut,
+        is_search_shortcut, is_select_all, is_stop_shortcut, keep_preview_sources,
+        list_cursor_index, list_key, list_selection_step, list_selection_target, music_format,
+        notification_copy_text, piano_channel_panel_height, piano_gain_panel_height,
+        piano_transition_ready, playback_state_label, preferred_mame_device,
+        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
+        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
+        select_range, selection_status, single_queue_selection, unsupported_chips,
+        update_selection_order, update_window_settings, visible_music_track_indices,
     };
 
     #[test]
@@ -7952,12 +8071,22 @@ mod tests {
     }
 
     #[test]
-    fn search_shortcut_is_limited_to_library_and_control_f() {
-        let control_f = Keystroke::parse("ctrl-f").unwrap();
-        assert!(is_search_shortcut(&control_f, Page::Library));
-        assert!(!is_search_shortcut(&control_f, Page::Piano));
-        assert!(!is_search_shortcut(&control_f, Page::Devices));
-        for key in ["f", "ctrl-shift-f", "ctrl-alt-f", "cmd-f", "ctrl-g"] {
+    fn search_shortcut_accepts_control_and_platform_modifiers_only_in_library() {
+        for key in ["ctrl-f", "cmd-f"] {
+            let shortcut = Keystroke::parse(key).unwrap();
+            assert!(is_search_shortcut(&shortcut, Page::Library));
+            assert!(!is_search_shortcut(&shortcut, Page::Piano));
+            assert!(!is_search_shortcut(&shortcut, Page::Devices));
+        }
+        for key in [
+            "f",
+            "ctrl-shift-f",
+            "ctrl-alt-f",
+            "cmd-shift-f",
+            "cmd-alt-f",
+            "ctrl-g",
+            "cmd-g",
+        ] {
             assert!(!is_search_shortcut(
                 &Keystroke::parse(key).unwrap(),
                 Page::Library
@@ -8460,6 +8589,24 @@ mod tests {
             key("delete", DetailsSelection::Playlist),
             Some(ListKey::Delete)
         );
+    }
+
+    #[test]
+    fn music_album_shortcuts_work_anywhere_on_library_page() {
+        for (key, action) in [
+            ("ctrl-shift-left", ListKey::CollapseAllAlbums),
+            ("cmd-shift-left", ListKey::CollapseAllAlbums),
+            ("ctrl-shift-right", ListKey::ExpandAllAlbums),
+            ("cmd-shift-right", ListKey::ExpandAllAlbums),
+        ] {
+            let keystroke = Keystroke::parse(key).unwrap();
+            assert_eq!(
+                global_music_album_shortcut(&keystroke, Page::Library),
+                Some(action)
+            );
+            assert_eq!(global_music_album_shortcut(&keystroke, Page::Piano), None);
+            assert_eq!(global_music_album_shortcut(&keystroke, Page::Devices), None);
+        }
     }
 
     #[test]

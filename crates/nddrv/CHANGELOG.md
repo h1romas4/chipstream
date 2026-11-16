@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Handle Music album shortcuts throughout the Library screen.
+- Support Ctrl+F and Cmd+F for Library search.
+- Add a keyboard shortcuts dialog beside the Settings button.
 - Restore the Library selection and Music album collapse state on startup.
 - Shorten the library scan success notification.
 - Queue direct OKIM6258 writes during MDX playback.
