@@ -668,6 +668,10 @@ pub struct Config {
     pub window: Option<WindowSettings>,
     #[serde(default)]
     pub music_search: Option<serde_json::Value>,
+    #[serde(default)]
+    pub selected_library_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub music_all_albums_collapsed: bool,
 }
 
 impl Default for Config {
@@ -686,6 +690,8 @@ impl Default for Config {
             vgm: VgmSettings::default(),
             window: None,
             music_search: None,
+            selected_library_directory: None,
+            music_all_albums_collapsed: false,
         }
     }
 }
@@ -1221,12 +1227,30 @@ mod tests {
         let config = Config {
             music_search: Some(search.clone()),
             directories: vec![PathBuf::from("/music")],
+            selected_library_directory: Some(PathBuf::from("/music/album")),
+            music_all_albums_collapsed: true,
             ..Config::default()
         };
         save_config(&path, &config).unwrap();
         let restored = load_config(&path).unwrap();
         assert_eq!(restored.music_search, Some(search));
         assert_eq!(restored.directories, config.directories);
+        assert_eq!(
+            restored.selected_library_directory,
+            config.selected_library_directory
+        );
+        assert_eq!(
+            restored.music_all_albums_collapsed,
+            config.music_all_albums_collapsed
+        );
+
+        let legacy: Config = serde_json::from_value(serde_json::json!({
+            "directories": [],
+            "playlist": []
+        }))
+        .unwrap();
+        assert_eq!(legacy.selected_library_directory, None);
+        assert!(!legacy.music_all_albums_collapsed);
     }
 
     #[test]
@@ -2086,6 +2110,8 @@ mod tests {
             },
             window: None,
             music_search: None,
+            selected_library_directory: None,
+            music_all_albums_collapsed: false,
         };
         let path = dir.path().join("config/config.json");
         save_config(&path, &config).unwrap();

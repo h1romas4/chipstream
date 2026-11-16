@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore the Library selection and Music album collapse state on startup.
 - Shorten the library scan success notification.
 - Queue direct OKIM6258 writes during MDX playback.
 - Match the idle Update button color to the reference blue.

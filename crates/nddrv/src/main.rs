@@ -759,6 +759,8 @@ struct AppView {
     visible_directories: Vec<usize>,
     expanded_directories: HashMap<PathBuf, HashSet<PathBuf>>,
     selected_directory: Option<PathBuf>,
+    pending_library_selection: Option<PathBuf>,
+    pending_music_all_albums_collapsed: Option<bool>,
     library_scroll: ListState,
     queue_scroll: UniformListScrollHandle,
     directory_scroll: UniformListScrollHandle,
@@ -1474,6 +1476,8 @@ impl AppView {
         config_error: Option<String>,
         window_settings: WindowSettings,
     ) -> Self {
+        let pending_library_selection = config.selected_library_directory.clone();
+        let pending_music_all_albums_collapsed = Some(config.music_all_albums_collapsed);
         let (search_content, search_error) = match config.music_search.as_ref() {
             Some(saved) => match restore_music_search(saved) {
                 Ok(content) => (content, None),
@@ -1645,6 +1649,8 @@ impl AppView {
             visible_directories: Vec::new(),
             expanded_directories,
             selected_directory: None,
+            pending_library_selection,
+            pending_music_all_albums_collapsed,
             library_scroll: ListState::new(0, ListAlignment::Top, px(100.)),
             queue_scroll: UniformListScrollHandle::default(),
             directory_scroll: UniformListScrollHandle::default(),
@@ -1798,15 +1804,19 @@ impl AppView {
     }
 
     fn toggle_album_collapsed(&mut self, directory: PathBuf) {
+        self.pending_music_all_albums_collapsed = None;
         let scroll_position = self.library_scroll.logical_scroll_top();
         if !self.collapsed_albums.remove(&directory) {
             self.collapsed_albums.insert(directory.clone());
         }
+        self.config.music_all_albums_collapsed = self.all_albums_collapsed();
+        self.save();
         self.rebuild_music_rows();
         self.library_scroll.scroll_to(scroll_position);
     }
 
     fn set_all_albums_collapsed(&mut self, collapsed: bool) {
+        self.pending_music_all_albums_collapsed = None;
         self.collapsed_albums.clear();
         if collapsed {
             self.collapsed_albums.extend(
@@ -1815,10 +1825,20 @@ impl AppView {
                     .filter_map(|track| track.path.parent().map(Path::to_path_buf)),
             );
         }
+        self.config.music_all_albums_collapsed = collapsed;
+        self.save();
         self.rebuild_music_rows();
         if !self.music_rows.is_empty() {
             self.library_scroll.scroll_to_reveal_item(0);
         }
+    }
+
+    fn select_library_directory(&mut self, directory: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.pending_library_selection = None;
+        self.selected_directory = directory.clone();
+        self.config.selected_library_directory = directory;
+        self.save();
+        self.update_filter(cx);
     }
 
     fn all_albums_collapsed(&self) -> bool {
@@ -2154,10 +2174,29 @@ impl AppView {
                             .or_insert_with(|| HashSet::from([directory.path.clone()]));
                     }
                 }
-                if view.selected_directory.as_ref().is_some_and(|selected| {
-                    !view.directories.iter().any(|entry| &entry.path == selected)
-                }) {
-                    view.selected_directory = None;
+                let selected = view
+                    .pending_library_selection
+                    .take()
+                    .or_else(|| view.selected_directory.clone())
+                    .filter(|selected| {
+                        view.directories.iter().any(|entry| &entry.path == selected)
+                    });
+                if view.selected_directory != selected
+                    || view.config.selected_library_directory != selected
+                {
+                    view.selected_directory = selected.clone();
+                    view.config.selected_library_directory = selected;
+                    view.save();
+                }
+                if let Some(collapsed) = view.pending_music_all_albums_collapsed {
+                    view.collapsed_albums.clear();
+                    if collapsed {
+                        view.collapsed_albums.extend(
+                            view.tracks
+                                .iter()
+                                .filter_map(|track| track.path.parent().map(Path::to_path_buf)),
+                        );
+                    }
                 }
                 view.update_directory_tree();
                 view.update_filter(cx);
@@ -4198,8 +4237,9 @@ impl AppView {
                     .hover(|style| style.bg(rgb(0x293a47)))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.collapsed_albums.clear();
-                        view.selected_directory = Some(path.clone());
-                        view.update_filter(cx);
+                        view.pending_music_all_albums_collapsed = None;
+                        view.config.music_all_albums_collapsed = false;
+                        view.select_library_directory(Some(path.clone()), cx);
                         cx.notify();
                     }))
                     .child(
@@ -4285,6 +4325,8 @@ impl AppView {
             .is_some_and(|selected| !self.directories.iter().any(|entry| &entry.path == selected))
         {
             self.selected_directory = None;
+            self.config.selected_library_directory = None;
+            self.pending_library_selection = None;
         }
         self.update_directory_tree();
         self.update_filter(cx);
@@ -7168,8 +7210,7 @@ impl Render for AppView {
                                                                 .child(self.tracks.len().to_string()),
                                                         )
                                                         .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.selected_directory = None;
-                                                            view.update_filter(cx);
+                                                            view.select_library_directory(None, cx);
                                                             cx.notify();
                                                         })),
                                                 )
