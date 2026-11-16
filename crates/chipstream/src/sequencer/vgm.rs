@@ -1044,9 +1044,9 @@ impl<'a> VgmSequencer<'a> {
                     } else {
                         OutputBits::Bits10
                     });
-                    let stream = Okim6258Stream::new(oki);
+                    let stream = Okim6258Stream::new(oki).with_direct_write_queue();
                     Box::new(if vgm_input {
-                        stream.with_direct_write_queue().with_dc_blocker()
+                        stream.with_dc_blocker()
                     } else {
                         stream
                     })

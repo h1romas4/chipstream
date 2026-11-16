@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Queue direct OKIM6258 writes during MDX playback.
 - Match the idle Update button color to the reference blue.
 - Fix noise in emulated OKIM6258 VGM playback with direct data writes.
 - Always show English system names in TRACK INFO.
