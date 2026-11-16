@@ -55,7 +55,9 @@ fn mdx_reference_factories() -> ChipFactoryRegistry {
             } else {
                 OutputBits::Bits10
             });
-            Ok(Box::new(Okim6258Stream::new(chip)))
+            Ok(Box::new(
+                Okim6258Stream::new(chip).with_direct_write_queue(),
+            ))
         });
         factories
     };
