@@ -768,7 +768,7 @@ fn very_short_wait_includes_the_first_native_sample() {
 
 #[test]
 #[cfg(feature = "okim6258")]
-fn three_bit_okim6258_flag_reencodes_source_codes_to_four_bit() {
+fn three_bit_okim6258_flag_uses_four_bit_compatibility() {
     let make_document = |three_bit| {
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
@@ -786,7 +786,7 @@ fn three_bit_okim6258_flag_reencodes_source_codes_to_four_bit() {
     let four_bit_output = render_all(&mut four_bit);
     let three_bit_output = render_all(&mut three_bit);
 
-    assert_ne!(three_bit_output, four_bit_output);
+    assert_eq!(three_bit_output, four_bit_output);
     assert!(
         three_bit_output
             .iter()

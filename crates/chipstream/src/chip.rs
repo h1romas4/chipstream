@@ -33,7 +33,7 @@ pub use oki_adpcm::Okim6258Adpcm;
 #[cfg(feature = "okim6258")]
 pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 #[cfg(feature = "okim6258")]
-pub use okim6258_stream::{AdpcmBits, Okim6258Stream};
+pub use okim6258_stream::Okim6258Stream;
 #[cfg(feature = "okim6295")]
 pub use okim6295::Okim6295;
 #[cfg(feature = "pwm")]

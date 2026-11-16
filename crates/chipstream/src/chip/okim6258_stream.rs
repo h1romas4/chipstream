@@ -7,21 +7,11 @@ use soundlog::chip::{Chip, Okim6258Spec};
 use crate::audio::DcBlocker;
 
 use super::{
-    ChipError, ChipRegisterWrite, Okim6258, Okim6258Adpcm, SampleRate, SoundChip, SoundChipState,
-    StereoMute, restore_cloned_state, save_cloned_state,
+    ChipError, ChipRegisterWrite, Okim6258, SampleRate, SoundChip, SoundChipState, StereoMute,
+    restore_cloned_state, save_cloned_state,
 };
 
 const MAX_PENDING_BYTES: usize = 65_536;
-
-/// ADPCM code width in the source stream.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum AdpcmBits {
-    /// Decode three-bit codes from bits 1 through 3, then re-encode as four-bit ADPCM.
-    Bits3,
-    /// Use the four-bit ADPCM codes directly.
-    #[default]
-    Bits4,
-}
 
 /// Adapts DAC-stream writes to the native two-nibble OKIM6258 cadence.
 ///
@@ -39,12 +29,6 @@ pub enum AdpcmBits {
 #[derive(Clone)]
 pub struct Okim6258Stream {
     chip: Okim6258,
-    adpcm_bits: AdpcmBits,
-    source_decoder: Okim6258Adpcm,
-    output_encoder: Okim6258Adpcm,
-    source_data: u8,
-    source_nibble_shift: u8,
-    stream_data: u8,
     pending: VecDeque<(u8, u8)>,
     active: bool,
     high_nibble: bool,
@@ -57,24 +41,12 @@ impl Okim6258Stream {
     pub fn new(chip: Okim6258) -> Self {
         Self {
             chip,
-            adpcm_bits: AdpcmBits::default(),
-            source_decoder: Okim6258Adpcm::new(),
-            output_encoder: Okim6258Adpcm::new(),
-            source_data: 0,
-            source_nibble_shift: 0,
-            stream_data: 0,
             pending: VecDeque::new(),
             active: false,
             high_nibble: false,
             held_sample: 0,
             dc_blocker: None,
         }
-    }
-
-    /// Decode three-bit source codes and re-encode them as four-bit ADPCM.
-    pub fn with_adpcm_bits(mut self, adpcm_bits: AdpcmBits) -> Self {
-        self.adpcm_bits = adpcm_bits;
-        self
     }
 
     /// Enable a 20 Hz first-order high-pass filter on the decoded output.
@@ -91,27 +63,6 @@ impl Okim6258Stream {
         self.active = false;
         self.high_nibble = false;
         self.held_sample = 0;
-    }
-
-    fn reset_transcoder(&mut self) {
-        self.source_decoder.reset();
-        self.output_encoder.reset();
-        self.source_nibble_shift = 0;
-    }
-
-    fn transcode_3bit_sample(
-        &mut self,
-        source_nibble: u8,
-        sample: &mut i32,
-    ) -> Result<(), ChipError> {
-        let decoded = self.source_decoder.decode_3bit_code(source_nibble >> 1);
-        let encoded = self.output_encoder.encode_nibble(decoded);
-        self.chip
-            .apply_register_write(ChipRegisterWrite::Okim6258(Okim6258Spec {
-                register: 1,
-                value: encoded,
-            }))?;
-        self.chip.generate(std::slice::from_mut(sample))
     }
 }
 
@@ -141,17 +92,6 @@ impl SoundChip for Okim6258Stream {
     }
 
     fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
-        let was_stopped = self.chip.status() != 0;
-        let source_data = match &write {
-            ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, value }) => Some(*value),
-            _ => None,
-        };
-        let reset_transcoder = match &write {
-            ChipRegisterWrite::Okim6258(Okim6258Spec { register: 0, value }) => {
-                value & 1 != 0 || value & 2 == 0 || (was_stopped && value & 2 != 0)
-            }
-            _ => false,
-        };
         let clear = match &write {
             ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, .. }) => true,
             ChipRegisterWrite::Okim6258(Okim6258Spec { register: 0, value }) => {
@@ -160,15 +100,8 @@ impl SoundChip for Okim6258Stream {
             _ => false,
         };
         self.chip.apply_register_write(write)?;
-        if let Some(value) = source_data {
-            self.source_data = value;
-            self.source_nibble_shift = 0;
-        }
         if clear {
             self.clear_stream();
-        }
-        if reset_transcoder {
-            self.reset_transcoder();
         }
         if self.chip.status() != 0
             && let Some(filter) = &mut self.dc_blocker
@@ -185,10 +118,12 @@ impl SoundChip for Okim6258Stream {
     ) -> Result<(), ChipError> {
         if let ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, value }) = write {
             if self.chip.status() != 0 {
-                return self.apply_register_write(ChipRegisterWrite::Okim6258(Okim6258Spec {
-                    register: 1,
-                    value,
-                }));
+                return self
+                    .chip
+                    .apply_register_write(ChipRegisterWrite::Okim6258(Okim6258Spec {
+                        register: 1,
+                        value,
+                    }));
             }
             if self.pending.len() >= MAX_PENDING_BYTES {
                 return Err(ChipError::InvalidConfiguration {
@@ -218,30 +153,11 @@ impl SoundChip for Okim6258Stream {
                         *sample = self.held_sample;
                         continue;
                     };
-                    if self.adpcm_bits == AdpcmBits::Bits3 {
-                        self.stream_data = value;
-                    } else {
-                        self.chip.write(Okim6258Spec { register: 1, value })?;
-                    }
+                    self.chip.write(Okim6258Spec { register: 1, value })?;
                 }
-                if self.adpcm_bits == AdpcmBits::Bits3 {
-                    let nibble = if self.high_nibble {
-                        self.stream_data >> 4
-                    } else {
-                        self.stream_data & 0x0f
-                    };
-                    self.transcode_3bit_sample(nibble, sample)?;
-                } else {
-                    self.chip.generate(std::slice::from_mut(sample))?;
-                }
+                self.chip.generate(std::slice::from_mut(sample))?;
                 self.held_sample = *sample;
                 self.high_nibble = !self.high_nibble;
-            }
-        } else if self.adpcm_bits == AdpcmBits::Bits3 && self.chip.status() == 0 {
-            for sample in samples.iter_mut() {
-                let nibble = (self.source_data >> self.source_nibble_shift) & 0x0f;
-                self.source_nibble_shift ^= 4;
-                self.transcode_3bit_sample(nibble, sample)?;
             }
         } else {
             self.chip.generate(samples)?;
@@ -260,7 +176,6 @@ impl SoundChip for Okim6258Stream {
     fn reset(&mut self) {
         self.chip.reset();
         self.clear_stream();
-        self.reset_transcoder();
         if let Some(filter) = &mut self.dc_blocker {
             filter.reset();
         }
@@ -278,7 +193,7 @@ impl SoundChip for Okim6258Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chip::{AdpcmBits, OutputBits};
+    use crate::chip::OutputBits;
 
     #[test]
     fn dc_blocker_filters_stream_and_direct_writes_without_changing_decoder_state() {
@@ -331,42 +246,6 @@ mod tests {
             ChipRegisterWrite::Okim6258(Okim6258Spec { register: 1, value }),
             0,
         )
-    }
-
-    #[test]
-    fn three_bit_source_is_reencoded_for_register_and_stream_writes() {
-        fn render(value: u8, streamed: bool) -> [i32; 2] {
-            let mut chip = Okim6258Stream::new(Okim6258::new(8_000_000).unwrap())
-                .with_adpcm_bits(AdpcmBits::Bits3);
-            write(&mut chip, 0, 2);
-            if streamed {
-                stream(&mut chip, value).unwrap();
-            } else {
-                write(&mut chip, 1, value);
-            }
-            let mut samples = [0; 2];
-            chip.generate(&mut samples).unwrap();
-            samples
-        }
-
-        assert_eq!(render(0x73, false), [192, 576]);
-        assert_eq!(render(0x62, false), [192, 576]);
-        assert_eq!(render(0x73, true), [192, 576]);
-    }
-
-    #[test]
-    fn three_bit_transcoder_resets_when_playback_restarts() {
-        let mut chip = Okim6258Stream::new(Okim6258::new(8_000_000).unwrap())
-            .with_adpcm_bits(AdpcmBits::Bits3);
-        write(&mut chip, 0, 2);
-        write(&mut chip, 1, 0x73);
-        let mut first = [0; 2];
-        chip.generate(&mut first).unwrap();
-        write(&mut chip, 0, 1);
-        write(&mut chip, 0, 2);
-        let mut restarted = [0; 2];
-        chip.generate(&mut restarted).unwrap();
-        assert_eq!(restarted, first);
     }
 
     #[test]

@@ -4,7 +4,6 @@
 
 - Always show English system names in TRACK INFO.
 - Add connection points on both sides of the MAME Bridge routing node.
-- WIP: Decode 3-bit OKIM6258 VGM ADPCM in the software stream path and re-encode it as 4-bit ADPCM.
 
 ## v0.13.0
 
