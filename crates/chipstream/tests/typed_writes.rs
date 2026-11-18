@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chipstream::audio::ChipRoute;
+use chipstream::audio::ChipCapture;
 #[cfg(feature = "okim6258")]
 use chipstream::chip::Okim6258;
 #[cfg(feature = "okim6295")]
@@ -102,7 +102,7 @@ impl ChipWrite<CustomWrite> for RecordingChip {
 #[test]
 fn custom_chips_can_implement_typed_writes() {
     let writes = Writes::default();
-    let mut route = ChipRoute::new(RecordingChip {
+    let mut route = ChipCapture::new(RecordingChip {
         chip: Chip::Ym2151,
         writes: writes.clone(),
     });
@@ -120,7 +120,7 @@ where
         chip,
         writes: writes.clone(),
     });
-    ChipRoute::new(backend).chip_mut().write(spec).unwrap();
+    ChipCapture::new(backend).chip_mut().write(spec).unwrap();
     assert_eq!(&*writes.borrow(), &[expected]);
 }
 
@@ -216,7 +216,7 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
 fn concrete_pcm_chips_apply_typed_addresses_and_values() {
     #[cfg(feature = "segapcm")]
     {
-        let mut sega = ChipRoute::new(SegaPcm::new(4_000_000).unwrap());
+        let mut sega = ChipCapture::new(SegaPcm::new(4_000_000).unwrap());
         sega.chip_mut()
             .write(SegaPcmSpec {
                 offset: 0x185,
@@ -228,7 +228,7 @@ fn concrete_pcm_chips_apply_typed_addresses_and_values() {
 
     #[cfg(feature = "c140")]
     {
-        let mut c140 = ChipRoute::new(C140::new(12_288_000, C140Type::System2).unwrap());
+        let mut c140 = ChipCapture::new(C140::new(12_288_000, C140Type::System2).unwrap());
         c140.chip_mut()
             .write(C140Spec {
                 register: 0x103,
@@ -240,7 +240,7 @@ fn concrete_pcm_chips_apply_typed_addresses_and_values() {
 
     #[cfg(feature = "okim6258")]
     {
-        let mut oki = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
+        let mut oki = ChipCapture::new(Okim6258::new(8_000_000).unwrap());
         oki.chip_mut()
             .write(Okim6258Spec {
                 register: 2,
@@ -259,7 +259,7 @@ fn concrete_pcm_chips_apply_typed_addresses_and_values() {
 
     #[cfg(feature = "okim6295")]
     {
-        let mut oki6295 = ChipRoute::new(Okim6295::new(1_000_000).unwrap());
+        let mut oki6295 = ChipCapture::new(Okim6295::new(1_000_000).unwrap());
         oki6295
             .chip_mut()
             .write(Okim6295Spec {
@@ -280,7 +280,7 @@ fn typed_psg_and_wide_pwm_preserve_output() {
             stereo: true,
             ..Default::default()
         };
-        let mut psg = ChipRoute::new(Sn76496::with_config(3_579_545, config).unwrap());
+        let mut psg = ChipCapture::new(Sn76496::with_config(3_579_545, config).unwrap());
         for value in [0x82, 0x00, 0x90] {
             psg.chip_mut().write(PsgSpec { value }).unwrap();
         }
@@ -298,7 +298,7 @@ fn typed_psg_and_wide_pwm_preserve_output() {
 
     #[cfg(feature = "pwm")]
     {
-        let mut pwm = ChipRoute::new(Pwm::new(44_100).unwrap());
+        let mut pwm = ChipCapture::new(Pwm::new(44_100).unwrap());
         for (register, value) in [(1, 3), (0, 5), (2, 0xabc)] {
             pwm.chip_mut().write(PwmSpec { register, value }).unwrap();
         }
@@ -324,7 +324,7 @@ fn dynamic_chip_mismatch_is_rejected_before_writing() {
         chip: Chip::Ym2151,
         writes: writes.clone(),
     });
-    let mut route = ChipRoute::new(chip);
+    let mut route = ChipCapture::new(chip);
     assert!(matches!(
         route.chip_mut().write(Ym2612Spec {
             port: 1,
@@ -338,7 +338,7 @@ fn dynamic_chip_mismatch_is_rejected_before_writing() {
     ));
     assert!(writes.borrow().is_empty());
 
-    let mut ymfm = ChipRoute::new(YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap());
+    let mut ymfm = ChipCapture::new(YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap());
     assert!(matches!(
         ymfm.chip_mut().write(Ym2612Spec {
             port: 1,
@@ -360,7 +360,7 @@ fn dynamic_chip_mismatch_is_rejected_before_writing() {
 
 #[test]
 fn typed_ymfm_port_validation_is_preserved() {
-    let mut route = ChipRoute::new(YmfmChip::new(Chip::Ym2612, 7_670_454).unwrap());
+    let mut route = ChipCapture::new(YmfmChip::new(Chip::Ym2612, 7_670_454).unwrap());
     route
         .chip_mut()
         .write(Ym2612Spec {

@@ -5,7 +5,7 @@ use chipstream::audio::{
     AudioError, Gain, StereoBalance, StereoBlock, StereoEffect, StereoMixer, StereoResampler,
 };
 #[cfg(feature = "okim6258")]
-use chipstream::audio::{ChipRoute, StereoMatrix};
+use chipstream::audio::{ChipCapture, StereoMatrix};
 use chipstream::chip::SampleRate;
 #[cfg(feature = "okim6258")]
 use chipstream::chip::{ClockDivider, Okim6258, SoundChip};
@@ -25,7 +25,7 @@ fn convert_all(src: &StereoBlock, output: u32, chunk: usize) -> Vec<[f32; 2]> {
 #[test]
 #[cfg(feature = "okim6258")]
 fn matrix_preserves_native_layout_and_applies_oki_pan() {
-    let mut route = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
+    let mut route = ChipCapture::new(Okim6258::new(8_000_000).unwrap());
     route.chip_mut().set_divider(ClockDivider::Div512).unwrap();
     route
         .chip_mut()

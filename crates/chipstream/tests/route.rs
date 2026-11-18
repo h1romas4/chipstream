@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use chipstream::audio::{ChipRoute, RouteError};
+use chipstream::audio::{ChipCapture, RouteError};
 use chipstream::chip::{ChipError, ChipRegisterWrite, SoundChip, YmfmChip};
 #[cfg(feature = "okim6258")]
 use chipstream::chip::{ClockDivider, Okim6258, StereoMute};
@@ -11,7 +11,7 @@ use soundlog::chip::Okim6258Spec;
 #[test]
 #[cfg(feature = "okim6258")]
 fn captures_oki_rate_and_pan_changes_at_block_boundaries() {
-    let mut route = ChipRoute::new(Okim6258::new(8_000_000).unwrap());
+    let mut route = ChipCapture::new(Okim6258::new(8_000_000).unwrap());
     route
         .chip_mut()
         .write(Okim6258Spec {
@@ -75,7 +75,7 @@ fn preserves_multichannel_native_output_and_buffer_boundaries() {
     let chip = YmfmChip::new(Chip::Ym2203, 4_000_000).unwrap();
     let channels = chip.channels();
     assert_eq!(channels, 4);
-    let mut route = ChipRoute::new(chip);
+    let mut route = ChipCapture::new(chip);
     let mut samples = vec![99; channels * 3 + 2];
     let block = route.capture(&mut samples[..channels * 3]).unwrap();
     assert_eq!(block.chip_type(), &Chip::Ym2203);
@@ -91,7 +91,7 @@ fn preserves_multichannel_native_output_and_buffer_boundaries() {
 #[cfg(feature = "okim6258")]
 fn boxed_chip_and_empty_blocks_are_supported() {
     let chip: Box<dyn SoundChip> = Box::new(Okim6258::new(8_000_000).unwrap());
-    let mut route = ChipRoute::new(chip);
+    let mut route = ChipCapture::new(chip);
     route
         .chip_mut()
         .write(Okim6258Spec {
@@ -158,7 +158,7 @@ impl SoundChip for TestChip {
 
 #[test]
 fn validates_metadata_and_lengths_before_generation() {
-    let mut route = ChipRoute::new(TestChip {
+    let mut route = ChipCapture::new(TestChip {
         rate: 0,
         channels: 0,
         calls: 0,
@@ -198,7 +198,7 @@ fn validates_metadata_and_lengths_before_generation() {
 
 #[test]
 fn propagates_chip_errors_with_source_and_unchanged_buffer() {
-    let mut route = ChipRoute::new(TestChip {
+    let mut route = ChipCapture::new(TestChip {
         rate: 44_100,
         channels: 1,
         calls: 0,

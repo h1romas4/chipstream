@@ -22,7 +22,7 @@ use soundlog::vgm::{
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
 use crate::audio::{
-    AudioError, ChipRoute, RouteError, StereoBlock, StereoMatrix, StereoMixer, StereoResampler,
+    AudioError, ChipCapture, RouteError, StereoBlock, StereoMatrix, StereoMixer, StereoResampler,
     StereoResamplerState,
 };
 #[cfg(feature = "okim6295")]
@@ -342,7 +342,7 @@ struct Voice {
     clock: u32,
     sn_flags: soundlog::vgm::header::Sn76489Flags,
     tracker: Option<event::Tracker>,
-    route: ChipRoute<Box<dyn SoundChip>>,
+    route: ChipCapture<Box<dyn SoundChip>>,
     matrix: StereoMatrix,
     resampler: StereoResampler,
     memory: Rc<RefCell<Memory>>,
@@ -1140,7 +1140,7 @@ impl<'a> VgmSequencer<'a> {
             clock,
             sn_flags: header.sn76489_flags,
             tracker: None,
-            route: ChipRoute::new(backend),
+            route: ChipCapture::new(backend),
             matrix,
             resampler: StereoResampler::new(output_rate, min_rate, max_rate, SRC_CHUNK)?,
             memory,

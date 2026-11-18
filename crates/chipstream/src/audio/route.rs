@@ -12,12 +12,12 @@ use crate::chip::{ChipError, SampleRate, SoundChip, StereoMute};
 /// Each capture reflects the chip configuration at the start of that capture.
 /// Apply register writes or configuration changes between captures so a block
 /// never spans a change in rate or chip-controlled stereo mute.
-pub struct ChipRoute<C> {
+pub struct ChipCapture<C> {
     chip: C,
 }
 
-impl<C: SoundChip> ChipRoute<C> {
-    /// Create a route for an existing chip.
+impl<C: SoundChip> ChipCapture<C> {
+    /// Create a capture wrapper for an existing chip.
     pub fn new(chip: C) -> Self {
         Self { chip }
     }
@@ -30,13 +30,13 @@ impl<C: SoundChip> ChipRoute<C> {
     /// Access the chip to apply writes or change its configuration.
     ///
     /// ```compile_fail
-    /// use chipstream::audio::ChipRoute;
+    /// use chipstream::audio::ChipCapture;
     /// use chipstream::chip::YmfmChip;
     /// use soundlog::chip::Chip;
     ///
-    /// let mut route = ChipRoute::new(YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap());
-    /// let chip = route.into_inner();
-    /// route.chip_mut();
+    /// let mut capture = ChipCapture::new(YmfmChip::new(Chip::Ym2151, 4_000_000).unwrap());
+    /// let chip = capture.into_inner();
+    /// capture.chip_mut();
     /// ```
     pub fn chip_mut(&mut self) -> &mut C {
         &mut self.chip
@@ -50,7 +50,7 @@ impl<C: SoundChip> ChipRoute<C> {
     /// Generate native interleaved samples into caller-owned storage.
     ///
     /// The caller chooses how many complete native frames to generate and
-    /// schedules captures around writes. The route itself does not allocate,
+    /// schedules captures around writes. The capture wrapper itself does not allocate,
     /// convert sample rates, normalize, apply pan, mix, or process effects;
     /// the chip implementation may allocate. Those stages consume the
     /// returned samples and their metadata.

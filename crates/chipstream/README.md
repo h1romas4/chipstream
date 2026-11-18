@@ -11,12 +11,24 @@ It uses [`soundlog`](https://crates.io/crates/soundlog) for VGM/MDX format　def
 | --- | --- | --- |
 | `sequencer` | `VgmSequencer`, `MdxSequencer`, `ChipFactoryRegistry` | Render songs to stereo PCM with typed register-write callbacks, optional state tracking, and replaceable chip backends. |
 | `chip` | `SoundChip`, chip implementations | Apply typed soundlog writes and generate native-rate samples. |
-| `audio` | `ChipRoute`, `NativeBlock` | Capture native samples and chip metadata. |
+| `audio` | `ChipCapture`, `NativeBlock` | Capture native samples and chip metadata. |
 | `audio` | `StereoMatrix`, `StereoBlock` | Convert native outputs to stereo. |
 | `audio` | `StereoResampler`, `StereoMixer`, `StereoEffect` | Resample, mix, and process stereo blocks. |
 
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --open`).
+
+## How chip audio becomes PCM
+
+The sequencer creates a backend for each chip instance, applies timed register
+writes, and renders each chip independently. Each native output is mapped to
+stereo and resampled before aligned sources are mixed into the output block.
+
+![Chip audio flow from VGM/MDX input to stereo PCM](assets/audio-flow.svg)
+
+The factory selects or creates a `SoundChip`; it is not part of the audio
+signal path. Resampling can either downsample or upsample, depending on the
+chip's native rate and the requested output rate. The final mix is not clipped.
 
 ## Cargo features
 
@@ -276,16 +288,16 @@ stereo bus. In this example, FM is centered and SSG channels A and B are
 panned left and right:
 
 ```rust
-use chipstream::audio::{ChipRoute, StereoBlock, StereoMatrix, StereoMixer, StereoResampler};
+use chipstream::audio::{ChipCapture, StereoBlock, StereoMatrix, StereoMixer, StereoResampler};
 use chipstream::chip::{SampleRate, SoundChip, YmfmChip};
 use soundlog::chip::{Chip, Ym2203Spec};
 
 let chip = YmfmChip::new(Chip::Ym2203, 4_000_000)?;
 let native_rate = chip.sample_rate();
-let mut route = ChipRoute::new(chip);
+let mut capture = ChipCapture::new(chip);
 for (register, value) in [(0, 0x24), (1, 0x01), (2, 0x90), (3, 0x01),
                           (7, 0x3c), (8, 0x0f), (9, 0x0f)] {
-    route.chip_mut().write(Ym2203Spec { register, value })?;
+    capture.chip_mut().write(Ym2203Spec { register, value })?;
 }
 let scale = 1.0 / 32768.0;
 let matrix = StereoMatrix::new(vec![
@@ -297,7 +309,7 @@ let matrix = StereoMatrix::new(vec![
 let mut src = StereoResampler::new(48_000, native_rate, native_rate, 4096)?;
 
 let mut samples = [0; 4 * 4096];
-let native = route.capture(&mut samples)?;
+let native = capture.capture(&mut samples)?;
 # assert!(native.samples().chunks_exact(4).any(|frame| frame[1] != 0 && frame[2] != 0));
 let stereo = matrix.convert(&native)?;
 # assert!(stereo.frames().iter().any(|frame| frame[0] != frame[1]));
