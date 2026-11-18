@@ -1,8 +1,9 @@
 # chipstream
 
-`chipstream` provides retro sound-chip emulation and device-independent VGM and
-MDX playback for games. It is in early development; the sound engine is not yet
-provided.
+`chipstream` provides retro sound-chip emulation, device-independent VGM and
+MDX playback, and audio-processing components for applications and games.
+
+It uses [`soundlog`](https://crates.io/crates/soundlog) for VGM/MDX format　definitions and typed chip writes.
 
 ## APIs
 
@@ -33,6 +34,7 @@ YMFM chips are always available. Optional features are disabled by default:
 Enable the chips your application needs, for example:
 
 ```toml
+[dependencies]
 chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 ```
 
