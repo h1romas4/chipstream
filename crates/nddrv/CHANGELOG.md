@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update ymfm-sys to 0.3.0.
+
 ## v0.14.0
 
 - Handle Music album shortcuts throughout the Library screen.

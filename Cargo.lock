@@ -785,7 +785,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -10240,9 +10240,9 @@ dependencies = [
 
 [[package]]
 name = "ymfm-sys"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "666f5320f82b65b5864b3b9e9cc4d9a9978781644f520b4e95fdec7521c51b29"
+checksum = "eb14c017fef042212410aa71cc8e51500b5f540eae5d0117bafd4a156f70ef68"
 dependencies = [
  "cc",
  "cxx",

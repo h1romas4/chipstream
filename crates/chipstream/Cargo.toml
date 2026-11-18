@@ -21,4 +21,4 @@ sn76496 = []
 
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }
-ymfm-sys = "0.2.0"
+ymfm-sys = "0.3.0"
