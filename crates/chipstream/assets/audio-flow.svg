@@ -1,151 +1,167 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1540" viewBox="0 0 1440 1540" role="img" aria-labelledby="title description">
-  <title id="title">Chipstream audio flow and gain controls</title>
-  <desc id="description">VGM, MDX, or generator commands are routed to a chip backend per instance. Each backend generates native samples, which pass through per-output effects, gain, pan, stereo routing and optional group effects before resampling and queueing. A post-resampling chip gain is applied to each queue as the sequencer mixes the final stereo PCM. These controls do not affect physical hardware audio.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1490" viewBox="0 0 1440 1490" role="img" aria-labelledby="title description">
+  <title id="title">How chip audio becomes stereo PCM</title>
+  <desc id="description">A sequencer reads VGM, MDX, or generated commands and schedules writes to each chip instance. Each backend generates native samples, which are captured, processed and routed to stereo, resampled, and queued. The mixer aligns the queues and applies per-chip gain before returning stereo PCM. Output controls act before resampling; neither gain control affects physical hardware audio.</desc>
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#46617a"/>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#14856f"/>
     </marker>
-    <marker id="audio-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#287a5b"/>
-    </marker>
-    <marker id="control-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#a8670a"/>
+    <marker id="config-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#b47218"/>
     </marker>
     <style>
-      text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172b3a; }
-      .title { font-size: 30px; font-weight: 700; }
-      .subtitle { font-size: 17px; fill: #506477; }
-      .heading { font-size: 20px; font-weight: 700; }
-      .label { font-size: 17px; font-weight: 700; }
-      .small { font-size: 15px; fill: #42586b; }
-      .tiny { font-size: 13px; fill: #506477; }
-      .api { font-size: 16px; font-weight: 700; fill: #895008; }
-      .api-small { font-size: 14px; fill: #754d16; }
-      .box { stroke-width: 2; rx: 12; }
-      .arrow { fill: none; stroke: #46617a; stroke-width: 2.5; marker-end: url(#arrow); }
-      .audio { fill: none; stroke: #287a5b; stroke-width: 2.5; marker-end: url(#audio-arrow); }
-      .control { fill: none; stroke: #a8670a; stroke-width: 2.5; stroke-dasharray: 8 5; marker-end: url(#control-arrow); }
+      text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172f40; }
+      .hero-title { font-size: 34px; font-weight: 700; fill: #ffffff; }
+      .hero-sub { font-size: 17px; fill: #c4dbe3; }
+      .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 2px; fill: #74dfc3; }
+      .section { font-size: 21px; font-weight: 700; }
+      .section-note { font-size: 14px; fill: #617681; }
+      .number { font-size: 14px; font-weight: 700; fill: #ffffff; }
+      .card-title { font-size: 18px; font-weight: 700; }
+      .body { font-size: 15px; fill: #405b69; }
+      .small { font-size: 13px; fill: #617681; }
+      .tag { font-size: 12px; font-weight: 700; letter-spacing: 0.8px; fill: #16725f; }
+      .config-title { font-size: 15px; font-weight: 700; fill: #865513; }
+      .config-body { font-size: 14px; fill: #765d3a; }
+      .mono { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 13px; fill: #405b69; }
+      .signal { fill: none; stroke: #14856f; stroke-width: 3; marker-end: url(#arrow); }
+      .config { fill: none; stroke: #b47218; stroke-width: 2.5; stroke-dasharray: 6 5; marker-end: url(#config-arrow); }
     </style>
   </defs>
 
-  <rect width="100%" height="100%" fill="#f7f9fc"/>
-  <text x="54" y="58" class="title">How chip audio becomes stereo PCM</text>
-  <text x="54" y="88" class="subtitle">A separate audio lane for each chip instance, combined at the output-rate mixer.</text>
+  <rect width="1440" height="1490" fill="#f3f7f7"/>
+  <rect width="1440" height="158" fill="#123548"/>
+  <text x="64" y="43" class="eyebrow">CHIPSTREAM / AUDIO PIPELINE</text>
+  <text x="64" y="91" class="hero-title">How chip audio becomes stereo PCM</text>
+  <text x="64" y="124" class="hero-sub">From timed chip writes to a single, output-rate stereo stream.</text>
+  <rect x="1140" y="53" width="236" height="48" rx="24" fill="#204b5b" stroke="#477383"/>
+  <text x="1258" y="83" text-anchor="middle" class="hero-sub">VGM  ·  MDX  ·  custom</text>
 
-  <rect x="50" y="118" width="1340" height="190" rx="18" fill="#ffffff" stroke="#b8c6d3" stroke-width="2"/>
-  <text x="76" y="149" class="heading">1. Choose a source and create the sequencer</text>
-  <rect x="70" y="168" width="350" height="116" class="box" fill="#eaf2ff" stroke="#7195c4"/>
-  <text x="245" y="194" text-anchor="middle" class="label">Input</text>
-  <text x="245" y="219" text-anchor="middle" class="small">VGM bytes / VgmDocument</text>
-  <text x="245" y="242" text-anchor="middle" class="small">MDX bytes / MdxPackage + PDX</text>
-  <text x="245" y="265" text-anchor="middle" class="tiny">or VgmCommandGenerator</text>
+  <!-- Sources and configuration -->
+  <circle cx="80" cy="201" r="16" fill="#147b6a"/>
+  <text x="80" y="206" text-anchor="middle" class="number">1</text>
+  <text x="109" y="208" class="section">Read and schedule</text>
+  <text x="1376" y="207" text-anchor="end" class="section-note">The factory configures a backend; it is not in the audio path.</text>
 
-  <rect x="480" y="168" width="440" height="116" class="box" fill="#eaf2ff" stroke="#7195c4"/>
-  <text x="700" y="194" text-anchor="middle" class="label">VgmSequencer / MdxSequencer</text>
-  <text x="700" y="219" text-anchor="middle" class="small">output rate + chunk size + options</text>
-  <text x="700" y="242" text-anchor="middle" class="small">PlaybackOptions: loop count + fade</text>
-  <text x="700" y="265" text-anchor="middle" class="tiny">render() advances commands and produces audio</text>
-  <path d="M420 226 H470" class="arrow"/>
+  <rect x="64" y="232" width="330" height="164" rx="14" fill="#ffffff" stroke="#d4e2e2"/>
+  <text x="88" y="264" class="tag">SOURCE</text>
+  <text x="88" y="296" class="card-title">Music data</text>
+  <text x="88" y="324" class="body">VGM or MDX + optional PDX</text>
+  <text x="88" y="349" class="body">or a custom command generator</text>
+  <text x="88" y="376" class="small">Bytes or parsed input</text>
 
-  <rect x="1000" y="168" width="370" height="116" class="box" fill="#fff3db" stroke="#d3a344"/>
-  <text x="1185" y="194" text-anchor="middle" class="label">ChipFactoryRegistry</text>
-  <text x="1185" y="219" text-anchor="middle" class="small">select a backend for each instance</text>
-  <text x="1185" y="242" text-anchor="middle" class="small">built-in or custom SoundChip</text>
-  <text x="1185" y="265" text-anchor="middle" class="tiny">optional replacement factories</text>
-  <path d="M1000 226 H930" class="control"/>
+  <rect x="447" y="232" width="440" height="164" rx="14" fill="#ffffff" stroke="#b6d6d0"/>
+  <text x="471" y="264" class="tag">SEQUENCER</text>
+  <text x="471" y="296" class="card-title">VGM / MDX sequencer</text>
+  <text x="471" y="324" class="body">Schedule waits and register writes</text>
+  <text x="471" y="349" class="body">for the matching chip instances.</text>
+  <text x="471" y="376" class="small">Output rate, chunk size, loop and fade options</text>
+  <path d="M394 314H435" class="signal"/>
 
-  <path d="M700 284 V341" class="arrow"/>
-  <rect x="180" y="350" width="1080" height="86" class="box" fill="#fff3db" stroke="#d3a344"/>
-  <text x="720" y="378" text-anchor="middle" class="label">Command scheduling and routing</text>
-  <text x="720" y="404" text-anchor="middle" class="small">VgmCommand → ChipRegisterWrite; waits and writes advance the matching chip instances</text>
-  <rect x="50" y="490" width="1340" height="332" rx="18" fill="#ffffff" stroke="#b8c6d3" stroke-width="2"/>
-  <text x="76" y="522" class="heading">2. Per-chip instance: native samples → stereo → output-rate queue</text>
-  <path d="M180 393 H26 V614 H67" class="audio"/>
+  <rect x="940" y="232" width="436" height="164" rx="14" fill="#fff9ee" stroke="#ecd5ae"/>
+  <text x="964" y="264" class="config-title">ChipFactoryRegistry</text>
+  <text x="964" y="296" class="body">Select a SoundChip backend</text>
+  <text x="964" y="324" class="body">for each chip instance.</text>
+  <text x="964" y="360" class="small">Built-in or custom factories</text>
+  <path d="M940 314H899" class="config"/>
 
-  <rect x="75" y="552" width="230" height="124" class="box" fill="#edf7f1" stroke="#6eaa88"/>
-  <text x="190" y="580" text-anchor="middle" class="label">SoundChip</text>
-  <text x="190" y="605" text-anchor="middle" class="small">apply writes + generate</text>
-  <text x="190" y="630" text-anchor="middle" class="tiny">native-rate samples</text>
-  <text x="190" y="652" text-anchor="middle" class="tiny">one backend per instance</text>
+  <!-- One lane per chip instance -->
+  <rect x="64" y="466" width="1312" height="408" rx="20" fill="#e5f2ef" stroke="#c5e0d9"/>
+  <circle cx="96" cy="501" r="16" fill="#147b6a"/>
+  <text x="96" y="506" text-anchor="middle" class="number">2</text>
+  <text x="125" y="508" class="section">Render each chip independently</text>
+  <rect x="1090" y="485" width="252" height="32" rx="16" fill="#ffffff"/>
+  <text x="1216" y="506" text-anchor="middle" class="tag">ONE LANE PER INSTANCE</text>
+  <path d="M667 396V431H39V627H80" class="signal"/>
+  <text x="93" y="540" class="section-note">Timed writes</text>
 
-  <rect x="330" y="552" width="230" height="124" class="box" fill="#edf7f1" stroke="#6eaa88"/>
-  <text x="445" y="580" text-anchor="middle" class="label">ChipCapture</text>
-  <text x="445" y="605" text-anchor="middle" class="small">capture() → NativeBlock</text>
-  <text x="445" y="630" text-anchor="middle" class="tiny">interleaved i32 outputs</text>
-  <text x="445" y="652" text-anchor="middle" class="tiny">at the chip's native rate</text>
-  <path d="M305 614 H322" class="audio"/>
+  <rect x="80" y="558" width="275" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
+  <text x="101" y="589" class="tag">01 / GENERATE</text>
+  <text x="101" y="620" class="card-title">SoundChip</text>
+  <text x="101" y="648" class="body">Apply writes and generate</text>
+  <text x="101" y="671" class="body">native-rate samples.</text>
+  <text x="101" y="695" class="small">One backend per instance</text>
 
-  <rect x="585" y="552" width="230" height="124" class="box" fill="#eef2ff" stroke="#8495c7"/>
-  <text x="700" y="580" text-anchor="middle" class="label">Effects + StereoMatrix</text>
-  <text x="700" y="605" text-anchor="middle" class="small">native effect → gain / pan</text>
-  <text x="700" y="630" text-anchor="middle" class="tiny">stereo routing → group effects</text>
-  <text x="700" y="652" text-anchor="middle" class="tiny">native-rate f32 stereo</text>
-  <path d="M560 614 H577" class="audio"/>
+  <rect x="390" y="558" width="275" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
+  <text x="411" y="589" class="tag">02 / CAPTURE</text>
+  <text x="411" y="620" class="card-title">ChipCapture</text>
+  <text x="411" y="648" class="body">Capture a NativeBlock</text>
+  <text x="411" y="671" class="body">of interleaved i32 outputs.</text>
+  <text x="411" y="695" class="small">Still at the native rate</text>
+  <path d="M355 635H380" class="signal"/>
 
-  <rect x="840" y="552" width="230" height="124" class="box" fill="#eef2ff" stroke="#8495c7"/>
-  <text x="955" y="580" text-anchor="middle" class="label">StereoResampler</text>
-  <text x="955" y="605" text-anchor="middle" class="small">process() → StereoBlock</text>
-  <text x="955" y="630" text-anchor="middle" class="tiny">native → output rate</text>
-  <text x="955" y="652" text-anchor="middle" class="tiny">retains resampler history</text>
-  <path d="M815 614 H832" class="audio"/>
+  <rect x="700" y="558" width="275" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
+  <text x="721" y="589" class="tag">03 / ROUTE</text>
+  <text x="721" y="620" class="card-title">Effects + stereo</text>
+  <text x="721" y="648" class="body">Output effects → gain / pan</text>
+  <text x="721" y="671" class="body">→ stereo → group effects</text>
+  <text x="721" y="695" class="small">Native-rate f32 stereo</text>
+  <path d="M665 635H690" class="signal"/>
 
-  <rect x="1095" y="552" width="230" height="124" class="box" fill="#edf7f1" stroke="#6eaa88"/>
-  <text x="1210" y="580" text-anchor="middle" class="label">Voice queue</text>
-  <text x="1210" y="605" text-anchor="middle" class="small">buffer stereo frames</text>
-  <text x="1210" y="630" text-anchor="middle" class="tiny">f32 at output rate</text>
-  <text x="1210" y="652" text-anchor="middle" class="tiny">one queue per instance</text>
-  <path d="M1070 614 H1087" class="audio"/>
+  <rect x="1010" y="558" width="350" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
+  <text x="1031" y="589" class="tag">04 / RESAMPLE + BUFFER</text>
+  <text x="1031" y="620" class="card-title">StereoResampler → queue</text>
+  <text x="1031" y="648" class="body">Convert to the requested output rate</text>
+  <text x="1031" y="671" class="body">and buffer stereo frames.</text>
+  <text x="1031" y="695" class="small">One queue per instance</text>
+  <path d="M975 635H1000" class="signal"/>
 
-  <rect x="485" y="720" width="430" height="76" class="box" fill="#fff8e9" stroke="#d3a344"/>
-  <text x="700" y="747" text-anchor="middle" class="api">output_layout() + output controls</text>
-  <text x="700" y="773" text-anchor="middle" class="api-small">gain, pan, and effects before resampling</text>
-  <path d="M700 720 V685" class="control"/>
-  <text x="102" y="774" class="small">Other chip instances follow the same lane.</text>
+  <rect x="700" y="761" width="660" height="86" rx="12" fill="#fff9ee" stroke="#ecd5ae"/>
+  <text x="721" y="790" class="config-title">Per-output controls</text>
+  <text x="721" y="816" class="config-body">output_layout() · gain / pan · output and group effects</text>
+  <text x="721" y="837" class="small">Before resampling; changes affect newly captured samples.</text>
+  <path d="M838 761V723" class="config"/>
+  <text x="101" y="790" class="body">Native outputs are backend signals,</text>
+  <text x="101" y="813" class="body">not necessarily synthesis channels.</text>
+  <text x="101" y="837" class="small">Stereo masks and group routing also apply.</text>
 
-  <path d="M1210 676 V856 H910 V894" class="audio"/>
-  <text x="1070" y="846" text-anchor="middle" class="small">all instance queues</text>
-  <text x="76" y="876" class="heading">3. Align, mix, and return audio</text>
-  <rect x="375" y="894" width="535" height="110" class="box" fill="#edf7f1" stroke="#6eaa88"/>
-  <text x="642" y="922" text-anchor="middle" class="label">StereoMixer::mix</text>
-  <text x="642" y="948" text-anchor="middle" class="small">align output-rate frames and add each chip</text>
-  <text x="642" y="974" text-anchor="middle" class="tiny">apply each instance's chip gain during mixing</text>
+  <!-- Final mix -->
+  <circle cx="80" cy="927" r="16" fill="#147b6a"/>
+  <text x="80" y="932" text-anchor="middle" class="number">3</text>
+  <text x="109" y="934" class="section">Align, mix and return</text>
+  <path d="M1360 635H1400V898H266V968" class="signal"/>
+  <rect x="80" y="968" width="372" height="155" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
+  <text x="103" y="1000" class="tag">ALL INSTANCE QUEUES</text>
+  <text x="103" y="1031" class="card-title">StereoMixer::mix</text>
+  <text x="103" y="1059" class="body">Align output-rate frames and</text>
+  <text x="103" y="1082" class="body">add each instance with its gain.</text>
+  <text x="103" y="1107" class="small">No clipping is applied</text>
 
-  <rect x="1000" y="894" width="325" height="110" class="box" fill="#fff8e9" stroke="#d3a344"/>
-  <text x="1162" y="923" text-anchor="middle" class="api">set_chip_gain()</text>
-  <text x="1162" y="949" text-anchor="middle" class="api-small">one gain for the whole instance</text>
-  <text x="1162" y="974" text-anchor="middle" class="api-small">after resampling, at the mixer</text>
-  <path d="M1000 949 H920" class="control"/>
+  <rect x="513" y="968" width="382" height="155" rx="14" fill="#123f4a"/>
+  <text x="537" y="1000" class="eyebrow">OUTPUT</text>
+  <text x="537" y="1031" class="card-title" style="fill:#ffffff">render() → StereoBlock</text>
+  <text x="537" y="1059" class="hero-sub">f32 stereo at the requested rate</text>
+  <text x="537" y="1086" class="hero-sub">with configured fade</text>
+  <text x="537" y="1108" class="small" style="fill:#c4dbe3">The last block may be shorter.</text>
+  <path d="M452 1045H501" class="signal"/>
 
-  <path d="M642 1004 V1048" class="audio"/>
-  <rect x="375" y="1057" width="535" height="116" class="box" fill="#eaf2ff" stroke="#7195c4"/>
-  <text x="642" y="1086" text-anchor="middle" class="label">render() → StereoBlock</text>
-  <text x="642" y="1112" text-anchor="middle" class="small">f32 stereo at the requested output rate</text>
-  <text x="642" y="1138" text-anchor="middle" class="tiny">configured fade → optional host effects / audio device</text>
-  <text x="642" y="1158" text-anchor="middle" class="tiny">final mix is not clipped; last block may be shorter</text>
+  <rect x="957" y="968" width="403" height="155" rx="14" fill="#fff9ee" stroke="#ecd5ae"/>
+  <text x="980" y="1000" class="config-title">set_chip_gain()</text>
+  <text x="980" y="1031" class="body">One gain for the whole instance,</text>
+  <text x="980" y="1054" class="body">applied after resampling at the mixer.</text>
+  <text x="980" y="1083" class="small">Also affects queued, unmixed PCM.</text>
+  <text x="980" y="1105" class="small">Does not change audio already mixed during seek.</text>
+  <path d="M1158 1123V1142H266V1134" class="config"/>
 
-  <rect x="50" y="1210" width="650" height="240" class="box" fill="#ffffff" stroke="#b8c6d3"/>
-  <text x="76" y="1242" class="heading">Native outputs and effects</text>
-  <text x="76" y="1272" class="small">Use output_layout(chip, instance) for the gain order.</text>
-  <text x="76" y="1298" class="small">YM2203: [FM, SSG A, SSG B, SSG C]</text>
-  <text x="76" y="1324" class="small">YM2608 / YM2610(B): [FM+ADPCM L, R, SSG]</text>
-  <text x="76" y="1354" class="tiny">Outputs are backend signals, not necessarily synthesis channels.</text>
-  <text x="76" y="1378" class="tiny">Stereo groups process routed outputs; channel masks still apply.</text>
-  <text x="76" y="1402" class="tiny">Changes affect newly captured samples, not buffered audio</text>
-  <text x="76" y="1424" class="tiny">or resampler history. Effect tails are truncated at source end.</text>
+  <!-- Reference notes -->
+  <rect x="64" y="1196" width="644" height="202" rx="14" fill="#ffffff" stroke="#d4e2e2"/>
+  <text x="88" y="1230" class="card-title">Reading native outputs</text>
+  <text x="88" y="1260" class="body">Use output_layout(chip, instance) to find their order.</text>
+  <text x="88" y="1290" class="mono">YM2203      [FM, SSG A, SSG B, SSG C]</text>
+  <text x="88" y="1316" class="mono">YM2608/2610 [FM+ADPCM L, R, SSG]</text>
+  <text x="88" y="1350" class="small">Buffered audio and resampler history retain previous output settings.</text>
+  <text x="88" y="1372" class="small">Effect tails are truncated at the source's end.</text>
 
-  <rect x="740" y="1210" width="650" height="240" class="box" fill="#ffffff" stroke="#b8c6d3"/>
-  <text x="766" y="1242" class="heading">Chip gain and hardware</text>
-  <text x="766" y="1272" class="small">Chip gain multiplies the whole instance after resampling.</text>
-  <text x="766" y="1298" class="small">It also affects buffered PCM that has not yet been mixed.</text>
-  <text x="766" y="1324" class="small">Audio already mixed during a seek is unchanged.</text>
-  <text x="766" y="1354" class="tiny">Output gains and chip gain multiply each other.</text>
-  <text x="766" y="1378" class="tiny">Both default to 1.0; gains must be finite and nonnegative.</text>
-  <text x="766" y="1402" class="tiny">Neither controls physical hardware audio; route and mix</text>
-  <text x="766" y="1424" class="tiny">hardware output separately.</text>
+  <rect x="732" y="1196" width="644" height="202" rx="14" fill="#ffffff" stroke="#d4e2e2"/>
+  <text x="756" y="1230" class="card-title">Gain and hardware</text>
+  <text x="756" y="1260" class="body">Output gains and chip gain multiply each other.</text>
+  <text x="756" y="1285" class="body">Both default to 1.0; gains must be finite and nonnegative.</text>
+  <text x="756" y="1320" class="small">These controls do not affect physical hardware audio.</text>
+  <text x="756" y="1342" class="small">Route and mix hardware output separately.</text>
+  <text x="756" y="1372" class="small">Both gain APIs are available on VGM and MDX sequencers.</text>
 
-  <path d="M76 1490 H126" class="audio"/>
-  <text x="140" y="1495" class="small">audio / command flow</text>
-  <path d="M430 1490 H480" class="control"/>
-  <text x="494" y="1495" class="small">configuration / gain control</text>
-  <text x="1370" y="1495" text-anchor="end" class="tiny">Both gain APIs are available on VGM and MDX sequencers.</text>
+  <path d="M68 1447H116" class="signal"/>
+  <text x="130" y="1452" class="small">command / audio flow</text>
+  <path d="M340 1447H388" class="config"/>
+  <text x="402" y="1452" class="small">configuration / control</text>
+  <text x="1376" y="1452" text-anchor="end" class="small">Host effects and audio device are outside this pipeline.</text>
 </svg>
