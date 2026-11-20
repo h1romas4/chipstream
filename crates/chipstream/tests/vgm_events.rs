@@ -6,7 +6,7 @@ use chipstream::sequencer::{
     VgmSequencerOptions,
 };
 use soundlog::chip::state::{ChipState, Ym2151State};
-use soundlog::chip::{Ym2151Spec, Ym2612Spec};
+use soundlog::chip::{Ay8910Spec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::{DataBlock, WaitSamples, Ym2612Port0Address2AWriteAndWaitN};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
 
@@ -99,6 +99,54 @@ fn filters_preserve_original_observer_and_tracker_events() {
             .iter()
             .any(|(_, _, _, events)| matches!(events.as_deref(), Some([StateEvent::KeyOn { .. }])))
     );
+}
+
+#[test]
+fn ay8910_filters_affect_audio_while_callbacks_observe_original_writes() {
+    use chipstream::chip::YmfmChip;
+    use chipstream::sequencer::ChipFactoryRegistry;
+
+    fn player(volume: u8) -> VgmSequencer<'static> {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+        for (register, value) in [(0, 100), (1, 0), (7, 0x3e), (8, volume)] {
+            builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(1000));
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Ay8910, |config| {
+            Ok(Box::new(YmfmChip::new_ym2149(config.clock(), false)?))
+        });
+        VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            128,
+            Default::default(),
+            factories,
+        )
+        .unwrap()
+    }
+
+    let mut filtered = player(15);
+    let mut reference = player(0);
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&observed);
+    filtered.on_write(move |instance, spec: Ay8910Spec, frame, _| {
+        captured
+            .borrow_mut()
+            .push((instance, spec.register, spec.value, frame));
+    });
+    filtered.filter_write(|_, mut spec: Ay8910Spec, _| {
+        if spec.register == 8 {
+            spec.value = 0;
+        }
+        spec
+    });
+    while let Some(block) = filtered.render().unwrap() {
+        assert_eq!(Some(block), reference.render().unwrap());
+    }
+    assert!(reference.render().unwrap().is_none());
+    assert!(observed.borrow().contains(&(Instance::Primary, 8, 15, 0)));
 }
 
 #[test]

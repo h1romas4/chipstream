@@ -10,9 +10,9 @@ use soundlog::chip::state::{
     Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
 };
 use soundlog::chip::{
-    C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec, SegaPcmSpec,
-    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
-    Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+    Ay8910Spec, C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec,
+    SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
+    Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::Instance;
 
@@ -67,6 +67,7 @@ macro_rules! impl_write_callback_target {
 }
 
 impl_write_callback_target!(PsgSpec, Psg);
+impl_write_callback_target!(Ay8910Spec, Ay8910);
 impl_write_callback_target!(GameGearPsgSpec, GameGearPsg);
 impl_write_callback_target!(SegaPcmSpec, SegaPcm);
 impl_write_callback_target!(C140Spec, C140);
