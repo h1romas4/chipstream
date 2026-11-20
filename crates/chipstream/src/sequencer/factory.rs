@@ -177,26 +177,49 @@ pub enum ChipBackendSettings {
     /// OKIM6258 settings.
     Okim6258(Okim6258Settings),
     /// OKIM6295 pin 7 selection.
-    Okim6295 { pin7_high: bool },
+    Okim6295 {
+        /// Initial state of the sample-rate selection pin.
+        pin7_high: bool,
+    },
     /// C140 board variant.
     C140(C140Variant),
     /// SegaPCM banking configuration.
-    SegaPcm { bank_shift: u8, bank_mask: u8 },
+    SegaPcm {
+        /// Shift applied to the bank bits in the channel control register.
+        bank_shift: u8,
+        /// Mask selecting the bank bits in the channel control register.
+        bank_mask: u8,
+    },
     /// YM2203 embedded PSG settings.
-    Ym2203 { ssg: AyOutputSettings },
+    Ym2203 {
+        /// Embedded PSG output configuration.
+        ssg: AyOutputSettings,
+    },
     /// YM2608 embedded PSG settings.
-    Ym2608 { ssg: AyOutputSettings },
+    Ym2608 {
+        /// Embedded PSG output configuration.
+        ssg: AyOutputSettings,
+    },
     /// YM2610 variant selection.
-    Ym2610 { is_b: bool },
+    Ym2610 {
+        /// Select the YM2610B variant when true.
+        is_b: bool,
+    },
 }
 
 /// Configuration passed to a registered sound-chip factory.
 pub struct ChipFactoryConfig {
+    /// Chip requested by the source.
     chip: Chip,
+    /// Primary or secondary instance.
     instance: Instance,
+    /// Effective input clock in Hz.
     clock: u32,
+    /// Sequencer output rate in Hz.
     output_rate: u32,
+    /// Chip-specific header settings.
     settings: ChipBackendSettings,
+    /// Original OKIM6258 clock, when present in the source.
     source_okim6258_clock: Option<u32>,
 }
 

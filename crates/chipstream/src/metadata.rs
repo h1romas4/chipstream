@@ -11,6 +11,7 @@ use soundlog::mdx::header::MdxHeader;
 use soundlog::meta::Gd3;
 use soundlog::vgm::header::VgmHeader;
 
+/// Maximum input size accepted by metadata probes.
 const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Standard metadata tags available from a VGM/VGZ or MDX file.
@@ -72,6 +73,7 @@ impl Error for MetadataError {}
 /// Parse standard GD3 metadata from uncompressed VGM bytes.
 ///
 /// Callers handling VGZ input should decompress it before calling this function.
+/// Inputs larger than 64 MiB are rejected.
 pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     probe_vgm_bytes_with_language(bytes, VgmMetadataLanguage::English)
 }
@@ -79,6 +81,7 @@ pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
 /// Parse GD3 metadata, preferring the requested language for each field.
 ///
 /// Callers handling VGZ input should decompress it before calling this function.
+/// Inputs larger than 64 MiB are rejected.
 pub fn probe_vgm_bytes_with_language(
     bytes: &[u8],
     language: VgmMetadataLanguage,
@@ -116,6 +119,8 @@ pub fn probe_vgm_bytes_with_language(
 }
 
 /// Parse title metadata from MDX bytes, including supported compressed bodies.
+///
+/// Inputs larger than 64 MiB are rejected before normalization.
 pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     check_size(bytes, MAX_INPUT_BYTES)?;
     let normalized = normalize_mdx_for_playback(bytes)

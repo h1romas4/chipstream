@@ -1,12 +1,17 @@
 //! Compatibility handling for VGM PWM initialization.
 
+/// Non-control writes that trigger the PWM initialization workaround.
 const WRITE_THRESHOLD: u8 = 32;
 
+/// Progress of the PWM initialization compatibility check.
 #[derive(Clone, Copy, Default)]
 pub(super) enum PwmCompatibility {
+    /// No relevant writes have been observed.
     #[default]
     Monitoring,
+    /// Count of non-control writes observed so far.
     Counting(u8),
+    /// Detection has completed or been disabled by a control write.
     Finished,
 }
 

@@ -120,7 +120,9 @@ impl Error for AudioError {}
 /// Interleaved stereo PCM, without implicit clipping or normalization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StereoBlock {
+    /// Rate shared by every frame in the block.
     pub(crate) sample_rate: SampleRate,
+    /// Finite left/right PCM frames.
     pub(crate) frames: Vec<[f32; 2]>,
 }
 
@@ -184,10 +186,12 @@ impl StereoBlock {
 /// mute, and can position mono sources using its coefficients.
 #[derive(Debug, Clone)]
 pub struct StereoMatrix {
+    /// One left/right coefficient pair per native output.
     coefficients: Vec<[f32; 2]>,
 }
 
 impl StereoMatrix {
+    /// Return the native-output routing coefficients.
     pub(crate) fn coefficients(&self) -> &[[f32; 2]] {
         &self.coefficients
     }
@@ -213,6 +217,7 @@ impl StereoMatrix {
         self.convert_with_gains(input, None)
     }
 
+    /// Convert native frames with optional per-output gains and chip mutes.
     pub(crate) fn convert_with_gains(
         &self,
         input: &NativeBlock<'_>,

@@ -11,6 +11,7 @@ use super::{
     restore_cloned_state, save_cloned_state,
 };
 
+/// Maximum queued direct and DAC-stream bytes.
 const MAX_PENDING_BYTES: usize = 65_536;
 
 /// Adapts ADPCM writes to the native two-nibble OKIM6258 cadence.
@@ -30,12 +31,19 @@ const MAX_PENDING_BYTES: usize = 65_536;
 /// output samples only and does not change the ADPCM predictor or registers.
 #[derive(Clone)]
 pub struct Okim6258Stream {
+    /// Decoder and register state.
     chip: Okim6258,
+    /// Pending bytes and their stream IDs; direct writes have no ID.
     pending: VecDeque<(Option<u8>, u8)>,
+    /// Whether queued playback has started.
     active: bool,
+    /// Whether the next generated sample consumes the current byte's high nibble.
     high_nibble: bool,
+    /// Last decoded sample, held while the queue is empty.
     held_sample: i32,
+    /// Whether playing direct writes enter the same queue.
     queue_direct_writes: bool,
+    /// Optional output-only DC blocker.
     dc_blocker: Option<DcBlocker>,
 }
 
@@ -71,6 +79,7 @@ impl Okim6258Stream {
         self
     }
 
+    /// Discard queued bytes and reset stream delivery state.
     fn clear_stream(&mut self) {
         self.pending.clear();
         self.active = false;
@@ -78,6 +87,7 @@ impl Okim6258Stream {
         self.held_sample = 0;
     }
 
+    /// Queue a byte without exceeding the bounded input buffer.
     fn enqueue(&mut self, stream_id: Option<u8>, value: u8) -> Result<(), ChipError> {
         if self.pending.len() >= MAX_PENDING_BYTES {
             return Err(ChipError::InvalidConfiguration {

@@ -58,9 +58,14 @@ pub struct StereoMute {
 ///
 /// The numerator may be zero when a backend reports invalid metadata; a route
 /// rejects such a rate. The denominator is always nonzero.
+/// Equality compares the stored numerator and denominator, not the numerical
+/// value: for example, `48000/1` and `96000/2` are not equal. Audio components
+/// that compare rates for compatibility accept equivalent ratios.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleRate {
+    /// Rational rate numerator.
     numerator: u32,
+    /// Nonzero rational rate denominator.
     denominator: NonZeroU32,
 }
 

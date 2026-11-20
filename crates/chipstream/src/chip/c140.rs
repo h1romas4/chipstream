@@ -18,16 +18,22 @@ pub enum C140Type {
     Asic219,
 }
 
+/// Playback position, interpolation, and sample bounds for one C140 voice.
 #[derive(Clone, Copy, Default)]
 struct Voice {
+    /// Whether the voice is currently playing.
     active: bool,
+    /// Fractional playback phase and sample position.
     phase: u32,
     position: i32,
+    /// Previous and current decoded samples and their difference.
     previous: i32,
     last: i32,
     difference: i32,
+    /// Latched sample bank and mode.
     bank: u8,
     mode: u8,
+    /// Sample start, end, and loop offsets.
     start: i32,
     end: i32,
     loop_start: i32,

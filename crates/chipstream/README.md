@@ -27,7 +27,7 @@ The sequencer creates a backend for each chip instance, applies timed register
 writes, and renders each chip independently. Each native output is mapped to
 stereo and resampled before aligned sources are mixed into the output block.
 
-![Chip audio flow from VGM/MDX input to stereo PCM](assets/audio-flow.svg)
+![Chip audio flow from VGM/MDX input to stereo PCM](https://raw.githubusercontent.com/h1romas4/chipstream/main/crates/chipstream/assets/audio-flow.svg)
 
 The factory selects or creates a `SoundChip`; it is not part of the audio
 signal path. Resampling can downsample or upsample. The final mix is not clipped.
@@ -139,8 +139,10 @@ while let Some(block) = player.render()? {
 
 ### Playback options
 
-Both sequencers require options at construction; their default options play one
-traversal without fading. Use `PlaybackOptions` for loop count and fade duration:
+Both sequencers require options at construction; their defaults request one
+traversal without fading. VGM header loop base and modifier values may change
+the effective number of traversals. Use `PlaybackOptions` for loop count and
+fade duration:
 
 ```rust,no_run
 use std::time::Duration;
@@ -251,6 +253,8 @@ produce audio on either side.
 Effects must be `Clone + 'static`; cloning must independently capture all
 parameters and processing state for checkpoints. Restoring a checkpoint
 requires the same groups and effect order; it restores their state and pan.
+After a checkpoint restore or rendering error, create a new sequencer; playback
+and further restoration cannot continue on the failed sequencer.
 
 Stereo effects must preserve frame count and sample rate. Errors and non-finite
 output fail rendering. Effect tails are truncated at the source's end.
@@ -344,7 +348,7 @@ while let Some(block) = player.render()? {
 A filter returns one write of the same type. Another filter for that type
 replaces it; callbacks and state trackers still see the original writes.
 Filters may execute ahead of returned audio, without global ordering across
-voices, and cannot change generated audio or queued hardware events.
+voices, and cannot change already generated audio or queued hardware events.
 
 Filter closure state is not part of checkpoints. The caller must restore it
 before restoring or seeking; seeking calls the filter while advancing.
@@ -370,7 +374,7 @@ The `chip` module provides `YmfmChip` and, with their respective features,
 
 `Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
 the `chipstream-ndsif` software fallback use
-[`Okim6258Stream`](src/chip/okim6258_stream.rs) for ordered byte delivery.
+[`Okim6258Stream`](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/src/chip/okim6258_stream.rs) for ordered byte delivery.
 VGM software playback applies a 20 Hz high-pass filter to the decoded output
 to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
 The same mono filter is available independently as `audio::DcBlocker`.
@@ -510,6 +514,6 @@ BSD-3-Clause License
 
 ## Third-party notices
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for implementation
+See [THIRD_PARTY_NOTICES.md](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/THIRD_PARTY_NOTICES.md) for implementation
 attributions and licenses. Distributors should also review the licenses of
 transitive dependencies.

@@ -13,7 +13,9 @@ use crate::chip::SampleRate;
 
 /// A typed handle to an effect installed in a sequencer.
 pub struct EffectId<T> {
+    /// Identity shared with the installed entry.
     id: Arc<()>,
+    /// Associates the identity with the concrete effect type.
     marker: PhantomData<fn() -> T>,
 }
 
@@ -34,17 +36,30 @@ pub struct OutputGroupId(Arc<()>);
 #[derive(Debug)]
 pub enum EffectError {
     /// An output index is outside the native output layout.
-    OutputOutOfRange { output: usize, channels: usize },
+    OutputOutOfRange {
+        /// Requested native output index.
+        output: usize,
+        /// Number of native outputs.
+        channels: usize,
+    },
     /// A group must contain at least one output.
     EmptyGroup,
     /// An output was repeated or already belongs to a group.
-    OutputAlreadyGrouped { output: usize },
+    OutputAlreadyGrouped {
+        /// Repeated or already grouped native output index.
+        output: usize,
+    },
     /// The group does not exist in this sequencer.
     GroupNotFound,
     /// The effect does not exist in this sequencer.
     EffectNotFound,
     /// The requested position is outside the effect chain.
-    PositionOutOfRange { position: usize, length: usize },
+    PositionOutOfRange {
+        /// Requested position in the chain.
+        position: usize,
+        /// Number of effects in the chain.
+        length: usize,
+    },
     /// Pan must be finite and between -1 and 1.
     InvalidPan,
 }
@@ -74,9 +89,13 @@ impl fmt::Display for EffectError {
 
 impl Error for EffectError {}
 
+/// Type-erased native effect with checkpoint-compatible cloning.
 trait NativeProcessor {
+    /// Process one native output in place.
     fn process(&mut self, samples: &mut [f32], rate: SampleRate) -> Result<(), AudioError>;
+    /// Expose the concrete effect for typed handles.
     fn any_mut(&mut self) -> &mut dyn Any;
+    /// Clone the effect's processing state.
     fn clone_box(&self) -> Box<dyn NativeProcessor>;
 }
 
@@ -92,9 +111,13 @@ impl<T: NativeEffect + Clone + 'static> NativeProcessor for T {
     }
 }
 
+/// Type-erased stereo effect with checkpoint-compatible cloning.
 trait StereoProcessor {
+    /// Process a grouped stereo block.
     fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError>;
+    /// Expose the concrete effect for typed handles.
     fn any_mut(&mut self) -> &mut dyn Any;
+    /// Clone the effect's processing state.
     fn clone_box(&self) -> Box<dyn StereoProcessor>;
 }
 
@@ -110,6 +133,7 @@ impl<T: StereoEffect + Clone + 'static> StereoProcessor for T {
     }
 }
 
+/// Native effect and its stable handle identity.
 struct NativeEntry {
     id: Arc<()>,
     effect: Box<dyn NativeProcessor>,
@@ -124,6 +148,7 @@ impl Clone for NativeEntry {
     }
 }
 
+/// Stereo effect and its stable handle identity.
 struct StereoEntry {
     id: Arc<()>,
     effect: Box<dyn StereoProcessor>,
@@ -139,20 +164,29 @@ impl Clone for StereoEntry {
 }
 
 #[derive(Clone)]
+/// Disjoint native outputs and their stereo effect chain.
 struct Group {
+    /// Identity used by group handles and checkpoints.
     id: Arc<()>,
+    /// Native output indices belonging to the group.
     outputs: Vec<usize>,
+    /// Effects applied after grouped outputs are mixed to stereo.
     effects: Vec<StereoEntry>,
 }
 
 #[derive(Clone)]
+/// Effect chains and pan settings for one chip voice.
 pub(super) struct EffectRack {
+    /// Per-output native effect chains.
     native: Vec<Vec<NativeEntry>>,
+    /// Optional per-output pan overrides.
     pans: Vec<Option<f32>>,
+    /// Output groups and their stereo effects.
     groups: Vec<Group>,
 }
 
 impl EffectRack {
+    /// Initialize an empty rack for the native output count.
     pub(super) fn new(channels: usize) -> Self {
         Self {
             native: vec![Vec::new(); channels],
@@ -161,6 +195,7 @@ impl EffectRack {
         }
     }
 
+    /// Validate a native output index.
     fn check_output(&self, output: usize) -> Result<(), EffectError> {
         if output >= self.native.len() {
             return Err(EffectError::OutputOutOfRange {
@@ -171,6 +206,7 @@ impl EffectRack {
         Ok(())
     }
 
+    /// Set or clear an output's pan override.
     pub(super) fn set_pan(&mut self, output: usize, pan: Option<f32>) -> Result<(), EffectError> {
         self.check_output(output)?;
         if pan.is_some_and(|p| !p.is_finite() || !(-1.0..=1.0).contains(&p)) {
@@ -180,6 +216,7 @@ impl EffectRack {
         Ok(())
     }
 
+    /// Append an effect to one native output.
     pub(super) fn add_native<T: NativeEffect + Clone + 'static>(
         &mut self,
         output: usize,
@@ -197,6 +234,7 @@ impl EffectRack {
         })
     }
 
+    /// Create a nonempty group whose outputs are not already grouped.
     pub(super) fn create_group(&mut self, outputs: &[usize]) -> Result<OutputGroupId, EffectError> {
         if outputs.is_empty() {
             return Err(EffectError::EmptyGroup);
@@ -221,12 +259,14 @@ impl EffectRack {
         Ok(OutputGroupId(id))
     }
 
+    /// Check whether this rack owns a group handle.
     pub(super) fn contains_group(&self, id: &OutputGroupId) -> bool {
         self.groups
             .iter()
             .any(|group| Arc::ptr_eq(&group.id, &id.0))
     }
 
+    /// Remove a group and its stereo effects.
     pub(super) fn remove_group(&mut self, id: &OutputGroupId) -> Result<(), EffectError> {
         let index = self
             .groups
@@ -237,6 +277,7 @@ impl EffectRack {
         Ok(())
     }
 
+    /// Append an effect to a group's stereo chain.
     pub(super) fn add_stereo<T: StereoEffect + Clone + 'static>(
         &mut self,
         group: &OutputGroupId,
@@ -258,6 +299,7 @@ impl EffectRack {
         })
     }
 
+    /// Find a typed effect by its handle identity.
     pub(super) fn effect_mut<T: 'static>(&mut self, id: &EffectId<T>) -> Option<&mut T> {
         for chain in &mut self.native {
             for entry in chain {
@@ -276,6 +318,7 @@ impl EffectRack {
         None
     }
 
+    /// Remove an effect if this rack owns its handle.
     pub(super) fn remove_effect<T>(&mut self, id: &EffectId<T>) -> bool {
         for chain in &mut self.native {
             if let Some(index) = chain
@@ -299,6 +342,7 @@ impl EffectRack {
         false
     }
 
+    /// Move an effect within its existing chain.
     pub(super) fn move_effect<T>(
         &mut self,
         id: &EffectId<T>,
@@ -331,6 +375,7 @@ impl EffectRack {
         Ok(false)
     }
 
+    /// Compare group and effect identities and order for checkpoint restoration.
     pub(super) fn same_topology(&self, other: &Self) -> bool {
         self.native.len() == other.native.len()
             && self.native.iter().zip(&other.native).all(|(a, b)| {
@@ -348,6 +393,7 @@ impl EffectRack {
             })
     }
 
+    /// Apply native effects, routing, and grouped stereo effects to a block.
     pub(super) fn process(
         &mut self,
         input: &NativeBlock<'_>,

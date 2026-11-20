@@ -134,8 +134,9 @@ impl Error for MdxSequencerError {
 ///
 /// [`Self::on_write`] reports typed chip writes while rendering, with optional
 /// state-change data registered through [`Self::track_state`].
-/// After a rendering error the sequencer cannot be resumed.
+/// After a rendering or checkpoint restore error, create a new sequencer.
 pub struct MdxSequencer<'a> {
+    /// VGM-based playback engine driven by the MDX generator.
     player: VgmSequencer<'a>,
 }
 

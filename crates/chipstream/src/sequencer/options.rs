@@ -7,8 +7,9 @@ use super::VgmSequencerError;
 /// Playback behavior shared by VGM and MDX sequencers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackOptions {
-    /// Number of song traversals; `None` allows unlimited looping and zero
-    /// is treated as one traversal.
+    /// Requested number of song traversals; `None` allows unlimited looping
+    /// and zero is treated as one. For VGM, the header loop base and modifier
+    /// (or their overrides) affect the effective count.
     pub loop_count: Option<u32>,
     /// Fade after the final loop boundary; `None` or zero disables fading.
     /// Unlimited playback and songs without loops ignore the fade. Durations
@@ -18,7 +19,7 @@ pub struct PlaybackOptions {
 }
 
 impl Default for PlaybackOptions {
-    /// Default to one traversal with no fade.
+    /// Request one traversal with no fade.
     fn default() -> Self {
         Self {
             loop_count: Some(1),
@@ -27,6 +28,7 @@ impl Default for PlaybackOptions {
     }
 }
 
+/// Convert an optional fade duration to rounded VGM-rate samples.
 pub(super) fn fadeout_samples(fadeout: Option<Duration>) -> Result<Option<u32>, VgmSequencerError> {
     fadeout
         .map(|duration| {

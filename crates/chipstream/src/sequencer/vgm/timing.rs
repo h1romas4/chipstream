@@ -6,16 +6,24 @@ use soundlog::vgm::command::{Instance, VgmCommand};
 use crate::chip::{ChipRegisterWrite, SampleRate};
 
 #[derive(Clone, Copy)]
+/// Register layout and divisor bounds for a dynamically clocked chip.
 struct ClockRegisters {
+    /// Address of the first clock byte.
     first: u8,
+    /// Valid bits for each little-endian clock byte.
     masks: [u8; 4],
+    /// Smallest possible native-rate divisor.
     min_divisor: u32,
+    /// Largest possible native-rate divisor.
     max_divisor: u32,
 }
 
 #[derive(Clone, Copy, Default)]
+/// Write pacing and optional dynamic-clock metadata for one chip type.
 pub(super) struct TimingProfile {
+    /// Native frames between writes, or no pacing.
     pub(super) write_interval: Option<usize>,
+    /// Clock register layout, if the chip supports dynamic clocks.
     clock_registers: Option<ClockRegisters>,
 }
 
@@ -59,8 +67,11 @@ impl TimingProfile {
 }
 
 #[derive(Clone, Copy)]
+/// Byte-wise extrema of observed clock writes.
 struct ClockChanges {
+    /// Smallest observed value for each byte.
     low: [u8; 4],
+    /// Largest observed value for each byte.
     high: [u8; 4],
 }
 
@@ -100,14 +111,21 @@ impl ClockChanges {
     }
 }
 
+/// Clock observations and declared ranges for both chip instances.
 struct DynamicClock {
+    /// Chip type to which these observations apply.
     chip: Chip,
+    /// Register layout and sample-rate divisors.
     registers: ClockRegisters,
+    /// Per-instance byte-wise observations.
     instances: [ClockChanges; 2],
+    /// Per-instance inclusive ranges supplied by a generator.
     declared_ranges: [Option<(u32, u32)>; 2],
 }
 
+/// Dynamic-clock metadata used to size resampler rate bounds.
 pub(super) struct Timing {
+    /// Entries for present chips with dynamically writable clocks.
     clocks: Vec<DynamicClock>,
 }
 

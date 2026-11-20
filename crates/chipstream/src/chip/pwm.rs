@@ -6,11 +6,15 @@
 use super::{ChipError, ChipRegisterWrite, SoundChip};
 use soundlog::chip::Chip;
 
+/// Fixed native output rate of the reference PWM implementation.
 const RATE: u32 = 22_050;
 
+/// Three-entry FIFO for one PWM output channel.
 #[derive(Clone, Default)]
 struct Fifo {
+    /// Queued sample values in playback order.
     data: [u16; 3],
+    /// Number of occupied entries.
     len: usize,
 }
 

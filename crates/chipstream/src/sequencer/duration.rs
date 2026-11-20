@@ -14,7 +14,9 @@ use crate::fixed::divide_ratio;
 
 use super::{MdxSequencerError, MdxSequencerOptions, VgmSequencerError, VgmSequencerOptions};
 
+/// Command scan limit for finite playback and VGM loop detection.
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
+/// Lower scan limit for potentially unlimited MDX generators.
 const MAX_UNLIMITED_MDX_DURATION_COMMANDS: u32 = 100_000;
 
 /// Result of a bounded playback-duration scan.

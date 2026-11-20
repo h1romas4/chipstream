@@ -26,6 +26,7 @@ pub trait StereoEffect {
 /// A constant, nonnegative linear amplitude gain.
 #[derive(Clone)]
 pub struct Gain {
+    /// Current linear amplitude multiplier.
     gain: f32,
 }
 
@@ -78,6 +79,7 @@ impl NativeEffect for Gain {
 /// the other and is therefore distinct from positioning a mono source.
 #[derive(Clone)]
 pub struct StereoBalance {
+    /// Current balance from left (-1) to right (1).
     balance: f32,
 }
 

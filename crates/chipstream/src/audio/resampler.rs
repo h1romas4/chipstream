@@ -9,8 +9,11 @@ use crate::fixed::{advance, ceil_multiply_divide, divide_ratio, multiply_ratio};
 use super::buffer::same_rate;
 use super::{AudioError, StereoBlock};
 
+/// Number of taps in each windowed-sinc phase.
 const SINC_LENGTH: usize = 256;
+/// Half the filter's tap count, used to determine lookahead.
 const HALF: usize = SINC_LENGTH / 2;
+/// Number of fractional phases between adjacent coefficient tables.
 const PHASES: usize = 128;
 
 /// Stateful, band-limited stereo SRC for a bounded range of input rates.
@@ -37,33 +40,51 @@ const PHASES: usize = 128;
 /// discards history for reuse. Output block lengths vary, so callers mixing
 /// multiple sources must queue and align them.
 pub struct StereoResampler {
+    /// Output rate and inclusive supported input-rate range in Hz.
     output_rate: u32,
     min_input_rate: u32,
     max_input_rate: u32,
+    /// Maximum number of input frames processed per internal chunk.
     max_chunk_frames: usize,
+    /// Windowed-sinc coefficients for each fractional phase.
     coefficients: Vec<f32>,
+    /// Buffered input frames tagged with their original rates.
     input: VecDeque<([f32; 2], SampleRate)>,
+    /// Current filter center in the buffered input.
     position: usize,
+    /// Fractional input position and cached per-output-frame step.
     phase: u32,
     phase_rate: Option<SampleRate>,
     phase_step: u32,
+    /// Whether the input position must advance before producing another frame.
     pending_advance: bool,
+    /// Fractional output duration and whole output frames still due.
     duration: u32,
     due: usize,
+    /// Most recent nonempty input rate.
     last_rate: Option<SampleRate>,
+    /// Whether the finite stream has been drained.
     finished: bool,
 }
 
+/// Buffered input and timing state saved for sequencer checkpoints.
 pub(crate) struct StereoResamplerState {
+    /// Buffered frames and their input rates.
     input: VecDeque<([f32; 2], SampleRate)>,
+    /// Filter center in the buffered input.
     position: usize,
+    /// Fractional position and cached per-output-frame step.
     phase: u32,
     phase_rate: Option<SampleRate>,
     phase_step: u32,
+    /// Whether the position must advance before the next output frame.
     pending_advance: bool,
+    /// Fractional duration and whole output frames still due.
     duration: u32,
     due: usize,
+    /// Most recent nonempty input rate.
     last_rate: Option<SampleRate>,
+    /// Whether the finite stream has been drained.
     finished: bool,
 }
 

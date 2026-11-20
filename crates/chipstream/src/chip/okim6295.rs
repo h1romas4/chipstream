@@ -8,14 +8,19 @@ use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data}
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;
 
+/// ADPCM decoder and sample position for one OKIM6295 voice.
 #[derive(Clone, Copy, Default)]
 struct Voice {
+    /// Whether the voice is active.
     playing: bool,
+    /// Sample start address, nibble position, and nibble count.
     start: u32,
     position: u32,
     count: u32,
+    /// ADPCM predictor and step-table index.
     signal: i32,
     step: usize,
+    /// Voice attenuation multiplier.
     volume: i32,
 }
 

@@ -10,23 +10,36 @@ use crate::sequencer::{
     Okim6258Divider, Okim6258Settings, Sn76489Settings,
 };
 
+/// Effective settings for one chip instance.
 pub(super) struct VoiceConfig {
+    /// Chip type selected by the source.
     pub(super) chip: Chip,
+    /// Primary or secondary instance.
     pub(super) instance: Instance,
+    /// Effective input clock, including extra-header overrides.
     pub(super) clock: u32,
+    /// Whether the source declares a dual-chip configuration.
     pub(super) dual: bool,
+    /// Chip-specific header settings.
     pub(super) settings: ChipBackendSettings,
+    /// Whether the built-in OKIM6258 backend filters DC.
     pub(super) okim6258_dc_blocker: bool,
 }
 
+/// Header-derived voices and timing information for sequencer construction.
 pub(in crate::sequencer) struct ChipConfiguration<'a> {
+    /// Primary VGM header.
     pub(super) header: &'a VgmHeader,
+    /// Optional per-instance clock and volume overrides.
     pub(super) extra: Option<&'a VgmExtraHeader>,
+    /// Dynamic-clock observations and bounds.
     pub(super) timing: Timing,
+    /// Playable chip instances declared by the header.
     pub(super) voices: Vec<VoiceConfig>,
 }
 
 impl<'a> ChipConfiguration<'a> {
+    /// Build per-instance settings from the source headers.
     pub(in crate::sequencer) fn from_header(
         header: &'a VgmHeader,
         extra: Option<&'a VgmExtraHeader>,
@@ -68,6 +81,7 @@ impl<'a> ChipConfiguration<'a> {
         }
     }
 
+    /// Record observed non-default PSG stereo masks by instance.
     pub(super) fn set_psg_stereo(&mut self, stereo: [bool; 2]) {
         for voice in &mut self.voices {
             if let ChipBackendSettings::Sn76489(settings) = &mut voice.settings {
@@ -76,6 +90,7 @@ impl<'a> ChipConfiguration<'a> {
         }
     }
 
+    /// Include a complete clock value in the instance's timing bounds.
     pub(in crate::sequencer) fn observe_clock(
         &mut self,
         chip: &Chip,
@@ -85,6 +100,7 @@ impl<'a> ChipConfiguration<'a> {
         self.timing.observe_clock(chip, instance, clock);
     }
 
+    /// Extract supported clocks, including legacy header aliases.
     fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 18] {
         let misc = header.misc();
         [
@@ -152,6 +168,7 @@ impl From<Ay8910Flags> for AyOutputSettings {
     }
 }
 
+/// Translate header flags into chip-specific factory settings.
 fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
     match chip {
         Chip::Ay8910 => ChipBackendSettings::Ay8910(Ay8910Settings::from(header)),
@@ -211,6 +228,7 @@ fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
     }
 }
 
+/// Map a supported chip to its VGM extra-header identifier.
 pub(super) fn chip_id(chip: &Chip) -> ChipId {
     match chip {
         Chip::Sn76489 => ChipId::Sn76489,

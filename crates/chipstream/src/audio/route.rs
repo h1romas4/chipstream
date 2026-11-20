@@ -13,6 +13,7 @@ use crate::chip::{ChipError, SampleRate, SoundChip, StereoMute};
 /// Apply register writes or configuration changes between captures so a block
 /// never spans a change in rate or chip-controlled stereo mute.
 pub struct ChipCapture<C> {
+    /// Backend whose native output is captured.
     chip: C,
 }
 
@@ -91,10 +92,15 @@ impl<C: SoundChip> ChipCapture<C> {
 /// assumption is made that multiple native outputs are left/right channels.
 #[derive(Debug)]
 pub struct NativeBlock<'a> {
+    /// Backend chip type.
     chip_type: Chip,
+    /// Exact native sample rate.
     sample_rate: SampleRate,
+    /// Number of native values per frame.
     channels: usize,
+    /// Chip-controlled stereo mute, when applicable.
     stereo_mute: Option<StereoMute>,
+    /// Caller-owned interleaved output buffer.
     samples: &'a [i32],
 }
 

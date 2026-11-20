@@ -133,15 +133,21 @@ impl_state_tracker!(Ym3812State, Ym3812);
 impl_state_tracker!(Ymf262State, Ymf262);
 impl_state_tracker!(Ymf278bState, Ymf278b);
 
+/// Maximum number of callback events buffered ahead of returned PCM.
 pub(super) const MAX_PENDING_EVENTS: usize = 4096;
 
 #[derive(Clone)]
+/// Original chip write and any tracked state changes awaiting delivery.
 pub(super) struct PendingWriteEvent {
+    /// Target chip instance.
     pub instance: Instance,
+    /// Unfiltered write observed by callbacks.
     pub write: ChipRegisterWrite,
+    /// State changes generated from the original write, if tracking is enabled.
     pub state_events: Option<Vec<StateEvent>>,
 }
 
+/// Type-erased callback registered for a write specification.
 trait WriteCallback {
     /// Identify the callback's concrete write specification.
     fn target_type_id(&self) -> TypeId;
@@ -159,12 +165,14 @@ trait WriteCallback {
     );
 }
 
+/// Adapts a typed user callback to the dynamic callback registry.
 struct TypedWriteCallback<C, F> {
     callback: F,
     state_only: bool,
     _target: std::marker::PhantomData<fn() -> C>,
 }
 
+/// Type-erased filter registered for a write specification.
 trait WriteFilter {
     /// Identify the filter's concrete write specification.
     fn target_type_id(&self) -> TypeId;
@@ -179,6 +187,7 @@ trait WriteFilter {
     ) -> ChipRegisterWrite;
 }
 
+/// Adapts a typed user filter to the dynamic filter registry.
 struct TypedWriteFilter<C, F> {
     filter: F,
     _target: std::marker::PhantomData<fn() -> C>,
@@ -249,9 +258,13 @@ where
     }
 }
 
+/// Registered callbacks and filters, keyed by write type.
 pub(super) struct CallbackRegistry<'a> {
+    /// Observers invoked when queued events are delivered.
     callbacks: Vec<Box<dyn WriteCallback + 'a>>,
+    /// Filters invoked immediately before applying writes.
     filters: RefCell<Vec<Box<dyn WriteFilter + 'a>>>,
+    /// Whether a state-only event was dropped because the queue was full.
     state_overflow: Cell<bool>,
 }
 
@@ -267,6 +280,7 @@ impl Default for CallbackRegistry<'_> {
 }
 
 impl<'a> CallbackRegistry<'a> {
+    /// Apply the registered filter for a write, if present.
     pub(super) fn filter_write(
         &self,
         instance: Instance,
@@ -284,6 +298,7 @@ impl<'a> CallbackRegistry<'a> {
         }
     }
 
+    /// Install a filter, replacing the previous filter for the same type.
     pub(super) fn register_filter<C, F>(&mut self, filter: F)
     where
         C: VgmWriteCallbackTarget,
@@ -304,6 +319,7 @@ impl<'a> CallbackRegistry<'a> {
             .any(|callback| callback.matches(write))
     }
 
+    /// Check whether an observer accepts this write and its state events.
     pub(super) fn accepts(&self, write: &ChipRegisterWrite, events: Option<&[StateEvent]>) -> bool {
         self.callbacks
             .iter()
@@ -313,6 +329,7 @@ impl<'a> CallbackRegistry<'a> {
             })
     }
 
+    /// Mark and permit dropping an overflowing state-only event.
     pub(super) fn drop_overflowing_state(&self, write: &ChipRegisterWrite) -> bool {
         let state_only = self
             .callbacks
@@ -325,6 +342,7 @@ impl<'a> CallbackRegistry<'a> {
         state_only
     }
 
+    /// Return and clear the state-event overflow flag.
     pub(super) fn take_state_overflow(&self) -> bool {
         self.state_overflow.replace(false)
     }
@@ -357,6 +375,7 @@ impl<'a> CallbackRegistry<'a> {
 }
 
 #[derive(Clone)]
+/// Concrete chip-state tracker stored by a sequencer voice.
 pub(super) enum Tracker {
     Sn76489(Sn76489State),
     Ym2151(Ym2151State),

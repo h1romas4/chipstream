@@ -311,11 +311,16 @@ impl From<AudioError> for VgmSequencerError {
     }
 }
 
+/// ROM contents and write overlays shared by voices using the same memory.
 #[derive(Clone, Default)]
 struct Memory {
+    /// ADPCM-A sample ROM.
     adpcm_a: Vec<u8>,
+    /// ADPCM-B sample ROM.
     adpcm_b: Vec<u8>,
+    /// PCM sample ROM.
     pcm: Vec<u8>,
+    /// Writes indexed by memory class and address.
     writes: HashMap<(u8, u32), u8>,
 }
 
@@ -359,43 +364,69 @@ fn observe_psg_stereo(stereo: &mut [bool; 2], command: &VgmCommand) {
     }
 }
 
+/// Chip instance and the state required to render it on the output timeline.
 struct Voice {
+    /// Chip type and instance.
     chip: Chip,
     instance: Instance,
+    /// Effective input clock in Hz.
     clock: u32,
+    /// PSG flags used when constructing a state tracker.
     sn_flags: soundlog::vgm::header::Sn76489Flags,
+    /// Optional state observer of unfiltered writes.
     tracker: Option<event::Tracker>,
+    /// Backend and its native-output capture.
     route: ChipCapture<Box<dyn SoundChip>>,
+    /// Current native-to-stereo routing.
     matrix: StereoMatrix,
+    /// Native-to-output-rate conversion and its history.
     resampler: StereoResampler,
+    /// Memory shared with backends that access external samples.
     memory: Rc<RefCell<Memory>>,
+    /// Fractional native-sample phase and cached conversion ratio.
     phase: u32,
     phase_rate: Option<SampleRate>,
     phase_step: u32,
+    /// Resampled frames awaiting the sequencer mix.
     queue: VecDeque<[f32; 2]>,
+    /// Post-resampling chip gain.
     gain: f32,
+    /// Per-native-output gains applied before resampling.
     output_gains: Vec<f32>,
+    /// Native and grouped effects and pan overrides.
     effects: EffectRack,
+    /// Unmasked routing coefficients used when applying pan.
     base_coefficients: Vec<[f32; 2]>,
+    /// Chip-controlled stereo enable masks for each output.
     output_masks: Vec<[bool; 2]>,
+    /// Source-derived main and paired-output volume coefficients.
     main_coefficient: f32,
     paired_coefficient: f32,
+    /// Writes waiting for their native-sample pacing interval.
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
+    /// Frames between paced writes and remaining frames until the next write.
     write_interval: usize,
     write_cooldown: usize,
 }
 
+/// Callback registrations and pending events shared while rendering a voice.
 struct EventContext<'a, 'callbacks> {
     callbacks: &'a CallbackRegistry<'callbacks>,
     events: &'a mut VecDeque<(usize, PendingWriteEvent)>,
 }
 
+/// Linear output-frame fade, including frames already buffered at its start.
 #[derive(Clone)]
 struct Fade {
+    /// Absolute output frame where the fade begins.
     start_frame: usize,
+    /// Buffered frames to emit before applying the fade.
     pending: usize,
+    /// Fade length in output frames.
     length: f32,
+    /// Output rate used to accumulate elapsed fade time.
     rate: u32,
+    /// Completed whole seconds and frames within the current second.
     seconds: u32,
     frames: u32,
 }
@@ -616,8 +647,9 @@ impl Voice {
 
 /// A VGM player that returns stereo f32 PCM blocks without an audio device.
 ///
-/// The stream is played once by default. Rendering uses lookahead and may
-/// consume commands beyond the returned block.
+/// Playback requests one traversal by default; VGM header loop settings can
+/// change the effective count. Rendering uses lookahead and may consume
+/// commands beyond the returned block.
 ///
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
@@ -668,32 +700,51 @@ impl Voice {
 /// guaranteed real-time safe. After a rendering or checkpoint restore error,
 /// create a new sequencer.
 pub struct VgmSequencer<'a> {
+    /// Source command stream and optional reconstruction factory.
     stream: VgmStream,
     stream_factory: Option<StreamFactory>,
+    /// Whether this source supports checkpoint reconstruction.
     rewindable: bool,
+    /// Header loop settings used when resetting a replayable stream.
     initial_loop_base: i8,
     initial_loop_modifier: u8,
+    /// Consumed stream results and settings changes for checkpoint replay.
     stream_steps: usize,
     stream_settings: Vec<(usize, StreamSetting)>,
+    /// Active chip instances.
     voices: Vec<Voice>,
+    /// Output rate and maximum returned block length.
     output_rate: u32,
     chunk_frames: usize,
+    /// Number of output frames delivered or skipped by seeking.
     position_frames: usize,
+    /// Remaining source wait in 44.1 kHz samples.
     wait: u32,
+    /// Output frames available for mixing.
     available: usize,
+    /// Fractional output-frame phase and its per-source-sample step.
     output_phase: u32,
     output_step: u32,
+    /// Whether the stream has ended or encountered a terminal error.
     ended: bool,
     failed: bool,
+    /// Whether rendering has started.
     started: bool,
+    /// Callback registrations and events pending output delivery.
     callbacks: CallbackRegistry<'a>,
     events: VecDeque<(usize, PendingWriteEvent)>,
+    /// Frames preserved when seeking into the middle of a block.
     pending_output: VecDeque<[f32; 2]>,
+    /// Per-instance PWM initialization compatibility state, when enabled.
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
+    /// Configured fade duration and remaining source samples.
     fade_samples: Option<u32>,
     fade_remaining: Option<u32>,
+    /// Output-frame fade state, once fading begins.
     fade_frames: Option<Fade>,
+    /// MDX generator marker signalling the start of fading.
     mdx_loop_marker: Option<MdxLoopMarker>,
+    /// Identity tying checkpoints to this sequencer.
     source_identity: Arc<()>,
 }
 
@@ -732,8 +783,9 @@ pub enum NativeOutput {
 
 /// Playback options for a VGM file or parsed document.
 ///
-/// Defaults to one traversal with no fade and preserves the header loop
-/// settings. Generator sources handle their own looping.
+/// Defaults to requesting one traversal with no fade and preserves the header
+/// loop settings, which can change the effective count. Generator sources
+/// handle their own looping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VgmSequencerOptions {
     /// Loop count and fade duration.
@@ -795,6 +847,7 @@ pub struct VgmSequencerCheckpoint {
     fade_frames: Option<Fade>,
 }
 
+/// Snapshot of one voice's backend, routing, and pending audio.
 struct VoiceCheckpoint {
     chip: Chip,
     instance: Instance,
