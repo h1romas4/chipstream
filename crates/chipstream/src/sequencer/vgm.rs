@@ -792,9 +792,9 @@ pub enum NativeOutput {
 /// Playback options for a VGM file or parsed document.
 ///
 /// Defaults to requesting one traversal with no fade and preserves the header
-/// loop settings, which can change the effective count. Generator sources
-/// handle their own looping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// loop settings, which can change the effective count. The PWM compatibility
+/// workaround is enabled by default. Generator sources handle their own looping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VgmSequencerOptions {
     /// Loop count and fade duration.
     pub playback: super::PlaybackOptions,
@@ -802,6 +802,22 @@ pub struct VgmSequencerOptions {
     pub loop_base: Option<i8>,
     /// Override the loop modifier from the VGM header, or use the header when `None`.
     pub loop_modifier: Option<u8>,
+    /// Enable the PWM initialization workaround for malformed VGM rips.
+    ///
+    /// Enabled by default. See [`VgmSequencer::set_pwm_compatibility`] for
+    /// the heuristic and its effect on register writes.
+    pub pwm_compatibility: bool,
+}
+
+impl Default for VgmSequencerOptions {
+    fn default() -> Self {
+        Self {
+            playback: super::PlaybackOptions::default(),
+            loop_base: None,
+            loop_modifier: None,
+            pwm_compatibility: true,
+        }
+    }
 }
 
 /// Initialization information for a single-pass VGM command generator.
@@ -1489,6 +1505,7 @@ impl<'a> VgmSequencer<'a> {
     fn apply_options(&mut self, options: VgmSequencerOptions) -> Result<(), VgmSequencerError> {
         let fadeout = super::options::fadeout_samples(options.playback.fadeout)?;
         self.configure_fadeout(fadeout, None)?;
+        self.set_pwm_compatibility(options.pwm_compatibility)?;
         self.stream.set_loop_count(options.playback.loop_count);
         self.stream_settings.push((
             self.stream_steps,
@@ -1527,7 +1544,9 @@ impl<'a> VgmSequencer<'a> {
 
     /// Enable or disable the bad-rip PWM channel initialization workaround.
     ///
-    /// Enabled by default. Configuration is only allowed before rendering.
+    /// Enabled by default. For VGM files and documents, this overrides
+    /// [`VgmSequencerOptions::pwm_compatibility`]. Configuration is only
+    /// allowed before rendering, including for generator sources.
     /// Per chip instance, 32 writes to non-control registers before a control
     /// write with a nonzero low byte cause a `0x005` control write immediately
     /// before the 32nd write. The cycle register counts too; zero-low-byte

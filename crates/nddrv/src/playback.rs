@@ -1544,6 +1544,7 @@ impl Sequencer {
                     playback: mdx_options(looped, settings).playback,
                     loop_base: (!looped).then_some(0),
                     loop_modifier: (!looped).then_some(0x10),
+                    ..Default::default()
                 },
                 factories,
             )?;
@@ -3388,6 +3389,7 @@ mod tests {
                         },
                         loop_base: Some(0),
                         loop_modifier: Some(0x10),
+                        ..Default::default()
                     },
                 )
                 .unwrap();
@@ -3559,6 +3561,7 @@ mod tests {
                     },
                     loop_base: Some(0),
                     loop_modifier: Some(0x10),
+                    ..Default::default()
                 },
             )
             .unwrap();

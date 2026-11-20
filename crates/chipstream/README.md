@@ -173,6 +173,10 @@ let mdx = MdxSequencer::new(
 
 For VGM, `VgmSequencerOptions` can also override the header's `loop_base` and
 `loop_modifier`; `None` preserves the respective header value.
+Its `pwm_compatibility` option enables a malformed-rip workaround by default;
+set it to `false` to disable the heuristic. The pre-render
+`set_pwm_compatibility` method can override this setting and is also available
+for generator sources.
 
 `new` accepts parsed documents, while `from_vgm` accepts file bytes. Both have
 `_with_factories` variants for custom chip factories.

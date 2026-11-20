@@ -50,6 +50,7 @@ fn construction_options_apply_to_all_file_and_document_paths() {
             },
             loop_base,
             loop_modifier,
+            ..Default::default()
         };
         let mut players = [
             VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 64, options).unwrap(),

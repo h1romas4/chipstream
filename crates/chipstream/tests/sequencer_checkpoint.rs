@@ -180,6 +180,7 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
             },
             loop_modifier: Some(0x10),
             loop_base: Some(0),
+            ..Default::default()
         },
     )
     .unwrap();

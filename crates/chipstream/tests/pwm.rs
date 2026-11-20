@@ -194,6 +194,77 @@ fn vgm_bad_rip_workaround_triggers_on_32nd_non_control_write() {
 }
 
 #[test]
+fn pwm_compatibility_option_applies_to_all_vgm_constructors_and_checkpoints() {
+    use chipstream::sequencer::ChipFactoryRegistry;
+
+    let document = pwm_rip(None, 32);
+    let bytes: Vec<u8> = document.clone().into();
+    let options = VgmSequencerOptions {
+        pwm_compatibility: false,
+        ..Default::default()
+    };
+    let mut players = [
+        VgmSequencer::new(document.clone(), 44_100, 64, options).unwrap(),
+        VgmSequencer::new_with_factories(document, 44_100, 64, options, ChipFactoryRegistry::new())
+            .unwrap(),
+        VgmSequencer::from_vgm(bytes.clone(), 44_100, 64, options).unwrap(),
+        VgmSequencer::from_vgm_with_factories(
+            bytes,
+            44_100,
+            64,
+            options,
+            ChipFactoryRegistry::new(),
+        )
+        .unwrap(),
+    ];
+    for player in &mut players {
+        let checkpoint = player.checkpoint().unwrap();
+        let (audio, events) = render_events(player);
+        assert!(audio.iter().flatten().all(|sample| *sample == 0.0));
+        assert!(events.iter().all(|event| event.0 != 0));
+        player.restore_checkpoint(&checkpoint).unwrap();
+        assert_eq!(render_events(player), (audio, events));
+    }
+
+    let mut overridden = VgmSequencer::new(pwm_rip(None, 32), 44_100, 64, options).unwrap();
+    overridden.set_pwm_compatibility(true).unwrap();
+    let (audio, events) = render_events(&mut overridden);
+    assert!(audio.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(events.iter().any(|event| event.0 == 0 && event.1 == 5));
+}
+
+#[test]
+fn pwm_compatibility_setter_remains_available_for_generators() {
+    use chipstream::sequencer::GeneratorConfig;
+    use soundlog::vgm::command::VgmCommand;
+
+    #[derive(Debug)]
+    struct Commands(std::vec::IntoIter<VgmCommand>);
+    impl soundlog::VgmCommandGenerator for Commands {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Ok(self.0.next())
+        }
+    }
+
+    let document = pwm_rip(None, 32);
+    let config = GeneratorConfig {
+        header: document.header,
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator(
+        Box::new(Commands(document.commands.into_iter())),
+        config,
+        44_100,
+        64,
+    )
+    .unwrap();
+    player.set_pwm_compatibility(false).unwrap();
+    let (audio, events) = render_events(&mut player);
+    assert!(audio.iter().flatten().all(|sample| *sample == 0.0));
+    assert!(events.iter().all(|event| event.0 != 0));
+}
+
+#[test]
 fn pwm_workaround_respects_threshold_and_original_control_write() {
     for (control, count, expect_workaround) in [
         (None, 31, false),

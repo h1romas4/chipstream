@@ -325,6 +325,7 @@ mod tests {
                     },
                     loop_base: base,
                     loop_modifier: modifier,
+                    ..Default::default()
                 };
                 let mut player =
                     VgmSequencer::from_vgm(bytes.clone(), 44_100, 128, options).unwrap();

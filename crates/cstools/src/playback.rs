@@ -126,6 +126,7 @@ impl Player {
                         playback,
                         loop_base: options.loop_base,
                         loop_modifier: options.loop_modifier,
+                        ..Default::default()
                     },
                     factories,
                 )
