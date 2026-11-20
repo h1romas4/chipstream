@@ -4,9 +4,10 @@ use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, S
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, Instance, MdxSequencer, VgmSequencer, VgmSequencerError,
 };
-use soundlog::chip::{Ym2151Spec, Ym2612Spec};
-use soundlog::vgm::VgmBuilder;
+use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::WaitSamples;
+use soundlog::vgm::header::{ChipClock, ChipId};
+use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
 
@@ -94,6 +95,59 @@ fn state_callbacks_work_with_external_chip_factories() {
     ));
 }
 
+#[test]
+fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_579_545);
+    }
+    builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0xff });
+    builder.add_chip_write(Instance::Secondary, GameGearPsgSpec { value: 0x10 });
+    builder.add_vgm_command(WaitSamples(10));
+    builder.set_extra_header(VgmExtraHeader {
+        chip_clocks: vec![ChipClock::new(
+            ChipId::Sn76489,
+            Instance::Secondary,
+            4_000_000,
+        )],
+        ..Default::default()
+    });
+    let mut document = builder.finalize();
+    document.header.sn76489_flags.gamegear_stereo = true;
+    let bytes: Vec<u8> = document.into();
+    let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
+
+    for from_bytes in [false, true] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut factories = ChipFactoryRegistry::new();
+        let created = Arc::clone(&seen);
+        factories.register(Chip::Sn76489, move |config| {
+            created.lock().unwrap().push((
+                config.instance(),
+                config.clock(),
+                config.sn76489_stereo_used(),
+            ));
+            Ok(Box::new(FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            )))
+        });
+        if from_bytes {
+            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
+        } else {
+            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (Instance::Primary, 3_579_545, false),
+                (Instance::Secondary, 4_000_000, true),
+            ]
+        );
+    }
+}
+
 type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);
 type ScheduleTrace = (Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>);
 
@@ -115,7 +169,7 @@ impl FakeChip {
             Chip::Ym2203 | Chip::Ymf262 => 4,
             Chip::Ym2608 | Chip::Ym2610b => 3,
             Chip::Ymf278b => 6,
-            Chip::Ym2413 | Chip::Ym2151 | Chip::Ym2612 | Chip::Pwm => 2,
+            Chip::Ym2413 | Chip::Ym2151 | Chip::Ym2612 | Chip::Pwm | Chip::Sn76489 => 2,
             _ => 1,
         };
         Self {

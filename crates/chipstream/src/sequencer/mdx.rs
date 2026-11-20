@@ -10,12 +10,13 @@ use soundlog::mdx::convert::{
     to_vgm_stream_generator_with_loop_marker,
 };
 use soundlog::mdx::package::MdxPackage;
-use soundlog::vgm::VgmStream;
+use soundlog::vgm::{VgmHeader, VgmStream};
 
 use crate::audio::StereoBlock;
 
 use super::factory::ChipFactoryRegistry;
 use super::vgm::StreamFactory;
+use super::vgm::config::ChipConfiguration;
 use super::{
     Chip, Instance, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerCheckpoint,
     VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
@@ -284,11 +285,23 @@ impl<'a> MdxSequencer<'a> {
                 Ok((VgmStream::from_generator(generator), None))
             }
         });
-        let mut player = VgmSequencer::from_mdx_stream(
+        let mut header = VgmHeader {
+            ym2151_clock: options.ym2151_clock,
+            okim6258_clock: if has_pcm { options.okim6258_clock } else { 0 },
+            ..VgmHeader::default()
+        };
+        header.okim6258_flags.clock_divider = soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
+        let mut config = ChipConfiguration::from_header(&header, None, false);
+        if has_pcm {
+            // Legacy MDX PCM rate commands can switch between these clocks.
+            for clock in [4_000_000_u32, 8_000_000_u32] {
+                config.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
+            }
+        }
+        let mut player = VgmSequencer::from_stream(
             VgmStream::from_generator(generator),
             stream_factory,
-            options.ym2151_clock,
-            has_pcm.then_some(options.okim6258_clock),
+            config,
             output_rate,
             chunk_frames,
             factories,

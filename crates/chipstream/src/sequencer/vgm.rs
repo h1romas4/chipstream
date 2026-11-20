@@ -1,5 +1,6 @@
 //! VGM command playback, chip routing, and stereo audio rendering.
 
+pub(super) mod config;
 mod timing;
 
 use std::cell::RefCell;
@@ -42,6 +43,7 @@ use crate::fixed::{advance, divide_ratio};
 
 use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
+use config::{ChipConfiguration, VoiceConfig, chip_id};
 use event::{CallbackRegistry, PendingWriteEvent, VgmStateTracker};
 use timing::{Timing, TimingProfile};
 
@@ -325,15 +327,6 @@ fn observe_psg_stereo(stereo: &mut [bool; 2], command: &VgmCommand) {
     {
         stereo[*instance as usize] = true;
     }
-}
-
-struct VoiceConfig {
-    chip: Chip,
-    instance: Instance,
-    clock: u32,
-    dual: bool,
-    sn76489_stereo_used: bool,
-    vgm_input: bool,
 }
 
 struct Voice {
@@ -843,88 +836,23 @@ impl<'a> VgmSequencer<'a> {
         let data = data.into();
         let header = VgmHeader::from_bytes(&data)?;
         let extra = header.extra_header_from_bytes(&data)?;
-        let mut timing = Timing::new(&Self::supported_clocks(&header));
+        let mut config = ChipConfiguration::from_header(&header, extra.as_ref(), true);
         let scan_psg = header.sn76489_clock & 0x3fff_ffff != 0
             && header.sn76489_flags.gamegear_stereo
             && factories.contains(&Chip::Sn76489);
         let mut psg_stereo = [false; 2];
-        if timing.needs_scan() || scan_psg {
+        if config.timing.needs_scan() || scan_psg {
             visit_non_data_block_commands(&data, &header, |command| {
-                timing.observe(command);
+                config.timing.observe(command);
                 if scan_psg {
                     observe_psg_stereo(&mut psg_stereo, command);
                 }
             })?;
         }
-        let voices = Self::make_voices(
-            &header,
-            extra.as_ref(),
-            &timing,
-            psg_stereo,
-            true,
-            output_rate,
-            &mut factories,
-        )?;
+        config.set_psg_stereo(psg_stereo);
+        let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_vgm(data)?;
         Self::from_parts(stream, None, voices, output_rate, chunk_frames)
-    }
-
-    /// Extract clocks for supported chips, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 18] {
-        let misc = header.misc();
-        [
-            (Chip::Sn76489, header.sn76489_clock),
-            (Chip::SegaPcm, header.sega_pcm_clock),
-            (Chip::Pwm, header.pwm_clock),
-            (Chip::Ay8910, header.ay8910_clock),
-            (Chip::C140, header.c140_clock),
-            (Chip::Ym2413, header.ym2413_clock),
-            (
-                Chip::Ym2612,
-                misc.use_ym2413_clock_for_ym2612
-                    .unwrap_or(header.ym2612_clock),
-            ),
-            (
-                Chip::Ym2151,
-                misc.use_ym2413_clock_for_ym2151
-                    .unwrap_or(header.ym2151_clock),
-            ),
-            (Chip::Ym2203, header.ym2203_clock),
-            (Chip::Ym2608, header.ym2608_clock),
-            (Chip::Ym2610b, header.ym2610b_clock),
-            (Chip::Ym3812, header.ym3812_clock),
-            (Chip::Ym3526, header.ym3526_clock),
-            (Chip::Y8950, header.y8950_clock),
-            (Chip::Ymf262, header.ymf262_clock),
-            (Chip::Ymf278b, header.ymf278b_clock),
-            (Chip::Okim6258, header.okim6258_clock),
-            (Chip::Okim6295, header.okim6295_clock),
-        ]
-    }
-
-    /// Map a supported sequencer chip to its VGM extra-header identifier.
-    fn chip_id(chip: &Chip) -> ChipId {
-        match chip {
-            Chip::Sn76489 => ChipId::Sn76489,
-            Chip::SegaPcm => ChipId::SegaPcm,
-            Chip::Pwm => ChipId::Pwm,
-            Chip::Ay8910 => ChipId::Ay8910,
-            Chip::C140 => ChipId::C140,
-            Chip::Ym2413 => ChipId::Ym2413,
-            Chip::Ym2612 => ChipId::Ym2612,
-            Chip::Ym2151 => ChipId::Ym2151,
-            Chip::Ym2203 => ChipId::Ym2203,
-            Chip::Ym2608 => ChipId::Ym2608,
-            Chip::Ym2610b => ChipId::Ym2610,
-            Chip::Ym3812 => ChipId::Ym3812,
-            Chip::Ym3526 => ChipId::Ym3526,
-            Chip::Y8950 => ChipId::Y8950,
-            Chip::Ymf262 => ChipId::Ymf262,
-            Chip::Ymf278b => ChipId::Ymf278b,
-            Chip::Okim6258 => ChipId::Okim6258,
-            Chip::Okim6295 => ChipId::Okim6295,
-            _ => unreachable!("only supported chips have sequencer voices"),
-        }
     }
 
     /// Construct a backend, routing matrix, and resampler for one chip instance.
@@ -942,10 +870,10 @@ impl<'a> VgmSequencer<'a> {
             clock,
             dual,
             sn76489_stereo_used,
-            vgm_input,
+            okim6258_dc_blocker,
         } = config;
         #[cfg(not(feature = "okim6258"))]
-        let _ = vgm_input;
+        let _ = okim6258_dc_blocker;
         let profile = TimingProfile::for_chip(&chip);
         let clock = if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
@@ -1045,7 +973,7 @@ impl<'a> VgmSequencer<'a> {
                         OutputBits::Bits10
                     });
                     let stream = Okim6258Stream::new(oki).with_direct_write_queue();
-                    Box::new(if vgm_input {
+                    Box::new(if okim6258_dc_blocker {
                         stream.with_dc_blocker()
                     } else {
                         stream
@@ -1087,7 +1015,7 @@ impl<'a> VgmSequencer<'a> {
                 }
             };
         let global = volume::global_gain(header.volume_modifier);
-        let id = Self::chip_id(&chip);
+        let id = chip_id(&chip);
         let has_ym2612 = header
             .misc()
             .use_ym2413_clock_for_ym2612
@@ -1197,15 +1125,16 @@ impl<'a> VgmSequencer<'a> {
         mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
-        let mut timing = Timing::new(&Self::supported_clocks(&document.header));
+        let mut config =
+            ChipConfiguration::from_header(&document.header, document.extra_header.as_ref(), true);
         let scan_psg = document.header.sn76489_clock & 0x3fff_ffff != 0
             && document.header.sn76489_flags.gamegear_stereo
             && factories.contains(&Chip::Sn76489);
         let mut psg_stereo = [false; 2];
-        if timing.needs_scan() || scan_psg {
+        if config.timing.needs_scan() || scan_psg {
             let mut psg_ended = false;
             for command in &document.commands {
-                timing.observe(command);
+                config.timing.observe(command);
                 if matches!(command, VgmCommand::EndOfData(_)) {
                     psg_ended = true;
                 }
@@ -1214,52 +1143,23 @@ impl<'a> VgmSequencer<'a> {
                 }
             }
         }
-        let voices = Self::make_voices(
-            &document.header,
-            document.extra_header.as_ref(),
-            &timing,
-            psg_stereo,
-            true,
-            output_rate,
-            &mut factories,
-        )?;
+        config.set_psg_stereo(psg_stereo);
+        let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_document(document);
         Self::from_parts(stream, None, voices, output_rate, chunk_frames)
     }
 
-    /// Create a sequencer for an MDX-generated stream using a synthesized header.
-    pub(super) fn from_mdx_stream(
+    /// Create a sequencer from a stream and prepared chip configuration.
+    pub(super) fn from_stream(
         stream: VgmStream,
         stream_factory: StreamFactory,
-        ym2151_clock: u32,
-        okim6258_clock: Option<u32>,
+        config: ChipConfiguration<'_>,
         output_rate: u32,
         chunk_frames: usize,
         mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
-        let mut header = VgmHeader {
-            ym2151_clock,
-            okim6258_clock: okim6258_clock.unwrap_or(0),
-            ..VgmHeader::default()
-        };
-        header.okim6258_flags.clock_divider = soundlog::mdx::pcm_mixer::PCM8_OKIM6258_CLOCK_DIVIDER;
-        let mut timing = Timing::new(&Self::supported_clocks(&header));
-        if okim6258_clock.is_some() {
-            // Legacy MDX PCM rate commands can switch between these clocks.
-            for clock in [4_000_000_u32, 8_000_000_u32] {
-                timing.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
-            }
-        }
-        let voices = Self::make_voices(
-            &header,
-            None,
-            &timing,
-            [false; 2],
-            false,
-            output_rate,
-            &mut factories,
-        )?;
+        let voices = Self::make_voices(config, output_rate, &mut factories)?;
         Self::from_parts(
             stream,
             Some(stream_factory),
@@ -1280,51 +1180,25 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
-    /// Create voices for each present chip and enabled instance in the header.
+    /// Create voices from the prepared per-instance settings.
     fn make_voices(
-        header: &VgmHeader,
-        extra: Option<&VgmExtraHeader>,
-        timing: &Timing,
-        psg_stereo: [bool; 2],
-        vgm_input: bool,
+        config: ChipConfiguration<'_>,
         output_rate: u32,
         factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
         let mut voices = Vec::new();
-        for (chip, raw) in Self::supported_clocks(header) {
-            if raw & 0x3fff_ffff == 0 {
+        for voice in config.voices {
+            if voice.chip == Chip::Ay8910 && !factories.contains(&voice.chip) {
                 continue;
             }
-            if chip == Chip::Ay8910 && !factories.contains(&chip) {
-                continue;
-            }
-            for instance in [Instance::Primary, Instance::Secondary] {
-                if instance == Instance::Secondary && raw & 0x4000_0000 == 0 {
-                    continue;
-                }
-                let clock = extra
-                    .and_then(|extra| {
-                        extra.chip_clocks.iter().find(|entry| {
-                            entry.chip_id == Self::chip_id(&chip) && entry.instance == instance
-                        })
-                    })
-                    .map_or(raw & 0x3fff_ffff, |entry| entry.clock & 0x3fff_ffff);
-                voices.push(Self::make_voice(
-                    header,
-                    extra,
-                    VoiceConfig {
-                        chip: chip.clone(),
-                        instance,
-                        clock,
-                        dual: raw & 0x4000_0000 != 0,
-                        sn76489_stereo_used: chip == Chip::Sn76489 && psg_stereo[instance as usize],
-                        vgm_input,
-                    },
-                    timing,
-                    output_rate,
-                    factories,
-                )?);
-            }
+            voices.push(Self::make_voice(
+                config.header,
+                config.extra,
+                voice,
+                &config.timing,
+                output_rate,
+                factories,
+            )?);
         }
         Ok(voices)
     }
