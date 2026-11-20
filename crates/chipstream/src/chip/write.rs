@@ -1,4 +1,8 @@
 //! Typed chip register writes and conversions from soundlog VGM commands.
+//!
+//! [`ChipWrite`] associates a write specification with compatible backends.
+//! [`ChipRegisterWrite`] carries supported writes through dynamic dispatch,
+//! preserving chip-specific address widths and values.
 
 use soundlog::chip::{
     Ay8910Spec, C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec,

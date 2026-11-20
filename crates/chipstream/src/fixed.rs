@@ -1,4 +1,7 @@
 //! Fixed-point timing arithmetic using only 32-bit integer operations.
+//!
+//! These helpers calculate integer and Q0.32 fractional ratios for sequencer
+//! and resampler timing, reporting invalid inputs or overflow with `None`.
 
 /// Double a remainder, add a bit, and report a carry past the divisor.
 fn double_remainder(value: u32, divisor: u32, bit: u32) -> (u32, bool) {

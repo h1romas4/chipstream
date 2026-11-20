@@ -1,4 +1,7 @@
 //! VGM header volume modifiers and per-chip gain calculation.
+//!
+//! Global and extra-header volumes are converted to linear gains alongside
+//! backend-specific balancing and YM2612 headroom adjustments.
 
 use soundlog::chip::Chip;
 use soundlog::vgm::command::Instance;

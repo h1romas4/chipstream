@@ -5,6 +5,16 @@
 //! typed register-write callbacks with optional chip-state tracking.
 //! Output is not clipped, and rendering may allocate.
 //!
+//! [`VgmSequencerOptions`] and [`MdxSequencerOptions`] configure playback;
+//! [`ChipFactoryRegistry`] can replace selected chip backends. Both sequencers
+//! expose native-output effects and checkpoint-based seeking. Duration scans
+//! through [`measure_vgm_duration_frames`] and [`measure_mdx_duration_frames`]
+//! are bounded and can return [`PlaybackDuration::Unknown`].
+//!
+//! VGM generators can supply commands lazily using [`GeneratorConfig`], but
+//! single-pass generators do not support checkpoints. After a rendering or
+//! checkpoint restore error, create a new sequencer.
+//!
 //! Render a VGM file containing a YM2151:
 //!
 //! ```no_run

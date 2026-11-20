@@ -2,6 +2,9 @@
 //! `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
 //! Copyright (c) David Haywood.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! [`Pwm`] models the 32X PWM channel FIFOs and register-controlled routing.
+//! It generates stereo output at the reference port's fixed native rate.
 
 use super::{ChipError, ChipRegisterWrite, SoundChip};
 use soundlog::chip::Chip;

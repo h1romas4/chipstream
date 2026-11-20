@@ -1,4 +1,8 @@
 //! Device timing metadata and generic clock-range collection.
+//!
+//! Timing profiles define write pacing and dynamic-clock register layouts.
+//! Observed or declared clock changes provide conservative native sample-rate
+//! bounds for resampler construction.
 
 use soundlog::chip::Chip;
 use soundlog::vgm::command::{Instance, VgmCommand};

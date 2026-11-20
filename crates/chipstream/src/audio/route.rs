@@ -1,4 +1,8 @@
 //! Capturing sound chip output as consistently configured native blocks.
+//!
+//! [`ChipCapture`] generates samples into caller-owned storage and returns a
+//! [`NativeBlock`] carrying the chip type, rate, channel count, and optional
+//! stereo mute. Routing and sample-rate conversion are separate stages.
 
 use std::error::Error;
 use std::fmt;

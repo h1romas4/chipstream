@@ -1,4 +1,8 @@
 //! Incremental MDX playback and stereo audio rendering.
+//!
+//! [`MdxSequencer`] drives a soundlog MDX command generator through the shared
+//! VGM playback engine without retaining a converted VGM. The caller supplies
+//! optional PDX data; playback with PDX requires the `okim6258` feature.
 
 use std::borrow::Cow;
 use std::error::Error;

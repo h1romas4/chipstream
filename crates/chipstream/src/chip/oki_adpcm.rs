@@ -2,6 +2,10 @@
 //! `70743c6fb2602a5c2666c679b618706eabfca2ad`.
 //! Copyright (c) Barry Rodewald.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! The OKIM6258 and OKIM6295 implementations share the predictor difference
+//! table. The `okim6258` feature also exposes a stateful 4-bit encoder and
+//! decoder for use independently of a chip.
 
 pub(super) const INDEX_SHIFT: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
 

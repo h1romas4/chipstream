@@ -6,6 +6,10 @@
 //! The 12-bit predictor and DAC output precision are modeled separately;
 //! unlike the referenced MAME revision, 10-bit output does not clamp the
 //! predictor to 10 bits.
+//!
+//! [`Okim6258`] models register-controlled decoding and direct data-latch
+//! writes. Ordered DAC-stream delivery is handled separately by
+//! [`super::Okim6258Stream`].
 
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;

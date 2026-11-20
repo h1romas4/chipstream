@@ -1,4 +1,8 @@
-//! In-place stereo effects, including gain and balance.
+//! In-place native-output and stereo effects.
+//!
+//! [`NativeEffect`] processes one chip output before stereo routing, while
+//! [`StereoEffect`] processes a stereo block. [`Gain`] implements both;
+//! [`StereoBalance`] attenuates either side of a stereo block.
 
 use crate::chip::SampleRate;
 

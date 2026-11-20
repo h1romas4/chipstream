@@ -1,4 +1,8 @@
 //! Yamaha chip emulation backed by `ymfm-sys` and its external callbacks.
+//!
+//! [`YmfmChip`] wraps supported Yamaha backends and provides an optional
+//! AY-compatible YM2149 approximation. External memory and other callbacks
+//! can be supplied through [`YmfmChip::with_handler`].
 
 use soundlog::chip::Chip;
 use ymfm_sys::ffi::{self, ChipType};

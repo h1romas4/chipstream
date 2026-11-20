@@ -1,4 +1,8 @@
 //! User-supplied chip factories for replacing built-in sequencer backends.
+//!
+//! [`ChipFactoryRegistry`] selects factories by chip type and passes each
+//! instance's effective configuration through [`ChipFactoryConfig`]. Optional
+//! factories can decline an instance; factory errors are propagated.
 
 use std::collections::HashMap;
 

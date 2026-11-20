@@ -2,6 +2,9 @@
 //! `92ffd8d0269cd49b0ef256cd3912269387f8d318`.
 //! Copyright (c) Mirko Buffoni and Aaron Giles.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! [`Okim6295`] implements four ADPCM voices with separately loaded sample ROM.
+//! Register writes control playback, ROM banking, clock, and pin 7 selection.
 
 use super::oki_adpcm::{INDEX_SHIFT, difference_table};
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data};

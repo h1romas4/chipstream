@@ -1,4 +1,9 @@
 //! Stereo PCM blocks, native-output conversion matrices, and audio errors.
+//!
+//! [`StereoBlock`] owns finite left/right frames and their sample rate.
+//! [`StereoMatrix`] maps native chip outputs into those frames without
+//! guessing channel layouts or normalization. [`AudioError`] reports invalid
+//! metadata and processing failures.
 
 use std::error::Error;
 use std::fmt;

@@ -2,6 +2,10 @@
 //! `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
 //! Copyright (c) Nicola Salmoria.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! [`Sn76496`] emulates SN76489-family tone and noise generation.
+//! [`Sn76496Config`] selects noise feedback, clock division, polarity, and
+//! optional Game Gear stereo routing.
 
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip};
 use soundlog::chip::Chip;

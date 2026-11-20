@@ -1,4 +1,9 @@
 //! Bounded playback-duration measurement without generating PCM audio.
+//!
+//! The VGM and MDX scanners advance their command streams using playback
+//! options and convert waits to output frames. [`PlaybackDuration`] distinguishes
+//! finite results, observed unbounded VGM loops, and scans that cannot
+//! determine a duration within their limits.
 
 use soundlog::mdx::convert::{
     MdxLoopMarker, MdxToVgmOptions, to_vgm_stream_generator,

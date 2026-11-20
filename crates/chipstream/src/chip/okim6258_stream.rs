@@ -1,4 +1,8 @@
 //! Ordered ADPCM stream delivery for an OKIM6258.
+//!
+//! [`Okim6258Stream`] wraps the chip to queue stream bytes at its two-sample
+//! decoding cadence. Direct writes can optionally share the queue, and an
+//! optional DC blocker filters output without modifying decoder state.
 
 use std::collections::VecDeque;
 

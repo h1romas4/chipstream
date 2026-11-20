@@ -1,4 +1,9 @@
 //! Typed register-write callbacks and state tracking during sequencer playback.
+//!
+//! The callback registry maps typed observers and filters to dynamic chip
+//! writes. Observers and state trackers receive original writes, while filters
+//! transform writes before they reach a backend. Events are buffered for
+//! delivery at their output-frame positions.
 
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};

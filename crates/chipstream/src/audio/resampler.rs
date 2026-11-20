@@ -1,4 +1,9 @@
 //! Stateful band-limited sample-rate conversion for stereo audio.
+//!
+//! [`StereoResampler`] accepts a configured range of native input rates and
+//! retains filter history across blocks. Its output length varies with input
+//! rate and lookahead; call [`StereoResampler::finish`] to drain a finite
+//! stream and [`StereoResampler::reset`] before reuse.
 
 use std::collections::VecDeque;
 use std::f32::consts::PI;

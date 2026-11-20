@@ -2,6 +2,9 @@
 //! `70743c6fb2602a5c2666c679b618706eabfca2ad`.
 //! Copyright (c) Hiromitsu Shioya and Olivier Galibert.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! [`SegaPcm`] provides 16 PCM voices, configurable ROM banking, and stereo
+//! native output. Sample ROM data is supplied separately from register writes.
 
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data};
 use soundlog::chip::Chip;

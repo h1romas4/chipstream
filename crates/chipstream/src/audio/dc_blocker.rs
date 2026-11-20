@@ -1,4 +1,8 @@
 //! First-order DC blocking for mono native-rate PCM.
+//!
+//! [`DcBlocker`] retains filter history across blocks and sample-rate changes.
+//! Use a separate instance for each mono channel and reset it between
+//! independent streams.
 
 use crate::chip::SampleRate;
 

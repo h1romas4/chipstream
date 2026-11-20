@@ -2,6 +2,9 @@
 //!
 //! VGZ input must be decompressed by the caller before probing. MDX input is
 //! normalized for playback, including supported compressed MDX bodies.
+//! [`probe_vgm_bytes_with_language`] selects between bilingual GD3 fields;
+//! [`probe_mdx_bytes`] extracts the MDX title. Results use [`TrackMetadata`],
+//! and inputs larger than 64 MiB are rejected.
 
 use std::error::Error;
 use std::fmt;

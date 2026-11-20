@@ -1,4 +1,12 @@
 //! VGM command playback, chip routing, and stereo audio rendering.
+//!
+//! [`VgmSequencer`] reads a parsed document, owned VGM bytes, or a lazy
+//! command generator. It schedules writes, renders chip instances at their
+//! native rates, and mixes resampled stereo blocks. Factories, write callbacks,
+//! effects, and checkpoints provide control over playback and seeking.
+//!
+//! Rendering can read ahead and allocate; it is not guaranteed real-time safe.
+//! Single-pass generators do not support checkpoints.
 
 pub(super) mod config;
 mod timing;

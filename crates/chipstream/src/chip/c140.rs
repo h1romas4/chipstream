@@ -2,6 +2,9 @@
 //! `1bc5484698bb746c6f9f7dae58b005d2472f1215`.
 //! Copyright (c) R. Belmont.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
+//!
+//! [`C140`] models 24 sample voices and supports the board variants selected
+//! by [`C140Type`]. Its sample ROM is supplied separately from register writes.
 
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data};
 use soundlog::chip::Chip;

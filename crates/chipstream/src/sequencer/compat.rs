@@ -1,4 +1,8 @@
 //! Compatibility handling for VGM PWM initialization.
+//!
+//! A per-instance state machine detects malformed rips that omit PWM channel
+//! initialization. It requests a synthetic control write once when the
+//! configured threshold is reached.
 
 /// Non-control writes that trigger the PWM initialization workaround.
 const WRITE_THRESHOLD: u8 = 32;

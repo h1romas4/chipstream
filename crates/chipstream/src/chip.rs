@@ -1,4 +1,15 @@
 //! Native sound-chip interfaces and implementations.
+//!
+//! [`SoundChip`] exposes native-rate sample generation and register writes;
+//! [`ChipWrite`] provides typed writes using soundlog specifications.
+//! [`YmfmChip`] supports the bundled Yamaha backends, while feature-gated
+//! implementations provide additional chips. Use [`ScheduledChip`] for
+//! backends that schedule writes instead of producing host PCM immediately.
+//!
+//! Native samples are interleaved `i32` values in a chip-specific layout and
+//! amplitude. [`crate::audio::ChipCapture`] preserves their rate and layout
+//! metadata for routing and resampling. For complete song playback, use the
+//! [`crate::sequencer`] module instead.
 
 #[cfg(feature = "c140")]
 mod c140;

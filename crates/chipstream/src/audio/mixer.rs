@@ -1,4 +1,7 @@
 //! Mixing aligned stereo blocks at a common sample rate.
+//!
+//! [`StereoMixer`] adds an input block to a destination with a linear gain.
+//! Callers must align frame counts and rates; mixing does not clip the result.
 
 use super::buffer::same_rate;
 use super::{AudioError, StereoBlock};

@@ -1,4 +1,8 @@
 //! Preparation of per-instance chip settings for sequencer initialization.
+//!
+//! Header clocks, flags, and optional extra-header overrides are translated
+//! into voice configurations and backend settings. Clock observations are
+//! passed to the timing module to determine resampler bounds.
 
 use soundlog::chip::Chip;
 use soundlog::vgm::command::Instance;

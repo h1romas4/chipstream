@@ -1,4 +1,8 @@
 //! Per-output and grouped stereo effects for sequencer voices.
+//!
+//! An effect rack applies native effects before routing and stereo effects
+//! after grouped outputs are mixed. Typed handles identify installed effects,
+//! and rack topology and effect state participate in checkpoint restoration.
 
 use std::any::Any;
 use std::error::Error;

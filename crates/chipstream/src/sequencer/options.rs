@@ -1,3 +1,8 @@
+//! Playback options shared by VGM and MDX sequencers.
+//!
+//! [`PlaybackOptions`] specifies loop count and fade duration. Fade durations
+//! are converted to VGM-rate samples before playback or duration measurement.
+
 use std::time::Duration;
 
 use soundlog::vgm::VGM_SAMPLE_RATE;
