@@ -1240,7 +1240,8 @@ mod playback_tests {
             }
             builder.add_vgm_command(WaitSamples(4410));
             let data: Vec<u8> = builder.finalize().into();
-            let mut reference = VgmSequencer::from_bytes(&data, 44_100, CHUNK_FRAMES).unwrap();
+            let mut reference =
+                VgmSequencer::from_vgm(data.as_slice(), 44_100, CHUNK_FRAMES).unwrap();
             reference.set_ym2608_rhythm_rom(instance, &rom).unwrap();
             let mut expected = Vec::new();
             while let Some(block) = reference.render().unwrap() {
@@ -1440,7 +1441,7 @@ mod playback_tests {
     #[test]
     fn producer_preserves_sequencer_pcm_and_reports_parse_errors() {
         let data = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
-        let mut reference = VgmSequencer::from_bytes(&data, 48_000, CHUNK_FRAMES).unwrap();
+        let mut reference = VgmSequencer::from_vgm(data.as_slice(), 48_000, CHUNK_FRAMES).unwrap();
         let mut expected = Vec::new();
         while let Some(block) = reference.render().unwrap() {
             expected.extend_from_slice(block.frames());

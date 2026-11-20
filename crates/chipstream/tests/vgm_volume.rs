@@ -336,7 +336,7 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
     let mut document = builder.finalize();
     document.header.volume_modifier = 0x20;
     let bytes: Vec<u8> = document.into();
-    let mut player = VgmSequencer::from_bytes(&bytes, 48_000, 256).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
     let first = player.render().unwrap().unwrap().frames().to_vec();
     assert_scaled(&first, &baseline[..first.len()], 1.0, 1.0);
     player

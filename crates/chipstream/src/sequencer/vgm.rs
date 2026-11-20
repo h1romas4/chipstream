@@ -835,22 +835,11 @@ fn replay_stream(
 }
 
 impl<'a> VgmSequencer<'a> {
-    /// Create a sequencer from a borrowed uncompressed VGM file.
-    ///
-    /// The bytes are copied into the stream. Use [`Self::from_vgm`] to pass
-    /// an owned `Vec<u8>` without that copy.
-    pub fn from_bytes(
-        data: &[u8],
-        output_rate: u32,
-        chunk_frames: usize,
-    ) -> Result<Self, VgmSequencerError> {
-        Self::from_vgm(data.to_vec(), output_rate, chunk_frames)
-    }
-
-    /// Create a sequencer from an owned uncompressed VGM file.
+    /// Create a sequencer from an uncompressed VGM file.
     ///
     /// Commands are parsed on demand. The file bytes remain in memory for
     /// looping; passing a `Vec<u8>` transfers its allocation to the stream.
+    /// Passing a borrowed byte slice copies it into an owned buffer.
     /// Decompress VGZ before calling this method. Sample data and audio buffers
     /// may allocate separately. GD3 metadata is not parsed or validated.
     ///

@@ -16,6 +16,17 @@ fn render_all(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
 }
 
 #[test]
+fn from_vgm_accepts_owned_and_borrowed_bytes() {
+    let bytes = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
+    let mut borrowed = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
+    let mut owned = VgmSequencer::from_vgm(bytes, 48_000, 256).unwrap();
+
+    let expected = render_all(&mut owned);
+    assert!(!expected.is_empty());
+    assert_eq!(render_all(&mut borrowed), expected);
+}
+
+#[test]
 fn current_sample_tracks_the_soundlog_command_position() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(4410));
@@ -104,7 +115,7 @@ fn supplied_vgm_examples_produce_stereo_audio() {
         ),
     ];
     for (name, data) in fixtures {
-        let mut player = VgmSequencer::from_bytes(data, 48_000, 512)
+        let mut player = VgmSequencer::from_vgm(*data, 48_000, 512)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let samples = render_all(&mut player);
         let document = VgmDocument::try_from(*data).unwrap();
@@ -352,7 +363,7 @@ fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
 #[cfg(feature = "sn76496")]
 fn sn76489_vgm_produces_audio() {
     let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");
-    let mut player = VgmSequencer::from_bytes(data, 44_100, 1000).unwrap();
+    let mut player = VgmSequencer::from_vgm(data.as_slice(), 44_100, 1000).unwrap();
     let audio = render_all(&mut player);
     assert!(!audio.is_empty());
     assert!(
@@ -462,7 +473,7 @@ fn dual_chip_and_independent_gains_survive_serialization() {
     }
     builder.add_vgm_command(WaitSamples(4000));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_bytes(&bytes, 48_000, 256).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
     player
         .set_gain(Chip::Okim6258, Instance::Primary, 0.0)
         .unwrap();
@@ -522,7 +533,7 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
     }
     builder.add_vgm_command(WaitSamples(4410));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_bytes(&bytes, 44_100, 128).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 128).unwrap();
     let audio = render_all(&mut player);
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut document_player = VgmSequencer::new(document, 44_100, 257).unwrap();
@@ -536,7 +547,7 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
 
 #[test]
 fn invalid_input_and_missing_end_are_reported() {
-    assert!(VgmSequencer::from_bytes(b"not vgm", 48_000, 100).is_err());
+    assert!(VgmSequencer::from_vgm(b"not vgm".as_slice(), 48_000, 100).is_err());
     let doc = VgmDocument::default();
     assert!(matches!(
         VgmSequencer::new(doc.clone(), 0, 100),
@@ -583,7 +594,7 @@ fn ym2612_pcm_dac_stream_is_expanded() {
         builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(15));
     }
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_bytes(&bytes, 48_000, 256).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
     let audio = render_all(&mut player);
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut document_player = VgmSequencer::new(document, 48_000, 257).unwrap();
