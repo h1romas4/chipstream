@@ -116,7 +116,14 @@ fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
     assert_eq!(player.position_frames(), position);
     player.remove_effect(&extra).unwrap();
     assert!(player.effect_mut(&extra).is_err());
-    player.restore_checkpoint(&checkpoint).unwrap();
+    assert!(matches!(
+        player.restore_checkpoint(&checkpoint),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
 }
 
 #[test]

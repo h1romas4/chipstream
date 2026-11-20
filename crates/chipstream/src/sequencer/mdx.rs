@@ -502,6 +502,9 @@ impl<'a> MdxSequencer<'a> {
     }
 
     /// Restore a checkpoint created by this MDX sequencer.
+    ///
+    /// Any restore error permanently prevents further playback or restoration;
+    /// create a new sequencer instead.
     pub fn restore_checkpoint(
         &mut self,
         checkpoint: &VgmSequencerCheckpoint,

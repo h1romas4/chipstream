@@ -620,12 +620,21 @@ fn nonfinite_effect_output_fails_rendering_explicitly() {
     player
         .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Invalid)
         .unwrap();
+    let checkpoint = player.checkpoint().unwrap();
     assert!(matches!(
         player.render(),
         Err(VgmSequencerError::Audio(AudioError::NonFiniteSample))
     ));
     assert!(matches!(
         player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+    assert!(matches!(
+        player.restore_checkpoint(&checkpoint),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+    assert!(matches!(
+        player.seek_to_frame(&checkpoint, 0),
         Err(VgmSequencerError::StreamFailed)
     ));
 }

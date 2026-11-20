@@ -118,7 +118,7 @@ pub enum VgmSequencerError {
     RomTooLarge,
     /// The command stream ended without an end command.
     UnexpectedEnd,
-    /// The sequencer cannot resume after a rendering error.
+    /// The sequencer cannot resume after a rendering or checkpoint restore error.
     StreamFailed,
     /// The playback duration exceeds supported limits.
     DurationOverflow,
@@ -201,7 +201,10 @@ impl fmt::Display for VgmSequencerError {
             Self::InvalidRomBlock => write!(f, "invalid VGM ROM/RAM block"),
             Self::RomTooLarge => write!(f, "VGM chip memory exceeds the supported size"),
             Self::UnexpectedEnd => write!(f, "VGM command stream ended without an end command"),
-            Self::StreamFailed => write!(f, "sequencer cannot continue after a rendering error"),
+            Self::StreamFailed => write!(
+                f,
+                "sequencer cannot continue after a rendering or checkpoint restore error"
+            ),
             Self::DurationOverflow => write!(f, "VGM playback duration exceeds supported limits"),
             Self::PwmCompatibilityConfigurationAfterPlayback => {
                 write!(f, "PWM compatibility must be configured before rendering")
@@ -662,7 +665,8 @@ impl Voice {
 /// while balancing against YM2612. These gains also apply to custom backends.
 ///
 /// PCM is not clipped or normalized. Rendering can allocate and is not
-/// guaranteed real-time safe. After a rendering error, create a new sequencer.
+/// guaranteed real-time safe. After a rendering or checkpoint restore error,
+/// create a new sequencer.
 pub struct VgmSequencer<'a> {
     stream: VgmStream,
     stream_factory: Option<StreamFactory>,
@@ -1927,7 +1931,23 @@ impl<'a> VgmSequencer<'a> {
     /// The command parser is recreated from the original source and advanced
     /// through the checkpoint's consumed commands. Chip synthesis and PCM
     /// rendering are not repeated for that prefix.
+    /// Any restore error permanently prevents further playback or restoration;
+    /// create a new sequencer instead.
     pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: &VgmSequencerCheckpoint,
+    ) -> Result<(), VgmSequencerError> {
+        if self.failed {
+            return Err(VgmSequencerError::StreamFailed);
+        }
+        let result = self.restore_checkpoint_inner(checkpoint);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn restore_checkpoint_inner(
         &mut self,
         checkpoint: &VgmSequencerCheckpoint,
     ) -> Result<(), VgmSequencerError> {
@@ -1964,43 +1984,13 @@ impl<'a> VgmSequencer<'a> {
             (None, None)
         };
         let stream = replacement.as_mut().unwrap_or(&mut self.stream);
-        if let Err(error) =
-            replay_stream(stream, checkpoint.stream_steps, &checkpoint.stream_settings)
-        {
-            if replacement.is_none() {
-                reset_replay_stream(
-                    &mut self.stream,
-                    self.initial_loop_base,
-                    self.initial_loop_modifier,
-                );
-                if replay_stream(&mut self.stream, self.stream_steps, &self.stream_settings)
-                    .is_err()
-                {
-                    self.failed = true;
-                }
-            }
-            return Err(error);
-        }
+        replay_stream(stream, checkpoint.stream_steps, &checkpoint.stream_settings)?;
 
         for (memory, saved) in unique_memories(&self.voices).iter().zip(&checkpoint.memory) {
             *memory.borrow_mut() = saved.clone();
         }
         for (voice, saved) in self.voices.iter_mut().zip(&checkpoint.voices) {
-            if let Err(error) = voice.route.chip_mut().restore_state(saved.state.as_ref()) {
-                if replacement.is_none() {
-                    reset_replay_stream(
-                        &mut self.stream,
-                        self.initial_loop_base,
-                        self.initial_loop_modifier,
-                    );
-                    if replay_stream(&mut self.stream, self.stream_steps, &self.stream_settings)
-                        .is_err()
-                    {
-                        self.failed = true;
-                    }
-                }
-                return Err(error.into());
-            }
+            voice.route.chip_mut().restore_state(saved.state.as_ref())?;
             voice.tracker = saved.tracker.clone();
             voice.matrix = saved.matrix.clone();
             voice.resampler.restore_state(&saved.resampler);
@@ -2062,6 +2052,9 @@ impl<'a> VgmSequencer<'a> {
         target: usize,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<(), VgmSequencerError> {
+        if self.failed {
+            return Err(VgmSequencerError::StreamFailed);
+        }
         if target < checkpoint.position_frames {
             return Err(VgmSequencerError::SeekTargetBeforeCheckpoint {
                 target,

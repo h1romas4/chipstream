@@ -907,45 +907,68 @@ fn mdx_factories_receive_the_effective_pcm_settings() {
 }
 
 #[test]
-fn failed_chip_restore_preserves_vgm_stream_position() {
+fn failed_chip_restore_prevents_playback_and_further_restores() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.register_chip(Chip::Ym2151, Instance::Secondary, 4_000_000);
     for _ in 0..10 {
         builder.add_vgm_command(WaitSamples(128));
     }
-    let bytes: Vec<u8> = builder.finalize().into();
-    let mut factories = ChipFactoryRegistry::new();
-    factories.register(Chip::Ym2151, |config| {
-        let mut chip = FakeChip::new(
-            config.chip().clone(),
-            config.clock(),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        chip.restore_fails = true;
-        Ok(Box::new(chip))
-    });
-    let mut player = VgmSequencer::from_vgm_with_factories(
-        bytes.clone(),
-        44_100,
-        64,
-        Default::default(),
-        factories,
-    )
-    .unwrap();
-    let mut expected = VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()).unwrap();
-    let checkpoint = player.checkpoint().unwrap();
-    for _ in 0..4 {
-        assert_eq!(player.render().unwrap(), expected.render().unwrap());
+    let document = builder.finalize();
+    for from_file in [false, true] {
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Ym2151, |config| {
+            let mut chip = FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            chip.restore_fails = config.instance() == Instance::Secondary;
+            Ok(Box::new(chip))
+        });
+        let mut player = if from_file {
+            VgmSequencer::from_vgm_with_factories(
+                Vec::<u8>::from(document.clone()),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+        } else {
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+        }
+        .unwrap();
+        let checkpoint = player.checkpoint().unwrap();
+        assert!(player.render().unwrap().is_some());
+        assert!(matches!(
+            player.restore_checkpoint(&checkpoint),
+            Err(VgmSequencerError::Chip(ChipError::InvalidStateSnapshot(
+                Chip::Ym2151
+            )))
+        ));
+        assert!(matches!(
+            player.render(),
+            Err(VgmSequencerError::StreamFailed)
+        ));
+        assert!(matches!(
+            player.checkpoint(),
+            Err(VgmSequencerError::StreamFailed)
+        ));
+        assert!(matches!(
+            player.restore_checkpoint(&checkpoint),
+            Err(VgmSequencerError::StreamFailed)
+        ));
+        assert!(matches!(
+            player.seek_to_frame(&checkpoint, 0),
+            Err(VgmSequencerError::StreamFailed)
+        ));
     }
-    let sample = player.current_sample();
-    let position = player.position_frames();
-    assert!(matches!(
-        player.restore_checkpoint(&checkpoint),
-        Err(VgmSequencerError::Chip(_))
-    ));
-    assert_eq!(player.current_sample(), sample);
-    assert_eq!(player.position_frames(), position);
-    assert_eq!(player.render().unwrap(), expected.render().unwrap());
 }
 
 #[test]
