@@ -153,6 +153,28 @@ impl StereoBlock {
     pub fn frames(&self) -> &[[f32; 2]] {
         &self.frames
     }
+
+    /// Transform frames using a reusable scratch buffer.
+    ///
+    /// The closure receives a copy of the frames and may change their values,
+    /// but not the frame count or sample rate. The transformed samples must be
+    /// finite. On error, the block is unchanged; closure-owned state is not
+    /// rolled back. The scratch buffer's contents are unspecified afterward
+    /// and can be reused for subsequent calls.
+    pub fn try_transform(
+        &mut self,
+        scratch: &mut Vec<[f32; 2]>,
+        transform: impl FnOnce(&mut [[f32; 2]]) -> Result<(), AudioError>,
+    ) -> Result<(), AudioError> {
+        scratch.clear();
+        scratch.extend_from_slice(&self.frames);
+        transform(scratch)?;
+        if scratch.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err(AudioError::NonFiniteSample);
+        }
+        std::mem::swap(&mut self.frames, scratch);
+        Ok(())
+    }
 }
 
 /// Explicit native-output-to-stereo coefficients, including amplitude scaling.

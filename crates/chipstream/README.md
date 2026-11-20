@@ -182,10 +182,10 @@ PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
 
 `measure_vgm_duration_frames` and `measure_mdx_duration_frames` take the same
-playback settings and return `PlaybackDuration::Finite`, `Unbounded`, or
-`Unknown`. Scans are bounded: an MDX loop that exceeds the scan limit, or a
-duration exceeding `u32::MAX` output frames, is `Unknown`. Playback itself is
-not limited by this measurement.
+sequencer options as playback and return `PlaybackDuration::Finite`,
+`Unbounded`, or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan
+limit, or a duration exceeding `u32::MAX` output frames, is `Unknown`.
+Playback itself is not limited by this measurement.
 
 ### Gain control
 
@@ -254,6 +254,29 @@ requires the same groups and effect order; it restores their state and pan.
 
 Stereo effects must preserve frame count and sample rate. Errors and non-finite
 output fail rendering. Effect tails are truncated at the source's end.
+
+For custom stereo effects, `StereoBlock::try_transform` uses a reusable
+scratch buffer and leaves the block unchanged on error:
+
+```rust
+use chipstream::audio::{AudioError, StereoBlock, StereoEffect};
+
+#[derive(Clone, Default)]
+struct SwapChannels {
+    scratch: Vec<[f32; 2]>,
+}
+
+impl StereoEffect for SwapChannels {
+    fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError> {
+        block.try_transform(&mut self.scratch, |frames| {
+            for frame in frames {
+                frame.swap(0, 1);
+            }
+            Ok(())
+        })
+    }
+}
+```
 
 Mutate effects between `render` calls with exclusive sequencer access. Changes
 affect newly captured PCM, not buffered audio or resampler history. Effects do

@@ -14,6 +14,47 @@ fn block(rate: u32, frames: Vec<[f32; 2]>) -> StereoBlock {
     StereoBlock::new(SampleRate::from_hz(rate), frames).unwrap()
 }
 
+#[test]
+fn transform_preserves_block_on_errors_and_reuses_scratch() {
+    let mut block = block(48_000, vec![[1.0, 2.0], [3.0, 4.0]]);
+    let mut scratch = Vec::new();
+    block
+        .try_transform(&mut scratch, |frames| {
+            for frame in frames {
+                frame.swap(0, 1);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(block.frames(), &[[2.0, 1.0], [4.0, 3.0]]);
+    let before = block.clone();
+
+    assert!(matches!(
+        block.try_transform(&mut scratch, |frames| {
+            frames[0] = [9.0, 9.0];
+            Err(AudioError::InvalidGain)
+        }),
+        Err(AudioError::InvalidGain)
+    ));
+    assert_eq!(block, before);
+    assert!(matches!(
+        block.try_transform(&mut scratch, |frames| {
+            frames[1][0] = f32::NAN;
+            Ok(())
+        }),
+        Err(AudioError::NonFiniteSample)
+    ));
+    assert_eq!(block, before);
+    block
+        .try_transform(&mut scratch, |frames| {
+            frames[0][0] = 7.0;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(block.frames(), &[[7.0, 1.0], [4.0, 3.0]]);
+    assert_eq!(block.sample_rate(), SampleRate::from_hz(48_000));
+}
+
 fn convert_all(src: &StereoBlock, output: u32, chunk: usize) -> Vec<[f32; 2]> {
     let input_rate = src.sample_rate().floor_hz();
     let mut resampler = StereoResampler::new(output, input_rate, input_rate, chunk).unwrap();

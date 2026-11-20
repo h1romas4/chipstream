@@ -14,7 +14,10 @@ pub trait NativeEffect {
     fn process_native(&mut self, samples: &mut [f32], rate: SampleRate) -> Result<(), AudioError>;
 }
 
-/// An in-place stereo PCM effect.
+/// A stereo PCM effect.
+///
+/// [`StereoBlock::try_transform`] provides reusable scratch space and preserves
+/// the block if processing fails.
 pub trait StereoEffect {
     /// Process one block; on error the block is unchanged.
     fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError>;

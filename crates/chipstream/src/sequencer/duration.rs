@@ -12,7 +12,7 @@ use soundlog::vgm::stream::{StreamResult, VgmStream};
 
 use crate::fixed::divide_ratio;
 
-use super::{MdxSequencerError, MdxSequencerOptions, PlaybackOptions, VgmSequencerError};
+use super::{MdxSequencerError, MdxSequencerOptions, VgmSequencerError, VgmSequencerOptions};
 
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
 const MAX_UNLIMITED_MDX_DURATION_COMMANDS: u32 = 100_000;
@@ -40,26 +40,33 @@ impl PlaybackDuration {
 
 /// Measure VGM playback in output frames without rendering audio.
 ///
-/// `data` must contain uncompressed VGM bytes. If `options.loop_count` is `None`, a
-/// VGM that reaches a loop point is unbounded; one without a loop point is
-/// measured to its natural end. A scan that reaches its limit or exceeds
-/// `u32::MAX` output frames is unknown.
+/// `data` must contain uncompressed VGM bytes. Pass the same options used for
+/// playback, including any loop base and modifier overrides. If
+/// `options.playback.loop_count` is `None`, a VGM that reaches a loop point is
+/// unbounded; one without a loop point is measured to its natural end. A scan
+/// that reaches its limit or exceeds `u32::MAX` output frames is unknown.
 pub fn measure_vgm_duration_frames(
     data: &[u8],
     output_rate: u32,
-    options: PlaybackOptions,
+    options: VgmSequencerOptions,
 ) -> Result<PlaybackDuration, VgmSequencerError> {
-    let fadeout_samples = super::options::fadeout_samples(options.fadeout)?;
+    let fadeout_samples = super::options::fadeout_samples(options.playback.fadeout)?;
     let header = VgmHeader::from_bytes(data)?;
     let mut stream = VgmStream::from_vgm(data.to_vec())?;
     let command_start = VgmHeader::command_start(header.version, header.data_offset);
     let loop_position = usize::try_from(header.loop_offset)
         .ok()
         .and_then(|offset| 0x1c_usize.checked_add(offset));
-    let detect_loop = options.loop_count.is_none()
+    let detect_loop = options.playback.loop_count.is_none()
         && header.loop_offset != 0
         && loop_position.is_some_and(|position| position >= command_start && position < data.len());
-    stream.set_loop_count(options.loop_count);
+    stream.set_loop_count(options.playback.loop_count);
+    if let Some(base) = options.loop_base {
+        stream.set_loop_base(base);
+    }
+    if let Some(modifier) = options.loop_modifier {
+        stream.set_loop_modifier(modifier);
+    }
     stream.set_fadeout_samples(
         fadeout_samples
             .filter(|samples| *samples > 0)
@@ -236,7 +243,7 @@ mod tests {
         let bytes: Vec<u8> = builder.finalize().into();
 
         assert_eq!(
-            measure_vgm_duration_frames(&bytes, u32::MAX, PlaybackOptions::default()).unwrap(),
+            measure_vgm_duration_frames(&bytes, u32::MAX, VgmSequencerOptions::default()).unwrap(),
             PlaybackDuration::Unknown
         );
     }
@@ -275,26 +282,61 @@ mod tests {
         builder.add_vgm_command(WaitSamples(3_000));
         builder.set_loop_index(1);
         let bytes: Vec<u8> = builder.finalize().into();
-        let options = PlaybackOptions {
-            loop_count: Some(2),
-            fadeout: Some(std::time::Duration::from_millis(50)),
-        };
-        let mut player = VgmSequencer::from_vgm(
-            bytes.clone(),
-            48_000,
-            512,
-            VgmSequencerOptions {
-                playback: options,
-                ..Default::default()
+        let options = VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                fadeout: Some(std::time::Duration::from_millis(50)),
             },
-        )
-        .unwrap();
+            ..Default::default()
+        };
+        let mut player = VgmSequencer::from_vgm(bytes.clone(), 48_000, 512, options).unwrap();
         let rendered = rendered_frames(|| player.render());
 
         assert_eq!(
             measure_vgm_duration_frames(&bytes, 48_000, options).unwrap(),
             PlaybackDuration::Finite(rendered)
         );
+    }
+
+    #[test]
+    fn vgm_duration_matches_header_and_loop_overrides() {
+        let mut builder = VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(400));
+        builder.set_loop_index(0);
+        let mut document = builder.finalize();
+        document.header.loop_base = 1;
+        document.header.loop_modifier = 0x20;
+        let bytes: Vec<u8> = document.into();
+
+        for (base, modifier, expected) in [
+            (None, None, 1_200),
+            (Some(0), None, 1_600),
+            (None, Some(0x10), 400),
+            (Some(0), Some(0x10), 800),
+            (Some(-1), None, 2_000),
+        ] {
+            for fadeout in [None, Some(std::time::Duration::from_millis(10))] {
+                let options = VgmSequencerOptions {
+                    playback: PlaybackOptions {
+                        loop_count: Some(2),
+                        fadeout,
+                    },
+                    loop_base: base,
+                    loop_modifier: modifier,
+                };
+                let mut player =
+                    VgmSequencer::from_vgm(bytes.clone(), 44_100, 128, options).unwrap();
+                let rendered = rendered_frames(|| player.render());
+                if fadeout.is_none() {
+                    assert_eq!(rendered, expected);
+                }
+                assert_eq!(
+                    measure_vgm_duration_frames(&bytes, 44_100, options).unwrap(),
+                    PlaybackDuration::Finite(rendered),
+                    "base={base:?}, modifier={modifier:?}, fadeout={fadeout:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -327,9 +369,12 @@ mod tests {
             measure_vgm_duration_frames(
                 &bytes,
                 48_000,
-                PlaybackOptions {
-                    loop_count: None,
-                    fadeout: None
+                VgmSequencerOptions {
+                    playback: PlaybackOptions {
+                        loop_count: None,
+                        fadeout: None,
+                    },
+                    ..Default::default()
                 }
             )
             .unwrap(),
@@ -339,9 +384,12 @@ mod tests {
             measure_vgm_duration_frames(
                 &bytes,
                 0,
-                PlaybackOptions {
-                    loop_count: None,
-                    fadeout: None
+                VgmSequencerOptions {
+                    playback: PlaybackOptions {
+                        loop_count: None,
+                        fadeout: None,
+                    },
+                    ..Default::default()
                 }
             ),
             Err(super::VgmSequencerError::InvalidSampleRate)
@@ -357,9 +405,12 @@ mod tests {
             measure_vgm_duration_frames(
                 &bytes,
                 48_000,
-                PlaybackOptions {
-                    loop_count: None,
-                    fadeout: None
+                VgmSequencerOptions {
+                    playback: PlaybackOptions {
+                        loop_count: None,
+                        fadeout: None,
+                    },
+                    ..Default::default()
                 }
             )
             .unwrap(),
@@ -402,20 +453,14 @@ mod tests {
         builder.add_vgm_command(WaitSamples(1_000));
         builder.set_loop_index(0);
         let bytes: Vec<u8> = builder.finalize().into();
-        let options = PlaybackOptions {
-            loop_count: Some(2),
-            fadeout: Some(Duration::from_millis(50)),
-        };
-        let mut player = VgmSequencer::from_vgm(
-            bytes.clone(),
-            48_000,
-            512,
-            VgmSequencerOptions {
-                playback: options,
-                ..Default::default()
+        let options = VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                fadeout: Some(Duration::from_millis(50)),
             },
-        )
-        .unwrap();
+            ..Default::default()
+        };
+        let mut player = VgmSequencer::from_vgm(bytes.clone(), 48_000, 512, options).unwrap();
         let rendered = rendered_frames(|| player.render());
         assert_eq!(
             measure_vgm_duration_frames(&bytes, 48_000, options).unwrap(),

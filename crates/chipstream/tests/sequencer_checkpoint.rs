@@ -33,18 +33,21 @@ fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
     #[derive(Clone)]
     struct StereoEcho {
         previous: [f32; 2],
+        scratch: Vec<[f32; 2]>,
     }
     impl StereoEffect for StereoEcho {
         fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError> {
-            let mut frames = Vec::with_capacity(block.frames().len());
-            for frame in block.frames() {
-                frames.push([
-                    frame[0] + self.previous[0] * 0.25,
-                    frame[1] + self.previous[1] * 0.25,
-                ]);
-                self.previous = *frame;
-            }
-            *block = StereoBlock::new(block.sample_rate(), frames)?;
+            let mut previous = self.previous;
+            block.try_transform(&mut self.scratch, |frames| {
+                for frame in frames {
+                    let current = *frame;
+                    frame[0] += previous[0] * 0.25;
+                    frame[1] += previous[1] * 0.25;
+                    previous = current;
+                }
+                Ok(())
+            })?;
+            self.previous = previous;
             Ok(())
         }
     }
@@ -63,7 +66,13 @@ fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
         .add_group_effect(&group, StereoBalance::new(0.0).unwrap())
         .unwrap();
     let stereo_echo = player
-        .add_group_effect(&group, StereoEcho { previous: [0.0; 2] })
+        .add_group_effect(
+            &group,
+            StereoEcho {
+                previous: [0.0; 2],
+                scratch: Vec::new(),
+            },
+        )
         .unwrap();
     player
         .set_output_pan(Chip::Ym2203, Instance::Primary, 1, Some(-0.2))

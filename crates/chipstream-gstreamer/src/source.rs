@@ -1520,8 +1520,12 @@ fn load_sequencer_with_factories(
                 bytes,
                 extension.eq_ignore_ascii_case("vgz") || extension.eq_ignore_ascii_case("gz"),
             )?;
+            let options = VgmSequencerOptions {
+                playback,
+                ..Default::default()
+            };
             let duration_frames =
-                measure_vgm_duration_frames(&bytes, settings.sample_rate, playback)
+                measure_vgm_duration_frames(&bytes, settings.sample_rate, options)
                     .map_err(|error| format!("failed to measure VGM duration: {error}"))?
                     .finite_frames()
                     .map(u64::from);
@@ -1538,10 +1542,7 @@ fn load_sequencer_with_factories(
                 bytes,
                 settings.sample_rate,
                 settings.chunk_frames,
-                VgmSequencerOptions {
-                    playback,
-                    ..Default::default()
-                },
+                options,
                 factories,
             )
             .map_err(|error| format!("failed to create VGM sequencer: {error}"))?;
@@ -2868,7 +2869,7 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../soundlog/assets/vgm/sn76489_a4.vgm");
         let data = fs::read(&path).unwrap();
         let expected_frames =
-            measure_vgm_duration_frames(&data, DEFAULT_SAMPLE_RATE, PlaybackOptions::default())
+            measure_vgm_duration_frames(&data, DEFAULT_SAMPLE_RATE, VgmSequencerOptions::default())
                 .unwrap()
                 .finite_frames()
                 .unwrap();
