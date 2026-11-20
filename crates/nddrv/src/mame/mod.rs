@@ -6,7 +6,7 @@ mod protocol;
 #[cfg(all(test, unix))]
 mod tests;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use chipstream::sequencer::{Chip, Instance};
+use chipstream_ndsif::{NdsifNd7Validator, NdsifRoute};
 use ndsif::{Command, OrderedLiveRecord, OrderedLiveWrite, RegisterWrite, WriteId};
 use ndsif_transport::{
     NdsifOrderedLiveSession, NdsifRegisterEvent, NdsifSerialTransport, NdsifTransport,
@@ -24,7 +26,7 @@ use ndsif_transport::{
 use crate::device::DeviceHandle;
 pub use install::install as install_plugins;
 pub use protocol::Plugin;
-use protocol::{Decoder, Event};
+use protocol::{Decoder, Event, Nd7Route};
 
 pub const ADDRESS: &str = "127.0.0.1:32151";
 const POLL: Duration = Duration::from_millis(20);
@@ -130,14 +132,16 @@ fn run(
                 }
                 transport.reset_for_reuse()?;
             }
-            Plugin::NanoDrive8 => {
+            Plugin::NanoDrive7 | Plugin::NanoDrive8 => {
                 clock::mame_executable(mame_home.context("Set MAME HOME in Routing > MAME")?)?;
-                if !transport.capabilities().iter().any(|entry| {
-                    entry.write_id == WriteId::YM2151.get()
-                        && entry.instance == 0
-                        && entry.page == 0
-                        && entry.features & 1 != 0
-                }) {
+                if plugin == Plugin::NanoDrive8
+                    && !transport.capabilities().iter().any(|entry| {
+                        entry.write_id == WriteId::YM2151.get()
+                            && entry.instance == 0
+                            && entry.page == 0
+                            && entry.features & 1 != 0
+                    })
+                {
                     bail!("NanoDrive does not advertise primary YM2151 writes");
                 }
             }
@@ -162,6 +166,21 @@ fn run(
                 Plugin::NanoDrive6 => {
                     nd6_connection(&mut transport, &listener, &mut stream, stop, events)
                 }
+                Plugin::NanoDrive7 => nd7_connection(
+                    &mut transport,
+                    &listener,
+                    &mut stream,
+                    stop,
+                    events,
+                    |name, routes, stop| {
+                        clock::nd7_clocks(
+                            mame_home.context("Set MAME HOME in Routing > MAME")?,
+                            name,
+                            routes,
+                            stop,
+                        )
+                    },
+                ),
                 Plugin::NanoDrive8 => nd8_connection(
                     &mut transport,
                     &listener,
@@ -499,6 +518,190 @@ impl ClockSkip {
             dac && skipping && allowance == u64::from(delta),
         )
     }
+}
+
+fn nd7_connection(
+    transport: &mut NdsifSerialTransport,
+    listener: &TcpListener,
+    stream: &mut TcpStream,
+    stop: &AtomicBool,
+    events: &Sender<ServerEvent>,
+    mut query_clocks: impl FnMut(&str, &[Nd7Route], &AtomicBool) -> Result<Vec<Result<u32>>>,
+) -> Result<()> {
+    let mut input = Input::new(Plugin::NanoDrive7);
+    let mut routes = Vec::<(WriteId, u8, u32)>::new();
+    let mut enabled = HashSet::new();
+    let mut declared = HashSet::new();
+    let mut initialized = false;
+    while let Some(event) = input.next(listener, stream, stop)? {
+        match event {
+            Event::Nd7Machine {
+                name,
+                routes: requested,
+                ..
+            } => {
+                if initialized {
+                    transport
+                        .flush_scheduled_until(0, 44_100)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                initialized = false;
+                routes.clear();
+                enabled.clear();
+                declared.clear();
+                let clocks = query_clocks(&name, &requested, stop)?;
+                if clocks.len() != requested.len() {
+                    bail!("MAME clock query returned an invalid route count");
+                }
+                let mut validator = NdsifNd7Validator::default();
+                for (route, clock) in requested.iter().zip(clocks) {
+                    declared.insert((route.write_id, route.instance));
+                    if route.write_id == 0x5e {
+                        declared.insert((0x5f, route.instance));
+                    }
+                    let result = (|| -> Result<()> {
+                        let hz = clock?;
+                        let id = WriteId::try_from(route.write_id)?;
+                        let chip = match route.write_id {
+                            0x51 => Chip::Ym2413,
+                            0x55 => Chip::Ym2203,
+                            0x5a => Chip::Ym3812,
+                            0x5b => Chip::Ym3526,
+                            0x5e => Chip::Ymf262,
+                            0xa0 => Chip::Ay8910,
+                            _ => bail!("Unsupported ND7 chip"),
+                        };
+                        let supports_page = |id, page| {
+                            transport.capabilities().iter().any(|entry| {
+                                entry.write_id == id
+                                    && entry.instance == route.instance
+                                    && entry.page == page
+                                    && entry.features & 1 != 0
+                            })
+                        };
+                        if !supports_page(route.write_id, 0)
+                            || (route.write_id == 0x5e && !supports_page(0x5f, 1))
+                            || !transport.supports_clock(id, route.instance, hz)
+                        {
+                            bail!("device does not support the requested route or clock ({hz} Hz)");
+                        }
+                        let instance = if route.instance == 0 {
+                            Instance::Primary
+                        } else {
+                            Instance::Secondary
+                        };
+                        validator
+                            .add(
+                                &NdsifRoute {
+                                    chip,
+                                    source: instance,
+                                    device: 0,
+                                    target: instance,
+                                },
+                                hz,
+                            )
+                            .map_err(anyhow::Error::msg)?;
+                        routes.push((id, route.instance, hz));
+                        enabled.insert((route.write_id, route.instance));
+                        if route.write_id == 0x5e {
+                            enabled.insert((0x5f, route.instance));
+                        }
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        let _ = events.send(ServerEvent::Warning(format!(
+                            "ND7 {} skipped: {error:#}",
+                            route.tag
+                        )));
+                    }
+                }
+                if routes.is_empty() {
+                    bail!("MAME has no compatible NanoDrive7 sound-chip routes");
+                }
+            }
+            Event::Reset => {
+                if initialized {
+                    transport
+                        .flush_scheduled_until(0, 44_100)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                if routes.is_empty() {
+                    bail!("MAME did not provide NanoDrive7 chip identities");
+                }
+                transport.reset_for_reuse()?;
+                for &(id, instance, hz) in &routes {
+                    transport
+                        .configure_chip(id, instance, hz)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                initialized = true;
+            }
+            Event::Nd7Write {
+                write_id,
+                instance,
+                address,
+                value,
+            } => {
+                if !initialized {
+                    bail!("NanoDrive7 write before MAME reset");
+                }
+                if !declared.contains(&(write_id, instance)) {
+                    bail!("MAME wrote to an undeclared NanoDrive7 route");
+                }
+                if !enabled.contains(&(write_id, instance)) {
+                    if input.pending.is_empty() {
+                        transport
+                            .flush_scheduled_until(0, 44_100)
+                            .map_err(anyhow::Error::msg)?;
+                    }
+                    continue;
+                }
+                if (write_id == 0xa0 && address > 0x0f) || (write_id == 0x51 && address > 0x3f) {
+                    bail!("Invalid NanoDrive7 register address");
+                }
+                transport
+                    .schedule_register_write(NdsifRegisterEvent {
+                        write_id: WriteId::try_from(write_id)?,
+                        instance,
+                        page: u8::from(write_id == 0x5f),
+                        write: RegisterWrite::new(address, value),
+                        sample_frame: 0,
+                        sample_rate: 44_100,
+                    })
+                    .map_err(anyhow::Error::msg)?;
+                if input.pending.is_empty() {
+                    transport
+                        .flush_scheduled_until(0, 44_100)
+                        .map_err(anyhow::Error::msg)?;
+                }
+            }
+            Event::Pause | Event::Resume => {
+                transport
+                    .flush_scheduled_until(0, 44_100)
+                    .map_err(anyhow::Error::msg)?;
+                if transport.supports_output_volume() {
+                    transport.set_output_muted(matches!(event, Event::Pause))?;
+                } else {
+                    let _ = events.send(ServerEvent::Warning(
+                        "NanoDrive does not support output mute".into(),
+                    ));
+                }
+            }
+            Event::Quit => {
+                transport
+                    .flush_scheduled_until(0, 44_100)
+                    .map_err(anyhow::Error::msg)?;
+                return Ok(());
+            }
+            _ => bail!("Unexpected ND7 MAME message"),
+        }
+    }
+    if initialized {
+        transport
+            .flush_scheduled_until(0, 44_100)
+            .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
 }
 
 fn nd8_connection(

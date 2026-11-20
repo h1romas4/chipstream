@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 const LICENSE: &str = include_str!("../../assets/mame-plugins/LICENSE");
-const FILES: [(&str, &str); 6] = [
+const FILES: [(&str, &str); 9] = [
     (
         "nanodrive6/init.lua",
         include_str!("../../assets/mame-plugins/nanodrive6/init.lua"),
@@ -17,6 +17,15 @@ const FILES: [(&str, &str); 6] = [
         include_str!("../../assets/mame-plugins/nanodrive6/plugin.json"),
     ),
     ("nanodrive6/LICENSE", LICENSE),
+    (
+        "nanodrive7/init.lua",
+        include_str!("../../assets/mame-plugins/nanodrive7/init.lua"),
+    ),
+    (
+        "nanodrive7/plugin.json",
+        include_str!("../../assets/mame-plugins/nanodrive7/plugin.json"),
+    ),
+    ("nanodrive7/LICENSE", LICENSE),
     (
         "nanodrive8/init.lua",
         include_str!("../../assets/mame-plugins/nanodrive8/init.lua"),

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add NanoDrive 7 MAME plugin and routing support.
 - Update ymfm-sys to 0.3.0.
 - Add YM2413 Melodic/Rhythm and YMF262 A/B and C/D output gain controls to the Piano Roll.
 

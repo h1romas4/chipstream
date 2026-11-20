@@ -727,6 +727,7 @@ struct AppView {
     mame_status: &'static str,
     mame_address: Entity<InputState>,
     mame_nd6_command: Entity<InputState>,
+    mame_nd7_command: Entity<InputState>,
     mame_nd8_command: Entity<InputState>,
     tracks: Vec<Track>,
     track_by_path: HashMap<PathBuf, usize>,
@@ -1558,6 +1559,11 @@ impl AppView {
             input.set_value(mame::Plugin::NanoDrive6.launch_example(), window, cx);
             input
         });
+        let mame_nd7_command = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(mame::Plugin::NanoDrive7.launch_example(), window, cx);
+            input
+        });
         let mame_nd8_command = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
             input.set_value(mame::Plugin::NanoDrive8.launch_example(), window, cx);
@@ -1669,6 +1675,7 @@ impl AppView {
             mame_status: "Stopped",
             mame_address,
             mame_nd6_command,
+            mame_nd7_command,
             mame_nd8_command,
             tracks: Vec::new(),
             track_by_path: HashMap::new(),
@@ -5381,8 +5388,10 @@ impl AppView {
                                     let Some(Ok(plugin)) = view.mame_route() else {
                                         return;
                                     };
-                                    if plugin == mame::Plugin::NanoDrive8
-                                        && view.config.general.mame_home.is_none()
+                                    if matches!(
+                                        plugin,
+                                        mame::Plugin::NanoDrive7 | mame::Plugin::NanoDrive8
+                                    ) && view.config.general.mame_home.is_none()
                                     {
                                         view.pending_errors.push(error_notification(
                                             "MAME HOME not set",
@@ -5426,6 +5435,7 @@ impl AppView {
             .when_some(route.and_then(Result::ok), |panel, plugin| {
                 let command = match plugin {
                     mame::Plugin::NanoDrive6 => &self.mame_nd6_command,
+                    mame::Plugin::NanoDrive7 => &self.mame_nd7_command,
                     mame::Plugin::NanoDrive8 => &self.mame_nd8_command,
                 };
                 panel.child(Input::new(command).readonly(true).small().w_full())
@@ -5434,6 +5444,12 @@ impl AppView {
                 panel
                     .child(
                         Input::new(&self.mame_nd6_command)
+                            .readonly(true)
+                            .small()
+                            .w_full(),
+                    )
+                    .child(
+                        Input::new(&self.mame_nd7_command)
                             .readonly(true)
                             .small()
                             .w_full(),

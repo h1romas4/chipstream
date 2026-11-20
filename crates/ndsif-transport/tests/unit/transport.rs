@@ -651,6 +651,161 @@ fn fixed_clock_route_and_configuration_accept_same_tolerance_without_clock_comma
 
 #[cfg(unix)]
 #[test]
+fn nanodrive7_register_only_device_uses_advertised_targets_and_logical_clocks() {
+    use std::io::Write;
+
+    let (mut transport, mut device) = test_transport();
+    transport.data_capacity = 0;
+    transport.event_capacity = 0;
+    let (release, wait) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut decoder = ndsif::Decoder::new();
+        let ping = read_device_frame(&mut device, &mut decoder);
+        let ndsif::Request::Ping(bytes) = ndsif::Request::decode(&ping).unwrap() else {
+            panic!("expected PING");
+        };
+        device.write_all(b"ND7 boot diagnostics\r\n").unwrap();
+        reply_to_device_frame(&mut device, &ping, Reply::Ping(bytes));
+
+        let request = read_device_frame(&mut device, &mut decoder);
+        assert!(matches!(
+            ndsif::Request::decode(&request).unwrap(),
+            ndsif::Request::GetCapabilities { offset: 0 }
+        ));
+        let mut entries = Vec::new();
+        for (id, instance, page, features, mode, hz) in [
+            (0x55_u8, 0_u8, 0_u8, 5_u8, 2_u8, 0_u32),
+            (0x55, 1, 0, 5, 2, 0),
+            (0xa5, 1, 0, 5, 2, 0),
+            (0x51, 0, 0, 1, 1, 3_579_540),
+            (0x5e, 0, 0, 5, 2, 0),
+            (0x5f, 0, 1, 5, 2, 0),
+            (0xa0, 0, 0, 5, 2, 0),
+            (0xa0, 1, 0, 5, 2, 0),
+            (0x5a, 0, 0, 5, 2, 0),
+            (0x5b, 0, 0, 5, 2, 0),
+        ] {
+            entries.extend_from_slice(&[id, instance, page, features, mode]);
+            entries.extend_from_slice(&hz.to_le_bytes());
+        }
+        let capabilities = ndsif::Capabilities::new(256, 0, 0, 1, u16::MAX, &entries).unwrap();
+        reply_to_device_frame(&mut device, &request, Reply::Capabilities(capabilities));
+
+        let frame = read_device_frame(&mut device, &mut decoder);
+        assert!(matches!(
+            ndsif::Request::decode(&frame).unwrap(),
+            ndsif::Request::GetInfo
+        ));
+        reply_to_device_frame(
+            &mut device,
+            &frame,
+            Reply::Info(ndsif::DeviceInfo {
+                model: "NanoDrive 7",
+                firmware: "4.0b1",
+            }),
+        );
+
+        for (id, instance, hz) in [(0xa0, 1, 2_000_000), (0x5b, 0, 3_579_545)] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match ndsif::Request::decode(&frame).unwrap() {
+                ndsif::Request::SetChipClock {
+                    write_id,
+                    instance: actual_instance,
+                    hz: actual_hz,
+                } => assert_eq!(
+                    (write_id.get(), actual_instance, actual_hz),
+                    (id, instance, hz)
+                ),
+                request => panic!("unexpected clock request: {request:?}"),
+            }
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        for (id, instance, page, count, start) in [
+            (0xa0, 1, 0, 127, 0),
+            (0xa0, 1, 0, 3, 127),
+            (0x5f, 0, 1, 1, 0),
+        ] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match ndsif::Request::decode(&frame).unwrap() {
+                ndsif::Request::WriteRegisters {
+                    write_id,
+                    instance: actual_instance,
+                    page: actual_page,
+                    writes,
+                } => {
+                    assert_eq!(
+                        (write_id.get(), actual_instance, actual_page),
+                        (id, instance, page)
+                    );
+                    assert_eq!(writes.len(), count);
+                    for (offset, write) in writes.iter().enumerate() {
+                        assert_eq!(write.address, 5);
+                        assert_eq!(write.value, (start + offset) as u8);
+                    }
+                }
+                request => panic!("unexpected write request: {request:?}"),
+            }
+        }
+        for expected in [Some(96), None, Some(0)] {
+            let frame = read_device_frame(&mut device, &mut decoder);
+            match (expected, ndsif::Request::decode(&frame).unwrap()) {
+                (Some(expected), ndsif::Request::SetOutputVolume { attenuation }) => {
+                    assert_eq!(attenuation, expected);
+                }
+                (None, ndsif::Request::Reset) => {}
+                (_, request) => panic!("unexpected reset request: {request:?}"),
+            }
+            reply_to_device_frame(&mut device, &frame, Reply::Complete);
+        }
+        wait.recv().unwrap();
+    });
+
+    transport
+        .request_typed(Command::Ping(b"chipstream"))
+        .unwrap();
+    transport.load_capabilities().unwrap();
+    transport.verify_audio_stream_idle().unwrap();
+    transport.verify_timed_dac_idle().unwrap();
+    assert_eq!(transport.device_info().unwrap().model, "NanoDrive 7");
+    assert_eq!(transport.capabilities().len(), 10);
+    assert!(transport.supports_output_volume());
+    assert!(!transport.supports_timed_dac());
+    assert!(!transport.supports_audio_stream(0, 4_000_000));
+    let ay = WriteId::try_from(0xa0).unwrap();
+    let opl1 = WriteId::try_from(0x5b).unwrap();
+    let ym2413 = WriteId::try_from(0x51).unwrap();
+    transport.configure_chip(ay, 1, 2_000_000).unwrap();
+    transport.configure_chip(opl1, 0, 3_579_545).unwrap();
+    transport.configure_chip(ym2413, 0, 3_579_545).unwrap();
+    assert!(
+        transport
+            .configure_chip(WriteId::YM2151, 0, 4_000_000)
+            .is_err()
+    );
+    for (write_id, instance, page, count) in
+        [(ay, 1, 0, 130), (WriteId::try_from(0x5f).unwrap(), 0, 1, 1)]
+    {
+        for value in 0..count {
+            transport
+                .schedule_register_write(NdsifRegisterEvent {
+                    write_id,
+                    instance,
+                    page,
+                    write: ndsif::RegisterWrite::new(5, value as u8),
+                    sample_frame: 0,
+                    sample_rate: 44_100,
+                })
+                .unwrap();
+        }
+    }
+    transport.flush_scheduled_until(1, 44_100).unwrap();
+    transport.reset_for_reuse().unwrap();
+    release.send(()).unwrap();
+    worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn device_info_queries_and_owns_model_and_firmware() {
     let (mut transport, mut device) = test_transport();
     let (release, wait) = std::sync::mpsc::channel();

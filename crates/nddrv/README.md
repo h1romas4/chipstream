@@ -215,9 +215,12 @@ enabled and may be heard alongside NanoDrive output. Timing is best-effort;
 fast-forward can drop DAC samples. Muting on pause requires hardware volume
 control.
 
-For NanoDrive 8, select the directory of the MAME version you use to play. It
+For NanoDrive 7 and 8, select the directory of the MAME version you use to play. It
 must contain one executable named `mame` or `mame64` (Windows: `mame.exe` or
 `mame64.exe`).
+
+NanoDrive 7 supports mapped YM2203, YM2413, OPL and AY-family chips. Conflicting
+or unavailable chip routes are reported and skipped.
 
 The bundled plugins include Fujix's BSD 3-Clause license, installed alongside
 each plugin.

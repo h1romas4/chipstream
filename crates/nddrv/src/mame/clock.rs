@@ -1,4 +1,4 @@
-//! Discover the YM2151 clock using the configured MAME installation.
+//! Discover sound-chip clocks using the configured MAME installation.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,45 @@ const MAX_XML_BYTES: u64 = 16 * 1024 * 1024;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub fn ym2151_clock(home: &Path, machine: &str, tag: &str, stop: &AtomicBool) -> Result<u32> {
+    let xml = query_xml(home, machine, stop)?;
+    parse_clock(&xml, machine, tag)
+}
+
+pub fn nd7_clocks(
+    home: &Path,
+    machine: &str,
+    routes: &[super::protocol::Nd7Route],
+    stop: &AtomicBool,
+) -> Result<Vec<Result<u32>>> {
+    let xml = query_xml(home, machine, stop)?;
+    let document = parse_document(&xml)?;
+    let system = find_machine(&document, machine)?;
+    Ok(routes
+        .iter()
+        .map(|route| {
+            let types: &[&str] = match route.write_id {
+                0x51 => &["ym2413"],
+                0x55 => &["ym2203"],
+                0x5a => &["ym3812"],
+                0x5b => &["ym3526"],
+                0x5e => &["ymf262"],
+                0xa0 => &["ay8910", "ay8912", "ay8913", "ym2149"],
+                _ => bail!("Unsupported ND7 chip"),
+            };
+            let (hz, chip_type) = find_chip(system, &route.tag, types)?;
+            if route.divide_clock && chip_type != "ym2149" {
+                bail!("Only YM2149 supports the SEL clock divider");
+            }
+            let hz = if route.divide_clock { hz / 2 } else { hz };
+            if hz == 0 {
+                bail!("MAME chip clock is zero");
+            }
+            Ok(hz)
+        })
+        .collect())
+}
+
+fn query_xml(home: &Path, machine: &str, stop: &AtomicBool) -> Result<String> {
     let executable = mame_executable(home)?;
     let mut command = Command::new(&executable);
     command
@@ -55,22 +94,30 @@ pub fn ym2151_clock(home: &Path, machine: &str, tag: &str, stop: &AtomicBool) ->
     if output.len() as u64 > MAX_XML_BYTES {
         bail!("MAME XML exceeds the size limit");
     }
-    parse_clock(
-        std::str::from_utf8(&output).context("MAME XML is not UTF-8")?,
-        machine,
-        tag,
-    )
+    String::from_utf8(output).context("MAME XML is not UTF-8")
 }
 
 fn parse_clock(xml: &str, machine: &str, tag: &str) -> Result<u32> {
-    let document = roxmltree::Document::parse_with_options(
+    let document = parse_document(xml)?;
+    let system = find_machine(&document, machine)?;
+    Ok(find_chip(system, tag, &["ym2151"])?.0)
+}
+
+fn parse_document(xml: &str) -> Result<roxmltree::Document<'_>> {
+    roxmltree::Document::parse_with_options(
         xml,
         roxmltree::ParsingOptions {
             allow_dtd: true,
             ..Default::default()
         },
     )
-    .context("Invalid MAME XML")?;
+    .context("Invalid MAME XML")
+}
+
+fn find_machine<'a, 'input>(
+    document: &'a roxmltree::Document<'input>,
+    machine: &str,
+) -> Result<roxmltree::Node<'a, 'input>> {
     let mut machines = document
         .descendants()
         .filter(|node| node.has_tag_name("machine") && node.attribute("name") == Some(machine));
@@ -80,37 +127,48 @@ fn parse_clock(xml: &str, machine: &str, tag: &str) -> Result<u32> {
     if machines.next().is_some() {
         bail!("MAME XML contains duplicate machines");
     }
+    Ok(system)
+}
+
+fn find_chip<'a, 'input>(
+    system: roxmltree::Node<'a, 'input>,
+    tag: &str,
+    types: &[&str],
+) -> Result<(u32, &'a str)> {
     let expected = tag.trim_start_matches(':');
     let matching = |node: &roxmltree::Node<'_, '_>| {
         node.attribute("tag")
             .is_some_and(|value| value.trim_start_matches(':') == expected)
     };
-    let refs = system
-        .children()
-        .filter(|node| {
-            node.has_tag_name("device_ref")
-                && node.attribute("name") == Some("ym2151")
-                && matching(node)
-        })
-        .count();
+    let mut refs = system.children().filter(|node| {
+        node.has_tag_name("device_ref")
+            && node
+                .attribute("name")
+                .is_some_and(|name| types.contains(&name))
+            && matching(node)
+    });
+    let chip_type = refs
+        .next()
+        .and_then(|node| node.attribute("name"))
+        .context("MAME XML does not contain the requested chip type")?;
     let mut chips = system.children().filter(|node| {
         node.has_tag_name("chip") && node.attribute("type") == Some("audio") && matching(node)
     });
     let chip = chips
         .next()
         .context("MAME XML does not contain the requested audio chip")?;
-    if refs != 1 || chips.next().is_some() {
-        bail!("MAME XML does not uniquely identify the YM2151");
+    if refs.next().is_some() || chips.next().is_some() {
+        bail!("MAME XML does not uniquely identify the sound chip");
     }
     let hz: u32 = chip
         .attribute("clock")
-        .context("MAME XML has no YM2151 clock")?
+        .context("MAME XML has no sound-chip clock")?
         .parse()
-        .context("Invalid YM2151 clock")?;
+        .context("Invalid sound-chip clock")?;
     if hz == 0 {
-        bail!("YM2151 clock is zero");
+        bail!("Sound-chip clock is zero");
     }
-    Ok(hz)
+    Ok((hz, chip_type))
 }
 
 pub(super) fn mame_executable(home: &Path) -> Result<PathBuf> {
@@ -186,5 +244,31 @@ mod tests {
             ym2151_clock(home.path(), "game", ":ym", &AtomicBool::new(false)).unwrap(),
             4_000_000
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn queries_nd7_clocks_and_checks_ym2149_divider() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let executable = home.path().join("mame");
+        std::fs::write(&executable, b"#!/bin/sh\nprintf '%s' '<mame><machine name=\"game\"><device_ref name=\"ym2149\" tag=\"psg\"/><chip type=\"audio\" tag=\"psg\" clock=\"4000000\"/><device_ref name=\"ay8910\" tag=\"ay\"/><chip type=\"audio\" tag=\"ay\" clock=\"2000000\"/></machine></mame>'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let route = |tag: &str, divide_clock| super::super::protocol::Nd7Route {
+            write_id: 0xa0,
+            instance: 0,
+            tag: tag.into(),
+            divide_clock,
+        };
+        let results = nd7_clocks(
+            home.path(),
+            "game",
+            &[route(":psg", true), route(":ay", false), route(":ay", true)],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(*results[0].as_ref().unwrap(), 2_000_000);
+        assert_eq!(*results[1].as_ref().unwrap(), 2_000_000);
+        assert!(results[2].is_err());
     }
 }

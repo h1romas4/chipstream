@@ -7,17 +7,24 @@ use crate::routing::{ChipInstance, HardwareChip};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plugin {
     NanoDrive6,
+    NanoDrive7,
     NanoDrive8,
 }
 
 impl Plugin {
     pub fn all_systems() -> &'static [&'static str] {
-        &["Sega System C2", "Mega Drive", "YM2151-based systems"]
+        &[
+            "Sega System C2",
+            "Mega Drive",
+            "YM2203 / YM2413 / OPL / AY systems",
+            "YM2151-based systems",
+        ]
     }
 
     pub fn supported_systems(self) -> &'static [&'static str] {
         match self {
             Self::NanoDrive6 => &["Sega System C2", "Mega Drive"],
+            Self::NanoDrive7 => &["YM2203 / YM2413 / OPL / AY systems"],
             Self::NanoDrive8 => &["YM2151-based systems"],
         }
     }
@@ -27,6 +34,16 @@ impl Plugin {
             Self::NanoDrive6 => &[
                 (HardwareChip::Ym2612, ChipInstance::Primary),
                 (HardwareChip::Sn76489, ChipInstance::Primary),
+            ],
+            Self::NanoDrive7 => &[
+                (HardwareChip::Ym2203, ChipInstance::Primary),
+                (HardwareChip::Ym2203, ChipInstance::Secondary),
+                (HardwareChip::Ay8910, ChipInstance::Primary),
+                (HardwareChip::Ay8910, ChipInstance::Secondary),
+                (HardwareChip::Ym2413, ChipInstance::Primary),
+                (HardwareChip::Ym3526, ChipInstance::Primary),
+                (HardwareChip::Ym3812, ChipInstance::Primary),
+                (HardwareChip::Ymf262, ChipInstance::Primary),
             ],
             Self::NanoDrive8 => &[(HardwareChip::Ym2151, ChipInstance::Primary)],
         }
@@ -46,6 +63,13 @@ impl Plugin {
         };
         let nd6 = supports(0x52, 0) && supports(0x53, 1) && supports(0x50, 0);
         let nd8 = supports(0x54, 0);
+        if model == "NanoDrive 7"
+            && [0x51, 0x55, 0x5a, 0x5b, 0x5e, 0xa0]
+                .into_iter()
+                .any(|id| supports(id, 0))
+        {
+            return Ok(Self::NanoDrive7);
+        }
         match (nd6, nd8) {
             (true, false) => Ok(Self::NanoDrive6),
             (false, true) => Ok(Self::NanoDrive8),
@@ -61,9 +85,18 @@ impl Plugin {
     pub fn launch_example(self) -> &'static str {
         match self {
             Self::NanoDrive6 => "mame -plugin nanodrive6 megadrij [softname]",
+            Self::NanoDrive7 => "mame -plugin nanodrive7 [machine]",
             Self::NanoDrive8 => "mame -plugin nanodrive8 [machine]",
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Nd7Route {
+    pub write_id: u8,
+    pub instance: u8,
+    pub tag: String,
+    pub divide_clock: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,6 +127,17 @@ pub enum Event {
         tag: String,
     },
     Ym2151 {
+        address: u8,
+        value: u8,
+    },
+    Nd7Machine {
+        pid: u32,
+        name: String,
+        routes: Vec<Nd7Route>,
+    },
+    Nd7Write {
+        write_id: u8,
+        instance: u8,
         address: u8,
         value: u8,
     },
@@ -144,6 +188,16 @@ fn decode_one(plugin: Plugin, bytes: &[u8]) -> Result<Option<(Event, usize)>> {
         (Plugin::NanoDrive6, b'F') => 6,
         (Plugin::NanoDrive6, b'C') => 5,
         (Plugin::NanoDrive8, b'P' | b'U') => 1,
+        (Plugin::NanoDrive7, b'P' | b'U') => 1,
+        (Plugin::NanoDrive7, b'V') => 5,
+        (Plugin::NanoDrive7, b'J') if bytes.len() < 3 => return Ok(None),
+        (Plugin::NanoDrive7, b'J') => {
+            let size = usize::from(u16::from_le_bytes([bytes[1], bytes[2]])) + 3;
+            if !(9..=2048).contains(&size) {
+                bail!("Invalid ND7 initialization length");
+            }
+            size
+        }
         (Plugin::NanoDrive8, b'W') => 3,
         (Plugin::NanoDrive8, b'I') if bytes.len() < 7 => return Ok(None),
         (Plugin::NanoDrive8, b'I') => 7 + usize::from(bytes[5]) + usize::from(bytes[6]),
@@ -201,6 +255,63 @@ fn decode_one(plugin: Plugin, bytes: &[u8]) -> Result<Option<(Event, usize)>> {
             address: bytes[1],
             value: bytes[2],
         },
+        b'V' => Event::Nd7Write {
+            write_id: bytes[1],
+            instance: bytes[2],
+            address: bytes[3],
+            value: bytes[4],
+        },
+        b'J' => {
+            let name_end = 8 + usize::from(bytes[7]);
+            if name_end >= length {
+                bail!("Invalid ND7 machine name or missing chip routes");
+            }
+            let name = std::str::from_utf8(&bytes[8..name_end])?;
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            {
+                bail!("Invalid MAME machine name");
+            }
+            let mut routes = Vec::<Nd7Route>::new();
+            let mut offset = name_end;
+            while offset < length {
+                if length - offset < 3 {
+                    bail!("Incomplete ND7 chip route");
+                }
+                let id = bytes[offset];
+                let instance = bytes[offset + 1] & 0x7f;
+                let divide_clock = bytes[offset + 1] & 0x80 != 0;
+                let end = offset + 3 + usize::from(bytes[offset + 2]);
+                if end > length
+                    || !matches!(id, 0x51 | 0x55 | 0x5a | 0x5b | 0x5e | 0xa0)
+                    || instance > u8::from(matches!(id, 0x55 | 0xa0))
+                    || (divide_clock && id != 0xa0)
+                    || routes
+                        .iter()
+                        .any(|route| route.write_id == id && route.instance == instance)
+                {
+                    bail!("Invalid ND7 chip route");
+                }
+                let tag = std::str::from_utf8(&bytes[offset + 3..end])?;
+                if tag.len() < 2 || !tag.starts_with(':') || !tag.is_ascii() {
+                    bail!("Invalid ND7 chip tag");
+                }
+                routes.push(Nd7Route {
+                    write_id: id,
+                    instance,
+                    tag: tag.to_owned(),
+                    divide_clock,
+                });
+                offset = end;
+            }
+            Event::Nd7Machine {
+                pid: read_u32(3),
+                name: name.to_owned(),
+                routes,
+            }
+        }
         b'I' => {
             let game_end = 7 + usize::from(bytes[5]);
             let name = std::str::from_utf8(&bytes[7..game_end])?;
@@ -233,7 +344,12 @@ mod tests {
     fn lists_all_mame_systems_independent_of_device_selection() {
         assert_eq!(
             Plugin::all_systems(),
-            &["Sega System C2", "Mega Drive", "YM2151-based systems"]
+            &[
+                "Sega System C2",
+                "Mega Drive",
+                "YM2203 / YM2413 / OPL / AY systems",
+                "YM2151-based systems"
+            ]
         );
     }
 
@@ -264,6 +380,11 @@ mod tests {
         };
         let nd6 = [entry(0x52, 0), entry(0x53, 1), entry(0x50, 0)];
         let nd8 = [entry(0x54, 0)];
+        assert_eq!(
+            Plugin::for_device("NanoDrive 7", &[entry(0x55, 0)]),
+            Ok(Plugin::NanoDrive7)
+        );
+        assert!(Plugin::for_device("NanoDrive 7", &[]).is_err());
         assert_eq!(
             Plugin::for_device("NanoDrive 6.1", &nd6),
             Ok(Plugin::NanoDrive6)
@@ -361,6 +482,68 @@ mod tests {
             ]
         );
         decoder.finish().unwrap();
+    }
+
+    #[test]
+    fn decodes_fragmented_nd7_identity_and_register_writes() {
+        let payload = b"\x2a\0\0\0\x03abc\x55\0\x03:ym\xa0\x81\x04:psg";
+        let mut bytes = vec![b'J'];
+        bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(b"RV\x55\0\x27\x12V\xa0\x01\x07\x38Q");
+        let mut decoder = Decoder::new(Plugin::NanoDrive7);
+        let mut events = Vec::new();
+        for chunk in bytes.chunks(2) {
+            events.extend(decoder.push(chunk).unwrap());
+        }
+        assert_eq!(
+            events,
+            vec![
+                Event::Nd7Machine {
+                    pid: 42,
+                    name: "abc".into(),
+                    routes: vec![
+                        Nd7Route {
+                            write_id: 0x55,
+                            instance: 0,
+                            tag: ":ym".into(),
+                            divide_clock: false
+                        },
+                        Nd7Route {
+                            write_id: 0xa0,
+                            instance: 1,
+                            tag: ":psg".into(),
+                            divide_clock: true
+                        },
+                    ]
+                },
+                Event::Reset,
+                Event::Nd7Write {
+                    write_id: 0x55,
+                    instance: 0,
+                    address: 0x27,
+                    value: 0x12
+                },
+                Event::Nd7Write {
+                    write_id: 0xa0,
+                    instance: 1,
+                    address: 7,
+                    value: 0x38
+                },
+                Event::Quit,
+            ]
+        );
+        decoder.finish().unwrap();
+        for payload in [
+            &b"\x2a\0\0\0\x03abc\x55\x80\x03:ym"[..],
+            &b"\x2a\0\0\0\x03abc\x55\0\x03:ym\x55\0\x03:ym"[..],
+            &b"\x2a\0\0\0\x03abc\x55\0\x05:ym"[..],
+        ] {
+            let mut message = vec![b'J'];
+            message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            message.extend_from_slice(payload);
+            assert!(Decoder::new(Plugin::NanoDrive7).push(&message).is_err());
+        }
     }
 
     #[test]

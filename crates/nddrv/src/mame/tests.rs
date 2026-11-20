@@ -46,14 +46,25 @@ fn test_connection(
                                 let mut entries = Vec::new();
                                 let chips = match plugin {
                                     Plugin::NanoDrive6 => vec![
-                                        (0x52, 0, 7_670_454_u32, 1, 1),
-                                        (0x53, 1, 7_670_454, 1, 1),
-                                        (0x50, 0, 3_579_545, 1, 1),
+                                        (0x52, 0, 0, 7_670_454_u32, 1, 1),
+                                        (0x53, 0, 1, 7_670_454, 1, 1),
+                                        (0x50, 0, 0, 3_579_545, 1, 1),
                                     ],
-                                    Plugin::NanoDrive8 => vec![(0x54, 0, 0_u32, 5, 2)],
+                                    Plugin::NanoDrive7 => vec![
+                                        (0x55, 0, 0, 0, 5, 2),
+                                        (0x55, 1, 0, 0, 5, 2),
+                                        (0xa0, 0, 0, 0, 5, 2),
+                                        (0xa0, 1, 0, 0, 5, 2),
+                                        (0x51, 0, 0, 3_579_540, 1, 1),
+                                        (0x5e, 0, 0, 0, 5, 2),
+                                        (0x5f, 0, 1, 0, 5, 2),
+                                    ],
+                                    Plugin::NanoDrive8 => vec![(0x54, 0, 0, 0_u32, 5, 2)],
                                 };
-                                for (id, page, clock, features, clock_mode) in chips {
-                                    entries.extend_from_slice(&[id, 0, page, features, clock_mode]);
+                                for (id, instance, page, clock, features, clock_mode) in chips {
+                                    entries.extend_from_slice(&[
+                                        id, instance, page, features, clock_mode,
+                                    ]);
                                     entries.extend_from_slice(&clock.to_le_bytes());
                                 }
                                 let caps = Capabilities::new(
@@ -232,6 +243,126 @@ fn nd8_plugin_stream_reaches_ym2151_device() {
             RegisterWrite::new(0x20, 0x7f),
             RegisterWrite::new(0x21, 0x11)
         ]
+    );
+    transport.reset_for_reuse().unwrap();
+    device_stop.store(true, Ordering::Release);
+    device_worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn nd7_plugin_stream_configures_shared_clocks_and_routes_registers() {
+    let (mut transport, frames, device_stop, device_worker) = test_connection(Plugin::NanoDrive7);
+    let (listener, mut client, mut socket) = sockets();
+    let payload = b"\x2a\0\0\0\x03abc\x55\0\x03:op\xa0\x81\x04:psg\x5e\0\x04:opl";
+    let mut message = vec![b'J'];
+    message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    message.extend_from_slice(payload);
+    message.extend_from_slice(b"RV\x55\0\x27\x12V\xa0\x01\x07\x38V\x5e\0\x20\x01V\x5f\0\x05\x01PQ");
+    client.write_all(&message).unwrap();
+    let (events, _) = mpsc::channel();
+    nd7_connection(
+        &mut transport,
+        &listener,
+        &mut socket,
+        &AtomicBool::new(false),
+        &events,
+        |name, routes, _| {
+            assert_eq!(name, "abc");
+            assert_eq!(routes.len(), 3);
+            assert!(routes[1].divide_clock);
+            Ok(vec![Ok(4_000_000), Ok(2_000_000), Ok(14_318_180)])
+        },
+    )
+    .unwrap();
+    for (id, instance, hz) in [
+        (0x55, 0, 4_000_000),
+        (0xa0, 1, 2_000_000),
+        (0x5e, 0, 14_318_180),
+    ] {
+        let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        let Request::SetChipClock {
+            write_id,
+            instance: actual,
+            hz: actual_hz,
+        } = Request::decode(&frame).unwrap()
+        else {
+            panic!("expected clock")
+        };
+        assert_eq!((write_id.get(), actual, actual_hz), (id, instance, hz));
+    }
+    for (id, instance, page, address, value) in [
+        (0x55, 0, 0, 0x27, 0x12),
+        (0xa0, 1, 0, 7, 0x38),
+        (0x5e, 0, 0, 0x20, 1),
+        (0x5f, 0, 1, 5, 1),
+    ] {
+        let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        let Request::WriteRegisters {
+            write_id,
+            instance: actual,
+            page: actual_page,
+            writes,
+        } = Request::decode(&frame).unwrap()
+        else {
+            panic!("expected write")
+        };
+        assert_eq!((write_id.get(), actual, actual_page), (id, instance, page));
+        assert_eq!(
+            writes.iter().collect::<Vec<_>>(),
+            vec![RegisterWrite::new(address, value)]
+        );
+    }
+    transport.reset_for_reuse().unwrap();
+    device_stop.store(true, Ordering::Release);
+    device_worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn nd7_skips_conflicting_routes_and_rejects_undeclared_writes() {
+    let (mut transport, frames, device_stop, device_worker) = test_connection(Plugin::NanoDrive7);
+    let (listener, mut client, mut socket) = sockets();
+    let payload = b"\x2a\0\0\0\x03abc\x55\0\x04:ym1\x55\x01\x04:ym2";
+    let mut message = vec![b'J'];
+    message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    message.extend_from_slice(payload);
+    message.extend_from_slice(b"RV\x55\0\x27\x12V\x55\x01\x27\x34");
+    client.write_all(&message).unwrap();
+    let (events, received) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = nd7_connection(
+            &mut transport,
+            &listener,
+            &mut socket,
+            &AtomicBool::new(false),
+            &events,
+            |_, _, _| Ok(vec![Ok(4_000_000), Ok(3_000_000)]),
+        );
+        (result, transport)
+    });
+    assert!(matches!(
+        Request::decode(&frames.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap(),
+        Request::SetChipClock { instance: 0, .. }
+    ));
+    let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+    let Request::WriteRegisters {
+        instance, writes, ..
+    } = Request::decode(&frame).unwrap()
+    else {
+        panic!("expected write")
+    };
+    assert_eq!(instance, 0);
+    assert_eq!(
+        writes.iter().collect::<Vec<_>>(),
+        vec![RegisterWrite::new(0x27, 0x12)]
+    );
+    assert!(frames.try_recv().is_err());
+    client.write_all(b"V\x5f\0\x05\x01").unwrap();
+    let (result, mut transport) = worker.join().unwrap();
+    assert!(result.unwrap_err().to_string().contains("undeclared"));
+    assert!(
+        matches!(received.try_recv(), Ok(ServerEvent::Warning(message)) if message.contains(":ym2") && message.contains("shared clocks"))
     );
     transport.reset_for_reuse().unwrap();
     device_stop.store(true, Ordering::Release);
