@@ -27,7 +27,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
             if enabled {
                 let mut player = result.unwrap_or_else(|error| panic!("{chip:?}: {error}"));
                 player
-                    .set_gain(chip.clone(), Instance::Primary, 0.5)
+                    .set_chip_gain(chip.clone(), Instance::Primary, 0.5)
                     .unwrap();
                 assert!(player.render().unwrap().is_some(), "{chip:?}");
             } else {
@@ -65,7 +65,7 @@ fn mdx_pdx_requires_okim6258_but_fm_only_does_not() {
     if cfg!(feature = "okim6258") {
         let mut player = result.unwrap_or_else(|error| panic!("PDX playback: {error}"));
         player
-            .set_gain(Chip::Okim6258, Instance::Primary, 0.5)
+            .set_chip_gain(Chip::Okim6258, Instance::Primary, 0.5)
             .unwrap();
         assert!(player.render().unwrap().is_some());
     } else {

@@ -66,7 +66,7 @@ use chipstream::sequencer::{Chip, Instance, VgmSequencer};
 
 let bytes = std::fs::read("song.vgm")?;
 let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
-player.set_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
+player.set_chip_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
 }
@@ -81,8 +81,8 @@ use chipstream::sequencer::{Chip, Instance, MdxSequencer};
 let mdx = std::fs::read("song.mdx")?;
 let pdx = std::fs::read("song.pdx")?;
 let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512, Default::default())?;
-player.set_gain(Chip::Ym2151, Instance::Primary, 0.8)?;
-player.set_gain(Chip::Okim6258, Instance::Primary, 0.5)?;
+player.set_chip_gain(Chip::Ym2151, Instance::Primary, 0.8)?;
+player.set_chip_gain(Chip::Okim6258, Instance::Primary, 0.5)?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
 }
@@ -167,12 +167,18 @@ playback settings and return `PlaybackDuration::Finite`, `Unbounded`, or
 scan limit are `Unknown`, not assumed unbounded. Durations exceeding `u32::MAX`
 output frames are also `Unknown`; playback is not limited by this measurement.
 
-`set_gain` applies a linear gain to a chip instance and returns an error if it
-is absent. `VgmSequencer::set_opn_gains` independently adjusts the FM/ADPCM and
-SSG outputs of YM2203, YM2608, and YM2610(B), multiplying the chip gain. Its
-changes apply to newly captured samples; already buffered audio and resampler
-history retain their previous levels. Both sequencers expose `chip_instances`
-and support typed write callbacks. Register callbacks
+Both sequencers provide `set_chip_gain` for the post-resampling gain of a chip
+instance, and `output_layout` and `set_output_gains` for its individual native
+outputs. For example, YM2203 uses `[Fm, SsgChannel(0), SsgChannel(1),
+SsgChannel(2)]`; YM2608 and YM2610(B) use `[FmAdpcmLeft, FmAdpcmRight,
+SsgMixed]`. These are backend outputs, not necessarily individual sound
+channels. Gains multiply the chip's existing matrix and header levels, so VGM
+stereo masks continue to apply. Output-gain changes affect newly captured
+samples; buffered audio and resampler history retain their previous levels.
+Chip-gain changes also affect unmixed buffered PCM, but not audio already mixed
+during a seek. Neither gain controls physical hardware audio.
+
+Both sequencers expose `chip_instances` and support typed write callbacks. Register callbacks
 with `on_write` and state tracking with `track_state` before rendering:
 
 ```rust,no_run
@@ -338,7 +344,8 @@ The VGM sequencer applies backend output balancing to built-in and custom
 backends alike: SN76489 is multiplied by 0.5, YM2203 SSG by 0.25, and
 YM2608/YM2610(B) SSG by 0.375. When the VGM declares a YM2612, other chips
 are additionally multiplied by 2/3 while the YM2612 level remains unchanged.
-VGM header volume settings and `set_gain` multiply these levels.
+VGM header volume settings, `set_chip_gain`, and `set_output_gains` multiply
+these levels.
 
 ### NDSIF scheduled output
 

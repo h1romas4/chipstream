@@ -112,10 +112,10 @@ fn vgm_dual_psg_and_game_gear_stereo() {
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31, Default::default()).unwrap();
     let mut document = VgmSequencer::new(parsed, 44_100, 256, Default::default()).unwrap();
     stream
-        .set_gain(Chip::Sn76489, Instance::Secondary, 0.0)
+        .set_chip_gain(Chip::Sn76489, Instance::Secondary, 0.0)
         .unwrap();
     document
-        .set_gain(Chip::Sn76489, Instance::Secondary, 0.0)
+        .set_chip_gain(Chip::Sn76489, Instance::Secondary, 0.0)
         .unwrap();
     let render = |player: &mut VgmSequencer<'_>| {
         let mut audio = Vec::new();

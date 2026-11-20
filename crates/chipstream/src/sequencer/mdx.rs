@@ -18,8 +18,8 @@ use super::factory::ChipFactoryRegistry;
 use super::vgm::StreamFactory;
 use super::vgm::config::ChipConfiguration;
 use super::{
-    Chip, Instance, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerCheckpoint,
-    VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
+    Chip, Instance, NativeOutput, PlaybackOptions, StateEvent, VgmSequencer,
+    VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
 };
 
 /// Playback and driver options for the incremental MDX sequencer.
@@ -284,15 +284,38 @@ impl<'a> MdxSequencer<'a> {
         Ok(Self { player })
     }
 
-    /// Change the gain of a chip, including already buffered PCM.
-    pub fn set_gain(
+    /// Change a chip's post-resampling mix gain. See [`VgmSequencer::set_chip_gain`].
+    pub fn set_chip_gain(
         &mut self,
         chip: Chip,
         instance: Instance,
         gain: f32,
     ) -> Result<(), MdxSequencerError> {
         self.player
-            .set_gain(chip, instance, gain)
+            .set_chip_gain(chip, instance, gain)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Return the native output layout for a chip instance.
+    pub fn output_layout(
+        &self,
+        chip: Chip,
+        instance: Instance,
+    ) -> Result<&'static [NativeOutput], MdxSequencerError> {
+        self.player
+            .output_layout(chip, instance)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Set native output gains. See [`VgmSequencer::set_output_gains`].
+    pub fn set_output_gains(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        gains: &[f32],
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .set_output_gains(chip, instance, gains)
             .map_err(MdxSequencerError::Playback)
     }
 

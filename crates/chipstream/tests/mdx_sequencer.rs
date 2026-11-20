@@ -1,8 +1,8 @@
 use std::error::Error;
 
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, PlaybackOptions,
-    VgmSequencer,
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, NativeOutput,
+    PlaybackOptions, VgmSequencer,
 };
 use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 #[cfg(feature = "okim6258")]
@@ -83,6 +83,29 @@ fn position_frames_counts_returned_pcm() {
     assert_eq!(player.position_frames(), 0);
     let block = player.render().unwrap().unwrap();
     assert_eq!(player.position_frames(), block.frames().len());
+}
+
+#[test]
+fn mdx_native_output_gains_control_stereo_channels() {
+    let baseline =
+        render_mdx(&mut MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap());
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
+    assert_eq!(
+        player
+            .output_layout(Chip::Ym2151, Instance::Primary)
+            .unwrap(),
+        &[NativeOutput::Left, NativeOutput::Right]
+    );
+    player
+        .set_output_gains(Chip::Ym2151, Instance::Primary, &[1.0, 0.0])
+        .unwrap();
+    let output = render_mdx(&mut player);
+    assert_eq!(output.len(), baseline.len());
+    assert!(output.iter().any(|frame| frame[0].abs() > 0.0001));
+    for (actual, expected) in output.iter().zip(baseline) {
+        assert_eq!(actual[0], expected[0]);
+        assert_eq!(actual[1], 0.0);
+    }
 }
 
 fn fm_package() -> MdxPackage {
@@ -323,7 +346,7 @@ fn events_and_gain_are_available_for_mdx() {
     );
     let mut muted = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
     muted
-        .set_gain(Chip::Ym2151, Instance::Primary, 0.0)
+        .set_chip_gain(Chip::Ym2151, Instance::Primary, 0.0)
         .unwrap();
     let muted = render_mdx(&mut muted);
     assert_eq!(muted.len(), frames.len());

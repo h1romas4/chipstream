@@ -12,7 +12,7 @@
 //!
 //! let bytes = std::fs::read("song.vgm")?;
 //! let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
-//! player.set_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
+//! player.set_chip_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
 //! while let Some(block) = player.render()? {
 //!     // Send block.frames() to the host.
 //! }
@@ -55,5 +55,6 @@ pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
 pub use vgm::{
-    GeneratorConfig, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmSequencerOptions,
+    GeneratorConfig, NativeOutput, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
+    VgmSequencerOptions,
 };

@@ -95,8 +95,6 @@ pub enum VgmSequencerError {
     InvalidSampleRate,
     /// A gain is negative or non-finite.
     InvalidGain,
-    /// The chip does not provide separately controllable FM/ADPCM and SSG outputs.
-    UnsupportedOpnGains(Chip),
     /// The requested chip instance is not playable.
     ChipNotFound {
         /// Requested chip type.
@@ -187,12 +185,6 @@ impl fmt::Display for VgmSequencerError {
             Self::InvalidChunkSize => write!(f, "output chunk size must be nonzero"),
             Self::InvalidSampleRate => write!(f, "output sample rate must be nonzero"),
             Self::InvalidGain => write!(f, "gain must be finite and nonnegative"),
-            Self::UnsupportedOpnGains(chip) => {
-                write!(
-                    f,
-                    "{chip:?} does not have separately controllable FM/ADPCM and SSG outputs"
-                )
-            }
             Self::ChipNotFound { chip, instance } => {
                 write!(f, "no playable {chip:?} {instance:?} chip")
             }
@@ -368,7 +360,7 @@ struct Voice {
     phase_step: u32,
     queue: VecDeque<[f32; 2]>,
     gain: f32,
-    opn_gains: [f32; 2],
+    output_gains: Vec<f32>,
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -592,20 +584,9 @@ impl Voice {
             .ok_or(VgmSequencerError::DurationOverflow)?;
         let mut raw = vec![0; samples];
         let native = self.route.capture(&mut raw)?;
-        let gains = match self.chip {
-            Chip::Ym2203 => Some([
-                self.opn_gains[0],
-                self.opn_gains[1],
-                self.opn_gains[1],
-                self.opn_gains[1],
-            ]),
-            Chip::Ym2608 | Chip::Ym2610b => {
-                Some([self.opn_gains[0], self.opn_gains[0], self.opn_gains[1], 1.0])
-            }
-            _ => None,
-        };
-        let gains = gains.as_ref().map(|gains| &gains[..native.channels()]);
-        let stereo = self.matrix.convert_with_gains(&native, gains)?;
+        let stereo = self
+            .matrix
+            .convert_with_gains(&native, Some(&self.output_gains))?;
         self.queue
             .extend(self.resampler.process(&stereo)?.frames().iter().copied());
         Ok(())
@@ -694,6 +675,39 @@ pub struct VgmSequencer<'a> {
     source_identity: Arc<()>,
 }
 
+/// Meaning of one native output in a sequencer's stereo matrix.
+///
+/// These are backend outputs, not necessarily individual synthesis channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeOutput {
+    /// A mono output.
+    Mono,
+    /// The left stereo output.
+    Left,
+    /// The right stereo output.
+    Right,
+    /// The second left output of a four-output stereo chip.
+    LeftAux,
+    /// The second right output of a four-output stereo chip.
+    RightAux,
+    /// A mono FM output.
+    Fm,
+    /// The left combined FM/ADPCM output.
+    FmAdpcmLeft,
+    /// The right combined FM/ADPCM output.
+    FmAdpcmRight,
+    /// An SSG channel, numbered 0 (A), 1 (B), or 2 (C).
+    SsgChannel(u8),
+    /// A mixed mono SSG output.
+    SsgMixed,
+    /// YM2413 melodic output.
+    Melodic,
+    /// YM2413 rhythm output.
+    Rhythm,
+    /// A native output not routed into the sequencer's stereo mix.
+    Unmixed(u8),
+}
+
 /// Playback options for a VGM file or parsed document.
 ///
 /// Defaults to one traversal with no fade and preserves the header loop
@@ -772,7 +786,7 @@ struct VoiceCheckpoint {
     phase_step: u32,
     queue: VecDeque<[f32; 2]>,
     gain: f32,
-    opn_gains: [f32; 2],
+    output_gains: Vec<f32>,
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -1121,6 +1135,7 @@ impl<'a> VgmSequencer<'a> {
         }
         let (min_rate, max_rate) =
             timing.bounds(&chip, instance, clock, backend.sample_rate_ratio());
+        let output_gains = vec![1.0; backend.channels()];
         Ok(Voice {
             chip,
             instance,
@@ -1136,7 +1151,7 @@ impl<'a> VgmSequencer<'a> {
             phase_step: 0,
             queue: VecDeque::new(),
             gain: 1.0,
-            opn_gains: [1.0; 2],
+            output_gains,
             main_coefficient: main,
             paired_coefficient: paired,
             paced_writes: profile.write_interval.map(|_| VecDeque::new()),
@@ -1539,9 +1554,12 @@ impl<'a> VgmSequencer<'a> {
         self.fade_frames.as_ref().map(|fade| fade.start_frame)
     }
 
-    /// Change the gain for one chip instance, including already buffered PCM.
-    /// This multiplies, rather than replaces, the VGM header's volume.
-    pub fn set_gain(
+    /// Change the post-resampling mix gain for one chip instance.
+    ///
+    /// This includes unmixed buffered PCM and multiplies the header volume.
+    /// Audio already mixed during a seek is unaffected. Hardware output is
+    /// not controlled by this gain.
+    pub fn set_chip_gain(
         &mut self,
         chip: Chip,
         instance: Instance,
@@ -1566,30 +1584,64 @@ impl<'a> VgmSequencer<'a> {
             .map(|voice| (voice.chip.clone(), voice.instance))
     }
 
-    /// Set independent gains for an OPN chip's FM/ADPCM and SSG outputs.
+    /// Return the native output layout in the order accepted by
+    /// [`Self::set_output_gains`].
     ///
-    /// Supports YM2203, YM2608, and YM2610(B). Both gains multiply the chip
-    /// gain and header levels. Changes apply to newly captured PCM; already
-    /// buffered audio and resampler history retain their previous levels.
-    pub fn set_opn_gains(
+    /// Layouts describe the backend's host PCM outputs, including outputs
+    /// not routed into the stereo mix. Hardware audio is not controlled.
+    pub fn output_layout(
+        &self,
+        chip: Chip,
+        instance: Instance,
+    ) -> Result<&'static [NativeOutput], VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        use NativeOutput::*;
+        Ok(match voice.chip {
+            Chip::Ay8910 if voice.output_gains.len() == 3 => {
+                &[SsgChannel(0), SsgChannel(1), SsgChannel(2)]
+            }
+            Chip::Ym2203 => &[Fm, SsgChannel(0), SsgChannel(1), SsgChannel(2)],
+            Chip::Ym2608 | Chip::Ym2610b => &[FmAdpcmLeft, FmAdpcmRight, SsgMixed],
+            Chip::Ym2413 => &[Melodic, Rhythm],
+            Chip::Ymf262 => &[Left, Right, LeftAux, RightAux],
+            Chip::Ymf278b => &[Unmixed(0), Unmixed(1), Unmixed(2), Unmixed(3), Left, Right],
+            _ if voice.output_gains.len() == 1 => &[Mono],
+            _ => &[Left, Right],
+        })
+    }
+
+    /// Set one gain per native output, in [`Self::output_layout`] order.
+    ///
+    /// Gains must be finite and nonnegative. They multiply the existing stereo
+    /// matrix coefficients, chip gain, and header levels. Changes affect newly
+    /// captured PCM; buffered audio and resampler history retain prior levels.
+    /// This does not control hardware audio.
+    pub fn set_output_gains(
         &mut self,
         chip: Chip,
         instance: Instance,
-        fm_adpcm: f32,
-        ssg: f32,
+        gains: &[f32],
     ) -> Result<(), VgmSequencerError> {
-        if !fm_adpcm.is_finite() || fm_adpcm < 0.0 || !ssg.is_finite() || ssg < 0.0 {
-            return Err(VgmSequencerError::InvalidGain);
-        }
-        if !matches!(chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
-            return Err(VgmSequencerError::UnsupportedOpnGains(chip));
-        }
         let voice = self
             .voices
             .iter_mut()
             .find(|voice| voice.chip == chip && voice.instance == instance)
             .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
-        voice.opn_gains = [fm_adpcm, ssg];
+        if gains.len() != voice.output_gains.len() {
+            return Err(AudioError::ChannelMismatch {
+                expected: voice.output_gains.len(),
+                actual: gains.len(),
+            }
+            .into());
+        }
+        if gains.iter().any(|gain| !gain.is_finite() || *gain < 0.0) {
+            return Err(VgmSequencerError::InvalidGain);
+        }
+        voice.output_gains.copy_from_slice(gains);
         Ok(())
     }
 
@@ -1677,7 +1729,7 @@ impl<'a> VgmSequencer<'a> {
                 phase_step: voice.phase_step,
                 queue: voice.queue.clone(),
                 gain: voice.gain,
-                opn_gains: voice.opn_gains,
+                output_gains: voice.output_gains.clone(),
                 main_coefficient: voice.main_coefficient,
                 paired_coefficient: voice.paired_coefficient,
                 paced_writes: voice.paced_writes.clone(),
@@ -1800,7 +1852,7 @@ impl<'a> VgmSequencer<'a> {
             voice.phase_step = saved.phase_step;
             voice.queue.clone_from(&saved.queue);
             voice.gain = saved.gain;
-            voice.opn_gains = saved.opn_gains;
+            voice.output_gains.clone_from(&saved.output_gains);
             voice.main_coefficient = saved.main_coefficient;
             voice.paired_coefficient = saved.paired_coefficient;
             voice.paced_writes.clone_from(&saved.paced_writes);

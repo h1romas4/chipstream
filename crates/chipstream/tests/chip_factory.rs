@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, SoundChipState};
 use chipstream::sequencer::{
     Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, GeneratorConfig,
-    Instance, MdxSequencer, Okim6258Divider, VgmSequencer, VgmSequencerError,
+    Instance, MdxSequencer, NativeOutput, Okim6258Divider, VgmSequencer, VgmSequencerError,
 };
 use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::{VgmCommand, WaitSamples};
@@ -24,6 +24,56 @@ impl soundlog::VgmCommandGenerator for Commands {
 
 fn generator(commands: Vec<VgmCommand>) -> Box<dyn soundlog::VgmCommandGenerator> {
     Box::new(Commands(commands.into_iter()))
+}
+
+#[test]
+fn ay_output_layout_matches_each_custom_backend() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
+    builder.register_chip(Chip::Ay8910, Instance::Secondary, 2_000_000);
+    builder.add_vgm_command(WaitSamples(10));
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::Ay8910, |config| {
+        let mut chip = FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        if config.instance() == Instance::Primary {
+            chip.channels = 3;
+        }
+        Ok(Box::new(chip))
+    });
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
+    assert_eq!(
+        player
+            .output_layout(Chip::Ay8910, Instance::Primary)
+            .unwrap(),
+        &[
+            NativeOutput::SsgChannel(0),
+            NativeOutput::SsgChannel(1),
+            NativeOutput::SsgChannel(2)
+        ]
+    );
+    assert_eq!(
+        player
+            .output_layout(Chip::Ay8910, Instance::Secondary)
+            .unwrap(),
+        &[NativeOutput::Mono]
+    );
+    player
+        .set_output_gains(Chip::Ay8910, Instance::Primary, &[1.0, 0.5, 0.0])
+        .unwrap();
+    player
+        .set_output_gains(Chip::Ay8910, Instance::Secondary, &[0.5])
+        .unwrap();
 }
 
 type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);

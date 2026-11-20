@@ -1,4 +1,5 @@
-use chipstream::sequencer::VgmSequencer;
+use chipstream::audio::AudioError;
+use chipstream::sequencer::{NativeOutput, VgmSequencer, VgmSequencerError};
 use soundlog::chip::Chip;
 use soundlog::chip::Okim6258Spec;
 use soundlog::vgm::VgmBuilder;
@@ -13,7 +14,7 @@ fn render(document: VgmDocument) -> Vec<[f32; 2]> {
 fn render_with_muted(document: VgmDocument, muted: Option<Chip>) -> Vec<[f32; 2]> {
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     if let Some(chip) = muted {
-        player.set_gain(chip, Instance::Primary, 0.0).unwrap();
+        player.set_chip_gain(chip, Instance::Primary, 0.0).unwrap();
     }
     let mut samples = Vec::new();
     while let Some(block) = player.render().unwrap() {
@@ -152,7 +153,7 @@ fn extra(volumes: Vec<ChipVolume>) -> VgmExtraHeader {
 }
 
 #[test]
-fn opn_gains_control_fm_and_ssg_independently() {
+fn output_gains_control_fm_and_ssg_independently() {
     let cases: &[(&[u8], &[u8], Chip)] = &[
         (
             include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
@@ -177,11 +178,16 @@ fn opn_gains_control_fm_and_ssg_independently() {
             let run = |fm, ssg, chip_gain| {
                 let mut player =
                     VgmSequencer::new(document.clone(), 48_000, 256, Default::default()).unwrap();
+                let gains = match chip {
+                    Chip::Ym2203 => vec![fm, ssg, ssg, ssg],
+                    Chip::Ym2608 | Chip::Ym2610b => vec![fm, fm, ssg],
+                    _ => unreachable!(),
+                };
                 player
-                    .set_opn_gains(chip.clone(), Instance::Primary, fm, ssg)
+                    .set_output_gains(chip.clone(), Instance::Primary, &gains)
                     .unwrap();
                 player
-                    .set_gain(chip.clone(), Instance::Primary, chip_gain)
+                    .set_chip_gain(chip.clone(), Instance::Primary, chip_gain)
                     .unwrap();
                 let mut audio = Vec::new();
                 while let Some(block) = player.render().unwrap() {
@@ -207,7 +213,7 @@ fn opn_gains_control_fm_and_ssg_independently() {
 }
 
 #[test]
-fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
+fn output_gain_changes_and_checkpoints_keep_streaming_state() {
     let document =
         VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
             .unwrap();
@@ -218,7 +224,7 @@ fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
     );
     player.render().unwrap();
     player
-        .set_opn_gains(Chip::Ym2203, Instance::Primary, 1.0, 0.0)
+        .set_output_gains(Chip::Ym2203, Instance::Primary, &[1.0, 0.0, 0.0, 0.0])
         .unwrap();
     let checkpoint = player.checkpoint().unwrap();
     let muted = (0..20)
@@ -232,7 +238,7 @@ fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
             .all(|frame| frame[0].abs() < 0.00001)
     );
     player
-        .set_opn_gains(Chip::Ym2203, Instance::Primary, 1.0, 1.0)
+        .set_output_gains(Chip::Ym2203, Instance::Primary, &[1.0, 1.0, 1.0, 1.0])
         .unwrap();
     let resumed = (0..20)
         .map(|_| player.render().unwrap().unwrap().frames().to_vec())
@@ -250,19 +256,143 @@ fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
     }
     assert!(
         player
-            .set_opn_gains(Chip::Ym2203, Instance::Primary, f32::NAN, 1.0)
+            .set_output_gains(Chip::Ym2203, Instance::Primary, &[f32::NAN, 1.0, 1.0, 1.0])
             .is_err()
     );
     assert!(
         player
-            .set_opn_gains(Chip::Ym2151, Instance::Primary, 1.0, 1.0)
+            .set_output_gains(Chip::Ym2151, Instance::Primary, &[1.0, 1.0])
             .is_err()
     );
     assert!(
         player
-            .set_opn_gains(Chip::Ym2203, Instance::Secondary, 1.0, 1.0)
+            .set_output_gains(Chip::Ym2203, Instance::Secondary, &[1.0, 1.0, 1.0, 1.0])
             .is_err()
     );
+}
+
+#[test]
+fn stereo_output_gains_validate_atomically_and_control_each_side() {
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm")[..])
+            .unwrap();
+    let baseline = render(document.clone());
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    assert_eq!(
+        player
+            .output_layout(Chip::Ym2151, Instance::Primary)
+            .unwrap(),
+        &[NativeOutput::Left, NativeOutput::Right]
+    );
+    player
+        .set_output_gains(Chip::Ym2151, Instance::Primary, &[0.5, 0.0])
+        .unwrap();
+    assert!(matches!(
+        player.set_output_gains(Chip::Ym2151, Instance::Primary, &[1.0]),
+        Err(VgmSequencerError::Audio(AudioError::ChannelMismatch {
+            expected: 2,
+            actual: 1
+        }))
+    ));
+    for gains in [[1.0, f32::NAN], [1.0, f32::INFINITY], [1.0, -1.0]] {
+        assert!(matches!(
+            player.set_output_gains(Chip::Ym2151, Instance::Primary, &gains),
+            Err(VgmSequencerError::InvalidGain)
+        ));
+    }
+    let mut output = Vec::new();
+    while let Some(block) = player.render().unwrap() {
+        output.extend_from_slice(block.frames());
+    }
+    assert_scaled(&output, &baseline, 0.5, 0.0);
+}
+
+#[test]
+fn output_layout_reports_chip_specific_native_outputs() {
+    let cases: &[(Chip, &[NativeOutput])] = &[
+        (Chip::Ym3812, &[NativeOutput::Mono]),
+        (Chip::Ym2413, &[NativeOutput::Melodic, NativeOutput::Rhythm]),
+        (
+            Chip::Ym2608,
+            &[
+                NativeOutput::FmAdpcmLeft,
+                NativeOutput::FmAdpcmRight,
+                NativeOutput::SsgMixed,
+            ],
+        ),
+        (
+            Chip::Ymf262,
+            &[
+                NativeOutput::Left,
+                NativeOutput::Right,
+                NativeOutput::LeftAux,
+                NativeOutput::RightAux,
+            ],
+        ),
+        (
+            Chip::Ymf278b,
+            &[
+                NativeOutput::Unmixed(0),
+                NativeOutput::Unmixed(1),
+                NativeOutput::Unmixed(2),
+                NativeOutput::Unmixed(3),
+                NativeOutput::Left,
+                NativeOutput::Right,
+            ],
+        ),
+    ];
+    for (chip, expected) in cases {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(chip.clone(), Instance::Primary, 4_000_000);
+        builder.add_vgm_command(WaitSamples(1));
+        let mut player =
+            VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
+        assert_eq!(
+            player
+                .output_layout(chip.clone(), Instance::Primary)
+                .unwrap(),
+            *expected
+        );
+        player
+            .set_output_gains(chip.clone(), Instance::Primary, &vec![1.0; expected.len()])
+            .unwrap();
+        assert!(matches!(
+            player.output_layout(chip.clone(), Instance::Secondary),
+            Err(VgmSequencerError::ChipNotFound { .. })
+        ));
+    }
+}
+
+#[test]
+fn output_gains_survive_vgm_stereo_mask_changes() {
+    let mut document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    document.commands.insert(
+        0,
+        VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0110_1010)),
+    );
+    let baseline = render(document.clone());
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    assert_eq!(
+        player
+            .output_layout(Chip::Ym2203, Instance::Primary)
+            .unwrap(),
+        &[
+            NativeOutput::Fm,
+            NativeOutput::SsgChannel(0),
+            NativeOutput::SsgChannel(1),
+            NativeOutput::SsgChannel(2)
+        ]
+    );
+    player
+        .set_output_gains(Chip::Ym2203, Instance::Primary, &[1.0, 0.5, 0.5, 0.5])
+        .unwrap();
+    let mut output = Vec::new();
+    while let Some(block) = player.render().unwrap() {
+        output.extend_from_slice(block.frames());
+    }
+    assert_scaled(&output, &baseline, 0.5, 0.5);
 }
 
 fn oki_builder(dual: bool) -> VgmBuilder {
@@ -342,7 +472,7 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
     let first = player.render().unwrap().unwrap().frames().to_vec();
     assert_scaled(&first, &baseline[..first.len()], 1.0, 1.0);
     player
-        .set_gain(Chip::Okim6258, Instance::Primary, 0.25)
+        .set_chip_gain(Chip::Okim6258, Instance::Primary, 0.25)
         .unwrap();
     let next = player.render().unwrap().unwrap().frames().to_vec();
     assert_scaled(

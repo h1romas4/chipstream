@@ -551,7 +551,7 @@ fn gain_applies_to_the_correct_chip_and_buffered_audio() {
     let mut player = VgmSequencer::new(doc, 48_000, 100, Default::default()).unwrap();
     player.render().unwrap();
     player
-        .set_gain(Chip::Okim6258, Instance::Primary, 0.0)
+        .set_chip_gain(Chip::Okim6258, Instance::Primary, 0.0)
         .unwrap();
     assert!(
         player
@@ -563,11 +563,11 @@ fn gain_applies_to_the_correct_chip_and_buffered_audio() {
             .all(|f| *f == [0.0; 2])
     );
     assert!(matches!(
-        player.set_gain(Chip::Okim6258, Instance::Primary, f32::NAN),
+        player.set_chip_gain(Chip::Okim6258, Instance::Primary, f32::NAN),
         Err(VgmSequencerError::InvalidGain)
     ));
     assert!(matches!(
-        player.set_gain(Chip::Ym2151, Instance::Primary, 1.0),
+        player.set_chip_gain(Chip::Ym2151, Instance::Primary, 1.0),
         Err(VgmSequencerError::ChipNotFound { .. })
     ));
 }
@@ -600,7 +600,7 @@ fn dual_chip_and_independent_gains_survive_serialization() {
     let mut player =
         VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     player
-        .set_gain(Chip::Okim6258, Instance::Primary, 0.0)
+        .set_chip_gain(Chip::Okim6258, Instance::Primary, 0.0)
         .unwrap();
     let samples = render_all(&mut player);
     assert!(samples.iter().all(|f| f[0] == 0.0));
@@ -1001,8 +1001,10 @@ fn chips_with_different_native_rates_mix_on_the_same_timeline() {
     let mut full = VgmSequencer::new(doc.clone(), 48_000, 73, Default::default()).unwrap();
     let mut oki = VgmSequencer::new(doc.clone(), 48_000, 409, Default::default()).unwrap();
     let mut ym = VgmSequencer::new(doc, 48_000, 255, Default::default()).unwrap();
-    oki.set_gain(Chip::Ym2612, Instance::Primary, 0.0).unwrap();
-    ym.set_gain(Chip::Okim6258, Instance::Primary, 0.0).unwrap();
+    oki.set_chip_gain(Chip::Ym2612, Instance::Primary, 0.0)
+        .unwrap();
+    ym.set_chip_gain(Chip::Okim6258, Instance::Primary, 0.0)
+        .unwrap();
     let all = render_all(&mut full);
     let left = render_all(&mut oki);
     let right = render_all(&mut ym);

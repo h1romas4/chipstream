@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer,
-    VgmSequencerOptions,
+    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, NativeOutput, PlaybackOptions,
+    VgmSequencer, VgmSequencerOptions,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -1342,18 +1342,10 @@ impl Sequencer {
         }
     }
 
-    fn set_gain(&mut self, chip: Chip, instance: Instance, gain: f32) -> Result<()> {
+    fn set_chip_gain(&mut self, chip: Chip, instance: Instance, gain: f32) -> Result<()> {
         match self {
-            Self::Vgm(player) => player.set_gain(chip, instance, gain)?,
-            Self::Mdx(player) => player.set_gain(chip, instance, gain)?,
-        }
-        Ok(())
-    }
-
-    fn set_opn_gains(&mut self, chip: Chip, instance: Instance, fm: f32, ssg: f32) -> Result<()> {
-        match self {
-            Self::Vgm(player) => player.set_opn_gains(chip, instance, fm, ssg)?,
-            Self::Mdx(_) => bail!("MDX does not support OPN chip gains"),
+            Self::Vgm(player) => player.set_chip_gain(chip, instance, gain)?,
+            Self::Mdx(player) => player.set_chip_gain(chip, instance, gain)?,
         }
         Ok(())
     }
@@ -1387,14 +1379,25 @@ impl Sequencer {
                     .copied()
                     .unwrap_or(1.0)
             };
-            sequencer.set_gain(source.chip.clone(), source.instance, value(GainPart::Chip))?;
+            sequencer.set_chip_gain(source.chip.clone(), source.instance, value(GainPart::Chip))?;
             if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
-                sequencer.set_opn_gains(
-                    source.chip.clone(),
-                    source.instance,
-                    value(GainPart::Fm),
-                    value(GainPart::Ssg),
-                )?;
+                let Self::Vgm(player) = sequencer else {
+                    bail!("MDX does not support OPN chip gains");
+                };
+                let output_gains = player
+                    .output_layout(source.chip.clone(), source.instance)?
+                    .iter()
+                    .map(|output| match output {
+                        NativeOutput::Fm
+                        | NativeOutput::FmAdpcmLeft
+                        | NativeOutput::FmAdpcmRight => Ok(value(GainPart::Fm)),
+                        NativeOutput::SsgChannel(_) | NativeOutput::SsgMixed => {
+                            Ok(value(GainPart::Ssg))
+                        }
+                        _ => bail!("unsupported OPN native output: {output:?}"),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                player.set_output_gains(source.chip.clone(), source.instance, &output_gains)?;
             }
         }
         *applied_revision = Some(revision);
