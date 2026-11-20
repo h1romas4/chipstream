@@ -3,17 +3,20 @@
 `chipstream` provides retro sound-chip emulation, device-independent VGM and
 MDX playback, and audio-processing components for applications and games.
 
-It uses [`soundlog`](https://crates.io/crates/soundlog) for VGM/MDX format　definitions and typed chip writes.
+It uses [`soundlog`](https://crates.io/crates/soundlog) for VGM/MDX format
+definitions and typed chip writes.
 
 ## APIs
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| `sequencer` | `VgmSequencer`, `MdxSequencer`, `ChipFactoryRegistry` | Render songs to stereo PCM with typed register-write callbacks, optional state tracking, and replaceable chip backends. |
-| `chip` | `SoundChip`, chip implementations | Apply typed soundlog writes and generate native-rate samples. |
+| `sequencer` | `VgmSequencer`, `MdxSequencer` | Render songs to stereo PCM. |
+| `sequencer` | `ChipFactoryRegistry` | Replace chip backends. |
+| `chip` | `SoundChip`, chip implementations | Apply writes and generate native samples. |
 | `audio` | `ChipCapture`, `NativeBlock` | Capture native samples and chip metadata. |
 | `audio` | `StereoMatrix`, `StereoBlock` | Convert native outputs to stereo. |
-| `audio` | `StereoResampler`, `StereoMixer`, `StereoEffect` | Resample, mix, and process stereo blocks. |
+| `audio` | `StereoResampler`, `StereoMixer` | Resample and mix stereo blocks. |
+| `audio` | `StereoEffect` | Process stereo blocks. |
 
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --open`).
@@ -27,8 +30,7 @@ stereo and resampled before aligned sources are mixed into the output block.
 ![Chip audio flow from VGM/MDX input to stereo PCM](assets/audio-flow.svg)
 
 The factory selects or creates a `SoundChip`; it is not part of the audio
-signal path. Resampling can either downsample or upsample, depending on the
-chip's native rate and the requested output rate. The final mix is not clipped.
+signal path. Resampling can downsample or upsample. The final mix is not clipped.
 
 ## Cargo features
 
@@ -51,11 +53,11 @@ chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 ```
 
 When a VGM header declares one of these chips without its feature,
-sequencer construction returns
-`VgmSequencerError::FeatureDisabled`; unsupported chips without implementations
-remain silent. MDX playback with a supplied PDX requires `okim6258` even when
-the song does not use PCM notes. Without a PDX, FM-only MDX playback does not
-require it.
+sequencer construction returns `VgmSequencerError::FeatureDisabled`.
+Unsupported chips without implementations remain silent.
+
+MDX playback with a supplied PDX requires `okim6258`, even when the song does
+not use PCM notes. Without a PDX, FM-only playback does not require it.
 
 ## Sequencers
 
@@ -89,14 +91,19 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### Custom command sources
+
 For a custom command source, implement `soundlog::VgmCommandGenerator` and
 pass it to `VgmSequencer::from_generator` with a `GeneratorConfig` containing
-the chip header. `from_generator_with_factories` also accepts replacement
-backends. Declare per-instance OKIM6258/OKIM6295 clock ranges, including
+the chip header. Use `from_generator_with_factories` to replace backends.
+
+Declare per-instance OKIM6258/OKIM6295 clock ranges, including
 intermediate clock-byte values, and SN76489 stereo-mask use in the config:
-the generator cannot be scanned ahead of playback. It must emit `EndOfData`,
-and is responsible for its own loops. Single-pass generators do not support
-checkpoints; rendering invokes them synchronously and may read ahead.
+the generator cannot be scanned ahead of playback.
+
+The generator must emit `EndOfData` and handle its own loops. It is called
+synchronously and may be read ahead. Single-pass generators do not support
+checkpoints.
 
 ```rust
 use chipstream::sequencer::{GeneratorConfig, VgmSequencer};
@@ -117,7 +124,10 @@ impl VgmCommandGenerator for Source {
     }
 }
 let config = GeneratorConfig {
-    header: VgmHeader { ym2151_clock: 4_000_000, ..Default::default() },
+    header: VgmHeader {
+        ym2151_clock: 4_000_000,
+        ..Default::default()
+    },
     ..Default::default()
 };
 let mut player = VgmSequencer::from_generator(Box::new(Source(0)), config, 48_000, 512)?;
@@ -126,6 +136,8 @@ while let Some(block) = player.render()? {
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+### Playback options
 
 Both sequencers require options at construction; their default options play one
 traversal without fading. Use `PlaybackOptions` for loop count and fade duration:
@@ -137,46 +149,59 @@ use chipstream::sequencer::{
 };
 use soundlog::mdx::package::MdxPackage;
 
-let playback = PlaybackOptions { loop_count: Some(2), fadeout: Some(Duration::from_secs(2)) };
+let playback = PlaybackOptions {
+    loop_count: Some(2),
+    fadeout: Some(Duration::from_secs(2)),
+};
 let vgm = VgmSequencer::from_vgm(
-    std::fs::read("song.vgm")?, 48_000, 512,
+    std::fs::read("song.vgm")?,
+    48_000,
+    512,
     VgmSequencerOptions { playback, ..Default::default() },
 )?;
 let package = MdxPackage::parse_owned(std::fs::read("song.mdx")?, None)?;
-let mdx = MdxSequencer::new(package, 48_000, 512, MdxSequencerOptions {
-    playback,
-    ..Default::default()
-})?;
+let mdx = MdxSequencer::new(
+    package,
+    48_000,
+    512,
+    MdxSequencerOptions { playback, ..Default::default() },
+)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 For VGM, `VgmSequencerOptions` can also override the header's `loop_base` and
-`loop_modifier`; `None` preserves the respective header value. `new` accepts
-parsed documents, while `from_vgm` accepts file bytes. Both have
-`_with_factories` variants for custom chip factories. Generator sources
-handle their own loops.
+`loop_modifier`; `None` preserves the respective header value.
+
+`new` accepts parsed documents, while `from_vgm` accepts file bytes. Both have
+`_with_factories` variants for custom chip factories.
 
 `None` as the loop count allows unlimited looping. For indefinite MDX playback
-also set `max_ticks` to `None`; other resource limits remain active. PDX lookup
-is the caller's responsibility, and omitting PDX disables the PCM path even
-when the MDX names a PDX.
+also set `max_ticks` to `None`; other resource limits remain active.
+
+PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
+even when the MDX names a PDX.
 
 `measure_vgm_duration_frames` and `measure_mdx_duration_frames` take the same
 playback settings and return `PlaybackDuration::Finite`, `Unbounded`, or
-`Unknown`. Scans are bounded; unlimited MDX loops that do not end within the
-scan limit are `Unknown`, not assumed unbounded. Durations exceeding `u32::MAX`
-output frames are also `Unknown`; playback is not limited by this measurement.
+`Unknown`. Scans are bounded: an MDX loop that exceeds the scan limit, or a
+duration exceeding `u32::MAX` output frames, is `Unknown`. Playback itself is
+not limited by this measurement.
+
+### Gain control
 
 Both sequencers provide `set_chip_gain` for the post-resampling gain of a chip
-instance, and `output_layout` and `set_output_gains` for its individual native
-outputs. For example, YM2203 uses `[Fm, SsgChannel(0), SsgChannel(1),
+instance. Use `output_layout` and `set_output_gains` for its native outputs.
+
+For example, YM2203 uses `[Fm, SsgChannel(0), SsgChannel(1),
 SsgChannel(2)]`; YM2608 and YM2610(B) use `[FmAdpcmLeft, FmAdpcmRight,
 SsgMixed]`. These are backend outputs, not necessarily individual sound
-channels. Gains multiply the chip's existing matrix and header levels, so VGM
-stereo masks continue to apply. Output-gain changes affect newly captured
-samples; buffered audio and resampler history retain their previous levels.
-Chip-gain changes also affect unmixed buffered PCM, but not audio already mixed
-during a seek. Neither gain controls physical hardware audio.
+channels.
+
+Gains multiply the existing matrix and header levels, preserving VGM stereo
+masks. Output-gain changes affect newly captured samples; buffered audio and
+resampler history retain their previous levels. Chip gain also affects unmixed
+buffered PCM, but not audio already mixed during a seek. Neither gain controls
+physical hardware audio.
 
 ### Native-output and stereo-group effects
 
@@ -190,7 +215,12 @@ use chipstream::sequencer::{Chip, Instance, VgmSequencer};
 let bytes = std::fs::read("song.vgm")?;
 let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
 // YM2608 layout: [FmAdpcmLeft, FmAdpcmRight, SsgMixed]
-let ssg = player.add_output_effect(Chip::Ym2608, Instance::Primary, 2, Gain::new(0.8)?)?;
+let ssg = player.add_output_effect(
+    Chip::Ym2608,
+    Instance::Primary,
+    2,
+    Gain::new(0.8)?,
+)?;
 player.set_output_pan(Chip::Ym2608, Instance::Primary, 2, Some(-0.5))?;
 let fm = player.create_output_group(Chip::Ym2608, Instance::Primary, &[0, 1])?;
 let balance = player.add_group_effect(&fm, StereoBalance::new(0.0)?)?;
@@ -204,32 +234,35 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`NativeEffect` operates on one output's `f32` samples in native backend
-amplitude units, at the current native sample rate. Output effects run in
-order, followed by `set_output_gains`, pan, and matrix routing. A group sums
-its selected routed outputs and processes them with its ordered `StereoEffect`
-chain. Ungrouped outputs use the ordinary mix. An output can belong to at most
-one group; removing a group removes its effects. `move_effect` reorders an
-effect within its chain and `remove_effect` removes it.
+`NativeEffect` processes one output's `f32` samples in native backend units,
+at the current native rate. Output effects run before gain, pan, and matrix
+routing. A group sums its routed outputs and applies its `StereoEffect` chain.
+Ungrouped outputs use the ordinary mix.
+
+An output can belong to at most one group. Removing a group removes its
+effects; `move_effect` and `remove_effect` manage individual effects.
 
 Pan is linear from -1 (left) to 1 (right), with both sides at full level at
-zero. `None` restores the output's original routing; explicit pan can route an
-otherwise left- or right-only output to either side. VGM channel masks still
-apply before group effects, and backend stereo mutes apply after group effects.
-Effects can subsequently produce audio on either side of a group.
+zero. `None` restores the original routing; explicit pan can route a
+left- or right-only output to either side. VGM channel masks apply before
+group effects, and backend stereo mutes apply afterward. Group effects can
+produce audio on either side.
 
 Effects must be `Clone + 'static`; cloning must independently capture all
 parameters and processing state for checkpoints. Restoring a checkpoint
-requires the same groups and effect order and restores their saved state and
-pan values. Single-pass generator checkpoints remain unsupported. Stereo
-effects must preserve the block's frame count and sample rate. Errors and
-non-finite output fail rendering. Effect tails are truncated at the source's
-end. Changes affect newly captured PCM, not buffered audio or resampler history;
-they do not control physical hardware. Mutate effects between `render` calls
-with exclusive access to the sequencer.
+requires the same groups and effect order; it restores their state and pan.
 
-Both sequencers expose `chip_instances` and support typed write callbacks. Register callbacks
-with `on_write` and state tracking with `track_state` before rendering:
+Stereo effects must preserve frame count and sample rate. Errors and non-finite
+output fail rendering. Effect tails are truncated at the source's end.
+
+Mutate effects between `render` calls with exclusive sequencer access. Changes
+affect newly captured PCM, not buffered audio or resampler history. Effects do
+not control physical hardware.
+
+### Write callbacks and filters
+
+Both sequencers expose `chip_instances` and typed write callbacks. Register
+callbacks with `on_write` and state tracking with `track_state` before rendering:
 
 ```rust,no_run
 use chipstream::sequencer::{Instance, StateEvent, VgmSequencer};
@@ -242,7 +275,10 @@ player.on_write(|instance, spec: Ym2151Spec, sample, events| {
     if let Some(events) = events {
         for event in events {
             if let StateEvent::KeyOn { channel, tone } = event {
-                println!("{instance:?} sample {sample}: channel {channel} at {:?}", tone.freq_hz);
+                println!(
+                    "{instance:?} sample {sample}: channel {channel} at {:?}",
+                    tone.freq_hz
+                );
             }
         }
     }
@@ -253,11 +289,11 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Callbacks receive the instance, a chip-specific write specification, the
-absolute output-frame position at the sequencer's sample rate, and optional
-state changes. They run synchronously during `render`; rendering may allocate
-and is not guaranteed real-time safe. Output is not clipped.
-SN76489 state tracking uses the VGM header's clock-divider and zero-period
+Callbacks receive the instance, typed write, output-frame position, and
+optional state changes. They run synchronously during `render`, which may
+allocate and is not guaranteed real-time safe.
+
+For SN76489, state tracking uses the VGM header's clock-divider and zero-period
 settings. `track_state_with_voice_clocks` also accounts for per-instance
 extra-header clock overrides.
 
@@ -282,13 +318,13 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-A filter returns one write of the same type. Registering another filter for
-that type replaces it; filters and observers are independent. `on_write` and
-state trackers see original writes. Filters run when a write is applied and
-may execute ahead of returned audio, without global ordering across voices.
-They cannot change already generated audio or queued hardware events. Filter
-closure state is not part of sequencer checkpoints: callers must restore it
-before restoring or seeking, and seeking calls the filter while advancing.
+A filter returns one write of the same type. Another filter for that type
+replaces it; callbacks and state trackers still see the original writes.
+Filters may execute ahead of returned audio, without global ordering across
+voices, and cannot change generated audio or queued hardware events.
+
+Filter closure state is not part of checkpoints. The caller must restore it
+before restoring or seeking; seeking calls the filter while advancing.
 
 ## Chips
 
@@ -317,8 +353,7 @@ to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
 The same mono filter is available independently as `audio::DcBlocker`.
 
 See its API documentation for queue, underrun, and stop behavior.
-`Okim6258Adpcm` provides the shared 12-bit predictor and encoder separately
-from chip registers and stream delivery.
+`Okim6258Adpcm` provides the 12-bit predictor and encoder separately.
 
 ### External chip backends
 
@@ -329,19 +364,14 @@ registry to `VgmSequencer::from_vgm_with_factories`,
 `VgmSequencer::new_with_factories`, or the corresponding
 `MdxSequencer` constructor.
 
-| Factory configuration | Description |
-|---|---|
-| `chip()` | Chip type selected by the VGM/MDX stream |
-| `instance()` | Primary or secondary instance |
-| `clock()` | Effective input clock in Hz |
-| `output_rate()` | Sequencer output rate in frames per second |
-| `settings()` | Format-independent chip-specific backend settings |
-| `source_okim6258_clock()` | Source-declared OKIM6258 clock for hardware timing |
+The factory receives a `ChipFactoryConfig` with the chip, instance, clock,
+output rate, and chip-specific settings. See its rustdoc for all accessors.
 
 `register_optional` can select the built-in backend for individual instances
 by returning `Ok(None)`; errors are propagated rather than triggering fallback.
 `register_fallback` can add a backend for instances declined by an existing
 factory. AY8910 has no default backend, so a declined instance is an error.
+
 To opt into YM2149 approximation, register a factory using
 `YmfmChip::new_ym2149(clock, divide_clock)` for `Chip::Ay8910`;
 `ay8910_settings().and_then(Ay8910Settings::ym2149_clock_divider)` checks
@@ -380,15 +410,15 @@ YMFM-backed chip types can be replaced individually:
 | `Ymf262` | 4 |
 | `Ymf278b` | 6 |
 
-The returned backend must report the configured chip type and clock and match
-the native output count above. Its `generate()` method still supplies samples
-to the sequencer; routing register writes to physical hardware does not by
-itself route that hardware's audio into the host PCM output. Implement
-`save_state()` and `restore_state()` to support checkpoint seeking. Backends
-that schedule timed output expose `ScheduledChip` through `SoundChip::scheduled`;
-they must also opt into `supports_checkpoint` when their scheduled state can
-be restored. DAC-interrupting backends cannot currently use checkpoints. Backend
-errors can be returned as `ChipError::External`.
+The backend must report the configured chip type and clock, and match the
+native output count above. Its `generate()` method supplies samples to the
+sequencer. Routing writes to physical hardware does not route its audio into
+host PCM.
+
+Implement `save_state()` and `restore_state()` for checkpoint seeking.
+Scheduled backends must also opt into `supports_checkpoint`; DAC-interrupting
+backends cannot currently use checkpoints. See `SoundChip` and `ScheduledChip`
+in rustdoc for details.
 
 The VGM sequencer applies backend output balancing to built-in and custom
 backends alike: SN76489 is multiplied by 0.5, YM2203 SSG by 0.25, and
@@ -437,7 +467,8 @@ let stereo = matrix.convert(&native)?;
 # assert!(stereo.frames().iter().any(|frame| frame[0] != frame[1]));
 let converted = src.process(&stereo)?;
 let tail = src.finish()?; // Drain once at the end of the stream.
-# assert!(converted.frames().iter().chain(tail.frames()).any(|frame| frame[0] != 0.0 && frame[1] != 0.0));
+# assert!(converted.frames().iter().chain(tail.frames())
+#     .any(|frame| frame[0] != 0.0 && frame[1] != 0.0));
 for block in [converted, tail] {
     let mut bus = StereoBlock::silence(SampleRate::from_hz(48_000), block.frames().len())?;
     StereoMixer::mix(&mut bus, &block, 1.0)?;
