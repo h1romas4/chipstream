@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn mdx_duration_matches_rendered_output_with_loop_and_fadeout() {
-        let bytes = include_bytes!("../../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+        let bytes = include_bytes!("../../assets/mdx/mdx_fm_loop.mdx");
         let package = MdxPackage::parse(bytes, None).unwrap();
         let options = MdxSequencerOptions {
             playback: crate::sequencer::PlaybackOptions {
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn unlimited_mdx_loop_is_unknown_when_the_scan_limit_is_reached() {
-        let bytes = include_bytes!("../../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+        let bytes = include_bytes!("../../assets/mdx/mdx_fm_loop.mdx");
         let package = MdxPackage::parse(bytes, None).unwrap();
         let options = MdxSequencerOptions {
             playback: PlaybackOptions {

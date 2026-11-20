@@ -53,20 +53,20 @@ fn centered_rms(audio: &[[f32; 2]]) -> f32 {
 fn opn_ssg_and_fm_balance_matches_reference_ranges() {
     let cases: &[(&[u8], &[u8], f32, f32)] = &[
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_psg_a4.vgm"),
             0.32,
             0.38,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_psg_a4.vgm"),
             0.65,
             0.77,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_psg_a4.vgm"),
             0.65,
             0.77,
         ),
@@ -88,11 +88,8 @@ fn opn_ssg_and_fm_balance_matches_reference_ranges() {
 #[cfg(feature = "sn76496")]
 fn sn76489_ym2612_balance_and_headroom() {
     let mut psg =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm")[..])
-            .unwrap();
-    let mut fm =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2612_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/sn76489_a4.vgm")[..]).unwrap();
+    let mut fm = VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2612_a4.vgm")[..]).unwrap();
     let psg_alone = render(psg.clone());
     let fm_alone = render(fm.clone());
     psg.header.ym2612_clock = fm.header.ym2612_clock;
@@ -111,8 +108,7 @@ fn sn76489_ym2612_balance_and_headroom() {
 #[test]
 fn ym2612_headroom_preserves_ssg_stereo_mask() {
     let mut document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     document.commands.insert(
         0,
         VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0110_1010)),
@@ -129,11 +125,8 @@ fn ym2612_headroom_preserves_ssg_stereo_mask() {
 #[cfg(feature = "sn76496")]
 fn sn76489_ym2151_balance_matches_reference_range() {
     let mut psg =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm")[..])
-            .unwrap();
-    let mut fm =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/sn76489_a4.vgm")[..]).unwrap();
+    let mut fm = VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2151_a4.vgm")[..]).unwrap();
     psg.header.ym2151_clock = fm.header.ym2151_clock;
     fm.header.sn76489_clock = psg.header.sn76489_clock;
     let psg_audio = render_with_muted(psg, Some(Chip::Ym2151));
@@ -156,18 +149,18 @@ fn extra(volumes: Vec<ChipVolume>) -> VgmExtraHeader {
 fn output_gains_control_fm_and_ssg_independently() {
     let cases: &[(&[u8], &[u8], Chip)] = &[
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_psg_a4.vgm"),
             Chip::Ym2203,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_psg_a4.vgm"),
             Chip::Ym2608,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_psg_a4.vgm"),
             Chip::Ym2610b,
         ),
     ];
@@ -215,8 +208,7 @@ fn output_gains_control_fm_and_ssg_independently() {
 #[test]
 fn output_gain_changes_and_checkpoints_keep_streaming_state() {
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     assert_eq!(
         player.chip_instances().collect::<Vec<_>>(),
@@ -274,8 +266,7 @@ fn output_gain_changes_and_checkpoints_keep_streaming_state() {
 #[test]
 fn stereo_output_gains_validate_atomically_and_control_each_side() {
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2151_a4.vgm")[..]).unwrap();
     let baseline = render(document.clone());
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     assert_eq!(
@@ -366,8 +357,7 @@ fn output_layout_reports_chip_specific_native_outputs() {
 #[test]
 fn output_gains_survive_vgm_stereo_mask_changes() {
     let mut document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     document.commands.insert(
         0,
         VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0110_1010)),
@@ -398,8 +388,7 @@ fn output_gains_survive_vgm_stereo_mask_changes() {
 #[test]
 fn native_effects_and_stereo_groups_process_only_selected_outputs() {
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let render = |mode: u8| {
         let mut player =
             VgmSequencer::new(document.clone(), 48_000, 256, Default::default()).unwrap();
@@ -444,8 +433,7 @@ fn native_effects_and_stereo_groups_process_only_selected_outputs() {
 #[test]
 fn pan_preserves_stereo_masks_and_validates_effect_configuration() {
     let mut document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     document.commands.insert(
         0,
         VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0101_0101)),
@@ -506,8 +494,7 @@ fn pan_preserves_stereo_masks_and_validates_effect_configuration() {
 #[test]
 fn pan_can_route_a_native_output_to_the_other_side() {
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     for output in 1..=3 {
         player
@@ -539,8 +526,7 @@ fn effect_order_can_be_changed_and_removed_during_playback() {
     }
 
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     player
         .set_output_gains(Chip::Ym2203, Instance::Primary, &[0.0, 1.0, 0.0, 0.0])
@@ -614,8 +600,7 @@ fn nonfinite_effect_output_fails_rendering_explicitly() {
     }
 
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     player
         .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Invalid)
@@ -732,27 +717,27 @@ fn absolute_and_relative_chip_volumes_follow_their_own_baselines() {
     let cases: &[(&[u8], ChipId, u16)] = &[
         #[cfg(feature = "sn76496")]
         (
-            include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm"),
+            include_bytes!("../assets/vgm/sn76489_a4.vgm"),
             ChipId::Sn76489,
             0x80,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2413_fm_a4.vgm"),
             ChipId::Ym2413,
             0x200,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_fm_a4.vgm"),
             ChipId::Ym2203,
             0x100,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_fm_a4.vgm"),
             ChipId::Ym2608,
             0x80,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm"),
             ChipId::Ym2610,
             0x40, // This fixture sets the dual-chip flag, halving the per-instance baseline.
         ),
@@ -807,20 +792,20 @@ fn dual_chip_absolute_volumes_are_independent() {
 fn paired_ssg_and_fm_volumes_are_independent_and_survive_stereo_mask() {
     let cases: &[(&[u8], &[u8], ChipId, u16)] = &[
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_psg_a4.vgm"),
             ChipId::Ym2203,
             0x80,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_psg_a4.vgm"),
             ChipId::Ym2608,
             0x80,
         ),
         (
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_psg_a4.vgm"),
             ChipId::Ym2610,
             0x80,
         ),
@@ -855,8 +840,7 @@ fn paired_ssg_and_fm_volumes_are_independent_and_survive_stereo_mask() {
 #[test]
 fn modifier_in_extended_header_space_is_read_for_vgm_150_and_151() {
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2413_fm_a4.vgm")[..]).unwrap();
     let baseline = render(document.clone());
     let mut bytes: Vec<u8> = document.into();
     assert!(bytes.len() > 0x7c);

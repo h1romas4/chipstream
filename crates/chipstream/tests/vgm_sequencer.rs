@@ -19,7 +19,7 @@ fn render_all(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
 
 #[test]
 fn from_vgm_accepts_owned_and_borrowed_bytes() {
-    let bytes = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
+    let bytes = include_bytes!("../assets/vgm/ym2151_a4.vgm").to_vec();
     let mut borrowed =
         VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     let mut owned = VgmSequencer::from_vgm(bytes, 48_000, 256, Default::default()).unwrap();
@@ -154,62 +154,38 @@ fn position_frames_counts_returned_pcm_across_loops() {
 #[test]
 fn supplied_vgm_examples_produce_stereo_audio() {
     let fixtures: &[(&str, &[u8])] = &[
-        (
-            "ym2151",
-            include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm"),
-        ),
+        ("ym2151", include_bytes!("../assets/vgm/ym2151_a4.vgm")),
         (
             "ym2203_fm",
-            include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_fm_a4.vgm"),
         ),
         (
             "ym2203_psg",
-            include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2203_psg_a4.vgm"),
         ),
-        (
-            "ym2413",
-            include_bytes!("../../soundlog/assets/vgm/ym2413_fm_a4.vgm"),
-        ),
+        ("ym2413", include_bytes!("../assets/vgm/ym2413_fm_a4.vgm")),
         (
             "ym2608_fm",
-            include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_fm_a4.vgm"),
         ),
         (
             "ym2608_psg",
-            include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2608_psg_a4.vgm"),
         ),
         (
             "ym2610_fm",
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm"),
         ),
         (
             "ym2610_psg",
-            include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            include_bytes!("../assets/vgm/ym2610b_psg_a4.vgm"),
         ),
-        (
-            "ym2612",
-            include_bytes!("../../soundlog/assets/vgm/ym2612_a4.vgm"),
-        ),
-        (
-            "ym3526",
-            include_bytes!("../../soundlog/assets/vgm/ym3526_fm_a4.vgm"),
-        ),
-        (
-            "y8950",
-            include_bytes!("../../soundlog/assets/vgm/y8950_fm_a4.vgm"),
-        ),
-        (
-            "ym3812",
-            include_bytes!("../../soundlog/assets/vgm/ym3812_fm_a4.vgm"),
-        ),
-        (
-            "ymf262",
-            include_bytes!("../../soundlog/assets/vgm/ymf262_fm_a4.vgm"),
-        ),
-        (
-            "ymf278b",
-            include_bytes!("../../soundlog/assets/vgm/ymf278b_fm_a4.vgm"),
-        ),
+        ("ym2612", include_bytes!("../assets/vgm/ym2612_a4.vgm")),
+        ("ym3526", include_bytes!("../assets/vgm/ym3526_fm_a4.vgm")),
+        ("y8950", include_bytes!("../assets/vgm/y8950_fm_a4.vgm")),
+        ("ym3812", include_bytes!("../assets/vgm/ym3812_fm_a4.vgm")),
+        ("ymf262", include_bytes!("../assets/vgm/ymf262_fm_a4.vgm")),
+        ("ymf278b", include_bytes!("../assets/vgm/ymf278b_fm_a4.vgm")),
     ];
     for (name, data) in fixtures {
         let mut player = VgmSequencer::from_vgm(*data, 48_000, 512, Default::default())
@@ -483,7 +459,7 @@ fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
 #[test]
 #[cfg(feature = "sn76496")]
 fn sn76489_vgm_produces_audio() {
-    let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");
+    let data = include_bytes!("../assets/vgm/sn76489_a4.vgm");
     let mut player =
         VgmSequencer::from_vgm(data.as_slice(), 44_100, 1000, Default::default()).unwrap();
     let audio = render_all(&mut player);
@@ -523,7 +499,7 @@ fn t6w28_header_is_rejected_for_document_and_stream() {
 
 #[test]
 fn ym2610_header_variant_selects_correct_fm_channels() {
-    let bytes = include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm");
+    let bytes = include_bytes!("../assets/vgm/ym2610b_fm_a4.vgm");
     let mut doc = VgmDocument::try_from(bytes.as_slice()).unwrap();
     for is_b in [false, true] {
         if is_b {
@@ -746,7 +722,7 @@ fn ym2612_pcm_dac_stream_is_expanded() {
 #[test]
 fn ym2203_ssg_stereo_mask_is_applied_before_resampling() {
     use soundlog::vgm::command::{Ay8910StereoMask, VgmCommand};
-    let bytes = include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm");
+    let bytes = include_bytes!("../assets/vgm/ym2203_psg_a4.vgm");
     let mut doc = VgmDocument::try_from(&bytes[..]).unwrap();
     // YM2203 SSG: enable all three channels on the right only.
     doc.commands.insert(

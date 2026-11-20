@@ -10,8 +10,8 @@ use soundlog::vgm::command::{VgmCommand, WaitSamples};
 use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId};
 use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
-const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
-const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
+const MDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
+const PDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");
 
 #[derive(Debug)]
 struct Commands(std::vec::IntoIter<VgmCommand>);

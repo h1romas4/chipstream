@@ -15,9 +15,9 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::PdxBuilder;
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
-const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+const MDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
 #[cfg(feature = "okim6258")]
-const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
+const PDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");
 
 fn render_mdx(player: &mut MdxSequencer<'_>) -> Vec<[f32; 2]> {
     let mut frames = Vec::new();

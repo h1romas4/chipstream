@@ -14,3 +14,6 @@
 !crates/soundlog/assets/mdx/*.MDX
 !crates/soundlog/assets/mdx/*.pdx
 !crates/soundlog/assets/mdx/*.PDX
+!crates/chipstream/assets/vgm/*.vgm
+!crates/chipstream/assets/mdx/*.mdx
+!crates/chipstream/assets/mdx/*.pdx

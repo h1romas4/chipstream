@@ -53,8 +53,7 @@ fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
     }
 
     let document =
-        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
-            .unwrap();
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
     let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     let echo = player
         .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Echo { previous: 0.0 })
@@ -391,7 +390,7 @@ fn seek_to_frame_can_be_cancelled_between_render_blocks() {
 
 #[test]
 fn mdx_checkpoint_restores_generator_and_audio_state() {
-    let mdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+    let mdx = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
     let package = MdxPackage::parse_owned(mdx.to_vec(), None).unwrap();
     let options = MdxSequencerOptions {
         playback: PlaybackOptions {
