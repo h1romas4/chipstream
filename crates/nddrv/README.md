@@ -162,6 +162,14 @@ routed to NanoDrive. Without an AY hardware route or enabled YM2149 emulation
 they are visual-only. Envelope-enabled tones are shown as active without
 simulating envelope amplitude. Chip Gain does not affect NanoDrive output.
 
+The **Chip** slider controls the entire emulated chip. YM2203, YM2608, and
+YM2610(B) also have independent FM (FM / ADPCM for YM2608 and YM2610(B)) and
+SSG sliders. YM2413 has Melodic and Rhythm sliders, and YMF262 has A / B and
+C / D output-pair sliders. These group gains multiply the Chip gain and apply
+equally to both instances of the same chip type. Other chips have only a Chip
+slider. Changes affect newly generated audio; buffered audio may still use the
+previous gain.
+
 ## NanoDrive Routing
 
 NanoDrive routing is experimental.

@@ -2897,16 +2897,7 @@ impl AppView {
                 if !software {
                     continue;
                 }
-                let mut parts = vec![(GainPart::Chip, "Chip")];
-                if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
-                    let main = if source.chip == Chip::Ym2203 {
-                        "FM"
-                    } else {
-                        "FM / ADPCM"
-                    };
-                    parts.extend([(GainPart::Fm, main), (GainPart::Ssg, "SSG")]);
-                }
-                for (part, label) in parts {
+                for &(part, label) in GainPart::controls(&source.chip) {
                     if let Some(control) = self.gain_controls.get(&(source.chip.clone(), part)) {
                         slider_rows += 1;
                         let value = match control.slider.read(cx).value() {
@@ -3341,11 +3332,7 @@ impl AppView {
                             .iter()
                             .filter(|source| !source.hardware && !source.visual_only)
                         {
-                            let mut parts = vec![GainPart::Chip];
-                            if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
-                                parts.extend([GainPart::Fm, GainPart::Ssg]);
-                            }
-                            for part in parts {
+                            for &(part, _) in GainPart::controls(&source.chip) {
                                 let key = (source.chip.clone(), part);
                                 if self.gain_controls.contains_key(&key) {
                                     continue;

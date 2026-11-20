@@ -125,6 +125,52 @@ pub enum GainPart {
     Chip,
     Fm,
     Ssg,
+    Melodic,
+    Rhythm,
+    MainOutputs,
+    AuxOutputs,
+}
+
+impl GainPart {
+    pub fn controls(chip: &Chip) -> &'static [(Self, &'static str)] {
+        match chip {
+            Chip::Ym2203 => &[(Self::Chip, "Chip"), (Self::Fm, "FM"), (Self::Ssg, "SSG")],
+            Chip::Ym2608 | Chip::Ym2610b => &[
+                (Self::Chip, "Chip"),
+                (Self::Fm, "FM / ADPCM"),
+                (Self::Ssg, "SSG"),
+            ],
+            Chip::Ym2413 => &[
+                (Self::Chip, "Chip"),
+                (Self::Melodic, "Melodic"),
+                (Self::Rhythm, "Rhythm"),
+            ],
+            Chip::Ymf262 => &[
+                (Self::Chip, "Chip"),
+                (Self::MainOutputs, "A / B"),
+                (Self::AuxOutputs, "C / D"),
+            ],
+            _ => &[(Self::Chip, "Chip")],
+        }
+    }
+
+    fn for_output(chip: &Chip, output: NativeOutput) -> Option<Self> {
+        match output {
+            NativeOutput::Fm | NativeOutput::FmAdpcmLeft | NativeOutput::FmAdpcmRight => {
+                Some(Self::Fm)
+            }
+            NativeOutput::SsgChannel(_) | NativeOutput::SsgMixed => Some(Self::Ssg),
+            NativeOutput::Melodic => Some(Self::Melodic),
+            NativeOutput::Rhythm => Some(Self::Rhythm),
+            NativeOutput::Left | NativeOutput::Right if *chip == Chip::Ymf262 => {
+                Some(Self::MainOutputs)
+            }
+            NativeOutput::LeftAux | NativeOutput::RightAux if *chip == Chip::Ymf262 => {
+                Some(Self::AuxOutputs)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1350,6 +1396,21 @@ impl Sequencer {
         Ok(())
     }
 
+    fn output_layout(&self, chip: Chip, instance: Instance) -> Result<&'static [NativeOutput]> {
+        Ok(match self {
+            Self::Vgm(player) => player.output_layout(chip, instance)?,
+            Self::Mdx(player) => player.output_layout(chip, instance)?,
+        })
+    }
+
+    fn set_output_gains(&mut self, chip: Chip, instance: Instance, gains: &[f32]) -> Result<()> {
+        match self {
+            Self::Vgm(player) => player.set_output_gains(chip, instance, gains)?,
+            Self::Mdx(player) => player.set_output_gains(chip, instance, gains)?,
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn new(path: &Path, rate: u32, looped: bool) -> Result<Self> {
         Self::with_factories(path, rate, looped, ChipFactoryRegistry::new())
@@ -1380,25 +1441,12 @@ impl Sequencer {
                     .unwrap_or(1.0)
             };
             sequencer.set_chip_gain(source.chip.clone(), source.instance, value(GainPart::Chip))?;
-            if matches!(source.chip, Chip::Ym2203 | Chip::Ym2608 | Chip::Ym2610b) {
-                let Self::Vgm(player) = sequencer else {
-                    bail!("MDX does not support OPN chip gains");
-                };
-                let output_gains = player
-                    .output_layout(source.chip.clone(), source.instance)?
-                    .iter()
-                    .map(|output| match output {
-                        NativeOutput::Fm
-                        | NativeOutput::FmAdpcmLeft
-                        | NativeOutput::FmAdpcmRight => Ok(value(GainPart::Fm)),
-                        NativeOutput::SsgChannel(_) | NativeOutput::SsgMixed => {
-                            Ok(value(GainPart::Ssg))
-                        }
-                        _ => bail!("unsupported OPN native output: {output:?}"),
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                player.set_output_gains(source.chip.clone(), source.instance, &output_gains)?;
-            }
+            let output_gains = sequencer
+                .output_layout(source.chip.clone(), source.instance)?
+                .iter()
+                .map(|output| GainPart::for_output(&source.chip, *output).map_or(1.0, &value))
+                .collect::<Vec<_>>();
+            sequencer.set_output_gains(source.chip.clone(), source.instance, &output_gains)?;
         }
         *applied_revision = Some(revision);
         Ok(())
@@ -2961,6 +3009,205 @@ mod tests {
                 assert_eq!(
                     player.gains.values.lock().unwrap()[&(Chip::Ym2203, part)],
                     1.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn opn_fm_and_ssg_gains_are_independent_of_each_other() {
+        let fixtures: &[(Chip, &[u8], &[u8])] = &[
+            (
+                Chip::Ym2203,
+                include_bytes!("../../soundlog/assets/vgm/ym2203_fm_a4.vgm"),
+                include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm"),
+            ),
+            (
+                Chip::Ym2608,
+                include_bytes!("../../soundlog/assets/vgm/ym2608_fm_a4.vgm"),
+                include_bytes!("../../soundlog/assets/vgm/ym2608_psg_a4.vgm"),
+            ),
+            (
+                Chip::Ym2610b,
+                include_bytes!("../../soundlog/assets/vgm/ym2610b_fm_a4.vgm"),
+                include_bytes!("../../soundlog/assets/vgm/ym2610b_psg_a4.vgm"),
+            ),
+        ];
+        for (chip, fm, ssg) in fixtures {
+            for (data, part, other) in [
+                (*fm, GainPart::Fm, GainPart::Ssg),
+                (*ssg, GainPart::Ssg, GainPart::Fm),
+            ] {
+                let render = |muted| {
+                    let mut sequencer = Sequencer::Vgm(
+                        VgmSequencer::from_vgm(data, 44_100, 1024, Default::default()).unwrap(),
+                    );
+                    let sources = Sequencer::gain_sources(&sequencer, &[]);
+                    let gains = GainState::default();
+                    if let Some(part) = muted {
+                        gains
+                            .values
+                            .lock()
+                            .unwrap()
+                            .insert((chip.clone(), part), 0.0);
+                    }
+                    Sequencer::apply_chip_gains(&mut sequencer, &sources, &gains, &mut None)
+                        .unwrap();
+                    sequencer.render().unwrap().unwrap().frames().to_vec()
+                };
+                let baseline = render(None);
+                assert!(baseline.iter().flatten().any(|sample| sample.abs() > 0.001));
+                assert_eq!(render(Some(other)), baseline, "{chip:?} {part:?}");
+                assert!(
+                    render(Some(part))
+                        .iter()
+                        .flatten()
+                        .all(|sample| sample.abs() < 0.00001),
+                    "{chip:?} {part:?}"
+                );
+                assert!(
+                    render(Some(GainPart::Chip))
+                        .iter()
+                        .flatten()
+                        .all(|sample| sample.abs() < 0.00001),
+                    "{chip:?} master"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn applying_default_gains_preserves_mdx_output() {
+        let package = MdxPackage::parse(
+            include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx"),
+            Some(include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx")),
+        )
+        .unwrap();
+        let render = |apply_gains| {
+            let mut sequencer = Sequencer::Mdx(
+                MdxSequencer::new(package.clone(), 44_100, 1024, Default::default()).unwrap(),
+            );
+            if apply_gains {
+                let sources = Sequencer::gain_sources(&sequencer, &[]);
+                Sequencer::apply_chip_gains(
+                    &mut sequencer,
+                    &sources,
+                    &GainState::default(),
+                    &mut None,
+                )
+                .unwrap();
+            }
+            let mut frames = Vec::new();
+            for _ in 0..4 {
+                let Some(block) = sequencer.render().unwrap() else {
+                    break;
+                };
+                frames.extend_from_slice(block.frames());
+            }
+            frames
+        };
+        let baseline = render(false);
+        assert!(baseline.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert_eq!(render(true), baseline);
+    }
+
+    #[test]
+    fn ym2413_and_ymf262_group_gains_control_native_outputs() {
+        use chipstream::chip::{ChipError, ChipRegisterWrite, SoundChip};
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        struct TestChip {
+            chip: Chip,
+            clock: u32,
+            channels: usize,
+            active: usize,
+        }
+        impl SoundChip for TestChip {
+            fn chip_type(&self) -> &Chip {
+                &self.chip
+            }
+            fn clock(&self) -> u32 {
+                self.clock
+            }
+            fn sample_rate(&self) -> u32 {
+                44_100
+            }
+            fn channels(&self) -> usize {
+                self.channels
+            }
+            fn apply_register_write(&mut self, _: ChipRegisterWrite) -> Result<(), ChipError> {
+                Ok(())
+            }
+            fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+                for frame in samples.chunks_exact_mut(self.channels) {
+                    frame.fill(0);
+                    frame[self.active] = 8192;
+                }
+                Ok(())
+            }
+            fn reset(&mut self) {}
+        }
+
+        for (chip, parts) in [
+            (Chip::Ym2413, &[GainPart::Melodic, GainPart::Rhythm][..]),
+            (
+                Chip::Ymf262,
+                &[
+                    GainPart::MainOutputs,
+                    GainPart::MainOutputs,
+                    GainPart::AuxOutputs,
+                    GainPart::AuxOutputs,
+                ][..],
+            ),
+        ] {
+            for (active, &part) in parts.iter().enumerate() {
+                let render = |muted| {
+                    let mut builder = VgmBuilder::new();
+                    builder.register_chip(chip.clone(), Instance::Primary, 4_000_000);
+                    builder.add_vgm_command(WaitSamples(4096));
+                    let mut factories = ChipFactoryRegistry::new();
+                    let channels = parts.len();
+                    factories.register(chip.clone(), move |config| {
+                        Ok(Box::new(TestChip {
+                            chip: config.chip().clone(),
+                            clock: config.clock(),
+                            channels,
+                            active,
+                        }))
+                    });
+                    let mut sequencer = Sequencer::Vgm(
+                        VgmSequencer::new_with_factories(
+                            builder.finalize(),
+                            44_100,
+                            1024,
+                            Default::default(),
+                            factories,
+                        )
+                        .unwrap(),
+                    );
+                    let sources = Sequencer::gain_sources(&sequencer, &[]);
+                    let gains = GainState::default();
+                    if let Some(part) = muted {
+                        gains
+                            .values
+                            .lock()
+                            .unwrap()
+                            .insert((chip.clone(), part), 0.0);
+                    }
+                    Sequencer::apply_chip_gains(&mut sequencer, &sources, &gains, &mut None)
+                        .unwrap();
+                    sequencer.render().unwrap().unwrap().frames().to_vec()
+                };
+                let other = parts.iter().copied().find(|&p| p != part).unwrap();
+                let baseline = render(None);
+                assert!(baseline.iter().flatten().any(|sample| sample.abs() > 0.001));
+                assert_eq!(render(Some(other)), baseline, "{chip:?} output {active}");
+                assert!(
+                    render(Some(part))
+                        .iter()
+                        .flatten()
+                        .all(|sample| sample.abs() < 0.00001),
+                    "{chip:?} output {active}"
                 );
             }
         }
