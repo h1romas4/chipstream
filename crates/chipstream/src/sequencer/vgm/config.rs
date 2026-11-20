@@ -2,16 +2,20 @@
 
 use soundlog::chip::Chip;
 use soundlog::vgm::command::Instance;
-use soundlog::vgm::header::{ChipId, VgmExtraHeader, VgmHeader};
+use soundlog::vgm::header::{Ay8910ChipType, Ay8910Flags, ChipId, VgmExtraHeader, VgmHeader};
 
 use super::timing::Timing;
+use crate::sequencer::{
+    Ay8910Settings, Ay8910Variant, AyOutputSettings, C140Variant, ChipBackendSettings,
+    Okim6258Divider, Okim6258Settings, Sn76489Settings,
+};
 
 pub(super) struct VoiceConfig {
     pub(super) chip: Chip,
     pub(super) instance: Instance,
     pub(super) clock: u32,
     pub(super) dual: bool,
-    pub(super) sn76489_stereo_used: bool,
+    pub(super) settings: ChipBackendSettings,
     pub(super) okim6258_dc_blocker: bool,
 }
 
@@ -51,7 +55,7 @@ impl<'a> ChipConfiguration<'a> {
                     instance,
                     clock,
                     dual,
-                    sn76489_stereo_used: false,
+                    settings: backend_settings(chip, header),
                     okim6258_dc_blocker,
                 });
             }
@@ -66,8 +70,8 @@ impl<'a> ChipConfiguration<'a> {
 
     pub(super) fn set_psg_stereo(&mut self, stereo: [bool; 2]) {
         for voice in &mut self.voices {
-            if voice.chip == Chip::Sn76489 {
-                voice.sn76489_stereo_used = stereo[voice.instance as usize];
+            if let ChipBackendSettings::Sn76489(settings) = &mut voice.settings {
+                settings.stereo_used = stereo[voice.instance as usize];
             }
         }
     }
@@ -111,6 +115,99 @@ impl<'a> ChipConfiguration<'a> {
             (Chip::Okim6258, header.okim6258_clock),
             (Chip::Okim6295, header.okim6295_clock),
         ]
+    }
+}
+
+impl From<&VgmHeader> for Ay8910Settings {
+    fn from(header: &VgmHeader) -> Self {
+        let variant = match header.ay_chip_type {
+            Ay8910ChipType::Ay8910 => Ay8910Variant::Ay8910,
+            Ay8910ChipType::Ay8912 => Ay8910Variant::Ay8912,
+            Ay8910ChipType::Ay8913 => Ay8910Variant::Ay8913,
+            Ay8910ChipType::Ay8930 => Ay8910Variant::Ay8930,
+            Ay8910ChipType::Ay8914 => Ay8910Variant::Ay8914,
+            Ay8910ChipType::Ym2149 => Ay8910Variant::Ym2149,
+            Ay8910ChipType::Ym3439 => Ay8910Variant::Ym3439,
+            Ay8910ChipType::Ymz284 => Ay8910Variant::Ymz284,
+            Ay8910ChipType::Ymz294 => Ay8910Variant::Ymz294,
+            Ay8910ChipType::Unknown(value) => Ay8910Variant::Unknown(value),
+        };
+        Self {
+            variant,
+            output: header.ay8910_flags.into(),
+        }
+    }
+}
+
+impl From<Ay8910Flags> for AyOutputSettings {
+    fn from(flags: Ay8910Flags) -> Self {
+        Self {
+            legacy_output: flags.legacy_output,
+            single_output: flags.single_output,
+            discrete_output: flags.discrete_output,
+            raw_output: flags.raw_output,
+            ym_pin26_low: flags.ym_pin26_low,
+            reserved_flags: flags.reserved,
+        }
+    }
+}
+
+fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
+    match chip {
+        Chip::Ay8910 => ChipBackendSettings::Ay8910(Ay8910Settings::from(header)),
+        Chip::Sn76489 => {
+            let flags = header.sn76489_flags;
+            let feedback = u16::from(header.sn76489_feedback);
+            let width = u8::from(header.sn76489_shift_register_width);
+            ChipBackendSettings::Sn76489(Sn76489Settings {
+                shift_width: if width == 0 { 16 } else { width },
+                feedback: if feedback == 0 { 0x0009 } else { feedback },
+                negate: flags.output_negate,
+                stereo: flags.gamegear_stereo,
+                stereo_used: false,
+                divider_8: flags.clock_divider_8,
+                frequency_zero_is_1024: flags.frequency_0_is_400,
+                xnor: flags.xnor_noise_mode,
+                t6w28: header.misc().t6w28_detected == Some(true),
+                reserved_flags: flags.reserved,
+            })
+        }
+        Chip::Okim6258 => {
+            let flags = header.okim6258_flags;
+            ChipBackendSettings::Okim6258(Okim6258Settings {
+                divider: match flags.clock_divider {
+                    0 => Okim6258Divider::Div1024,
+                    1 => Okim6258Divider::Div768,
+                    _ => Okim6258Divider::Div512,
+                },
+                adpcm_3bit: flags.adpcm_3bit_select,
+                output_12bit: flags.output_12bit,
+                reserved_flags: flags.reserved,
+            })
+        }
+        Chip::Okim6295 => ChipBackendSettings::Okim6295 {
+            pin7_high: header.okim6295_clock & 0x8000_0000 != 0,
+        },
+        Chip::C140 => ChipBackendSettings::C140(match u8::from(header.c140_chip_type) {
+            0 => C140Variant::System2,
+            1 => C140Variant::System21,
+            2 => C140Variant::Asic219,
+            value => C140Variant::Unknown(value),
+        }),
+        Chip::SegaPcm => ChipBackendSettings::SegaPcm {
+            bank_shift: header.spcm_interface as u8,
+            bank_mask: (header.spcm_interface >> 16) as u8,
+        },
+        Chip::Ym2203 => ChipBackendSettings::Ym2203 {
+            ssg: header.ym2203_ay8910_flags.into(),
+        },
+        Chip::Ym2608 => ChipBackendSettings::Ym2608 {
+            ssg: header.ym2608_ay8910_flags.into(),
+        },
+        Chip::Ym2610b => ChipBackendSettings::Ym2610 {
+            is_b: header.misc().ym2610b_detected == Some(true),
+        },
+        _ => ChipBackendSettings::Standard,
     }
 }
 

@@ -4,8 +4,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use chipstream::chip::{ChipError, Sn76496, Sn76496Config, YmfmChip};
-use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
+use chipstream::chip::{ChipError, Sn76496, YmfmChip};
+use chipstream::sequencer::{
+    Chip, ChipBackendSettings, ChipFactoryConfig, ChipFactoryRegistry, Instance,
+};
 use ndsif::WriteId;
 use ndsif_transport::NdsifSerialConfig;
 
@@ -105,12 +107,11 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
         let policy = Rc::clone(&policy);
         factories.register(chip, move |config| {
             let instance = instance_number(config.instance());
-            let oki_clock = if registered_chip == Chip::Ym2151 {
-                config.header().okim6258_clock & 0x3fff_ffff
+            let oki_timing_clock = if registered_chip == Chip::Ym2151 {
+                config.source_okim6258_clock()
             } else {
-                0
+                None
             };
-            let oki_timing_clock = (oki_clock != 0).then_some(oki_clock);
             let transport = find_transport(
                 &chip_transports,
                 &registered_chip,
@@ -165,8 +166,10 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
     let psg_transports = Rc::clone(&transports);
     let psg_policy = Rc::clone(&policy);
     factories.register(Chip::Sn76489, move |config| {
-        let flags = &config.header().sn76489_flags;
-        if config.header().misc().t6w28_detected == Some(true) {
+        let ChipBackendSettings::Sn76489(settings) = *config.settings() else {
+            return Err(ChipError::UnsupportedChip(config.chip().clone()));
+        };
+        if settings.t6w28 {
             return Err(ChipError::InvalidConfiguration {
                 chip: Chip::Sn76489,
                 reason: "T6W28 PSG is not supported",
@@ -177,7 +180,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
             Instance::Secondary => WriteId::SN76489_SECOND,
         };
         let instance = instance_number(config.instance());
-        let transport = if config.sn76489_stereo_used() {
+        let transport = if settings.stereo_used {
             None
         } else {
             find_transport(
@@ -194,19 +197,9 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
             return Ok(Box::new(NdsifSn76489::new(config, transport)?));
         }
 
-        let feedback = u16::from(config.header().sn76489_feedback);
-        let width = u8::from(config.header().sn76489_shift_register_width);
         Ok(Box::new(Sn76496::with_config(
             config.clock(),
-            Sn76496Config {
-                feedback: if feedback == 0 { 0x0009 } else { feedback },
-                shift_width: if width == 0 { 16 } else { width },
-                negate: flags.output_negate,
-                stereo: flags.gamegear_stereo,
-                divider_8: flags.clock_divider_8,
-                frequency_zero_is_1024: flags.frequency_0_is_400,
-                xnor: flags.xnor_noise_mode,
-            },
+            settings.into(),
         )?))
     });
 
@@ -235,7 +228,7 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
 fn select_route(
     policy: &RefCell<impl NdsifRoutePolicy>,
     device: usize,
-    config: &ChipFactoryConfig<'_>,
+    config: &ChipFactoryConfig,
 ) -> Result<NdsifRouteOptions, ChipError> {
     let route = NdsifRoute {
         chip: config.chip().clone(),

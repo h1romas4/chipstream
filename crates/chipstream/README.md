@@ -231,17 +231,34 @@ registry to `VgmSequencer::from_vgm_with_factories`,
 | `instance()` | Primary or secondary instance |
 | `clock()` | Effective input clock in Hz |
 | `output_rate()` | Sequencer output rate in frames per second |
-| `header()` | Parsed VGM header, or synthesized MDX header |
-| `extra_header()` | Optional VGM extra header |
+| `settings()` | Format-independent chip-specific backend settings |
+| `source_okim6258_clock()` | Source-declared OKIM6258 clock for hardware timing |
 
 `register_optional` can select the built-in backend for individual instances
 by returning `Ok(None)`; errors are propagated rather than triggering fallback.
 `register_fallback` can add a backend for instances declined by an existing
 factory. AY8910 has no default backend, so a declined instance is an error.
 To opt into YM2149 approximation, register a factory using
-`YmfmChip::new_ym2149(clock, divide_clock)` for `Chip::Ay8910`; callers
-must interpret and validate the VGM AY type and flags. The three YM2149 outputs
+`YmfmChip::new_ym2149(clock, divide_clock)` for `Chip::Ay8910`;
+`ay8910_settings().and_then(Ay8910Settings::ym2149_clock_divider)` checks
+whether the model and output settings are supported. The three YM2149 outputs
 are mixed as AY channels, including VGM per-channel stereo masks.
+
+```rust
+use chipstream::chip::{ChipError, YmfmChip};
+use chipstream::sequencer::{Ay8910Settings, Chip, ChipFactoryRegistry};
+
+let mut factories = ChipFactoryRegistry::new();
+factories.register(Chip::Ay8910, |config| {
+    let divide = config.ay8910_settings()
+        .and_then(Ay8910Settings::ym2149_clock_divider)
+        .ok_or(ChipError::InvalidConfiguration {
+            chip: Chip::Ay8910,
+            reason: "unsupported AY model or output settings",
+        })?;
+    Ok(Box::new(YmfmChip::new_ym2149(config.clock(), divide)?))
+});
+```
 
 YMFM-backed chip types can be replaced individually:
 

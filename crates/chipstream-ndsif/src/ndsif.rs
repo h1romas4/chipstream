@@ -15,7 +15,9 @@ use soundlog::vgm::command::Instance;
 
 use chipstream::{
     chip::{ChipError, ChipRegisterWrite, SampleRate, ScheduledChip, SoundChip},
-    sequencer::{ChipFactoryConfig, ChipFactoryRegistry},
+    sequencer::{
+        Ay8910Variant, ChipBackendSettings, ChipFactoryConfig, ChipFactoryRegistry, Okim6258Divider,
+    },
 };
 
 use ndsif_transport::{
@@ -53,16 +55,13 @@ pub enum NdsifAyCompatibility {
 
 impl<T: NdsifTransport> NdsifSoundChip<T> {
     /// Configure a physical chip and create its scheduled sound-chip adapter.
-    pub fn new(
-        config: &ChipFactoryConfig<'_>,
-        transport: Rc<RefCell<T>>,
-    ) -> Result<Self, ChipError> {
+    pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
 
     /// Configure a physical chip instance independently of the source instance.
     pub fn with_target_instance(
-        config: &ChipFactoryConfig<'_>,
+        config: &ChipFactoryConfig,
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
@@ -74,30 +73,32 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
     /// The caller must ensure the target supports the selected approximation.
     /// Unsupported AY output and clock flags remain rejected.
     pub fn with_target_ay_compatibility(
-        config: &ChipFactoryConfig<'_>,
+        config: &ChipFactoryConfig,
         target: Instance,
         transport: Rc<RefCell<T>>,
         compatibility: NdsifAyCompatibility,
     ) -> Result<Self, ChipError> {
-        use soundlog::vgm::header::Ay8910ChipType;
-
         let chip = config.chip().clone();
         let Some((divisor, channels, write_id)) = ndsif_chip_config(&chip) else {
             return Err(ChipError::UnsupportedChip(chip));
         };
-        if chip == Chip::Ay8910
-            && (!(config.header().ay_chip_type == Ay8910ChipType::Ay8910
+        if chip == Chip::Ay8910 {
+            let ChipBackendSettings::Ay8910(settings) = config.settings() else {
+                return Err(ChipError::UnsupportedChip(chip));
+            };
+            if !(settings.variant == Ay8910Variant::Ay8910
                 || (compatibility == NdsifAyCompatibility::Ay8910AndYm2149
-                    && config.header().ay_chip_type == Ay8910ChipType::Ym2149))
-                || config.header().ay8910_flags.ym_pin26_low
-                || config.header().ay8910_flags.discrete_output
-                || config.header().ay8910_flags.raw_output
-                || config.header().ay8910_flags.reserved != 0)
-        {
-            return Err(ChipError::InvalidConfiguration {
-                chip,
-                reason: "NDSIF AY routing requires a supported AY chip type with mixed output and no YM clock-divider flags",
-            });
+                    && settings.variant == Ay8910Variant::Ym2149))
+                || settings.output.ym_pin26_low
+                || settings.output.discrete_output
+                || settings.output.raw_output
+                || settings.output.reserved_flags != 0
+            {
+                return Err(ChipError::InvalidConfiguration {
+                    chip,
+                    reason: "NDSIF AY routing requires a supported AY chip type with mixed output and no YM clock-divider flags",
+                });
+            }
         }
         if config.clock() < divisor {
             return Err(ChipError::InvalidClock {
@@ -301,26 +302,26 @@ pub struct NdsifSn76489<T> {
 
 impl<T: NdsifTransport> NdsifSn76489<T> {
     /// Configure an SN76489 instance and create its scheduled adapter.
-    pub fn new(
-        config: &ChipFactoryConfig<'_>,
-        transport: Rc<RefCell<T>>,
-    ) -> Result<Self, ChipError> {
+    pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
 
     /// Configure a physical PSG instance independently of the source instance.
     pub fn with_target_instance(
-        config: &ChipFactoryConfig<'_>,
+        config: &ChipFactoryConfig,
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
-        if config.header().misc().t6w28_detected == Some(true) {
+        let ChipBackendSettings::Sn76489(settings) = config.settings() else {
+            return Err(ChipError::UnsupportedChip(config.chip().clone()));
+        };
+        if settings.t6w28 {
             return Err(ChipError::InvalidConfiguration {
                 chip: Chip::Sn76489,
                 reason: "T6W28 PSG is not supported",
             });
         }
-        if config.sn76489_stereo_used() {
+        if settings.stereo_used {
             return Err(ChipError::InvalidConfiguration {
                 chip: Chip::Sn76489,
                 reason: "NDSIF SN76489 does not support Game Gear stereo masks",
@@ -346,7 +347,7 @@ impl<T: NdsifTransport> NdsifSn76489<T> {
                 config.clock(),
                 NonZeroU32::new(16).expect("SN76489 divider is nonzero"),
             ),
-            stereo_enabled: config.header().sn76489_flags.gamegear_stereo,
+            stereo_enabled: settings.stereo,
             transport,
         })
     }
@@ -543,24 +544,24 @@ struct PendingOkiTiming {
 
 impl<T: NdsifTransport> NdsifOkim6258<T> {
     /// Configure an NDSIF audio stream from the sequencer's chip metadata.
-    pub fn new(
-        config: &ChipFactoryConfig<'_>,
-        transport: Rc<RefCell<T>>,
-    ) -> Result<Self, ChipError> {
+    pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
 
     /// Configure a physical ADPCM instance independently of the source instance.
     pub fn with_target_instance(
-        config: &ChipFactoryConfig<'_>,
+        config: &ChipFactoryConfig,
         target: Instance,
         transport: Rc<RefCell<T>>,
     ) -> Result<Self, ChipError> {
         let instance = instance_id(target);
-        let divider = match config.header().okim6258_flags.clock_divider {
-            0 => Divider::Div1024,
-            1 => Divider::Div768,
-            _ => Divider::Div512,
+        let ChipBackendSettings::Okim6258(settings) = config.settings() else {
+            return Err(ChipError::UnsupportedChip(config.chip().clone()));
+        };
+        let divider = match settings.divider {
+            Okim6258Divider::Div1024 => Divider::Div1024,
+            Okim6258Divider::Div768 => Divider::Div768,
+            Okim6258Divider::Div512 => Divider::Div512,
         };
         if config.clock() < divider as u32 {
             return Err(ChipError::InvalidClock {

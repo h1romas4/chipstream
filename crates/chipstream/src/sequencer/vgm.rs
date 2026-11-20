@@ -32,15 +32,19 @@ use crate::chip::Okim6295;
 use crate::chip::Pwm;
 #[cfg(feature = "segapcm")]
 use crate::chip::SegaPcm;
+#[cfg(feature = "sn76496")]
+use crate::chip::Sn76496;
 #[cfg(feature = "c140")]
 use crate::chip::{C140, C140Type};
 use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChipState, YmfmChip};
 #[cfg(feature = "okim6258")]
 use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
-#[cfg(feature = "sn76496")]
-use crate::chip::{Sn76496, Sn76496Config};
 use crate::fixed::{advance, divide_ratio};
 
+#[cfg(any(feature = "sn76496", feature = "okim6258"))]
+use super::ChipBackendSettings;
+#[cfg(feature = "okim6258")]
+use super::Okim6258Divider;
 use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
 use config::{ChipConfiguration, VoiceConfig, chip_id};
@@ -869,7 +873,7 @@ impl<'a> VgmSequencer<'a> {
             instance,
             clock,
             dual,
-            sn76489_stereo_used,
+            settings,
             okim6258_dc_blocker,
         } = config;
         #[cfg(not(feature = "okim6258"))]
@@ -890,9 +894,9 @@ impl<'a> VgmSequencer<'a> {
             instance,
             clock,
             output_rate,
-            header,
-            extra,
-            sn76489_stereo_used,
+            settings,
+            (header.okim6258_clock & 0x3fff_ffff != 0)
+                .then_some(header.okim6258_clock & 0x3fff_ffff),
         );
         let backend: Box<dyn SoundChip> =
             if let Some(backend) = factories.create(&factory_config)? {
@@ -901,28 +905,21 @@ impl<'a> VgmSequencer<'a> {
                 return Err(ChipError::UnsupportedChip(chip).into());
             } else if chip == Chip::Sn76489 {
                 feature_backend!("sn76496", chip, {
-                    if header.misc().t6w28_detected == Some(true) {
+                    let ChipBackendSettings::Sn76489(settings) = factory_config.settings() else {
+                        return Err(ChipError::InvalidConfiguration {
+                            chip,
+                            reason: "missing SN76489 settings",
+                        }
+                        .into());
+                    };
+                    if settings.t6w28 {
                         return Err(ChipError::InvalidConfiguration {
                             chip,
                             reason: "T6W28 PSG is not supported",
                         }
                         .into());
                     }
-                    let flags = header.sn76489_flags;
-                    let feedback = u16::from(header.sn76489_feedback);
-                    let width = u8::from(header.sn76489_shift_register_width);
-                    Box::new(Sn76496::with_config(
-                        clock,
-                        Sn76496Config {
-                            feedback: if feedback == 0 { 0x0009 } else { feedback },
-                            shift_width: if width == 0 { 16 } else { width },
-                            negate: flags.output_negate,
-                            stereo: flags.gamegear_stereo,
-                            divider_8: flags.clock_divider_8,
-                            frequency_zero_is_1024: flags.frequency_0_is_400,
-                            xnor: flags.xnor_noise_mode,
-                        },
-                    )?)
+                    Box::new(Sn76496::with_config(clock, (*settings).into())?)
                 })
             } else if chip == Chip::C140 {
                 feature_backend!("c140", chip, {
@@ -959,15 +956,21 @@ impl<'a> VgmSequencer<'a> {
                 })
             } else if chip == Chip::Okim6258 {
                 feature_backend!("okim6258", chip, {
-                    let flags = &header.okim6258_flags;
+                    let ChipBackendSettings::Okim6258(settings) = factory_config.settings() else {
+                        return Err(ChipError::InvalidConfiguration {
+                            chip,
+                            reason: "missing OKIM6258 settings",
+                        }
+                        .into());
+                    };
                     // The MAME-backed vgm2wav compatibility path also ignores this selector.
                     let mut oki = Okim6258::new(clock)?;
-                    oki.set_divider(match flags.clock_divider {
-                        0 => ClockDivider::Div1024,
-                        1 => ClockDivider::Div768,
-                        _ => ClockDivider::Div512,
+                    oki.set_divider(match settings.divider {
+                        Okim6258Divider::Div1024 => ClockDivider::Div1024,
+                        Okim6258Divider::Div768 => ClockDivider::Div768,
+                        Okim6258Divider::Div512 => ClockDivider::Div512,
                     })?;
-                    oki.set_output_bits(if flags.output_12bit {
+                    oki.set_output_bits(if settings.output_12bit {
                         OutputBits::Bits12
                     } else {
                         OutputBits::Bits10

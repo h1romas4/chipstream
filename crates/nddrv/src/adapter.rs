@@ -1,31 +1,15 @@
 //! Adapters between sequencer sources and software targets.
 
 use chipstream::chip::{ChipError, SoundChip, YmfmChip};
-use chipstream::sequencer::{Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance};
-use soundlog::vgm::header::{Ay8910ChipType, VgmHeader};
+use chipstream::sequencer::{
+    Ay8910Settings, Chip, ChipFactoryConfig, ChipFactoryRegistry, Instance,
+};
+use soundlog::vgm::header::VgmHeader;
 
 use crate::routing::{Adapter, ChipInstance, RoutingPlan, SoftwareTarget, Source, Target};
 
 pub fn ym2149_clock_divider(header: &VgmHeader) -> Option<bool> {
-    let ym = matches!(
-        header.ay_chip_type,
-        Ay8910ChipType::Ym2149
-            | Ay8910ChipType::Ym3439
-            | Ay8910ChipType::Ymz284
-            | Ay8910ChipType::Ymz294
-    );
-    if (!ym
-        && !matches!(
-            header.ay_chip_type,
-            Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
-        ))
-        || header.ay8910_flags.discrete_output
-        || header.ay8910_flags.raw_output
-        || header.ay8910_flags.reserved != 0
-    {
-        return None;
-    }
-    Some(ym && header.ay8910_flags.ym_pin26_low)
+    Ay8910Settings::from(header).ym2149_clock_divider()
 }
 
 #[derive(Clone, Copy)]
@@ -75,10 +59,13 @@ pub fn register_software_adapters(
     }
 }
 
-fn ym2149_backend(config: &ChipFactoryConfig<'_>) -> Result<Box<dyn SoundChip>, ChipError> {
-    let divide = ym2149_clock_divider(config.header()).ok_or(ChipError::InvalidConfiguration {
-        chip: Chip::Ay8910,
-        reason: "YM2149 emulation does not support this AY variant or output flags",
-    })?;
+fn ym2149_backend(config: &ChipFactoryConfig) -> Result<Box<dyn SoundChip>, ChipError> {
+    let divide = config
+        .ay8910_settings()
+        .and_then(Ay8910Settings::ym2149_clock_divider)
+        .ok_or(ChipError::InvalidConfiguration {
+            chip: Chip::Ay8910,
+            reason: "YM2149 emulation does not support this AY variant or output flags",
+        })?;
     Ok(Box::new(YmfmChip::new_ym2149(config.clock(), divide)?))
 }

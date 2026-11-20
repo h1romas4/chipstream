@@ -337,11 +337,11 @@ fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
                     )));
                 }
                 let oki_clock = if chip == Chip::Ym2151 {
-                    config.header().okim6258_clock & 0x3fff_ffff
+                    config.source_okim6258_clock()
                 } else {
-                    0
+                    None
                 };
-                if oki_clock != 0
+                if let Some(oki_clock) = oki_clock
                     && (!device.supports_route_clock(WriteId::OKIM6258, 0, oki_clock)
                         || !device.supports_route_audio(0, oki_clock))
                 {

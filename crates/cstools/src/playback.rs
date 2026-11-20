@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, PlaybackOptions,
-    VgmSequencer, VgmSequencerError,
+    Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions,
+    PlaybackOptions, VgmSequencer, VgmSequencerError,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -22,7 +22,8 @@ use soundlog::mdx::convert::{
     to_vgm_stream_generator_with_loop_marker,
 };
 use soundlog::vgm::command::VgmCommand;
-use soundlog::vgm::header::{Ay8910ChipType, VgmHeader};
+#[cfg(test)]
+use soundlog::vgm::header::Ay8910ChipType;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
 use terminal_size::{Width, terminal_size};
 
@@ -84,29 +85,13 @@ pub(super) enum Player {
     Mdx(MdxSequencer<'static>),
 }
 
-fn ym2149_clock_divider(header: &VgmHeader) -> Result<bool, ChipError> {
-    let ym = matches!(
-        header.ay_chip_type,
-        Ay8910ChipType::Ym2149
-            | Ay8910ChipType::Ym3439
-            | Ay8910ChipType::Ymz284
-            | Ay8910ChipType::Ymz294
-    );
-    if (!ym
-        && !matches!(
-            header.ay_chip_type,
-            Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
-        ))
-        || header.ay8910_flags.discrete_output
-        || header.ay8910_flags.raw_output
-        || header.ay8910_flags.reserved != 0
-    {
-        return Err(ChipError::InvalidConfiguration {
+fn ym2149_clock_divider(settings: &Ay8910Settings) -> Result<bool, ChipError> {
+    settings
+        .ym2149_clock_divider()
+        .ok_or(ChipError::InvalidConfiguration {
             chip: Chip::Ay8910,
             reason: "YM2149 emulation does not support this AY variant or output flags",
-        });
-    }
-    Ok(ym && header.ay8910_flags.ym_pin26_low)
+        })
 }
 
 impl Player {
@@ -123,7 +108,10 @@ impl Player {
                 let mut factories = ChipFactoryRegistry::new();
                 if options.ay8910_ym2149.unwrap_or(true) {
                     factories.register(Chip::Ay8910, |config| {
-                        let divide_clock = ym2149_clock_divider(config.header())?;
+                        let settings = config
+                            .ay8910_settings()
+                            .ok_or(ChipError::UnsupportedChip(config.chip().clone()))?;
+                        let divide_clock = ym2149_clock_divider(settings)?;
                         Ok(Box::new(YmfmChip::new_ym2149(
                             config.clock(),
                             divide_clock,
@@ -936,22 +924,22 @@ mod playback_tests {
             .unwrap()
             .header;
         header.ay_chip_type = Ay8910ChipType::Ym2149;
-        assert!(!ym2149_clock_divider(&header).unwrap());
+        assert!(!ym2149_clock_divider(&Ay8910Settings::from(&header)).unwrap());
         header.ay8910_flags.ym_pin26_low = true;
-        assert!(ym2149_clock_divider(&header).unwrap());
+        assert!(ym2149_clock_divider(&Ay8910Settings::from(&header)).unwrap());
         header.ay_chip_type = Ay8910ChipType::Ay8910;
-        assert!(!ym2149_clock_divider(&header).unwrap());
+        assert!(!ym2149_clock_divider(&Ay8910Settings::from(&header)).unwrap());
         header.ay_chip_type = Ay8910ChipType::Ay8930;
-        assert!(ym2149_clock_divider(&header).is_err());
+        assert!(ym2149_clock_divider(&Ay8910Settings::from(&header)).is_err());
         header.ay_chip_type = Ay8910ChipType::Ym2149;
         header.ay8910_flags.discrete_output = true;
-        assert!(ym2149_clock_divider(&header).is_err());
+        assert!(ym2149_clock_divider(&Ay8910Settings::from(&header)).is_err());
         header.ay8910_flags.discrete_output = false;
         header.ay8910_flags.raw_output = true;
-        assert!(ym2149_clock_divider(&header).is_err());
+        assert!(ym2149_clock_divider(&Ay8910Settings::from(&header)).is_err());
         header.ay8910_flags.raw_output = false;
         header.ay8910_flags.reserved = 1;
-        assert!(ym2149_clock_divider(&header).is_err());
+        assert!(ym2149_clock_divider(&Ay8910Settings::from(&header)).is_err());
     }
     use soundlog::mdx::package::MdxPackage;
     use soundlog::vgm::VgmBuilder;

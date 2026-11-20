@@ -45,7 +45,10 @@ mod volume;
 
 pub use duration::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
-pub use factory::{ChipFactoryConfig, ChipFactoryRegistry};
+pub use factory::{
+    Ay8910Settings, Ay8910Variant, AyOutputSettings, C140Variant, ChipBackendSettings,
+    ChipFactoryConfig, ChipFactoryRegistry, Okim6258Divider, Okim6258Settings, Sn76489Settings,
+};
 pub use mdx::{MdxSequencer, MdxSequencerError, MdxSequencerOptions};
 pub use options::PlaybackOptions;
 pub use soundlog::chip::Chip;

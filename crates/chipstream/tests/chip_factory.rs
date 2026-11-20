@@ -2,14 +2,16 @@ use std::sync::{Arc, Mutex};
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, SoundChipState};
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, VgmSequencer, VgmSequencerError,
+    Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, Instance,
+    MdxSequencer, Okim6258Divider, VgmSequencer, VgmSequencerError,
 };
 use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::WaitSamples;
-use soundlog::vgm::header::{ChipClock, ChipId};
+use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId};
 use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
+const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
 
 #[test]
 fn factory_fallback_only_handles_declined_instances_and_propagates_errors() {
@@ -122,11 +124,13 @@ fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
         let mut factories = ChipFactoryRegistry::new();
         let created = Arc::clone(&seen);
         factories.register(Chip::Sn76489, move |config| {
-            created.lock().unwrap().push((
-                config.instance(),
-                config.clock(),
-                config.sn76489_stereo_used(),
-            ));
+            let ChipBackendSettings::Sn76489(settings) = config.settings() else {
+                return Err(ChipError::UnsupportedChip(config.chip().clone()));
+            };
+            created
+                .lock()
+                .unwrap()
+                .push((config.instance(), config.clock(), settings.stereo_used));
             Ok(Box::new(FakeChip::new(
                 config.chip().clone(),
                 config.clock(),
@@ -146,6 +150,158 @@ fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
             ]
         );
     }
+}
+
+#[test]
+fn vgm_factories_receive_chip_settings_and_source_timing_without_headers() {
+    let chips = [
+        (Chip::Ay8910, 2_000_000),
+        (Chip::Sn76489, 3_579_545),
+        (Chip::Okim6258, 8_000_000),
+        (Chip::Okim6295, 1_000_000),
+        (Chip::C140, 44_100),
+        (Chip::SegaPcm, 4_000_000),
+        (Chip::Ym2203, 4_000_000),
+        (Chip::Ym2608, 8_000_000),
+        (Chip::Ym2610b, 8_000_000),
+    ];
+    let mut builder = VgmBuilder::new();
+    for (chip, clock) in &chips {
+        builder.register_chip(chip.clone(), Instance::Primary, *clock);
+    }
+    builder.add_chip_write(Instance::Primary, GameGearPsgSpec { value: 0x10 });
+    builder.add_vgm_command(WaitSamples(10));
+    builder.set_extra_header(VgmExtraHeader {
+        chip_clocks: vec![ChipClock::new(
+            ChipId::Okim6258,
+            Instance::Primary,
+            4_000_000,
+        )],
+        ..Default::default()
+    });
+    let mut document = builder.finalize();
+    document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+    document.header.ay8910_flags.ym_pin26_low = true;
+    document.header.sn76489_flags.gamegear_stereo = true;
+    document.header.sn76489_flags.output_negate = true;
+    document.header.okim6258_flags.clock_divider = 1;
+    document.header.okim6258_flags.output_12bit = true;
+    document.header.okim6295_clock |= 0x8000_0000;
+    document.header.c140_chip_type = 2.into();
+    document.header.spcm_interface = 0x0003_000c;
+    document.header.ym2203_ay8910_flags.discrete_output = true;
+    document.header.ym2608_ay8910_flags.raw_output = true;
+    document.header.ym2610b_clock |= 0x8000_0000;
+    let bytes: Vec<u8> = document.into();
+    let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
+
+    for from_bytes in [false, true] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut factories = ChipFactoryRegistry::new();
+        for (chip, _) in &chips {
+            let seen = Arc::clone(&seen);
+            factories.register(chip.clone(), move |config| {
+                seen.lock().unwrap().push((
+                    config.chip().clone(),
+                    config.clock(),
+                    *config.settings(),
+                    config.source_okim6258_clock(),
+                ));
+                Ok(Box::new(FakeChip::new(
+                    config.chip().clone(),
+                    config.clock(),
+                    Arc::new(Mutex::new(Vec::new())),
+                )))
+            });
+        }
+        if from_bytes {
+            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
+        } else {
+            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        let settings = |chip| seen.iter().find(|entry| entry.0 == chip).unwrap();
+        assert!(seen.iter().all(|entry| entry.3 == Some(8_000_000)));
+        let ChipBackendSettings::Ay8910(ay) = settings(Chip::Ay8910).2 else {
+            panic!("missing AY settings");
+        };
+        assert_eq!(ay.variant, Ay8910Variant::Ym2149);
+        assert_eq!(ay.ym2149_clock_divider(), Some(true));
+        let ChipBackendSettings::Sn76489(psg) = settings(Chip::Sn76489).2 else {
+            panic!("missing SN76489 settings");
+        };
+        assert_eq!((psg.feedback, psg.shift_width), (9, 16));
+        assert!(psg.stereo && psg.stereo_used && psg.negate);
+        let oki = settings(Chip::Okim6258);
+        assert_eq!(oki.1, 4_000_000);
+        let ChipBackendSettings::Okim6258(oki) = oki.2 else {
+            panic!("missing OKIM6258 settings");
+        };
+        assert_eq!(oki.divider, Okim6258Divider::Div768);
+        assert!(oki.output_12bit);
+        assert_eq!(
+            settings(Chip::Okim6295).2,
+            ChipBackendSettings::Okim6295 { pin7_high: true }
+        );
+        let c140 = settings(Chip::C140);
+        assert_eq!(
+            (c140.1, c140.2),
+            (25_056_500, ChipBackendSettings::C140(C140Variant::Asic219))
+        );
+        assert_eq!(
+            settings(Chip::SegaPcm).2,
+            ChipBackendSettings::SegaPcm {
+                bank_shift: 12,
+                bank_mask: 3
+            }
+        );
+        let ChipBackendSettings::Ym2203 { ssg } = settings(Chip::Ym2203).2 else {
+            panic!("missing YM2203 PSG settings");
+        };
+        assert!(ssg.discrete_output);
+        let ChipBackendSettings::Ym2608 { ssg } = settings(Chip::Ym2608).2 else {
+            panic!("missing YM2608 PSG settings");
+        };
+        assert!(ssg.raw_output);
+        assert_eq!(
+            settings(Chip::Ym2610b).2,
+            ChipBackendSettings::Ym2610 { is_b: true }
+        );
+    }
+}
+
+#[test]
+fn mdx_factories_receive_the_effective_pcm_settings() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut factories = ChipFactoryRegistry::new();
+    for chip in [Chip::Ym2151, Chip::Okim6258] {
+        let seen = Arc::clone(&seen);
+        factories.register(chip, move |config| {
+            seen.lock().unwrap().push((
+                config.chip().clone(),
+                config.clock(),
+                *config.settings(),
+                config.source_okim6258_clock(),
+            ));
+            Ok(Box::new(FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            )))
+        });
+    }
+    MdxSequencer::from_mdx_with_factories(MDX.to_vec(), Some(PDX.to_vec()), 44_100, 64, factories)
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|entry| entry.3 == Some(8_000_000)));
+    let oki = seen.iter().find(|entry| entry.0 == Chip::Okim6258).unwrap();
+    assert_eq!(oki.1, 8_000_000);
+    let ChipBackendSettings::Okim6258(settings) = oki.2 else {
+        panic!("missing OKIM6258 settings");
+    };
+    assert_eq!(settings.divider, Okim6258Divider::Div512);
+    assert!(!settings.output_12bit);
 }
 
 type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);
@@ -169,7 +325,13 @@ impl FakeChip {
             Chip::Ym2203 | Chip::Ymf262 => 4,
             Chip::Ym2608 | Chip::Ym2610b => 3,
             Chip::Ymf278b => 6,
-            Chip::Ym2413 | Chip::Ym2151 | Chip::Ym2612 | Chip::Pwm | Chip::Sn76489 => 2,
+            Chip::Ym2413
+            | Chip::Ym2151
+            | Chip::Ym2612
+            | Chip::Pwm
+            | Chip::Sn76489
+            | Chip::C140
+            | Chip::SegaPcm => 2,
             _ => 1,
         };
         Self {

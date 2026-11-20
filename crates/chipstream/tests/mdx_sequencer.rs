@@ -43,14 +43,18 @@ fn mdx_reference_factories() -> ChipFactoryRegistry {
     let factories = {
         let mut factories = factories;
         factories.register(Chip::Okim6258, |config| {
-            use chipstream::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
+            use chipstream::chip::{ChipError, ClockDivider, Okim6258, Okim6258Stream, OutputBits};
+            use chipstream::sequencer::{ChipBackendSettings, Okim6258Divider};
+            let ChipBackendSettings::Okim6258(settings) = config.settings() else {
+                return Err(ChipError::UnsupportedChip(config.chip().clone()));
+            };
             let mut chip = Okim6258::new(config.clock())?;
-            chip.set_divider(match config.header().okim6258_flags.clock_divider {
-                0 => ClockDivider::Div1024,
-                1 => ClockDivider::Div768,
-                _ => ClockDivider::Div512,
+            chip.set_divider(match settings.divider {
+                Okim6258Divider::Div1024 => ClockDivider::Div1024,
+                Okim6258Divider::Div768 => ClockDivider::Div768,
+                Okim6258Divider::Div512 => ClockDivider::Div512,
             })?;
-            chip.set_output_bits(if config.header().okim6258_flags.output_12bit {
+            chip.set_output_bits(if settings.output_12bit {
                 OutputBits::Bits12
             } else {
                 OutputBits::Bits10

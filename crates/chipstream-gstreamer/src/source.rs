@@ -24,13 +24,14 @@ use gstreamer_base as gst_base;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
 use soundlog::mdx::package::MdxPackage;
+#[cfg(test)]
 use soundlog::vgm::header::Ay8910ChipType;
 
 use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError, MdxSequencerOptions,
-    PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
+    Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError,
+    MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
     measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
 use chipstream_ndsif::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
@@ -1558,32 +1559,14 @@ fn load_sequencer_with_factories(
 
 fn register_ay_ym2149(factories: &mut ChipFactoryRegistry) {
     factories.register_fallback(Chip::Ay8910, |config| {
-        let header = config.header();
-        let ym = matches!(
-            header.ay_chip_type,
-            Ay8910ChipType::Ym2149
-                | Ay8910ChipType::Ym3439
-                | Ay8910ChipType::Ymz284
-                | Ay8910ChipType::Ymz294
-        );
-        if (!ym
-            && !matches!(
-                header.ay_chip_type,
-                Ay8910ChipType::Ay8910 | Ay8910ChipType::Ay8912 | Ay8910ChipType::Ay8913
-            ))
-            || header.ay8910_flags.discrete_output
-            || header.ay8910_flags.raw_output
-            || header.ay8910_flags.reserved != 0
-        {
-            return Err(ChipError::InvalidConfiguration {
+        let divide = config
+            .ay8910_settings()
+            .and_then(Ay8910Settings::ym2149_clock_divider)
+            .ok_or(ChipError::InvalidConfiguration {
                 chip: Chip::Ay8910,
                 reason: "YM2149 emulation does not support this AY variant or output flags",
-            });
-        }
-        Ok(Box::new(YmfmChip::new_ym2149(
-            config.clock(),
-            ym && header.ay8910_flags.ym_pin26_low,
-        )?))
+            })?;
+        Ok(Box::new(YmfmChip::new_ym2149(config.clock(), divide)?))
     });
 }
 
