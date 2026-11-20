@@ -1,4 +1,8 @@
 //! Device-specific policies for selected hardware routes.
+//!
+//! A policy receives selected hardware routes before configuration. The
+//! direct policy accepts them unchanged; the NanoDrive 7 policy additionally
+//! validates shared chip and clock resources and selects AY compatibility.
 
 use crate::NdsifAyCompatibility;
 use std::collections::HashSet;
@@ -18,6 +22,8 @@ pub struct NdsifRouteOptions {
 /// same policy instance is shared by all chip factories in one registry.
 /// Software fallbacks do not invoke the policy. Errors stop construction and
 /// never cause a different device or software fallback to be selected.
+/// Chip instances are constructed sequentially, so earlier devices may already
+/// be configured when a later selection fails.
 pub trait NdsifRoutePolicy {
     /// Check the selected route and effective source clock.
     ///
@@ -44,7 +50,9 @@ impl NdsifRoutePolicy for NdsifDirectPolicy {
 /// playback registry.
 #[derive(Default)]
 pub struct NdsifNd7Policy {
+    /// Transport indices corresponding to NanoDrive 7 devices.
     devices: HashSet<usize>,
+    /// Resources already selected for this playback registry.
     validator: NdsifNd7Validator,
 }
 

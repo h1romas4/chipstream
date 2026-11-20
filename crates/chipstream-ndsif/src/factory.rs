@@ -1,4 +1,8 @@
 //! Device selection and chipstream factory registration.
+//!
+//! Automatic factories select the first compatible transport for each chip
+//! instance, with software fallback where available. Route policies can
+//! validate the selected hardware resources before the backend is created.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -22,9 +26,9 @@ use crate::{
 /// compatible chip/clock capability. When no device matches, the normal
 /// emulated backend is retained, except AY8910 which has no emulated backend:
 /// when an AY device is present, an unroutable AY instance is an error.
-/// SN76489 instances that use Game Gear stereo masks use emulation. An
-/// empty list returns an empty registry. All
-/// configurations are validated before any device is opened or reset.
+/// SN76489 instances that use Game Gear stereo masks use emulation. An empty
+/// list selects no hardware. All configurations are validated before any
+/// device is opened or reset, although opening devices is not transactional.
 ///
 /// # Errors
 ///
@@ -65,6 +69,10 @@ pub fn create_chip_factories(
 /// Build automatic chip factories using scheduled transports with cached capabilities.
 ///
 /// `supports_ay` must indicate whether any transport advertises AY8910.
+/// Unmatched chips use their normal software backend where available;
+/// AY8910 has no built-in backend. Non-default Game Gear stereo masks use
+/// SN76489 emulation. Capability checks and chip configuration occur when
+/// the sequencer creates each instance.
 pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
@@ -76,7 +84,8 @@ pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
 ///
 /// The policy is called for each selected hardware instance and shared across
 /// factories. It can validate device resources and select AY compatibility.
-/// Rejected selections return an error rather than falling back.
+/// Rejected selections return an error rather than falling back. `supports_ay`
+/// must indicate whether any transport advertises AY8910.
 pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
@@ -247,6 +256,7 @@ fn select_route(
         .map_err(error)
 }
 
+/// Optional selected device index and shared transport handle.
 type SelectedTransport<T> = Option<(usize, Rc<RefCell<T>>)>;
 
 /// Find the first configured device supporting the requested chip and clock.

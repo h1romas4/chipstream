@@ -3,6 +3,12 @@
 //! Hardware-backed chips emit silence into host PCM; audible output must be
 //! captured or played through the physical device. Transport events use
 //! absolute output-frame positions and can arrive out of chronological order.
+//! The adapters do not support state snapshots or sequencer checkpoints, and
+//! their `SoundChip::reset` methods do not reset adapter or device state.
+//!
+//! [`NdsifSoundChip`] handles register-based chips, [`NdsifSn76489`] handles
+//! PSG writes, and [`NdsifOkim6258`] converts source ADPCM into a continuous
+//! device stream. Factory helpers register adapters for a shared transport.
 
 use std::{cell::RefCell, collections::VecDeque, num::NonZeroU32, rc::Rc};
 
@@ -34,12 +40,19 @@ use ndsif_transport::{
 /// zero. Sequencer playback uses [`ScheduledChip::apply_register_write_at`] and
 /// supplies the correct absolute frame.
 pub struct NdsifSoundChip<T> {
+    /// Source chip type used to validate register writes.
     chip: Chip,
+    /// Physical target instance.
     instance: u8,
+    /// Configured chip clock in hertz.
     clock: u32,
+    /// Host output rate used for untimed writes.
     output_rate: u32,
+    /// Native chip sample-rate ratio.
     sample_rate: SampleRate,
+    /// Host PCM channel count.
     channels: usize,
+    /// Shared scheduled transport for the physical device.
     transport: Rc<RefCell<T>>,
 }
 
@@ -55,6 +68,8 @@ pub enum NdsifAyCompatibility {
 
 impl<T: NdsifTransport> NdsifSoundChip<T> {
     /// Configure a physical chip and create its scheduled sound-chip adapter.
+    ///
+    /// Errors are as described by [`Self::with_target_ay_compatibility`].
     pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
@@ -72,6 +87,11 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
     ///
     /// The caller must ensure the target supports the selected approximation.
     /// Unsupported AY output and clock flags remain rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported chip or configuration, an invalid
+    /// clock, a borrowed transport, or a transport configuration failure.
     pub fn with_target_ay_compatibility(
         config: &ChipFactoryConfig,
         target: Instance,
@@ -218,7 +238,7 @@ impl<T: NdsifTransport> SoundChip for NdsifSoundChip<T> {
         Ok(())
     }
 
-    /// No local chip state needs resetting.
+    /// Leave adapter and physical device state unchanged.
     fn reset(&mut self) {}
 }
 
@@ -291,22 +311,36 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSoundChip<T> {
 ///
 /// T6W28 and tracks using non-default Game Gear stereo masks are rejected.
 pub struct NdsifSn76489<T> {
+    /// Physical target instance.
     instance: u8,
+    /// Protocol write ID for the target instance.
     write_id: WriteId,
+    /// Configured chip clock in hertz.
     clock: u32,
+    /// Host output rate used for untimed writes.
     output_rate: u32,
+    /// Native chip sample-rate ratio.
     sample_rate: SampleRate,
+    /// Whether source stereo-mask commands are enabled.
     stereo_enabled: bool,
+    /// Shared scheduled transport for the physical device.
     transport: Rc<RefCell<T>>,
 }
 
 impl<T: NdsifTransport> NdsifSn76489<T> {
     /// Configure an SN76489 instance and create its scheduled adapter.
+    ///
+    /// Errors are as described by [`Self::with_target_instance`].
     pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
 
     /// Configure a physical PSG instance independently of the source instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incompatible PSG settings, a borrowed transport,
+    /// or a transport configuration failure.
     pub fn with_target_instance(
         config: &ChipFactoryConfig,
         target: Instance,
@@ -452,7 +486,7 @@ impl<T: NdsifTransport> SoundChip for NdsifSn76489<T> {
         Ok(())
     }
 
-    /// No local chip state needs resetting.
+    /// Leave adapter and physical device state unchanged.
     fn reset(&mut self) {}
 }
 
@@ -520,35 +554,60 @@ impl<T: NdsifTransport> ScheduledChip for NdsifSn76489<T> {
 /// NDSIF supports 4 MHz and 8 MHz clocks and positions changes at ADPCM byte
 /// boundaries. Writes to `0x10..=0x17` are ignored for VGMMAME compatibility.
 pub struct NdsifOkim6258<T> {
+    /// Physical target instance.
     instance: u8,
+    /// Current source and device clock in hertz.
     clock: u32,
+    /// Current ADPCM clock divider.
     divider: Divider,
+    /// Host output rate used for untimed writes.
     output_rate: u32,
+    /// Whether stream finalization has completed.
     stream_finished: bool,
+    /// Position at which the next device ADPCM byte will be scheduled.
     next_byte_position: u32,
+    /// Frame-to-byte mapping segments for clock and divider changes.
     timeline: Vec<AudioPositionClock>,
+    /// Timing register writes awaiting coalescing and submission.
     pending_timing: Option<PendingOkiTiming>,
+    /// Predictor for decoding the source ADPCM stream.
     source_decoder: chipstream::chip::Okim6258Adpcm,
+    /// Predictor for re-encoding the continuous device stream.
     output_decoder: chipstream::chip::Okim6258Adpcm,
+    /// Whether the source ADPCM stream is playing.
     source_playing: bool,
+    /// Source ADPCM bytes awaiting rendering.
     source_data: VecDeque<u8>,
+    /// Shared scheduled transport for the physical device.
     transport: Rc<RefCell<T>>,
 }
 
+/// Timing changes collected at the same output frame before being applied.
 struct PendingOkiTiming {
+    /// Output frame at which the timing changes take effect.
     frame: usize,
+    /// Output sample rate associated with the frame.
     rate: u32,
+    /// Clock assembled from source register writes.
     clock: u32,
+    /// Selected ADPCM divider.
     divider: Divider,
 }
 
 impl<T: NdsifTransport> NdsifOkim6258<T> {
     /// Configure an NDSIF audio stream from the sequencer's chip metadata.
+    ///
+    /// Errors are as described by [`Self::with_target_instance`].
     pub fn new(config: &ChipFactoryConfig, transport: Rc<RefCell<T>>) -> Result<Self, ChipError> {
         Self::with_target_instance(config, config.instance(), transport)
     }
 
     /// Configure a physical ADPCM instance independently of the source instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incompatible settings, an unsupported clock or
+    /// timeline, a borrowed transport, or a transport configuration failure.
     pub fn with_target_instance(
         config: &ChipFactoryConfig,
         target: Instance,
@@ -688,6 +747,7 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
             }
             0x01 => {
                 if self.source_playing {
+                    /// Bound source data buffered between rendering calls.
                     const MAX_SOURCE_BYTES: usize = 65_536;
                     if self.source_data.len() >= MAX_SOURCE_BYTES {
                         return Err(external_error(
@@ -867,7 +927,9 @@ impl<T: NdsifTransport> NdsifOkim6258<T> {
     }
 }
 
+/// Positioned OKIM6258 event forwarded to the transport.
 enum Okim6258Event {
+    /// Audio stream control such as a pan change.
     Control(NdsifAudioControlEvent),
 }
 
@@ -922,7 +984,7 @@ impl<T: NdsifTransport> SoundChip for NdsifOkim6258<T> {
         Ok(())
     }
 
-    /// No local chip state needs resetting.
+    /// Leave adapter and physical device state unchanged.
     fn reset(&mut self) {}
 }
 
@@ -1040,6 +1102,11 @@ pub fn register_okim6258_factory<T: NdsifTransport + 'static>(
 }
 
 /// Register one YMFM chip type with an NDSIF transport.
+///
+/// # Errors
+///
+/// Returns [`ChipError::UnsupportedChip`] for AY8910 or a chip without a
+/// YMFM adapter. Device configuration errors occur when the factory is used.
 pub fn register_ymfm_factory<T: NdsifTransport + 'static>(
     registry: &mut ChipFactoryRegistry,
     chip: Chip,
@@ -1072,6 +1139,10 @@ pub fn register_ay8910_factory<T: NdsifTransport + 'static>(
 }
 
 /// Register factories for all YMFM-backed chip types.
+///
+/// # Errors
+///
+/// Returns an error if one of the chip types cannot be registered.
 pub fn register_ymfm_factories<T: NdsifTransport + 'static>(
     registry: &mut ChipFactoryRegistry,
     transport: Rc<RefCell<T>>,

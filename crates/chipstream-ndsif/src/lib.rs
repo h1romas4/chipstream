@@ -1,4 +1,9 @@
 //! NDSIF hardware integration for chipstream.
+//!
+//! Build automatic or explicit chip factories to connect a chipstream
+//! sequencer to NDSIF transports. Hardware-backed chips emit silence into
+//! host PCM; their physical audio must be handled separately. Device I/O and
+//! scheduling are provided by `ndsif-transport`.
 
 #![doc = include_str!("../README.md")]
 

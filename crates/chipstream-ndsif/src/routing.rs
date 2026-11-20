@@ -1,4 +1,9 @@
 //! Explicit chip-instance routing for applications with saved connections.
+//!
+//! [`NdsifRoute`] maps a source chip instance to a device and target instance.
+//! Route validation rejects duplicate sources, duplicate targets, unsupported
+//! chips, and aliased device handles. Device capabilities and policy checks
+//! are evaluated when the sequencer constructs its chip instances.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -32,8 +37,11 @@ pub struct NdsifRoute {
 /// Validate the physical chip and clock resources shared by NanoDrive 7 routes.
 #[derive(Default)]
 pub struct NdsifNd7Validator {
+    /// Occupied OPN target slots, indexed by device and secondary flag.
     opn_slots: HashSet<(usize, bool)>,
+    /// Shared OPN clock selected for each device.
     opn_clocks: HashMap<usize, u32>,
+    /// Devices with an occupied OPL resource.
     opl_slots: HashSet<usize>,
 }
 

@@ -71,8 +71,9 @@ so earlier chips may already be configured when a later route is rejected.
 
 Most applications should start with `create_chip_factories`. It selects the
 first connected device that advertises a compatible chip and clock; unmatched
-chips use chipstream's normal emulation. Errors opening or initializing a
-configured device are returned rather than silently ignored.
+chips use chipstream's normal emulation where available. AY8910 has no
+built-in backend. Errors opening or initializing a configured device are
+returned rather than silently ignored.
 
 ## Connect devices and play
 
@@ -222,13 +223,14 @@ operations may block; this crate does not put hardware audio into host PCM.
 
 ## Playback support and limitations
 
-The transport supports YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
+The transport supports AY8910, YM2413, YM2151, YM2203, YM2608, YM2610B, YM2612,
 YM3526, Y8950, YM3812, YMF262, YMF278B, SN76489, and OKIM6258 where the
 device advertises compatible capabilities. Check the connected device rather
 than relying on its model name.
 
 - Automatic routing uses emulation when no compatible hardware target is
-  available. Explicit routes fail when the selected target is incompatible.
+  available, except that AY8910 has no built-in backend. Explicit routes fail
+  when the selected target is incompatible.
 - SN76489 hardware routing is unavailable for non-default Game Gear stereo
   masks; T6W28 PSG is not supported. A VGM stereo-capable flag alone does not
   prevent routing.
@@ -239,6 +241,9 @@ than relying on its model name.
 - Hardware writes are best-effort, not sample-accurate. Device latency,
   serial bandwidth, scheduling, and clock drift can affect timing. Hardware
   audio must be mixed externally with any host audio.
+- Hardware-backed chip adapters do not support sequencer checkpoints, and
+  their `SoundChip::reset` does not reset the adapter or physical device.
+  Manage device reset and connection reuse separately.
 
 ## Errors and device reuse
 

@@ -1,9 +1,13 @@
 //! Near-zero ADPCM output for the continuous NDSIF hardware stream.
+//!
+//! These helpers converge the output predictor toward zero at stream end and
+//! select a repeating pair for the device's subsequent idle output.
 
 use chipstream::chip::Okim6258Adpcm;
 
 /// Encode two near-zero nibbles and advance the predictor.
 pub(crate) fn encode_zero_byte(state: &mut Okim6258Adpcm) -> u8 {
+    /// Choose a nibble that brings the predictor closest to zero.
     fn encode_zero_nibble(state: &mut Okim6258Adpcm) -> u8 {
         let nibble = (0..16)
             .min_by_key(|&nibble| {
