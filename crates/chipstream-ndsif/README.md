@@ -101,7 +101,7 @@ let devices = [NdsifSerialConfig {
     reset_device: true,
 }];
 let factories = create_chip_factories(&devices)?;
-let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+let mut player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, Default::default(), factories)?;
 
 while let Some(block) = player.render()? {
     // Send block.frames() to the application's audio output.
@@ -208,7 +208,7 @@ fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers,
     )?];
     let recorders: Vec<_> = devices.iter().map(NdsifWorkerDevice::recorder).collect();
     let factories = create_automatic_transport_factories(&recorders, supports_ay);
-    let player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, factories)?;
+    let player = VgmSequencer::from_vgm_with_factories(vgm, 48_000, 512, Default::default(), factories)?;
     let timeline = Arc::new(NdsifHostTimeline::pending());
     let workers = NdsifHardwareWorkers::start(&devices, Arc::clone(&timeline), NonZeroUsize::new(8).unwrap())?;
     Ok((player, workers, timeline))

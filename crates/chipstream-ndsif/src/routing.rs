@@ -497,7 +497,8 @@ mod tests {
                 reject: false,
             },
         );
-        VgmSequencer::new_with_factories(document, 44_100, 256, factories).unwrap();
+        VgmSequencer::new_with_factories(document, 44_100, 256, Default::default(), factories)
+            .unwrap();
         let calls = selected.borrow();
         assert_eq!(calls.len(), 2);
         for (chip, clock) in [(Chip::Ay8910, 2_000_000), (Chip::Ym2151, 4_000_000)] {
@@ -524,9 +525,15 @@ mod tests {
                 reject: true,
             },
         );
-        let error = VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
-            .err()
-            .expect("policy rejection must not fall back");
+        let error = VgmSequencer::new_with_factories(
+            document.clone(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .err()
+        .expect("policy rejection must not fall back");
         assert!(
             error
                 .to_string()
@@ -545,7 +552,10 @@ mod tests {
                 reject: true,
             },
         );
-        assert!(VgmSequencer::new_with_factories(document, 44_100, 256, factories).is_ok());
+        assert!(
+            VgmSequencer::new_with_factories(document, 44_100, 256, Default::default(), factories)
+                .is_ok()
+        );
         assert!(selected.borrow().is_empty());
 
         for (chip, clock) in [(Chip::Sn76489, 3_579_545), (Chip::Okim6258, 4_000_000)] {
@@ -565,10 +575,15 @@ mod tests {
                     reject: true,
                 },
             );
-            let error =
-                VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories)
-                    .err()
-                    .expect("the selected hardware route must be validated");
+            let error = VgmSequencer::new_with_factories(
+                builder.finalize(),
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            )
+            .err()
+            .expect("the selected hardware route must be validated");
             assert!(
                 error
                     .to_string()
@@ -609,9 +624,15 @@ mod tests {
             Reject(Rc::clone(&selected)),
         )
         .unwrap();
-        let error = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories)
-            .err()
-            .expect("policy rejection must not fall back");
+        let error = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .err()
+        .expect("policy rejection must not fall back");
         assert!(
             error
                 .to_string()
@@ -654,7 +675,13 @@ mod tests {
                 NdsifNd7Policy::new([0], 1).unwrap(),
             )
             .unwrap();
-            let result = VgmSequencer::new_with_factories(document, 44_100, 256, factories);
+            let result = VgmSequencer::new_with_factories(
+                document,
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            );
             if conflict {
                 assert!(
                     result
@@ -711,8 +738,13 @@ mod tests {
                 true,
                 NdsifNd7Policy::new(nd7_devices.iter().copied(), devices.len()).unwrap(),
             );
-            let result =
-                VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories);
+            let result = VgmSequencer::from_vgm_with_factories(
+                builder.finalize(),
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            );
             match expected_error {
                 Some(expected) => assert!(
                     result
@@ -761,8 +793,13 @@ mod tests {
             let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), 1).unwrap();
             let factories =
                 create_routed_transport_factories_with_policy(&[device], &routes, policy).unwrap();
-            let result =
-                VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
+            let result = VgmSequencer::new_with_factories(
+                builder.finalize(),
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            );
             if conflict {
                 assert!(
                     result
@@ -825,7 +862,13 @@ mod tests {
                 true,
                 NdsifNd7Policy::new([0], 1).unwrap(),
             );
-            let result = VgmSequencer::new_with_factories(document, 44_100, 256, factories);
+            let result = VgmSequencer::new_with_factories(
+                document,
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            );
             if expected_error {
                 assert!(
                     result
@@ -878,13 +921,25 @@ mod tests {
             NdsifNd7Policy::new([0, 1], devices.len()).unwrap(),
         );
         let document = builder.finalize();
-        assert!(VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories).is_ok());
+        assert!(
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                256,
+                Default::default(),
+                factories
+            )
+            .is_ok()
+        );
         let factories = create_automatic_transport_factories_with_policy(
             &devices[..1],
             false,
             NdsifNd7Policy::new([0], 1).unwrap(),
         );
-        assert!(VgmSequencer::new_with_factories(document, 44_100, 256, factories).is_ok());
+        assert!(
+            VgmSequencer::new_with_factories(document, 44_100, 256, Default::default(), factories)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -920,12 +975,19 @@ mod tests {
                     routed_factories(vec![Rc::clone(&device)], std::slice::from_ref(&route))
                         .unwrap();
                 let result = if use_document {
-                    VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+                    VgmSequencer::new_with_factories(
+                        document.clone(),
+                        44_100,
+                        256,
+                        Default::default(),
+                        factories,
+                    )
                 } else {
                     VgmSequencer::from_vgm_with_factories(
                         Vec::<u8>::from(document.clone()),
                         44_100,
                         256,
+                        Default::default(),
                         factories,
                     )
                 };
@@ -975,12 +1037,19 @@ mod tests {
                 };
                 let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
                 let result = if use_document {
-                    VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+                    VgmSequencer::new_with_factories(
+                        document.clone(),
+                        44_100,
+                        256,
+                        Default::default(),
+                        factories,
+                    )
                 } else {
                     VgmSequencer::from_vgm_with_factories(
                         Vec::<u8>::from(document.clone()),
                         44_100,
                         256,
+                        Default::default(),
                         factories,
                     )
                 };
@@ -1023,7 +1092,7 @@ mod tests {
         };
         let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
         assert!(matches!(
-            VgmSequencer::new_with_factories(document, 44_100, 256, factories),
+            VgmSequencer::new_with_factories(document, 44_100, 256, Default::default(), factories),
             Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
                 chip: Chip::Sn76489,
                 reason: "T6W28 PSG is not supported",
@@ -1055,12 +1124,19 @@ mod tests {
             };
             let factories = routed_factories(vec![Rc::clone(&device)], &[route]).unwrap();
             let mut sequencer = if use_document {
-                VgmSequencer::new_with_factories(document.clone(), 44_100, 256, factories)
+                VgmSequencer::new_with_factories(
+                    document.clone(),
+                    44_100,
+                    256,
+                    Default::default(),
+                    factories,
+                )
             } else {
                 VgmSequencer::from_vgm_with_factories(
                     Vec::<u8>::from(document.clone()),
                     44_100,
                     256,
+                    Default::default(),
                     factories,
                 )
             }
@@ -1107,8 +1183,14 @@ mod tests {
             },
         ];
         let factories = routed_factories(vec![Rc::clone(&device)], &routes).unwrap();
-        let mut sequencer =
-            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories).unwrap();
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            dual_ay_vgm(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         while sequencer.render().unwrap().is_some() {}
         let device = device.borrow();
         let ay = WriteId::try_from(0xa0).unwrap();
@@ -1142,6 +1224,7 @@ mod tests {
             dual_ay_vgm(),
             44_100,
             256,
+            Default::default(),
             ChipFactoryRegistry::new(),
         )
         .unwrap();
@@ -1158,7 +1241,13 @@ mod tests {
         }));
         let factories = routed_factories(vec![supported], std::slice::from_ref(&route)).unwrap();
         assert!(matches!(
-            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories),
+            VgmSequencer::from_vgm_with_factories(
+                dual_ay_vgm(),
+                44_100,
+                256,
+                Default::default(),
+                factories
+            ),
             Err(VgmSequencerError::Chip(ChipError::UnsupportedChip(
                 Chip::Ay8910
             )))
@@ -1166,7 +1255,13 @@ mod tests {
         let unsupported = Rc::new(RefCell::new(Device::default()));
         let factories = routed_factories(vec![unsupported], &[route]).unwrap();
         assert!(matches!(
-            VgmSequencer::from_vgm_with_factories(dual_ay_vgm(), 44_100, 256, factories),
+            VgmSequencer::from_vgm_with_factories(
+                dual_ay_vgm(),
+                44_100,
+                256,
+                Default::default(),
+                factories
+            ),
             Err(VgmSequencerError::Chip(ChipError::External { .. }))
         ));
     }
@@ -1198,7 +1293,13 @@ mod tests {
             let factories =
                 routed_factories(vec![Rc::clone(&device)], std::slice::from_ref(&route)).unwrap();
             assert!(matches!(
-                VgmSequencer::from_vgm_with_factories(bytes, 44_100, 256, factories),
+                VgmSequencer::from_vgm_with_factories(
+                    bytes,
+                    44_100,
+                    256,
+                    Default::default(),
+                    factories
+                ),
                 Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
                     chip: Chip::Ay8910,
                     ..
@@ -1211,9 +1312,14 @@ mod tests {
         builder.add_vgm_command(soundlog::vgm::command::Ay8910StereoMask::from_mask(1));
         builder.add_vgm_command(WaitSamples(441));
         let factories = routed_factories(vec![device], &[route]).unwrap();
-        let mut sequencer =
-            VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories)
-                .unwrap();
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         assert!(matches!(
             sequencer.render(),
             Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
@@ -1270,8 +1376,13 @@ mod tests {
                     )
                     .unwrap()
                 };
-                let sequencer =
-                    VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 256, factories);
+                let sequencer = VgmSequencer::from_vgm_with_factories(
+                    bytes.clone(),
+                    44_100,
+                    256,
+                    Default::default(),
+                    factories,
+                );
                 if !nd7 {
                     assert!(matches!(
                         sequencer,
@@ -1319,7 +1430,13 @@ mod tests {
             )
             .unwrap();
             assert!(matches!(
-                VgmSequencer::from_vgm_with_factories(invalid, 44_100, 256, factories),
+                VgmSequencer::from_vgm_with_factories(
+                    invalid,
+                    44_100,
+                    256,
+                    Default::default(),
+                    factories
+                ),
                 Err(VgmSequencerError::Chip(
                     ChipError::InvalidConfiguration { .. }
                 ))
@@ -1344,8 +1461,14 @@ mod tests {
         ];
         let factories =
             routed_factories(vec![Rc::clone(&first), Rc::clone(&second)], &routes).unwrap();
-        let mut sequencer =
-            VgmSequencer::from_vgm_with_factories(dual_vgm(), 44_100, 256, factories).unwrap();
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            dual_vgm(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         while sequencer.render().unwrap().is_some() {}
         for device in [&first, &second] {
             let device = device.borrow();
@@ -1366,8 +1489,14 @@ mod tests {
         }));
         let routes = [route(Instance::Primary, 0, Instance::Secondary)];
         let factories = routed_factories(vec![Rc::clone(&first)], &routes).unwrap();
-        let mut sequencer =
-            VgmSequencer::from_vgm_with_factories(dual_vgm(), 44_100, 256, factories).unwrap();
+        let mut sequencer = VgmSequencer::from_vgm_with_factories(
+            dual_vgm(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         while sequencer.render().unwrap().is_some() {}
         assert_eq!(first.borrow().configured, [(WriteId::YM2151, 1, 4_000_000)]);
         assert_eq!(first.borrow().events.len(), 1);
@@ -1375,7 +1504,13 @@ mod tests {
         let unavailable = Rc::new(RefCell::new(Device::default()));
         let factories = routed_factories(vec![unavailable], &routes).unwrap();
         assert!(matches!(
-            VgmSequencer::from_vgm_with_factories(dual_vgm(), 44_100, 256, factories),
+            VgmSequencer::from_vgm_with_factories(
+                dual_vgm(),
+                44_100,
+                256,
+                Default::default(),
+                factories
+            ),
             Err(VgmSequencerError::Chip(ChipError::External { .. }))
         ));
     }
@@ -1431,7 +1566,7 @@ mod tests {
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Okim6258, Instance::Primary, 4_000_000);
         assert!(matches!(
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories),
+            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, Default::default(), factories),
             Err(VgmSequencerError::Chip(ChipError::External { message, .. }))
                 if message.contains("paired OKIM6258")
         ));
@@ -1460,8 +1595,14 @@ mod tests {
             builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
         }
         builder.add_vgm_command(WaitSamples(441));
-        let mut sequencer =
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+        let mut sequencer = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let mut has_audio = false;
         while let Some(block) = sequencer.render().unwrap() {
             has_audio |= block.frames().iter().flatten().any(|sample| *sample != 0.0);

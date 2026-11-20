@@ -68,7 +68,7 @@ fn render(
     rate: u32,
     chunk: usize,
 ) -> (Vec<[f32; 2]>, Vec<(usize, u32)>) {
-    let mut player = VgmSequencer::new(document, rate, chunk).unwrap();
+    let mut player = VgmSequencer::new(document, rate, chunk, Default::default()).unwrap();
     let captured = Rc::new(RefCell::new(Vec::new()));
     macro_rules! listen {
         ($spec:ty) => {{

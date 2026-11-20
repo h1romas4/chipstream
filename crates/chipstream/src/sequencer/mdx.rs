@@ -139,7 +139,7 @@ pub struct MdxSequencer<'a> {
 }
 
 impl<'a> MdxSequencer<'a> {
-    /// Parse owned MDX and optional PDX buffers, and play once with default limits.
+    /// Parse owned MDX and optional PDX buffers with the specified options.
     ///
     /// PDX lookup is the caller's responsibility. A missing PDX is accepted,
     /// even if the MDX names one, and disables the PCM path.
@@ -151,12 +151,14 @@ impl<'a> MdxSequencer<'a> {
         pdx: Option<Vec<u8>>,
         output_rate: u32,
         chunk_frames: usize,
+        options: MdxSequencerOptions,
     ) -> Result<Self, MdxSequencerError> {
         Self::from_mdx_with_factories(
             mdx,
             pdx,
             output_rate,
             chunk_frames,
+            options,
             ChipFactoryRegistry::new(),
         )
     }
@@ -167,6 +169,7 @@ impl<'a> MdxSequencer<'a> {
         pdx: Option<Vec<u8>>,
         output_rate: u32,
         chunk_frames: usize,
+        options: MdxSequencerOptions,
         factories: ChipFactoryRegistry,
     ) -> Result<Self, MdxSequencerError> {
         let normalized =
@@ -175,39 +178,7 @@ impl<'a> MdxSequencer<'a> {
                 Cow::Owned(normalized) => normalized,
             };
         let package = MdxPackage::parse_owned(normalized, pdx).map_err(MdxSequencerError::Parse)?;
-        Self::new_with_factories(package, output_rate, chunk_frames, factories)
-    }
-
-    /// Play a parsed package once using the default playback limits.
-    ///
-    /// Equivalent to [`Self::with_options`] with default options.
-    pub fn new(
-        package: MdxPackage,
-        output_rate: u32,
-        chunk_frames: usize,
-    ) -> Result<Self, MdxSequencerError> {
-        Self::new_with_factories(
-            package,
-            output_rate,
-            chunk_frames,
-            ChipFactoryRegistry::new(),
-        )
-    }
-
-    /// Play a parsed package once with selected external chip factories.
-    pub fn new_with_factories(
-        package: MdxPackage,
-        output_rate: u32,
-        chunk_frames: usize,
-        factories: ChipFactoryRegistry,
-    ) -> Result<Self, MdxSequencerError> {
-        Self::with_options_with_factories(
-            package,
-            output_rate,
-            chunk_frames,
-            MdxSequencerOptions::default(),
-            factories,
-        )
+        Self::new_with_factories(package, output_rate, chunk_frames, options, factories)
     }
 
     /// Play a parsed package with explicit driver options.
@@ -224,13 +195,13 @@ impl<'a> MdxSequencer<'a> {
     ///
     /// The default tick limit is 100,000 (about 17 minutes at tempo t120).
     /// Command-per-tick and decoded-PCM limits are independently configurable.
-    pub fn with_options(
+    pub fn new(
         package: MdxPackage,
         output_rate: u32,
         chunk_frames: usize,
         options: MdxSequencerOptions,
     ) -> Result<Self, MdxSequencerError> {
-        Self::with_options_with_factories(
+        Self::new_with_factories(
             package,
             output_rate,
             chunk_frames,
@@ -240,7 +211,7 @@ impl<'a> MdxSequencer<'a> {
     }
 
     /// Play a parsed package with explicit options and external chip factories.
-    pub fn with_options_with_factories(
+    pub fn new_with_factories(
         package: MdxPackage,
         output_rate: u32,
         chunk_frames: usize,

@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer,
+    VgmSequencerOptions,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -1471,7 +1472,7 @@ impl Sequencer {
         if extension(path) == "mdx" {
             let package = mdx_package(path, bytes)?;
             let options = mdx_options(looped, settings);
-            Ok(Self::Mdx(MdxSequencer::with_options_with_factories(
+            Ok(Self::Mdx(MdxSequencer::new_with_factories(
                 package,
                 rate,
                 CHUNK_FRAMES,
@@ -1484,8 +1485,17 @@ impl Sequencer {
             } else {
                 0
             };
-            let mut sequencer =
-                VgmSequencer::from_vgm_with_factories(bytes, rate, CHUNK_FRAMES, factories)?;
+            let mut sequencer = VgmSequencer::from_vgm_with_factories(
+                bytes,
+                rate,
+                CHUNK_FRAMES,
+                VgmSequencerOptions {
+                    playback: mdx_options(looped, settings).playback,
+                    loop_base: (!looped).then_some(0),
+                    loop_modifier: (!looped).then_some(0x10),
+                },
+                factories,
+            )?;
             if let Some((directory, routes, configured_rom)) = rom {
                 Self::configure_ym2608_rhythm_rom(
                     &mut sequencer,
@@ -1495,11 +1505,6 @@ impl Sequencer {
                     routes,
                     configured_rom,
                 )?;
-            }
-            sequencer.set_playback_options(mdx_options(looped, settings).playback)?;
-            if !looped {
-                sequencer.set_loop_base(0);
-                sequencer.set_loop_modifier(0x10);
             }
             Ok(Self::Vgm(sequencer))
         }
@@ -2796,7 +2801,8 @@ mod tests {
             pdx: None,
         };
         let render = |muted: [bool; 2], soloed: [bool; 2]| {
-            let player = MdxSequencer::new(package.clone(), 44_100, 1024).unwrap();
+            let player =
+                MdxSequencer::new(package.clone(), 44_100, 1024, Default::default()).unwrap();
             let mut player = Sequencer::Mdx(player);
             let mute = Arc::new(FmMute::default());
             for (channel, muted) in muted.into_iter().enumerate() {
@@ -2877,7 +2883,9 @@ mod tests {
             ),
         ];
         let render = |chip: &Chip, data: &[u8], muted: Option<bool>| {
-            let mut player = Sequencer::Vgm(VgmSequencer::from_vgm(data, 44_100, 1024).unwrap());
+            let mut player = Sequencer::Vgm(
+                VgmSequencer::from_vgm(data, 44_100, 1024, Default::default()).unwrap(),
+            );
             if let Some(muted) = muted {
                 let mute = Arc::new(FmMute::default());
                 for channel in 0..crate::fm_mute::fm_channels(chip).unwrap() {
@@ -3119,13 +3127,20 @@ mod tests {
                 std::fs::write(rom_dir.join(YM2608_RHYTHM_ROM), [0x77; 8192]).unwrap();
                 let loaded = rhythm_audio(&track, &rom_dir, &[]);
                 assert!(loaded.iter().flatten().any(|sample| sample.abs() > 0.001));
-                let mut reference =
-                    VgmSequencer::from_vgm(read_track(&track).unwrap(), 44_100, CHUNK_FRAMES)
-                        .unwrap();
-                reference.set_loop_count(Some(2));
-                reference.set_loop_base(0);
-                reference.set_loop_modifier(0x10);
-                reference.set_fadeout(Some(Duration::from_secs(2))).unwrap();
+                let mut reference = VgmSequencer::from_vgm(
+                    read_track(&track).unwrap(),
+                    44_100,
+                    CHUNK_FRAMES,
+                    VgmSequencerOptions {
+                        playback: PlaybackOptions {
+                            loop_count: Some(2),
+                            fadeout: Some(Duration::from_secs(2)),
+                        },
+                        loop_base: Some(0),
+                        loop_modifier: Some(0x10),
+                    },
+                )
+                .unwrap();
                 reference
                     .set_ym2608_rhythm_rom(instance, &[0x77; 8192])
                     .unwrap();
@@ -3283,12 +3298,20 @@ mod tests {
             let selected = render(Some(&chosen), &[]).unwrap();
             let adjacent = render(None, &[]).unwrap();
             assert_ne!(selected, adjacent);
-            let mut reference =
-                VgmSequencer::from_vgm(read_track(&track).unwrap(), 44_100, CHUNK_FRAMES).unwrap();
-            reference.set_loop_count(Some(2));
-            reference.set_loop_base(0);
-            reference.set_loop_modifier(0x10);
-            reference.set_fadeout(Some(Duration::from_secs(2))).unwrap();
+            let mut reference = VgmSequencer::from_vgm(
+                read_track(&track).unwrap(),
+                44_100,
+                CHUNK_FRAMES,
+                VgmSequencerOptions {
+                    playback: PlaybackOptions {
+                        loop_count: Some(2),
+                        fadeout: Some(Duration::from_secs(2)),
+                    },
+                    loop_base: Some(0),
+                    loop_modifier: Some(0x10),
+                },
+            )
+            .unwrap();
             reference
                 .set_ym2608_rhythm_rom(instance, &[0x33; 8192])
                 .unwrap();

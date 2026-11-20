@@ -1,7 +1,9 @@
 #![cfg(feature = "pwm")]
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, Pwm, SoundChip};
-use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
+use chipstream::sequencer::{
+    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
+};
 use soundlog::chip::{Chip, PwmSpec};
 use soundlog::vgm::command::{Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
@@ -87,8 +89,8 @@ fn vgm_playback_and_events_preserve_12_bit_samples() {
     let doc = builder.finalize();
     let bytes: Vec<u8> = doc.clone().into();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 30).unwrap();
-    let mut document = VgmSequencer::new(parsed, 44_100, 128).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 30, Default::default()).unwrap();
+    let mut document = VgmSequencer::new(parsed, 44_100, 128, Default::default()).unwrap();
     let render = |player: &mut VgmSequencer<'_>| {
         let mut audio = Vec::new();
         let values = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -156,8 +158,8 @@ fn render_events(player: &mut VgmSequencer<'_>) -> (Vec<[f32; 2]>, CapturedEvent
 fn vgm_bad_rip_workaround_triggers_on_32nd_non_control_write() {
     let document = pwm_rip(Some(0), 33);
     let bytes: Vec<u8> = document.clone().into();
-    let mut streamed = VgmSequencer::from_vgm(bytes, 44_100, 11).unwrap();
-    let mut parsed = VgmSequencer::new(document.clone(), 44_100, 128).unwrap();
+    let mut streamed = VgmSequencer::from_vgm(bytes, 44_100, 11, Default::default()).unwrap();
+    let mut parsed = VgmSequencer::new(document.clone(), 44_100, 128, Default::default()).unwrap();
     let (audio, events) = render_events(&mut streamed);
     let (other_audio, other_events) = render_events(&mut parsed);
     assert_eq!(audio, other_audio);
@@ -180,7 +182,7 @@ fn vgm_bad_rip_workaround_triggers_on_32nd_non_control_write() {
             .any(|frame| frame[0] > 0.001 && frame[1] > 0.001)
     );
 
-    let mut disabled = VgmSequencer::new(document, 44_100, 128).unwrap();
+    let mut disabled = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     disabled.set_pwm_compatibility(false).unwrap();
     let (silent, events) = render_events(&mut disabled);
     assert!(silent.iter().flatten().all(|sample| *sample == 0.0));
@@ -200,7 +202,8 @@ fn pwm_workaround_respects_threshold_and_original_control_write() {
         (Some(0x100), 32, true),
         (Some(5), 33, false),
     ] {
-        let mut player = VgmSequencer::new(pwm_rip(control, count), 44_100, 16).unwrap();
+        let mut player =
+            VgmSequencer::new(pwm_rip(control, count), 44_100, 16, Default::default()).unwrap();
         let (_, events) = render_events(&mut player);
         let control_writes = events
             .iter()
@@ -239,7 +242,7 @@ fn pwm_compatibility_is_independent_for_each_chip_instance() {
         })
         .collect::<Vec<_>>();
     document.commands.splice(end..end, secondary);
-    let mut player = VgmSequencer::new(document, 44_100, 32).unwrap();
+    let mut player = VgmSequencer::new(document, 44_100, 32, Default::default()).unwrap();
     let instances = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let callback_instances = std::rc::Rc::clone(&instances);
     player.on_write(move |instance, spec: PwmSpec, _, _| {
@@ -276,8 +279,19 @@ fn pwm_workaround_does_not_repeat_on_vgm_loop() {
         );
         builder.add_vgm_command(WaitSamples(2));
     }
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 17).unwrap();
-    player.set_loop_count(Some(2));
+    let mut player = VgmSequencer::new(
+        builder.finalize(),
+        44_100,
+        17,
+        VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let (_, events) = render_events(&mut player);
     assert_eq!(
         events

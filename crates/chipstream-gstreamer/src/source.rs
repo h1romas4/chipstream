@@ -32,7 +32,7 @@ use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError,
     MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
-    measure_mdx_duration_frames, measure_vgm_duration_frames,
+    VgmSequencerOptions, measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
 use chipstream_ndsif::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
 use ndsif_transport::{
@@ -1498,7 +1498,7 @@ fn load_sequencer_with_factories(
                     .map_err(|error| format!("failed to measure MDX duration: {error}"))?
                     .finite_frames()
                     .map(u64::from);
-            let player = MdxSequencer::with_options_with_factories(
+            let player = MdxSequencer::new_with_factories(
                 package,
                 settings.sample_rate,
                 settings.chunk_frames,
@@ -1538,15 +1538,16 @@ fn load_sequencer_with_factories(
                 bytes,
                 settings.sample_rate,
                 settings.chunk_frames,
+                VgmSequencerOptions {
+                    playback,
+                    ..Default::default()
+                },
                 factories,
             )
             .map_err(|error| format!("failed to create VGM sequencer: {error}"))?;
             configure_adjacent_ym2608_rhythm_rom(path, &mut player)?;
             player
                 .set_pwm_compatibility(true)
-                .map_err(|error| format!("failed to configure VGM playback: {error}"))?;
-            player
-                .set_playback_options(playback)
                 .map_err(|error| format!("failed to configure VGM playback: {error}"))?;
             Ok((Sequencer::Vgm(player), metadata, warning, duration_frames))
         }
@@ -1988,6 +1989,7 @@ mod tests {
                     builder.finalize(),
                     44_100,
                     256,
+                    Default::default(),
                     factories,
                 );
                 if conflict {
@@ -2638,10 +2640,15 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
         builder.add_vgm_command(WaitSamples(441));
-        let error =
-            VgmSequencer::from_vgm_with_factories(builder.finalize(), 44_100, 256, factories)
-                .err()
-                .expect("existing factory error should propagate");
+        let error = VgmSequencer::from_vgm_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        )
+        .err()
+        .expect("existing factory error should propagate");
         assert!(error.to_string().contains("hardware route rejected"));
     }
 
@@ -2716,8 +2723,9 @@ mod tests {
     #[test]
     fn discard_to_frame_matches_sequential_rendering() {
         let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");
-        let mut expected_player =
-            Sequencer::Vgm(VgmSequencer::from_vgm(data.to_vec(), 48_000, 512).unwrap());
+        let mut expected_player = Sequencer::Vgm(
+            VgmSequencer::from_vgm(data.to_vec(), 48_000, 512, Default::default()).unwrap(),
+        );
         let mut expected = Vec::new();
         while let Some(block) = expected_player.render().unwrap() {
             expected.extend_from_slice(block.frames());
@@ -2725,8 +2733,9 @@ mod tests {
 
         let target_frame = 1_237_u64;
         assert!(expected.len() > target_frame as usize);
-        let mut seek_player =
-            Sequencer::Vgm(VgmSequencer::from_vgm(data.to_vec(), 48_000, 512).unwrap());
+        let mut seek_player = Sequencer::Vgm(
+            VgmSequencer::from_vgm(data.to_vec(), 48_000, 512, Default::default()).unwrap(),
+        );
         let cancelled = AtomicBool::new(false);
         let mut actual = discard_to_frame(&mut seek_player, target_frame, &cancelled)
             .unwrap()
@@ -2748,24 +2757,34 @@ mod tests {
             fadeout_samples: None,
             ay8910_ym2149: true,
         };
-        let mut expected_player =
-            VgmSequencer::from_vgm(data.to_vec(), settings.sample_rate, settings.chunk_frames)
-                .unwrap();
-        expected_player.set_loop_count(Some(settings.play_count));
-        expected_player.set_fadeout(None).unwrap();
+        let options = VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(settings.play_count),
+                fadeout: None,
+            },
+            ..Default::default()
+        };
+        let mut expected_player = VgmSequencer::from_vgm(
+            data.as_slice(),
+            settings.sample_rate,
+            settings.chunk_frames,
+            options,
+        )
+        .unwrap();
         let mut expected = Vec::new();
         while let Some(block) = expected_player.render().unwrap() {
             expected.extend_from_slice(block.frames());
         }
 
         let mut player = Sequencer::Vgm(
-            VgmSequencer::from_vgm(data.to_vec(), settings.sample_rate, settings.chunk_frames)
-                .unwrap(),
+            VgmSequencer::from_vgm(
+                data.as_slice(),
+                settings.sample_rate,
+                settings.chunk_frames,
+                options,
+            )
+            .unwrap(),
         );
-        if let Sequencer::Vgm(player) = &mut player {
-            player.set_loop_count(Some(settings.play_count));
-            player.set_fadeout(None).unwrap();
-        }
         let mut checkpoints = VecDeque::new();
         capture_checkpoint(&mut player, &mut checkpoints).unwrap();
         let cancelled = AtomicBool::new(false);

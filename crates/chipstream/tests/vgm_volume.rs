@@ -11,7 +11,7 @@ fn render(document: VgmDocument) -> Vec<[f32; 2]> {
 }
 
 fn render_with_muted(document: VgmDocument, muted: Option<Chip>) -> Vec<[f32; 2]> {
-    let mut player = VgmSequencer::new(document, 48_000, 256).unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     if let Some(chip) = muted {
         player.set_gain(chip, Instance::Primary, 0.0).unwrap();
     }
@@ -175,7 +175,8 @@ fn opn_gains_control_fm_and_ssg_independently() {
             let document = VgmDocument::try_from(bytes).unwrap();
             let baseline = render(document.clone());
             let run = |fm, ssg, chip_gain| {
-                let mut player = VgmSequencer::new(document.clone(), 48_000, 256).unwrap();
+                let mut player =
+                    VgmSequencer::new(document.clone(), 48_000, 256, Default::default()).unwrap();
                 player
                     .set_opn_gains(chip.clone(), Instance::Primary, fm, ssg)
                     .unwrap();
@@ -210,7 +211,7 @@ fn opn_gain_changes_and_checkpoints_keep_streaming_state() {
     let document =
         VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
             .unwrap();
-    let mut player = VgmSequencer::new(document, 48_000, 256).unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
     assert_eq!(
         player.chip_instances().collect::<Vec<_>>(),
         vec![(Chip::Ym2203, Instance::Primary)]
@@ -336,7 +337,8 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
     let mut document = builder.finalize();
     document.header.volume_modifier = 0x20;
     let bytes: Vec<u8> = document.into();
-    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
+    let mut player =
+        VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     let first = player.render().unwrap().unwrap().frames().to_vec();
     assert_scaled(&first, &baseline[..first.len()], 1.0, 1.0);
     player

@@ -694,6 +694,20 @@ pub struct VgmSequencer<'a> {
     source_identity: Arc<()>,
 }
 
+/// Playback options for a VGM file or parsed document.
+///
+/// Defaults to one traversal with no fade and preserves the header loop
+/// settings. Generator sources handle their own looping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VgmSequencerOptions {
+    /// Loop count and fade duration.
+    pub playback: super::PlaybackOptions,
+    /// Override the loop base from the VGM header, or use the header when `None`.
+    pub loop_base: Option<i8>,
+    /// Override the loop modifier from the VGM header, or use the header when `None`.
+    pub loop_modifier: Option<u8>,
+}
+
 /// Initialization information for a single-pass VGM command generator.
 ///
 /// The header and optional extra header declare the same chips, settings,
@@ -850,8 +864,15 @@ impl<'a> VgmSequencer<'a> {
         data: impl Into<Vec<u8>>,
         output_rate: u32,
         chunk_frames: usize,
+        options: VgmSequencerOptions,
     ) -> Result<Self, VgmSequencerError> {
-        Self::from_vgm_with_factories(data, output_rate, chunk_frames, ChipFactoryRegistry::new())
+        Self::from_vgm_with_factories(
+            data,
+            output_rate,
+            chunk_frames,
+            options,
+            ChipFactoryRegistry::new(),
+        )
     }
 
     /// Create a sequencer with replacement factories for selected chip types.
@@ -866,6 +887,7 @@ impl<'a> VgmSequencer<'a> {
         data: impl Into<Vec<u8>>,
         output_rate: u32,
         chunk_frames: usize,
+        options: VgmSequencerOptions,
         mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
@@ -888,7 +910,9 @@ impl<'a> VgmSequencer<'a> {
         config.set_psg_stereo(psg_stereo);
         let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_vgm(data)?;
-        Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)
+        let mut player = Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)?;
+        player.apply_options(options)?;
+        Ok(player)
     }
 
     /// Construct a backend, routing matrix, and resampler for one chip instance.
@@ -1143,11 +1167,13 @@ impl<'a> VgmSequencer<'a> {
         document: VgmDocument,
         output_rate: u32,
         chunk_frames: usize,
+        options: VgmSequencerOptions,
     ) -> Result<Self, VgmSequencerError> {
         Self::new_with_factories(
             document,
             output_rate,
             chunk_frames,
+            options,
             ChipFactoryRegistry::new(),
         )
     }
@@ -1157,6 +1183,7 @@ impl<'a> VgmSequencer<'a> {
         document: VgmDocument,
         output_rate: u32,
         chunk_frames: usize,
+        options: VgmSequencerOptions,
         mut factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
@@ -1181,7 +1208,9 @@ impl<'a> VgmSequencer<'a> {
         config.set_psg_stereo(psg_stereo);
         let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_document(document);
-        Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)
+        let mut player = Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)?;
+        player.apply_options(options)?;
+        Ok(player)
     }
 
     /// Play commands generated lazily using the supplied chip configuration.
@@ -1351,41 +1380,28 @@ impl<'a> VgmSequencer<'a> {
         })
     }
 
-    /// Configure loop count and fade duration before rendering.
-    ///
-    /// Fade durations are rounded to the nearest 44,100 Hz sample. A duration
-    /// rounding to zero disables fading. Files without a loop and unlimited
-    /// playback ignore the fade.
-    pub fn set_playback_options(
-        &mut self,
-        options: super::PlaybackOptions,
-    ) -> Result<(), VgmSequencerError> {
-        let fadeout = super::options::fadeout_samples(options.fadeout)?;
-        if self.started {
-            return Err(VgmSequencerError::FadeoutConfigurationAfterPlayback);
-        }
-        self.set_loop_count(options.loop_count);
-        self.set_fadeout_samples(fadeout)
-    }
-
-    /// Set the fade duration before rendering without changing the loop count.
-    ///
-    /// See [`Self::set_playback_options`] for rounding and loop behavior.
-    pub fn set_fadeout(
-        &mut self,
-        fadeout: Option<std::time::Duration>,
-    ) -> Result<(), VgmSequencerError> {
-        self.set_fadeout_samples(super::options::fadeout_samples(fadeout)?)
-    }
-
-    /// Apply and record the fade duration for future stream reconstruction.
-    fn set_fadeout_samples(&mut self, samples: Option<u32>) -> Result<(), VgmSequencerError> {
-        self.configure_fadeout(samples, None)?;
-        let samples = samples.filter(|samples| *samples != 0);
+    fn apply_options(&mut self, options: VgmSequencerOptions) -> Result<(), VgmSequencerError> {
+        let fadeout = super::options::fadeout_samples(options.playback.fadeout)?;
+        self.configure_fadeout(fadeout, None)?;
+        self.stream.set_loop_count(options.playback.loop_count);
+        self.stream_settings.push((
+            self.stream_steps,
+            StreamSetting::LoopCount(options.playback.loop_count),
+        ));
         self.stream
-            .set_fadeout_samples(samples.map(|samples| samples as usize));
+            .set_fadeout_samples(fadeout.map(|samples| samples as usize));
         self.stream_settings
-            .push((self.stream_steps, StreamSetting::FadeoutSamples(samples)));
+            .push((self.stream_steps, StreamSetting::FadeoutSamples(fadeout)));
+        if let Some(base) = options.loop_base {
+            self.stream.set_loop_base(base);
+            self.stream_settings
+                .push((self.stream_steps, StreamSetting::LoopBase(base)));
+        }
+        if let Some(modifier) = options.loop_modifier {
+            self.stream.set_loop_modifier(modifier);
+            self.stream_settings
+                .push((self.stream_steps, StreamSetting::LoopModifier(modifier)));
+        }
         Ok(())
     }
 
@@ -1514,14 +1530,6 @@ impl<'a> VgmSequencer<'a> {
         }
     }
 
-    /// Set the number of playthroughs (`None` loops indefinitely).
-    /// This should be called before rendering begins.
-    pub fn set_loop_count(&mut self, count: Option<u32>) {
-        self.stream.set_loop_count(count);
-        self.stream_settings
-            .push((self.stream_steps, StreamSetting::LoopCount(count)));
-    }
-
     /// Return the output-frame position where the current fade begins, once
     /// rendering has reached its loop boundary.
     ///
@@ -1529,20 +1537,6 @@ impl<'a> VgmSequencer<'a> {
     /// absent for tracks without a fade or before the boundary is encountered.
     pub fn fade_start_frame(&self) -> Option<usize> {
         self.fade_frames.as_ref().map(|fade| fade.start_frame)
-    }
-
-    /// Override the VGM loop modifier before rendering.
-    pub fn set_loop_modifier(&mut self, modifier: u8) {
-        self.stream.set_loop_modifier(modifier);
-        self.stream_settings
-            .push((self.stream_steps, StreamSetting::LoopModifier(modifier)));
-    }
-
-    /// Override the VGM loop base before rendering.
-    pub fn set_loop_base(&mut self, base: i8) {
-        self.stream.set_loop_base(base);
-        self.stream_settings
-            .push((self.stream_steps, StreamSetting::LoopBase(base)));
     }
 
     /// Change the gain for one chip instance, including already buffered PCM.
@@ -2472,7 +2466,8 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Ym2151, Instance::Secondary, 4_000_000);
-        let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64).unwrap();
+        let mut player =
+            VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
         let write = ChipRegisterWrite::Ym2151(Ym2151Spec {
             register: 0x20,
             value: 0xc7,

@@ -11,7 +11,7 @@
 //! use chipstream::sequencer::{Chip, Instance, VgmSequencer};
 //!
 //! let bytes = std::fs::read("song.vgm")?;
-//! let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+//! let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
 //! player.set_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
 //! while let Some(block) = player.render()? {
 //!     // Send block.frames() to the host.
@@ -27,7 +27,7 @@
 //!
 //! let mdx = std::fs::read("song.mdx")?;
 //! let pdx = std::fs::read("song.pdx")?;
-//! let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512)?;
+//! let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512, Default::default())?;
 //! while let Some(block) = player.render()? {
 //!     // Send block.frames() to the host.
 //! }
@@ -54,4 +54,6 @@ pub use options::PlaybackOptions;
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
-pub use vgm::{GeneratorConfig, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError};
+pub use vgm::{
+    GeneratorConfig, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmSequencerOptions,
+};

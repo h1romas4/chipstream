@@ -212,7 +212,9 @@ mod tests {
 
     use super::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
     use crate::audio::StereoBlock;
-    use crate::sequencer::{MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer};
+    use crate::sequencer::{
+        MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerOptions,
+    };
 
     #[test]
     fn u32_multiplication_keeps_the_high_and_low_words() {
@@ -273,12 +275,20 @@ mod tests {
         builder.add_vgm_command(WaitSamples(3_000));
         builder.set_loop_index(1);
         let bytes: Vec<u8> = builder.finalize().into();
-        let mut player = VgmSequencer::from_vgm(bytes.clone(), 48_000, 512).unwrap();
         let options = PlaybackOptions {
             loop_count: Some(2),
             fadeout: Some(std::time::Duration::from_millis(50)),
         };
-        player.set_playback_options(options).unwrap();
+        let mut player = VgmSequencer::from_vgm(
+            bytes.clone(),
+            48_000,
+            512,
+            VgmSequencerOptions {
+                playback: options,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let rendered = rendered_frames(|| player.render());
 
         assert_eq!(
@@ -298,7 +308,7 @@ mod tests {
             },
             ..MdxSequencerOptions::default()
         };
-        let mut player = MdxSequencer::with_options(package.clone(), 48_000, 512, options).unwrap();
+        let mut player = MdxSequencer::new(package.clone(), 48_000, 512, options).unwrap();
         let rendered = rendered_frames(|| player.render());
 
         assert_eq!(
@@ -375,7 +385,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut player = MdxSequencer::with_options(package.clone(), 48_000, 512, options).unwrap();
+        let mut player = MdxSequencer::new(package.clone(), 48_000, 512, options).unwrap();
         let rendered = rendered_frames(|| player.render());
         assert_eq!(
             measure_mdx_duration_frames(package, 48_000, options).unwrap(),
@@ -392,21 +402,24 @@ mod tests {
         builder.add_vgm_command(WaitSamples(1_000));
         builder.set_loop_index(0);
         let bytes: Vec<u8> = builder.finalize().into();
-        let mut player = VgmSequencer::from_vgm(bytes.clone(), 48_000, 512).unwrap();
         let options = PlaybackOptions {
             loop_count: Some(2),
             fadeout: Some(Duration::from_millis(50)),
         };
-        player.set_playback_options(options).unwrap();
+        let mut player = VgmSequencer::from_vgm(
+            bytes.clone(),
+            48_000,
+            512,
+            VgmSequencerOptions {
+                playback: options,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let rendered = rendered_frames(|| player.render());
         assert_eq!(
             measure_vgm_duration_frames(&bytes, 48_000, options).unwrap(),
             PlaybackDuration::Finite(rendered)
-        );
-        assert!(
-            player
-                .set_playback_options(PlaybackOptions::default())
-                .is_err()
         );
         assert!(super::super::options::fadeout_samples(Some(Duration::MAX)).is_err());
     }

@@ -109,8 +109,8 @@ fn vgm_dual_psg_and_game_gear_stereo() {
     doc.header.sn76489_flags.clock_divider_8 = true;
     let bytes: Vec<u8> = doc.into();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31).unwrap();
-    let mut document = VgmSequencer::new(parsed, 44_100, 256).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31, Default::default()).unwrap();
+    let mut document = VgmSequencer::new(parsed, 44_100, 256, Default::default()).unwrap();
     stream
         .set_gain(Chip::Sn76489, Instance::Secondary, 0.0)
         .unwrap();

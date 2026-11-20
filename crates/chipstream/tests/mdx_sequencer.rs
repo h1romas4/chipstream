@@ -1,9 +1,8 @@
 use std::error::Error;
 
-#[cfg(feature = "okim6258")]
-use chipstream::sequencer::PlaybackOptions;
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, VgmSequencer,
+    Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions, PlaybackOptions,
+    VgmSequencer,
 };
 use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 #[cfg(feature = "okim6258")]
@@ -70,7 +69,7 @@ fn mdx_reference_factories() -> ChipFactoryRegistry {
 
 #[test]
 fn current_sample_tracks_the_soundlog_command_position() {
-    let mut player = MdxSequencer::new(fm_package(), 44_100, 256).unwrap();
+    let mut player = MdxSequencer::new(fm_package(), 44_100, 256, Default::default()).unwrap();
 
     assert_eq!(player.current_sample(), 0);
     player.render().unwrap();
@@ -79,7 +78,7 @@ fn current_sample_tracks_the_soundlog_command_position() {
 
 #[test]
 fn position_frames_counts_returned_pcm() {
-    let mut player = MdxSequencer::new(fm_package(), 44_100, 256).unwrap();
+    let mut player = MdxSequencer::new(fm_package(), 44_100, 256, Default::default()).unwrap();
 
     assert_eq!(player.position_frames(), 0);
     let block = player.render().unwrap().unwrap();
@@ -176,9 +175,14 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
             ..Default::default()
         };
         let document = to_vgm_document(&package, &options.into()).unwrap();
-        let mut reference =
-            VgmSequencer::new_with_factories(document, 48_000, 512, mdx_reference_factories())
-                .unwrap();
+        let mut reference = VgmSequencer::new_with_factories(
+            document,
+            48_000,
+            512,
+            Default::default(),
+            mdx_reference_factories(),
+        )
+        .unwrap();
         let expected = render_vgm(&mut reference);
         assert!(
             expected
@@ -187,8 +191,7 @@ fn fm_and_pcm_match_eager_conversion_across_chunks() {
                 .any(|sample| sample.abs() > 0.0001)
         );
         for chunk in [31, 1024] {
-            let mut mdx =
-                MdxSequencer::with_options(package.clone(), 48_000, chunk, options).unwrap();
+            let mut mdx = MdxSequencer::new(package.clone(), 48_000, chunk, options).unwrap();
             assert_eq!(
                 render_mdx(&mut mdx),
                 expected,
@@ -210,22 +213,21 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
         max_ticks: None,
         ..Default::default()
     };
-    let once = render_mdx(
-        &mut MdxSequencer::with_options(package.clone(), 44_100, 256, options(Some(1))).unwrap(),
-    );
-    let twice = render_mdx(
-        &mut MdxSequencer::with_options(package.clone(), 44_100, 257, options(Some(2))).unwrap(),
-    );
+    let once =
+        render_mdx(&mut MdxSequencer::new(package.clone(), 44_100, 256, options(Some(1))).unwrap());
+    let twice =
+        render_mdx(&mut MdxSequencer::new(package.clone(), 44_100, 257, options(Some(2))).unwrap());
     let mut expected = VgmSequencer::new_with_factories(
         to_vgm_document(&package, &options(Some(2)).into()).unwrap(),
         44_100,
         512,
+        Default::default(),
         mdx_reference_factories(),
     )
     .unwrap();
     assert_eq!(twice, render_vgm(&mut expected));
     assert!(twice.len() > once.len());
-    let mut infinite = MdxSequencer::with_options(package, 44_100, 256, options(None)).unwrap();
+    let mut infinite = MdxSequencer::new(package, 44_100, 256, options(None)).unwrap();
     let frames: Vec<_> = (0..(twice.len() / 256 + 2))
         .flat_map(|_| infinite.render().unwrap().unwrap().frames().to_vec())
         .collect();
@@ -233,30 +235,52 @@ fn finite_and_infinite_loops_are_driven_incrementally() {
 }
 
 #[test]
-fn mdx_constructor_loop_defaults_are_explicit() {
+fn mdx_constructors_apply_explicit_loop_options() {
     let package = MdxPackage::parse(MDX, None).unwrap();
-    let once = render_mdx(&mut MdxSequencer::new(package.clone(), 44_100, 256).unwrap());
-    let options = MdxSequencerOptions::default();
-    let explicit_once =
-        render_mdx(&mut MdxSequencer::with_options(package.clone(), 44_100, 256, options).unwrap());
-    assert_eq!(once, explicit_once);
-
-    assert_eq!(MdxSequencerOptions::default().playback.loop_count, Some(1));
-    let mut default_options =
-        MdxSequencer::with_options(package, 44_100, 256, MdxSequencerOptions::default()).unwrap();
-    assert_eq!(render_mdx(&mut default_options), once);
+    let once = render_mdx(
+        &mut MdxSequencer::new(package.clone(), 44_100, 256, Default::default()).unwrap(),
+    );
+    let options = MdxSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            fadeout: None,
+        },
+        max_ticks: None,
+        ..Default::default()
+    };
+    let mut players = [
+        MdxSequencer::new(package.clone(), 44_100, 256, options).unwrap(),
+        MdxSequencer::new_with_factories(package, 44_100, 256, options, ChipFactoryRegistry::new())
+            .unwrap(),
+        MdxSequencer::from_mdx(MDX.to_vec(), None, 44_100, 256, options).unwrap(),
+        MdxSequencer::from_mdx_with_factories(
+            MDX.to_vec(),
+            None,
+            44_100,
+            256,
+            options,
+            ChipFactoryRegistry::new(),
+        )
+        .unwrap(),
+    ];
+    let expected = render_mdx(&mut players[0]);
+    assert!(expected.len() > once.len());
+    for player in &mut players[1..] {
+        assert_eq!(render_mdx(player), expected);
+    }
 }
 
 #[test]
 fn mdx_filter_write_mutes_ym2151_pan() {
-    let original = render_mdx(&mut MdxSequencer::new(fm_package(), 48_000, 128).unwrap());
+    let original =
+        render_mdx(&mut MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap());
     assert!(
         original
             .iter()
             .flatten()
             .any(|sample| sample.abs() > 0.0001)
     );
-    let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
     player.filter_write(|_, mut spec: Ym2151Spec, _| {
         if (0x20..=0x27).contains(&spec.register) {
             spec.value &= 0x3f;
@@ -270,7 +294,7 @@ fn mdx_filter_write_mutes_ym2151_pan() {
 
 #[test]
 fn events_and_gain_are_available_for_mdx() {
-    let mut player = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
     player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let callback_events = std::rc::Rc::clone(&events);
@@ -297,7 +321,7 @@ fn events_and_gain_are_available_for_mdx() {
             .iter()
             .all(|(_, instance, spec, _)| *instance == Instance::Primary && spec.register == 0x08)
     );
-    let mut muted = MdxSequencer::new(fm_package(), 48_000, 128).unwrap();
+    let mut muted = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
     muted
         .set_gain(Chip::Ym2151, Instance::Primary, 0.0)
         .unwrap();
@@ -309,20 +333,31 @@ fn events_and_gain_are_available_for_mdx() {
 
 #[test]
 fn invalid_inputs_limits_and_playback_errors_are_reported() {
-    assert!(MdxSequencer::from_mdx(b"bad mdx".to_vec(), None, 48_000, 128).is_err());
-    assert!(MdxSequencer::from_mdx(MDX.to_vec(), Some(b"bad pdx".to_vec()), 48_000, 128).is_err());
-    assert!(MdxSequencer::new(fm_package(), 0, 128).is_err());
-    assert!(MdxSequencer::new(fm_package(), 48_000, 0).is_err());
+    assert!(
+        MdxSequencer::from_mdx(b"bad mdx".to_vec(), None, 48_000, 128, Default::default()).is_err()
+    );
+    assert!(
+        MdxSequencer::from_mdx(
+            MDX.to_vec(),
+            Some(b"bad pdx".to_vec()),
+            48_000,
+            128,
+            Default::default()
+        )
+        .is_err()
+    );
+    assert!(MdxSequencer::new(fm_package(), 0, 128, Default::default()).is_err());
+    assert!(MdxSequencer::new(fm_package(), 48_000, 0, Default::default()).is_err());
     let options = MdxSequencerOptions {
         ym2151_clock: 0,
         ..Default::default()
     };
-    assert!(MdxSequencer::with_options(fm_package(), 48_000, 128, options).is_err());
+    assert!(MdxSequencer::new(fm_package(), 48_000, 128, options).is_err());
     let options = MdxSequencerOptions {
         max_ticks: Some(1),
         ..Default::default()
     };
-    let mut player = MdxSequencer::with_options(fm_package(), 48_000, 128, options).unwrap();
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128, options).unwrap();
     let error = loop {
         match player.render() {
             Err(error) => break error,
@@ -368,8 +403,10 @@ fn compressed_mdx_and_pdx_play_like_uncompressed_inputs() {
     let plain_pdx = make_pdx(false);
     let compressed_mdx = make_mdx(true);
     let compressed_pdx = make_pdx(true);
-    let expected =
-        render_mdx(&mut MdxSequencer::from_mdx(plain_mdx, Some(plain_pdx), 48_000, 128).unwrap());
+    let expected = render_mdx(
+        &mut MdxSequencer::from_mdx(plain_mdx, Some(plain_pdx), 48_000, 128, Default::default())
+            .unwrap(),
+    );
     assert!(
         expected
             .iter()
@@ -377,7 +414,14 @@ fn compressed_mdx_and_pdx_play_like_uncompressed_inputs() {
             .any(|sample| sample.abs() > 0.0001)
     );
     let actual = render_mdx(
-        &mut MdxSequencer::from_mdx(compressed_mdx, Some(compressed_pdx), 48_000, 257).unwrap(),
+        &mut MdxSequencer::from_mdx(
+            compressed_mdx,
+            Some(compressed_pdx),
+            48_000,
+            257,
+            Default::default(),
+        )
+        .unwrap(),
     );
     assert_eq!(actual, expected);
 }
@@ -386,8 +430,11 @@ fn compressed_mdx_and_pdx_play_like_uncompressed_inputs() {
 fn owned_mdx_without_pdx_matches_parsed_package() {
     let package = fm_package();
     let mdx = package.to_mdx_bytes().unwrap();
-    let actual = render_mdx(&mut MdxSequencer::from_mdx(mdx, None, 48_000, 128).unwrap());
-    let expected = render_mdx(&mut MdxSequencer::new(package, 48_000, 128).unwrap());
+    let actual = render_mdx(
+        &mut MdxSequencer::from_mdx(mdx, None, 48_000, 128, Default::default()).unwrap(),
+    );
+    let expected =
+        render_mdx(&mut MdxSequencer::new(package, 48_000, 128, Default::default()).unwrap());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.0001));
 }
@@ -407,7 +454,10 @@ fn owned_mdx_normalizes_mxdrv16y_track_stubs() {
 
     let normalized = soundlog::mdx::compat::normalize_mdx_for_playback(&mdx).unwrap();
     let package = MdxPackage::parse(&normalized, None).unwrap();
-    let actual = render_mdx(&mut MdxSequencer::from_mdx(mdx, None, 48_000, 128).unwrap());
-    let expected = render_mdx(&mut MdxSequencer::new(package, 48_000, 128).unwrap());
+    let actual = render_mdx(
+        &mut MdxSequencer::from_mdx(mdx, None, 48_000, 128, Default::default()).unwrap(),
+    );
+    let expected =
+        render_mdx(&mut MdxSequencer::new(package, 48_000, 128, Default::default()).unwrap());
     assert_eq!(actual, expected);
 }

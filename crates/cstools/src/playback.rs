@@ -11,7 +11,7 @@ use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions,
-    PlaybackOptions, VgmSequencer, VgmSequencerError,
+    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -118,9 +118,18 @@ impl Player {
                         )?))
                     });
                 }
-                let mut sequencer =
-                    VgmSequencer::from_vgm_with_factories(data, rate, CHUNK_FRAMES, factories)
-                        .context("failed to create VGM sequencer")?;
+                let mut sequencer = VgmSequencer::from_vgm_with_factories(
+                    data,
+                    rate,
+                    CHUNK_FRAMES,
+                    VgmSequencerOptions {
+                        playback,
+                        loop_base: options.loop_base,
+                        loop_modifier: options.loop_modifier,
+                    },
+                    factories,
+                )
+                .context("failed to create VGM sequencer")?;
                 if let Some(rom) = &options.ym2608_rhythm_rom {
                     sequencer
                         .set_ym2608_rhythm_rom(Instance::Primary, rom)
@@ -138,13 +147,6 @@ impl Player {
                     }
                 }
                 sequencer.set_pwm_compatibility(options.compat_vgm_pwm.unwrap_or(true))?;
-                sequencer.set_playback_options(playback)?;
-                if let Some(modifier) = options.loop_modifier {
-                    sequencer.set_loop_modifier(modifier);
-                }
-                if let Some(base) = options.loop_base {
-                    sequencer.set_loop_base(base);
-                }
                 Self::Vgm(sequencer)
             }
             Input::Mdx(package) => {
@@ -154,7 +156,7 @@ impl Player {
                     ..MdxSequencerOptions::default()
                 };
                 Self::Mdx(
-                    MdxSequencer::with_options(*package, rate, CHUNK_FRAMES, settings)
+                    MdxSequencer::new(*package, rate, CHUNK_FRAMES, settings)
                         .context("failed to create MDX sequencer")?,
                 )
             }
@@ -1241,7 +1243,8 @@ mod playback_tests {
             builder.add_vgm_command(WaitSamples(4410));
             let data: Vec<u8> = builder.finalize().into();
             let mut reference =
-                VgmSequencer::from_vgm(data.as_slice(), 44_100, CHUNK_FRAMES).unwrap();
+                VgmSequencer::from_vgm(data.as_slice(), 44_100, CHUNK_FRAMES, Default::default())
+                    .unwrap();
             reference.set_ym2608_rhythm_rom(instance, &rom).unwrap();
             let mut expected = Vec::new();
             while let Some(block) = reference.render().unwrap() {
@@ -1441,7 +1444,9 @@ mod playback_tests {
     #[test]
     fn producer_preserves_sequencer_pcm_and_reports_parse_errors() {
         let data = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
-        let mut reference = VgmSequencer::from_vgm(data.as_slice(), 48_000, CHUNK_FRAMES).unwrap();
+        let mut reference =
+            VgmSequencer::from_vgm(data.as_slice(), 48_000, CHUNK_FRAMES, Default::default())
+                .unwrap();
         let mut expected = Vec::new();
         while let Some(block) = reference.render().unwrap() {
             expected.extend_from_slice(block.frames());
@@ -1508,7 +1513,7 @@ mod playback_tests {
             ym2608_rhythm_rom: None,
             fadeout_samples: None,
         };
-        let mut reference = MdxSequencer::with_options(
+        let mut reference = MdxSequencer::new(
             package.clone(),
             48_000,
             CHUNK_FRAMES,
@@ -1857,11 +1862,19 @@ mod playback_tests {
             let data = fade_vgm(true);
             let mut reference = None;
             for chunk in [1, 73, 1024, 4096] {
-                let mut player = VgmSequencer::from_vgm(data.clone(), 48_000, chunk).unwrap();
-                player.set_loop_count(Some(2));
-                player
-                    .set_fadeout(Some(Duration::from_secs_f64(2111.0 / 44_100.0)))
-                    .unwrap();
+                let mut player = VgmSequencer::from_vgm(
+                    data.clone(),
+                    48_000,
+                    chunk,
+                    VgmSequencerOptions {
+                        playback: PlaybackOptions {
+                            loop_count: Some(2),
+                            fadeout: Some(Duration::from_secs_f64(2111.0 / 44_100.0)),
+                        },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());
@@ -1882,10 +1895,19 @@ mod playback_tests {
         #[test]
         fn short_fades_end_at_silence() {
             for samples in [1, 2] {
-                let mut player = VgmSequencer::from_vgm(fade_vgm(true), 48_000, 73).unwrap();
-                player
-                    .set_fadeout(Some(Duration::from_secs_f64(f64::from(samples) / 44_100.0)))
-                    .unwrap();
+                let mut player = VgmSequencer::from_vgm(
+                    fade_vgm(true),
+                    48_000,
+                    73,
+                    VgmSequencerOptions {
+                        playback: PlaybackOptions {
+                            fadeout: Some(Duration::from_secs_f64(f64::from(samples) / 44_100.0)),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());
@@ -1940,7 +1962,7 @@ mod playback_tests {
             let mut reference = None;
             for chunk in [1, 73, 1024, 4096] {
                 let mut player =
-                    MdxSequencer::with_options(package.clone(), 48_000, chunk, settings).unwrap();
+                    MdxSequencer::new(package.clone(), 48_000, chunk, settings).unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = player.render().unwrap() {
                     frames.extend_from_slice(block.frames());

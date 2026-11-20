@@ -128,9 +128,9 @@ fn vgm_rom_and_second_chip_preserve_wide_addresses() {
     doc.header.spcm_interface = 12 | (0x70 << 16);
     let bytes: Vec<u8> = doc.clone().into();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 128).unwrap();
-    let mut document = VgmSequencer::new(doc, 44_100, 57).unwrap();
-    let mut parsed_player = VgmSequencer::new(parsed, 44_100, 128).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
+    let mut document = VgmSequencer::new(doc, 44_100, 57, Default::default()).unwrap();
+    let mut parsed_player = VgmSequencer::new(parsed, 44_100, 128, Default::default()).unwrap();
     let render = |player: &mut VgmSequencer| {
         let mut result = Vec::new();
         while let Some(block) = player.render().unwrap() {
@@ -156,7 +156,8 @@ fn vgm_events_report_both_address_bytes() {
         },
     );
     builder.add_vgm_command(WaitSamples(100));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 128).unwrap();
+    let mut player =
+        VgmSequencer::new(builder.finalize(), 44_100, 128, Default::default()).unwrap();
     let events = Rc::new(RefCell::new(Vec::new()));
     let callback_events = Rc::clone(&events);
     player.on_write(move |instance, spec: SegaPcmSpec, sample, _| {

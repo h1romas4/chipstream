@@ -1,6 +1,8 @@
 #[cfg(feature = "sn76496")]
 use chipstream::chip::ChipError;
-use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
+use chipstream::sequencer::{
+    ChipFactoryRegistry, PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
+};
 #[cfg(feature = "okim6258")]
 use soundlog::chip::Okim6258Spec;
 use soundlog::chip::{Chip, Ym2608Spec, Ym2610Spec, Ym2612Spec};
@@ -18,8 +20,9 @@ fn render_all(player: &mut VgmSequencer) -> Vec<[f32; 2]> {
 #[test]
 fn from_vgm_accepts_owned_and_borrowed_bytes() {
     let bytes = include_bytes!("../../soundlog/assets/vgm/ym2151_a4.vgm").to_vec();
-    let mut borrowed = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
-    let mut owned = VgmSequencer::from_vgm(bytes, 48_000, 256).unwrap();
+    let mut borrowed =
+        VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
+    let mut owned = VgmSequencer::from_vgm(bytes, 48_000, 256, Default::default()).unwrap();
 
     let expected = render_all(&mut owned);
     assert!(!expected.is_empty());
@@ -27,10 +30,93 @@ fn from_vgm_accepts_owned_and_borrowed_bytes() {
 }
 
 #[test]
+fn construction_options_apply_to_all_file_and_document_paths() {
+    let mut builder = VgmBuilder::new();
+    builder.set_loop_index(0);
+    builder.add_vgm_command(WaitSamples(400));
+    let mut document = builder.finalize();
+    document.header.loop_modifier = 0x20;
+    let bytes: Vec<u8> = document.clone().into();
+
+    for (loop_base, loop_modifier, expected_frames) in [
+        (None, None, 1_600),
+        (None, Some(0x10), 800),
+        (Some(1), Some(0x10), 400),
+    ] {
+        let options = VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                fadeout: None,
+            },
+            loop_base,
+            loop_modifier,
+        };
+        let mut players = [
+            VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 64, options).unwrap(),
+            VgmSequencer::from_vgm_with_factories(
+                bytes.as_slice(),
+                44_100,
+                64,
+                options,
+                ChipFactoryRegistry::new(),
+            )
+            .unwrap(),
+            VgmSequencer::new(document.clone(), 44_100, 64, options).unwrap(),
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                64,
+                options,
+                ChipFactoryRegistry::new(),
+            )
+            .unwrap(),
+        ];
+        for player in &mut players {
+            let first = player.render().unwrap().unwrap().frames().len();
+            let checkpoint = player.checkpoint().unwrap();
+            let output = render_all(player);
+            assert_eq!(first + output.len(), expected_frames);
+            player.restore_checkpoint(&checkpoint).unwrap();
+            assert_eq!(render_all(player), output);
+        }
+    }
+}
+
+#[test]
+fn construction_options_reject_fadeout_overflow() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(WaitSamples(1));
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    let options = VgmSequencerOptions {
+        playback: PlaybackOptions {
+            fadeout: Some(std::time::Duration::MAX),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for result in [
+        VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 64, options),
+        VgmSequencer::from_vgm_with_factories(
+            bytes.as_slice(),
+            44_100,
+            64,
+            options,
+            ChipFactoryRegistry::new(),
+        ),
+        VgmSequencer::new(document.clone(), 44_100, 64, options),
+        VgmSequencer::new_with_factories(document, 44_100, 64, options, ChipFactoryRegistry::new()),
+    ] {
+        assert!(matches!(result, Err(VgmSequencerError::DurationOverflow)));
+    }
+}
+
+#[test]
 fn current_sample_tracks_the_soundlog_command_position() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(4410));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 256).unwrap();
+    let mut player =
+        VgmSequencer::new(builder.finalize(), 44_100, 256, Default::default()).unwrap();
 
     assert_eq!(player.current_sample(), 0);
     player.render().unwrap();
@@ -43,8 +129,19 @@ fn position_frames_counts_returned_pcm_across_loops() {
     builder.add_vgm_command(WaitSamples(1000));
     builder.set_loop_index(0);
     builder.add_vgm_command(WaitSamples(1000));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 256).unwrap();
-    player.set_loop_count(Some(2));
+    let mut player = VgmSequencer::new(
+        builder.finalize(),
+        44_100,
+        256,
+        VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let mut returned_frames = 0;
     while let Some(block) = player.render().unwrap() {
@@ -115,11 +212,12 @@ fn supplied_vgm_examples_produce_stereo_audio() {
         ),
     ];
     for (name, data) in fixtures {
-        let mut player = VgmSequencer::from_vgm(*data, 48_000, 512)
+        let mut player = VgmSequencer::from_vgm(*data, 48_000, 512, Default::default())
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let samples = render_all(&mut player);
         let document = VgmDocument::try_from(*data).unwrap();
-        let mut document_player = VgmSequencer::new(document, 48_000, 257).unwrap();
+        let mut document_player =
+            VgmSequencer::new(document, 48_000, 257, Default::default()).unwrap();
         assert_eq!(samples, render_all(&mut document_player), "{name}");
         assert!(samples.len() > 8_000, "{name}: {}", samples.len());
         assert!(
@@ -183,8 +281,8 @@ fn oki_document() -> VgmDocument {
 #[cfg(feature = "okim6258")]
 fn chunks_preserve_oki_pan_rate_and_duration() {
     let doc = oki_document();
-    let mut small = VgmSequencer::new(doc.clone(), 48_000, 31).unwrap();
-    let mut large = VgmSequencer::new(doc, 48_000, 1024).unwrap();
+    let mut small = VgmSequencer::new(doc.clone(), 48_000, 31, Default::default()).unwrap();
+    let mut large = VgmSequencer::new(doc, 48_000, 1024, Default::default()).unwrap();
     let a = render_all(&mut small);
     let b = render_all(&mut large);
     assert_eq!(a.len(), (5000_u32 * 48_000 + 22_050) as usize / 44_100);
@@ -197,7 +295,8 @@ fn chunks_preserve_oki_pan_rate_and_duration() {
     assert!(a[3000..].iter().all(|f| f[0].abs() < 0.00001));
     assert!(a[3000..].iter().any(|f| f[1].abs() > 0.001));
 
-    let mut checkpointed = VgmSequencer::new(oki_document(), 48_000, 31).unwrap();
+    let mut checkpointed =
+        VgmSequencer::new(oki_document(), 48_000, 31, Default::default()).unwrap();
     checkpointed.render().unwrap();
     let checkpoint = checkpointed.checkpoint().unwrap();
     let continuation = render_all(&mut checkpointed);
@@ -249,9 +348,16 @@ fn vgm_okim6258_matches_explicit_dc_filtered_decoder() {
                     .with_dc_blocker(),
             ))
         });
-        let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
-        let mut direct =
-            VgmSequencer::new_with_factories(document.clone(), rate, 127, factories).unwrap();
+        let mut builtin =
+            VgmSequencer::new(document.clone(), rate, 31, Default::default()).unwrap();
+        let mut direct = VgmSequencer::new_with_factories(
+            document.clone(),
+            rate,
+            127,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let actual = render_all(&mut builtin);
         assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
         assert_eq!(actual, render_all(&mut direct));
@@ -263,8 +369,14 @@ fn vgm_okim6258_matches_explicit_dc_filtered_decoder() {
             chip.set_output_bits(OutputBits::Bits12);
             Ok(Box::new(Okim6258Stream::new(chip).with_dc_blocker()))
         });
-        let mut latch =
-            VgmSequencer::new_with_factories(document.clone(), rate, 127, latch_factories).unwrap();
+        let mut latch = VgmSequencer::new_with_factories(
+            document.clone(),
+            rate,
+            127,
+            Default::default(),
+            latch_factories,
+        )
+        .unwrap();
         assert_ne!(actual, render_all(&mut latch));
     }
 }
@@ -328,12 +440,15 @@ fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
     document.header.okim6258_flags.output_12bit = true;
 
     for rate in [44_100, 48_000] {
-        let mut builtin = VgmSequencer::new(document.clone(), rate, 31).unwrap();
-        let mut large = VgmSequencer::new(document.clone(), rate, 1024).unwrap();
+        let mut builtin =
+            VgmSequencer::new(document.clone(), rate, 31, Default::default()).unwrap();
+        let mut large =
+            VgmSequencer::new(document.clone(), rate, 1024, Default::default()).unwrap();
         let expected = render_all(&mut large);
         assert_eq!(render_all(&mut builtin), expected);
 
-        let mut checkpointed = VgmSequencer::new(document.clone(), rate, 127).unwrap();
+        let mut checkpointed =
+            VgmSequencer::new(document.clone(), rate, 127, Default::default()).unwrap();
         checkpointed.render().unwrap();
         let checkpoint = checkpointed.checkpoint().unwrap();
         let continuation = render_all(&mut checkpointed);
@@ -347,8 +462,14 @@ fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
             chip.set_output_bits(OutputBits::Bits12);
             Ok(Box::new(chip))
         });
-        let mut latch =
-            VgmSequencer::new_with_factories(document.clone(), rate, 127, factories).unwrap();
+        let mut latch = VgmSequencer::new_with_factories(
+            document.clone(),
+            rate,
+            127,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let latch_audio = render_all(&mut latch);
         let max_difference = expected
             .iter()
@@ -363,7 +484,8 @@ fn okim6258_dac_stream_preserves_bytes_across_chunk_sizes_and_checkpoints() {
 #[cfg(feature = "sn76496")]
 fn sn76489_vgm_produces_audio() {
     let data = include_bytes!("../../soundlog/assets/vgm/sn76489_a4.vgm");
-    let mut player = VgmSequencer::from_vgm(data.as_slice(), 44_100, 1000).unwrap();
+    let mut player =
+        VgmSequencer::from_vgm(data.as_slice(), 44_100, 1000, Default::default()).unwrap();
     let audio = render_all(&mut player);
     assert!(!audio.is_empty());
     assert!(
@@ -381,13 +503,13 @@ fn t6w28_header_is_rejected_for_document_and_stream() {
     builder.add_vgm_command(WaitSamples(100));
     let mut doc = builder.finalize();
     assert_eq!(doc.header.misc().t6w28_detected, Some(false));
-    assert!(VgmSequencer::new(doc.clone(), 44_100, 128).is_ok());
+    assert!(VgmSequencer::new(doc.clone(), 44_100, 128, Default::default()).is_ok());
     doc.header.sn76489_clock |= 0x8000_0000;
     assert_eq!(doc.header.misc().t6w28_detected, Some(true));
     let bytes: Vec<u8> = doc.clone().into();
     for result in [
-        VgmSequencer::new(doc, 44_100, 128),
-        VgmSequencer::from_vgm(bytes, 44_100, 128),
+        VgmSequencer::new(doc, 44_100, 128, Default::default()),
+        VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()),
     ] {
         assert!(matches!(
             result,
@@ -410,9 +532,11 @@ fn ym2610_header_variant_selects_correct_fm_channels() {
             doc.header.ym2610b_clock &= !0x8000_0000;
         }
         assert_eq!(doc.header.misc().ym2610b_detected, Some(is_b));
-        let mut document_player = VgmSequencer::new(doc.clone(), 44_100, 256).unwrap();
+        let mut document_player =
+            VgmSequencer::new(doc.clone(), 44_100, 256, Default::default()).unwrap();
         let bytes: Vec<u8> = doc.clone().into();
-        let mut stream_player = VgmSequencer::from_vgm(bytes, 44_100, 512).unwrap();
+        let mut stream_player =
+            VgmSequencer::from_vgm(bytes, 44_100, 512, Default::default()).unwrap();
         let samples = render_all(&mut document_player);
         assert_eq!(samples, render_all(&mut stream_player));
         let audible = samples.iter().flatten().any(|sample| sample.abs() > 0.001);
@@ -424,7 +548,7 @@ fn ym2610_header_variant_selects_correct_fm_channels() {
 #[cfg(feature = "okim6258")]
 fn gain_applies_to_the_correct_chip_and_buffered_audio() {
     let doc = oki_document();
-    let mut player = VgmSequencer::new(doc, 48_000, 100).unwrap();
+    let mut player = VgmSequencer::new(doc, 48_000, 100, Default::default()).unwrap();
     player.render().unwrap();
     player
         .set_gain(Chip::Okim6258, Instance::Primary, 0.0)
@@ -473,7 +597,8 @@ fn dual_chip_and_independent_gains_survive_serialization() {
     }
     builder.add_vgm_command(WaitSamples(4000));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
+    let mut player =
+        VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     player
         .set_gain(Chip::Okim6258, Instance::Primary, 0.0)
         .unwrap();
@@ -489,8 +614,19 @@ fn loop_count_and_short_final_chunk() {
     builder.set_loop_index(1);
     builder.add_vgm_command(WaitSamples(300));
     let doc = builder.finalize();
-    let mut player = VgmSequencer::new(doc, 44_100, 256).unwrap();
-    player.set_loop_count(Some(2));
+    let mut player = VgmSequencer::new(
+        doc,
+        44_100,
+        256,
+        VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(player.render().unwrap().unwrap().frames().len(), 256);
     assert_eq!(player.render().unwrap().unwrap().frames().len(), 256);
     assert_eq!(player.render().unwrap().unwrap().frames().len(), 188);
@@ -533,10 +669,11 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
     }
     builder.add_vgm_command(WaitSamples(4410));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 128).unwrap();
+    let mut player =
+        VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 128, Default::default()).unwrap();
     let audio = render_all(&mut player);
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut document_player = VgmSequencer::new(document, 44_100, 257).unwrap();
+    let mut document_player = VgmSequencer::new(document, 44_100, 257, Default::default()).unwrap();
     assert_eq!(audio, render_all(&mut document_player));
     assert!(
         audio
@@ -547,19 +684,21 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
 
 #[test]
 fn invalid_input_and_missing_end_are_reported() {
-    assert!(VgmSequencer::from_vgm(b"not vgm".as_slice(), 48_000, 100).is_err());
+    assert!(
+        VgmSequencer::from_vgm(b"not vgm".as_slice(), 48_000, 100, Default::default()).is_err()
+    );
     let doc = VgmDocument::default();
     assert!(matches!(
-        VgmSequencer::new(doc.clone(), 0, 100),
+        VgmSequencer::new(doc.clone(), 0, 100, Default::default()),
         Err(VgmSequencerError::InvalidSampleRate)
     ));
     assert!(matches!(
-        VgmSequencer::new(doc, 48_000, 0),
+        VgmSequencer::new(doc, 48_000, 0, Default::default()),
         Err(VgmSequencerError::InvalidChunkSize)
     ));
     let mut doc = VgmDocument::default();
     doc.commands.push(WaitSamples(1).into());
-    let mut player = VgmSequencer::new(doc, 44_100, 100).unwrap();
+    let mut player = VgmSequencer::new(doc, 44_100, 100, Default::default()).unwrap();
     assert!(matches!(
         player.render(),
         Err(VgmSequencerError::UnexpectedEnd)
@@ -594,10 +733,11 @@ fn ym2612_pcm_dac_stream_is_expanded() {
         builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(15));
     }
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256).unwrap();
+    let mut player =
+        VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     let audio = render_all(&mut player);
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut document_player = VgmSequencer::new(document, 48_000, 257).unwrap();
+    let mut document_player = VgmSequencer::new(document, 48_000, 257, Default::default()).unwrap();
     assert_eq!(audio, render_all(&mut document_player));
     assert_eq!(audio.len(), (9000_u32 * 48_000 + 22_050) as usize / 44_100);
     assert!(audio.iter().any(|frame| frame[0].abs() > 0.01));
@@ -613,7 +753,7 @@ fn ym2203_ssg_stereo_mask_is_applied_before_resampling() {
         0,
         VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0110_1010)),
     );
-    let mut player = VgmSequencer::new(doc, 48_000, 512).unwrap();
+    let mut player = VgmSequencer::new(doc, 48_000, 512, Default::default()).unwrap();
     let audio = render_all(&mut player);
     assert!(audio.iter().all(|frame| frame[0].abs() < 0.00001));
     assert!(audio.iter().any(|frame| frame[1].abs() > 0.001));
@@ -637,7 +777,8 @@ fn oki_clock_byte_changes_keep_time() {
         },
     );
     builder.add_vgm_command(WaitSamples(2000));
-    let mut player = VgmSequencer::new(builder.finalize(), 48_000, 257).unwrap();
+    let mut player =
+        VgmSequencer::new(builder.finalize(), 48_000, 257, Default::default()).unwrap();
     assert_eq!(
         render_all(&mut player).len(),
         (3000_u32 * 48_000 + 22_050) as usize / 44_100
@@ -660,8 +801,8 @@ fn extra_header_clock_overrides_chip_instance_clock() {
     });
     let mut direct = oki_document();
     direct.header.okim6258_clock = 4_000_000;
-    let mut a = VgmSequencer::new(overridden, 48_000, 256).unwrap();
-    let mut b = VgmSequencer::new(direct, 48_000, 256).unwrap();
+    let mut a = VgmSequencer::new(overridden, 48_000, 256, Default::default()).unwrap();
+    let mut b = VgmSequencer::new(direct, 48_000, 256, Default::default()).unwrap();
     assert_eq!(render_all(&mut a), render_all(&mut b));
 }
 
@@ -703,10 +844,15 @@ fn streamed_dual_oki_matches_document_with_loop_and_extra_header() {
     document.header.volume_modifier = 0xe0;
     let bytes: Vec<u8> = document.into();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut streamed = VgmSequencer::from_vgm(bytes, 48_000, 73).unwrap();
-    let mut parsed = VgmSequencer::new(document, 48_000, 257).unwrap();
-    streamed.set_loop_count(Some(2));
-    parsed.set_loop_count(Some(2));
+    let options = VgmSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut streamed = VgmSequencer::from_vgm(bytes, 48_000, 73, options).unwrap();
+    let mut parsed = VgmSequencer::new(document, 48_000, 257, options).unwrap();
     let actual = render_all(&mut streamed);
     assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
     let expected = render_all(&mut parsed);
@@ -728,7 +874,7 @@ fn malformed_commands_are_reported_when_scanned_or_rendered() {
     let start = VgmHeader::command_start(header.version, header.data_offset);
     bytes.truncate(start);
     bytes.push(0x61);
-    let mut player = VgmSequencer::from_vgm(bytes, 44_100, 100).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes, 44_100, 100, Default::default()).unwrap();
     assert!(player.render().is_err());
     assert!(matches!(
         player.render(),
@@ -742,7 +888,7 @@ fn malformed_commands_are_reported_when_scanned_or_rendered() {
         let start = VgmHeader::command_start(header.version, header.data_offset);
         bytes.truncate(start);
         bytes.extend_from_slice(&[0x67, 0x66, 0, 5, 0, 0, 0, 1]);
-        assert!(VgmSequencer::from_vgm(bytes, 44_100, 100).is_err());
+        assert!(VgmSequencer::from_vgm(bytes, 44_100, 100, Default::default()).is_err());
     }
 }
 
@@ -761,7 +907,8 @@ fn supplied_ym2608_rhythm_rom_reaches_the_chip() {
         );
     }
     builder.add_vgm_command(WaitSamples(4410));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 256).unwrap();
+    let mut player =
+        VgmSequencer::new(builder.finalize(), 44_100, 256, Default::default()).unwrap();
     player
         .set_ym2608_rhythm_rom(Instance::Primary, &[0x77; 8192])
         .unwrap();
@@ -793,7 +940,7 @@ fn very_short_wait_includes_the_first_native_sample() {
         },
     );
     builder.add_vgm_command(WaitSamples(1));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8, Default::default()).unwrap();
     let output = render_all(&mut player);
     assert_eq!(output.len(), 1);
     assert!(output[0][0].abs() > 0.0001);
@@ -814,8 +961,10 @@ fn three_bit_okim6258_flag_uses_four_bit_compatibility() {
         document
     };
 
-    let mut four_bit = VgmSequencer::new(make_document(false), 44_100, 256).unwrap();
-    let mut three_bit = VgmSequencer::new(make_document(true), 44_100, 256).unwrap();
+    let mut four_bit =
+        VgmSequencer::new(make_document(false), 44_100, 256, Default::default()).unwrap();
+    let mut three_bit =
+        VgmSequencer::new(make_document(true), 44_100, 256, Default::default()).unwrap();
     let four_bit_output = render_all(&mut four_bit);
     let three_bit_output = render_all(&mut three_bit);
 
@@ -849,9 +998,9 @@ fn chips_with_different_native_rates_mix_on_the_same_timeline() {
     }
     builder.add_vgm_command(WaitSamples(4410));
     let doc = builder.finalize();
-    let mut full = VgmSequencer::new(doc.clone(), 48_000, 73).unwrap();
-    let mut oki = VgmSequencer::new(doc.clone(), 48_000, 409).unwrap();
-    let mut ym = VgmSequencer::new(doc, 48_000, 255).unwrap();
+    let mut full = VgmSequencer::new(doc.clone(), 48_000, 73, Default::default()).unwrap();
+    let mut oki = VgmSequencer::new(doc.clone(), 48_000, 409, Default::default()).unwrap();
+    let mut ym = VgmSequencer::new(doc, 48_000, 255, Default::default()).unwrap();
     oki.set_gain(Chip::Ym2612, Instance::Primary, 0.0).unwrap();
     ym.set_gain(Chip::Okim6258, Instance::Primary, 0.0).unwrap();
     let all = render_all(&mut full);

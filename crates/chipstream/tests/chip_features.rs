@@ -21,8 +21,8 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         let document = builder.finalize();
         let bytes: Vec<u8> = document.clone().into();
         for result in [
-            VgmSequencer::new(document, 48_000, 128),
-            VgmSequencer::from_vgm(bytes, 48_000, 128),
+            VgmSequencer::new(document, 48_000, 128, Default::default()),
+            VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()),
         ] {
             if enabled {
                 let mut player = result.unwrap_or_else(|error| panic!("{chip:?}: {error}"));
@@ -51,10 +51,17 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
 fn mdx_pdx_requires_okim6258_but_fm_only_does_not() {
     let mdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
     let pdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
-    let mut fm = MdxSequencer::from_mdx(mdx.to_vec(), None, 48_000, 128).unwrap();
+    let mut fm =
+        MdxSequencer::from_mdx(mdx.to_vec(), None, 48_000, 128, Default::default()).unwrap();
     assert!(fm.render().unwrap().is_some());
 
-    let result = MdxSequencer::from_mdx(mdx.to_vec(), Some(pdx.to_vec()), 48_000, 128);
+    let result = MdxSequencer::from_mdx(
+        mdx.to_vec(),
+        Some(pdx.to_vec()),
+        48_000,
+        128,
+        Default::default(),
+    );
     if cfg!(feature = "okim6258") {
         let mut player = result.unwrap_or_else(|error| panic!("PDX playback: {error}"));
         player

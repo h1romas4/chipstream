@@ -189,7 +189,7 @@ A t120 @1 q8 l4 cccccccc
     let key_offs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let callback_key_ons = std::rc::Rc::clone(&key_ons);
     let callback_key_offs = std::rc::Rc::clone(&key_offs);
-    let mut sequencer = VgmSequencer::from_vgm(vgm_bytes, 44_100, 256).unwrap();
+    let mut sequencer = VgmSequencer::from_vgm(vgm_bytes, 44_100, 256, Default::default()).unwrap();
     sequencer.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
     sequencer.on_write(move |_, spec: Ym2151Spec, sample, _| {
         if spec.register == 0x08 {

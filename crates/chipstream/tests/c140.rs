@@ -137,8 +137,8 @@ fn vgm_chip_rom_and_wide_events() {
     doc.header.c140_chip_type = C140ChipType::C140System2;
     let bytes: Vec<u8> = doc.clone().into();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31).unwrap();
-    let mut document = VgmSequencer::new(parsed, 44_100, 256).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31, Default::default()).unwrap();
+    let mut document = VgmSequencer::new(parsed, 44_100, 256, Default::default()).unwrap();
     let render = |player: &mut VgmSequencer<'_>| {
         let mut output = Vec::new();
         let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));

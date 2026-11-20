@@ -279,7 +279,13 @@ fn fixed_clock_routing_and_connection_reuse_work_through_serial_transport() {
             },
         );
         builder.add_vgm_command(WaitSamples(441));
-        let result = VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories);
+        let result = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories,
+        );
         if accepted {
             let mut player = result.unwrap();
             while player.render().unwrap().is_some() {}

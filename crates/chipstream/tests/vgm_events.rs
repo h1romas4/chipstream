@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chipstream::sequencer::{Chip, Instance, StateEvent, VgmSequencer, VgmSequencerError};
+use chipstream::sequencer::{
+    Chip, Instance, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerError,
+    VgmSequencerOptions,
+};
 use soundlog::chip::state::{ChipState, Ym2151State};
 use soundlog::chip::{Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::{DataBlock, WaitSamples, Ym2612Port0Address2AWriteAndWaitN};
@@ -59,10 +62,16 @@ fn collect(player: &mut VgmSequencer<'_>) -> (Vec<[f32; 2]>, Vec<Ym2151Event>) {
 
 #[test]
 fn identity_write_filter_preserves_audio_and_observer_timing() {
-    let mut reference = VgmSequencer::new(document(), 48_000, 31).unwrap();
-    let mut filtered = VgmSequencer::new(document(), 48_000, 31).unwrap();
+    let options = VgmSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut reference = VgmSequencer::new(document(), 48_000, 31, options).unwrap();
+    let mut filtered = VgmSequencer::new(document(), 48_000, 31, options).unwrap();
     for player in [&mut reference, &mut filtered] {
-        player.set_loop_count(Some(2));
         player.track_state_with_voice_clocks::<Ym2151State>();
     }
     filtered.filter_write(|_, spec: Ym2151Spec, _| spec);
@@ -71,8 +80,8 @@ fn identity_write_filter_preserves_audio_and_observer_timing() {
 
 #[test]
 fn filters_preserve_original_observer_and_tracker_events() {
-    let mut reference = VgmSequencer::new(document(), 44_100, 31).unwrap();
-    let mut filtered = VgmSequencer::new(document(), 44_100, 31).unwrap();
+    let mut reference = VgmSequencer::new(document(), 44_100, 31, Default::default()).unwrap();
+    let mut filtered = VgmSequencer::new(document(), 44_100, 31, Default::default()).unwrap();
     for player in [&mut reference, &mut filtered] {
         player.track_state_with_voice_clocks::<Ym2151State>();
     }
@@ -94,13 +103,16 @@ fn filters_preserve_original_observer_and_tracker_events() {
 
 #[test]
 fn callback_timing_is_chunk_invariant_across_loops_and_fadeout() {
-    let mut small = VgmSequencer::new(document(), 44_100, 31).unwrap();
-    let mut large = VgmSequencer::new(document(), 44_100, 512).unwrap();
+    let options = VgmSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            fadeout: Some(std::time::Duration::from_secs_f64(150.0 / 44_100.0)),
+        },
+        ..Default::default()
+    };
+    let mut small = VgmSequencer::new(document(), 44_100, 31, options).unwrap();
+    let mut large = VgmSequencer::new(document(), 44_100, 512, options).unwrap();
     for player in [&mut small, &mut large] {
-        player.set_loop_count(Some(2));
-        player
-            .set_fadeout(Some(std::time::Duration::from_secs_f64(150.0 / 44_100.0)))
-            .unwrap();
         player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
         player.track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0);
     }
@@ -115,17 +127,22 @@ fn callback_timing_is_chunk_invariant_across_loops_and_fadeout() {
 #[test]
 fn event_timing_matches_pcm_across_chunks_loop_and_final_boundary() {
     let doc = document();
-    let mut small = VgmSequencer::new(doc.clone(), 44_100, 31).unwrap();
-    let mut large = VgmSequencer::new(doc.clone(), 44_100, 256).unwrap();
-    let mut plain = VgmSequencer::new(doc, 44_100, 71).unwrap();
+    let options = VgmSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut small = VgmSequencer::new(doc.clone(), 44_100, 31, options).unwrap();
+    let mut large = VgmSequencer::new(doc.clone(), 44_100, 256, options).unwrap();
+    let mut plain = VgmSequencer::new(doc, 44_100, 71, options).unwrap();
     for player in [&mut small, &mut large] {
-        player.set_loop_count(Some(2));
         player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
         player.track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0);
     }
     small.on_write(|_, _: Ym2151Spec, _, _| {});
     large.on_write(|_, _: Ym2151Spec, _, _| {});
-    plain.set_loop_count(Some(2));
     let (a, events_a) = collect(&mut small);
     let (b, events_b) = collect(&mut large);
     let (c, _) = collect(&mut plain);
@@ -170,7 +187,7 @@ fn event_positions_follow_output_rate_rounding() {
         );
     }
     builder.add_vgm_command(WaitSamples(100));
-    let mut player = VgmSequencer::new(builder.finalize(), 48_000, 17).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 48_000, 17, Default::default()).unwrap();
     let (_, events) = collect(&mut player);
     assert_eq!(
         events
@@ -196,7 +213,7 @@ fn typed_callbacks_filter_multiport_registers() {
         );
     }
     builder.add_vgm_command(WaitSamples(10));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 32).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 32, Default::default()).unwrap();
     let captured = Rc::new(RefCell::new(Vec::new()));
     let callback_events = Rc::clone(&captured);
     player.on_write(move |instance, spec: Ym2612Spec, sample, state_events| {
@@ -229,8 +246,8 @@ fn state_tracking_uses_requested_clock_and_is_instance_specific() {
     builder.add_vgm_command(WaitSamples(10));
     let bytes: Vec<u8> = builder.finalize().into();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
-    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 8).unwrap();
-    let mut parsed = VgmSequencer::new(document, 44_100, 8).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 8, Default::default()).unwrap();
+    let mut parsed = VgmSequencer::new(document, 44_100, 8, Default::default()).unwrap();
     for player in [&mut stream, &mut parsed] {
         player.track_state::<Ym2151State>(Instance::Primary, 2_000_000.0);
     }
@@ -272,7 +289,7 @@ fn state_only_callbacks_use_effective_voice_clock_and_skip_unrelated_writes() {
         builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
     }
     builder.add_vgm_command(WaitSamples(10));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<Ym2151State>();
     let events = Rc::new(RefCell::new(Vec::new()));
     let output = Rc::clone(&events);
@@ -310,7 +327,7 @@ fn state_only_overflow_is_reported_without_stopping_playback() {
         );
     }
     builder.add_vgm_command(WaitSamples(10));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<Ym2151State>();
     player.on_state_change::<Ym2151Spec, _>(|_, _, _| {});
     let mut overflow = false;
@@ -324,7 +341,7 @@ fn state_only_overflow_is_reported_without_stopping_playback() {
 
 #[test]
 fn state_tracking_reports_optional_events_for_filtered_writes() {
-    let mut player = VgmSequencer::new(document(), 44_100, 40).unwrap();
+    let mut player = VgmSequencer::new(document(), 44_100, 40, Default::default()).unwrap();
     player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
     let (_, events) = collect(&mut player);
     let key_events = events
@@ -365,7 +382,7 @@ fn generated_dac_writes_are_delivered_as_typed_events() {
     );
     builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(1));
     builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(1));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 1).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 1, Default::default()).unwrap();
     let captured = Rc::new(RefCell::new(Vec::new()));
     let callback_events = Rc::clone(&captured);
     player.on_write(move |instance, spec: Ym2612Spec, sample, _| {
@@ -403,7 +420,7 @@ fn callback_queue_limit_and_render_failure_are_explicit() {
         );
     }
     builder.add_vgm_command(WaitSamples(10));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 8, Default::default()).unwrap();
     player.on_write(|_, _: Ym2151Spec, _, _| {});
     assert!(matches!(
         player.render(),
@@ -426,7 +443,7 @@ fn zero_length_stream_delivers_final_event_at_zero() {
             value: 0x4c,
         },
     );
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
     let captured = Rc::new(RefCell::new(Vec::new()));
     let callback_events = Rc::clone(&captured);
     player.on_write(move |instance, spec: Ym2151Spec, sample, _| {

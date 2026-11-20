@@ -65,7 +65,7 @@ Render VGM containing a YM2151:
 use chipstream::sequencer::{Chip, Instance, VgmSequencer};
 
 let bytes = std::fs::read("song.vgm")?;
-let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
 player.set_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
@@ -80,7 +80,7 @@ use chipstream::sequencer::{Chip, Instance, MdxSequencer};
 
 let mdx = std::fs::read("song.mdx")?;
 let pdx = std::fs::read("song.pdx")?;
-let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512)?;
+let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512, Default::default())?;
 player.set_gain(Chip::Ym2151, Instance::Primary, 0.8)?;
 player.set_gain(Chip::Okim6258, Instance::Primary, 0.5)?;
 while let Some(block) = player.render()? {
@@ -127,24 +127,34 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Both sequencers default to one traversal without fading. Use `PlaybackOptions`
-for loop count and fade duration; MDX includes it in `MdxSequencerOptions`:
+Both sequencers require options at construction; their default options play one
+traversal without fading. Use `PlaybackOptions` for loop count and fade duration:
 
 ```rust,no_run
 use std::time::Duration;
-use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer};
+use chipstream::sequencer::{
+    MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerOptions,
+};
 use soundlog::mdx::package::MdxPackage;
 
 let playback = PlaybackOptions { loop_count: Some(2), fadeout: Some(Duration::from_secs(2)) };
-let mut vgm = VgmSequencer::from_vgm(std::fs::read("song.vgm")?, 48_000, 512)?;
-vgm.set_playback_options(playback)?;
+let vgm = VgmSequencer::from_vgm(
+    std::fs::read("song.vgm")?, 48_000, 512,
+    VgmSequencerOptions { playback, ..Default::default() },
+)?;
 let package = MdxPackage::parse_owned(std::fs::read("song.mdx")?, None)?;
-let mdx = MdxSequencer::with_options(package, 48_000, 512, MdxSequencerOptions {
+let mdx = MdxSequencer::new(package, 48_000, 512, MdxSequencerOptions {
     playback,
     ..Default::default()
 })?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+For VGM, `VgmSequencerOptions` can also override the header's `loop_base` and
+`loop_modifier`; `None` preserves the respective header value. `new` accepts
+parsed documents, while `from_vgm` accepts file bytes. Both have
+`_with_factories` variants for custom chip factories. Generator sources
+handle their own loops.
 
 `None` as the loop count allows unlimited looping. For indefinite MDX playback
 also set `max_ticks` to `None`; other resource limits remain active. PDX lookup
@@ -170,7 +180,7 @@ use chipstream::sequencer::{Instance, StateEvent, VgmSequencer};
 use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 
 let bytes = std::fs::read("song.vgm")?;
-let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
 player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
 player.on_write(|instance, spec: Ym2151Spec, sample, events| {
     if let Some(events) = events {
@@ -203,7 +213,7 @@ use chipstream::sequencer::{Instance, VgmSequencer};
 use soundlog::chip::Ym2151Spec;
 
 let bytes = std::fs::read("song.vgm")?;
-let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512)?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
 player.filter_write(|instance, mut write: Ym2151Spec, _frame| {
     if instance == Instance::Primary && write.register == 0x20 {
         write.value &= 0x3f;

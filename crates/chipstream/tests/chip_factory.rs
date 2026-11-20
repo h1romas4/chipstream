@@ -274,7 +274,7 @@ fn generator_with_builtin_chip_matches_document() {
     let mut generated =
         VgmSequencer::from_generator(generator(document.commands.clone()), config, 48_000, 128)
             .unwrap();
-    let mut parsed = VgmSequencer::new(document, 48_000, 128).unwrap();
+    let mut parsed = VgmSequencer::new(document, 48_000, 128, Default::default()).unwrap();
     let collect = |player: &mut VgmSequencer<'_>| {
         let mut frames = Vec::new();
         while let Some(block) = player.render().unwrap() {
@@ -373,7 +373,7 @@ fn generator_declared_clock_range_matches_document_playback() {
     let mut generated =
         VgmSequencer::from_generator(generator(document.commands.clone()), config, 48_000, 257)
             .unwrap();
-    let mut parsed = VgmSequencer::new(document, 48_000, 257).unwrap();
+    let mut parsed = VgmSequencer::new(document, 48_000, 257, Default::default()).unwrap();
     let collect = |player: &mut VgmSequencer<'_>| {
         let mut frames = Vec::new();
         while let Some(block) = player.render().unwrap() {
@@ -449,7 +449,14 @@ fn factory_fallback_only_handles_declined_instances_and_propagates_errors() {
             Arc::new(Mutex::new(Vec::new())),
         )))
     });
-    let player = VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+    let player = VgmSequencer::new_with_factories(
+        document.clone(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     assert_eq!(player.chip_instances().count(), 2);
     assert_eq!(*called.lock().unwrap(), vec![Instance::Secondary]);
 
@@ -462,7 +469,7 @@ fn factory_fallback_only_handles_declined_instances_and_propagates_errors() {
     });
     factories.register_fallback(Chip::Ay8910, |_| panic!("errors must not fall back"));
     assert!(matches!(
-        VgmSequencer::new_with_factories(document, 44_100, 64, factories),
+        VgmSequencer::new_with_factories(document, 44_100, 64, Default::default(), factories),
         Err(VgmSequencerError::Chip(ChipError::External { .. }))
     ));
 }
@@ -488,8 +495,14 @@ fn state_callbacks_work_with_external_chip_factories() {
         builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
     }
     builder.add_vgm_command(WaitSamples(100));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     player.track_state_with_voice_clocks::<Ym2151State>();
     let events = Arc::new(Mutex::new(Vec::new()));
     let output = Arc::clone(&events);
@@ -545,9 +558,23 @@ fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
             )))
         });
         if from_bytes {
-            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
+            VgmSequencer::from_vgm_with_factories(
+                bytes.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
         } else {
-            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
         }
         assert_eq!(
             *seen.lock().unwrap(),
@@ -595,9 +622,23 @@ fn legacy_vgm_clock_aliases_reach_the_correct_factories() {
                 });
             }
             let mut player = if from_bytes {
-                VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap()
+                VgmSequencer::from_vgm_with_factories(
+                    bytes.clone(),
+                    44_100,
+                    64,
+                    Default::default(),
+                    factories,
+                )
+                .unwrap()
             } else {
-                VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap()
+                VgmSequencer::new_with_factories(
+                    document.clone(),
+                    44_100,
+                    64,
+                    Default::default(),
+                    factories,
+                )
+                .unwrap()
             };
             assert_eq!(
                 *created.lock().unwrap(),
@@ -636,7 +677,7 @@ fn psg_factory_scan_reports_malformed_commands_before_creating_a_backend() {
         )))
     });
     assert!(matches!(
-        VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, factories),
+        VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, Default::default(), factories),
         Err(VgmSequencerError::Parse(_))
     ));
     assert!(!*called.lock().unwrap());
@@ -705,9 +746,23 @@ fn vgm_factories_receive_chip_settings_and_source_timing_without_headers() {
             });
         }
         if from_bytes {
-            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
+            VgmSequencer::from_vgm_with_factories(
+                bytes.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
         } else {
-            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
         }
         let seen = seen.lock().unwrap();
         let settings = |chip| seen.iter().find(|entry| entry.0 == chip).unwrap();
@@ -780,8 +835,15 @@ fn mdx_factories_receive_the_effective_pcm_settings() {
             )))
         });
     }
-    MdxSequencer::from_mdx_with_factories(MDX.to_vec(), Some(PDX.to_vec()), 44_100, 64, factories)
-        .unwrap();
+    MdxSequencer::from_mdx_with_factories(
+        MDX.to_vec(),
+        Some(PDX.to_vec()),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert!(seen.iter().all(|entry| entry.3 == Some(8_000_000)));
@@ -812,9 +874,15 @@ fn failed_chip_restore_preserves_vgm_stream_position() {
         chip.restore_fails = true;
         Ok(Box::new(chip))
     });
-    let mut player =
-        VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap();
-    let mut expected = VgmSequencer::from_vgm(bytes, 44_100, 64).unwrap();
+    let mut player = VgmSequencer::from_vgm_with_factories(
+        bytes.clone(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
+    let mut expected = VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()).unwrap();
     let checkpoint = player.checkpoint().unwrap();
     for _ in 0..4 {
         assert_eq!(player.render().unwrap(), expected.render().unwrap());
@@ -849,8 +917,14 @@ fn scheduled_voices_prepare_before_shared_flush() {
         chip.schedule_trace = Some((config.instance(), Arc::clone(&captured)));
         Ok(Box::new(chip))
     });
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     assert!(player.render().unwrap().is_some());
     let trace = trace.lock().unwrap();
     assert_eq!(trace.len(), 4);
@@ -885,8 +959,14 @@ fn scheduled_checkpoint_requires_explicit_support_and_replayable_dac_state() {
             chip.stop_dac = stops_dac;
             Ok(Box::new(chip))
         });
-        let mut player =
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+        let mut player = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            64,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let checkpoint = player.checkpoint();
         if expected {
             let checkpoint = checkpoint.unwrap();
@@ -969,8 +1049,14 @@ fn dac_notifications_use_exact_start_ids_and_all_stop_reaches_all_voices() {
         chip.dac_notifications = Some((config.instance(), Arc::clone(&captured)));
         Ok(Box::new(chip))
     });
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
     let notifications = notifications.lock().unwrap();
     for (instance, expected) in [
@@ -1031,8 +1117,14 @@ fn replaces_ymfm_backends_independently_by_chip_type() {
         });
     }
 
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
 
     assert_eq!(*created.lock().unwrap(), chips);
@@ -1072,8 +1164,14 @@ fn optional_factory_routes_instances_independently_and_keeps_builtin_backend() {
             Arc::clone(&fake_writes),
         ))))
     });
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
     assert_eq!(
         *seen.lock().unwrap(),
@@ -1094,7 +1192,13 @@ fn optional_factory_errors_do_not_fall_back() {
         })
     });
     assert!(matches!(
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories),
+        VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories
+        ),
         Err(VgmSequencerError::Chip(ChipError::External { .. }))
     ));
 }
@@ -1113,7 +1217,13 @@ fn rejects_factory_chip_type_mismatch() {
     });
 
     assert!(matches!(
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories),
+        VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            256,
+            Default::default(),
+            factories
+        ),
         Err(VgmSequencerError::Chip(ChipError::ChipMismatch {
             expected: Chip::Ym2151,
             actual: Chip::Ym2612,
@@ -1141,9 +1251,21 @@ fn rejects_factory_clock_mismatch_against_extra_header_clock() {
             )))
         });
         let result = if from_bytes {
-            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories)
+            VgmSequencer::from_vgm_with_factories(
+                bytes.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
         } else {
-            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories)
+            VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                64,
+                Default::default(),
+                factories,
+            )
         };
         assert!(matches!(
             result,
@@ -1171,8 +1293,15 @@ fn mdx_sequencer_uses_registered_factories() {
         )))
     });
 
-    let mut player =
-        MdxSequencer::from_mdx_with_factories(MDX.to_vec(), None, 44_100, 256, factories).unwrap();
+    let mut player = MdxSequencer::from_mdx_with_factories(
+        MDX.to_vec(),
+        None,
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     assert_eq!(*created.lock().unwrap(), [Chip::Ym2151]);
     while player.render().unwrap().is_some() {}
 }
@@ -1193,7 +1322,13 @@ fn factory_can_replace_a_chip_with_its_builtin_feature_disabled() {
         )))
     });
 
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     assert!(player.render().unwrap().is_some());
 }

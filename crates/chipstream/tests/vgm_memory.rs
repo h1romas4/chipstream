@@ -54,7 +54,7 @@ fn owned_vgm_with_large_block_is_not_copied_at_initialization() {
     let bytes: Vec<u8> = builder.finalize().into();
     MAX_ALLOCATION.store(0, Ordering::Relaxed);
     MEASURING.store(true, Ordering::Relaxed);
-    let result = VgmSequencer::from_vgm(bytes, 48_000, 256);
+    let result = VgmSequencer::from_vgm(bytes, 48_000, 256, Default::default());
     MEASURING.store(false, Ordering::Relaxed);
     let largest = MAX_ALLOCATION.load(Ordering::Relaxed);
     assert!(result.is_ok());
@@ -68,7 +68,7 @@ fn owned_vgm_with_large_block_is_not_copied_at_initialization() {
     bytes.push(0x66);
     TOTAL_ALLOCATIONS.store(0, Ordering::Relaxed);
     MEASURING.store(true, Ordering::Relaxed);
-    let result = VgmSequencer::from_vgm(bytes, 48_000, 256);
+    let result = VgmSequencer::from_vgm(bytes, 48_000, 256, Default::default());
     MEASURING.store(false, Ordering::Relaxed);
     let total = TOTAL_ALLOCATIONS.load(Ordering::Relaxed);
     assert!(result.is_ok());

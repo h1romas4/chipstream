@@ -5,7 +5,10 @@ use std::{
 
 use chipstream::{
     chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip},
-    sequencer::{Chip, ChipFactoryRegistry, Instance, VgmSequencer, VgmSequencerError},
+    sequencer::{
+        Chip, ChipFactoryRegistry, Instance, PlaybackOptions, VgmSequencer, VgmSequencerError,
+        VgmSequencerOptions,
+    },
 };
 use chipstream_ndsif::{
     NdsifOkim6258, NdsifSn76489, NdsifSoundChip, ndsif::register_ymfm_factories,
@@ -81,8 +84,10 @@ fn automatic_okim6258_emulation_fallback_matches_builtin_decoder() {
     document.header.okim6258_flags.output_12bit = true;
 
     let factories = chipstream_ndsif::create_chip_factories(&[]).unwrap();
-    let mut builtin = VgmSequencer::new(document.clone(), 48_000, 31).unwrap();
-    let mut fallback = VgmSequencer::new_with_factories(document, 48_000, 127, factories).unwrap();
+    let mut builtin = VgmSequencer::new(document.clone(), 48_000, 31, Default::default()).unwrap();
+    let mut fallback =
+        VgmSequencer::new_with_factories(document, 48_000, 127, Default::default(), factories)
+            .unwrap();
     let render = |player: &mut VgmSequencer| {
         let mut frames = Vec::new();
         while let Some(block) = player.render().unwrap() {
@@ -220,7 +225,9 @@ fn rendered_audio_reaches_pcm_block_boundary() {
     let capture = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&capture));
-    let mut player = VgmSequencer::new_with_factories(document, 48_000, 1024, factories).unwrap();
+    let mut player =
+        VgmSequencer::new_with_factories(document, 48_000, 1024, Default::default(), factories)
+            .unwrap();
     for _ in 0..4 {
         player.render().unwrap().unwrap();
     }
@@ -266,8 +273,14 @@ fn vgm_initialization_is_not_lost_to_paced_writes() {
     }));
     let mut factories = ChipFactoryRegistry::new();
     register_ymfm_factories(&mut factories, Rc::clone(&transport)).unwrap();
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        1024,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     player.render().unwrap();
     let capture = transport.borrow();
     assert_eq!(capture.initial_events.len(), 100);
@@ -310,8 +323,14 @@ fn write_filters_patch_timed_hardware_writes_but_preserve_observers() {
     let mut factories = ChipFactoryRegistry::new();
     register_ymfm_factories(&mut factories, Rc::clone(&transport)).unwrap();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     player.filter_write(|_, mut spec: Ym2151Spec, _| {
         spec.value = 0xff;
         spec
@@ -411,8 +430,14 @@ fn target_instance_can_differ_from_source_for_each_ndsif_adapter() {
             Rc::clone(&target),
         )?))
     });
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
     let device = transport.borrow();
     assert!(device.configured.contains(&(WriteId::YM2151, 1, 4_000_000)));
@@ -495,8 +520,14 @@ fn factory_schedules_absolute_frames_and_protocol_registers() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_ymfm_factories(&mut factories, Rc::clone(&transport)).unwrap();
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while let Some(block) = player.render().unwrap() {
         assert!(block.frames().iter().all(|frame| *frame == [0.0, 0.0]));
     }
@@ -563,8 +594,14 @@ fn transport_errors_are_returned_by_render() {
     }));
     let mut factories = ChipFactoryRegistry::new();
     register_ymfm_factories(&mut factories, transport).unwrap();
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
 
     assert!(matches!(
         player.render(),
@@ -592,8 +629,14 @@ fn invalid_register_ports_are_reported() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_ymfm_factories(&mut factories, transport).unwrap();
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
 
     assert!(matches!(
         player.render(),
@@ -624,8 +667,14 @@ fn adapter_generates_silence_with_the_expected_channel_count() {
         Ok(Box::new(chip))
     });
 
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     assert!(player.render().unwrap().is_some());
 }
 
@@ -712,9 +761,14 @@ fn skipping_silent_capture_preserves_audio_and_write_timing() {
                         writes: Rc::clone(&chip_writes),
                     }))
                 });
-                let mut sequencer =
-                    VgmSequencer::new_with_factories(document.clone(), rate, 73, factories)
-                        .unwrap();
+                let mut sequencer = VgmSequencer::new_with_factories(
+                    document.clone(),
+                    rate,
+                    73,
+                    Default::default(),
+                    factories,
+                )
+                .unwrap();
                 let mut frames = Vec::new();
                 while let Some(block) = sequencer.render().unwrap() {
                     frames.extend_from_slice(block.frames());
@@ -773,8 +827,14 @@ fn okim6258_coalesces_clock_bytes_and_tracks_divider_changes() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        1024,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
 
     let transport = transport.borrow();
@@ -846,7 +906,8 @@ fn okim6258_ignores_vgmmame_registers_without_affecting_scheduled_audio() {
         register_okim6258_factory(&mut factories, Rc::clone(&transport));
         let bytes = Vec::<u8>::from(builder.finalize());
         let mut player =
-            VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, factories).unwrap();
+            VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, Default::default(), factories)
+                .unwrap();
         while player.render().unwrap().is_some() {}
         let transport = transport.borrow();
         (
@@ -883,9 +944,20 @@ fn okim6258_divider_changes_remain_monotonic_during_loops() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 256, factories).unwrap();
-    player.set_loop_count(Some(50));
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        256,
+        VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(50),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {
         let frame = player.position_frames();
         let transport = transport.borrow();
@@ -944,8 +1016,14 @@ fn okim6258_reports_an_unsupported_dynamic_clock() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        1024,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     let error = player.render().unwrap_err().to_string();
     assert!(
         error.contains("unsupported OKIM6258 clock 3000000 Hz"),
@@ -991,8 +1069,14 @@ fn okim6258_factory_schedules_adpcm_stream_and_flushes_at_block_boundaries() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(builder.finalize(), 44_100, 128, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        builder.finalize(),
+        44_100,
+        128,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
 
     let transport = transport.borrow();
@@ -1080,9 +1164,14 @@ fn okim6258_alternating_stream_frequency_preserves_source_timing() {
         let transport = Rc::new(RefCell::new(FakeTransport::default()));
         let mut factories = ChipFactoryRegistry::new();
         register_okim6258_factory(&mut factories, Rc::clone(&transport));
-        let mut player =
-            VgmSequencer::new_with_factories(document.clone(), output_rate, 1024, factories)
-                .unwrap();
+        let mut player = VgmSequencer::new_with_factories(
+            document.clone(),
+            output_rate,
+            1024,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         while player.render().unwrap().is_some() {}
         let transport = transport.borrow();
         let sent: Vec<_> = transport
@@ -1156,8 +1245,14 @@ fn okim6258_prebuffer_contains_all_bytes_due_through_each_output_block() {
         let transport = Rc::new(RefCell::new(FakeTransport::default()));
         let mut factories = ChipFactoryRegistry::new();
         register_okim6258_factory(&mut factories, Rc::clone(&transport));
-        let mut player =
-            VgmSequencer::new_with_factories(document.clone(), rate, 1024, factories).unwrap();
+        let mut player = VgmSequencer::new_with_factories(
+            document.clone(),
+            rate,
+            1024,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let timeline = ndsif::AudioPositionClock::new(
             ndsif::AudioTiming::new(ndsif::OkiClock::Mhz8, Divider::Div512),
             rate,
@@ -1249,9 +1344,14 @@ fn okim6258_stop_resets_only_source_and_discards_pending_bytes() {
             let transport = Rc::new(RefCell::new(FakeTransport::default()));
             let mut factories = ChipFactoryRegistry::new();
             register_okim6258_factory(&mut factories, Rc::clone(&transport));
-            let mut player =
-                VgmSequencer::new_with_factories(document.clone(), 44_100, chunk_frames, factories)
-                    .unwrap();
+            let mut player = VgmSequencer::new_with_factories(
+                document.clone(),
+                44_100,
+                chunk_frames,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
             while player.render().unwrap().is_some() {}
             let actual: Vec<_> = transport
                 .borrow()
@@ -1336,9 +1436,14 @@ fn okim6258_dac_stream_start_and_stop_control_source_state() {
             let transport = Rc::new(RefCell::new(FakeTransport::default()));
             let mut factories = ChipFactoryRegistry::new();
             register_okim6258_factory(&mut factories, Rc::clone(&transport));
-            let mut player =
-                VgmSequencer::new_with_factories(document.clone(), output_rate, 64, factories)
-                    .unwrap();
+            let mut player = VgmSequencer::new_with_factories(
+                document.clone(),
+                output_rate,
+                64,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
             while player.render().unwrap().is_some() {}
             let actual: Vec<_> = transport
                 .borrow()
@@ -1431,8 +1536,14 @@ fn okim6258_register_stop_interrupts_dac_until_stream_restarts() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player =
-        VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap();
+    let mut player = VgmSequencer::new_with_factories(
+        document.clone(),
+        44_100,
+        64,
+        Default::default(),
+        factories,
+    )
+    .unwrap();
     while player.render().unwrap().is_some() {}
     let actual: Vec<_> = transport
         .borrow()
@@ -1446,7 +1557,9 @@ fn okim6258_register_stop_interrupts_dac_until_stream_restarts() {
     let transport = Rc::new(RefCell::new(FakeTransport::default()));
     let mut factories = ChipFactoryRegistry::new();
     register_okim6258_factory(&mut factories, Rc::clone(&transport));
-    let mut player = VgmSequencer::new_with_factories(document, 44_100, 64, factories).unwrap();
+    let mut player =
+        VgmSequencer::new_with_factories(document, 44_100, 64, Default::default(), factories)
+            .unwrap();
     player.filter_write(|_, mut spec: Okim6258Spec, _| {
         if spec.register == 0 && spec.value == 1 {
             spec.value = 2;
@@ -1486,8 +1599,14 @@ fn okim6258_rejects_non_audio_registers() {
         let transport = Rc::new(RefCell::new(FakeTransport::default()));
         let mut factories = ChipFactoryRegistry::new();
         register_okim6258_factory(&mut factories, transport);
-        let mut player =
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 64, factories).unwrap();
+        let mut player = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            64,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
 
         assert!(matches!(
             player.render(),

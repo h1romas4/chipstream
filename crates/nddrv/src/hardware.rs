@@ -1071,7 +1071,7 @@ mod tests {
         }];
         let factories =
             chipstream_ndsif::create_routed_transport_factories(&recorders, &routes).unwrap();
-        let mut sequencer = MdxSequencer::with_options_with_factories(
+        let mut sequencer = MdxSequencer::new_with_factories(
             package,
             44_100,
             1024,
@@ -1220,8 +1220,14 @@ mod tests {
             builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
         }
         builder.add_vgm_command(WaitSamples(44_100));
-        let mut sequencer =
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+        let mut sequencer = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            1024,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         let timeline = Arc::new(NdsifHostTimeline::pending());
         timeline
             .schedule_output_fade(0, 44_100, Duration::from_millis(300))
@@ -1644,6 +1650,7 @@ mod tests {
             Vec::<u8>::from(builder.finalize()),
             44_100,
             1024,
+            Default::default(),
             factories,
         )
         .unwrap();
@@ -1751,8 +1758,14 @@ mod tests {
             builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
         }
         builder.add_vgm_command(WaitSamples(if short { 441 } else { 20_000 }));
-        let mut sequencer =
-            VgmSequencer::new_with_factories(builder.finalize(), 44_100, 1024, factories).unwrap();
+        let mut sequencer = VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            1024,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
         recorders[1]
             .borrow_mut()
             .configure_chip(WriteId::YM2151, 0, 4_000_000)
@@ -2075,6 +2088,7 @@ mod tests {
             Vec::<u8>::from(builder.finalize()),
             44_100,
             1024,
+            Default::default(),
             factories,
         )
         .unwrap();

@@ -1,5 +1,6 @@
 use chipstream::sequencer::{
     MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerError,
+    VgmSequencerOptions,
 };
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmBuilder;
@@ -23,7 +24,7 @@ fn filter_state_is_caller_owned_and_seek_runs_filters() {
         },
     );
     builder.add_vgm_command(WaitSamples(256));
-    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64).unwrap();
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
     let calls = Rc::new(Cell::new(0));
     let observed = Rc::clone(&calls);
     player.filter_write(move |_, spec: Ym2151Spec, _| {
@@ -50,13 +51,20 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
     builder.add_vgm_command(WaitSamples(2_205));
     let bytes: Vec<u8> = builder.finalize().into();
 
-    let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128).unwrap();
-    player.set_loop_count(Some(2));
-    player.set_loop_modifier(0x10);
-    player.set_loop_base(0);
-    player
-        .set_fadeout(Some(Duration::from_secs_f64(2_000.0 / 44_100.0)))
-        .unwrap();
+    let mut player = VgmSequencer::from_vgm(
+        bytes,
+        48_000,
+        128,
+        VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                fadeout: Some(Duration::from_secs_f64(2_000.0 / 44_100.0)),
+            },
+            loop_modifier: Some(0x10),
+            loop_base: Some(0),
+        },
+    )
+    .unwrap();
     for _ in 0..3 {
         assert!(player.render().unwrap().is_some());
     }
@@ -78,7 +86,7 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
 }
 
 #[test]
-fn checkpoint_restores_header_loop_settings_after_later_changes() {
+fn checkpoint_restores_header_loop_settings() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(400));
     builder.set_loop_index(0);
@@ -87,21 +95,24 @@ fn checkpoint_restores_header_loop_settings_after_later_changes() {
     document.header.loop_modifier = 0x20;
 
     for from_file in [false, true] {
-        let mut player = if from_file {
-            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 64).unwrap()
-        } else {
-            VgmSequencer::new(document.clone(), 44_100, 64).unwrap()
+        let options = VgmSequencerOptions {
+            playback: PlaybackOptions {
+                loop_count: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
         };
-        player.set_loop_count(Some(2));
+        let mut player = if from_file {
+            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 64, options).unwrap()
+        } else {
+            VgmSequencer::new(document.clone(), 44_100, 64, options).unwrap()
+        };
         assert!(player.render().unwrap().is_some());
         let checkpoint = player.checkpoint().unwrap();
         let mut expected = Vec::new();
         while let Some(block) = player.render().unwrap() {
             expected.push(block);
         }
-        player.set_loop_count(Some(1));
-        player.set_loop_base(3);
-        player.set_loop_modifier(0x10);
         player.restore_checkpoint(&checkpoint).unwrap();
         let mut actual = Vec::new();
         while let Some(block) = player.render().unwrap() {
@@ -178,9 +189,15 @@ fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
     let document = builder.finalize();
     for from_file in [false, true] {
         let mut player = if from_file {
-            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 128).unwrap()
+            VgmSequencer::from_vgm(
+                Vec::<u8>::from(document.clone()),
+                44_100,
+                128,
+                Default::default(),
+            )
+            .unwrap()
         } else {
-            VgmSequencer::new(document.clone(), 44_100, 128).unwrap()
+            VgmSequencer::new(document.clone(), 44_100, 128, Default::default()).unwrap()
         };
         let first = player.render().unwrap().unwrap();
         assert!(first.frames().iter().flatten().any(|sample| *sample != 0.0));
@@ -206,9 +223,9 @@ fn checkpoint_cannot_be_restored_to_a_different_sequencer() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut first = VgmSequencer::from_vgm(bytes.clone(), 48_000, 128).unwrap();
+    let mut first = VgmSequencer::from_vgm(bytes.clone(), 48_000, 128, Default::default()).unwrap();
     let checkpoint = first.checkpoint().unwrap();
-    let mut second = VgmSequencer::from_vgm(bytes, 48_000, 128).unwrap();
+    let mut second = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
 
     assert!(matches!(
         second.restore_checkpoint(&checkpoint),
@@ -221,7 +238,7 @@ fn seek_to_frame_preserves_the_unconsumed_part_of_a_block() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
     assert!(player.render().unwrap().is_some());
 
     let checkpoint = player.checkpoint().unwrap();
@@ -243,7 +260,7 @@ fn seek_to_frame_can_be_cancelled_between_render_blocks() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
     let bytes: Vec<u8> = builder.finalize().into();
-    let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128).unwrap();
+    let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
     let checkpoint = player.checkpoint().unwrap();
 
     assert!(matches!(
@@ -264,7 +281,7 @@ fn mdx_checkpoint_restores_generator_and_audio_state() {
         },
         ..MdxSequencerOptions::default()
     };
-    let mut player = MdxSequencer::with_options(package, 48_000, 128, options).unwrap();
+    let mut player = MdxSequencer::new(package, 48_000, 128, options).unwrap();
     for _ in 0..3 {
         assert!(player.render().unwrap().is_some());
     }
@@ -307,7 +324,7 @@ fn mdx_checkpoint_restores_fade_start_position() {
         },
         ..Default::default()
     };
-    let mut player = MdxSequencer::with_options(package, 44_100, 128, options).unwrap();
+    let mut player = MdxSequencer::new(package, 44_100, 128, options).unwrap();
     assert_eq!(player.fade_start_frame(), None);
     let before_fade = player.checkpoint().unwrap();
     while player.fade_start_frame().is_none() {
