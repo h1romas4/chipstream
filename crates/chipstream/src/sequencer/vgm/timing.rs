@@ -104,6 +104,7 @@ struct DynamicClock {
     chip: Chip,
     registers: ClockRegisters,
     instances: [ClockChanges; 2],
+    declared_ranges: [Option<(u32, u32)>; 2],
 }
 
 pub(super) struct Timing {
@@ -124,6 +125,7 @@ impl Timing {
                             chip: chip.clone(),
                             registers,
                             instances: [ClockChanges::default(); 2],
+                            declared_ranges: [None; 2],
                         })
                 })
                 .collect(),
@@ -168,6 +170,17 @@ impl Timing {
         }
     }
 
+    /// Include a declared inclusive range of complete clock values.
+    pub(super) fn include_range(&mut self, chip: &Chip, instance: Instance, min: u32, max: u32) {
+        if let Some(changes) = self.clocks.iter_mut().find(|entry| &entry.chip == chip) {
+            let range = &mut changes.declared_ranges[instance as usize];
+            *range = Some(match *range {
+                Some((old_min, old_max)) => (old_min.min(min), old_max.max(max)),
+                None => (min, max),
+            });
+        }
+    }
+
     /// Return conservative native-rate bounds, or the fixed rate's bounds.
     pub(super) fn bounds(
         &self,
@@ -177,7 +190,13 @@ impl Timing {
         rate: SampleRate,
     ) -> (u32, u32) {
         if let Some(changes) = self.clocks.iter().find(|entry| &entry.chip == chip) {
-            changes.instances[instance as usize].bounds(clock, changes.registers)
+            let (mut min, mut max) =
+                changes.instances[instance as usize].bounds(clock, changes.registers);
+            if let Some((declared_min, declared_max)) = changes.declared_ranges[instance as usize] {
+                min = min.min((declared_min / changes.registers.max_divisor).max(1));
+                max = max.max(declared_max.div_ceil(changes.registers.min_divisor).max(1));
+            }
+            (min, max)
         } else {
             (
                 rate.floor_hz(),
@@ -268,6 +287,22 @@ mod tests {
         assert_eq!(
             timing.bounds(&Chip::Ym2151, Instance::Primary, 0, rate),
             (3, 4)
+        );
+    }
+
+    #[test]
+    fn declared_ranges_are_merged_per_instance() {
+        let mut timing = Timing::new(&[(Chip::Okim6258, 0x4000_0000 | 8_000_000)]);
+        let rate = SampleRate::from_hz(7_812);
+        timing.include_range(&Chip::Okim6258, Instance::Secondary, 4_000_000, 12_000_000);
+        timing.include_range(&Chip::Okim6258, Instance::Secondary, 6_000_000, 16_000_000);
+        assert_eq!(
+            timing.bounds(&Chip::Okim6258, Instance::Primary, 8_000_000, rate),
+            (8_000_000 / 1024, 8_000_000_u32.div_ceil(512))
+        );
+        assert_eq!(
+            timing.bounds(&Chip::Okim6258, Instance::Secondary, 8_000_000, rate),
+            (4_000_000 / 1024, 16_000_000_u32.div_ceil(512))
         );
     }
 }

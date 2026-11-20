@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,7 +19,8 @@ use soundlog::vgm::header::{ChipId, VgmExtraHeader};
 use soundlog::vgm::parser::visit_non_data_block_commands;
 use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::{
-    DacStreamSelector, DacStreamTarget, VGM_SAMPLE_RATE, VgmDocument, VgmHeader, VgmStream,
+    DacStreamSelector, DacStreamTarget, VGM_SAMPLE_RATE, VgmCommandGenerator, VgmDocument,
+    VgmHeader, VgmStream,
 };
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
@@ -127,6 +129,15 @@ pub enum VgmSequencerError {
     FadeoutConfigurationAfterPlayback,
     /// A checkpoint is incompatible with this sequencer.
     CheckpointMismatch,
+    /// A single-pass generator cannot be reconstructed for a checkpoint.
+    CheckpointUnsupported,
+    /// A generator clock range is invalid or refers to an absent dynamic-clock chip.
+    InvalidGeneratorClockRange {
+        /// Chip whose declared clock range is invalid.
+        chip: Chip,
+        /// Instance whose declared clock range is invalid.
+        instance: Instance,
+    },
     /// The original stream could not be reconstructed for a checkpoint.
     StreamReconstruction(String),
     /// A seek target precedes its starting checkpoint.
@@ -208,6 +219,15 @@ impl fmt::Display for VgmSequencerError {
                     f,
                     "checkpoint does not belong to this sequencer configuration"
                 )
+            }
+            Self::CheckpointUnsupported => {
+                write!(
+                    f,
+                    "checkpoints are not supported for single-pass generators"
+                )
+            }
+            Self::InvalidGeneratorClockRange { chip, instance } => {
+                write!(f, "invalid generator clock range for {chip:?} {instance:?}")
             }
             Self::StreamReconstruction(error) => {
                 write!(
@@ -647,6 +667,7 @@ impl Voice {
 pub struct VgmSequencer<'a> {
     stream: VgmStream,
     stream_factory: Option<StreamFactory>,
+    rewindable: bool,
     initial_loop_base: i8,
     initial_loop_modifier: u8,
     stream_steps: usize,
@@ -671,6 +692,28 @@ pub struct VgmSequencer<'a> {
     fade_frames: Option<Fade>,
     mdx_loop_marker: Option<MdxLoopMarker>,
     source_identity: Arc<()>,
+}
+
+/// Initialization information for a single-pass VGM command generator.
+///
+/// The header and optional extra header declare the same chips, settings,
+/// clocks, and volumes as for VGM playback; no command pre-scan is performed.
+#[derive(Default)]
+pub struct GeneratorConfig {
+    /// Chip clocks, settings, and global volume.
+    pub header: VgmHeader,
+    /// Optional per-instance clocks and volumes.
+    pub extra_header: Option<VgmExtraHeader>,
+    /// Per-instance inclusive clock bounds for OKIM6258 and OKIM6295.
+    ///
+    /// Include every clock reached during playback, including intermediate
+    /// values from individual clock-byte writes. The initial clock is included
+    /// automatically. Out-of-range sample rates cause a rendering error.
+    pub clock_ranges: Vec<(Chip, Instance, RangeInclusive<u32>)>,
+    /// Whether each SN76489 instance uses a non-default Game Gear stereo mask.
+    ///
+    /// Set this for external factories when the header enables stereo.
+    pub sn76489_stereo_used: [bool; 2],
 }
 
 /// Exact sequencer state captured at an output-block boundary.
@@ -825,7 +868,7 @@ impl<'a> VgmSequencer<'a> {
     /// Create a sequencer with replacement factories for selected chip types.
     ///
     /// Factories replace the built-in backend only for registered chip types.
-    /// They receive the parsed header, chip instance, and effective clock.
+    /// They receive the chip instance, effective clock, and chip-specific settings.
     /// If an SN76489 factory is registered and the header enables Game Gear
     /// stereo, commands are also scanned for non-default stereo masks. This
     /// may report malformed commands during construction; data-block payloads
@@ -856,7 +899,7 @@ impl<'a> VgmSequencer<'a> {
         config.set_psg_stereo(psg_stereo);
         let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_vgm(data)?;
-        Self::from_parts(stream, None, voices, output_rate, chunk_frames)
+        Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)
     }
 
     /// Construct a backend, routing matrix, and resampler for one chip instance.
@@ -1149,13 +1192,79 @@ impl<'a> VgmSequencer<'a> {
         config.set_psg_stereo(psg_stereo);
         let voices = Self::make_voices(config, output_rate, &mut factories)?;
         let stream = VgmStream::from_document(document);
-        Self::from_parts(stream, None, voices, output_rate, chunk_frames)
+        Self::from_parts(stream, None, true, voices, output_rate, chunk_frames)
     }
 
-    /// Create a sequencer from a stream and prepared chip configuration.
-    pub(super) fn from_stream(
-        stream: VgmStream,
-        stream_factory: StreamFactory,
+    /// Play commands generated lazily using the supplied chip configuration.
+    ///
+    /// The generator must emit `EndOfData` before returning `None`; otherwise
+    /// rendering fails with [`VgmSequencerError::UnexpectedEnd`]. It handles
+    /// its own loops. Stream-level loop and fade settings do not provide a
+    /// generator loop point. Checkpoints are unsupported for this single-pass
+    /// source. The generator is called synchronously during rendering, which
+    /// may read ahead and is not guaranteed real-time safe.
+    pub fn from_generator(
+        generator: Box<dyn VgmCommandGenerator>,
+        config: GeneratorConfig,
+        output_rate: u32,
+        chunk_frames: usize,
+    ) -> Result<Self, VgmSequencerError> {
+        Self::from_generator_with_factories(
+            generator,
+            config,
+            output_rate,
+            chunk_frames,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Play a generator with selected external chip factories.
+    ///
+    /// See [`Self::from_generator`] for the source contract.
+    pub fn from_generator_with_factories(
+        generator: Box<dyn VgmCommandGenerator>,
+        config: GeneratorConfig,
+        output_rate: u32,
+        chunk_frames: usize,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, VgmSequencerError> {
+        Self::validate_output(output_rate, chunk_frames)?;
+        let mut prepared =
+            ChipConfiguration::from_header(&config.header, config.extra_header.as_ref(), true);
+        prepared.set_psg_stereo(config.sn76489_stereo_used);
+        for (chip, instance, range) in &config.clock_ranges {
+            if !matches!(chip, Chip::Okim6258 | Chip::Okim6295)
+                || range.is_empty()
+                || *range.start() == 0
+                || (*chip == Chip::Okim6295 && *range.end() > 0x7fff_ffff)
+                || !prepared
+                    .voices
+                    .iter()
+                    .any(|voice| &voice.chip == chip && voice.instance == *instance)
+            {
+                return Err(VgmSequencerError::InvalidGeneratorClockRange {
+                    chip: chip.clone(),
+                    instance: *instance,
+                });
+            }
+            prepared
+                .timing
+                .include_range(chip, *instance, *range.start(), *range.end());
+        }
+        Self::from_generator_parts(
+            generator,
+            None,
+            prepared,
+            output_rate,
+            chunk_frames,
+            factories,
+        )
+    }
+
+    /// Create a generator-backed sequencer, optionally with a replay source.
+    pub(super) fn from_generator_parts(
+        generator: Box<dyn VgmCommandGenerator>,
+        stream_factory: Option<StreamFactory>,
         config: ChipConfiguration<'_>,
         output_rate: u32,
         chunk_frames: usize,
@@ -1163,9 +1272,11 @@ impl<'a> VgmSequencer<'a> {
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let voices = Self::make_voices(config, output_rate, &mut factories)?;
+        let rewindable = stream_factory.is_some();
         Self::from_parts(
-            stream,
-            Some(stream_factory),
+            VgmStream::from_generator(generator),
+            stream_factory,
+            rewindable,
             voices,
             output_rate,
             chunk_frames,
@@ -1210,6 +1321,7 @@ impl<'a> VgmSequencer<'a> {
     fn from_parts(
         mut stream: VgmStream,
         stream_factory: Option<StreamFactory>,
+        rewindable: bool,
         voices: Vec<Voice>,
         output_rate: u32,
         chunk_frames: usize,
@@ -1220,6 +1332,7 @@ impl<'a> VgmSequencer<'a> {
         Ok(Self {
             stream,
             stream_factory,
+            rewindable,
             initial_loop_base,
             initial_loop_modifier,
             stream_steps: 0,
@@ -1545,9 +1658,13 @@ impl<'a> VgmSequencer<'a> {
     /// The checkpoint can be restored repeatedly on this sequencer. It stores
     /// chip and audio-filter state; restoring reconstructs the parser by
     /// replaying the consumed command stream without generating PCM.
+    /// Single-pass generators return [`VgmSequencerError::CheckpointUnsupported`].
     pub fn checkpoint(&mut self) -> Result<VgmSequencerCheckpoint, VgmSequencerError> {
         if self.failed {
             return Err(VgmSequencerError::StreamFailed);
+        }
+        if !self.rewindable {
+            return Err(VgmSequencerError::CheckpointUnsupported);
         }
 
         let mut voices = Vec::with_capacity(self.voices.len());

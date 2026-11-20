@@ -89,6 +89,44 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+For a custom command source, implement `soundlog::VgmCommandGenerator` and
+pass it to `VgmSequencer::from_generator` with a `GeneratorConfig` containing
+the chip header. `from_generator_with_factories` also accepts replacement
+backends. Declare per-instance OKIM6258/OKIM6295 clock ranges, including
+intermediate clock-byte values, and SN76489 stereo-mask use in the config:
+the generator cannot be scanned ahead of playback. It must emit `EndOfData`,
+and is responsible for its own loops. Single-pass generators do not support
+checkpoints; rendering invokes them synchronously and may read ahead.
+
+```rust
+use chipstream::sequencer::{GeneratorConfig, VgmSequencer};
+use soundlog::{ParseError, VgmCommandGenerator};
+use soundlog::vgm::{VgmHeader, command::{EndOfData, VgmCommand, WaitSamples}};
+
+#[derive(Debug)]
+struct Source(u8);
+impl VgmCommandGenerator for Source {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        let command = match self.0 {
+            0 => Some(VgmCommand::WaitSamples(WaitSamples(441))),
+            1 => Some(VgmCommand::EndOfData(EndOfData)),
+            _ => None,
+        };
+        self.0 += 1;
+        Ok(command)
+    }
+}
+let config = GeneratorConfig {
+    header: VgmHeader { ym2151_clock: 4_000_000, ..Default::default() },
+    ..Default::default()
+};
+let mut player = VgmSequencer::from_generator(Box::new(Source(0)), config, 48_000, 512)?;
+while let Some(block) = player.render()? {
+    // Send block.frames() to the host.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 Both sequencers default to one traversal without fading. Use `PlaybackOptions`
 for loop count and fade duration; MDX includes it in `MdxSequencerOptions`:
 

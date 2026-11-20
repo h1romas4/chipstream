@@ -298,9 +298,9 @@ impl<'a> MdxSequencer<'a> {
                 config.observe_clock(&Chip::Okim6258, Instance::Primary, clock);
             }
         }
-        let mut player = VgmSequencer::from_stream(
-            VgmStream::from_generator(generator),
-            stream_factory,
+        let mut player = VgmSequencer::from_generator_parts(
+            generator,
+            Some(stream_factory),
             config,
             output_rate,
             chunk_frames,

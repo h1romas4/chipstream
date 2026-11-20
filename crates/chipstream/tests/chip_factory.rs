@@ -2,16 +2,423 @@ use std::sync::{Arc, Mutex};
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, SoundChipState};
 use chipstream::sequencer::{
-    Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, Instance,
-    MdxSequencer, Okim6258Divider, VgmSequencer, VgmSequencerError,
+    Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, GeneratorConfig,
+    Instance, MdxSequencer, Okim6258Divider, VgmSequencer, VgmSequencerError,
 };
 use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
-use soundlog::vgm::command::WaitSamples;
+use soundlog::vgm::command::{VgmCommand, WaitSamples};
 use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId};
 use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
 const MDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
 const PDX: &[u8] = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.pdx");
+
+#[derive(Debug)]
+struct Commands(std::vec::IntoIter<VgmCommand>);
+
+impl soundlog::VgmCommandGenerator for Commands {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+        Ok(self.0.next())
+    }
+}
+
+fn generator(commands: Vec<VgmCommand>) -> Box<dyn soundlog::VgmCommandGenerator> {
+    Box::new(Commands(commands.into_iter()))
+}
+
+type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);
+type ScheduleTrace = (Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>);
+
+struct FakeChip {
+    chip: Chip,
+    clock: u32,
+    channels: usize,
+    writes: Arc<Mutex<Vec<Chip>>>,
+    dac_notifications: Option<DacNotifications>,
+    scheduled_checkpoint: Option<bool>,
+    restore_fails: bool,
+    stop_dac: bool,
+    schedule_trace: Option<ScheduleTrace>,
+}
+
+impl FakeChip {
+    fn new(chip: Chip, clock: u32, writes: Arc<Mutex<Vec<Chip>>>) -> Self {
+        let channels = match &chip {
+            Chip::Ym2203 | Chip::Ymf262 => 4,
+            Chip::Ym2608 | Chip::Ym2610b => 3,
+            Chip::Ymf278b => 6,
+            Chip::Ym2413
+            | Chip::Ym2151
+            | Chip::Ym2612
+            | Chip::Pwm
+            | Chip::Sn76489
+            | Chip::C140
+            | Chip::SegaPcm => 2,
+            _ => 1,
+        };
+        Self {
+            chip,
+            clock,
+            channels,
+            writes,
+            dac_notifications: None,
+            scheduled_checkpoint: None,
+            restore_fails: false,
+            stop_dac: false,
+            schedule_trace: None,
+        }
+    }
+}
+
+impl SoundChip for FakeChip {
+    fn chip_type(&self) -> &Chip {
+        &self.chip
+    }
+
+    fn clock(&self) -> u32 {
+        self.clock
+    }
+
+    fn sample_rate(&self) -> u32 {
+        if self.chip == Chip::Okim6258 {
+            7_812
+        } else {
+            44_100
+        }
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
+    }
+
+    fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
+        if write.chip() != self.chip {
+            return Err(ChipError::ChipMismatch {
+                expected: write.chip(),
+                actual: self.chip.clone(),
+            });
+        }
+        self.writes.lock().unwrap().push(self.chip.clone());
+        Ok(())
+    }
+
+    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
+        if self.dac_notifications.is_some()
+            || self.scheduled_checkpoint.is_some()
+            || self.schedule_trace.is_some()
+        {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
+    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
+        samples.fill(0);
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+
+    fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
+        Ok(Box::new(0_u8))
+    }
+
+    fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
+        if !self.restore_fails && state.as_any().is::<u8>() {
+            Ok(())
+        } else {
+            Err(ChipError::InvalidStateSnapshot(self.chip.clone()))
+        }
+    }
+}
+
+impl ScheduledChip for FakeChip {
+    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
+        if let Some((instance, trace)) = &self.schedule_trace {
+            trace.lock().unwrap().push(("prepare", *instance, 0));
+        }
+        Ok(())
+    }
+
+    fn flush_scheduled_until(&mut self, frame: usize, _rate: u32) -> Result<(), ChipError> {
+        if let Some((instance, trace)) = &self.schedule_trace {
+            trace.lock().unwrap().push(("flush", *instance, frame));
+        }
+        Ok(())
+    }
+
+    fn supports_checkpoint(&self) -> bool {
+        self.scheduled_checkpoint.unwrap_or(false)
+    }
+
+    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
+        self.stop_dac
+            && matches!(write, ChipRegisterWrite::Okim6258(spec) if spec.register == 0 && spec.value & 1 != 0)
+    }
+
+    fn set_dac_stream_playing_at(
+        &mut self,
+        playing: bool,
+        _sample_frame: usize,
+        _output_rate: u32,
+    ) -> Result<(), ChipError> {
+        if let Some((instance, notifications)) = &self.dac_notifications {
+            notifications.lock().unwrap().push((*instance, playing));
+        }
+        Ok(())
+    }
+}
+
+fn ymfm_chips() -> [Chip; 11] {
+    [
+        Chip::Ym2413,
+        Chip::Ym2612,
+        Chip::Ym2151,
+        Chip::Ym2203,
+        Chip::Ym2608,
+        Chip::Ym2610b,
+        Chip::Ym3812,
+        Chip::Ym3526,
+        Chip::Y8950,
+        Chip::Ymf262,
+        Chip::Ymf278b,
+    ]
+}
+
+#[test]
+fn generator_uses_configuration_factories_and_callbacks() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_579_545);
+        builder.add_chip_write(instance, GameGearPsgSpec { value: 0x10 });
+    }
+    builder.add_vgm_command(WaitSamples(100));
+    builder.set_extra_header(VgmExtraHeader {
+        chip_clocks: vec![ChipClock::new(
+            ChipId::Sn76489,
+            Instance::Secondary,
+            4_000_000,
+        )],
+        ..Default::default()
+    });
+    let mut document = builder.finalize();
+    document.header.sn76489_flags.gamegear_stereo = true;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let mut factories = ChipFactoryRegistry::new();
+    let created = Arc::clone(&seen);
+    let fake_writes = Arc::clone(&writes);
+    factories.register(Chip::Sn76489, move |config| {
+        let ChipBackendSettings::Sn76489(settings) = config.settings() else {
+            panic!("missing PSG settings");
+        };
+        created
+            .lock()
+            .unwrap()
+            .push((config.instance(), config.clock(), settings.stereo_used));
+        Ok(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::clone(&fake_writes),
+        )))
+    });
+    let config = GeneratorConfig {
+        header: document.header,
+        extra_header: document.extra_header,
+        sn76489_stereo_used: [false, true],
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator_with_factories(
+        generator(document.commands),
+        config,
+        44_100,
+        64,
+        factories,
+    )
+    .unwrap();
+    assert!(matches!(
+        player.checkpoint(),
+        Err(VgmSequencerError::CheckpointUnsupported)
+    ));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&events);
+    player.on_write::<GameGearPsgSpec, _>(move |instance, _, _, _| {
+        observed.lock().unwrap().push(instance);
+    });
+    while player.render().unwrap().is_some() {}
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (Instance::Primary, 3_579_545, false),
+            (Instance::Secondary, 4_000_000, true)
+        ]
+    );
+    assert_eq!(events.lock().unwrap().len(), 2);
+    assert_eq!(writes.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn generator_with_builtin_chip_matches_document() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+        builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(1000));
+    let document = builder.finalize();
+    let config = GeneratorConfig {
+        header: document.header.clone(),
+        ..Default::default()
+    };
+    let mut generated =
+        VgmSequencer::from_generator(generator(document.commands.clone()), config, 48_000, 128)
+            .unwrap();
+    let mut parsed = VgmSequencer::new(document, 48_000, 128).unwrap();
+    let collect = |player: &mut VgmSequencer<'_>| {
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let expected = collect(&mut parsed);
+    assert!(!expected.is_empty());
+    assert_eq!(collect(&mut generated), expected);
+}
+
+#[test]
+fn generator_reports_missing_end_and_generation_errors() {
+    let mut player = VgmSequencer::from_generator(
+        generator(vec![VgmCommand::WaitSamples(WaitSamples(10))]),
+        GeneratorConfig::default(),
+        44_100,
+        64,
+    )
+    .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::UnexpectedEnd)
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+
+    #[derive(Debug)]
+    struct Fails;
+    impl soundlog::VgmCommandGenerator for Fails {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Err(soundlog::ParseError::UnexpectedEof)
+        }
+    }
+    let mut player =
+        VgmSequencer::from_generator(Box::new(Fails), GeneratorConfig::default(), 44_100, 64)
+            .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::Parse(
+            soundlog::ParseError::UnexpectedEof
+        ))
+    ));
+}
+
+#[test]
+fn generator_rejects_invalid_clock_ranges() {
+    for (chip, instance, range) in [
+        (Chip::Ym2151, Instance::Primary, 1..=4),
+        (Chip::Okim6258, Instance::Secondary, 1..=4),
+        (Chip::Okim6258, Instance::Primary, 0..=4),
+        (Chip::Okim6258, Instance::Primary, 4..=1),
+    ] {
+        let config = GeneratorConfig {
+            header: soundlog::vgm::VgmHeader {
+                okim6258_clock: 4_000_000,
+                ..Default::default()
+            },
+            clock_ranges: vec![(chip, instance, range)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            VgmSequencer::from_generator(generator(vec![]), config, 44_100, 64),
+            Err(VgmSequencerError::InvalidGeneratorClockRange { .. })
+        ));
+    }
+}
+
+#[test]
+#[cfg(feature = "okim6258")]
+fn generator_declared_clock_range_matches_document_playback() {
+    use soundlog::chip::Okim6258Spec;
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    for (register, value) in [(0, 2), (1, 0x71)] {
+        builder.add_chip_write(Instance::Primary, Okim6258Spec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(1000));
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x0a,
+            value: 0x60,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(2000));
+    let document = builder.finalize();
+    let config = GeneratorConfig {
+        header: document.header.clone(),
+        clock_ranges: vec![(Chip::Okim6258, Instance::Primary, 0x601200..=8_000_000)],
+        ..Default::default()
+    };
+    let mut generated =
+        VgmSequencer::from_generator(generator(document.commands.clone()), config, 48_000, 257)
+            .unwrap();
+    let mut parsed = VgmSequencer::new(document, 48_000, 257).unwrap();
+    let collect = |player: &mut VgmSequencer<'_>| {
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let expected = collect(&mut parsed);
+    assert!(!expected.is_empty());
+    assert_eq!(collect(&mut generated), expected);
+}
+
+#[test]
+#[cfg(feature = "okim6258")]
+fn generator_fails_when_clock_exceeds_resampler_range() {
+    use chipstream::audio::AudioError;
+    use soundlog::chip::Okim6258Spec;
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Okim6258, Instance::Primary, 8_000_000);
+    builder.add_chip_write(
+        Instance::Primary,
+        Okim6258Spec {
+            register: 0x0b,
+            value: 1,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(1000));
+    let document = builder.finalize();
+    let config = GeneratorConfig {
+        header: document.header,
+        ..Default::default()
+    };
+    let mut player =
+        VgmSequencer::from_generator(generator(document.commands), config, 48_000, 256).unwrap();
+    let error = loop {
+        match player.render() {
+            Err(error) => break error,
+            result => assert!(result.unwrap().is_some(), "expected rate error"),
+        }
+    };
+    assert!(matches!(
+        error,
+        VgmSequencerError::Audio(AudioError::RateOutOfRange { .. })
+    ));
+}
 
 #[test]
 fn factory_fallback_only_handles_declined_instances_and_propagates_errors() {
@@ -150,6 +557,89 @@ fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
             ]
         );
     }
+}
+
+#[test]
+fn legacy_vgm_clock_aliases_reach_the_correct_factories() {
+    for (clock, alias, opcode) in [
+        (4_000_000_u32, Chip::Ym2151, 0x54),
+        (7_670_454_u32, Chip::Ym2612, 0x52),
+    ] {
+        let mut bytes = vec![0_u8; 0x40];
+        bytes[..4].copy_from_slice(b"Vgm ");
+        bytes[8..12].copy_from_slice(&0x0000_0101_u32.to_le_bytes());
+        bytes[0x10..0x14].copy_from_slice(&clock.to_le_bytes());
+        bytes.extend_from_slice(&[opcode, 0x28, 0x4c, 0x61, 100, 0, 0x66]);
+        let eof = (bytes.len() as u32 - 4).to_le_bytes();
+        bytes[4..8].copy_from_slice(&eof);
+        let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
+
+        for from_bytes in [false, true] {
+            let created = Arc::new(Mutex::new(Vec::new()));
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let mut factories = ChipFactoryRegistry::new();
+            for chip in [Chip::Ym2413, alias.clone()] {
+                let created = Arc::clone(&created);
+                let writes = Arc::clone(&writes);
+                factories.register(chip, move |config| {
+                    created.lock().unwrap().push((
+                        config.chip().clone(),
+                        config.instance(),
+                        config.clock(),
+                    ));
+                    Ok(Box::new(FakeChip::new(
+                        config.chip().clone(),
+                        config.clock(),
+                        Arc::clone(&writes),
+                    )))
+                });
+            }
+            let mut player = if from_bytes {
+                VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories).unwrap()
+            } else {
+                VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories).unwrap()
+            };
+            assert_eq!(
+                *created.lock().unwrap(),
+                [
+                    (Chip::Ym2413, Instance::Primary, clock),
+                    (alias.clone(), Instance::Primary, clock)
+                ]
+            );
+            while player.render().unwrap().is_some() {}
+            assert_eq!(*writes.lock().unwrap(), [alias.clone()]);
+        }
+    }
+}
+
+#[test]
+fn psg_factory_scan_reports_malformed_commands_before_creating_a_backend() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
+    let mut document = builder.finalize();
+    document.header.sn76489_flags.gamegear_stereo = true;
+    let mut bytes: Vec<u8> = document.into();
+    let header = soundlog::vgm::VgmHeader::from_bytes(&bytes).unwrap();
+    let start = soundlog::vgm::VgmHeader::command_start(header.version, header.data_offset);
+    bytes.truncate(start);
+    bytes.push(0x61);
+
+    let called = Arc::new(Mutex::new(false));
+    let mut factories = ChipFactoryRegistry::new();
+    let created = Arc::clone(&called);
+    factories.register(Chip::Sn76489, move |config| {
+        *created.lock().unwrap() = true;
+        Ok(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        )))
+    });
+    assert!(matches!(
+        VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, factories),
+        Err(VgmSequencerError::Parse(_))
+    ));
+    assert!(!*called.lock().unwrap());
 }
 
 #[test]
@@ -302,150 +792,6 @@ fn mdx_factories_receive_the_effective_pcm_settings() {
     };
     assert_eq!(settings.divider, Okim6258Divider::Div512);
     assert!(!settings.output_12bit);
-}
-
-type DacNotifications = (Instance, Arc<Mutex<Vec<(Instance, bool)>>>);
-type ScheduleTrace = (Instance, Arc<Mutex<Vec<(&'static str, Instance, usize)>>>);
-
-struct FakeChip {
-    chip: Chip,
-    clock: u32,
-    channels: usize,
-    writes: Arc<Mutex<Vec<Chip>>>,
-    dac_notifications: Option<DacNotifications>,
-    scheduled_checkpoint: Option<bool>,
-    restore_fails: bool,
-    stop_dac: bool,
-    schedule_trace: Option<ScheduleTrace>,
-}
-
-impl FakeChip {
-    fn new(chip: Chip, clock: u32, writes: Arc<Mutex<Vec<Chip>>>) -> Self {
-        let channels = match &chip {
-            Chip::Ym2203 | Chip::Ymf262 => 4,
-            Chip::Ym2608 | Chip::Ym2610b => 3,
-            Chip::Ymf278b => 6,
-            Chip::Ym2413
-            | Chip::Ym2151
-            | Chip::Ym2612
-            | Chip::Pwm
-            | Chip::Sn76489
-            | Chip::C140
-            | Chip::SegaPcm => 2,
-            _ => 1,
-        };
-        Self {
-            chip,
-            clock,
-            channels,
-            writes,
-            dac_notifications: None,
-            scheduled_checkpoint: None,
-            restore_fails: false,
-            stop_dac: false,
-            schedule_trace: None,
-        }
-    }
-}
-
-impl SoundChip for FakeChip {
-    fn chip_type(&self) -> &Chip {
-        &self.chip
-    }
-
-    fn clock(&self) -> u32 {
-        self.clock
-    }
-
-    fn sample_rate(&self) -> u32 {
-        if self.chip == Chip::Okim6258 {
-            7_812
-        } else {
-            44_100
-        }
-    }
-
-    fn channels(&self) -> usize {
-        self.channels
-    }
-
-    fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
-        if write.chip() != self.chip {
-            return Err(ChipError::ChipMismatch {
-                expected: write.chip(),
-                actual: self.chip.clone(),
-            });
-        }
-        self.writes.lock().unwrap().push(self.chip.clone());
-        Ok(())
-    }
-
-    fn scheduled(&mut self) -> Option<&mut dyn ScheduledChip> {
-        if self.dac_notifications.is_some()
-            || self.scheduled_checkpoint.is_some()
-            || self.schedule_trace.is_some()
-        {
-            Some(self)
-        } else {
-            None
-        }
-    }
-
-    fn generate(&mut self, samples: &mut [i32]) -> Result<(), ChipError> {
-        samples.fill(0);
-        Ok(())
-    }
-
-    fn reset(&mut self) {}
-
-    fn save_state(&mut self) -> Result<Box<dyn SoundChipState>, ChipError> {
-        Ok(Box::new(0_u8))
-    }
-
-    fn restore_state(&mut self, state: &dyn SoundChipState) -> Result<(), ChipError> {
-        if !self.restore_fails && state.as_any().is::<u8>() {
-            Ok(())
-        } else {
-            Err(ChipError::InvalidStateSnapshot(self.chip.clone()))
-        }
-    }
-}
-
-impl ScheduledChip for FakeChip {
-    fn prepare_scheduled(&mut self) -> Result<(), ChipError> {
-        if let Some((instance, trace)) = &self.schedule_trace {
-            trace.lock().unwrap().push(("prepare", *instance, 0));
-        }
-        Ok(())
-    }
-
-    fn flush_scheduled_until(&mut self, frame: usize, _rate: u32) -> Result<(), ChipError> {
-        if let Some((instance, trace)) = &self.schedule_trace {
-            trace.lock().unwrap().push(("flush", *instance, frame));
-        }
-        Ok(())
-    }
-
-    fn supports_checkpoint(&self) -> bool {
-        self.scheduled_checkpoint.unwrap_or(false)
-    }
-
-    fn stops_dac_stream_on_write(&self, write: &ChipRegisterWrite) -> bool {
-        self.stop_dac
-            && matches!(write, ChipRegisterWrite::Okim6258(spec) if spec.register == 0 && spec.value & 1 != 0)
-    }
-
-    fn set_dac_stream_playing_at(
-        &mut self,
-        playing: bool,
-        _sample_frame: usize,
-        _output_rate: u32,
-    ) -> Result<(), ChipError> {
-        if let Some((instance, notifications)) = &self.dac_notifications {
-            notifications.lock().unwrap().push((*instance, playing));
-        }
-        Ok(())
-    }
 }
 
 #[test]
@@ -641,22 +987,6 @@ fn dac_notifications_use_exact_start_ids_and_all_stop_reaches_all_voices() {
     }
 }
 
-fn ymfm_chips() -> [Chip; 11] {
-    [
-        Chip::Ym2413,
-        Chip::Ym2612,
-        Chip::Ym2151,
-        Chip::Ym2203,
-        Chip::Ym2608,
-        Chip::Ym2610b,
-        Chip::Ym3812,
-        Chip::Ym3526,
-        Chip::Y8950,
-        Chip::Ymf262,
-        Chip::Ymf278b,
-    ]
-}
-
 #[test]
 fn replaces_ymfm_backends_independently_by_chip_type() {
     let chips = ymfm_chips();
@@ -789,6 +1119,41 @@ fn rejects_factory_chip_type_mismatch() {
             actual: Chip::Ym2612,
         }))
     ));
+}
+
+#[test]
+fn rejects_factory_clock_mismatch_against_extra_header_clock() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
+    builder.set_extra_header(VgmExtraHeader {
+        chip_clocks: vec![ChipClock::new(ChipId::Ym2151, Instance::Primary, 3_579_545)],
+        ..Default::default()
+    });
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    for from_bytes in [false, true] {
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::Ym2151, |config| {
+            Ok(Box::new(FakeChip::new(
+                config.chip().clone(),
+                4_000_000,
+                Arc::new(Mutex::new(Vec::new())),
+            )))
+        });
+        let result = if from_bytes {
+            VgmSequencer::from_vgm_with_factories(bytes.clone(), 44_100, 64, factories)
+        } else {
+            VgmSequencer::new_with_factories(document.clone(), 44_100, 64, factories)
+        };
+        assert!(matches!(
+            result,
+            Err(VgmSequencerError::Chip(ChipError::ClockMismatch {
+                chip: Chip::Ym2151,
+                expected: 3_579_545,
+                actual: 4_000_000,
+            }))
+        ));
+    }
 }
 
 #[test]

@@ -54,4 +54,4 @@ pub use options::PlaybackOptions;
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
-pub use vgm::{VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError};
+pub use vgm::{GeneratorConfig, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError};
