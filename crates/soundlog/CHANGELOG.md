@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.17.0 (Unreleased)
+
+### Added
+
+- Add: `VgmStream::last_stream_write_id` identifies the DAC stream that generated the most recent write, distinguishing it from direct chip writes.
 
 ### Fixed
 
