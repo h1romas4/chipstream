@@ -700,21 +700,25 @@ impl Voice {
 /// guaranteed real-time safe. After a rendering or checkpoint restore error,
 /// create a new sequencer.
 pub struct VgmSequencer<'a> {
-    /// Source command stream and optional reconstruction factory.
+    /// Source command stream.
     stream: VgmStream,
+    /// Optional factory for reconstructing the source stream.
     stream_factory: Option<StreamFactory>,
     /// Whether this source supports checkpoint reconstruction.
     rewindable: bool,
-    /// Header loop settings used when resetting a replayable stream.
+    /// Header loop base used when resetting a replayable stream.
     initial_loop_base: i8,
+    /// Header loop modifier used when resetting a replayable stream.
     initial_loop_modifier: u8,
-    /// Consumed stream results and settings changes for checkpoint replay.
+    /// Number of consumed stream results for checkpoint replay.
     stream_steps: usize,
+    /// Stream settings changes and their positions for checkpoint replay.
     stream_settings: Vec<(usize, StreamSetting)>,
     /// Active chip instances.
     voices: Vec<Voice>,
-    /// Output rate and maximum returned block length.
+    /// Output sample rate in frames per second.
     output_rate: u32,
+    /// Maximum returned block length in output frames.
     chunk_frames: usize,
     /// Number of output frames delivered or skipped by seeking.
     position_frames: usize,
@@ -722,23 +726,27 @@ pub struct VgmSequencer<'a> {
     wait: u32,
     /// Output frames available for mixing.
     available: usize,
-    /// Fractional output-frame phase and its per-source-sample step.
+    /// Fractional output-frame phase.
     output_phase: u32,
+    /// Fractional output-frame step per source sample.
     output_step: u32,
-    /// Whether the stream has ended or encountered a terminal error.
+    /// Whether the stream has ended.
     ended: bool,
+    /// Whether a terminal rendering or checkpoint restore error occurred.
     failed: bool,
     /// Whether rendering has started.
     started: bool,
-    /// Callback registrations and events pending output delivery.
+    /// Registered write callbacks and filters.
     callbacks: CallbackRegistry<'a>,
+    /// Callback events pending output delivery, with frame offsets.
     events: VecDeque<(usize, PendingWriteEvent)>,
     /// Frames preserved when seeking into the middle of a block.
     pending_output: VecDeque<[f32; 2]>,
     /// Per-instance PWM initialization compatibility state, when enabled.
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
-    /// Configured fade duration and remaining source samples.
+    /// Configured fade duration in source samples.
     fade_samples: Option<u32>,
+    /// Remaining source samples after fading starts, or `None` before it starts.
     fade_remaining: Option<u32>,
     /// Output-frame fade state, once fading begins.
     fade_frames: Option<Fade>,
