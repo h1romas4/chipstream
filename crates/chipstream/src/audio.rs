@@ -41,7 +41,7 @@ mod route;
 
 pub use buffer::{AudioError, StereoBlock, StereoMatrix};
 pub use dc_blocker::DcBlocker;
-pub use effect::{Gain, StereoBalance, StereoEffect};
+pub use effect::{Gain, NativeEffect, StereoBalance, StereoEffect};
 pub use mixer::StereoMixer;
 pub use resampler::StereoResampler;
 pub(crate) use resampler::StereoResamplerState;

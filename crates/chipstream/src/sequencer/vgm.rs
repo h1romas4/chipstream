@@ -25,8 +25,8 @@ use soundlog::vgm::{
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
 use crate::audio::{
-    AudioError, ChipCapture, RouteError, StereoBlock, StereoMatrix, StereoMixer, StereoResampler,
-    StereoResamplerState,
+    AudioError, ChipCapture, NativeEffect, RouteError, StereoBlock, StereoEffect, StereoMatrix,
+    StereoMixer, StereoResampler, StereoResamplerState,
 };
 #[cfg(feature = "okim6295")]
 use crate::chip::Okim6295;
@@ -47,6 +47,7 @@ use crate::fixed::{advance, divide_ratio};
 use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
 use super::Okim6258Divider;
+use super::effects::{EffectError, EffectId, EffectRack, OutputGroupId};
 use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
 use config::{ChipConfiguration, VoiceConfig, chip_id};
@@ -176,6 +177,8 @@ pub enum VgmSequencerError {
     Route(RouteError),
     /// Audio processing failed.
     Audio(AudioError),
+    /// An effect configuration or handle is invalid.
+    Effect(EffectError),
 }
 
 impl fmt::Display for VgmSequencerError {
@@ -255,6 +258,7 @@ impl fmt::Display for VgmSequencerError {
             Self::Chip(error) => write!(f, "chip failed: {error}"),
             Self::Route(error) => write!(f, "chip capture failed: {error}"),
             Self::Audio(error) => write!(f, "audio processing failed: {error}"),
+            Self::Effect(error) => write!(f, "effect configuration failed: {error}"),
         }
     }
 }
@@ -267,8 +271,15 @@ impl Error for VgmSequencerError {
             Self::Chip(e) => Some(e),
             Self::Route(e) => Some(e),
             Self::Audio(e) => Some(e),
+            Self::Effect(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+impl From<EffectError> for VgmSequencerError {
+    fn from(error: EffectError) -> Self {
+        Self::Effect(error)
     }
 }
 
@@ -361,6 +372,9 @@ struct Voice {
     queue: VecDeque<[f32; 2]>,
     gain: f32,
     output_gains: Vec<f32>,
+    effects: EffectRack,
+    base_coefficients: Vec<[f32; 2]>,
+    output_masks: Vec<[bool; 2]>,
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -584,9 +598,13 @@ impl Voice {
             .ok_or(VgmSequencerError::DurationOverflow)?;
         let mut raw = vec![0; samples];
         let native = self.route.capture(&mut raw)?;
-        let stereo = self
-            .matrix
-            .convert_with_gains(&native, Some(&self.output_gains))?;
+        let stereo = self.effects.process(
+            &native,
+            &self.matrix,
+            &self.base_coefficients,
+            &self.output_masks,
+            &self.output_gains,
+        )?;
         self.queue
             .extend(self.resampler.process(&stereo)?.frames().iter().copied());
         Ok(())
@@ -787,6 +805,8 @@ struct VoiceCheckpoint {
     queue: VecDeque<[f32; 2]>,
     gain: f32,
     output_gains: Vec<f32>,
+    effects: EffectRack,
+    output_masks: Vec<[bool; 2]>,
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
@@ -1136,6 +1156,9 @@ impl<'a> VgmSequencer<'a> {
         let (min_rate, max_rate) =
             timing.bounds(&chip, instance, clock, backend.sample_rate_ratio());
         let output_gains = vec![1.0; backend.channels()];
+        let effects = EffectRack::new(backend.channels());
+        let output_masks = vec![[true; 2]; backend.channels()];
+        let base_coefficients = matrix.coefficients().to_vec();
         Ok(Voice {
             chip,
             instance,
@@ -1152,6 +1175,9 @@ impl<'a> VgmSequencer<'a> {
             queue: VecDeque::new(),
             gain: 1.0,
             output_gains,
+            effects,
+            base_coefficients,
+            output_masks,
             main_coefficient: main,
             paired_coefficient: paired,
             paced_writes: profile.write_interval.map(|_| VecDeque::new()),
@@ -1645,6 +1671,134 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
+    /// Set linear pan for a native output, or restore its original routing with `None`.
+    ///
+    /// `-1` routes left, `0` routes equally to both sides, and `1` routes
+    /// right. VGM channel masks still apply. Changes affect newly captured PCM.
+    pub fn set_output_pan(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        pan: Option<f32>,
+    ) -> Result<(), VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        voice.effects.set_pan(output, pan)?;
+        Ok(())
+    }
+
+    /// Append an effect to one native output, before gain and stereo routing.
+    ///
+    /// `Clone` must produce an independent snapshot of all effect parameters
+    /// and processing state for checkpointing. Effects run at the current
+    /// native rate; their tails are truncated at the source's end.
+    pub fn add_output_effect<T: NativeEffect + Clone + 'static>(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        effect: T,
+    ) -> Result<EffectId<T>, VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        Ok(voice.effects.add_native(output, effect)?)
+    }
+
+    /// Group native outputs for stereo effects. Each output may be in one group.
+    ///
+    /// Outputs are routed through their normal matrix and masks before group
+    /// effects; ungrouped outputs are mixed normally.
+    pub fn create_output_group(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        outputs: &[usize],
+    ) -> Result<OutputGroupId, VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        Ok(voice.effects.create_group(outputs)?)
+    }
+
+    /// Remove a group and its effects; its outputs return to the ordinary mix.
+    pub fn remove_output_group(&mut self, group: &OutputGroupId) -> Result<(), VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.effects.contains_group(group))
+            .ok_or(EffectError::GroupNotFound)?;
+        voice.effects.remove_group(group)?;
+        Ok(())
+    }
+
+    /// Append a stereo effect to an output group.
+    ///
+    /// `Clone` must produce an independent snapshot of all parameters and
+    /// processing state. Effects run at the native rate and their tails are
+    /// truncated at the source's end.
+    pub fn add_group_effect<T: StereoEffect + Clone + 'static>(
+        &mut self,
+        group: &OutputGroupId,
+        effect: T,
+    ) -> Result<EffectId<T>, VgmSequencerError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.effects.contains_group(group))
+            .ok_or(EffectError::GroupNotFound)?;
+        Ok(voice.effects.add_stereo(group, effect)?)
+    }
+
+    /// Access an installed effect's parameters and state.
+    ///
+    /// Changes affect newly captured PCM, not existing queues or resampler
+    /// history. Call between `render` calls, using exclusive sequencer access.
+    pub fn effect_mut<T: 'static>(
+        &mut self,
+        id: &EffectId<T>,
+    ) -> Result<&mut T, VgmSequencerError> {
+        self.voices
+            .iter_mut()
+            .find_map(|voice| voice.effects.effect_mut(id))
+            .ok_or_else(|| EffectError::EffectNotFound.into())
+    }
+
+    /// Remove an installed effect.
+    pub fn remove_effect<T>(&mut self, id: &EffectId<T>) -> Result<(), VgmSequencerError> {
+        if self
+            .voices
+            .iter_mut()
+            .any(|voice| voice.effects.remove_effect(id))
+        {
+            Ok(())
+        } else {
+            Err(EffectError::EffectNotFound.into())
+        }
+    }
+
+    /// Move an effect to a zero-based position within its existing chain.
+    pub fn move_effect<T>(
+        &mut self,
+        id: &EffectId<T>,
+        position: usize,
+    ) -> Result<(), VgmSequencerError> {
+        for voice in &mut self.voices {
+            if voice.effects.move_effect(id, position)? {
+                return Ok(());
+            }
+        }
+        Err(EffectError::EffectNotFound.into())
+    }
+
     /// Supply the unbundled YM2608 rhythm ROM before rendering.
     ///
     /// Without it, the internal rhythm instruments cannot play as intended.
@@ -1730,6 +1884,8 @@ impl<'a> VgmSequencer<'a> {
                 queue: voice.queue.clone(),
                 gain: voice.gain,
                 output_gains: voice.output_gains.clone(),
+                effects: voice.effects.clone(),
+                output_masks: voice.output_masks.clone(),
                 main_coefficient: voice.main_coefficient,
                 paired_coefficient: voice.paired_coefficient,
                 paced_writes: voice.paced_writes.clone(),
@@ -1787,6 +1943,7 @@ impl<'a> VgmSequencer<'a> {
                     voice.chip != saved.chip
                         || voice.instance != saved.instance
                         || voice.clock != saved.clock
+                        || !voice.effects.same_topology(&saved.effects)
                 })
             || unique_memories(&self.voices).len() != checkpoint.memory.len()
         {
@@ -1853,6 +2010,8 @@ impl<'a> VgmSequencer<'a> {
             voice.queue.clone_from(&saved.queue);
             voice.gain = saved.gain;
             voice.output_gains.clone_from(&saved.output_gains);
+            voice.effects.clone_from(&saved.effects);
+            voice.output_masks.clone_from(&saved.output_masks);
             voice.main_coefficient = saved.main_coefficient;
             voice.paired_coefficient = saved.paired_coefficient;
             voice.paced_writes.clone_from(&saved.paced_writes);
@@ -2242,6 +2401,12 @@ impl<'a> VgmSequencer<'a> {
                         coefficient(mask.left_ch2, mask.right_ch2),
                         coefficient(mask.left_ch3, mask.right_ch3),
                     ])?;
+                    voice.output_masks = vec![
+                        [true, true],
+                        [mask.left_ch1, mask.right_ch1],
+                        [mask.left_ch2, mask.right_ch2],
+                        [mask.left_ch3, mask.right_ch3],
+                    ];
                 }
             }
             AY8910StereoMask(mask) => {
@@ -2261,6 +2426,11 @@ impl<'a> VgmSequencer<'a> {
                             coefficient(mask.left_ch2, mask.right_ch2),
                             coefficient(mask.left_ch3, mask.right_ch3),
                         ])?;
+                        voice.output_masks = vec![
+                            [mask.left_ch1, mask.right_ch1],
+                            [mask.left_ch2, mask.right_ch2],
+                            [mask.left_ch3, mask.right_ch3],
+                        ];
                     } else if !(mask.left_ch1
                         && mask.right_ch1
                         && mask.left_ch2

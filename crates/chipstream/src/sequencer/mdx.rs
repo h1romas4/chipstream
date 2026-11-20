@@ -12,14 +12,15 @@ use soundlog::mdx::convert::{
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::{VgmHeader, VgmStream};
 
-use crate::audio::StereoBlock;
+use crate::audio::{NativeEffect, StereoBlock, StereoEffect};
 
 use super::factory::ChipFactoryRegistry;
 use super::vgm::StreamFactory;
 use super::vgm::config::ChipConfiguration;
 use super::{
-    Chip, Instance, NativeOutput, PlaybackOptions, StateEvent, VgmSequencer,
-    VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
+    Chip, EffectId, Instance, NativeOutput, OutputGroupId, PlaybackOptions, StateEvent,
+    VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker,
+    VgmWriteCallbackTarget,
 };
 
 /// Playback and driver options for the incremental MDX sequencer.
@@ -316,6 +317,90 @@ impl<'a> MdxSequencer<'a> {
     ) -> Result<(), MdxSequencerError> {
         self.player
             .set_output_gains(chip, instance, gains)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Set or clear native-output pan. See [`VgmSequencer::set_output_pan`].
+    pub fn set_output_pan(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        pan: Option<f32>,
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .set_output_pan(chip, instance, output, pan)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Append a native-output effect. See [`VgmSequencer::add_output_effect`].
+    pub fn add_output_effect<T: NativeEffect + Clone + 'static>(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        effect: T,
+    ) -> Result<EffectId<T>, MdxSequencerError> {
+        self.player
+            .add_output_effect(chip, instance, output, effect)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Create a stereo output group. See [`VgmSequencer::create_output_group`].
+    pub fn create_output_group(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        outputs: &[usize],
+    ) -> Result<OutputGroupId, MdxSequencerError> {
+        self.player
+            .create_output_group(chip, instance, outputs)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Remove an output group. See [`VgmSequencer::remove_output_group`].
+    pub fn remove_output_group(&mut self, group: &OutputGroupId) -> Result<(), MdxSequencerError> {
+        self.player
+            .remove_output_group(group)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Append a stereo group effect. See [`VgmSequencer::add_group_effect`].
+    pub fn add_group_effect<T: StereoEffect + Clone + 'static>(
+        &mut self,
+        group: &OutputGroupId,
+        effect: T,
+    ) -> Result<EffectId<T>, MdxSequencerError> {
+        self.player
+            .add_group_effect(group, effect)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Access an installed effect. See [`VgmSequencer::effect_mut`].
+    pub fn effect_mut<T: 'static>(
+        &mut self,
+        id: &EffectId<T>,
+    ) -> Result<&mut T, MdxSequencerError> {
+        self.player
+            .effect_mut(id)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Remove an effect. See [`VgmSequencer::remove_effect`].
+    pub fn remove_effect<T>(&mut self, id: &EffectId<T>) -> Result<(), MdxSequencerError> {
+        self.player
+            .remove_effect(id)
+            .map_err(MdxSequencerError::Playback)
+    }
+
+    /// Reorder an effect within its chain. See [`VgmSequencer::move_effect`].
+    pub fn move_effect<T>(
+        &mut self,
+        id: &EffectId<T>,
+        position: usize,
+    ) -> Result<(), MdxSequencerError> {
+        self.player
+            .move_effect(id, position)
             .map_err(MdxSequencerError::Playback)
     }
 

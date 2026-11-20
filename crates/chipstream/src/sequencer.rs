@@ -36,6 +36,7 @@
 
 mod compat;
 mod duration;
+mod effects;
 mod event;
 mod factory;
 mod mdx;
@@ -44,6 +45,7 @@ mod vgm;
 mod volume;
 
 pub use duration::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
+pub use effects::{EffectError, EffectId, OutputGroupId};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
 pub use factory::{
     Ay8910Settings, Ay8910Variant, AyOutputSettings, C140Variant, ChipBackendSettings,

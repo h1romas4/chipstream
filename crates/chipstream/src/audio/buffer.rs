@@ -166,6 +166,10 @@ pub struct StereoMatrix {
 }
 
 impl StereoMatrix {
+    pub(crate) fn coefficients(&self) -> &[[f32; 2]] {
+        &self.coefficients
+    }
+
     /// One `[left, right]` coefficient pair for each native output.
     pub fn new(coefficients: Vec<[f32; 2]>) -> Result<Self, AudioError> {
         if coefficients.is_empty()

@@ -1,5 +1,5 @@
-use chipstream::audio::AudioError;
-use chipstream::sequencer::{NativeOutput, VgmSequencer, VgmSequencerError};
+use chipstream::audio::{AudioError, Gain, StereoBalance};
+use chipstream::sequencer::{EffectError, NativeOutput, VgmSequencer, VgmSequencerError};
 use soundlog::chip::Chip;
 use soundlog::chip::Okim6258Spec;
 use soundlog::vgm::VgmBuilder;
@@ -393,6 +393,241 @@ fn output_gains_survive_vgm_stereo_mask_changes() {
         output.extend_from_slice(block.frames());
     }
     assert_scaled(&output, &baseline, 0.5, 0.5);
+}
+
+#[test]
+fn native_effects_and_stereo_groups_process_only_selected_outputs() {
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let render = |mode: u8| {
+        let mut player =
+            VgmSequencer::new(document.clone(), 48_000, 256, Default::default()).unwrap();
+        let group = (mode != 0).then(|| {
+            player
+                .create_output_group(Chip::Ym2203, Instance::Primary, &[1, 2, 3])
+                .unwrap()
+        });
+        if mode == 2 {
+            for output in 1..=3 {
+                player
+                    .add_output_effect(
+                        Chip::Ym2203,
+                        Instance::Primary,
+                        output,
+                        Gain::new(0.5).unwrap(),
+                    )
+                    .unwrap();
+            }
+        } else if mode == 3 {
+            let balance = player
+                .add_group_effect(&group.unwrap(), StereoBalance::new(0.0).unwrap())
+                .unwrap();
+            player
+                .effect_mut(&balance)
+                .unwrap()
+                .set_balance(1.0)
+                .unwrap();
+        }
+        let mut frames = Vec::new();
+        for _ in 0..8 {
+            frames.extend_from_slice(player.render().unwrap().unwrap().frames());
+        }
+        frames
+    };
+    let baseline = render(0);
+    assert_eq!(render(1), baseline);
+    assert_scaled(&render(2), &baseline, 0.5, 0.5);
+    assert_scaled(&render(3), &baseline, 0.0, 1.0);
+}
+
+#[test]
+fn pan_preserves_stereo_masks_and_validates_effect_configuration() {
+    let mut document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    document.commands.insert(
+        0,
+        VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0b0101_0101)),
+    );
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    for output in 1..=3 {
+        player
+            .set_output_pan(Chip::Ym2203, Instance::Primary, output, Some(1.0))
+            .unwrap();
+    }
+    for _ in 0..4 {
+        assert!(
+            player
+                .render()
+                .unwrap()
+                .unwrap()
+                .frames()
+                .iter()
+                .flatten()
+                .all(|v| v.abs() < 0.00001)
+        );
+    }
+    assert!(matches!(
+        player.set_output_pan(Chip::Ym2203, Instance::Primary, 1, Some(f32::NAN)),
+        Err(VgmSequencerError::Effect(EffectError::InvalidPan))
+    ));
+    assert!(matches!(
+        player.set_output_pan(Chip::Ym2203, Instance::Primary, 4, Some(0.0)),
+        Err(VgmSequencerError::Effect(
+            EffectError::OutputOutOfRange { .. }
+        ))
+    ));
+    assert!(matches!(
+        player.create_output_group(Chip::Ym2203, Instance::Primary, &[]),
+        Err(VgmSequencerError::Effect(EffectError::EmptyGroup))
+    ));
+    assert!(matches!(
+        player.create_output_group(Chip::Ym2203, Instance::Primary, &[1, 1]),
+        Err(VgmSequencerError::Effect(
+            EffectError::OutputAlreadyGrouped { .. }
+        ))
+    ));
+    let group = player
+        .create_output_group(Chip::Ym2203, Instance::Primary, &[1, 2])
+        .unwrap();
+    assert!(matches!(
+        player.create_output_group(Chip::Ym2203, Instance::Primary, &[2, 3]),
+        Err(VgmSequencerError::Effect(
+            EffectError::OutputAlreadyGrouped { .. }
+        ))
+    ));
+    player.remove_output_group(&group).unwrap();
+    player
+        .create_output_group(Chip::Ym2203, Instance::Primary, &[2, 3])
+        .unwrap();
+}
+
+#[test]
+fn pan_can_route_a_native_output_to_the_other_side() {
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    for output in 1..=3 {
+        player
+            .set_output_pan(Chip::Ym2203, Instance::Primary, output, Some(1.0))
+            .unwrap();
+    }
+    let mut frames = Vec::new();
+    for _ in 0..8 {
+        frames.extend_from_slice(player.render().unwrap().unwrap().frames());
+    }
+    assert!(frames.iter().all(|frame| frame[0] == 0.0));
+    assert!(frames.iter().any(|frame| frame[1].abs() > 0.001));
+}
+
+#[test]
+fn effect_order_can_be_changed_and_removed_during_playback() {
+    use chipstream::audio::NativeEffect;
+    use chipstream::chip::SampleRate;
+
+    #[derive(Clone)]
+    struct Offset;
+    impl NativeEffect for Offset {
+        fn process_native(&mut self, samples: &mut [f32], _: SampleRate) -> Result<(), AudioError> {
+            for sample in samples {
+                *sample += 1000.0;
+            }
+            Ok(())
+        }
+    }
+
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    player
+        .set_output_gains(Chip::Ym2203, Instance::Primary, &[0.0, 1.0, 0.0, 0.0])
+        .unwrap();
+    let offset = player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Offset)
+        .unwrap();
+    let gain = player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Gain::new(0.0).unwrap())
+        .unwrap();
+    assert!(matches!(
+        player.move_effect(&gain, 2),
+        Err(VgmSequencerError::Effect(
+            EffectError::PositionOutOfRange { .. }
+        ))
+    ));
+    for _ in 0..4 {
+        assert!(
+            player
+                .render()
+                .unwrap()
+                .unwrap()
+                .frames()
+                .iter()
+                .flatten()
+                .all(|v| *v == 0.0)
+        );
+    }
+    player.move_effect(&gain, 0).unwrap();
+    let mut audible = false;
+    for _ in 0..8 {
+        audible |= player
+            .render()
+            .unwrap()
+            .unwrap()
+            .frames()
+            .iter()
+            .flatten()
+            .any(|v| v.abs() > 0.001);
+    }
+    assert!(audible);
+    player.remove_effect(&offset).unwrap();
+    assert!(player.effect_mut(&offset).is_err());
+    for _ in 0..8 {
+        player.render().unwrap().unwrap();
+    }
+    assert!(
+        player
+            .render()
+            .unwrap()
+            .unwrap()
+            .frames()
+            .iter()
+            .flatten()
+            .all(|v| *v == 0.0)
+    );
+}
+
+#[test]
+fn nonfinite_effect_output_fails_rendering_explicitly() {
+    use chipstream::audio::NativeEffect;
+    use chipstream::chip::SampleRate;
+
+    #[derive(Clone)]
+    struct Invalid;
+    impl NativeEffect for Invalid {
+        fn process_native(&mut self, samples: &mut [f32], _: SampleRate) -> Result<(), AudioError> {
+            samples.fill(f32::NAN);
+            Ok(())
+        }
+    }
+
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Invalid)
+        .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::Audio(AudioError::NonFiniteSample))
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
 }
 
 fn oki_builder(dual: bool) -> VgmBuilder {

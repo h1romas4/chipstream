@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1540" viewBox="0 0 1440 1540" role="img" aria-labelledby="title description">
   <title id="title">Chipstream audio flow and gain controls</title>
-  <desc id="description">VGM, MDX, or generator commands are routed to a chip backend per instance. Each backend generates native samples, which are converted to stereo with per-output gains, resampled, and queued. A post-resampling chip gain is applied to each queue as the sequencer mixes the final stereo PCM. Neither gain controls physical hardware audio.</desc>
+  <desc id="description">VGM, MDX, or generator commands are routed to a chip backend per instance. Each backend generates native samples, which pass through per-output effects, gain, pan, stereo routing and optional group effects before resampling and queueing. A post-resampling chip gain is applied to each queue as the sequencer mixes the final stereo PCM. These controls do not affect physical hardware audio.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0,0 L10,5 L0,10 Z" fill="#46617a"/>
@@ -76,9 +76,9 @@
   <path d="M305 614 H322" class="audio"/>
 
   <rect x="585" y="552" width="230" height="124" class="box" fill="#eef2ff" stroke="#8495c7"/>
-  <text x="700" y="580" text-anchor="middle" class="label">StereoMatrix</text>
-  <text x="700" y="605" text-anchor="middle" class="small">native outputs → L / R</text>
-  <text x="700" y="630" text-anchor="middle" class="tiny">matrix levels × output gains</text>
+  <text x="700" y="580" text-anchor="middle" class="label">Effects + StereoMatrix</text>
+  <text x="700" y="605" text-anchor="middle" class="small">native effect → gain / pan</text>
+  <text x="700" y="630" text-anchor="middle" class="tiny">stereo routing → group effects</text>
   <text x="700" y="652" text-anchor="middle" class="tiny">native-rate f32 stereo</text>
   <path d="M560 614 H577" class="audio"/>
 
@@ -97,8 +97,8 @@
   <path d="M1070 614 H1087" class="audio"/>
 
   <rect x="485" y="720" width="430" height="76" class="box" fill="#fff8e9" stroke="#d3a344"/>
-  <text x="700" y="747" text-anchor="middle" class="api">output_layout() + set_output_gains()</text>
-  <text x="700" y="773" text-anchor="middle" class="api-small">one gain per native output, before resampling</text>
+  <text x="700" y="747" text-anchor="middle" class="api">output_layout() + output controls</text>
+  <text x="700" y="773" text-anchor="middle" class="api-small">gain, pan, and effects before resampling</text>
   <path d="M700 720 V685" class="control"/>
   <text x="102" y="774" class="small">Other chip instances follow the same lane.</text>
 
@@ -124,14 +124,14 @@
   <text x="642" y="1158" text-anchor="middle" class="tiny">final mix is not clipped; last block may be shorter</text>
 
   <rect x="50" y="1210" width="650" height="240" class="box" fill="#ffffff" stroke="#b8c6d3"/>
-  <text x="76" y="1242" class="heading">Native output gains</text>
+  <text x="76" y="1242" class="heading">Native outputs and effects</text>
   <text x="76" y="1272" class="small">Use output_layout(chip, instance) for the gain order.</text>
   <text x="76" y="1298" class="small">YM2203: [FM, SSG A, SSG B, SSG C]</text>
   <text x="76" y="1324" class="small">YM2608 / YM2610(B): [FM+ADPCM L, R, SSG]</text>
-  <text x="76" y="1354" class="tiny">These are backend outputs, not necessarily synthesis channels.</text>
-  <text x="76" y="1378" class="tiny">Gains multiply matrix and header levels; stereo masks still apply.</text>
+  <text x="76" y="1354" class="tiny">Outputs are backend signals, not necessarily synthesis channels.</text>
+  <text x="76" y="1378" class="tiny">Stereo groups process routed outputs; channel masks still apply.</text>
   <text x="76" y="1402" class="tiny">Changes affect newly captured samples, not buffered audio</text>
-  <text x="76" y="1424" class="tiny">or resampler history.</text>
+  <text x="76" y="1424" class="tiny">or resampler history. Effect tails are truncated at source end.</text>
 
   <rect x="740" y="1210" width="650" height="240" class="box" fill="#ffffff" stroke="#b8c6d3"/>
   <text x="766" y="1242" class="heading">Chip gain and hardware</text>

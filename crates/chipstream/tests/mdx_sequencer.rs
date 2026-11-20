@@ -108,6 +108,32 @@ fn mdx_native_output_gains_control_stereo_channels() {
     }
 }
 
+#[test]
+fn mdx_stereo_group_effects_and_typed_controls() {
+    use chipstream::audio::StereoBalance;
+    let baseline =
+        render_mdx(&mut MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap());
+    let mut player = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
+    let group = player
+        .create_output_group(Chip::Ym2151, Instance::Primary, &[0, 1])
+        .unwrap();
+    let effect = player
+        .add_group_effect(&group, StereoBalance::new(0.0).unwrap())
+        .unwrap();
+    player
+        .effect_mut(&effect)
+        .unwrap()
+        .set_balance(1.0)
+        .unwrap();
+    let output = render_mdx(&mut player);
+    assert_eq!(output.len(), baseline.len());
+    assert!(baseline.iter().any(|frame| frame[0].abs() > 0.0001));
+    for (actual, expected) in output.iter().zip(baseline) {
+        assert_eq!(actual[0], 0.0);
+        assert_eq!(actual[1], expected[1]);
+    }
+}
+
 fn fm_package() -> MdxPackage {
     let mut builder = MdxBuilder::new();
     builder

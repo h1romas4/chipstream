@@ -8,6 +8,109 @@ use soundlog::vgm::command::WaitSamples;
 use std::time::Duration;
 
 #[test]
+fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
+    use chipstream::audio::{
+        AudioError, Gain, NativeEffect, StereoBalance, StereoBlock, StereoEffect,
+    };
+    use chipstream::chip::SampleRate;
+    use chipstream::sequencer::{Chip, Instance};
+    use soundlog::vgm::VgmDocument;
+
+    #[derive(Clone)]
+    struct Echo {
+        previous: f32,
+    }
+    impl NativeEffect for Echo {
+        fn process_native(&mut self, samples: &mut [f32], _: SampleRate) -> Result<(), AudioError> {
+            for sample in samples {
+                let current = *sample;
+                *sample += self.previous * 0.25;
+                self.previous = current;
+            }
+            Ok(())
+        }
+    }
+    #[derive(Clone)]
+    struct StereoEcho {
+        previous: [f32; 2],
+    }
+    impl StereoEffect for StereoEcho {
+        fn process(&mut self, block: &mut StereoBlock) -> Result<(), AudioError> {
+            let mut frames = Vec::with_capacity(block.frames().len());
+            for frame in block.frames() {
+                frames.push([
+                    frame[0] + self.previous[0] * 0.25,
+                    frame[1] + self.previous[1] * 0.25,
+                ]);
+                self.previous = *frame;
+            }
+            *block = StereoBlock::new(block.sample_rate(), frames)?;
+            Ok(())
+        }
+    }
+
+    let document =
+        VgmDocument::try_from(&include_bytes!("../../soundlog/assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    let echo = player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Echo { previous: 0.0 })
+        .unwrap();
+    let group = player
+        .create_output_group(Chip::Ym2203, Instance::Primary, &[1, 2, 3])
+        .unwrap();
+    let balance = player
+        .add_group_effect(&group, StereoBalance::new(0.0).unwrap())
+        .unwrap();
+    let stereo_echo = player
+        .add_group_effect(&group, StereoEcho { previous: [0.0; 2] })
+        .unwrap();
+    player
+        .set_output_pan(Chip::Ym2203, Instance::Primary, 1, Some(-0.2))
+        .unwrap();
+    for _ in 0..4 {
+        player.render().unwrap();
+    }
+    let checkpoint = player.checkpoint().unwrap();
+    let previous = player.effect_mut(&echo).unwrap().previous;
+    let stereo_previous = player.effect_mut(&stereo_echo).unwrap().previous;
+    let expected = player.render().unwrap();
+    player.effect_mut(&echo).unwrap().previous = 12345.0;
+    player.effect_mut(&stereo_echo).unwrap().previous = [12.0, 34.0];
+    player
+        .effect_mut(&balance)
+        .unwrap()
+        .set_balance(1.0)
+        .unwrap();
+    player
+        .set_output_pan(Chip::Ym2203, Instance::Primary, 1, Some(1.0))
+        .unwrap();
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(player.effect_mut(&echo).unwrap().previous, previous);
+    assert_eq!(
+        player.effect_mut(&stereo_echo).unwrap().previous,
+        stereo_previous
+    );
+    assert_eq!(player.effect_mut(&balance).unwrap().balance(), 0.0);
+    assert_eq!(player.render().unwrap(), expected);
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(player.render().unwrap(), expected);
+
+    let extra = player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Gain::new(0.5).unwrap())
+        .unwrap();
+    let position = player.position_frames();
+    assert!(matches!(
+        player.restore_checkpoint(&checkpoint),
+        Err(VgmSequencerError::CheckpointMismatch)
+    ));
+    assert_eq!(player.position_frames(), position);
+    player.remove_effect(&extra).unwrap();
+    assert!(player.effect_mut(&extra).is_err());
+    player.restore_checkpoint(&checkpoint).unwrap();
+}
+
+#[test]
 fn filter_state_is_caller_owned_and_seek_runs_filters() {
     use soundlog::chip::{Chip, Ym2151Spec};
     use soundlog::vgm::command::Instance;

@@ -178,6 +178,56 @@ samples; buffered audio and resampler history retain their previous levels.
 Chip-gain changes also affect unmixed buffered PCM, but not audio already mixed
 during a seek. Neither gain controls physical hardware audio.
 
+### Native-output and stereo-group effects
+
+Both sequencers can process each native output before its matrix routing, and
+apply stereo effects to groups of routed outputs before resampling:
+
+```rust,no_run
+use chipstream::audio::{Gain, StereoBalance};
+use chipstream::sequencer::{Chip, Instance, VgmSequencer};
+
+let bytes = std::fs::read("song.vgm")?;
+let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
+// YM2608 layout: [FmAdpcmLeft, FmAdpcmRight, SsgMixed]
+let ssg = player.add_output_effect(Chip::Ym2608, Instance::Primary, 2, Gain::new(0.8)?)?;
+player.set_output_pan(Chip::Ym2608, Instance::Primary, 2, Some(-0.5))?;
+let fm = player.create_output_group(Chip::Ym2608, Instance::Primary, &[0, 1])?;
+let balance = player.add_group_effect(&fm, StereoBalance::new(0.0)?)?;
+
+// Between render calls, update parameters using the typed handles.
+player.effect_mut(&ssg)?.set_gain(0.6)?;
+player.effect_mut(&balance)?.set_balance(0.3)?;
+while let Some(block) = player.render()? {
+    // Send block.frames() to the host.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`NativeEffect` operates on one output's `f32` samples in native backend
+amplitude units, at the current native sample rate. Output effects run in
+order, followed by `set_output_gains`, pan, and matrix routing. A group sums
+its selected routed outputs and processes them with its ordered `StereoEffect`
+chain. Ungrouped outputs use the ordinary mix. An output can belong to at most
+one group; removing a group removes its effects. `move_effect` reorders an
+effect within its chain and `remove_effect` removes it.
+
+Pan is linear from -1 (left) to 1 (right), with both sides at full level at
+zero. `None` restores the output's original routing; explicit pan can route an
+otherwise left- or right-only output to either side. VGM channel masks still
+apply before group effects, and backend stereo mutes apply after group effects.
+Effects can subsequently produce audio on either side of a group.
+
+Effects must be `Clone + 'static`; cloning must independently capture all
+parameters and processing state for checkpoints. Restoring a checkpoint
+requires the same groups and effect order and restores their saved state and
+pan values. Single-pass generator checkpoints remain unsupported. Stereo
+effects must preserve the block's frame count and sample rate. Errors and
+non-finite output fail rendering. Effect tails are truncated at the source's
+end. Changes affect newly captured PCM, not buffered audio or resampler history;
+they do not control physical hardware. Mutate effects between `render` calls
+with exclusive access to the sequencer.
+
 Both sequencers expose `chip_instances` and support typed write callbacks. Register callbacks
 with `on_write` and state tracking with `track_state` before rendering:
 

@@ -1,6 +1,18 @@
 //! In-place stereo effects, including gain and balance.
 
+use crate::chip::SampleRate;
+
 use super::{AudioError, StereoBlock};
+
+/// An in-place effect on one native output, before stereo routing.
+///
+/// Samples use the backend's native amplitude units as `f32`; no normalization
+/// or clipping is applied. The rate may change between calls. On error the
+/// samples must be unchanged.
+pub trait NativeEffect {
+    /// Process one output's samples at its current native rate.
+    fn process_native(&mut self, samples: &mut [f32], rate: SampleRate) -> Result<(), AudioError>;
+}
 
 /// An in-place stereo PCM effect.
 pub trait StereoEffect {
@@ -9,6 +21,7 @@ pub trait StereoEffect {
 }
 
 /// A constant, nonnegative linear amplitude gain.
+#[derive(Clone)]
 pub struct Gain {
     gain: f32,
 }
@@ -41,10 +54,26 @@ impl StereoEffect for Gain {
     }
 }
 
+impl NativeEffect for Gain {
+    fn process_native(&mut self, samples: &mut [f32], _rate: SampleRate) -> Result<(), AudioError> {
+        if samples
+            .iter()
+            .any(|sample| !(*sample * self.gain).is_finite())
+        {
+            return Err(AudioError::NonFiniteSample);
+        }
+        for sample in samples {
+            *sample *= self.gain;
+        }
+        Ok(())
+    }
+}
+
 /// Linear stereo balance; the center leaves both channels unchanged.
 ///
 /// `-1` mutes right, `1` mutes left. This does not fold either channel into
 /// the other and is therefore distinct from positioning a mono source.
+#[derive(Clone)]
 pub struct StereoBalance {
     balance: f32,
 }
