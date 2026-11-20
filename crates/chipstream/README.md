@@ -95,7 +95,9 @@ while let Some(block) = player.render()? {
 
 For a custom command source, implement `soundlog::VgmCommandGenerator` and
 pass it to `VgmSequencer::from_generator` with a `GeneratorConfig` containing
-the chip header. Use `from_generator_with_factories` to replace backends.
+the chip header. The sequencer creates a `VgmStream` with
+`VgmStream::from_generator` internally. Use `from_generator_with_factories`
+to replace backends.
 
 Declare per-instance OKIM6258/OKIM6295 clock ranges, including
 intermediate clock-byte values, and SN76489 stereo-mask use in the config:
@@ -292,6 +294,12 @@ not control physical hardware.
 
 ### Write callbacks and filters
 
+![Chip write observation, filtering, and backend selection](https://raw.githubusercontent.com/h1romas4/chipstream/main/crates/chipstream/assets/write-control-flow.svg)
+
+For a keyboard display, use tracked `KeyOn` and `KeyOff` events to maintain
+channel state and `KeyOn` tone frequency, when present, to select a key. The
+events describe the original writes, so a muted channel can still appear active.
+
 Both sequencers expose `chip_instances` and typed write callbacks. Register
 callbacks with `on_write` and state tracking with `track_state` before rendering:
 
@@ -353,6 +361,9 @@ A filter returns one write of the same type. Another filter for that type
 replaces it; callbacks and state trackers still see the original writes.
 Filters may execute ahead of returned audio, without global ordering across
 voices, and cannot change already generated audio or queued hardware events.
+For channel mute, keep application mute state and transform the relevant
+chip-specific writes. Changing that state alone does not rewrite existing
+chip registers; a filter cannot insert or suppress writes.
 
 Filter closure state is not part of checkpoints. The caller must restore it
 before restoring or seeking; seeking calls the filter while advancing.
