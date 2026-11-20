@@ -4637,6 +4637,7 @@ impl AppView {
         } else {
             graph.emulator_height
         };
+        let graph_height = graph.height.max(target_height);
         let mut panels = vec![
             div()
                 .absolute()
@@ -5086,8 +5087,8 @@ impl AppView {
             } else {
                 "Connected devices are routed automatically. Select a sequencer source, then a matching target to change it. Hardware timing is best-effort."
             }))
-            .child(div().id("patchbay-scroll").w_full().h(px(graph.height)).overflow_x_scrollbar()
-                .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph.height))
+            .child(div().id("patchbay-scroll").w_full().h(px(graph_height)).overflow_x_scrollbar()
+                .child(div().relative().w(px(patchbay::WIDTH)).h(px(graph_height))
                     .child(canvas(
                         |_, _, _| {},
                         move |bounds, _, window, _| {
@@ -5114,7 +5115,7 @@ impl AppView {
                                 }
                             }
                         }
-                    ).absolute().top_0().left_0().w(px(patchbay::WIDTH)).h(px(graph.height)))
+                    ).absolute().top_0().left_0().w(px(patchbay::WIDTH)).h(px(graph_height)))
                     .children(panels)
                     .children(nodes)))
     }

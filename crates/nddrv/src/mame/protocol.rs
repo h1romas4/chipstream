@@ -16,7 +16,14 @@ impl Plugin {
         &[
             "Sega System C2",
             "Mega Drive",
-            "YM2203 / YM2413 / OPL / AY systems",
+            "YM2203 #1",
+            "YM2203 #2",
+            "YM2413",
+            "YM3526",
+            "YM3812",
+            "YMF262",
+            "AY8910 / YM2149 #1",
+            "AY8910 / YM2149 #2",
             "YM2151-based systems",
         ]
     }
@@ -24,7 +31,16 @@ impl Plugin {
     pub fn supported_systems(self) -> &'static [&'static str] {
         match self {
             Self::NanoDrive6 => &["Sega System C2", "Mega Drive"],
-            Self::NanoDrive7 => &["YM2203 / YM2413 / OPL / AY systems"],
+            Self::NanoDrive7 => &[
+                "YM2203 #1",
+                "YM2203 #2",
+                "YM2413",
+                "YM3526",
+                "YM3812",
+                "YMF262",
+                "AY8910 / YM2149 #1",
+                "AY8910 / YM2149 #2",
+            ],
             Self::NanoDrive8 => &["YM2151-based systems"],
         }
     }
@@ -347,9 +363,20 @@ mod tests {
             &[
                 "Sega System C2",
                 "Mega Drive",
-                "YM2203 / YM2413 / OPL / AY systems",
+                "YM2203 #1",
+                "YM2203 #2",
+                "YM2413",
+                "YM3526",
+                "YM3812",
+                "YMF262",
+                "AY8910 / YM2149 #1",
+                "AY8910 / YM2149 #2",
                 "YM2151-based systems"
             ]
+        );
+        assert_eq!(
+            Plugin::NanoDrive7.supported_systems(),
+            &Plugin::all_systems()[2..10]
         );
     }
 

@@ -479,6 +479,19 @@ mod tests {
         assert_eq!(system_cables[0].target_y, 189.);
         let active_system_cables = graph.mame_system_cables(Some(1), &[true, true, false], true);
         assert!(active_system_cables.iter().all(|cable| cable.highlighted));
+        let nd7_systems: Vec<_> = crate::mame::Plugin::all_systems()
+            .iter()
+            .map(|system| {
+                crate::mame::Plugin::NanoDrive7
+                    .supported_systems()
+                    .contains(system)
+            })
+            .collect();
+        let nd7_cables = graph.mame_system_cables(Some(1), &nd7_systems, true);
+        assert_eq!(nd7_cables.len(), 8);
+        assert_eq!(nd7_cables[0].source_y, mame_system_row_y(2) + ROW / 2.);
+        assert_eq!(nd7_cables[1].source_y, mame_system_row_y(3) + ROW / 2.);
+        assert_ne!(nd7_cables[0].source_y, nd7_cables[1].source_y);
         let nd8_system_cables = graph.mame_system_cables(Some(1), &[false, false, true], false);
         assert_eq!(nd8_system_cables.len(), 1);
         assert_eq!(
