@@ -19,7 +19,7 @@ winresource = { version = "0.1.34", default-features = false }
 
 [dependencies]
 anyhow = "1"
-chipstream = { path = "../chipstream", features = ["ay8910", "c140", "c352", "es5503", "ga20", "gb_dmg", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "rf5c", "saa1099", "segapcm", "sn76496", "upd7759", "vsu", "wonderswan", "x1010", "ymf271", "ymz280b"] }
+chipstream = { path = "../chipstream", features = ["ay8910", "c140", "c352", "es5503", "es550x", "ga20", "gb_dmg", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "rf5c", "saa1099", "segapcm", "sn76496", "upd7759", "vsu", "wonderswan", "x1010", "ymf271", "ymz280b"] }
 chipstream-ndsif = { path = "../chipstream-ndsif" }
 chrono = "0.4"
 cpal = "0.18.2"

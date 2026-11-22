@@ -44,6 +44,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `c140` | C140 / ASIC219 | MAME | BSD-3-Clause |
 | `c352` | Namco C352 | MAME | BSD-3-Clause |
 | `es5503` | Ensoniq ES5503 | MAME | BSD-3-Clause |
+| `es550x` | Ensoniq ES5505 / ES5506 | MAME | BSD-3-Clause |
 | `gb_dmg` | Game Boy DMG | MAME, via Tetorica | BSD-3-Clause |
 | `ga20` | Irem GA20 | MAME | BSD-3-Clause |
 | `huc6280` | HuC6280 PSG | MAME | BSD-3-Clause |
@@ -80,6 +81,10 @@ eight outputs.
 QSound uses a DSP-ROM-free HLE with 16 PCM voices, three ADPCM voices, filters,
 and echo. Sample ROM data is supplied by VGM data blocks or `write_rom`.
 Legacy 4 MHz VGM clocks and their key-on behavior are supported.
+
+ES5505/ES5506 output pairs are mixed to stereo. VGM ROM regions and external
+per-voice bank writes are supported. The implementation has been tested with
+synthetic data but not verified against a complete ES550x VGM recording.
 
 Enable the chips your application needs, for example:
 

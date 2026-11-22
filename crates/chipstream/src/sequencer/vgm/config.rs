@@ -105,7 +105,7 @@ impl<'a> ChipConfiguration<'a> {
     }
 
     /// Extract supported clocks, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 40] {
+    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 41] {
         let misc = header.misc();
         [
             (Chip::Sn76489, header.sn76489_clock),
@@ -123,6 +123,14 @@ impl<'a> ChipConfiguration<'a> {
             (Chip::Vsu, header.vsu_clock),
             (Chip::C352, header.c352_clock),
             (Chip::Es5503, header.es5503_clock),
+            (
+                if header.es5506_clock & 0x8000_0000 != 0 {
+                    Chip::Es5506U8
+                } else {
+                    Chip::Es5505
+                },
+                header.es5506_clock,
+            ),
             (Chip::K053260, header.k053260_clock),
             (Chip::K054539, header.k054539_clock),
             (Chip::X1010, header.x1_010_clock),
@@ -249,6 +257,9 @@ fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
         Chip::Es5503 => ChipBackendSettings::Es5503 {
             output_channels: header.es5503_output_channels,
         },
+        Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16 => ChipBackendSettings::Es550x {
+            output_channels: header.es5506_output_channels,
+        },
         Chip::K054539 => ChipBackendSettings::K054539 {
             reverse_stereo: header.k054539_flags.reverse_stereo,
             disable_reverb: header.k054539_flags.disable_reverb,
@@ -293,6 +304,7 @@ pub(super) fn chip_id(chip: &Chip) -> ChipId {
         Chip::Vsu => ChipId::Vsu,
         Chip::C352 => ChipId::C352,
         Chip::Es5503 => ChipId::Es5503,
+        Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16 => ChipId::Es5506,
         Chip::K053260 => ChipId::K053260,
         Chip::K054539 => ChipId::K054539,
         Chip::X1010 => ChipId::X1010,

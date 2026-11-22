@@ -19,6 +19,8 @@ mod c140;
 mod c352;
 #[cfg(feature = "es5503")]
 mod es5503;
+#[cfg(feature = "es550x")]
+mod es550x;
 #[cfg(feature = "ga20")]
 mod ga20;
 #[cfg(feature = "gb_dmg")]
@@ -91,6 +93,8 @@ pub use ay8910::Ay8910;
 pub use c140::{C140, C140Type};
 #[cfg(feature = "c352")]
 pub use c352::C352;
+#[cfg(feature = "es550x")]
+pub use es550x::Es550x;
 #[cfg(feature = "es5503")]
 pub use es5503::Es5503;
 #[cfg(feature = "ga20")]
@@ -449,6 +453,7 @@ impl<T: Any> SoundChipState for T {
     feature = "c140",
     feature = "c352",
     feature = "es5503",
+    feature = "es550x",
     feature = "gb_dmg",
     feature = "ga20",
     feature = "huc6280",
@@ -483,6 +488,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "c140",
     feature = "c352",
     feature = "es5503",
+    feature = "es550x",
     feature = "gb_dmg",
     feature = "ga20",
     feature = "huc6280",

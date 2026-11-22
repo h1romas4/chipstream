@@ -1,3 +1,10 @@
+# ES5505/ES5506 implementation
+
+The ES550x implementation is based on MAME's `es5506.cpp`, revision
+`367a7f677a86d4806b5f808978590de5463eb90a`.
+Copyright (c) Aaron Giles. It is distributed under the BSD-3-Clause terms
+reproduced in the C352 section below.
+
 # AY8910 implementation
 
 The AY8910 implementation is based on libvgm's MAME-derived

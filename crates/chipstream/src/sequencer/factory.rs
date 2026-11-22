@@ -204,6 +204,11 @@ pub enum ChipBackendSettings {
         /// Output channels requested by the source.
         output_channels: u8,
     },
+    /// ES5505/ES5506 output-channel configuration.
+    Es550x {
+        /// Stereo output pairs requested by the source; zero means one.
+        output_channels: u8,
+    },
     /// C352 clock divider and rear-output selection.
     C352 {
         /// Input-clock cycles per output sample.

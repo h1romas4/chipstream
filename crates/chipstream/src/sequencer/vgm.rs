@@ -39,6 +39,8 @@ use crate::audio::{
 };
 #[cfg(feature = "c352")]
 use crate::chip::C352;
+#[cfg(feature = "es550x")]
+use crate::chip::Es550x;
 #[cfg(feature = "es5503")]
 use crate::chip::Es5503;
 #[cfg(feature = "ga20")]
@@ -1240,6 +1242,8 @@ impl<'a> VgmSequencer<'a> {
                     (*output_channels).max(1),
                 )?)
             })
+        } else if matches!(chip, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16) {
+            feature_backend!("es550x", chip, Box::new(Es550x::new(chip.clone(), clock)?))
         } else if matches!(chip, Chip::Rf5c68 | Chip::Rf5c164) {
             feature_backend!("rf5c", chip, Box::new(Rf5c::new(chip.clone(), clock)?))
         } else if chip == Chip::Saa1099 {
@@ -1469,7 +1473,10 @@ impl<'a> VgmSequencer<'a> {
         let effects = EffectRack::new(backend.channels());
         let output_masks = vec![[true; 2]; backend.channels()];
         let base_coefficients = matrix.coefficients().to_vec();
-        let resampler = if chip == Chip::Es5503 {
+        let resampler = if matches!(
+            chip,
+            Chip::Es5503 | Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16
+        ) {
             StereoResampler::new_adaptive(output_rate, min_rate, max_rate, SRC_CHUNK)?
         } else {
             StereoResampler::new(output_rate, min_rate, max_rate, SRC_CHUNK)?
@@ -1518,6 +1525,9 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Rf5c68
             | Chip::Rf5c164
             | Chip::Es5503
+            | Chip::Es5505
+            | Chip::Es5506U8
+            | Chip::Es5506U16
             | Chip::GbDmg
             | Chip::WonderSwan
             | Chip::Vsu
@@ -2881,7 +2891,7 @@ impl<'a> VgmSequencer<'a> {
         if let Some(voice) = self
             .voices
             .iter_mut()
-            .find(|v| v.chip == chip && v.instance == instance)
+            .find(|v| write.matches_chip(&v.chip) && v.instance == instance)
         {
             let vgm_initial = if source_initial {
                 match voice.route.chip_mut().scheduled() {
@@ -3004,6 +3014,49 @@ impl<'a> VgmSequencer<'a> {
                 usize::from(write.start_address) | voice.rf5c_wave_bank,
                 &write.data,
             )?;
+            return Ok(());
+        }
+        if block.data_type == 0x90 {
+            let Some(voice) = self.voices.iter_mut().find(|voice| {
+                matches!(voice.chip, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16)
+                    && voice.instance == instance
+            }) else {
+                return Ok(());
+            };
+            let DataBlockType::RomRamDump(dump) =
+                parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
+            else {
+                return Err(VgmSequencerError::InvalidRomBlock);
+            };
+            if dump.start_address & 0x4000_0000 != 0 {
+                return Err(VgmSequencerError::InvalidRomBlock);
+            }
+            let region = ((dump.start_address >> 28) & 3) as usize;
+            let offset = (dump.start_address & 0x0fff_ffff) as usize;
+            let end = offset
+                .checked_add(dump.data.len())
+                .ok_or(VgmSequencerError::RomTooLarge)?;
+            if end > dump.rom_size as usize {
+                return Err(VgmSequencerError::InvalidRomBlock);
+            }
+            let eight_bit = dump.start_address & 0x8000_0000 != 0;
+            let width = if eight_bit { 2 } else { 1 };
+            let end = end
+                .checked_mul(width)
+                .ok_or(VgmSequencerError::RomTooLarge)?;
+            if end > MAX_ROM_BYTES {
+                return Err(VgmSequencerError::RomTooLarge);
+            }
+            let start = (region << 28) | (offset * width);
+            if eight_bit {
+                let mut data = Vec::with_capacity(dump.data.len() * 2);
+                for byte in dump.data {
+                    data.extend_from_slice(&[0, byte]);
+                }
+                voice.route.chip_mut().write_rom(start, &data)?;
+            } else {
+                voice.route.chip_mut().write_rom(start, &dump.data)?;
+            }
             return Ok(());
         }
         let (chip, access) = match block.data_type {

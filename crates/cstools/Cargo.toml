@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
-chipstream = { path = "../chipstream", version = "0.1.0", features = ["ay8910", "c140", "c352", "ga20", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "saa1099", "segapcm", "sn76496", "upd7759", "x1010", "ymz280b"] }
+chipstream = { path = "../chipstream", version = "0.1.0", features = ["ay8910", "c140", "c352", "es550x", "ga20", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "saa1099", "segapcm", "sn76496", "upd7759", "x1010", "ymz280b"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 cpal = { version = "0.18.2", features = ["audioworklet"] }

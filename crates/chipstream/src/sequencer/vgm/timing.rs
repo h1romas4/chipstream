@@ -219,6 +219,9 @@ impl Timing {
                     .max(rate.numerator().div_ceil(rate.denominator().get())),
             );
         }
+        if matches!(chip, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16) {
+            return (clock / 512, clock.div_ceil(16));
+        }
         if let Some(changes) = self.clocks.iter().find(|entry| &entry.chip == chip) {
             let (mut min, mut max) =
                 changes.instances[instance as usize].bounds(clock, changes.registers);

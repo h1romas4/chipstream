@@ -5,13 +5,13 @@
 //! preserving chip-specific address widths and values.
 
 use soundlog::chip::{
-    Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, GbDmgSpec,
-    Huc6280Spec, K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec,
-    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, QsoundSpec, Rf5c68U8Spec,
-    Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec,
-    VsuSpec, WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec,
-    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
-    Ymf278bSpec, Ymz280bSpec,
+    Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Es5506U8Spec, Es5506U16Spec, Ga20Spec,
+    GameGearPsgSpec, GbDmgSpec, Huc6280Spec, K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec,
+    MultiPcmSpec, NesApuSpec, Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, QsoundSpec,
+    Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec,
+    Upd7759Spec, VsuSpec, WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec,
+    Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
+    Ymf271Spec, Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -21,6 +21,8 @@ use super::Ay8910;
 use super::C140;
 #[cfg(feature = "c352")]
 use super::C352;
+#[cfg(feature = "es550x")]
+use super::Es550x;
 #[cfg(feature = "es5503")]
 use super::Es5503;
 #[cfg(feature = "ga20")]
@@ -104,6 +106,9 @@ macro_rules! define_writes {
 
         impl ChipRegisterWrite {
             /// Chip type addressed by this write.
+            ///
+            /// ES550x bus writes identify the shared VGM chip as `Es5506U8`;
+            /// use [`Self::matches_chip`] to check the physical variant.
             pub fn chip(&self) -> Chip {
                 match self { $(Self::$variant(_) => Chip::$chip,)+ }
             }
@@ -116,7 +121,7 @@ macro_rules! define_writes {
             /// Extract write parts after checking the target chip.
             pub(crate) fn parts_for(&self, actual: &Chip) -> Result<(u8, u8, u32), ChipError> {
                 let expected = self.chip();
-                if &expected != actual {
+                if !self.matches_chip(actual) {
                     return Err(ChipError::ChipMismatch {
                         expected,
                         actual: actual.clone(),
@@ -143,7 +148,7 @@ macro_rules! define_writes {
                 fn apply_typed_write(&mut self, spec: $spec) -> Result<(), ChipError> {
                     let write = ChipRegisterWrite::$variant(spec);
                     let expected = write.chip();
-                    if self.chip_type() != &expected {
+                    if !write.matches_chip(self.chip_type()) {
                         return Err(ChipError::ChipMismatch {
                             expected,
                             actual: self.chip_type().clone(),
@@ -175,6 +180,8 @@ define_writes! {
         let [bank, register] = s.register.to_be_bytes();
         (bank, register, u32::from(s.value))
     }),
+    Es5506U8(Es5506U8Spec, Es5506U8, |s| (0, s.register, u32::from(s.value))),
+    Es5506U16(Es5506U16Spec, Es5506U8, |s| (0, s.register, u32::from(s.value))),
     Ga20(Ga20Spec, Ga20, |s| (0, s.register, u32::from(s.value))),
     GbDmg(GbDmgSpec, GbDmg, |s| (0, s.register, u32::from(s.value))),
     Vsu(VsuSpec, Vsu, |s| {
@@ -235,6 +242,15 @@ define_writes! {
 }
 
 impl ChipRegisterWrite {
+    /// Return whether this write can target the specified chip type.
+    pub fn matches_chip(&self, actual: &Chip) -> bool {
+        if matches!(self, Self::Es5506U8(_) | Self::Es5506U16(_)) {
+            matches!(actual, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16)
+        } else {
+            &self.chip() == actual
+        }
+    }
+
     /// Convert a supported VGM write command into its typed chip write.
     pub(crate) fn from_vgm_command(command: &VgmCommand) -> Option<(Instance, Self)> {
         use VgmCommand::*;
@@ -245,6 +261,8 @@ impl ChipRegisterWrite {
             C140Write(i, s) => (*i, Self::C140(s.clone())),
             C352Write(i, s) => (*i, Self::C352(s.clone())),
             Es5503Write(i, s) => (*i, Self::Es5503(s.clone())),
+            Es5506BEWrite(i, s) => (*i, Self::Es5506U8(s.clone())),
+            Es5506D6Write(i, s) => (*i, Self::Es5506U16(s.clone())),
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
             GbDmgWrite(i, s) => (*i, Self::GbDmg(s.clone())),
             VsuWrite(i, s) => (*i, Self::Vsu(s.clone())),
@@ -314,6 +332,10 @@ typed_write!(C140, C140Spec, C140);
 typed_write!(C352, C352Spec, C352);
 #[cfg(feature = "es5503")]
 typed_write!(Es5503, Es5503Spec, Es5503);
+#[cfg(feature = "es550x")]
+typed_write!(Es550x, Es5506U8Spec, Es5506U8);
+#[cfg(feature = "es550x")]
+typed_write!(Es550x, Es5506U16Spec, Es5506U16);
 #[cfg(feature = "gb_dmg")]
 typed_write!(GbDmg, GbDmgSpec, GbDmg);
 #[cfg(feature = "vsu")]
