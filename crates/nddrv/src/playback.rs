@@ -1048,6 +1048,7 @@ fn run_preview(
                     Chip::Ym3812 => ChipId::Ym3812,
                     Chip::Ymf262 => ChipId::Ymf262,
                     Chip::Ymf278b => ChipId::Ymf278b,
+                    Chip::WonderSwan => ChipId::WonderSwan,
                     _ => continue,
                 };
                 if let Some(entry) = extra
@@ -1122,8 +1123,8 @@ fn run_preview(
         }};
     }
     use soundlog::chip::{
-        Ay8910Spec, PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
-        Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+        Ay8910Spec, PsgSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
+        Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
     };
     register!(0, Ym2151Spec);
     register!(1, Ym2203Spec);
@@ -1161,6 +1162,7 @@ fn run_preview(
         .port);
     register!(crate::visualizer::SN76489_INDEX, PsgSpec);
     register!(crate::visualizer::AY8910_INDEX, Ay8910Spec);
+    register!(crate::visualizer::WONDERSWAN_INDEX, WonderSwanRegSpec);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -1655,12 +1657,14 @@ impl Sequencer {
         macro_rules! configure {
             ($player:expr) => {{
                 use soundlog::chip::state::{
-                    Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State,
-                    Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+                    Sn76489State, WonderSwanState, Y8950State, Ym2151State, Ym2203State,
+                    Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State,
+                    Ymf262State, Ymf278bState,
                 };
                 use soundlog::chip::{
-                    PsgSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
-                    Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+                    PsgSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
+                    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
+                    Ymf278bSpec,
                 };
                 register!($player, 0, Ym2151Spec, Ym2151State);
                 register!($player, 1, Ym2203Spec, Ym2203State);
@@ -1678,6 +1682,12 @@ impl Sequencer {
                     crate::visualizer::SN76489_INDEX,
                     PsgSpec,
                     Sn76489State
+                );
+                register!(
+                    $player,
+                    crate::visualizer::WONDERSWAN_INDEX,
+                    WonderSwanRegSpec,
+                    WonderSwanState
                 );
             }};
         }
@@ -2408,7 +2418,9 @@ mod tests {
     fn added_chips_use_the_nddrv_software_playback_path() {
         use crate::adapter::{AdapterMode, register_software_adapters};
         use crate::routing::{RoutingPlan, SoftwareTarget, Target};
-        use soundlog::chip::{Es5503Spec, GbDmgSpec, NesApuSpec};
+        use soundlog::chip::{
+            Es5503Spec, GbDmgSpec, NesApuSpec, WonderSwanRegSpec, WonderSwanSpec,
+        };
         use soundlog::vgm::command::{DataBlock, WaitSamples};
 
         let cases = [
@@ -2416,6 +2428,7 @@ mod tests {
             (Chip::Rf5c164, 12_500_000),
             (Chip::Es5503, 7_000_000),
             (Chip::GbDmg, 4_194_304),
+            (Chip::WonderSwan, 3_072_000),
             (Chip::Saa1099, 8_000_000),
             (Chip::K051649, 3_579_545),
             (Chip::Huc6280, 3_579_545),
@@ -2470,6 +2483,21 @@ mod tests {
                     builder.add_chip_write(Instance::Primary, GbDmgSpec { register, value });
                 }
             }
+            if chip == Chip::WonderSwan {
+                for offset in 0..16 {
+                    builder.add_chip_write(
+                        Instance::Primary,
+                        WonderSwanSpec {
+                            offset,
+                            value: 0xff,
+                        },
+                    );
+                }
+                for (register, value) in [(0x11, 7), (0x08, 0xff), (0x10, 1)] {
+                    builder
+                        .add_chip_write(Instance::Primary, WonderSwanRegSpec { register, value });
+                }
+            }
             if clock & 0x8000_0000 != 0 {
                 for (register, value) in [
                     (0x89, 128),
@@ -2509,7 +2537,9 @@ mod tests {
             );
             let block = player.render().unwrap().unwrap();
             assert!(!block.frames().is_empty(), "{chip:?}");
-            if matches!(chip, Chip::Es5503 | Chip::GbDmg) || clock & 0x8000_0000 != 0 {
+            if matches!(chip, Chip::Es5503 | Chip::GbDmg | Chip::WonderSwan)
+                || clock & 0x8000_0000 != 0
+            {
                 assert!(
                     block.frames().iter().any(|frame| frame[0].abs() > 0.001),
                     "{chip:?}"
@@ -5744,6 +5774,107 @@ mod tests {
                     .iter()
                     .flatten()
                     .all(|sample| sample.abs() < 0.00001)
+            );
+        }
+    }
+
+    #[test]
+    fn wonderswan_speaker_playback_and_piano_roll_match_preview() {
+        use soundlog::chip::{WonderSwanRegSpec, WonderSwanSpec};
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wonderswan.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::WonderSwan, Instance::Primary, 3_072_000);
+        for offset in 0..64 {
+            builder.add_chip_write(
+                Instance::Primary,
+                WonderSwanSpec {
+                    offset,
+                    value: 0xff,
+                },
+            );
+        }
+        for channel in 0..4 {
+            for (register, value) in [
+                (channel * 2, 0x26),
+                (channel * 2 + 1, 7),
+                (0x08 + channel, 0xff),
+            ] {
+                builder.add_chip_write(Instance::Primary, WonderSwanRegSpec { register, value });
+            }
+        }
+        for (register, value) in [(0x11, 7), (0x10, 0x8f)] {
+            builder.add_chip_write(Instance::Primary, WonderSwanRegSpec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        builder.add_chip_write(
+            Instance::Primary,
+            WonderSwanRegSpec {
+                register: 0x10,
+                value: 0,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        run_preview(
+            &path,
+            44_100,
+            false,
+            &preview_control,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+        let preview_notes =
+            preview_control
+                .preview
+                .lock()
+                .unwrap()
+                .roll
+                .snapshot(0, 44_100, RollMode::Incoming);
+
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let pending = Rc::new(RefCell::new(Vec::new()));
+        let mut player = Sequencer::new(&path, 44_100, false).unwrap();
+        player.track_visual_events(Rc::clone(&pending));
+        let mut audible = false;
+        while let Some(block) = player.render().unwrap() {
+            audible |= block.frames().iter().any(|frame| frame[0].abs() > 0.01);
+            flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+        }
+        assert!(audible);
+        let playback_notes =
+            control
+                .visualizer
+                .lock()
+                .unwrap()
+                .snapshot(0, 44_100, RollMode::Incoming);
+        let normalize = |notes: Vec<crate::visualizer::Note>| {
+            let mut notes: Vec<_> = notes
+                .into_iter()
+                .map(|n| (n.chip, n.instance, n.channel, n.pitch, n.start, n.end))
+                .collect();
+            notes.sort();
+            notes
+        };
+        let actual = normalize(playback_notes);
+        assert_eq!(normalize(preview_notes), actual);
+        assert_eq!(actual.len(), 3);
+        for (index, note) in actual.iter().enumerate() {
+            assert_eq!(
+                *note,
+                (
+                    crate::visualizer::WONDERSWAN_INDEX,
+                    0,
+                    index as u8,
+                    69,
+                    0,
+                    Some(4_410)
+                )
             );
         }
     }

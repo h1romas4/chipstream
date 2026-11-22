@@ -73,6 +73,8 @@ use crate::chip::SegaPcm;
 use crate::chip::Sn76496;
 #[cfg(feature = "upd7759")]
 use crate::chip::Upd7759;
+#[cfg(feature = "wonderswan")]
+use crate::chip::WonderSwan;
 #[cfg(feature = "x1010")]
 use crate::chip::X1010;
 #[cfg(feature = "ymz280b")]
@@ -515,6 +517,7 @@ impl Voice {
         context: &mut EventContext<'_, '_>,
     ) -> Result<bool, VgmSequencerError> {
         let (bank, register, value) = write.parts();
+        let is_wonderswan_memory = matches!(write, ChipRegisterWrite::WonderSwan(_));
         let is_bank_write = matches!(write, ChipRegisterWrite::MultiPcmBank(_))
             || matches!(&write, ChipRegisterWrite::Upd7759(spec) if spec.register == 3);
         let pending_write = context
@@ -553,7 +556,22 @@ impl Voice {
             self.rf5c_wave_bank = bank;
         }
         let state_events = if let Some(tracker) = self.tracker.as_mut().filter(|_| !is_bank_write) {
-            let changes = if let event::Tracker::C352(state) = tracker {
+            let changes = if let event::Tracker::WonderSwan(state) = tracker {
+                let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                    chip: self.chip.clone(),
+                    register,
+                    value,
+                })?;
+                if is_wonderswan_memory {
+                    state.on_waveform_write(u16::from_be_bytes([bank, register]), narrow)
+                } else {
+                    let (register, value) =
+                        soundlog::chip::state::WonderSwanState::map_vgm_to_wonderswan_register(
+                            register, narrow,
+                        );
+                    state.on_register_write(register, value)
+                }
+            } else if let event::Tracker::C352(state) = tracker {
                 let wide = u16::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
                     chip: self.chip.clone(),
                     register,
@@ -1182,6 +1200,8 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
         } else if chip == Chip::GbDmg {
             feature_backend!("gb_dmg", chip, Box::new(GbDmg::new(clock)?))
+        } else if chip == Chip::WonderSwan {
+            feature_backend!("wonderswan", chip, Box::new(WonderSwan::new(clock)?))
         } else if chip == Chip::Es5503 {
             feature_backend!("es5503", chip, {
                 let ChipBackendSettings::Es5503 { output_channels } = factory_config.settings()
@@ -1458,6 +1478,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Rf5c164
             | Chip::Es5503
             | Chip::GbDmg
+            | Chip::WonderSwan
             | Chip::Saa1099
             | Chip::Huc6280
             | Chip::Ga20
@@ -1815,7 +1836,8 @@ impl<'a> VgmSequencer<'a> {
     /// Enable state tracking for a chip type and instance.
     ///
     /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
-    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, ES5503, and Game Boy DMG.
+    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, ES5503, Game Boy DMG,
+    /// and WonderSwan.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: VgmStateTracker,

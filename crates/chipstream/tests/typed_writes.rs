@@ -85,6 +85,11 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Pokey(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ga20(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::GbDmg(s) => (0, s.register, s.value.into()),
+            ChipRegisterWrite::WonderSwan(s) => {
+                let [bank, register] = s.offset.to_be_bytes();
+                (bank, register, s.value.into())
+            }
+            ChipRegisterWrite::WonderSwanReg(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::K053260(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::K054539(s) => {
                 let [bank, register] = s.register.to_be_bytes();

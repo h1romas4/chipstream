@@ -20,6 +20,7 @@
 - Fix: Parse and serialize VGM PCM RAM copies with fixed length, little-endian offsets, and the correct chip instance.
 - Fix: Preserve RAM write block timing in `VgmBuilder`, and correct RF5C68/164 memory address byte order and secondary register selection.
 - Fix: Map Game Boy VGM wave RAM and unused register offsets to their actual I/O addresses for state tracking.
+- Fix: Track WonderSwan wavetable frequencies, channel enables, volume and tone modes correctly, including simultaneous channel changes.
 
 ## Planned
 

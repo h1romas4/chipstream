@@ -17,9 +17,8 @@ const WONDERSWAN_CHANNELS: usize = 4;
 /// - 16-bit memory offset writes (mm ll dd)
 /// - 8-bit register writes (aa dd)
 ///
-/// We store both forms: a small array for 8-bit register writes and a sparse
-/// map for 16-bit memory writes. When reading a register we prefer the
-/// 16-bit memory value (if present) and fall back to the 8-bit register map.
+/// We store both forms independently: a small array for registers and a
+/// sparse map for waveform memory.
 #[derive(Debug, Clone, Default)]
 struct WonderSwanStorage {
     reg: ArrayStorage<u8, 256>,
@@ -37,8 +36,7 @@ impl WonderSwanStorage {
         self.mem.write(offset, value);
     }
 
-    /// Read a logical 8-bit register value. Prefer 16-bit memory value if present
-    /// at the matching 16-bit offset (0x00XX), otherwise fall back to 8-bit regs.
+    /// Read a logical 8-bit register value.
     fn read(&self, register: u8) -> Option<u8> {
         self.reg.read(register)
     }
@@ -104,62 +102,38 @@ impl WonderSwanState {
         }
     }
 
-    /// Handle volume register write (0x88-0x8B)
-    fn handle_volume_register(&mut self, channel: u8, value: u8) -> Option<Vec<StateEvent>> {
-        // Volume is stored in the register we just wrote
-        // For channel 0/2: bits 0-3=right, bits 4-7=left
-        // For channel 1/3: bits 8-11=right, bits 12-15=left (but we get only low byte here)
-        // We need to check the stored value
-        let vol_left = (value >> 4) & 0x0F;
-        let vol_right = value & 0x0F;
-
-        let has_volume = vol_left > 0 || vol_right > 0;
-
-        if has_volume && self.channels[channel as usize].key_state == KeyState::Off {
-            // Key on
-            self.channels[channel as usize].key_state = KeyState::On;
-            let tone = self.extract_tone(channel as usize);
-            Some(vec![StateEvent::KeyOn { channel, tone }])
-        } else if !has_volume && self.channels[channel as usize].key_state == KeyState::On {
-            // Key off
-            self.channels[channel as usize].key_state = KeyState::Off;
-            Some(vec![StateEvent::KeyOff { channel }])
-        } else {
-            None
+    fn update_channel(&mut self, channel: usize) -> Option<StateEvent> {
+        let control = self.registers.read(0x90).unwrap_or(0);
+        let tone_mode =
+            !(channel == 1 && control & 0x20 != 0 || channel == 3 && control & 0x80 != 0);
+        let on = control & (1 << channel) != 0 && tone_mode && self.has_volume(channel);
+        let was_on = self.channels[channel].key_state == KeyState::On;
+        if on == was_on {
+            return None;
         }
+        self.channels[channel].key_state = if on { KeyState::On } else { KeyState::Off };
+        Some(if on {
+            StateEvent::KeyOn {
+                channel: channel as u8,
+                tone: self.extract_tone(channel),
+            }
+        } else {
+            StateEvent::KeyOff {
+                channel: channel as u8,
+            }
+        })
     }
 
-    /// Handle audio control register write (0x90)
-    fn handle_audio_control(&mut self, value: u8) -> Option<Vec<StateEvent>> {
-        // Check each channel's enable bit
-        for channel in 0..WONDERSWAN_CHANNELS {
-            let on = (value & (1 << channel)) != 0;
-
-            if on && self.channels[channel].key_state == KeyState::Off {
-                // Check if channel has volume
-                let has_volume = self.has_volume(channel);
-                if has_volume {
-                    self.channels[channel].key_state = KeyState::On;
-                    let tone = self.extract_tone(channel);
-                    return Some(vec![StateEvent::KeyOn {
-                        channel: channel as u8,
-                        tone,
-                    }]);
-                }
-            } else if !on && self.channels[channel].key_state == KeyState::On {
-                self.channels[channel].key_state = KeyState::Off;
-                return Some(vec![StateEvent::KeyOff {
-                    channel: channel as u8,
-                }]);
-            }
-        }
-
-        None
+    fn update_channels(&mut self) -> Option<Vec<StateEvent>> {
+        let events: Vec<_> = (0..WONDERSWAN_CHANNELS)
+            .filter_map(|channel| self.update_channel(channel))
+            .collect();
+        (!events.is_empty()).then_some(events)
     }
 
     /// Check if a channel has non-zero volume
     fn has_volume(&self, channel: usize) -> bool {
-        let register = 0x88 + ((channel >> 1) as u8);
+        let register = 0x88 + channel as u8;
         // Read from global register storage
         if let Some(vol_reg) = self.registers.read(register) {
             let vol_left = (vol_reg >> 4) & 0x0F;
@@ -181,11 +155,11 @@ impl WonderSwanState {
         let freq = freq_low | ((freq_high & 0x07) << 8);
 
         // Calculate frequency from freq value
-        // WonderSwan formula: actual_freq = master_clock / (128 * (2048 - freq))
+        // A 32-sample waveform advances once per (2048 - freq) master clocks.
         // period = 2048 - freq
         let period = 2048 - freq;
         let freq_hz = if period > 0 {
-            Some(self.master_clock_hz / (128.0f32 * period as f32))
+            Some(self.master_clock_hz / (32.0f32 * period as f32))
         } else {
             None
         };
@@ -193,7 +167,7 @@ impl WonderSwanState {
         ToneInfo::new(freq, 0, freq_hz)
     }
 
-    /// Map a VGM-style (port, register, value) tuple into the internal GbDmg
+    /// Map a VGM register offset and value into the internal WonderSwan
     /// register space used by `WonderSwanState`.
     pub fn map_vgm_to_wonderswan_register(register: u8, value: u8) -> (u8, u8) {
         let mapped_register = register.wrapping_add(0x80);
@@ -203,7 +177,7 @@ impl WonderSwanState {
     /// Handle a write after the storage has been updated. `register` is the
     /// logical 8-bit register (low byte of any 16-bit offset) and `value` is
     /// the byte written.
-    fn handle_write(&mut self, register: u8, value: u8) -> Option<Vec<StateEvent>> {
+    fn handle_write(&mut self, register: u8, _value: u8) -> Option<Vec<StateEvent>> {
         match register {
             // Frequency registers (0x80-0x87)
             0x80..=0x87 => {
@@ -212,12 +186,11 @@ impl WonderSwanState {
                 self.handle_frequency_register(channel)
             }
             // Volume registers (0x88-0x8B)
-            0x88 => self.handle_volume_register(0, value),
-            0x89 => self.handle_volume_register(1, value),
-            0x8A => self.handle_volume_register(2, value),
-            0x8B => self.handle_volume_register(3, value),
+            0x88..=0x8b => self
+                .update_channel(usize::from(register - 0x88))
+                .map(|event| vec![event]),
             // Audio control register (0x90)
-            0x90 => self.handle_audio_control(value),
+            0x90 => self.update_channels(),
             _ => None,
         }
     }
@@ -277,10 +250,8 @@ mod tests {
         state.on_register_write(0x80, 0x00);
         state.on_register_write(0x81, 0x04);
 
-        // Set volume for channel 0 (left=8, right=8)
+        state.on_register_write(0x90, 1);
         let event = state.on_register_write(0x88, 0x88);
-
-        // Volume change should trigger key on
         assert!(event.is_some());
         let events = event.as_ref().unwrap();
         assert_eq!(events.len(), 1);
@@ -297,9 +268,6 @@ mod tests {
 
         // Set volume for channel 0
         state.on_register_write(0x88, 0x88);
-
-        // Reset state for this test
-        state.channels[0].key_state = KeyState::Off;
 
         // Enable channel 0 via control register
         let event = state.on_register_write(0x90, 0x01);
@@ -369,6 +337,15 @@ mod tests {
     }
 
     #[test]
+    fn control_uses_each_channels_own_volume() {
+        let mut state = WonderSwanState::new(3_072_000.0);
+        state.on_register_write(0x8a, 0x66);
+        state.on_register_write(0x90, 0);
+        let events = state.on_register_write(0x90, 4).unwrap();
+        assert!(matches!(events[0], StateEvent::KeyOn { channel: 2, .. }));
+    }
+
+    #[test]
     fn test_wonderswan_reset() {
         let mut state = WonderSwanState::new(3_072_000.0f32);
 
@@ -390,6 +367,7 @@ mod tests {
         state.on_register_write(0x80, 0x00);
         state.on_register_write(0x81, 0x04);
         state.on_register_write(0x88, 0x88);
+        state.on_register_write(0x90, 1);
 
         // Disable by setting volume to 0
         let event = state.on_register_write(0x88, 0x00);
@@ -398,5 +376,23 @@ mod tests {
         let events = event.as_ref().unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], StateEvent::KeyOff { channel: 0 }));
+    }
+
+    #[test]
+    fn simultaneous_channels_and_voice_noise_modes() {
+        let mut state = WonderSwanState::new(3_072_000.0);
+        for register in 0x88..=0x8b {
+            assert!(state.on_register_write(register, 0xff).is_none());
+        }
+        let events = state.on_register_write(0x90, 0x0f).unwrap();
+        assert_eq!(events.len(), 4);
+        let events = state.on_register_write(0x90, 0xaf).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StateEvent::KeyOff { channel: 1 }));
+        assert!(matches!(events[1], StateEvent::KeyOff { channel: 3 }));
+        let events = state.on_register_write(0x90, 0).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StateEvent::KeyOff { channel: 0 }));
+        assert!(matches!(events[1], StateEvent::KeyOff { channel: 2 }));
     }
 }

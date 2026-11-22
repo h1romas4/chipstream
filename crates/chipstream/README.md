@@ -62,6 +62,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `saa1099` | SAA1099 | MAME | BSD-3-Clause |
 | `segapcm` | SegaPCM | MAME | BSD-3-Clause |
 | `sn76496` | SN76489 / SN76496 | MAME | BSD-3-Clause |
+| `wonderswan` | WonderSwan | MAME, via Tetorica | BSD-3-Clause |
 | `x1010` | Seta X1-010 | MAME | BSD-3-Clause |
 | `ymz280b` | Yamaha YMZ280B | MAME | BSD-3-Clause |
 

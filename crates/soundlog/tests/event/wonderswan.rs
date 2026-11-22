@@ -19,11 +19,11 @@ fn test_wonderswan_keyon_and_tone_freq_matches_a4() {
     let target_hz = 440.0_f32;
 
     // WonderSwan formula from state implementation:
-    //   freq_hz = master_clock / (128 * (2048 - freq))
+    //   freq_hz = master_clock / (32 * (2048 - freq))
     // Solve for freq:
-    //   period = master_clock / (128 * target_hz)
+    //   period = master_clock / (32 * target_hz)
     //   freq = 2048 - period
-    let period_f = (WONDERSWAN_MASTER_CLOCK / (128.0_f32 * target_hz)).round();
+    let period_f = (WONDERSWAN_MASTER_CLOCK / (32.0_f32 * target_hz)).round();
     assert!(
         (1.0..2048.0).contains(&period_f),
         "computed period out of range"
@@ -106,7 +106,6 @@ fn test_wonderswan_keyon_and_tone_freq_matches_a4() {
     );
 
     // Enable channel 0 via audio control register (register 0x90 bit0)
-    // WonderSwan[Primary] 0x90=0x4F KeyOn(ch=3, fnum=0x748(1864), freq=130.43Hz)
     builder.add_chip_write(
         Instance::Primary,
         chip::WonderSwanRegSpec {
@@ -167,7 +166,7 @@ fn test_wonderswan_keyon_and_tone_freq_matches_a4() {
     let freq_val: u16 = (low as u16) | (((high & 0x07) as u16) << 8);
     let period = 2048u16.saturating_sub(freq_val);
     let expected_hz = if period > 0 {
-        WONDERSWAN_MASTER_CLOCK / (128.0_f32 * period as f32)
+        WONDERSWAN_MASTER_CLOCK / (32.0_f32 * period as f32)
     } else {
         0.0_f32
     };
@@ -180,4 +179,5 @@ fn test_wonderswan_keyon_and_tone_freq_matches_a4() {
         expected_hz,
         diff
     );
+    assert!((freq_hz - target_hz).abs() <= WONDERSWAN_TOLERANCE_HZ);
 }
