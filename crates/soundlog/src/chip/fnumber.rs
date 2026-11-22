@@ -487,15 +487,15 @@ impl ChipTypeSpec for OplSpec {
 ///
 /// # Frequency formula
 ///
-/// OPX (YMF271) uses 12-bit F-numbers, a 3-bit block (octave 0–7), and the
-/// standard OPL-family formula:
+/// OPX uses a 12-bit F-number and a signed four-bit block (-8 to 7):
 ///
 /// ```text
-/// freq = F-num × Fclk / (288 × 2^(20 − Block))
+/// freq = F-num × Fclk / (384 × 2^(21 − signed_block))
 /// ```
 ///
-/// This is structurally identical to the OPL3 formula, but with a 12-bit
-/// F-number (vs. 10-bit for OPL3) and a higher master clock.
+/// This is the fundamental with operator multiplier 1, without detune or LFO.
+/// Block arguments are raw four-bit register values. Table generation uses
+/// the nonnegative range 0–7.
 ///
 /// # Reference clock
 ///
@@ -511,9 +511,7 @@ impl ChipTypeSpec for OpxSpec {
     fn config() -> ChipTypeConfig {
         ChipTypeConfig {
             fnum_bits: 12,
-            block_bits: 3,
-            // Block 4 keeps A4's F-number (~490) comfortably within the
-            // 12-bit range while preserving adequate tuning resolution.
+            block_bits: 4,
             a4_block: 4,
             prescaler: 1.0f32,
         }
@@ -529,19 +527,19 @@ impl ChipTypeSpec for OpxSpec {
         }
         let spec = Self::config();
         let max_fnum = (1u32 << spec.fnum_bits) - 1;
-        if f_num > max_fnum {
+        if f_num > max_fnum || block > 15 {
             return Err(FNumberError::InvalidInput);
         }
-        // freq = fnum × Fclk / (288 × 2^(20 − block))
-        let freq = (f_num as f32) * master_clock_hz / (288.0f32 * 2_f32.powi(20 - block as i32));
+        let signed_block = i32::from(block) - if block & 8 != 0 { 16 } else { 0 };
+        let freq = (f_num as f32) * master_clock_hz / (384.0 * 2_f32.powi(21 - signed_block));
         Ok(freq)
     }
 
     fn ideal_fnum_for_freq(target_freq: f32, block: u8, master_clock_hz: f32) -> f32 {
-        // fnum = target_freq × 288 × 2^(20 − block) / Fclk
-        let exp = 20_i32 - (block as i32);
+        let signed_block = i32::from(block) - if block & 8 != 0 { 16 } else { 0 };
+        let exp = 21 - signed_block;
         let denom_pow = 2_f32.powi(exp);
-        target_freq * 288.0f32 * denom_pow / master_clock_hz
+        target_freq * 384.0 * denom_pow / master_clock_hz
     }
 
     fn default_master_clock() -> f32 {

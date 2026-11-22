@@ -65,10 +65,15 @@ YMFM chips are always available. Optional features are disabled by default:
 | `vsu` | Virtual Boy VSU | Rustual Boy | MIT |
 | `wonderswan` | WonderSwan | MAME, via Tetorica | BSD-3-Clause |
 | `x1010` | Seta X1-010 | MAME | BSD-3-Clause |
+| `ymf271` | Yamaha YMF271 | MAME | BSD-3-Clause |
 | `ymz280b` | Yamaha YMZ280B | MAME | BSD-3-Clause |
 
 See [third-party notices](THIRD_PARTY_NOTICES.md) for source revisions and
 license terms.
+
+YMF271 follows MAME's approximations: PFM is ignored and alternate PCM looping
+is rejected. The VGM stereo mix uses CH0/CH1; the native backend exposes all
+eight outputs.
 
 Enable the chips your application needs, for example:
 

@@ -17,6 +17,7 @@ pub const HUC6280_INDEX: u8 = K051649_INDEX + 1;
 pub const POKEY_INDEX: u8 = HUC6280_INDEX + 1;
 pub const GB_DMG_INDEX: u8 = POKEY_INDEX + 1;
 pub const NES_APU_INDEX: u8 = GB_DMG_INDEX + 1;
+pub const YMF271_INDEX: u8 = NES_APU_INDEX + 1;
 const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
@@ -255,6 +256,8 @@ pub fn tracked_chip(chip: &chipstream::sequencer::Chip) -> Option<(u8, u8)> {
         Some((GB_DMG_INDEX, 3))
     } else if matches!(chip, chipstream::sequencer::Chip::NesApu) {
         Some((NES_APU_INDEX, 6))
+    } else if matches!(chip, chipstream::sequencer::Chip::Ymf271) {
+        Some((YMF271_INDEX, 48))
     } else {
         Some((
             crate::fm_mute::chip_index(chip)? as u8,

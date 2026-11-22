@@ -15,7 +15,7 @@ use soundlog::chip::state::{
     K053260State, K054539State, MultiPcmState, NesApuState, PokeyState, Saa1099State, Sn76489State,
     Upd7759State, VsuState, WonderSwanState, X1010State, Y8950State, Ym2151State, Ym2203State,
     Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State,
-    Ymf278bState, Ymz280bState,
+    Ymf271State, Ymf278bState, Ymz280bState,
 };
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, GbDmgSpec,
@@ -23,8 +23,8 @@ use soundlog::chip::{
     Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec,
     Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, VsuSpec,
     WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
-    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
-    Ymz280bSpec,
+    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
+    Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::Instance;
 
@@ -120,6 +120,7 @@ impl_write_callback_target!(Ym2608Spec, Ym2608);
 impl_write_callback_target!(Ym2610Spec, Ym2610);
 impl_write_callback_target!(Ymf262Spec, Ymf262);
 impl_write_callback_target!(Ymf278bSpec, Ymf278b);
+impl_write_callback_target!(Ymf271Spec, Ymf271);
 
 /// Supported sound-chip state types for [`VgmSequencer::track_state`].
 #[doc(hidden)]
@@ -153,6 +154,7 @@ pub enum VgmStateTrackerKind {
     Y8950,
     Ym3812,
     Ymf262,
+    Ymf271,
     Ymf278b,
 }
 
@@ -200,6 +202,7 @@ impl_state_tracker!(Ym3526State, Ym3526);
 impl_state_tracker!(Y8950State, Y8950);
 impl_state_tracker!(Ym3812State, Ym3812);
 impl_state_tracker!(Ymf262State, Ymf262);
+impl_state_tracker!(Ymf271State, Ymf271);
 impl_state_tracker!(Ymf278bState, Ymf278b);
 
 /// Maximum number of callback events buffered ahead of returned PCM.
@@ -474,6 +477,7 @@ pub(super) enum Tracker {
     Y8950(Y8950State),
     Ym3812(Ym3812State),
     Ymf262(Ymf262State),
+    Ymf271(Box<Ymf271State>),
     Ymf278b(Ymf278bState),
 }
 
@@ -549,6 +553,10 @@ impl Tracker {
                 state.set_port(port);
                 state.on_register_write(register, value)
             }
+            Self::Ymf271(state) => {
+                state.set_port(port);
+                state.on_register_write(register, value)
+            }
             Self::Ymf278b(state) => {
                 state.set_port(port);
                 state.on_register_write(register, value)
@@ -588,6 +596,7 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
         VgmStateTrackerKind::Y8950 => Chip::Y8950,
         VgmStateTrackerKind::Ym3812 => Chip::Ym3812,
         VgmStateTrackerKind::Ymf262 => Chip::Ymf262,
+        VgmStateTrackerKind::Ymf271 => Chip::Ymf271,
         VgmStateTrackerKind::Ymf278b => Chip::Ymf278b,
     }
 }
@@ -631,6 +640,7 @@ pub(super) fn tracker(
         VgmStateTrackerKind::Y8950 => Tracker::Y8950(Y8950State::new(clock)),
         VgmStateTrackerKind::Ym3812 => Tracker::Ym3812(Ym3812State::new(clock)),
         VgmStateTrackerKind::Ymf262 => Tracker::Ymf262(Ymf262State::new(clock)),
+        VgmStateTrackerKind::Ymf271 => Tracker::Ymf271(Box::new(Ymf271State::new(clock))),
         VgmStateTrackerKind::Ymf278b => Tracker::Ymf278b(Ymf278bState::new(clock)),
     }
 }

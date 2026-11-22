@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show YMF271 FM voices in Piano Roll previews and playback.
 - Correct YM2151 stereo positioning for NanoDrive 8 playback and MAME.
 
 ## v0.15.0

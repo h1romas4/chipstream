@@ -1680,7 +1680,10 @@ impl<'a> VgmCallbackStream<'a> {
             VgmCommand::Ymf271Write(instance, spec) => {
                 let event = self.state_trackers.ymf271[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.register, spec.value));
+                    .and_then(|state| {
+                        state.set_port(spec.port);
+                        state.on_register_write(spec.register, spec.value)
+                    });
                 if let Some(ref mut cb) = self.callbacks.on_ymf271_write {
                     cb(*instance, spec.clone(), sample, event);
                 }

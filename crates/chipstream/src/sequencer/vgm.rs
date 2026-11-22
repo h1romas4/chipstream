@@ -79,6 +79,8 @@ use crate::chip::Vsu;
 use crate::chip::WonderSwan;
 #[cfg(feature = "x1010")]
 use crate::chip::X1010;
+#[cfg(feature = "ymf271")]
+use crate::chip::Ymf271;
 #[cfg(feature = "ymz280b")]
 use crate::chip::Ymz280b;
 #[cfg(feature = "c140")]
@@ -739,7 +741,7 @@ impl Voice {
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
 /// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, RF5C68/164, SAA1099,
-/// K051649, K053260, K054539, X1-010, YMZ280B, MultiPCM, uPD7759, HuC6280, POKEY, GA20, C352, and
+/// K051649, K053260, K054539, X1-010, YMF271, YMZ280B, MultiPCM, uPD7759, HuC6280, POKEY, GA20, C352, and
 /// C140/219. The non-YMFM chips require their corresponding Cargo features;
 /// a chip declared in the header without its feature returns
 /// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
@@ -751,6 +753,8 @@ impl Voice {
 /// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag is accepted
 /// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
 /// behavior; native 3-bit ADPCM decoding is not implemented.
+/// YMF271 follows MAME's approximation: PFM is ignored, alternate PCM looping
+/// is rejected, and only its first two native outputs are routed to stereo.
 /// The built-in OKIM6258 backend queues direct data and DAC-stream writes in
 /// arrival order and applies a 20 Hz DC blocker. The queue is bounded; an
 /// overflow returns an error. Custom backends define their own behavior.
@@ -1263,6 +1267,8 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("x1010", chip, Box::new(X1010::new(clock)?))
         } else if chip == Chip::Ymz280b {
             feature_backend!("ymz280b", chip, Box::new(Ymz280b::new(clock)?))
+        } else if chip == Chip::Ymf271 {
+            feature_backend!("ymf271", chip, Box::new(Ymf271::new(clock)?))
         } else if chip == Chip::MultiPcm {
             feature_backend!("multipcm", chip, Box::new(MultiPcm::new(clock)?))
         } else if chip == Chip::Mikey {
@@ -1400,6 +1406,16 @@ impl<'a> VgmSequencer<'a> {
             Chip::Ym2608 | Chip::Ym2610b => vec![[main, 0.0], [0.0, main], [paired, paired]],
             Chip::Ym2413 => vec![[main, main]; 2],
             Chip::Ymf262 => vec![[main, 0.0], [0.0, main], [main, 0.0], [0.0, main]],
+            Chip::Ymf271 => vec![
+                [main, 0.0],
+                [0.0, main],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
             Chip::C352 => {
                 let rear = if header.c352_clock & 0x8000_0000 != 0 {
                     0.0
@@ -1472,6 +1488,7 @@ impl<'a> VgmSequencer<'a> {
             Chip::Ym2203 | Chip::Ymf262 | Chip::C352 => 4,
             Chip::Ym2608 | Chip::Ym2610b => 3,
             Chip::Ymf278b => 6,
+            Chip::Ymf271 => 8,
             Chip::Ym2413
             | Chip::Ym2151
             | Chip::Ym2612
@@ -1934,6 +1951,16 @@ impl<'a> VgmSequencer<'a> {
             Chip::Ym2413 => &[Melodic, Rhythm],
             Chip::Ymf262 | Chip::C352 => &[Left, Right, LeftAux, RightAux],
             Chip::Ymf278b => &[Unmixed(0), Unmixed(1), Unmixed(2), Unmixed(3), Left, Right],
+            Chip::Ymf271 => &[
+                Left,
+                Right,
+                LeftAux,
+                RightAux,
+                Unmixed(4),
+                Unmixed(5),
+                Unmixed(6),
+                Unmixed(7),
+            ],
             _ if voice.output_gains.len() == 1 => &[Mono],
             _ => &[Left, Right],
         })
@@ -2959,6 +2986,7 @@ impl<'a> VgmSequencer<'a> {
             0x8c => (Chip::K054539, None),
             0x91 => (Chip::X1010, None),
             0x86 => (Chip::Ymz280b, None),
+            0x85 => (Chip::Ymf271, None),
             0x89 => (Chip::MultiPcm, None),
             0x8a => (Chip::Upd7759, None),
             0x81 => (Chip::Ym2608, Some(AccessClass::AdpcmB)),

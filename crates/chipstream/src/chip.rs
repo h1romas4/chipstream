@@ -66,6 +66,8 @@ mod wonderswan;
 mod write;
 #[cfg(feature = "x1010")]
 mod x1010;
+#[cfg(feature = "ymf271")]
+mod ymf271;
 mod ymfm;
 #[cfg(feature = "ymz280b")]
 mod ymz280b;
@@ -130,6 +132,8 @@ pub use wonderswan::WonderSwan;
 pub use write::{ChipRegisterWrite, ChipWrite};
 #[cfg(feature = "x1010")]
 pub use x1010::X1010;
+#[cfg(feature = "ymf271")]
+pub use ymf271::Ymf271;
 pub use ymfm::YmfmChip;
 #[cfg(feature = "ymz280b")]
 pub use ymz280b::Ymz280b;
@@ -453,7 +457,8 @@ impl<T: Any> SoundChipState for T {
     feature = "vsu",
     feature = "wonderswan",
     feature = "x1010",
-    feature = "ymz280b"
+    feature = "ymz280b",
+    feature = "ymf271"
 ))]
 /// Capture a cloneable backend as a type-erased state snapshot.
 pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipState> {
@@ -484,7 +489,8 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "vsu",
     feature = "wonderswan",
     feature = "x1010",
-    feature = "ymz280b"
+    feature = "ymz280b",
+    feature = "ymf271"
 ))]
 /// Restore a cloneable backend after checking the snapshot's concrete type.
 pub(crate) fn restore_cloned_state<T: Clone + Any>(

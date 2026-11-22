@@ -38,6 +38,7 @@ vsu = []
 wonderswan = []
 x1010 = []
 ymz280b = []
+ymf271 = []
 
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }

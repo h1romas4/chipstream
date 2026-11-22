@@ -123,6 +123,7 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Ym2610(s) => (s.port, s.register, s.value.into()),
             ChipRegisterWrite::Ymf262(s) => (s.port, s.register, s.value.into()),
             ChipRegisterWrite::Ymf278b(s) => (s.port, s.register, s.value.into()),
+            ChipRegisterWrite::Ymf271(s) => (s.port, s.register, s.value.into()),
         };
         self.writes.borrow_mut().push(fields);
         Ok(())

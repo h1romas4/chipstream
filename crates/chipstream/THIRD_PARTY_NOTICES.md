@@ -1,3 +1,10 @@
+# YMF271 implementation
+
+The YMF271 implementation is based on MAME's `ymf271.cpp`, revision
+`367a7f677a86d4806b5f808978590de5463eb90a`.
+Copyright (c) superctr. It is distributed under the BSD-3-Clause terms
+reproduced in the C352 section below.
+
 # Virtual Boy VSU implementation
 
 The VSU implementation is based on

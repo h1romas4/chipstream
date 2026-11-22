@@ -1048,6 +1048,7 @@ fn run_preview(
                     Chip::Ym3812 => ChipId::Ym3812,
                     Chip::Ymf262 => ChipId::Ymf262,
                     Chip::Ymf278b => ChipId::Ymf278b,
+                    Chip::Ymf271 => ChipId::Ymf271,
                     Chip::WonderSwan => ChipId::WonderSwan,
                     Chip::Vsu => ChipId::Vsu,
                     Chip::Saa1099 => ChipId::Saa1099,
@@ -1133,7 +1134,7 @@ fn run_preview(
     use soundlog::chip::{
         Ay8910Spec, GbDmgSpec, Huc6280Spec, NesApuSpec, PokeySpec, PsgSpec, Saa1099Spec, Scc1Spec,
         VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec,
-        Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+        Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec, Ymf278bSpec,
     };
     register!(0, Ym2151Spec);
     register!(1, Ym2203Spec);
@@ -1179,6 +1180,7 @@ fn run_preview(
     register!(crate::visualizer::POKEY_INDEX, PokeySpec);
     register!(crate::visualizer::GB_DMG_INDEX, GbDmgSpec);
     register!(crate::visualizer::NES_APU_INDEX, NesApuSpec);
+    register!(crate::visualizer::YMF271_INDEX, Ymf271Spec);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -1676,13 +1678,13 @@ impl Sequencer {
                     GbDmgState, Huc6280State, K051649State, NesApuState, PokeyState, Saa1099State,
                     Sn76489State, VsuState, WonderSwanState, Y8950State, Ym2151State, Ym2203State,
                     Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State,
-                    Ymf262State, Ymf278bState,
+                    Ymf262State, Ymf271State, Ymf278bState,
                 };
                 use soundlog::chip::{
                     GbDmgSpec, Huc6280Spec, NesApuSpec, PokeySpec, PsgSpec, Saa1099Spec, Scc1Spec,
                     VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
                     Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
-                    Ymf278bSpec,
+                    Ymf271Spec, Ymf278bSpec,
                 };
                 register!($player, 0, Ym2151Spec, Ym2151State);
                 register!($player, 1, Ym2203Spec, Ym2203State);
@@ -1743,6 +1745,12 @@ impl Sequencer {
                     crate::visualizer::NES_APU_INDEX,
                     NesApuSpec,
                     NesApuState
+                );
+                register!(
+                    $player,
+                    crate::visualizer::YMF271_INDEX,
+                    Ymf271Spec,
+                    Ymf271State
                 );
             }};
         }
@@ -6001,6 +6009,96 @@ mod tests {
                 assert_eq!(notes[0].5, Some(4410), "{chip:?}, FDS={fds}");
             }
         }
+    }
+
+    #[test]
+    fn ymf271_playback_and_piano_roll_match_preview() {
+        use soundlog::chip::Ymf271Spec;
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ymf271.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ymf271, Instance::Primary, 16_934_400);
+        for (port, register, value) in [
+            (6, 0, 3),
+            (0, 0xb0, 7),
+            (0, 0xa0, 0x45),
+            (0, 0x90, 0x1c),
+            (0, 0, 1),
+            (2, 0x30, 1),
+            (2, 0x50, 31),
+            (2, 0x80, 15),
+            (2, 0xd0, 0x0f),
+            (2, 0xa0, 0x45),
+            (2, 0x90, 0x1c),
+            (2, 0, 1),
+        ] {
+            builder.add_chip_write(
+                Instance::Primary,
+                Ymf271Spec {
+                    port,
+                    register,
+                    value,
+                },
+            );
+        }
+        builder.add_vgm_command(WaitSamples(4_410));
+        builder.add_chip_write(
+            Instance::Primary,
+            Ymf271Spec {
+                port: 2,
+                register: 0,
+                value: 0,
+            },
+        );
+        builder.add_vgm_command(WaitSamples(100));
+        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+
+        let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        run_preview(
+            &path,
+            44_100,
+            false,
+            &preview_control,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+        let preview =
+            preview_control
+                .preview
+                .lock()
+                .unwrap()
+                .roll
+                .snapshot(0, 44_100, RollMode::Incoming);
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        let pending = Rc::new(RefCell::new(Vec::new()));
+        let mut player = Sequencer::new(&path, 44_100, false).unwrap();
+        player.track_visual_events(Rc::clone(&pending));
+        let mut audible = false;
+        while let Some(block) = player.render().unwrap() {
+            audible |= block.frames().iter().any(|frame| frame[0].abs() > 0.01);
+            flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+        }
+        let playback = control
+            .visualizer
+            .lock()
+            .unwrap()
+            .snapshot(0, 44_100, RollMode::Incoming);
+        let normalize = |notes: Vec<crate::visualizer::Note>| {
+            notes
+                .into_iter()
+                .map(|n| (n.chip, n.instance, n.channel, n.pitch, n.start, n.end))
+                .collect::<Vec<_>>()
+        };
+        assert!(audible);
+        let notes = normalize(playback);
+        assert_eq!(normalize(preview), notes);
+        assert_eq!(
+            notes,
+            [(crate::visualizer::YMF271_INDEX, 0, 24, 69, 0, Some(4_410))]
+        );
     }
 
     #[test]

@@ -585,7 +585,7 @@ detecting key on/off events and extracting tone information from register writes
 | **Y8950** | 9 FM + ADPCM | ✅ | ✅ | MSX | ✅ |
 | **YMf262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ✅ |
 | **YMF278b (OPL4)** | 18 FM + PCM | ✅ | ✅ | YMF278B | ✅ |
-| **YMF271 (OPX)** | 12 FM + PCM | ✅ | ✅ | YMF271 | NOT WORKING |
+| **YMF271 (OPX)** | 12 groups / 48 slots | ✅ | ✅ | YMF271 | FM voices; PCM not tracked |
 | **K051649** | 5 | ✅ | ✅ | Konami SCC | ✅ |
 | **SCC1 (K052539)** | 5 | ✅ | ✅ | Konami SCC (same as K051649) | ✅ |
 | **YMZ280b** | N/A | N/A | N/A | YMZ280B PCM | - |

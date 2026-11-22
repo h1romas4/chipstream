@@ -10,8 +10,8 @@ use soundlog::chip::{
     Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec,
     Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, VsuSpec,
     WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
-    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
-    Ymz280bSpec,
+    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
+    Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -61,6 +61,8 @@ use super::Vsu;
 use super::WonderSwan;
 #[cfg(feature = "x1010")]
 use super::X1010;
+#[cfg(feature = "ymf271")]
+use super::Ymf271;
 #[cfg(feature = "ymz280b")]
 use super::Ymz280b;
 use super::{ChipError, SoundChip, YmfmChip};
@@ -224,6 +226,7 @@ define_writes! {
     Ym2610(Ym2610Spec, Ym2610b, |s| (s.port, s.register, u32::from(s.value))),
     Ymf262(Ymf262Spec, Ymf262, |s| (s.port, s.register, u32::from(s.value))),
     Ymf278b(Ymf278bSpec, Ymf278b, |s| (s.port, s.register, u32::from(s.value))),
+    Ymf271(Ymf271Spec, Ymf271, |s| (s.port, s.register, u32::from(s.value))),
 }
 
 impl ChipRegisterWrite {
@@ -272,6 +275,7 @@ impl ChipRegisterWrite {
             Y8950Write(i, s) => (*i, Self::Y8950(s.clone())),
             Ymf262Write(i, s) => (*i, Self::Ymf262(s.clone())),
             Ymf278bWrite(i, s) => (*i, Self::Ymf278b(s.clone())),
+            Ymf271Write(i, s) => (*i, Self::Ymf271(s.clone())),
             Okim6258Write(i, s) => (*i, Self::Okim6258(s.clone())),
             Okim6295Write(i, s) => (*i, Self::Okim6295(s.clone())),
             _ => return None,
@@ -320,6 +324,8 @@ typed_write!(K054539, K054539Spec, K054539);
 typed_write!(X1010, X1010Spec, X1010);
 #[cfg(feature = "ymz280b")]
 typed_write!(Ymz280b, Ymz280bSpec, Ymz280b);
+#[cfg(feature = "ymf271")]
+typed_write!(Ymf271, Ymf271Spec, Ymf271);
 #[cfg(feature = "multipcm")]
 typed_write!(MultiPcm, MultiPcmSpec, MultiPcm);
 #[cfg(feature = "multipcm")]

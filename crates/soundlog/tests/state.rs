@@ -1235,49 +1235,16 @@ fn test_ymf271_state_tracking() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(soundlog::chip::Chip::Ymf271, Instance::Primary, 16_934_400);
 
-    // Select slot 0
-    builder.add_chip_write(
-        Instance::Primary,
-        Ymf271Spec {
-            port: 0,
-            register: 0x80,
-            value: 0x00,
-        },
-    );
-    // Set frequency registers for channel 0
-    builder.add_chip_write(
-        Instance::Primary,
-        Ymf271Spec {
-            port: 0,
-            register: 12,
-            value: 0x04,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Ymf271Spec {
-            port: 0,
-            register: 13,
-            value: 0x02,
-        },
-    );
-    builder.add_chip_write(
-        Instance::Primary,
-        Ymf271Spec {
-            port: 0,
-            register: 14,
-            value: 0x00,
-        },
-    );
-    // Key on channel 0
-    builder.add_chip_write(
-        Instance::Primary,
-        Ymf271Spec {
-            port: 0,
-            register: 0,
-            value: 0x01,
-        },
-    );
+    for (port, register, value) in [(0, 0xa0, 0x45), (0, 0x90, 0x1b), (0, 0, 1)] {
+        builder.add_chip_write(
+            Instance::Primary,
+            Ymf271Spec {
+                port,
+                register,
+                value,
+            },
+        );
+    }
 
     let doc = builder.finalize();
 
@@ -1292,7 +1259,7 @@ fn test_ymf271_state_tracking() {
     for result in stream {
         match result {
             Ok(StreamResult::Command(VgmCommand::Ymf271Write(Instance::Primary, spec))) => {
-                state.set_selected_slot(spec.port);
+                state.set_port(spec.port);
                 if let Some(mut evs) = state.on_register_write(spec.register, spec.value) {
                     events.append(&mut evs);
                 }
@@ -1312,7 +1279,7 @@ fn test_ymf271_state_tracking() {
     }
 
     // Verify channel count (YMF271 has complex addressing)
-    assert_eq!(state.channel_count(), 12);
+    assert_eq!(state.channel_count(), 48);
 }
 
 #[test]

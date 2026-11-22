@@ -1,321 +1,174 @@
-//! YMF271 (OPX) chip state implementation. (NOT WORKING)
-//!
-//! This module provides state tracking for the Yamaha YMF271 FM synthesis chip,
-//! commonly known as OPX, with 12 FM channels and PCM capabilities.
+//! YMF271 OPX register and FM voice state tracking.
 
 use super::channel::ChannelState;
 use super::chip_state::ChipState;
 use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
-use std::array;
+use crate::chip::fnumber::{ChipTypeSpec, OpxSpec};
 
-/// YMF271 has 12 FM channels (slots)
-/// (PCM wavetable capabilities are not tracked separately)
-const YMF271_CHANNELS: usize = 12;
+const GROUPS: [i8; 16] = [0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1];
+const CARRIERS_4: [u8; 16] = [8, 8, 8, 8, 8, 8, 12, 12, 9, 9, 14, 14, 14, 11, 13, 15];
+const CARRIERS_2: [u8; 4] = [2, 2, 3, 3];
+const CARRIERS_3: [u8; 8] = [2, 2, 2, 3, 6, 6, 7, 7];
 
-/// YMF271 recommended storage
-pub type Ymf271Storage = SparseStorage<u8, u8>;
+/// Register storage indexed by `(port << 8) | register`.
+pub type Ymf271Storage = SparseStorage<u16, u8>;
 
-/// YMF271 register state tracker
+#[derive(Debug, Clone, Copy, Default)]
+struct Slot {
+    keyed: bool,
+    fnum: u16,
+    latch: u8,
+    block: u8,
+    wave: u8,
+    algorithm: u8,
+}
+
+/// Tracks FM voices in the YMF271's 12 groups of four slots.
 ///
-/// Tracks all 12 FM channels (called "slots" in YMF271 documentation) and their
-/// register state, detecting key on/off events and extracting tone information.
-///
-/// # Register Layout
-///
-/// YMF271 has a complex register structure with:
-/// - 12 slots (channels) numbered 0-11
-/// - 4 groups (0-3) with 3 slots each
-/// - Registers per slot accessed via slot number and register offset
-///
-/// Key registers:
-/// - Register 0: Key On (bit 0) + External enable/output
-/// - Register 12: Block (octave)
-/// - Register 13: F-number high byte
-/// - Register 14: F-number low byte
-///
-/// Slots are organized as:
-/// - Group 0: Slots 0, 12, 24, 36
-/// - Group 1: Slots 1, 13, 25, 37
-/// - Group 2: Slots 2, 14, 26, 38
-/// - Group 3: Slots 3, 15, 27, 39
-///   (Only first 12 slots are FM channels)
+/// Select a VGM port with [`Self::set_port`] before each register write.
+/// Channel IDs are physical key-on slot numbers (`12 * bank + group`), so
+/// independent voices remain distinct in every synchronization mode.
+/// PCM and the non-pitched linear waveform are not reported as notes. FM
+/// frequency is the voice's fundamental before operator multiplier, detune,
+/// feedback and LFO modulation.
 #[derive(Debug, Clone)]
 pub struct Ymf271State {
-    /// Channel states for 12 FM channels
-    channels: [ChannelState; YMF271_CHANNELS],
-    /// Master clock frequency in Hz (used for frequency calculation)
+    channels: [ChannelState; 48],
+    slots: [Slot; 48],
+    sync: [u8; 12],
     master_clock_hz: f32,
-    /// Current selected slot for register writes
-    selected_slot: u8,
-    /// Global register storage for all written registers
+    current_port: u8,
     registers: Ymf271Storage,
 }
 
 impl Ymf271State {
-    /// Create a new YMF271 state tracker
-    ///
-    /// # Arguments
-    ///
-    /// * `master_clock_hz` - Master clock frequency in Hz
-    ///
-    /// Common values:
-    /// - 16,934,400 Hz (standard OPX)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use soundlog::chip::state::Ymf271State;
-    ///
-    /// let state = Ymf271State::new(16_934_400.0f32);
-    /// ```
+    /// Create a tracker with the chip's master clock in hertz.
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
-            channels: array::from_fn(|_| ChannelState::new()),
+            channels: std::array::from_fn(|_| ChannelState::new()),
+            slots: [Slot::default(); 48],
+            sync: [0; 12],
             master_clock_hz,
-            selected_slot: 0,
+            current_port: 0,
             registers: Ymf271Storage::default(),
         }
     }
 
-    /// Get a reference to a channel's state
-    ///
-    /// # Arguments
-    ///
-    /// * `channel` - Channel index (0-11)
-    ///
-    /// # Returns
-    ///
-    /// Some(&ChannelState) if channel index is valid, None otherwise
+    /// Return the state of a physical key-on slot, from 0 to 47.
     pub fn channel(&self, channel: u8) -> Option<&ChannelState> {
-        self.channels.get(channel as usize)
+        self.channels.get(usize::from(channel))
     }
 
-    /// Get a mutable reference to a channel's state
-    ///
-    /// # Arguments
-    ///
-    /// * `channel` - Channel index (0-11)
-    ///
-    /// # Returns
-    ///
-    /// Some(&mut ChannelState) if channel index is valid, None otherwise
+    /// Return mutable state for a physical key-on slot.
     pub fn channel_mut(&mut self, channel: u8) -> Option<&mut ChannelState> {
-        self.channels.get_mut(channel as usize)
+        self.channels.get_mut(usize::from(channel))
     }
 
-    /// Set the selected slot for register writes
-    ///
-    /// # Arguments
-    ///
-    /// * `slot` - Slot number (0-47, but only 0-11 are FM channels)
-    pub fn set_selected_slot(&mut self, slot: u8) {
-        self.selected_slot = slot;
+    /// Select the VGM register port (FM 0–3, PCM 4, utility 6).
+    pub fn set_port(&mut self, port: u8) {
+        self.current_port = port;
     }
 
-    /// Get the selected slot
-    ///
-    /// # Returns
-    ///
-    /// Current selected slot number
+    /// Return the currently selected VGM port.
+    pub fn current_port(&self) -> u8 {
+        self.current_port
+    }
+
+    /// Legacy alias for [`Self::set_port`]. The argument is a port, not a slot.
+    #[deprecated(note = "YMF271 writes select a port, not a slot; use set_port")]
+    pub fn set_selected_slot(&mut self, port: u8) {
+        self.set_port(port);
+    }
+
+    /// Legacy alias for [`Self::current_port`].
+    #[deprecated(note = "YMF271 writes select a port, not a slot; use current_port")]
     pub fn selected_slot(&self) -> u8 {
-        self.selected_slot
+        self.current_port()
     }
 
-    /// Calculate frequency in Hz from block and F-number.
-    ///
-    /// # Formula
-    ///
-    /// YMF271 (OPX) uses the standard OPL-family formula with a 288 prescaler:
-    ///
-    /// ```text
-    /// freq = fnum × Fclk / (288 × 2^(20 − block))
-    /// ```
-    ///
-    /// This is identical in structure to the OPL3 formula but with a 12-bit
-    /// F-number and a 16.9344 MHz master clock.
-    ///
-    /// # Arguments
-    ///
-    /// * `fnum`  - 12-bit F-number value (0–4095)
-    /// * `block` - 3-bit block / octave value (0–7)
-    ///
-    /// # Returns
-    ///
-    /// Frequency in Hz, or 0.0 when `fnum` is 0.
-    fn calculate_frequency(&self, fnum: u16, block: u8) -> f32 {
-        if fnum == 0 {
-            return 0.0f32;
-        }
-
-        // 3-bit block (0–7), matching the OPX hardware specification.
-        let block_clamped = (block & 0x07) as i32;
-        (fnum as f32 * self.master_clock_hz) / (288.0_f32 * 2_f32.powi(20 - block_clamped))
-    }
-
-    /// Extract tone from slot registers.
-    ///
-    /// YMF271 register layout per slot:
-    /// - Register 12: Block / octave (bits 2–0, 3-bit value 0–7)
-    /// - Register 13: F-number high nibble (bits 3–0, upper 4 bits of the 12-bit F-number)
-    /// - Register 14: F-number low byte (bits 7–0, lower 8 bits of the 12-bit F-number)
-    ///
-    /// # Arguments
-    ///
-    /// * `slot` - Slot index (0-11)
-    ///
-    /// # Returns
-    ///
-    /// Some(ToneInfo) if registers have been written, None otherwise
-    fn extract_tone(&self, slot: usize) -> Option<ToneInfo> {
-        if slot >= YMF271_CHANNELS {
-            return None;
-        }
-
-        // Read from global register storage
-        // Read block register (register 12)
-        let block_reg = 12;
-        let block_data = self.registers.read(block_reg)?;
-        // 3-bit block (octave 0–7) — matches the OPX hardware specification.
-        let block = block_data & 0x07;
-
-        // Read F-number high (register 13)
-        let fnum_hi_reg = 13;
-        let fnum_hi = self.registers.read(fnum_hi_reg)?;
-
-        // Read F-number low (register 14)
-        let fnum_lo_reg = 14;
-        let fnum_lo = self.registers.read(fnum_lo_reg)?;
-
-        // Combine into 12-bit F-number
-        // F-number is 12 bits: 4 bits from high + 8 bits from low
-        let fnum = ((fnum_hi as u16 & 0x0F) << 8) | (fnum_lo as u16);
-
-        if fnum == 0 {
-            return None;
-        }
-
-        let freq_hz = self.calculate_frequency(fnum, block);
-
-        Some(ToneInfo::new(fnum, block, Some(freq_hz)))
-    }
-
-    /// Handle key on/off register write (register 0)
-    ///
-    /// Register 0 format:
-    /// - Bit 7: External enable
-    /// - Bits 6-3: External output
-    /// - Bit 0: Key On (1=on, 0=off)
-    ///
-    /// # Arguments
-    ///
-    /// * `slot` - Slot index (0-11)
-    /// * `value` - Value written
-    ///
-    /// # Returns
-    ///
-    /// Some(StateEvent) if key state changed, None otherwise
-    fn handle_key_on_register(&mut self, slot: usize, value: u8) -> Option<Vec<StateEvent>> {
-        if slot >= YMF271_CHANNELS {
-            return None;
-        }
-
-        let key_on = (value & 0x01) != 0;
-        let new_key_state = if key_on { KeyState::On } else { KeyState::Off };
-
-        let old_key_state = self.channels[slot].key_state;
-        self.channels[slot].key_state = new_key_state;
-
-        match (old_key_state, new_key_state) {
-            (KeyState::Off, KeyState::On) => {
-                if let Some(tone) = self.extract_tone(slot) {
-                    self.channels[slot].tone = Some(tone);
-                    Some(vec![StateEvent::KeyOn {
-                        channel: slot as u8,
-                        tone,
-                    }])
-                } else {
-                    None
-                }
-            }
-            (KeyState::On, KeyState::Off) => Some(vec![StateEvent::KeyOff {
-                channel: slot as u8,
-            }]),
+    fn voice(&self, group: usize, bank: usize) -> Option<([usize; 4], usize, u8)> {
+        let slot = group + bank * 12;
+        match (self.sync[group], bank) {
+            (0, 0) => Some((
+                [group, group + 12, group + 24, group + 36],
+                4,
+                CARRIERS_4[usize::from(self.slots[slot].algorithm)],
+            )),
+            (1, 0 | 1) => Some((
+                [slot, slot + 24, 0, 0],
+                2,
+                CARRIERS_2[usize::from(self.slots[slot].algorithm & 3)],
+            )),
+            (2, 0) => Some((
+                [group, group + 12, group + 24, 0],
+                3,
+                CARRIERS_3[usize::from(self.slots[slot].algorithm & 7)],
+            )),
+            (2, 3) | (3, _) => Some(([slot, 0, 0, 0], 1, 1)),
             _ => None,
         }
     }
 
-    /// Handle frequency register writes (registers 12, 13, 14)
-    /// Handle frequency register write
-    ///
-    /// # Arguments
-    ///
-    /// * `slot` - Slot index (0-47)
-    ///
-    /// # Returns
-    ///
-    /// Some(vec![StateEvent::ToneChange) if tone changed while key is on, None otherwise
-    fn handle_frequency_register(&mut self, slot: usize) -> Option<Vec<StateEvent>> {
-        if slot >= YMF271_CHANNELS {
+    fn tone(&self, group: usize, bank: usize) -> Option<ToneInfo> {
+        let (slots, length, carriers) = self.voice(group, bank)?;
+        let head = self.slots[slots[0]];
+        if !head.keyed || head.fnum == 0 {
             return None;
         }
+        let pitched = slots[..length]
+            .iter()
+            .enumerate()
+            .any(|(position, &index)| {
+                carriers & (1 << position) != 0
+                    && self.slots[index].keyed
+                    && self.slots[index].wave < 6
+            });
+        if !pitched {
+            return None;
+        }
+        let frequency =
+            OpxSpec::fnum_block_to_freq(u32::from(head.fnum), head.block, self.master_clock_hz)
+                .ok()?;
+        Some(ToneInfo::new(head.fnum, head.block, Some(frequency)))
+    }
 
-        // If key is on and frequency changed, emit ToneChange
-        if self.channels[slot].key_state == KeyState::On
-            && let Some(tone) = self.extract_tone(slot)
-        {
-            let tone_changed = self.channels[slot]
-                .tone
-                .as_ref()
-                .map(|old_tone| old_tone.fnum != tone.fnum || old_tone.block != tone.block)
-                .unwrap_or(true);
-
-            if tone_changed {
-                self.channels[slot].tone = Some(tone);
-                return Some(vec![StateEvent::ToneChange {
-                    channel: slot as u8,
+    fn update_group(&mut self, group: usize, retrigger: Option<usize>) -> Option<Vec<StateEvent>> {
+        let mut events = Vec::new();
+        for bank in 0..4 {
+            let index = group + bank * 12;
+            let next = self.tone(group, bank);
+            let channel = &mut self.channels[index];
+            match (channel.tone, next) {
+                (None, Some(tone)) => events.push(StateEvent::KeyOn {
+                    channel: index as u8,
                     tone,
-                }]);
+                }),
+                (Some(_), None) => events.push(StateEvent::KeyOff {
+                    channel: index as u8,
+                }),
+                (Some(_), Some(tone)) if retrigger == Some(index) => {
+                    events.push(StateEvent::KeyOn {
+                        channel: index as u8,
+                        tone,
+                    });
+                }
+                (Some(old), Some(tone)) if old != tone => {
+                    events.push(StateEvent::ToneChange {
+                        channel: index as u8,
+                        tone,
+                    });
+                }
+                _ => {}
             }
+            channel.tone = next;
+            channel.key_state = if next.is_some() {
+                KeyState::On
+            } else {
+                KeyState::Off
+            };
         }
-
-        None
-    }
-
-    /// Handle register write to the selected slot
-    ///
-    /// # Arguments
-    ///
-    /// * `register` - Register offset (0-31)
-    /// * `value` - Value written
-    ///
-    /// # Returns
-    ///
-    /// Some(StateEvent) if state changed, None otherwise
-    fn handle_slot_register_write(&mut self, register: u8, value: u8) -> Option<Vec<StateEvent>> {
-        let slot = (self.selected_slot % 48) as usize;
-
-        // Only track first 12 slots (FM channels)
-        if slot >= YMF271_CHANNELS {
-            return None;
-        }
-
-        match register {
-            // Register 0: Key On + External enable/output
-            0 => self.handle_key_on_register(slot, value),
-
-            // Register 12: Block (octave)
-            12 => self.handle_frequency_register(slot),
-
-            // Register 13: F-number high
-            13 => self.handle_frequency_register(slot),
-
-            // Register 14: F-number low
-            14 => self.handle_frequency_register(slot),
-
-            // Other registers - store but don't generate events
-            _ => None,
-        }
+        (!events.is_empty()).then_some(events)
     }
 }
 
@@ -323,46 +176,71 @@ impl ChipState for Ymf271State {
     type Register = u8;
     type Value = u8;
 
-    fn read_register(&self, register: Self::Register) -> Option<Self::Value> {
-        self.registers.read(register)
+    fn read_register(&self, register: u8) -> Option<u8> {
+        self.registers
+            .read(u16::from_be_bytes([self.current_port, register]))
     }
 
-    fn on_register_write(
-        &mut self,
-        register: Self::Register,
-        value: Self::Value,
-    ) -> Option<Vec<StateEvent>> {
-        // Store all register writes in global storage
-        self.registers.write(register, value);
-
-        // YMF271 uses a two-step register access:
-        // 1. Write slot number to register select (we treat high bit as indicator)
-        // 2. Write data to the register offset
-        //
-        // For simplification, we use:
-        // - Registers 0x00-0x1F: Slot register writes (after slot selection)
-        // - Register 0x80+: Slot selection (bit 7 set indicates slot select)
-
-        if register >= 0x80 {
-            // Slot selection
-            self.set_selected_slot(value);
-            None
-        } else {
-            // Register write to selected slot
-            self.handle_slot_register_write(register, value)
+    fn on_register_write(&mut self, register: u8, value: u8) -> Option<Vec<StateEvent>> {
+        self.registers
+            .write(u16::from_be_bytes([self.current_port, register]), value);
+        if self.current_port == 6 && register < 16 {
+            let group = GROUPS[usize::from(register)];
+            if group < 0 {
+                return None;
+            }
+            let group = group as usize;
+            self.sync[group] = value & 3;
+            return self.update_group(group, None);
         }
+        if self.current_port > 3 {
+            return None;
+        }
+        let group = GROUPS[usize::from(register & 15)];
+        if group < 0 {
+            return None;
+        }
+        let group = group as usize;
+        let bank = usize::from(self.current_port);
+        let operation = register >> 4;
+        let index = group + bank * 12;
+        let mut targets = [index; 4];
+        let mut count = 1;
+        if matches!(operation, 0 | 9 | 10 | 12 | 13 | 14)
+            && self.sync[group] != 3
+            && let Some((slots, length, _)) = self.voice(group, bank)
+        {
+            targets = slots;
+            count = length;
+        }
+        for &target in &targets[..count] {
+            let slot = &mut self.slots[target];
+            match operation {
+                0 => slot.keyed = value & 1 != 0,
+                9 => {
+                    slot.fnum = (u16::from(slot.latch & 15) << 8) | u16::from(value);
+                    slot.block = slot.latch >> 4;
+                }
+                10 => slot.latch = value,
+                11 => slot.wave = value & 7,
+                12 => slot.algorithm = value & 15,
+                _ => {}
+            }
+        }
+        let retrigger = (operation == 0 && value & 1 != 0).then_some(index);
+        self.update_group(group, retrigger)
     }
 
     fn reset(&mut self) {
-        for channel in &mut self.channels {
-            channel.clear();
-        }
-        self.selected_slot = 0;
+        self.channels = std::array::from_fn(|_| ChannelState::new());
+        self.slots = [Slot::default(); 48];
+        self.sync = [0; 12];
+        self.current_port = 0;
         self.registers.clear();
     }
 
     fn channel_count(&self) -> usize {
-        YMF271_CHANNELS
+        48
     }
 }
 
@@ -370,137 +248,99 @@ impl ChipState for Ymf271State {
 mod tests {
     use super::*;
 
+    fn write(
+        state: &mut Ymf271State,
+        port: u8,
+        register: u8,
+        value: u8,
+    ) -> Option<Vec<StateEvent>> {
+        state.set_port(port);
+        state.on_register_write(register, value)
+    }
+
     #[test]
-    fn test_ymf271_key_on() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
-
-        // Select slot 0
-        state.on_register_write(0x80, 0x00);
-
-        // Set block
-        state.on_register_write(12, 0x04); // Block 4
-
-        // Set F-number
-        state.on_register_write(13, 0x02); // F-num high
-        state.on_register_write(14, 0x00); // F-num low
-
-        // Key on
-        let event = state.on_register_write(0, 0x01);
-
-        assert!(event.is_some());
-        let events = event.as_ref().unwrap();
-        assert_eq!(events.len(), 1);
-        if let StateEvent::KeyOn { channel, tone } = &events[0] {
-            assert_eq!(*channel, 0);
-            assert_eq!(tone.block, 4);
-            assert!(tone.freq_hz.is_some());
-        } else {
-            panic!("Expected KeyOn event");
+    fn sync_modes_broadcast_and_distinguish_voices() {
+        for (mode, bank, expected) in [(0, 0, 0), (1, 1, 12), (2, 0, 0), (3, 3, 36)] {
+            let mut state = Ymf271State::new(16_934_400.0);
+            write(&mut state, 6, 0, mode);
+            write(&mut state, bank, 0xa0, 0x45);
+            write(&mut state, bank, 0x90, 0x1c);
+            let events = write(&mut state, bank, 0, 1).unwrap();
+            assert!(
+                matches!(events.as_slice(), [StateEvent::KeyOn { channel, .. }] if *channel == expected)
+            );
+            let change = write(&mut state, bank, 0x90, 0x1d).unwrap();
+            assert!(
+                matches!(change.as_slice(), [StateEvent::ToneChange { channel, .. }] if *channel == expected)
+            );
+            let off = write(&mut state, bank, 0, 0).unwrap();
+            assert!(
+                matches!(off.as_slice(), [StateEvent::KeyOff { channel }] if *channel == expected)
+            );
         }
     }
 
     #[test]
-    fn test_ymf271_key_off() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
-
-        // Set up and key on slot 0
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(12, 0x04);
-        state.on_register_write(13, 0x02);
-        state.on_register_write(14, 0x00);
-        state.on_register_write(0, 0x01);
-
-        // Key off
-        let event = state.on_register_write(0, 0x00);
-
-        assert!(event.is_some());
-        let events = event.as_ref().unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StateEvent::KeyOff { channel: 0 }));
-    }
-
-    #[test]
-    fn test_ymf271_tone_change() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
-
-        // Set up and key on slot 0
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(12, 0x04);
-        state.on_register_write(13, 0x02);
-        state.on_register_write(14, 0x00);
-        state.on_register_write(0, 0x01);
-
-        // Change frequency while key is on
-        let event = state.on_register_write(14, 0x80);
-
-        assert!(event.is_some());
-        let events = event.as_ref().unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StateEvent::ToneChange { .. }));
-    }
-
-    #[test]
-    fn test_ymf271_multiple_channels() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
-
-        // Slot 0
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(12, 0x04);
-        state.on_register_write(13, 0x02);
-        state.on_register_write(14, 0x00);
-        state.on_register_write(0, 0x01);
-
-        // Slot 5
-        state.on_register_write(0x80, 0x05);
-        state.on_register_write(12, 0x05);
-        state.on_register_write(13, 0x03);
-        state.on_register_write(14, 0x00);
-        state.on_register_write(0, 0x01);
-
-        assert_eq!(state.channel(0).unwrap().key_state, KeyState::On);
-        assert_eq!(state.channel(5).unwrap().key_state, KeyState::On);
-    }
-
-    #[test]
-    fn test_ymf271_channel_count() {
-        let state = Ymf271State::new(16_934_400.0f32);
-        assert_eq!(state.channel_count(), 12);
-    }
-
-    #[test]
-    fn test_ymf271_reset() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
-
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(12, 0x04);
-        state.on_register_write(13, 0x02);
-        state.on_register_write(14, 0x00);
-        state.on_register_write(0, 0x01);
-
+    fn latched_frequency_signed_block_and_register_ports() {
+        let mut state = Ymf271State::new(16_934_400.0);
+        write(&mut state, 0, 0xa0, 0xf5);
+        write(&mut state, 0, 0x90, 0x1c);
+        let events = write(&mut state, 0, 0, 1).unwrap();
+        let StateEvent::KeyOn { tone, .. } = events[0] else {
+            panic!("expected key on")
+        };
+        assert_eq!(tone.block, 15);
+        assert!((tone.freq_hz.unwrap() - 13.75).abs() < 0.1);
+        assert!(write(&mut state, 0, 0xa0, 0x45).is_none());
+        let changes = write(&mut state, 0, 0x90, 0x1c).unwrap();
+        assert!(matches!(changes[0], StateEvent::ToneChange { .. }));
+        write(&mut state, 1, 0xa0, 0x12);
+        assert_eq!(state.read_register(0xa0), Some(0x12));
+        state.set_port(0);
+        assert_eq!(state.read_register(0xa0), Some(0x45));
         state.reset();
-
+        assert_eq!(state.read_register(0xa0), None);
         assert_eq!(state.channel(0).unwrap().key_state, KeyState::Off);
-        assert_eq!(state.selected_slot(), 0);
     }
 
     #[test]
-    fn test_ymf271_block_extraction() {
-        let mut state = Ymf271State::new(16_934_400.0f32);
+    fn pcm_carriers_and_sync_changes_never_leave_stuck_notes() {
+        let mut state = Ymf271State::new(16_934_400.0);
+        write(&mut state, 6, 0, 3);
+        write(&mut state, 0, 0xb0, 7);
+        write(&mut state, 0, 0xa0, 0x45);
+        write(&mut state, 0, 0x90, 0x1c);
+        assert!(write(&mut state, 0, 0, 1).is_none());
+        let on = write(&mut state, 0, 0xb0, 0).unwrap();
+        assert!(matches!(on[0], StateEvent::KeyOn { channel: 0, .. }));
+        let off = write(&mut state, 0, 0xb0, 6).unwrap();
+        assert!(matches!(off[0], StateEvent::KeyOff { channel: 0 }));
+        write(&mut state, 0, 0xb0, 0);
+        let off = write(&mut state, 6, 0, 0).unwrap();
+        assert!(matches!(off[0], StateEvent::KeyOff { channel: 0 }));
+    }
 
-        state.on_register_write(0x80, 0x00);
-        state.on_register_write(12, 0x07); // Block 7
-        state.on_register_write(13, 0x0F);
-        state.on_register_write(14, 0xFF);
-        let event = state.on_register_write(0, 0x01);
-
-        assert!(event.is_some());
-        let events = event.as_ref().unwrap();
-        assert_eq!(events.len(), 1);
-        if let StateEvent::KeyOn { tone, .. } = &events[0] {
-            assert_eq!(tone.block, 7);
-            assert_eq!(tone.fnum, 0xFFF);
-        } else {
-            panic!("Expected KeyOn event");
+    #[test]
+    fn two_operator_voices_have_independent_ports_and_keys() {
+        let mut state = Ymf271State::new(16_934_400.0);
+        write(&mut state, 6, 0, 1);
+        for (port, low) in [(0, 0x1c), (1, 0x70)] {
+            write(&mut state, port, 0xa0, 0x45);
+            write(&mut state, port, 0x90, low);
+            let events = write(&mut state, port, 0, 1).unwrap();
+            assert!(matches!(events[0], StateEvent::KeyOn { channel, .. } if channel == port * 12));
         }
+        assert!(write(&mut state, 0, 0x93, 1).is_none());
+        let off = write(&mut state, 0, 0, 0).unwrap();
+        assert!(matches!(
+            off.as_slice(),
+            [StateEvent::KeyOff { channel: 0 }]
+        ));
+        assert_eq!(state.channel(12).unwrap().key_state, KeyState::On);
+        let repeated = write(&mut state, 1, 0, 1).unwrap();
+        assert!(matches!(
+            repeated.as_slice(),
+            [StateEvent::KeyOn { channel: 12, .. }]
+        ));
     }
 }

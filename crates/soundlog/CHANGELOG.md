@@ -4,6 +4,7 @@
 
 ### Breaking API Changes
 
+- Change: `Ymf271State` exposes 48 physical slot channel IDs and selects VGM ports with `set_port`; its register storage uses port-qualified `u16` addresses.
 - Change: `NesApuState` exposes FDS as channel 5 and reports six channels.
 - Change: `Es5506State` tracks physical ES5505/ES5506 registers as `u32` values; VGM byte offsets must be converted to bus writes. Header chip enumeration now distinguishes `Chip::Es5505`.
 - Change: `PcmRamWrite` now has an `instance` field and no inline `data` field; PCM bytes come from the referenced data bank.
@@ -16,6 +17,7 @@
 
 ### Fixed
 
+- Fix: Track YMF271 FM key events, synchronization modes and signed-block frequency correctly; correct `OpxSpec` frequency conversion.
 - Fix: Encode and decode MultiPCM VGM bank offsets in little-endian byte order.
 - Fix: Interpret the VGM OKIM6258 ADPCM select bit correctly (set = 4-bit, clear = 3-bit).
 - Fix: Track ES550x bus writes, page selection, and chip variants correctly; detect the variant from the ES550x clock rather than the ES5503 clock.
@@ -31,7 +33,6 @@
 
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
-  - [ ] Fix: YMF271(OPX) state tracking.
   - [ ] Doc: NES APU Mapping
   - [ ] Doc: GBDMG Mapping
 
