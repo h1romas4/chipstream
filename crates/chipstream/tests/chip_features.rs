@@ -18,6 +18,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         (Chip::X1010, "x1010", cfg!(feature = "x1010")),
         (Chip::Ymz280b, "ymz280b", cfg!(feature = "ymz280b")),
         (Chip::MultiPcm, "multipcm", cfg!(feature = "multipcm")),
+        (Chip::Upd7759, "upd7759", cfg!(feature = "upd7759")),
         (Chip::Okim6258, "okim6258", cfg!(feature = "okim6258")),
         (Chip::Okim6295, "okim6295", cfg!(feature = "okim6295")),
         (Chip::Pwm, "pwm", cfg!(feature = "pwm")),

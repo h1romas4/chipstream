@@ -45,6 +45,8 @@ mod saa1099;
 mod segapcm;
 #[cfg(feature = "sn76496")]
 mod sn76496;
+#[cfg(feature = "upd7759")]
+mod upd7759;
 mod write;
 #[cfg(feature = "x1010")]
 mod x1010;
@@ -93,6 +95,8 @@ pub use saa1099::Saa1099;
 pub use segapcm::SegaPcm;
 #[cfg(feature = "sn76496")]
 pub use sn76496::{Sn76496, Sn76496Config};
+#[cfg(feature = "upd7759")]
+pub use upd7759::Upd7759;
 pub use write::{ChipRegisterWrite, ChipWrite};
 #[cfg(feature = "x1010")]
 pub use x1010::X1010;
@@ -402,6 +406,7 @@ impl<T: Any> SoundChipState for T {
     feature = "saa1099",
     feature = "segapcm",
     feature = "sn76496",
+    feature = "upd7759",
     feature = "x1010",
     feature = "ymz280b"
 ))]
@@ -426,6 +431,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "saa1099",
     feature = "segapcm",
     feature = "sn76496",
+    feature = "upd7759",
     feature = "x1010",
     feature = "ymz280b"
 ))]
@@ -687,6 +693,7 @@ impl Error for ChipError {}
     feature = "multipcm",
     feature = "okim6295",
     feature = "segapcm",
+    feature = "upd7759",
     feature = "x1010",
     feature = "ymz280b"
 ))]

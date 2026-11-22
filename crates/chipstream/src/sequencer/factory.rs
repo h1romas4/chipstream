@@ -205,6 +205,11 @@ pub enum ChipBackendSettings {
         /// Unrecognized header flag bits.
         reserved_flags: u8,
     },
+    /// uPD7759 VGM data transfer mode.
+    Upd7759 {
+        /// Select external slave input instead of standalone ROM playback.
+        slave: bool,
+    },
     /// SegaPCM banking configuration.
     SegaPcm {
         /// Shift applied to the bank bits in the channel control register.

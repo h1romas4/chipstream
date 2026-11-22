@@ -61,6 +61,8 @@ use crate::chip::Saa1099;
 use crate::chip::SegaPcm;
 #[cfg(feature = "sn76496")]
 use crate::chip::Sn76496;
+#[cfg(feature = "upd7759")]
+use crate::chip::Upd7759;
 #[cfg(feature = "x1010")]
 use crate::chip::X1010;
 #[cfg(feature = "ymz280b")]
@@ -78,7 +80,8 @@ use crate::fixed::{advance, divide_ratio};
     feature = "sn76496",
     feature = "okim6258",
     feature = "c352",
-    feature = "k054539"
+    feature = "k054539",
+    feature = "upd7759"
 ))]
 use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
@@ -507,7 +510,8 @@ impl Voice {
         context: &mut EventContext<'_, '_>,
     ) -> Result<bool, VgmSequencerError> {
         let (bank, register, value) = write.parts();
-        let is_bank_write = matches!(write, ChipRegisterWrite::MultiPcmBank(_));
+        let is_bank_write = matches!(write, ChipRegisterWrite::MultiPcmBank(_))
+            || matches!(&write, ChipRegisterWrite::Upd7759(spec) if spec.register == 3);
         let pending_write = context
             .callbacks
             .has_callback(&write)
@@ -698,7 +702,7 @@ impl Voice {
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
 /// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, SAA1099,
-/// K051649, K053260, K054539, X1-010, YMZ280B, MultiPCM, HuC6280, POKEY, GA20, C352, and
+/// K051649, K053260, K054539, X1-010, YMZ280B, MultiPCM, uPD7759, HuC6280, POKEY, GA20, C352, and
 /// C140/219. The non-YMFM chips require their corresponding Cargo features;
 /// a chip declared in the header without its feature returns
 /// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
@@ -1198,6 +1202,17 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("ymz280b", chip, Box::new(Ymz280b::new(clock)?))
         } else if chip == Chip::MultiPcm {
             feature_backend!("multipcm", chip, Box::new(MultiPcm::new(clock)?))
+        } else if chip == Chip::Upd7759 {
+            feature_backend!("upd7759", chip, {
+                let ChipBackendSettings::Upd7759 { slave } = factory_config.settings() else {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip: Chip::Upd7759,
+                        reason: "missing uPD7759 settings",
+                    }
+                    .into());
+                };
+                Box::new(Upd7759::with_slave_mode(clock, *slave)?)
+            })
         } else if chip == Chip::C352 {
             feature_backend!("c352", chip, {
                 let ChipBackendSettings::C352 { divider, .. } = factory_config.settings() else {
@@ -2788,6 +2803,7 @@ impl<'a> VgmSequencer<'a> {
             0x91 => (Chip::X1010, None),
             0x86 => (Chip::Ymz280b, None),
             0x89 => (Chip::MultiPcm, None),
+            0x8a => (Chip::Upd7759, None),
             0x81 => (Chip::Ym2608, Some(AccessClass::AdpcmB)),
             0x82 => (Chip::Ym2610b, Some(AccessClass::AdpcmA)),
             0x83 => (Chip::Ym2610b, Some(AccessClass::AdpcmB)),

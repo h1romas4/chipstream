@@ -82,6 +82,7 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Ymz280b(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::MultiPcm(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::MultiPcmBank(s) => (s.channel, 0, s.bank_offset.into()),
+            ChipRegisterWrite::Upd7759(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6295(s) => (0, s.register, s.value.into()),
@@ -208,6 +209,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
     check_mapping(
         Chip::MultiPcm,
         MultiPcmSpec {
+            register: 2,
+            value: 7,
+        },
+        (0, 2, 7),
+    );
+    check_mapping(
+        Chip::Upd7759,
+        Upd7759Spec {
             register: 2,
             value: 7,
         },

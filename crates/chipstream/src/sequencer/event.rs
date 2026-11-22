@@ -12,15 +12,15 @@ use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
 use soundlog::chip::state::{
     C352State, ChipState, Ga20State, Huc6280State, K051649State, K053260State, K054539State,
-    MultiPcmState, PokeyState, Saa1099State, Sn76489State, X1010State, Y8950State, Ym2151State,
-    Ym2203State, Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State,
-    Ymf262State, Ymf278bState, Ymz280bState,
+    MultiPcmState, PokeyState, Saa1099State, Sn76489State, Upd7759State, X1010State, Y8950State,
+    Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State,
+    Ym3812State, Ymf262State, Ymf278bState, Ymz280bState,
 };
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
     K054539Spec, MultiPcmBankSpec, MultiPcmSpec, Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec,
-    PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec,
-    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
+    PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec, Y8950Spec, Ym2151Spec,
+    Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
     Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::Instance;
@@ -88,6 +88,7 @@ impl_write_callback_target!(X1010Spec, X1010);
 impl_write_callback_target!(Ymz280bSpec, Ymz280b);
 impl_write_callback_target!(MultiPcmSpec, MultiPcm);
 impl_write_callback_target!(MultiPcmBankSpec, MultiPcmBank);
+impl_write_callback_target!(Upd7759Spec, Upd7759);
 impl_write_callback_target!(PwmSpec, Pwm);
 impl_write_callback_target!(Saa1099Spec, Saa1099);
 impl_write_callback_target!(Scc1Spec, Scc1);
@@ -123,6 +124,7 @@ pub enum VgmStateTrackerKind {
     X1010,
     Ymz280b,
     MultiPcm,
+    Upd7759,
     Ym2151,
     Ym2203,
     Ym2413,
@@ -164,6 +166,7 @@ impl_state_tracker!(K054539State, K054539);
 impl_state_tracker!(X1010State, X1010);
 impl_state_tracker!(Ymz280bState, Ymz280b);
 impl_state_tracker!(MultiPcmState, MultiPcm);
+impl_state_tracker!(Upd7759State, Upd7759);
 impl_state_tracker!(Ym2151State, Ym2151);
 impl_state_tracker!(Ym2203State, Ym2203);
 impl_state_tracker!(Ym2413State, Ym2413);
@@ -432,6 +435,7 @@ pub(super) enum Tracker {
     X1010(X1010State),
     Ymz280b(Ymz280bState),
     MultiPcm(MultiPcmState),
+    Upd7759(Upd7759State),
     Ym2151(Ym2151State),
     Ym2203(Ym2203State),
     Ym2413(Ym2413State),
@@ -477,6 +481,7 @@ impl Tracker {
             }
             Self::Ymz280b(state) => state.on_register_write(register, value),
             Self::MultiPcm(state) => state.on_register_write(register, value),
+            Self::Upd7759(state) => state.on_register_write(register, value),
             Self::C352(state) => {
                 state.on_register_write(u16::from_be_bytes([port, register]), u16::from(value))
             }
@@ -525,6 +530,7 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
         VgmStateTrackerKind::X1010 => Chip::X1010,
         VgmStateTrackerKind::Ymz280b => Chip::Ymz280b,
         VgmStateTrackerKind::MultiPcm => Chip::MultiPcm,
+        VgmStateTrackerKind::Upd7759 => Chip::Upd7759,
         VgmStateTrackerKind::Ym2151 => Chip::Ym2151,
         VgmStateTrackerKind::Ym2203 => Chip::Ym2203,
         VgmStateTrackerKind::Ym2413 => Chip::Ym2413,
@@ -562,6 +568,7 @@ pub(super) fn tracker(
         VgmStateTrackerKind::X1010 => Tracker::X1010(X1010State::new(clock)),
         VgmStateTrackerKind::Ymz280b => Tracker::Ymz280b(Ymz280bState::new(clock)),
         VgmStateTrackerKind::MultiPcm => Tracker::MultiPcm(MultiPcmState::new(clock)),
+        VgmStateTrackerKind::Upd7759 => Tracker::Upd7759(Upd7759State::new(clock)),
         VgmStateTrackerKind::Ym2151 => Tracker::Ym2151(Ym2151State::new(clock)),
         VgmStateTrackerKind::Ym2203 => Tracker::Ym2203(Ym2203State::new(clock)),
         VgmStateTrackerKind::Ym2413 => Tracker::Ym2413(Ym2413State::new(clock)),
