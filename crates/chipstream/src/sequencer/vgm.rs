@@ -40,6 +40,8 @@ use crate::audio::{
 use crate::chip::Okim6295;
 #[cfg(feature = "pwm")]
 use crate::chip::Pwm;
+#[cfg(feature = "saa1099")]
+use crate::chip::Saa1099;
 #[cfg(feature = "segapcm")]
 use crate::chip::SegaPcm;
 #[cfg(feature = "sn76496")]
@@ -661,7 +663,7 @@ impl Voice {
 ///
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
-/// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, and
+/// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, SAA1099, and
 /// C140/219. The non-YMFM chips require their corresponding Cargo features;
 /// a chip declared in the header without its feature returns
 /// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
@@ -1118,6 +1120,8 @@ impl<'a> VgmSequencer<'a> {
                 })
             } else if chip == Chip::Pwm {
                 feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+            } else if chip == Chip::Saa1099 {
+                feature_backend!("saa1099", chip, Box::new(Saa1099::new(clock)?))
             } else if chip == Chip::SegaPcm {
                 feature_backend!("segapcm", chip, {
                     Box::new(SegaPcm::with_banking(
@@ -1287,6 +1291,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Sn76489
             | Chip::SegaPcm
             | Chip::Pwm
+            | Chip::Saa1099
             | Chip::C140 => 2,
             _ => 1,
         }

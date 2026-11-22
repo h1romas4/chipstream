@@ -6,8 +6,8 @@
 
 use soundlog::chip::{
     Ay8910Spec, C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec,
-    SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
-    Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+    Saa1099Spec, SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec,
+    Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -17,6 +17,8 @@ use super::C140;
 use super::Okim6295;
 #[cfg(feature = "pwm")]
 use super::Pwm;
+#[cfg(feature = "saa1099")]
+use super::Saa1099;
 #[cfg(feature = "segapcm")]
 use super::SegaPcm;
 #[cfg(feature = "sn76496")]
@@ -120,6 +122,7 @@ define_writes! {
         (bank, register, u32::from(s.value))
     }),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
+    Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
     Ay8910(Ay8910Spec, Ay8910, |s| (0, s.register, u32::from(s.value))),
     Okim6258(Okim6258Spec, Okim6258, |s| (0, s.register, u32::from(s.value))),
     Okim6295(Okim6295Spec, Okim6295, |s| (0, s.register, u32::from(s.value))),
@@ -146,6 +149,7 @@ impl ChipRegisterWrite {
             SegaPcmWrite(i, s) => (*i, Self::SegaPcm(s.clone())),
             C140Write(i, s) => (*i, Self::C140(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
+            Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
             Ay8910Write(i, s) => (*i, Self::Ay8910(s.clone())),
             Ym2413Write(i, s) => (*i, Self::Ym2413(s.clone())),
             Ym2612Write(i, s) => (*i, Self::Ym2612(s.clone())),
@@ -186,6 +190,8 @@ typed_write!(SegaPcm, SegaPcmSpec, SegaPcm);
 typed_write!(C140, C140Spec, C140);
 #[cfg(feature = "pwm")]
 typed_write!(Pwm, PwmSpec, Pwm);
+#[cfg(feature = "saa1099")]
+typed_write!(Saa1099, Saa1099Spec, Saa1099);
 #[cfg(feature = "okim6258")]
 typed_write!(Okim6258, Okim6258Spec, Okim6258);
 #[cfg(feature = "okim6258")]
