@@ -19,6 +19,7 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use soundlog::chip::state::ChipState;
 use soundlog::chip::{Chip, PwmSpec};
 use soundlog::mdx::convert::MdxLoopMarker;
 use soundlog::vgm::command::{Instance, VgmCommand};
@@ -36,6 +37,8 @@ use crate::audio::{
     AudioError, ChipCapture, NativeEffect, RouteError, StereoBlock, StereoEffect, StereoMatrix,
     StereoMixer, StereoResampler, StereoResamplerState,
 };
+#[cfg(feature = "c352")]
+use crate::chip::C352;
 #[cfg(feature = "ga20")]
 use crate::chip::Ga20;
 #[cfg(feature = "huc6280")]
@@ -61,7 +64,7 @@ use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChip
 use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 use crate::fixed::{advance, divide_ratio};
 
-#[cfg(any(feature = "sn76496", feature = "okim6258"))]
+#[cfg(any(feature = "sn76496", feature = "okim6258", feature = "c352"))]
 use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
 use super::Okim6258Divider;
@@ -513,15 +516,22 @@ impl Voice {
             false
         };
         let state_events = if let Some(tracker) = self.tracker.as_mut() {
-            let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
-                chip: self.chip.clone(),
-                register,
-                value,
-            })?;
-            tracker
-                .on_register_write(bank, register, narrow)
-                .unwrap_or_default()
-                .into()
+            let changes = if let event::Tracker::C352(state) = tracker {
+                let wide = u16::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                    chip: self.chip.clone(),
+                    register,
+                    value,
+                })?;
+                state.on_register_write(u16::from_be_bytes([bank, register]), wide)
+            } else {
+                let narrow = u8::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
+                    chip: self.chip.clone(),
+                    register,
+                    value,
+                })?;
+                tracker.on_register_write(bank, register, narrow)
+            };
+            Some(changes.unwrap_or_default())
         } else {
             None
         };
@@ -1087,135 +1097,147 @@ impl<'a> VgmSequencer<'a> {
             (header.okim6258_clock & 0x3fff_ffff != 0)
                 .then_some(header.okim6258_clock & 0x3fff_ffff),
         );
-        let backend: Box<dyn SoundChip> =
-            if let Some(backend) = factories.create(&factory_config)? {
-                backend
-            } else if chip == Chip::Ay8910 {
-                return Err(ChipError::UnsupportedChip(chip).into());
-            } else if chip == Chip::Sn76489 {
-                feature_backend!("sn76496", chip, {
-                    let ChipBackendSettings::Sn76489(settings) = factory_config.settings() else {
+        let backend: Box<dyn SoundChip> = if let Some(backend) =
+            factories.create(&factory_config)?
+        {
+            backend
+        } else if chip == Chip::Ay8910 {
+            return Err(ChipError::UnsupportedChip(chip).into());
+        } else if chip == Chip::Sn76489 {
+            feature_backend!("sn76496", chip, {
+                let ChipBackendSettings::Sn76489(settings) = factory_config.settings() else {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip,
+                        reason: "missing SN76489 settings",
+                    }
+                    .into());
+                };
+                if settings.t6w28 {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip,
+                        reason: "T6W28 PSG is not supported",
+                    }
+                    .into());
+                }
+                Box::new(Sn76496::with_config(clock, (*settings).into())?)
+            })
+        } else if chip == Chip::C140 {
+            feature_backend!("c140", chip, {
+                let kind = match u8::from(header.c140_chip_type) {
+                    0 => C140Type::System2,
+                    1 => C140Type::System21,
+                    2 => C140Type::Asic219,
+                    _ => {
                         return Err(ChipError::InvalidConfiguration {
                             chip,
-                            reason: "missing SN76489 settings",
-                        }
-                        .into());
-                    };
-                    if settings.t6w28 {
-                        return Err(ChipError::InvalidConfiguration {
-                            chip,
-                            reason: "T6W28 PSG is not supported",
+                            reason: "unknown C140 board type",
                         }
                         .into());
                     }
-                    Box::new(Sn76496::with_config(clock, (*settings).into())?)
-                })
-            } else if chip == Chip::C140 {
-                feature_backend!("c140", chip, {
-                    let kind = match u8::from(header.c140_chip_type) {
-                        0 => C140Type::System2,
-                        1 => C140Type::System21,
-                        2 => C140Type::Asic219,
-                        _ => {
-                            return Err(ChipError::InvalidConfiguration {
-                                chip,
-                                reason: "unknown C140 board type",
-                            }
-                            .into());
-                        }
-                    };
-                    Box::new(C140::new(clock, kind)?)
-                })
-            } else if chip == Chip::Pwm {
-                feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
-            } else if chip == Chip::Saa1099 {
-                feature_backend!("saa1099", chip, Box::new(Saa1099::new(clock)?))
-            } else if chip == Chip::K051649 {
-                feature_backend!("k051649", chip, Box::new(K051649::new(clock)?))
-            } else if chip == Chip::Huc6280 {
-                feature_backend!("huc6280", chip, Box::new(Huc6280::new(clock)?))
-            } else if chip == Chip::Pokey {
-                feature_backend!("pokey", chip, Box::new(Pokey::new(clock)?))
-            } else if chip == Chip::Ga20 {
-                feature_backend!("ga20", chip, Box::new(Ga20::new(clock)?))
-            } else if chip == Chip::SegaPcm {
-                feature_backend!("segapcm", chip, {
-                    Box::new(SegaPcm::with_banking(
-                        clock,
-                        header.spcm_interface as u8,
-                        (header.spcm_interface >> 16) as u8,
-                    )?)
-                })
-            } else if chip == Chip::Okim6295 {
-                feature_backend!("okim6295", chip, {
-                    Box::new(Okim6295::with_pin7(
-                        clock,
-                        header.okim6295_clock & 0x8000_0000 != 0,
-                    )?)
-                })
-            } else if chip == Chip::Okim6258 {
-                feature_backend!("okim6258", chip, {
-                    let ChipBackendSettings::Okim6258(settings) = factory_config.settings() else {
-                        return Err(ChipError::InvalidConfiguration {
-                            chip,
-                            reason: "missing OKIM6258 settings",
-                        }
-                        .into());
-                    };
-                    // The MAME-backed vgm2wav compatibility path also ignores this selector.
-                    let mut oki = Okim6258::new(clock)?;
-                    oki.set_divider(match settings.divider {
-                        Okim6258Divider::Div1024 => ClockDivider::Div1024,
-                        Okim6258Divider::Div768 => ClockDivider::Div768,
-                        Okim6258Divider::Div512 => ClockDivider::Div512,
-                    })?;
-                    oki.set_output_bits(if settings.output_12bit {
-                        OutputBits::Bits12
-                    } else {
-                        OutputBits::Bits10
-                    });
-                    let stream = Okim6258Stream::new(oki).with_direct_write_queue();
-                    Box::new(if okim6258_dc_blocker {
-                        stream.with_dc_blocker()
-                    } else {
-                        stream
-                    })
-                })
-            } else {
-                let shared = Rc::clone(&memory);
-                let handler = InterfaceHandler {
-                    ymfm_external_read: Some(Box::new(move |access, address| {
-                        let memory = shared.borrow();
-                        Memory::key(access)
-                            .and_then(|key| memory.writes.get(&(key, address)))
-                            .or_else(|| {
-                                memory
-                                    .get(access)
-                                    .and_then(|data| data.get(address as usize))
-                            })
-                            .copied()
-                            .unwrap_or(0)
-                    })),
-                    ymfm_external_write: Some(Box::new({
-                        let shared = Rc::clone(&memory);
-                        move |access, address, value| {
-                            if let Some(key) = Memory::key(access) {
-                                shared.borrow_mut().writes.insert((key, address), value);
-                            }
-                        }
-                    })),
-                    ..Default::default()
                 };
-                if chip == Chip::Ym2610b {
-                    Box::new(YmfmChip::with_ym2610_variant(
-                        clock,
-                        header.misc().ym2610b_detected == Some(true),
-                        handler,
-                    )?)
+                Box::new(C140::new(clock, kind)?)
+            })
+        } else if chip == Chip::Pwm {
+            feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+        } else if chip == Chip::Saa1099 {
+            feature_backend!("saa1099", chip, Box::new(Saa1099::new(clock)?))
+        } else if chip == Chip::K051649 {
+            feature_backend!("k051649", chip, Box::new(K051649::new(clock)?))
+        } else if chip == Chip::Huc6280 {
+            feature_backend!("huc6280", chip, Box::new(Huc6280::new(clock)?))
+        } else if chip == Chip::Pokey {
+            feature_backend!("pokey", chip, Box::new(Pokey::new(clock)?))
+        } else if chip == Chip::Ga20 {
+            feature_backend!("ga20", chip, Box::new(Ga20::new(clock)?))
+        } else if chip == Chip::C352 {
+            feature_backend!("c352", chip, {
+                let ChipBackendSettings::C352 { divider, .. } = factory_config.settings() else {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip,
+                        reason: "missing C352 settings",
+                    }
+                    .into());
+                };
+                Box::new(C352::with_divider(clock, *divider)?)
+            })
+        } else if chip == Chip::SegaPcm {
+            feature_backend!("segapcm", chip, {
+                Box::new(SegaPcm::with_banking(
+                    clock,
+                    header.spcm_interface as u8,
+                    (header.spcm_interface >> 16) as u8,
+                )?)
+            })
+        } else if chip == Chip::Okim6295 {
+            feature_backend!("okim6295", chip, {
+                Box::new(Okim6295::with_pin7(
+                    clock,
+                    header.okim6295_clock & 0x8000_0000 != 0,
+                )?)
+            })
+        } else if chip == Chip::Okim6258 {
+            feature_backend!("okim6258", chip, {
+                let ChipBackendSettings::Okim6258(settings) = factory_config.settings() else {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip,
+                        reason: "missing OKIM6258 settings",
+                    }
+                    .into());
+                };
+                // The MAME-backed vgm2wav compatibility path also ignores this selector.
+                let mut oki = Okim6258::new(clock)?;
+                oki.set_divider(match settings.divider {
+                    Okim6258Divider::Div1024 => ClockDivider::Div1024,
+                    Okim6258Divider::Div768 => ClockDivider::Div768,
+                    Okim6258Divider::Div512 => ClockDivider::Div512,
+                })?;
+                oki.set_output_bits(if settings.output_12bit {
+                    OutputBits::Bits12
                 } else {
-                    Box::new(YmfmChip::with_handler(chip.clone(), clock, handler)?)
-                }
+                    OutputBits::Bits10
+                });
+                let stream = Okim6258Stream::new(oki).with_direct_write_queue();
+                Box::new(if okim6258_dc_blocker {
+                    stream.with_dc_blocker()
+                } else {
+                    stream
+                })
+            })
+        } else {
+            let shared = Rc::clone(&memory);
+            let handler = InterfaceHandler {
+                ymfm_external_read: Some(Box::new(move |access, address| {
+                    let memory = shared.borrow();
+                    Memory::key(access)
+                        .and_then(|key| memory.writes.get(&(key, address)))
+                        .or_else(|| {
+                            memory
+                                .get(access)
+                                .and_then(|data| data.get(address as usize))
+                        })
+                        .copied()
+                        .unwrap_or(0)
+                })),
+                ymfm_external_write: Some(Box::new({
+                    let shared = Rc::clone(&memory);
+                    move |access, address, value| {
+                        if let Some(key) = Memory::key(access) {
+                            shared.borrow_mut().writes.insert((key, address), value);
+                        }
+                    }
+                })),
+                ..Default::default()
             };
+            if chip == Chip::Ym2610b {
+                Box::new(YmfmChip::with_ym2610_variant(
+                    clock,
+                    header.misc().ym2610b_detected == Some(true),
+                    handler,
+                )?)
+            } else {
+                Box::new(YmfmChip::with_handler(chip.clone(), clock, handler)?)
+            }
+        };
         let global = volume::global_gain(header.volume_modifier);
         let id = chip_id(&chip);
         let has_ym2612 = header
@@ -1243,6 +1265,14 @@ impl<'a> VgmSequencer<'a> {
             Chip::Ym2608 | Chip::Ym2610b => vec![[main, 0.0], [0.0, main], [paired, paired]],
             Chip::Ym2413 => vec![[main, main]; 2],
             Chip::Ymf262 => vec![[main, 0.0], [0.0, main], [main, 0.0], [0.0, main]],
+            Chip::C352 => {
+                let rear = if header.c352_clock & 0x8000_0000 != 0 {
+                    0.0
+                } else {
+                    main
+                };
+                vec![[main, 0.0], [0.0, main], [rear, 0.0], [0.0, rear]]
+            }
             Chip::Ymf278b => vec![[0.0, 0.0]; 4]
                 .into_iter()
                 .chain([[main, 0.0], [0.0, main]])
@@ -1298,7 +1328,7 @@ impl<'a> VgmSequencer<'a> {
     /// Return the native output count expected by the chip's stereo matrix.
     fn matrix_channels(chip: &Chip) -> usize {
         match chip {
-            Chip::Ym2203 | Chip::Ymf262 => 4,
+            Chip::Ym2203 | Chip::Ymf262 | Chip::C352 => 4,
             Chip::Ym2608 | Chip::Ym2610b => 3,
             Chip::Ymf278b => 6,
             Chip::Ym2413
@@ -1748,7 +1778,7 @@ impl<'a> VgmSequencer<'a> {
             Chip::Ym2203 => &[Fm, SsgChannel(0), SsgChannel(1), SsgChannel(2)],
             Chip::Ym2608 | Chip::Ym2610b => &[FmAdpcmLeft, FmAdpcmRight, SsgMixed],
             Chip::Ym2413 => &[Melodic, Rhythm],
-            Chip::Ymf262 => &[Left, Right, LeftAux, RightAux],
+            Chip::Ymf262 | Chip::C352 => &[Left, Right, LeftAux, RightAux],
             Chip::Ymf278b => &[Unmixed(0), Unmixed(1), Unmixed(2), Unmixed(3), Left, Right],
             _ if voice.output_gains.len() == 1 => &[Mono],
             _ => &[Left, Right],
@@ -2698,6 +2728,7 @@ impl<'a> VgmSequencer<'a> {
             0x8b => (Chip::Okim6295, None),
             0x8d => (Chip::C140, None),
             0x93 => (Chip::Ga20, None),
+            0x92 => (Chip::C352, None),
             0x81 => (Chip::Ym2608, Some(AccessClass::AdpcmB)),
             0x82 => (Chip::Ym2610b, Some(AccessClass::AdpcmA)),
             0x83 => (Chip::Ym2610b, Some(AccessClass::AdpcmB)),

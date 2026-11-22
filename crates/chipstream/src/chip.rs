@@ -13,6 +13,8 @@
 
 #[cfg(feature = "c140")]
 mod c140;
+#[cfg(feature = "c352")]
+mod c352;
 #[cfg(feature = "ga20")]
 mod ga20;
 #[cfg(feature = "huc6280")]
@@ -49,6 +51,8 @@ use soundlog::chip::Chip;
 
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
+#[cfg(feature = "c352")]
+pub use c352::C352;
 #[cfg(feature = "ga20")]
 pub use ga20::Ga20;
 #[cfg(feature = "huc6280")]
@@ -364,6 +368,7 @@ impl<T: Any> SoundChipState for T {
 
 #[cfg(any(
     feature = "c140",
+    feature = "c352",
     feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
@@ -382,6 +387,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
 
 #[cfg(any(
     feature = "c140",
+    feature = "c352",
     feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
@@ -644,6 +650,7 @@ impl Error for ChipError {}
 
 #[cfg(any(
     feature = "c140",
+    feature = "c352",
     feature = "ga20",
     feature = "okim6295",
     feature = "segapcm"

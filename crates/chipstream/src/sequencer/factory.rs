@@ -187,6 +187,13 @@ pub enum ChipBackendSettings {
     },
     /// C140 board variant.
     C140(C140Variant),
+    /// C352 clock divider and rear-output selection.
+    C352 {
+        /// Input-clock cycles per output sample.
+        divider: u32,
+        /// Whether the VGM requests rear outputs to be muted.
+        disable_rear: bool,
+    },
     /// SegaPCM banking configuration.
     SegaPcm {
         /// Shift applied to the bank bits in the channel control register.

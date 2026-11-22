@@ -5,15 +5,17 @@
 //! preserving chip-specific address widths and values.
 
 use soundlog::chip::{
-    Ay8910Spec, C140Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, Okim6258Spec, Okim6295Spec,
-    PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Y8950Spec, Ym2151Spec,
-    Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
-    Ymf278bSpec,
+    Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, Okim6258Spec,
+    Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Y8950Spec,
+    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
+    Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
 #[cfg(feature = "c140")]
 use super::C140;
+#[cfg(feature = "c352")]
+use super::C352;
 #[cfg(feature = "ga20")]
 use super::Ga20;
 #[cfg(feature = "huc6280")]
@@ -130,6 +132,10 @@ define_writes! {
         let [bank, register] = s.register.to_be_bytes();
         (bank, register, u32::from(s.value))
     }),
+    C352(C352Spec, C352, |s| {
+        let [bank, register] = s.register.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
     Ga20(Ga20Spec, Ga20, |s| (0, s.register, u32::from(s.value))),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
     Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
@@ -161,6 +167,7 @@ impl ChipRegisterWrite {
             GameGearPsgWrite(i, s) => (*i, Self::GameGearPsg(s.clone())),
             SegaPcmWrite(i, s) => (*i, Self::SegaPcm(s.clone())),
             C140Write(i, s) => (*i, Self::C140(s.clone())),
+            C352Write(i, s) => (*i, Self::C352(s.clone())),
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
             Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
@@ -205,6 +212,8 @@ typed_write!(Sn76496, GameGearPsgSpec, GameGearPsg);
 typed_write!(SegaPcm, SegaPcmSpec, SegaPcm);
 #[cfg(feature = "c140")]
 typed_write!(C140, C140Spec, C140);
+#[cfg(feature = "c352")]
+typed_write!(C352, C352Spec, C352);
 #[cfg(feature = "ga20")]
 typed_write!(Ga20, Ga20Spec, Ga20);
 #[cfg(feature = "pwm")]

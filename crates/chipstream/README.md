@@ -39,6 +39,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | Feature | Chip |
 | --- | --- |
 | `c140` | C140 / ASIC219 |
+| `c352` | Namco C352 |
 | `ga20` | Irem GA20 |
 | `huc6280` | HuC6280 PSG |
 | `k051649` | K051649 / K052539 (SCC / SCC+) |

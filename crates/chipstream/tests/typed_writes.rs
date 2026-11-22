@@ -60,6 +60,10 @@ impl SoundChip for RecordingChip {
                 let [bank, register] = s.register.to_be_bytes();
                 (bank, register, s.value.into())
             }
+            ChipRegisterWrite::C352(s) => {
+                let [bank, register] = s.register.to_be_bytes();
+                (bank, register, s.value.into())
+            }
             ChipRegisterWrite::Pwm(s) => (0, s.register, s.value),
             ChipRegisterWrite::Saa1099(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Scc1(s) => (s.port, s.register, s.value.into()),
@@ -148,6 +152,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
             value: 0x56,
         },
         (0x12, 0x34, 0x56),
+    );
+    check_mapping(
+        Chip::C352,
+        C352Spec {
+            register: 0x0202,
+            value: 0xabcd,
+        },
+        (0x02, 0x02, 0xabcd),
     );
     check_mapping(
         Chip::Pwm,

@@ -105,7 +105,7 @@ impl<'a> ChipConfiguration<'a> {
     }
 
     /// Extract supported clocks, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 23] {
+    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 24] {
         let misc = header.misc();
         [
             (Chip::Sn76489, header.sn76489_clock),
@@ -116,6 +116,7 @@ impl<'a> ChipConfiguration<'a> {
             (Chip::Huc6280, header.huc6280_clock),
             (Chip::Pokey, header.pokey_clock),
             (Chip::Ga20, header.ga20_clock),
+            (Chip::C352, header.c352_clock),
             (Chip::Ay8910, header.ay8910_clock),
             (Chip::C140, header.c140_clock),
             (Chip::Ym2413, header.ym2413_clock),
@@ -220,6 +221,14 @@ fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
             2 => C140Variant::Asic219,
             value => C140Variant::Unknown(value),
         }),
+        Chip::C352 => ChipBackendSettings::C352 {
+            divider: if header.c352_clock_divider == 0 {
+                1
+            } else {
+                u32::from(header.c352_clock_divider) * 4
+            },
+            disable_rear: header.c352_clock & 0x8000_0000 != 0,
+        },
         Chip::SegaPcm => ChipBackendSettings::SegaPcm {
             bank_shift: header.spcm_interface as u8,
             bank_mask: (header.spcm_interface >> 16) as u8,
@@ -248,6 +257,7 @@ pub(super) fn chip_id(chip: &Chip) -> ChipId {
         Chip::Huc6280 => ChipId::Huc6280,
         Chip::Pokey => ChipId::Pokey,
         Chip::Ga20 => ChipId::Ga20,
+        Chip::C352 => ChipId::C352,
         Chip::Ay8910 => ChipId::Ay8910,
         Chip::C140 => ChipId::C140,
         Chip::Ym2413 => ChipId::Ym2413,
