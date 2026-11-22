@@ -157,8 +157,9 @@ impl Voice {
 /// Yamaha YMZ280B eight-voice PCM/ADPCM generator.
 ///
 /// Sample memory is supplied via [`SoundChip::write_rom`]; unloaded addresses
-/// read as zero. The DSP and external RAM writes are not emulated. End status
-/// is reported when the decoder reaches the end, without emulating an IRQ pin.
+/// read as zero. DSP bypass settings are accepted, but DSP effects and external
+/// RAM writes are not emulated. End status is reported when the decoder reaches
+/// the end, without emulating an IRQ pin.
 /// The post-end decay is generated continuously across output blocks.
 #[derive(Clone)]
 pub struct Ymz280b {
@@ -269,7 +270,19 @@ impl Ymz280b {
             return Ok(());
         }
         match register {
-            0x80..=0x82 if value != 0 => {
+            0x80 if value != 0 && value & 0x88 != 0x88 => {
+                return Err(ChipError::InvalidConfiguration {
+                    chip: Chip::Ymz280b,
+                    reason: "DSP registers are not supported",
+                });
+            }
+            0x81 if value > 1 => {
+                return Err(ChipError::InvalidConfiguration {
+                    chip: Chip::Ymz280b,
+                    reason: "DSP registers are not supported",
+                });
+            }
+            0x82 if value != 0 => {
                 return Err(ChipError::InvalidConfiguration {
                     chip: Chip::Ymz280b,
                     reason: "DSP registers are not supported",

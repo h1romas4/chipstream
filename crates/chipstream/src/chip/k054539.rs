@@ -46,6 +46,7 @@ struct Voice {
 /// read as zero. Timer and analog-input pins are not emulated. Reverb follows
 /// MAME's approximate implementation. Reset preserves registers, positions,
 /// ROM and configuration, but disables playback and clears reverb RAM.
+/// The VGM sequencer converts legacy sample-rate header values to chip clocks.
 #[derive(Clone)]
 pub struct K054539 {
     clock: u32,

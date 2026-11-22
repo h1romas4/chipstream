@@ -76,12 +76,6 @@ When a VGM header declares one of these chips without its feature,
 sequencer construction returns `VgmSequencerError::FeatureDisabled`.
 Unsupported chips without implementations remain silent.
 
-The NES APU uses the VGM CPU clock, DMC RAM upload blocks and the `nes_apu`
-feature. Clocks below 1.7 MHz select PAL timing; higher clocks select NTSC
-timing. FDS expansion audio requires `nes_fds`; its analog mixing and filters
-are approximations. `NesApuState` retains FDS register writes but only tracks
-APU channel enables, not FDS channel state or time-dependent counter expiry.
-
 MDX playback with a supplied PDX requires `okim6258`, even when the song does
 not use PCM notes. Without a PDX, FM-only playback does not require it.
 

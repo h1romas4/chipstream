@@ -196,6 +196,42 @@ fn vgm_header_flags_control_output() {
 }
 
 #[test]
+fn vgm_legacy_sample_rate_clock_matches_modern_clock() {
+    fn document(clock: u32) -> VgmDocument {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::K054539, Instance::Primary, clock);
+        let mut data = Vec::new();
+        data.extend_from_slice(&512_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&[0x40; 512]);
+        builder.add_vgm_command(DataBlock {
+            marker: 0x66,
+            chip_instance: 0,
+            data_type: 0x8c,
+            size: data.len() as u32,
+            data,
+        });
+        for (register, value) in [(2, 1), (5, 0x1f), (0x22f, 1), (0x214, 1)] {
+            builder.add_chip_write(Instance::Primary, K054539Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(300));
+        builder.finalize()
+    }
+    let mut modern =
+        VgmSequencer::new(document(18_432_000), 44_100, 128, Default::default()).unwrap();
+    let expected = modern.render().unwrap().unwrap();
+    assert!(expected.frames().iter().any(|frame| frame[0].abs() > 0.01));
+    let legacy = document(48_000);
+    let bytes: Vec<u8> = legacy.clone().into();
+    for mut player in [
+        VgmSequencer::new(legacy, 44_100, 128, Default::default()).unwrap(),
+        VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),
+    ] {
+        assert_eq!(player.render().unwrap().unwrap(), expected);
+    }
+}
+
+#[test]
 fn vgm_secondary_rom_callbacks_and_checkpoint() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::K054539, Instance::Primary, 18_432_000);

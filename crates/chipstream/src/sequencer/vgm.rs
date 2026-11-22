@@ -1102,6 +1102,8 @@ impl<'a> VgmSequencer<'a> {
                 (0 | 1, 21_390) => 12_288_000,
                 _ => clock * 576,
             }
+        } else if chip == Chip::K054539 && clock < 1_000_000 {
+            clock * 384
         } else {
             clock
         };
@@ -1164,7 +1166,7 @@ impl<'a> VgmSequencer<'a> {
         } else if chip == Chip::Huc6280 {
             feature_backend!("huc6280", chip, Box::new(Huc6280::new(clock)?))
         } else if chip == Chip::Pokey {
-            feature_backend!("pokey", chip, Box::new(Pokey::new(clock)?))
+            feature_backend!("pokey", chip, Box::new(Pokey::for_vgm(clock)?))
         } else if chip == Chip::Ga20 {
             feature_backend!("ga20", chip, Box::new(Ga20::new(clock)?))
         } else if chip == Chip::K053260 {

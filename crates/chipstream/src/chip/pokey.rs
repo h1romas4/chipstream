@@ -59,6 +59,9 @@ impl Channel {
 /// linear output model; external keyboard, paddle, and serial input are not
 /// exposed by this audio-only backend. POKEY has no audio reset pin; `reset`
 /// preserves the audio state, as in MAME.
+///
+/// The built-in VGM backend starts with SKCTL enabled for recordings that omit
+/// its initialization; [`Pokey::new`] leaves it disabled.
 #[derive(Clone)]
 pub struct Pokey {
     clock: u32,
@@ -104,6 +107,13 @@ impl Pokey {
             poly17: 0,
         };
         chip.reset_polynomials();
+        Ok(chip)
+    }
+
+    pub(crate) fn for_vgm(clock: u32) -> Result<Self, ChipError> {
+        let mut chip = Self::new(clock)?;
+        // VGM recordings can omit SKCTL writes made before logging began.
+        chip.write_register(15, 3);
         Ok(chip)
     }
 

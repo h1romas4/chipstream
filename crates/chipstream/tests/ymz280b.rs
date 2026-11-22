@@ -137,6 +137,22 @@ fn external_read_and_explicit_unsupported_operations() {
     assert_eq!(chip.read_external(), 0x34);
     assert_eq!(chip.read_external(), 0x34);
     assert_eq!(chip.read_external(), 0x56);
+    write(&mut chip, 0x80, 0x88);
+    write(&mut chip, 0x81, 1);
+    assert!(
+        chip.write(Ymz280bSpec {
+            register: 0x80,
+            value: 0x08
+        })
+        .is_err()
+    );
+    assert!(
+        chip.write(Ymz280bSpec {
+            register: 0x81,
+            value: 2
+        })
+        .is_err()
+    );
     assert!(
         chip.write(Ymz280bSpec {
             register: 0x87,
@@ -157,6 +173,47 @@ fn external_read_and_explicit_unsupported_operations() {
         Err(ChipError::InvalidBufferLength { .. })
     ));
     assert_eq!(invalid, [42; 3]);
+}
+
+#[test]
+fn vgm_dsp_bypass_writes_allow_pcm_playback() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ymz280b, Instance::Primary, 16_934_400);
+    let mut data = Vec::new();
+    data.extend_from_slice(&512_u32.to_le_bytes());
+    data.extend_from_slice(&0_u32.to_le_bytes());
+    data.extend_from_slice(&[0x40; 512]);
+    builder.add_vgm_command(DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x86,
+        size: data.len() as u32,
+        data,
+    });
+    for (register, value) in [
+        (0x80, 0x88),
+        (0x81, 1),
+        (0x61, 1),
+        (0x62, 0xff),
+        (0x63, 0xff),
+        (0, 0xff),
+        (2, 0xff),
+        (3, 8),
+        (0xff, 0x80),
+        (1, 0xd1),
+    ] {
+        builder.add_chip_write(Instance::Primary, Ymz280bSpec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(500));
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    for mut player in [
+        VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap(),
+        VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),
+    ] {
+        let first = player.render().unwrap().unwrap();
+        assert!(first.frames().iter().any(|frame| frame[0].abs() > 0.01));
+    }
 }
 
 #[test]

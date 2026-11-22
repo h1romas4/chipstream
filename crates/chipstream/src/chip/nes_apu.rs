@@ -440,8 +440,10 @@ impl Dmc {
 /// Nintendo NES APU with two pulse channels, triangle, noise and DMC.
 ///
 /// Registers are offsets from CPU address `$4000`. Sample RAM uses CPU
-/// addresses, and is snapshotted along with the channel state. With the
-/// `nes_fds` feature, `NesApu::with_fds` enables FDS expansion audio.
+/// addresses, and is snapshotted along with the channel state. VGM playback
+/// uses the header CPU clock and loads DMC RAM upload blocks into sample RAM.
+/// With the `nes_fds` feature, `NesApu::with_fds` enables FDS expansion audio;
+/// its analog mixing and filters are approximations.
 #[derive(Clone)]
 pub struct NesApu {
     clock: u32,

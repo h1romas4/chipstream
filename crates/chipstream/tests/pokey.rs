@@ -126,6 +126,32 @@ fn noise_filters_and_two_tone_change_the_output() {
 }
 
 #[test]
+fn vgm_initializes_both_pokeys_without_recorded_skctl_writes() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Pokey, instance, 1_789_790);
+        for (register, value) in [(8, 0x78), (0, 0x2f), (2, 0x15), (3, 0xa3)] {
+            builder.add_chip_write(instance, PokeySpec { register, value });
+        }
+    }
+    builder.add_vgm_command(WaitSamples(12_000));
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    for muted in [Instance::Primary, Instance::Secondary] {
+        let mut direct =
+            VgmSequencer::new(document.clone(), 44_100, 8192, Default::default()).unwrap();
+        let mut serialized =
+            VgmSequencer::from_vgm(bytes.clone(), 44_100, 8192, Default::default()).unwrap();
+        for player in [&mut direct, &mut serialized] {
+            player.set_chip_gain(Chip::Pokey, muted, 0.0).unwrap();
+        }
+        let first = direct.render().unwrap().unwrap();
+        assert!(first.frames().iter().any(|frame| frame[0].abs() > 0.001));
+        assert_eq!(first, serialized.render().unwrap().unwrap());
+    }
+}
+
+#[test]
 fn vgm_secondary_events_and_checkpoint() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Pokey, Instance::Primary, 1_789_790);
