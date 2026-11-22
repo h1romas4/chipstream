@@ -157,18 +157,14 @@ impl VsuState {
 
         // Frequency low register (offset 0x08)
         let fql_addr = base_addr + 0x08;
-        let freq_low = self.registers.read(fql_addr)?;
+        let freq_low = self.registers.read(fql_addr).unwrap_or(0);
 
         // Frequency high register (offset 0x0C, bits 2-0)
         let fqh_addr = base_addr + 0x0C;
-        let freq_high = self.registers.read(fqh_addr)?;
+        let freq_high = self.registers.read(fqh_addr).unwrap_or(0);
 
         // Combine into 11-bit frequency
         let freq_value = (freq_low as u16) | ((freq_high as u16 & 0x07) << 8);
-
-        if freq_value == 0 {
-            return None;
-        }
 
         let freq_hz = self.calculate_frequency(freq_value);
 
@@ -333,6 +329,22 @@ impl ChipState for VsuState {
         // Store all register writes in global storage with absolute address
         self.registers.write(register, value);
 
+        if register == 0x580 && value & 1 != 0 {
+            let mut events = Vec::new();
+            for channel in 0..VSU_CHANNELS {
+                let address = 0x400 + channel as u16 * 0x40;
+                let interval = self.registers.read(address).unwrap_or(0) & !0x80;
+                self.registers.write(address, interval);
+                if self.channels[channel].key_state == KeyState::On {
+                    self.channels[channel].key_state = KeyState::Off;
+                    events.push(StateEvent::KeyOff {
+                        channel: channel as u8,
+                    });
+                }
+            }
+            return (!events.is_empty()).then_some(events);
+        }
+
         // Check if address is in valid range
         if !(0x400..0x580).contains(&register) {
             return None;
@@ -456,6 +468,33 @@ mod tests {
     fn test_vsu_channel_count() {
         let state = VsuState::new(5_000_000.0f32);
         assert_eq!(state.channel_count(), 6);
+    }
+
+    #[test]
+    fn global_stop_clears_all_enabled_channels() {
+        let mut state = VsuState::new(5_000_000.0);
+        for base in [0x400, 0x440] {
+            state.on_register_write(base + 4, 0xff);
+            assert!(matches!(
+                state.on_register_write(base, 0x80).unwrap()[0],
+                StateEvent::KeyOn { .. }
+            ));
+        }
+        assert!(state.on_register_write(0x580, 0).is_none());
+        let events = state.on_register_write(0x580, 1).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                StateEvent::KeyOff { channel: 0 },
+                StateEvent::KeyOff { channel: 1 }
+            ]
+        ));
+        assert!(state.on_register_write(0x404, 0xff).is_none());
+        assert!(state.on_register_write(0x580, 1).is_none());
+        assert!(matches!(
+            state.on_register_write(0x400, 0x80).unwrap()[0],
+            StateEvent::KeyOn { channel: 0, .. }
+        ));
     }
 
     #[test]

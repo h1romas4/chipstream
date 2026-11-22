@@ -21,6 +21,7 @@
 - Fix: Preserve RAM write block timing in `VgmBuilder`, and correct RF5C68/164 memory address byte order and secondary register selection.
 - Fix: Map Game Boy VGM wave RAM and unused register offsets to their actual I/O addresses for state tracking.
 - Fix: Track WonderSwan wavetable frequencies, channel enables, volume and tone modes correctly, including simultaneous channel changes.
+- Fix: Track VSU global stop and zero-valued frequencies correctly.
 
 ## Planned
 

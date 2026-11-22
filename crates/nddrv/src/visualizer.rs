@@ -10,6 +10,7 @@ pub const WINDOW_SECONDS: u64 = 6;
 pub const SN76489_INDEX: u8 = crate::fm_mute::CHIP_COUNT as u8;
 pub const AY8910_INDEX: u8 = SN76489_INDEX + 1;
 pub const WONDERSWAN_INDEX: u8 = AY8910_INDEX + 1;
+pub const VSU_INDEX: u8 = WONDERSWAN_INDEX + 1;
 const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
@@ -86,6 +87,9 @@ impl PianoRoll {
                 | StateEvent::KeyOff { channel }
                 | StateEvent::ToneChange { channel, .. } => *channel,
             };
+            if chip == VSU_INDEX && channel == 5 {
+                continue;
+            }
             let voice = Voice {
                 chip,
                 instance: instance as u8,
@@ -220,6 +224,8 @@ pub fn source_color_index(chip: u8, instance: u8) -> u8 {
         2 * SN76489_INDEX + 2 + instance
     } else if chip == WONDERSWAN_INDEX {
         2 * SN76489_INDEX + 4 + instance
+    } else if chip == VSU_INDEX {
+        2 * SN76489_INDEX + 6 + instance
     } else {
         chip + instance * SN76489_INDEX
     }
@@ -232,6 +238,8 @@ pub fn tracked_chip(chip: &chipstream::sequencer::Chip) -> Option<(u8, u8)> {
         Some((AY8910_INDEX, 3))
     } else if matches!(chip, chipstream::sequencer::Chip::WonderSwan) {
         Some((WONDERSWAN_INDEX, 4))
+    } else if matches!(chip, chipstream::sequencer::Chip::Vsu) {
+        Some((VSU_INDEX, 5))
     } else {
         Some((
             crate::fm_mute::chip_index(chip)? as u8,

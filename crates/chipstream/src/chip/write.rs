@@ -8,7 +8,7 @@ use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, GbDmgSpec,
     Huc6280Spec, K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec,
     Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec,
-    Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec,
+    Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, VsuSpec,
     WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
     Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
     Ymz280bSpec,
@@ -55,6 +55,8 @@ use super::SegaPcm;
 use super::Sn76496;
 #[cfg(feature = "upd7759")]
 use super::Upd7759;
+#[cfg(feature = "vsu")]
+use super::Vsu;
 #[cfg(feature = "wonderswan")]
 use super::WonderSwan;
 #[cfg(feature = "x1010")]
@@ -169,6 +171,10 @@ define_writes! {
     }),
     Ga20(Ga20Spec, Ga20, |s| (0, s.register, u32::from(s.value))),
     GbDmg(GbDmgSpec, GbDmg, |s| (0, s.register, u32::from(s.value))),
+    Vsu(VsuSpec, Vsu, |s| {
+        let [bank, register] = s.offset.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
     WonderSwan(WonderSwanSpec, WonderSwan, |s| {
         let [bank, register] = s.offset.to_be_bytes();
         (bank, register, u32::from(s.value))
@@ -233,6 +239,7 @@ impl ChipRegisterWrite {
             Es5503Write(i, s) => (*i, Self::Es5503(s.clone())),
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
             GbDmgWrite(i, s) => (*i, Self::GbDmg(s.clone())),
+            VsuWrite(i, s) => (*i, Self::Vsu(s.clone())),
             WonderSwanWrite(i, s) => (*i, Self::WonderSwan(s.clone())),
             WonderSwanRegWrite(i, s) => (*i, Self::WonderSwanReg(s.clone())),
             K053260Write(i, s) => (*i, Self::K053260(s.clone())),
@@ -297,6 +304,8 @@ typed_write!(C352, C352Spec, C352);
 typed_write!(Es5503, Es5503Spec, Es5503);
 #[cfg(feature = "gb_dmg")]
 typed_write!(GbDmg, GbDmgSpec, GbDmg);
+#[cfg(feature = "vsu")]
+typed_write!(Vsu, VsuSpec, Vsu);
 #[cfg(feature = "wonderswan")]
 typed_write!(WonderSwan, WonderSwanSpec, WonderSwan);
 #[cfg(feature = "wonderswan")]

@@ -73,6 +73,8 @@ use crate::chip::SegaPcm;
 use crate::chip::Sn76496;
 #[cfg(feature = "upd7759")]
 use crate::chip::Upd7759;
+#[cfg(feature = "vsu")]
+use crate::chip::Vsu;
 #[cfg(feature = "wonderswan")]
 use crate::chip::WonderSwan;
 #[cfg(feature = "x1010")]
@@ -1202,6 +1204,8 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("gb_dmg", chip, Box::new(GbDmg::new(clock)?))
         } else if chip == Chip::WonderSwan {
             feature_backend!("wonderswan", chip, Box::new(WonderSwan::new(clock)?))
+        } else if chip == Chip::Vsu {
+            feature_backend!("vsu", chip, Box::new(Vsu::new(clock)?))
         } else if chip == Chip::Es5503 {
             feature_backend!("es5503", chip, {
                 let ChipBackendSettings::Es5503 { output_channels } = factory_config.settings()
@@ -1479,6 +1483,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Es5503
             | Chip::GbDmg
             | Chip::WonderSwan
+            | Chip::Vsu
             | Chip::Saa1099
             | Chip::Huc6280
             | Chip::Ga20
@@ -1837,7 +1842,7 @@ impl<'a> VgmSequencer<'a> {
     ///
     /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
     /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, ES5503, Game Boy DMG,
-    /// and WonderSwan.
+    /// WonderSwan, and VSU.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: VgmStateTracker,

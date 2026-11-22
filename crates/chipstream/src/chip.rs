@@ -59,6 +59,8 @@ mod segapcm;
 mod sn76496;
 #[cfg(feature = "upd7759")]
 mod upd7759;
+#[cfg(feature = "vsu")]
+mod vsu;
 #[cfg(feature = "wonderswan")]
 mod wonderswan;
 mod write;
@@ -121,6 +123,8 @@ pub use segapcm::SegaPcm;
 pub use sn76496::{Sn76496, Sn76496Config};
 #[cfg(feature = "upd7759")]
 pub use upd7759::Upd7759;
+#[cfg(feature = "vsu")]
+pub use vsu::Vsu;
 #[cfg(feature = "wonderswan")]
 pub use wonderswan::WonderSwan;
 pub use write::{ChipRegisterWrite, ChipWrite};
@@ -446,6 +450,7 @@ impl<T: Any> SoundChipState for T {
     feature = "segapcm",
     feature = "sn76496",
     feature = "upd7759",
+    feature = "vsu",
     feature = "wonderswan",
     feature = "x1010",
     feature = "ymz280b"
@@ -476,6 +481,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "segapcm",
     feature = "sn76496",
     feature = "upd7759",
+    feature = "vsu",
     feature = "wonderswan",
     feature = "x1010",
     feature = "ymz280b"
