@@ -25,6 +25,8 @@ mod okim6258;
 mod okim6258_stream;
 #[cfg(feature = "okim6295")]
 mod okim6295;
+#[cfg(feature = "pokey")]
+mod pokey;
 #[cfg(feature = "pwm")]
 mod pwm;
 #[cfg(feature = "saa1099")]
@@ -57,6 +59,8 @@ pub use okim6258::{ClockDivider, Okim6258, OutputBits};
 pub use okim6258_stream::Okim6258Stream;
 #[cfg(feature = "okim6295")]
 pub use okim6295::Okim6295;
+#[cfg(feature = "pokey")]
+pub use pokey::Pokey;
 #[cfg(feature = "pwm")]
 pub use pwm::Pwm;
 #[cfg(feature = "saa1099")]
@@ -361,6 +365,7 @@ impl<T: Any> SoundChipState for T {
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
+    feature = "pokey",
     feature = "saa1099",
     feature = "segapcm",
     feature = "sn76496"
@@ -377,6 +382,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
+    feature = "pokey",
     feature = "saa1099",
     feature = "segapcm",
     feature = "sn76496"

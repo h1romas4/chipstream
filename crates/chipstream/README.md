@@ -43,6 +43,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `k051649` | K051649 / K052539 (SCC / SCC+) |
 | `okim6258` | OKIM6258 |
 | `okim6295` | OKIM6295 |
+| `pokey` | POKEY |
 | `pwm` | PWM |
 | `saa1099` | SAA1099 |
 | `segapcm` | SegaPCM |

@@ -64,6 +64,7 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Saa1099(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Scc1(s) => (s.port, s.register, s.value.into()),
             ChipRegisterWrite::Huc6280(s) => (0, s.register, s.value.into()),
+            ChipRegisterWrite::Pokey(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6295(s) => (0, s.register, s.value.into()),
