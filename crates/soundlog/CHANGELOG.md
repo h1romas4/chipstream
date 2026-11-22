@@ -10,6 +10,8 @@
 
 - Change: `Ymf271State` exposes 48 physical slot channel IDs and selects VGM ports with `set_port`; its register storage uses port-qualified `u16` addresses.
 - Change: `NesApuState` exposes FDS as channel 5 and reports six channels.
+- Change: `NesApuSpec::register` uses CPU offsets for FDS writes: VGM offsets `0x20..=0x3e` map to `0x80..=0x9e`, and `0x3f` maps to `0x23`. Update code that constructs or inspects those writes.
+- Change: `Okim6258Flags::adpcm_3bit_select` is now true for 3-bit ADPCM and false for 4-bit ADPCM. Code that treated it as the raw VGM header bit must invert its value.
 - Change: `Es5506State` tracks physical ES5505/ES5506 registers as `u32` values; VGM byte offsets must be converted to bus writes. Header chip enumeration now distinguishes `Chip::Es5505`.
 - Change: `PcmRamWrite` now has an `instance` field and no inline `data` field; PCM bytes come from the referenced data bank.
 

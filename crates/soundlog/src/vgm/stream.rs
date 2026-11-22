@@ -1688,7 +1688,8 @@ impl VgmStream {
     /// Source stream ID of the most recent DAC-stream-generated write.
     ///
     /// Returns `None` for raw chip commands, waits, errors, and before the
-    /// first result. The value describes only the most recent call to `next`.
+    /// first result or after reset. The value describes only the most recent
+    /// call to `next`.
     pub fn last_stream_write_id(&self) -> Option<u8> {
         self.last_stream_write_id
     }
@@ -1896,6 +1897,7 @@ impl VgmStream {
         self.initial_wait_started = false;
         self.pending_stream_writes.clear();
         self.huc6280_selected = [0; 2];
+        self.last_stream_write_id = None;
         self.pending_wait = None;
         self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
@@ -3195,7 +3197,8 @@ mod tests {
                 value: 0xfe,
             },
         );
-        let mut stream = VgmStream::from_document(builder.finalize());
+        let document = builder.finalize();
+        let mut stream = VgmStream::from_document(document.clone());
         assert_eq!(stream.last_stream_write_id(), None);
         let mut generated = Vec::new();
         let mut raw = false;
@@ -3219,6 +3222,17 @@ mod tests {
         }
         assert_eq!(generated, [0x21, 0x43, 0x65]);
         assert!(raw);
+
+        let mut stream = VgmStream::from_document(document);
+        while stream.last_stream_write_id().is_none() {
+            assert!(!matches!(
+                stream.next().unwrap().unwrap(),
+                StreamResult::EndOfStream
+            ));
+        }
+        assert_eq!(stream.last_stream_write_id(), Some(7));
+        stream.reset();
+        assert_eq!(stream.last_stream_write_id(), None);
     }
 
     #[test]
