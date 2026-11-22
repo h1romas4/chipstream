@@ -140,3 +140,46 @@ fn vgm_dual_psg_and_game_gear_stereo() {
     assert!(a.iter().any(|frame| frame[0].abs() > 0.001));
     assert!(a.iter().all(|frame| frame[1] == 0.0));
 }
+
+#[test]
+fn t6w28_links_stereo_volumes_and_restores_checkpoint() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_072_000);
+    }
+    for value in [0x82, 0x05, 0x90, 0xf0] {
+        builder.add_chip_write(Instance::Primary, PsgSpec { value });
+    }
+    for value in [0x9f, 0xe4, 0xff] {
+        builder.add_chip_write(Instance::Secondary, PsgSpec { value });
+    }
+    builder.add_vgm_command(WaitSamples(1000));
+    for value in [0x90, 0xf0] {
+        builder.add_chip_write(Instance::Secondary, PsgSpec { value });
+    }
+    builder.add_vgm_command(WaitSamples(1000));
+    let mut document = builder.finalize();
+    document.header.sn76489_clock |= 0x8000_0000;
+    let mut player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
+    let first = player.render().unwrap().unwrap();
+    assert!(first.frames().iter().any(|frame| frame[0].abs() > 0.01));
+    assert!(first.frames().iter().all(|frame| frame[1] == 0.0));
+
+    let checkpoint = player.checkpoint().unwrap();
+    let render_remaining = |player: &mut VgmSequencer<'_>| {
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let expected = render_remaining(&mut player);
+    assert!(
+        expected
+            .iter()
+            .skip(1000)
+            .any(|frame| frame[1].abs() > 0.01)
+    );
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(render_remaining(&mut player), expected);
+}

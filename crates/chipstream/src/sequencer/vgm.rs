@@ -71,8 +71,6 @@ use crate::chip::Rf5c;
 use crate::chip::Saa1099;
 #[cfg(feature = "segapcm")]
 use crate::chip::SegaPcm;
-#[cfg(feature = "sn76496")]
-use crate::chip::Sn76496;
 #[cfg(feature = "upd7759")]
 use crate::chip::Upd7759;
 #[cfg(feature = "vsu")]
@@ -92,6 +90,8 @@ use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChip
 use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 #[cfg(feature = "k054539")]
 use crate::chip::{K054539, K054539Config};
+#[cfg(feature = "sn76496")]
+use crate::chip::{Sn76496, T6w28Half};
 use crate::fixed::{advance, divide_ratio};
 
 use super::ChipBackendSettings;
@@ -112,6 +112,13 @@ const SCALE: f32 = 1.0 / 32768.0;
 const PHASE_SCALE: f32 = 1.0 / 4_294_967_296.0;
 
 pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<MdxLoopMarker>), String>>;
+
+#[derive(Default)]
+struct T6w28Pair {
+    #[cfg(feature = "sn76496")]
+    volumes: Rc<RefCell<[[i32; 4]; 2]>>,
+    built_in: u8,
+}
 
 #[derive(Clone)]
 enum StreamSetting {
@@ -752,7 +759,8 @@ impl Voice {
 /// OKIM6258 pan and rate changes, SN76489 header settings and Game Gear
 /// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
 /// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
-/// T6W28 PSG returns an error. The OKIM6258 3-bit selection flag is accepted
+/// T6W28 uses two linked built-in PSG instances; a factory must provide both
+/// instances or leave both to the built-in backend. The OKIM6258 3-bit selection flag is accepted
 /// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
 /// behavior; native 3-bit ADPCM decoding is not implemented.
 /// YMF271 follows MAME's approximation: PFM is ignored, alternate PCM looping
@@ -1131,6 +1139,7 @@ impl<'a> VgmSequencer<'a> {
         timing: &Timing,
         output_rate: u32,
         factories: &mut ChipFactoryRegistry,
+        _t6w28: &mut T6w28Pair,
     ) -> Result<Voice, VgmSequencerError> {
         let VoiceConfig {
             chip,
@@ -1180,13 +1189,17 @@ impl<'a> VgmSequencer<'a> {
                     .into());
                 };
                 if settings.t6w28 {
-                    return Err(ChipError::InvalidConfiguration {
-                        chip,
-                        reason: "T6W28 PSG is not supported",
-                    }
-                    .into());
+                    let side = instance as usize;
+                    _t6w28.built_in |= 1 << side;
+                    Box::new(T6w28Half::new(
+                        clock,
+                        (*settings).into(),
+                        side,
+                        Rc::clone(&_t6w28.volumes),
+                    )?)
+                } else {
+                    Box::new(Sn76496::with_config(clock, (*settings).into())?)
                 }
-                Box::new(Sn76496::with_config(clock, (*settings).into())?)
             })
         } else if chip == Chip::C140 {
             feature_backend!("c140", chip, {
@@ -1391,10 +1404,13 @@ impl<'a> VgmSequencer<'a> {
             .unwrap_or(header.ym2612_clock)
             & 0x3fff_ffff
             != 0;
+        let built_in_t6w28 = _t6w28.built_in & (1 << instance as usize) != 0;
+        let t6w28_gain = if built_in_t6w28 { 2.0 } else { 1.0 };
         let main = SCALE
             * global
+            * t6w28_gain
             * volume::mix_gain(&chip, false, has_ym2612)
-            * volume::chip_gain(extra, &chip, id, instance, false, dual);
+            * volume::chip_gain(extra, &chip, id, instance, false, dual && !built_in_t6w28);
         let paired = SCALE
             * global
             * volume::mix_gain(&chip, true, has_ym2612)
@@ -1677,6 +1693,7 @@ impl<'a> VgmSequencer<'a> {
         factories: &mut ChipFactoryRegistry,
     ) -> Result<Vec<Voice>, VgmSequencerError> {
         let mut voices = Vec::new();
+        let mut t6w28 = T6w28Pair::default();
         for voice in config.voices {
             if voice.chip == Chip::Ay8910 && !factories.contains(&voice.chip) {
                 continue;
@@ -1688,7 +1705,15 @@ impl<'a> VgmSequencer<'a> {
                 &config.timing,
                 output_rate,
                 factories,
+                &mut t6w28,
             )?);
+        }
+        if t6w28.built_in != 0 && t6w28.built_in != 3 {
+            return Err(ChipError::InvalidConfiguration {
+                chip: Chip::Sn76489,
+                reason: "T6W28 requires two built-in halves or two factory backends",
+            }
+            .into());
         }
         Ok(voices)
     }

@@ -62,7 +62,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `rf5c` | RF5C68 / RF5C164 | MAME | BSD-3-Clause |
 | `saa1099` | SAA1099 | MAME | BSD-3-Clause |
 | `segapcm` | SegaPCM | MAME | BSD-3-Clause |
-| `sn76496` | SN76489 / SN76496 | MAME | BSD-3-Clause |
+| `sn76496` | SN76489 / SN76496 / T6W28 | MAME | BSD-3-Clause |
 | `vsu` | Virtual Boy VSU | Rustual Boy | MIT |
 | `wonderswan` | WonderSwan | MAME, via Tetorica | BSD-3-Clause |
 | `x1010` | Seta X1-010 | MAME | BSD-3-Clause |

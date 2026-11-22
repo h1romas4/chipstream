@@ -244,8 +244,8 @@ than relying on its model name.
   available, except that AY8910 has no built-in backend. Explicit routes fail
   when the selected target is incompatible.
 - SN76489 hardware routing is unavailable for non-default Game Gear stereo
-  masks; T6W28 PSG is not supported. A VGM stereo-capable flag alone does not
-  prevent routing.
+  masks or T6W28; automatic routing uses emulation for these. A VGM
+  stereo-capable flag alone does not prevent routing.
 - A VGM pairing YM2151 with OKIM6258 requires a compatible primary OKIM6258
   stream on the same device for hardware YM2151 routing.
 - Only one primary OKIM6258 stream is supported per transport. Supported

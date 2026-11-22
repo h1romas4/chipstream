@@ -27,7 +27,7 @@ use crate::{
 /// compatible chip/clock capability. When no device matches, the normal
 /// emulated backend is retained, except AY8910 which has no emulated backend:
 /// when an AY device is present, an unroutable AY instance is an error.
-/// SN76489 instances that use Game Gear stereo masks use emulation. An empty
+/// T6W28 and SN76489 instances that use Game Gear stereo masks use emulation. An empty
 /// list selects no hardware. All configurations are validated before any
 /// device is opened or reset, although opening devices is not transactional.
 /// Devices advertising YM2151 are identified to apply NanoDrive 8 pan correction.
@@ -98,7 +98,7 @@ pub fn create_chip_factories(
 /// `supports_ay` must indicate whether any transport advertises AY8910.
 /// Unmatched chips use their normal software backend where available;
 /// AY8910 has no built-in backend. Non-default Game Gear stereo masks use
-/// SN76489 emulation. Capability checks and chip configuration occur when
+/// SN76489 emulation; T6W28 also uses emulation. Capability checks and chip configuration occur when
 /// the sequencer creates each instance.
 pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
@@ -201,15 +201,12 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
 
     let psg_transports = Rc::clone(&transports);
     let psg_policy = Rc::clone(&policy);
-    factories.register(Chip::Sn76489, move |config| {
+    factories.register_optional(Chip::Sn76489, move |config| {
         let ChipBackendSettings::Sn76489(settings) = *config.settings() else {
             return Err(ChipError::UnsupportedChip(config.chip().clone()));
         };
         if settings.t6w28 {
-            return Err(ChipError::InvalidConfiguration {
-                chip: Chip::Sn76489,
-                reason: "T6W28 PSG is not supported",
-            });
+            return Ok(None);
         }
         let write_id = match config.instance() {
             Instance::Primary => WriteId::SN76489,
@@ -230,13 +227,13 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
         };
         if let Some((device, transport)) = transport {
             select_route(&psg_policy, device, config)?;
-            return Ok(Box::new(NdsifSn76489::new(config, transport)?));
+            return Ok(Some(Box::new(NdsifSn76489::new(config, transport)?)));
         }
 
-        Ok(Box::new(Sn76496::with_config(
+        Ok(Some(Box::new(Sn76496::with_config(
             config.clock(),
             settings.into(),
-        )?))
+        )?)))
     });
 
     let oki_transports = Rc::clone(&transports);

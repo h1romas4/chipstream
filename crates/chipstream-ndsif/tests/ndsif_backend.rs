@@ -100,6 +100,36 @@ fn automatic_okim6258_emulation_fallback_matches_builtin_decoder() {
     assert_eq!(render(&mut fallback), expected);
 }
 
+#[test]
+fn automatic_t6w28_fallback_matches_builtin_pair() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_072_000);
+    }
+    for value in [0x82, 0x05, 0x90] {
+        builder.add_chip_write(Instance::Primary, PsgSpec { value });
+    }
+    builder.add_chip_write(Instance::Secondary, PsgSpec { value: 0x90 });
+    builder.add_vgm_command(WaitSamples(500));
+    let mut document = builder.finalize();
+    document.header.sn76489_clock |= 0x8000_0000;
+    let factories = chipstream_ndsif::create_chip_factories(&[]).unwrap();
+    let mut builtin = VgmSequencer::new(document.clone(), 44_100, 31, Default::default()).unwrap();
+    let mut fallback =
+        VgmSequencer::new_with_factories(document, 44_100, 127, Default::default(), factories)
+            .unwrap();
+    let render = |player: &mut VgmSequencer<'_>| {
+        let mut frames = Vec::new();
+        while let Some(block) = player.render().unwrap() {
+            frames.extend_from_slice(block.frames());
+        }
+        frames
+    };
+    let expected = render(&mut builtin);
+    assert!(expected.iter().flatten().any(|sample| sample.abs() > 0.001));
+    assert_eq!(render(&mut fallback), expected);
+}
+
 #[derive(Default)]
 struct FakeTransport {
     configured: Vec<(WriteId, u8, u32)>,

@@ -735,6 +735,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The SN76496 implementation is based on MAME's SN76496 implementation, revision
 `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
 Original MAME source: `src/devices/sound/sn76496.cpp`.
+T6W28 behavior is based on libvgm's `emu/cores/sn76496.c`, revision
+`c8b998b606895990c409a512b86c5509070f9f0d`
+(`https://github.com/ValleyBell/libvgm`).
 
 Copyright (c) Nicola Salmoria
 All rights reserved.

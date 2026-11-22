@@ -128,6 +128,8 @@ pub use saa1099::Saa1099;
 #[cfg(feature = "segapcm")]
 pub use segapcm::SegaPcm;
 #[cfg(feature = "sn76496")]
+pub(crate) use sn76496::T6w28Half;
+#[cfg(feature = "sn76496")]
 pub use sn76496::{Sn76496, Sn76496Config};
 #[cfg(feature = "upd7759")]
 pub use upd7759::Upd7759;

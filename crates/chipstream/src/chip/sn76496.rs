@@ -1,6 +1,7 @@
 //! Based on MAME's SN76496 implementation, revision
 //! `ee1e4f9683a4953cb9d88f9256017fcbc38e3144`.
 //! Copyright (c) Nicola Salmoria.
+//! T6W28 behavior also follows libvgm's SN76496 core.
 //! See `THIRD_PARTY_NOTICES.md` for the license terms.
 //!
 //! [`Sn76496`] emulates SN76489-family tone and noise generation.
@@ -9,7 +10,9 @@
 
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip};
 use soundlog::chip::Chip;
+use std::cell::RefCell;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 
 /// Configuration of the SN76496 family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,8 +164,8 @@ impl Sn76496 {
         }
     }
 
-    /// Advance tone and noise generators and mix their stereo output.
-    fn tick(&mut self) -> [i32; 2] {
+    /// Advance tone and noise generators by one native sample.
+    fn advance(&mut self) {
         for channel in 0..3 {
             self.counters[channel] -= 1;
             if self.counters[channel] <= 0 {
@@ -185,12 +188,18 @@ impl Sn76496 {
             self.outputs[3] = self.noise & 1 != 0;
             self.counters[3] = self.periods[3];
         }
+    }
+
+    /// Advance tone and noise generators and mix their stereo output.
+    fn tick(&mut self) -> [i32; 2] {
+        self.advance();
         let mut output = [0; 2];
         for channel in 0..4 {
             if self.outputs[channel] {
                 if !self.config.stereo || self.stereo_mask & (0x10 << channel) != 0 {
                     output[0] += self.volumes[channel];
                 }
+
                 if !self.config.stereo || self.stereo_mask & (1 << channel) != 0 {
                     output[1] += self.volumes[channel];
                 }
@@ -295,5 +304,168 @@ impl SoundChip for Sn76496 {
         self.noise = 1 << (self.config.shift_width - 1);
         self.outputs[3] = self.noise & 1 != 0;
         self.stereo_mask = 0xff;
+    }
+}
+
+/// One VGM-addressable half of a T6W28; both halves share stereo volumes.
+pub(crate) struct T6w28Half {
+    inner: Sn76496,
+    side: usize,
+    volumes: Rc<RefCell<[[i32; 4]; 2]>>,
+}
+
+#[derive(Clone)]
+struct T6w28Snapshot {
+    inner: Sn76496,
+    volumes: [[i32; 4]; 2],
+}
+
+impl T6w28Half {
+    pub(crate) fn new(
+        clock: u32,
+        config: Sn76496Config,
+        side: usize,
+        volumes: Rc<RefCell<[[i32; 4]; 2]>>,
+    ) -> Result<Self, ChipError> {
+        Ok(Self {
+            inner: Sn76496::with_config(clock, config)?,
+            side,
+            volumes,
+        })
+    }
+
+    fn tick(&mut self) -> [i32; 2] {
+        if self.inner.periods[..3].iter().all(|&period| period == 0)
+            && self.inner.volumes.iter().all(|&volume| volume == 0)
+        {
+            return [0; 2];
+        }
+        self.inner.advance();
+        let volumes = self.volumes.borrow();
+        let mut output = [0; 2];
+        let channels = if self.side == 0 { 0..3 } else { 3..4 };
+        for channel in channels {
+            let polarity = if channel < 3 && self.inner.periods[channel] == 0 {
+                1
+            } else if self.inner.outputs[channel] {
+                1
+            } else {
+                -1
+            };
+            for side in 0..2 {
+                let mask = if side == 0 {
+                    0x10 << channel
+                } else {
+                    1 << channel
+                };
+                if !self.inner.config.stereo || self.inner.stereo_mask & mask != 0 {
+                    output[side] += polarity * volumes[side][channel];
+                }
+            }
+        }
+        if self.inner.config.negate {
+            output[0] = -output[0];
+            output[1] = -output[1];
+        }
+        output.map(|value| value >> 1)
+    }
+}
+
+impl SoundChip for T6w28Half {
+    fn chip_type(&self) -> &Chip {
+        &Chip::Sn76489
+    }
+
+    fn clock(&self) -> u32 {
+        self.inner.clock()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    fn sample_rate_ratio(&self) -> SampleRate {
+        self.inner.sample_rate_ratio()
+    }
+
+    fn channels(&self) -> usize {
+        2
+    }
+
+    fn apply_register_write(&mut self, write: ChipRegisterWrite) -> Result<(), ChipError> {
+        self.inner.apply_register_write(write)?;
+        self.volumes.borrow_mut()[self.side] = self.inner.volumes;
+        Ok(())
+    }
+
+    fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
+        if !buffer.len().is_multiple_of(2) {
+            return Err(ChipError::InvalidBufferLength {
+                length: buffer.len(),
+                channels: 2,
+            });
+        }
+        for frame in buffer.as_chunks_mut::<2>().0 {
+            *frame = self.tick();
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+        self.volumes.borrow_mut()[self.side] = self.inner.volumes;
+    }
+
+    fn save_state(&mut self) -> Result<Box<dyn super::SoundChipState>, ChipError> {
+        Ok(Box::new(T6w28Snapshot {
+            inner: self.inner.clone(),
+            volumes: *self.volumes.borrow(),
+        }))
+    }
+
+    fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), ChipError> {
+        let state = state
+            .as_any()
+            .downcast_ref::<T6w28Snapshot>()
+            .ok_or(ChipError::InvalidStateSnapshot(Chip::Sn76489))?;
+        self.inner = state.inner.clone();
+        *self.volumes.borrow_mut() = state.volumes;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundlog::chip::PsgSpec;
+
+    #[test]
+    fn t6w28_silent_noise_half_does_not_advance() {
+        let make_half = || {
+            T6w28Half::new(
+                3_072_000,
+                Sn76496Config::default(),
+                1,
+                Rc::new(RefCell::new([[0; 4]; 2])),
+            )
+            .unwrap()
+        };
+        let mut delayed = make_half();
+        let mut immediate = make_half();
+        for half in [&mut delayed, &mut immediate] {
+            half.apply_register_write(ChipRegisterWrite::Psg(PsgSpec { value: 0xe4 }))
+                .unwrap();
+        }
+        delayed.generate(&mut [0; 500]).unwrap();
+        for half in [&mut delayed, &mut immediate] {
+            half.apply_register_write(ChipRegisterWrite::Psg(PsgSpec { value: 0xf0 }))
+                .unwrap();
+        }
+        let mut a = [0; 1000];
+        let mut b = [0; 1000];
+        delayed.generate(&mut a).unwrap();
+        immediate.generate(&mut b).unwrap();
+        assert_eq!(a, b);
+        assert!(a.iter().any(|&sample| sample != 0));
     }
 }

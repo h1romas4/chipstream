@@ -111,7 +111,7 @@ pub struct Sn76489Settings {
     pub frequency_zero_is_1024: bool,
     /// Use XNOR noise feedback.
     pub xnor: bool,
-    /// The source identifies the unsupported T6W28 variant.
+    /// The source identifies the T6W28 variant.
     pub t6w28: bool,
     /// Unrecognized source flags.
     pub reserved_flags: u8,

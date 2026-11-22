@@ -1442,3 +1442,61 @@ fn factory_can_replace_a_chip_with_its_builtin_feature_disabled() {
     .unwrap();
     assert!(player.render().unwrap().is_some());
 }
+
+#[cfg(feature = "sn76496")]
+#[test]
+fn t6w28_factories_must_supply_both_linked_instances() {
+    let mut builder = VgmBuilder::new();
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_072_000);
+    }
+    builder.add_vgm_command(WaitSamples(10));
+    let mut document = builder.finalize();
+    document.header.sn76489_clock |= 0x8000_0000;
+
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register_optional(Chip::Sn76489, |config| {
+        if config.instance() == Instance::Primary {
+            Ok(Some(Box::new(FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            ))))
+        } else {
+            Ok(None)
+        }
+    });
+    assert!(matches!(
+        VgmSequencer::new_with_factories(
+            document.clone(),
+            44_100,
+            64,
+            Default::default(),
+            factories
+        ),
+        Err(VgmSequencerError::Chip(
+            ChipError::InvalidConfiguration { .. }
+        ))
+    ));
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let created = Arc::clone(&seen);
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::Sn76489, move |config| {
+        let ChipBackendSettings::Sn76489(settings) = config.settings() else {
+            panic!("missing PSG settings");
+        };
+        assert!(settings.t6w28);
+        created.lock().unwrap().push(config.instance());
+        Ok(Box::new(FakeChip::new(
+            config.chip().clone(),
+            config.clock(),
+            Arc::new(Mutex::new(Vec::new())),
+        )))
+    });
+    VgmSequencer::new_with_factories(document, 44_100, 64, Default::default(), factories).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [Instance::Primary, Instance::Secondary]
+    );
+}
