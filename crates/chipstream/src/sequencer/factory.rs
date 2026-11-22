@@ -194,6 +194,17 @@ pub enum ChipBackendSettings {
         /// Whether the VGM requests rear outputs to be muted.
         disable_rear: bool,
     },
+    /// K054539 VGM playback flags.
+    K054539 {
+        /// Swap left and right output.
+        reverse_stereo: bool,
+        /// Mute the reverb return.
+        disable_reverb: bool,
+        /// Latch position writes until key-on.
+        update_at_keyon: bool,
+        /// Unrecognized header flag bits.
+        reserved_flags: u8,
+    },
     /// SegaPCM banking configuration.
     SegaPcm {
         /// Shift applied to the bank bits in the channel control register.

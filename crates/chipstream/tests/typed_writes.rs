@@ -71,6 +71,10 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Pokey(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ga20(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::K053260(s) => (0, s.register, s.value.into()),
+            ChipRegisterWrite::K054539(s) => {
+                let [bank, register] = s.register.to_be_bytes();
+                (bank, register, s.value.into())
+            }
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6295(s) => (0, s.register, s.value.into()),
@@ -169,6 +173,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
             value: 0x02,
         },
         (0, 0x2f, 0x02),
+    );
+    check_mapping(
+        Chip::K054539,
+        K054539Spec {
+            register: 0x022f,
+            value: 0x81,
+        },
+        (2, 0x2f, 0x81),
     );
     check_mapping(
         Chip::Pwm,
