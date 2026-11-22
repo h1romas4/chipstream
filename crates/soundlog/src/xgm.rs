@@ -7,5 +7,5 @@ pub mod convert;
 pub mod document;
 
 pub use command::{XgmCommand, XgmRegisterWrite};
-pub use convert::{XgmPlaybackOptions, XgmVgmGenerator};
-pub use document::{XgmBuilder, XgmDocument, XgmSample, XgmTiming, XgmTrack};
+pub use convert::{XgmPlaybackError, XgmPlaybackOptions, XgmVgmGenerator};
+pub use document::{XgmBuilder, XgmDocument, XgmParseLimits, XgmSample, XgmTiming, XgmTrack};

@@ -15,6 +15,44 @@ fn invalid(message: impl Into<String>) -> ParseError {
     ParseError::DataInconsistency(message.into())
 }
 
+fn check_limit(resource: &str, value: usize, limit: Option<usize>) -> Result<(), ParseError> {
+    if let Some(limit) = limit
+        && value > limit
+    {
+        return Err(invalid(format!(
+            "XGM {resource} limit exceeded (maximum {limit})"
+        )));
+    }
+    Ok(())
+}
+
+/// Resource limits for parsing untrusted XGM files.
+///
+/// `None` disables a limit; zero permits no items or bytes. The sample bank is
+/// additionally bounded by the XGM format itself to less than 16 MiB.
+#[derive(Debug, Clone, Copy)]
+pub struct XgmParseLimits {
+    /// Maximum total input bytes, including all tracks and metadata. Default: 64 MiB.
+    pub max_input_bytes: Option<usize>,
+    /// Maximum number of tracks. Default: 256.
+    pub max_tracks: Option<usize>,
+    /// Maximum total commands across all tracks. Default: 1,000,000.
+    pub max_commands: Option<usize>,
+    /// Maximum GD3 chunk size in bytes, including its 12-byte header. Default: 1 MiB.
+    pub max_gd3_bytes: Option<usize>,
+}
+
+impl Default for XgmParseLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: Some(64 * 1024 * 1024),
+            max_tracks: Some(256),
+            max_commands: Some(1_000_000),
+            max_gd3_bytes: Some(1024 * 1024),
+        }
+    }
+}
+
 /// Frame timing specified by an XGM file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XgmTiming {
@@ -81,11 +119,20 @@ pub struct XgmDocument {
 }
 
 impl XgmDocument {
-    /// Parse an uncompressed XGM v1 file.
+    /// Parse an uncompressed XGM v1 file with [`XgmParseLimits::default`].
     ///
     /// For compatibility with files whose GD3 length is zero despite containing
     /// metadata, the eleven UTF-16 fields are read to their terminators.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
+        Self::parse_with_limits(bytes, XgmParseLimits::default())
+    }
+
+    /// Parse an uncompressed XGM v1 file with caller-selected resource limits.
+    ///
+    /// Limits are checked before copying sample or metadata data, and before
+    /// retaining each track or command.
+    pub fn parse_with_limits(bytes: &[u8], limits: XgmParseLimits) -> Result<Self, ParseError> {
+        check_limit("input bytes", bytes.len(), limits.max_input_bytes)?;
         let header = read_slice(bytes, 0, HEADER_SIZE)?;
         if &header[..4] != b"XGM " {
             return Err(ParseError::InvalidIdent(header[..4].try_into().unwrap()));
@@ -117,7 +164,9 @@ impl XgmDocument {
         }
         let mut pos = HEADER_SIZE + sample_len;
         let mut tracks = Vec::new();
+        let mut command_count = 0usize;
         loop {
+            check_limit("track count", tracks.len() + 1, limits.max_tracks)?;
             let len = read_u32_le_at(bytes, pos)? as usize;
             pos = pos
                 .checked_add(4)
@@ -126,17 +175,20 @@ impl XgmDocument {
             pos = pos
                 .checked_add(len)
                 .ok_or_else(|| invalid("XGM track length overflow"))?;
-            let commands = parse_commands(music)?;
+            let commands = parse_commands(music, &mut command_count, limits.max_commands)?;
             let gd3 = if flags & 2 != 0 {
                 let metadata_len = read_u32_le_at(bytes, pos + 8)? as usize;
                 let total = if metadata_len == 0 {
                     let mut end = pos + 12;
+                    check_limit("GD3 bytes", 12, limits.max_gd3_bytes)?;
                     for _ in 0..11 {
                         loop {
-                            let code = read_u16_le_at(bytes, end)?;
-                            end = end
+                            let next = end
                                 .checked_add(2)
                                 .ok_or_else(|| invalid("XGM GD3 length overflow"))?;
+                            check_limit("GD3 bytes", next - pos, limits.max_gd3_bytes)?;
+                            let code = read_u16_le_at(bytes, end)?;
+                            end = next;
                             if code == 0 {
                                 break;
                             }
@@ -148,6 +200,7 @@ impl XgmDocument {
                         .checked_add(12)
                         .ok_or_else(|| invalid("XGM GD3 length overflow"))?
                 };
+                check_limit("GD3 bytes", total, limits.max_gd3_bytes)?;
                 let mut raw = read_slice(bytes, pos, total)?.to_vec();
                 if metadata_len == 0 {
                     let len = u32::try_from(total - 12)
@@ -321,11 +374,20 @@ impl XgmBuilder {
     }
 }
 
-fn parse_commands(bytes: &[u8]) -> Result<Vec<XgmCommand>, ParseError> {
+fn parse_commands(
+    bytes: &[u8],
+    command_count: &mut usize,
+    max_commands: Option<usize>,
+) -> Result<Vec<XgmCommand>, ParseError> {
     let mut commands = Vec::new();
     let mut offsets = Vec::new();
     let mut pos = 0;
     while pos < bytes.len() {
+        let next_count = command_count
+            .checked_add(1)
+            .ok_or_else(|| invalid("XGM command count overflow"))?;
+        check_limit("command count", next_count, max_commands)?;
+        *command_count = next_count;
         offsets.push(pos);
         let opcode = bytes[pos];
         pos += 1;

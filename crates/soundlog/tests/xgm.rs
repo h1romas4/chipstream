@@ -1,12 +1,13 @@
 #![cfg(feature = "xgm")]
 
+use soundlog::ParseError;
 use soundlog::meta::Gd3;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::{VgmCommandGenerator, VgmStream};
 use soundlog::xgm::{
-    XgmBuilder, XgmCommand, XgmDocument, XgmPlaybackOptions, XgmRegisterWrite, XgmTiming, XgmTrack,
-    XgmVgmGenerator,
+    XgmBuilder, XgmCommand, XgmDocument, XgmParseLimits, XgmPlaybackError, XgmPlaybackOptions,
+    XgmRegisterWrite, XgmTiming, XgmTrack, XgmVgmGenerator,
 };
 
 fn track(commands: Vec<XgmCommand>) -> XgmTrack {
@@ -166,6 +167,7 @@ fn loops_are_bounded_by_options_and_pal_timing() {
         XgmPlaybackOptions {
             track: 0,
             loop_count: Some(2),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -228,7 +230,244 @@ fn a_loop_without_output_or_time_progress_fails() {
     let options = XgmPlaybackOptions {
         track: 0,
         loop_count: None,
+        ..Default::default()
     };
     let mut generator = XgmVgmGenerator::new(builder.finalize().unwrap(), options).unwrap();
     assert!(generator.next_command().is_err());
+}
+
+#[test]
+fn parse_limits_count_input_tracks_commands_and_metadata() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    for _ in 0..2 {
+        builder.add_track(XgmTrack {
+            commands: vec![XgmCommand::Frame, XgmCommand::End],
+            gd3: Some(Gd3::default()),
+        });
+    }
+    let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+    let limits = XgmParseLimits {
+        max_input_bytes: Some(bytes.len()),
+        max_tracks: Some(2),
+        max_commands: Some(4),
+        max_gd3_bytes: Some(34),
+    };
+    assert!(XgmDocument::parse_with_limits(&bytes, limits).is_ok());
+    for (stricter, resource) in [
+        (
+            XgmParseLimits {
+                max_input_bytes: Some(bytes.len() - 1),
+                ..limits
+            },
+            "input bytes",
+        ),
+        (
+            XgmParseLimits {
+                max_tracks: Some(1),
+                ..limits
+            },
+            "track count",
+        ),
+        (
+            XgmParseLimits {
+                max_commands: Some(3),
+                ..limits
+            },
+            "command count",
+        ),
+        (
+            XgmParseLimits {
+                max_gd3_bytes: Some(33),
+                ..limits
+            },
+            "GD3 bytes",
+        ),
+    ] {
+        let error = XgmDocument::parse_with_limits(&bytes, stricter).unwrap_err();
+        assert!(error.to_string().contains(resource), "{error}");
+    }
+    let mut zero_length = bytes.clone();
+    let gd3 = 0x104 + 4 + 2;
+    zero_length[gd3 + 8..gd3 + 12].fill(0);
+    assert!(XgmDocument::parse_with_limits(&zero_length, limits).is_ok());
+    assert!(
+        XgmDocument::parse_with_limits(
+            &zero_length,
+            XgmParseLimits {
+                max_gd3_bytes: Some(33),
+                ..limits
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        XgmDocument::parse_with_limits(
+            &bytes,
+            XgmParseLimits {
+                max_input_bytes: None,
+                max_tracks: None,
+                max_commands: None,
+                max_gd3_bytes: None,
+            }
+        )
+        .is_ok()
+    );
+}
+
+fn playback_error(error: ParseError) -> XgmPlaybackError {
+    match error {
+        ParseError::GeneratorError(error) => *error.downcast_ref::<XgmPlaybackError>().unwrap(),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn playback_limits_survive_output_and_reset_only_on_frame_waits() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![
+        XgmCommand::Psg(vec![0x90]),
+        XgmCommand::Loop(0),
+    ]));
+    let options = XgmPlaybackOptions {
+        loop_count: None,
+        max_commands_per_frame: Some(3),
+        ..Default::default()
+    };
+    let mut generator = XgmVgmGenerator::new(builder.finalize().unwrap(), options).unwrap();
+    assert!(matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::Sn76489Write(..))
+    ));
+    assert!(matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::Sn76489Write(..))
+    ));
+    let expected = XgmPlaybackError::CommandLimitExceeded {
+        max_commands_per_frame: 3,
+    };
+    assert_eq!(
+        playback_error(generator.next_command().unwrap_err()),
+        expected
+    );
+    assert_eq!(
+        playback_error(generator.next_command().unwrap_err()),
+        expected
+    );
+
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::Frame, XgmCommand::Loop(0)]));
+    let doc = builder.finalize().unwrap();
+    let options = XgmPlaybackOptions {
+        loop_count: None,
+        max_frames: Some(2),
+        max_commands_per_frame: Some(2),
+        ..Default::default()
+    };
+    let mut generator = XgmVgmGenerator::new(doc.clone(), options).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            generator.next_command().unwrap(),
+            Some(VgmCommand::WaitSamples(_))
+        ));
+    }
+
+    assert_eq!(
+        playback_error(generator.next_command().unwrap_err()),
+        XgmPlaybackError::FrameLimitExceeded { max_frames: 2 }
+    );
+    let unlimited = XgmPlaybackOptions {
+        max_frames: None,
+        max_commands_per_frame: None,
+        ..options
+    };
+    let mut generator = XgmVgmGenerator::new(doc, unlimited).unwrap();
+    for _ in 0..3 {
+        assert!(matches!(
+            generator.next_command().unwrap(),
+            Some(VgmCommand::WaitSamples(_))
+        ));
+    }
+}
+
+#[test]
+fn playback_limits_no_output_pcm_loops_and_zero_budget() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![
+        XgmCommand::Pcm {
+            channel: 0,
+            priority: 0,
+            sample_id: 0,
+        },
+        XgmCommand::Loop(0),
+    ]));
+    let doc = builder.finalize().unwrap();
+    for limit in [0, 3] {
+        let mut generator = XgmVgmGenerator::new(
+            doc.clone(),
+            XgmPlaybackOptions {
+                loop_count: None,
+                max_commands_per_frame: Some(limit),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            playback_error(generator.next_command().unwrap_err()),
+            XgmPlaybackError::CommandLimitExceeded {
+                max_commands_per_frame: limit
+            }
+        );
+    }
+    let generator = XgmVgmGenerator::new(
+        doc,
+        XgmPlaybackOptions {
+            loop_count: None,
+            max_commands_per_frame: Some(3),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut stream = VgmStream::from_generator(Box::new(generator));
+    assert_eq!(
+        playback_error(stream.next().unwrap().unwrap_err()),
+        XgmPlaybackError::CommandLimitExceeded {
+            max_commands_per_frame: 3
+        }
+    );
+}
+
+#[test]
+fn default_limits_reject_excess_commands_and_frames() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::End]));
+    let mut bytes = builder.finalize().unwrap().to_bytes().unwrap();
+    bytes.truncate(0x104);
+    bytes.extend_from_slice(&1_000_001u32.to_le_bytes());
+    bytes.resize(0x104 + 4 + 1_000_000, 0);
+    bytes.push(0x7f);
+    let error = XgmDocument::parse(&bytes).unwrap_err();
+    assert!(error.to_string().contains("command count"), "{error}");
+
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::Frame, XgmCommand::Loop(0)]));
+    let mut generator = XgmVgmGenerator::new(
+        builder.finalize().unwrap(),
+        XgmPlaybackOptions {
+            loop_count: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for _ in 0..100_000 {
+        assert!(matches!(
+            generator.next_command().unwrap(),
+            Some(VgmCommand::WaitSamples(_))
+        ));
+    }
+    assert_eq!(
+        playback_error(generator.next_command().unwrap_err()),
+        XgmPlaybackError::FrameLimitExceeded {
+            max_frames: 100_000
+        }
+    );
 }

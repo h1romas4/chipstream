@@ -7,19 +7,26 @@ use crate::chip::{PsgSpec, Ym2612Spec};
 use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::{VgmCommandGenerator, VgmStream};
 use std::collections::VecDeque;
+use std::fmt;
 
 const PCM_RATE: u64 = 14_000;
 const VGM_RATE: u64 = 44_100;
-const MAX_COMMANDS_WITHOUT_OUTPUT: usize = 1_048_576;
 
 /// Playback options for a single XGM track.
 #[derive(Debug, Clone, Copy)]
 pub struct XgmPlaybackOptions {
     /// Zero-based track index.
     pub track: usize,
-    /// Number of plays, including the first; `None` loops indefinitely.
-    /// Zero is treated as one play.
+    /// Number of plays, including the first; `None` does not limit loop count.
+    /// Zero is treated as one play. The frame and command limits still apply.
     pub loop_count: Option<u32>,
+    /// Maximum elapsed XGM frames, including repeated frames. Default: 100,000.
+    /// `None` disables the limit, including for infinite playback.
+    pub max_frames: Option<u32>,
+    /// Maximum XGM commands between frame waits. Default: 100,000.
+    /// `None` disables the limit; zero rejects every command. Disabling it can
+    /// make `next_command` run indefinitely on a loop without output or waits.
+    pub max_commands_per_frame: Option<u32>,
 }
 
 impl Default for XgmPlaybackOptions {
@@ -27,7 +34,51 @@ impl Default for XgmPlaybackOptions {
         Self {
             track: 0,
             loop_count: Some(1),
+            max_frames: Some(100_000),
+            max_commands_per_frame: Some(100_000),
         }
+    }
+}
+
+/// An XGM playback resource limit was exceeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XgmPlaybackError {
+    /// Playback would advance beyond the configured total frame count.
+    FrameLimitExceeded {
+        /// Configured frame limit.
+        max_frames: u32,
+    },
+    /// Too many commands were executed without a frame wait.
+    CommandLimitExceeded {
+        /// Configured command limit.
+        max_commands_per_frame: u32,
+    },
+}
+
+impl fmt::Display for XgmPlaybackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FrameLimitExceeded { max_frames } => {
+                write!(
+                    f,
+                    "XGM playback frame limit exceeded (maximum {max_frames})"
+                )
+            }
+            Self::CommandLimitExceeded {
+                max_commands_per_frame,
+            } => write!(
+                f,
+                "XGM playback command limit exceeded (maximum {max_commands_per_frame} commands without a frame wait)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for XgmPlaybackError {}
+
+impl From<XgmPlaybackError> for ParseError {
+    fn from(error: XgmPlaybackError) -> Self {
+        Self::GeneratorError(Box::new(error))
     }
 }
 
@@ -49,6 +100,8 @@ pub struct XgmVgmGenerator {
     options: XgmPlaybackOptions,
     command_index: usize,
     loops: u32,
+    frames: u32,
+    commands_since_frame: u32,
     channels: [PcmChannel; 4],
     pending: VecDeque<VgmCommand>,
     time: u64,
@@ -62,6 +115,9 @@ pub struct XgmVgmGenerator {
 
 impl XgmVgmGenerator {
     /// Validate a document and create a generator for the selected track.
+    ///
+    /// During playback, exceeding a limit returns [`ParseError::GeneratorError`]
+    /// containing an [`XgmPlaybackError`].
     pub fn new(document: XgmDocument, mut options: XgmPlaybackOptions) -> Result<Self, ParseError> {
         document.validate()?;
         if options.track >= document.tracks.len() {
@@ -77,6 +133,8 @@ impl XgmVgmGenerator {
             options,
             command_index: 0,
             loops: 0,
+            frames: 0,
+            commands_since_frame: 0,
             channels: [PcmChannel::default(); 4],
             pending: VecDeque::new(),
             time: 0,
@@ -181,7 +239,7 @@ impl XgmVgmGenerator {
 
 impl VgmCommandGenerator for XgmVgmGenerator {
     fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
-        for _ in 0..MAX_COMMANDS_WITHOUT_OUTPUT {
+        loop {
             if let Some(command) = self.pending.pop_front() {
                 return Ok(Some(command));
             }
@@ -200,9 +258,28 @@ impl VgmCommandGenerator for XgmVgmGenerator {
                     "XGM track ended without an end or loop command".into(),
                 ));
             };
+            if let Some(limit) = self.options.max_commands_per_frame
+                && self.commands_since_frame >= limit
+            {
+                return Err(XgmPlaybackError::CommandLimitExceeded {
+                    max_commands_per_frame: limit,
+                }
+                .into());
+            }
+            if matches!(command, XgmCommand::Frame)
+                && let Some(limit) = self.options.max_frames
+                && self.frames >= limit
+            {
+                return Err(XgmPlaybackError::FrameLimitExceeded { max_frames: limit }.into());
+            }
+            self.commands_since_frame = self.commands_since_frame.saturating_add(1);
             self.command_index += 1;
             match command {
-                XgmCommand::Frame => self.wait = self.document.timing.frame_samples(),
+                XgmCommand::Frame => {
+                    self.frames = self.frames.saturating_add(1);
+                    self.commands_since_frame = 0;
+                    self.wait = self.document.timing.frame_samples();
+                }
                 XgmCommand::Psg(bytes) => {
                     self.pending.extend(bytes.iter().map(|&value| {
                         VgmCommand::Sn76489Write(Instance::Primary, PsgSpec { value })
@@ -253,9 +330,6 @@ impl VgmCommandGenerator for XgmVgmGenerator {
                 }
             }
         }
-        Err(ParseError::CommandLimitExceeded {
-            limit: MAX_COMMANDS_WITHOUT_OUTPUT as u32,
-        })
     }
 }
 

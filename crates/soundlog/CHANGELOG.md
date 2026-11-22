@@ -6,6 +6,7 @@
 
 - Add: XGM v1 parsing and typed document construction with shared PCM samples, multiple tracks, and GD3 metadata (`xgm` feature).
 - Add: Lazy XGM playback through `VgmCommandGenerator`, including frame timing, looping, and four-channel PCM mixing.
+- Add: Configurable default XGM parsing and playback resource limits, including protection against loops without frame waits.
 
 ## v0.17.0
 

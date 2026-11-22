@@ -464,6 +464,19 @@ simulating its Z80 instruction timing. Select the track and loop count with
 Parsing accepts GD3 chunks with a zero length and eleven terminated fields,
 and serialization writes a corrected length.
 
+`XgmDocument::parse` defaults to limits of 64 MiB of input, 256 tracks,
+1,000,000 commands across all tracks, and 1 MiB per GD3 chunk (including its
+header). Use `XgmDocument::parse_with_limits` and `XgmParseLimits` to adjust
+them. These are parsing limits, not limits on programmatically built documents.
+
+Playback defaults to at most 100,000 frames in total and 100,000 XGM commands
+between frame waits, including commands that produce output and repeated loops.
+Configure these independently via `XgmPlaybackOptions`. Even with `loop_count:
+None`, the playback limits remain active. Each limit can be disabled with
+`None`; disabling the command limit can make a no-wait, no-output loop run
+indefinitely. Exceeding a playback limit returns a `ParseError::GeneratorError`
+containing `XgmPlaybackError`. `VgmStream` also has its own independent limits.
+
 ## VgmCallbackStream overview
 
 `VgmCallbackStream` wraps `VgmStream` to provide automatic chip state tracking
