@@ -6,6 +6,8 @@ mod error;
 pub mod mdx;
 pub mod meta;
 pub mod vgm;
+#[cfg(feature = "xgm")]
+pub mod xgm;
 
 pub use error::ParseError;
 pub use vgm::command::*;

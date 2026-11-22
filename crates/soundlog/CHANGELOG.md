@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.18.0 (Unreleased)
 
-- [ ] Add: Initial XGM format support (`xgm` feature).
+### Added
+
+- Add: XGM v1 parsing and typed document construction with shared PCM samples, multiple tracks, and GD3 metadata (`xgm` feature).
+- Add: Lazy XGM playback through `VgmCommandGenerator`, including frame timing, looping, and four-channel PCM mixing.
 
 ## v0.17.0
 

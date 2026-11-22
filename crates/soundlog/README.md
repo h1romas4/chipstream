@@ -5,8 +5,8 @@
 soundlog — builder, parser and stream-processor for retro sound-chip register-write logs
 
 `soundlog` is a small crate for building and parsing register-write
-logs for retro sound chips. It currently supports the VGM
-(Video Game Music) file format and MDX-to-VGM conversion.
+logs for retro sound chips. It supports the VGM (Video Game Music) file format,
+MDX-to-VGM conversion, and XGM v1.
 
 Key features:
 - Builder API to construct VGM documents programmatically.
@@ -27,8 +27,8 @@ Key features:
 - Processing limits: Configurable budgets for raw commands without time progress and DAC stream expansion per input wait.
 - Chip state tracking: Monitor register writes to track key on/off events and
   extract tone information (frequency, pitch) from sound chip registers in real-time.
-- Format conversion: Other supported formats can use the same VGM
-  stream-processing interface for playback; MDX is currently supported.
+- Format conversion: MDX and XGM v1 can use the same VGM stream-processing
+  interface for playback.
 
 ## Quick Start — building a VGM player
 
@@ -421,6 +421,48 @@ for result in &mut stream {
 }
 # }
 ```
+
+### XGM v1
+
+Enable the optional `xgm` feature to parse or build XGM v1 documents and
+play a track through `VgmStream`. XGM2 and gzip-compressed XGZ input are not
+supported. A document can contain multiple tracks sharing one sample bank.
+
+```rust
+# #[cfg(feature = "xgm")]
+# {
+use soundlog::vgm::VgmStream;
+use soundlog::xgm::{XgmBuilder, XgmCommand, XgmDocument, XgmPlaybackOptions,
+                    XgmTiming, XgmTrack, XgmVgmGenerator};
+
+let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+builder.set_sample(1, &[0x20; 256])?;
+builder.add_track(XgmTrack {
+    commands: vec![
+        XgmCommand::Pcm { channel: 0, priority: 0, sample_id: 1 },
+        XgmCommand::Frame,
+        XgmCommand::End,
+    ],
+    gd3: None,
+});
+let bytes = builder.finalize()?.to_bytes()?;
+let document = XgmDocument::parse(&bytes)?;
+let header = document.timing.vgm_header();
+let generator = XgmVgmGenerator::new(document, XgmPlaybackOptions::default())?;
+let mut stream = VgmStream::from_generator(Box::new(generator));
+# let _ = (&header, &mut stream);
+# }
+# Ok::<(), soundlog::ParseError>(())
+```
+
+The header declares the YM2612 and SN76489 clocks for the selected timing;
+pass it to the audio player or register-write consumer. The generator mixes up
+to four signed PCM channels at the nominal 14 kHz rate and emits YM2612 DAC
+writes on the 44.1 kHz VGM timeline. It approximates the driver rather than
+simulating its Z80 instruction timing. Select the track and loop count with
+`XgmPlaybackOptions`; looping is handled by the generator, not the stream.
+Parsing accepts GD3 chunks with a zero length and eleven terminated fields,
+and serialization writes a corrected length.
 
 ## VgmCallbackStream overview
 
