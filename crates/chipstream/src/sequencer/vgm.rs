@@ -478,6 +478,11 @@ struct EventContext<'a, 'callbacks> {
     events: &'a mut VecDeque<(usize, PendingWriteEvent)>,
 }
 
+struct WritePosition {
+    event: usize,
+    frame: usize,
+}
+
 /// Linear output-frame fade, including frames already buffered at its start.
 #[derive(Clone)]
 struct Fade {
@@ -526,13 +531,16 @@ impl Voice {
     fn apply_write(
         &mut self,
         write: ChipRegisterWrite,
-        event_position: usize,
-        sample_frame: usize,
+        position: WritePosition,
         output_rate: u32,
         vgm_initial: bool,
         dac_stream_id: Option<u8>,
         context: &mut EventContext<'_, '_>,
     ) -> Result<bool, VgmSequencerError> {
+        let WritePosition {
+            event: event_position,
+            frame: sample_frame,
+        } = position;
         let (bank, register, value) = write.parts();
         let is_wonderswan_memory = matches!(write, ChipRegisterWrite::WonderSwan(_));
         let is_bank_write = matches!(write, ChipRegisterWrite::MultiPcmBank(_))
@@ -707,8 +715,10 @@ impl Voice {
             };
             self.apply_write(
                 write,
-                event_position,
-                sample_frame,
+                WritePosition {
+                    event: event_position,
+                    frame: sample_frame,
+                },
                 output_rate,
                 false,
                 None,
@@ -2921,8 +2931,10 @@ impl<'a> VgmSequencer<'a> {
                     .ok_or(VgmSequencerError::DurationOverflow)?;
                 let stop_stream = voice.apply_write(
                     write,
-                    self.available,
-                    sample_frame,
+                    WritePosition {
+                        event: self.available,
+                        frame: sample_frame,
+                    },
                     self.output_rate,
                     vgm_initial,
                     dac_stream_id,
@@ -2953,8 +2965,10 @@ impl<'a> VgmSequencer<'a> {
                     .ok_or(VgmSequencerError::DurationOverflow)?;
                 voice.apply_write(
                     write,
-                    self.available,
-                    sample_frame,
+                    WritePosition {
+                        event: self.available,
+                        frame: sample_frame,
+                    },
                     self.output_rate,
                     false,
                     None,

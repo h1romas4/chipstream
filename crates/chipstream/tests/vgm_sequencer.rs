@@ -1,10 +1,10 @@
-#[cfg(feature = "sn76496")]
-use chipstream::chip::ChipError;
 use chipstream::sequencer::{
     ChipFactoryRegistry, PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
 };
 #[cfg(feature = "okim6258")]
 use soundlog::chip::Okim6258Spec;
+#[cfg(feature = "sn76496")]
+use soundlog::chip::PsgSpec;
 use soundlog::chip::{Chip, Ym2608Spec, Ym2610Spec, Ym2612Spec};
 use soundlog::vgm::command::{Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
@@ -474,28 +474,26 @@ fn sn76489_vgm_produces_audio() {
 
 #[test]
 #[cfg(feature = "sn76496")]
-fn t6w28_header_is_rejected_for_document_and_stream() {
+fn t6w28_header_plays_for_document_and_stream() {
     let mut builder = VgmBuilder::new();
-    builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
-    builder.add_vgm_command(WaitSamples(100));
+    for instance in [Instance::Primary, Instance::Secondary] {
+        builder.register_chip(Chip::Sn76489, instance, 3_579_545);
+    }
+    for value in [0x82, 0x05, 0x90] {
+        builder.add_chip_write(Instance::Primary, PsgSpec { value });
+    }
+    builder.add_vgm_command(WaitSamples(1000));
     let mut doc = builder.finalize();
     assert_eq!(doc.header.misc().t6w28_detected, Some(false));
     assert!(VgmSequencer::new(doc.clone(), 44_100, 128, Default::default()).is_ok());
     doc.header.sn76489_clock |= 0x8000_0000;
     assert_eq!(doc.header.misc().t6w28_detected, Some(true));
     let bytes: Vec<u8> = doc.clone().into();
-    for result in [
-        VgmSequencer::new(doc, 44_100, 128, Default::default()),
-        VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()),
-    ] {
-        assert!(matches!(
-            result,
-            Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
-                chip: Chip::Sn76489,
-                reason: "T6W28 PSG is not supported",
-            }))
-        ));
-    }
+    let mut document = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
+    let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
+    let expected = render_all(&mut document);
+    assert!(expected.iter().any(|frame| frame[0].abs() > 0.001));
+    assert_eq!(render_all(&mut stream), expected);
 }
 
 #[test]

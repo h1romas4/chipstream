@@ -360,7 +360,7 @@ impl Es550x {
                 if !is_5505 && voice.control & 0x2000 != 0 {
                     let raw = (word & 0xff00) | 0x80;
                     let exponent = raw >> 13;
-                    let mut mantissa = (raw << 3) as u16;
+                    let mut mantissa = raw << 3;
                     if exponent != 0 {
                         mantissa = (mantissa >> 1) | (!mantissa & 0x8000);
                     }

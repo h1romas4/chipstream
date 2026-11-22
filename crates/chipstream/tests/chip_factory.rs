@@ -416,7 +416,11 @@ fn generator_rejects_invalid_clock_ranges() {
         (Chip::Ym2151, Instance::Primary, 1..=4),
         (Chip::Okim6258, Instance::Secondary, 1..=4),
         (Chip::Okim6258, Instance::Primary, 0..=4),
-        (Chip::Okim6258, Instance::Primary, 4..=1),
+        (
+            Chip::Okim6258,
+            Instance::Primary,
+            std::ops::RangeInclusive::new(4, 1),
+        ),
     ] {
         let config = GeneratorConfig {
             header: soundlog::vgm::VgmHeader {
@@ -735,7 +739,10 @@ fn legacy_vgm_clock_aliases_reach_the_correct_factories() {
                 ]
             );
             while player.render().unwrap().is_some() {}
-            assert_eq!(*writes.lock().unwrap(), [alias.clone()]);
+            assert_eq!(
+                writes.lock().unwrap().as_slice(),
+                std::slice::from_ref(&alias)
+            );
         }
     }
 }

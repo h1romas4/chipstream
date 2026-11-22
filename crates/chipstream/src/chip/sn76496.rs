@@ -345,9 +345,9 @@ impl T6w28Half {
         let mut output = [0; 2];
         let channels = if self.side == 0 { 0..3 } else { 3..4 };
         for channel in channels {
-            let polarity = if channel < 3 && self.inner.periods[channel] == 0 {
-                1
-            } else if self.inner.outputs[channel] {
+            let polarity = if (channel < 3 && self.inner.periods[channel] == 0)
+                || self.inner.outputs[channel]
+            {
                 1
             } else {
                 -1

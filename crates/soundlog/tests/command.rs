@@ -35,7 +35,6 @@ fn qsound_uses_data_then_register_and_keeps_high_bit_data_primary() {
     bytes[offset..offset + 4].copy_from_slice(&[0xc4, 0x80, 0xfe, 0x91]);
     let commands: Vec<_> = VgmStream::from_vgm(bytes)
         .unwrap()
-        .into_iter()
         .filter_map(|result| match result.unwrap() {
             StreamResult::Command(command) => Some(command),
             _ => None,

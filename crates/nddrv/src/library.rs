@@ -1809,9 +1809,7 @@ mod tests {
         {
             assert!(ChipTag::new(&chip).software_supported(), "{chip:?}");
         }
-        for chip in [Chip::Ay8910] {
-            assert!(!ChipTag::new(&chip).software_supported(), "{chip:?}");
-        }
+        assert!(!ChipTag::new(&Chip::Ay8910).software_supported());
     }
 
     #[test]

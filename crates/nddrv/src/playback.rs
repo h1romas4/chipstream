@@ -5978,7 +5978,9 @@ mod tests {
             };
         }
 
-        let cases: &[(Chip, u32, bool, &[(u8, u8, u8)], (u8, u8, u8), u8)] = &[
+        type RegisterWrite = (u8, u8, u8);
+        type PitchedCase<'a> = (Chip, u32, bool, &'a [RegisterWrite], RegisterWrite, u8);
+        let cases: &[PitchedCase<'_>] = &[
             (
                 Chip::Saa1099,
                 8_000_000,
