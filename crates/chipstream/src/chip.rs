@@ -49,6 +49,10 @@ mod okim6295;
 mod pokey;
 #[cfg(feature = "pwm")]
 mod pwm;
+#[cfg(feature = "qsound")]
+mod qsound;
+#[cfg(feature = "qsound")]
+mod qsound_tables;
 #[cfg(feature = "rf5c")]
 mod rf5c;
 #[cfg(feature = "saa1099")]
@@ -115,6 +119,8 @@ pub use okim6295::Okim6295;
 pub use pokey::Pokey;
 #[cfg(feature = "pwm")]
 pub use pwm::Pwm;
+#[cfg(feature = "qsound")]
+pub use qsound::Qsound;
 #[cfg(feature = "rf5c")]
 pub use rf5c::Rf5c;
 #[cfg(feature = "saa1099")]

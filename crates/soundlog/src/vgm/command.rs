@@ -2543,17 +2543,17 @@ impl CommandSpec for chip::QsoundSpec {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push(self.register);
         dest.push(((self.value >> 8) & 0xFF) as u8);
         dest.push((self.value & 0xFF) as u8);
+        dest.push(self.register);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
     where
         Self: Sized,
     {
-        let reg = read_u8_at(bytes, off)?;
-        let hi = read_u8_at(bytes, off + 1)?;
-        let lo = read_u8_at(bytes, off + 2)?;
+        let hi = read_u8_at(bytes, off)?;
+        let lo = read_u8_at(bytes, off + 1)?;
+        let reg = read_u8_at(bytes, off + 2)?;
         let val = ((hi as u16) << 8) | (lo as u16);
         Ok((
             chip::QsoundSpec {

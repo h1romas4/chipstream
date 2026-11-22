@@ -7,10 +7,10 @@
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, GbDmgSpec,
     Huc6280Spec, K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec,
-    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec,
-    Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, VsuSpec,
-    WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
-    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
+    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, QsoundSpec, Rf5c68U8Spec,
+    Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec,
+    VsuSpec, WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec,
+    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf271Spec,
     Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
@@ -45,6 +45,8 @@ use super::Okim6295;
 use super::Pokey;
 #[cfg(feature = "pwm")]
 use super::Pwm;
+#[cfg(feature = "qsound")]
+use super::Qsound;
 #[cfg(feature = "rf5c")]
 use super::Rf5c;
 #[cfg(feature = "saa1099")]
@@ -198,6 +200,7 @@ define_writes! {
     NesApu(NesApuSpec, NesApu, |s| (0, s.register, u32::from(s.value))),
     Upd7759(Upd7759Spec, Upd7759, |s| (0, s.register, u32::from(s.value))),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
+    Qsound(QsoundSpec, Qsound, |s| (0, s.register, u32::from(s.value))),
     Rf5c68U8(Rf5c68U8Spec, Rf5c68, |s| (0, s.offset, u32::from(s.value))),
     Rf5c164U8(Rf5c164U8Spec, Rf5c164, |s| (0, s.offset, u32::from(s.value))),
     Rf5c68U16(Rf5c68U16Spec, Rf5c68, |s| {
@@ -255,6 +258,7 @@ impl ChipRegisterWrite {
             NesApuWrite(i, s) => (*i, Self::NesApu(s.clone())),
             Upd7759Write(i, s) => (*i, Self::Upd7759(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
+            QsoundWrite(i, s) => (*i, Self::Qsound(s.clone())),
             Rf5c68U8Write(i, s) => (*i, Self::Rf5c68U8(s.clone())),
             Rf5c68U16Write(i, s) => (*i, Self::Rf5c68U16(s.clone())),
             Rf5c164U8Write(i, s) => (*i, Self::Rf5c164U8(s.clone())),
@@ -326,6 +330,8 @@ typed_write!(X1010, X1010Spec, X1010);
 typed_write!(Ymz280b, Ymz280bSpec, Ymz280b);
 #[cfg(feature = "ymf271")]
 typed_write!(Ymf271, Ymf271Spec, Ymf271);
+#[cfg(feature = "qsound")]
+typed_write!(Qsound, QsoundSpec, Qsound);
 #[cfg(feature = "multipcm")]
 typed_write!(MultiPcm, MultiPcmSpec, MultiPcm);
 #[cfg(feature = "multipcm")]

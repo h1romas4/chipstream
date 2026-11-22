@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::library::VgmSettings;
 
 /// Native software-only sequencer backends exposed by NDDRV.
-pub const SOFTWARE_CHIPS: [Chip; 25] = [
+pub const SOFTWARE_CHIPS: [Chip; 26] = [
     Chip::SegaPcm,
     Chip::Pwm,
     Chip::Rf5c68,
@@ -33,6 +33,7 @@ pub const SOFTWARE_CHIPS: [Chip; 25] = [
     Chip::X1010,
     Chip::Ymz280b,
     Chip::Ymf271,
+    Chip::Qsound,
     Chip::MultiPcm,
     Chip::Upd7759,
     Chip::Mikey,
@@ -40,7 +41,7 @@ pub const SOFTWARE_CHIPS: [Chip; 25] = [
 ];
 
 pub fn software_instances(chip: &Chip) -> impl Iterator<Item = ChipInstance> + use<> {
-    let supports_secondary = *chip != Chip::Mikey;
+    let supports_secondary = !matches!(chip, Chip::Mikey | Chip::Qsound);
     ChipInstance::ALL
         .into_iter()
         .filter(move |instance| supports_secondary || *instance == ChipInstance::Primary)

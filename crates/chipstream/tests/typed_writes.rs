@@ -69,6 +69,7 @@ impl SoundChip for RecordingChip {
                 (bank, register, s.value.into())
             }
             ChipRegisterWrite::Pwm(s) => (0, s.register, s.value),
+            ChipRegisterWrite::Qsound(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Rf5c68U8(s) => (0, s.offset, s.value.into()),
             ChipRegisterWrite::Rf5c164U8(s) => (0, s.offset, s.value.into()),
             ChipRegisterWrite::Rf5c68U16(s) => {

@@ -8360,8 +8360,8 @@ mod tests {
             instances: 2,
             ..ay.clone()
         };
-        let qsound = ChipTag {
-            name: "QSound",
+        let scsp = ChipTag {
+            name: "SCSP",
             instances: 1,
             ymfm: false,
             ym2149_compatible: [false; 2],
@@ -8389,21 +8389,21 @@ mod tests {
         let mut statuses = HashMap::from([(1, DeviceStatus::Connected(vec![capability]))]);
         assert_eq!(
             unsupported_chips(
-                &[ay.clone(), qsound.clone(), ym.clone()],
+                &[ay.clone(), scsp.clone(), ym.clone()],
                 &[],
                 &statuses,
                 false
             ),
-            ["AY8910", "QSound"]
+            ["AY8910", "SCSP"]
         );
         assert_eq!(
             unsupported_chips(
-                &[ay.clone(), qsound.clone()],
+                &[ay.clone(), scsp.clone()],
                 std::slice::from_ref(&first),
                 &statuses,
                 false
             ),
-            ["QSound"]
+            ["SCSP"]
         );
         assert_eq!(
             unsupported_chips(
@@ -8453,12 +8453,12 @@ mod tests {
             ["AY8910"]
         );
         assert_eq!(
-            unsupported_chips(std::slice::from_ref(&qsound), &[], &statuses, false),
-            ["QSound"]
+            unsupported_chips(std::slice::from_ref(&scsp), &[], &statuses, false),
+            ["SCSP"]
         );
         assert_eq!(
-            unsupported_chips(&[ay.clone(), qsound, ym], &[], &statuses, true),
-            ["QSound"]
+            unsupported_chips(&[ay.clone(), scsp, ym], &[], &statuses, true),
+            ["SCSP"]
         );
         assert!(unsupported_chips(std::slice::from_ref(&dual_ay), &[], &statuses, true).is_empty());
         let valid_route = Connection {

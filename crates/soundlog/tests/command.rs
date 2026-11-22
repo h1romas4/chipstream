@@ -16,6 +16,36 @@ use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 
 #[test]
+fn qsound_uses_data_then_register_and_keeps_high_bit_data_primary() {
+    use soundlog::chip::{Chip, QsoundSpec};
+    use soundlog::vgm::command::command_to_vgm_bytes;
+    let expected = VgmCommand::QsoundWrite(
+        Instance::Primary,
+        QsoundSpec {
+            register: 0x91,
+            value: 0x80fe,
+        },
+    );
+    assert_eq!(command_to_vgm_bytes(&expected).0, [0xc4, 0x80, 0xfe, 0x91]);
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Qsound, Instance::Primary, 4_000_000);
+    builder.add_vgm_command(expected.clone());
+    let mut bytes: Vec<u8> = builder.finalize().into();
+    let offset = 0x34 + u32::from_le_bytes(bytes[0x34..0x38].try_into().unwrap()) as usize;
+    bytes[offset..offset + 4].copy_from_slice(&[0xc4, 0x80, 0xfe, 0x91]);
+    let commands: Vec<_> = VgmStream::from_vgm(bytes)
+        .unwrap()
+        .into_iter()
+        .filter_map(|result| match result.unwrap() {
+            StreamResult::Command(command) => Some(command),
+            _ => None,
+        })
+        .take(1)
+        .collect();
+    assert!(commands.contains(&expected));
+}
+
+#[test]
 fn pcm_ram_write_uses_fixed_length_little_endian_and_instance_bit() {
     use soundlog::vgm::command::{PcmRamWrite, StreamChipType, command_to_vgm_bytes};
 

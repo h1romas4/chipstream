@@ -57,6 +57,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `okim6258` | OKIM6258 | MAME | BSD-3-Clause |
 | `okim6295` | OKIM6295 | MAME | BSD-3-Clause |
 | `pokey` | POKEY | MAME | BSD-3-Clause |
+| `qsound` | Capcom QSound | qsound-hle | BSD-3-Clause |
 | `pwm` | PWM | MAME | BSD-3-Clause |
 | `rf5c` | RF5C68 / RF5C164 | MAME | BSD-3-Clause |
 | `saa1099` | SAA1099 | MAME | BSD-3-Clause |
@@ -74,6 +75,10 @@ license terms.
 YMF271 follows MAME's approximations: PFM is ignored and alternate PCM looping
 is rejected. The VGM stereo mix uses CH0/CH1; the native backend exposes all
 eight outputs.
+
+QSound uses a DSP-ROM-free HLE with 16 PCM voices, three ADPCM voices, filters,
+and echo. Sample ROM data is supplied by VGM data blocks or `write_rom`.
+Legacy 4 MHz VGM clocks and their key-on behavior are supported.
 
 Enable the chips your application needs, for example:
 
