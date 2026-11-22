@@ -388,7 +388,8 @@ mod tests {
                 ay8910_ym2149: true,
             },
         );
-        assert_eq!(ay.emulator_label(&off), "AY8910 #2 (silent)");
+        assert_eq!(ay.emulator_label(&off), "AY8910 #2");
+        assert!(!ay.is_silent(&off));
         assert_eq!(ay.emulator_label(&on), "YM2149 #2 (assigned)");
         let other = Source::Hardware(HardwareChip::Ym2151, ChipInstance::Primary);
         assert_eq!(other.emulator_label(&on), other.label());

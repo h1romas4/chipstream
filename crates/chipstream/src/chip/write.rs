@@ -15,6 +15,8 @@ use soundlog::chip::{
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
+#[cfg(feature = "ay8910")]
+use super::Ay8910;
 #[cfg(feature = "c140")]
 use super::C140;
 #[cfg(feature = "c352")]
@@ -298,6 +300,8 @@ macro_rules! typed_write {
     };
 }
 
+#[cfg(feature = "ay8910")]
+typed_write!(Ay8910, Ay8910Spec, Ay8910);
 #[cfg(feature = "sn76496")]
 typed_write!(Sn76496, PsgSpec, Psg);
 #[cfg(feature = "sn76496")]

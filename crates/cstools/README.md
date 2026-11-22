@@ -23,6 +23,7 @@ Options:
       --loop-base <LOOP_BASE>          Override the VGM loop base
       --compat-vgm-pwm <BOOL>          Enable the VGM PWM workaround (default: true)
       --ay8910-ym2149 <BOOL>           Approximate VGM AY8910 with YM2149 (default: true)
+      --ay8910-native                  Use native AY-3-8910/8912/8913 emulation
       --no-progress                    Do not display playback progress
   -h, --help     Print help
   -V, --version  Print version
@@ -91,6 +92,7 @@ by the audio host and may change when devices or system configuration change.
 | MDX and MML | Search for the named PDX alongside the input. Use `--pdx` to override the path. Missing or ambiguous PDX files are errors. |
 | `--ym2608-rhythm-rom` | YM2608 rhythm ROM is not bundled. Supply a compatible raw ROM for VGM/VGZ playback. |
 | `--ay8910-ym2149` | Approximate VGM/VGZ AY8910 with YM2149 by default. Set to `false` to disable the approximation; AY8910 is then silent. Unsupported AY variants or output flags are rejected when enabled. |
+| `--ay8910-native` | Use native AY-3-8910/8912/8913 instead of YM2149 approximation; cannot be combined with `--ay8910-ym2149`. Other models and raw/discrete output flags are rejected. |
 | VGM/VGZ options | VGM loop overrides and PWM compatibility settings apply only to VGM/VGZ. The PWM workaround is enabled by default; `--compat-vgm-pwm false` disables it. |
 
 ## Troubleshooting and caveats

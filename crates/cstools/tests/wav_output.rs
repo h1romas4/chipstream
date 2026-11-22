@@ -26,6 +26,7 @@ fn cli_renders_ay8910_using_ym2149() {
         ("default", vec![], true),
         ("enabled", vec!["--ay8910-ym2149", "true"], true),
         ("disabled", vec!["--ay8910-ym2149", "false"], false),
+        ("native", vec!["--ay8910-native"], true),
     ] {
         let output = dir.path().join(format!("{name}.wav"));
         let result = cli().arg(&input).arg(&output).args(args).output().unwrap();
@@ -40,6 +41,12 @@ fn cli_renders_ay8910_using_ym2149() {
             .any(|sample| sample.unwrap() != 0);
         assert_eq!(has_audio, audible, "{name}");
     }
+    let result = cli()
+        .arg(&input)
+        .args(["--ay8910-native", "--ay8910-ym2149", "true"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
 }
 
 #[test]
@@ -461,6 +468,7 @@ fn library_rejects_conflicting_infinite_options() {
         loop_base: None,
         compat_vgm_pwm: None,
         ay8910_ym2149: None,
+        ay8910_native: false,
         no_progress: false,
     };
     assert!(
@@ -550,6 +558,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         loop_base: None,
         compat_vgm_pwm: None,
         ay8910_ym2149: None,
+        ay8910_native: false,
         no_progress: false,
     })
     .unwrap();

@@ -38,6 +38,7 @@ pub struct ChipTag {
     pub instances: usize,
     pub ymfm: bool,
     pub ym2149_compatible: [bool; 2],
+    pub native_ay8910_compatible: [bool; 2],
 }
 
 impl ChipTag {
@@ -47,6 +48,7 @@ impl ChipTag {
             instances: 1,
             ymfm: YMFM_CHIPS.contains(chip),
             ym2149_compatible: [false; 2],
+            native_ay8910_compatible: [false; 2],
         }
     }
 
@@ -220,9 +222,7 @@ impl Track {
             let mut chips: Vec<ChipTag> = Vec::new();
             for (instance, chip, _) in header.chip_instances() {
                 let mut tag = ChipTag::new(&chip);
-                if chip == Chip::Ay8910
-                    && let Some(divided) = crate::adapter::ym2149_clock_divider(&header)
-                {
+                if chip == Chip::Ay8910 {
                     use soundlog::vgm::header::ChipId;
                     let clock = extra
                         .as_ref()
@@ -234,14 +234,22 @@ impl Track {
                         .map_or(header.ay8910_clock & 0x3fff_ffff, |entry| {
                             entry.clock & 0x3fff_ffff
                         });
+                    let settings = chipstream::sequencer::Ay8910Settings::from(&header);
                     tag.ym2149_compatible[instance as usize] =
-                        chipstream::chip::YmfmChip::validate_ym2149_clock(clock, divided).is_ok();
+                        settings.ym2149_clock_divider().is_some_and(|divided| {
+                            chipstream::chip::YmfmChip::validate_ym2149_clock(clock, divided)
+                                .is_ok()
+                        });
+                    tag.native_ay8910_compatible[instance as usize] =
+                        settings.supports_native_ay8910() && clock >= 8;
                 }
                 if let Some(existing) = chips.iter_mut().find(|existing| existing.name == tag.name)
                 {
                     existing.instances += 1;
                     existing.ym2149_compatible[instance as usize] =
                         tag.ym2149_compatible[instance as usize];
+                    existing.native_ay8910_compatible[instance as usize] =
+                        tag.native_ay8910_compatible[instance as usize];
                 } else {
                     chips.push(tag);
                 }
@@ -1988,6 +1996,44 @@ mod tests {
         document.header.ay8910_flags = Ay8910Flags::from(0);
         document.header.ay8910_clock = 536_870_912 | 0x4000_0000;
         assert_eq!(compatibility(&document), [false, false]);
+    }
+
+    #[test]
+    fn native_ay_track_compatibility_checks_models_flags_and_clocks() {
+        use soundlog::vgm::command::Instance;
+        use soundlog::vgm::header::{
+            Ay8910ChipType, Ay8910Flags, ChipClock, ChipId, VgmExtraHeader,
+        };
+
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        builder.register_chip(Chip::Ay8910, Instance::Secondary, 1_792_000);
+        builder.set_extra_header(VgmExtraHeader {
+            chip_clocks: vec![ChipClock::new(ChipId::Ay8910, Instance::Secondary, 7)],
+            ..Default::default()
+        });
+        let mut document = builder.finalize();
+        let compatibility = |document: &soundlog::vgm::VgmDocument| {
+            Track::track_chips(&Vec::<u8>::from(document), false).unwrap()[0]
+                .native_ay8910_compatible
+        };
+        for variant in [
+            Ay8910ChipType::Ay8910,
+            Ay8910ChipType::Ay8912,
+            Ay8910ChipType::Ay8913,
+        ] {
+            document.header.ay_chip_type = variant;
+            assert_eq!(compatibility(&document), [true, false]);
+        }
+        for variant in [Ay8910ChipType::Ay8930, Ay8910ChipType::Ym2149] {
+            document.header.ay_chip_type = variant;
+            assert_eq!(compatibility(&document), [false, false]);
+        }
+        document.header.ay_chip_type = Ay8910ChipType::Ay8910;
+        for flags in [4, 8, 32] {
+            document.header.ay8910_flags = Ay8910Flags::from(flags);
+            assert_eq!(compatibility(&document), [false, false]);
+        }
     }
 
     #[test]

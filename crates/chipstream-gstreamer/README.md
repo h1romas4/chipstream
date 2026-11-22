@@ -26,6 +26,7 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | `play-count` | uint | 2 | Total traversals; `0` repeats indefinitely |
 | `fadeout-seconds` | double | 2.0 | Fade after the final loop point; `0` disables it (maximum 3600) |
 | `ay8910-ym2149` | boolean | true | Emulate AY8910-compatible VGM sources using YM2149 |
+| `ay8910-native` | boolean | false | Use native AY-3-8910/8912/8913 instead of YM2149 approximation |
 | `ndsif-port` | string | — | Optional NDSIF serial port; unset uses emulation for every chip |
 | `ndsif-ports` | string | — | Optional comma-separated serial ports; compatible chips use the first matching device |
 | `ndsif-baud-rate` | uint | 115200 | NDSIF serial baud rate |
@@ -46,6 +47,10 @@ divider flags are honored. Unsupported AY variants, raw or discrete output,
 and reserved flags fail playback. Set `ay8910-ym2149=false` to disable this
 approximation; AY sources without a hardware route are then silent. Hardware
 routes take precedence and keep their own compatibility restrictions.
+Set `ay8910-native=true` to select native AY-3-8910/8912/8913 software
+playback instead; this takes precedence over `ay8910-ym2149` but not hardware.
+AY8914, AY8930, YM-family models, raw/discrete output and reserved flags are
+rejected by the native backend.
 
 Example URI: `chipstream:///music/game%20theme.vgm`
 

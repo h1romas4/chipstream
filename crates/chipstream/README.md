@@ -40,6 +40,7 @@ YMFM chips are always available. Optional features are disabled by default:
 
 | Feature | Chip | Source | Source license |
 | --- | --- | --- | --- |
+| `ay8910` | AY-3-8910 / 8912 / 8913 | MAME, via libvgm | BSD-3-Clause |
 | `c140` | C140 / ASIC219 | MAME | BSD-3-Clause |
 | `c352` | Namco C352 | MAME | BSD-3-Clause |
 | `es5503` | Ensoniq ES5503 | MAME | BSD-3-Clause |
@@ -87,7 +88,7 @@ Enable the chips your application needs, for example:
 chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 ```
 
-When a VGM header declares one of these chips without its feature,
+Except for AY8910, when a VGM header declares one of these chips without its feature,
 sequencer construction returns `VgmSequencerError::FeatureDisabled`.
 Unsupported chips without implementations remain silent.
 
@@ -448,6 +449,14 @@ output rate, and chip-specific settings. See its rustdoc for all accessors.
 by returning `Ok(None)`; errors are propagated rather than triggering fallback.
 `register_fallback` can add a backend for instances declined by an existing
 factory. AY8910 has no default backend, so a declined instance is an error.
+
+With the `ay8910` feature, `register_native_ay8910` opts into native
+AY-3-8910/8912/8913 sound generation; `register_native_ay8910_fallback`
+preserves an existing factory's priority. AY8914, AY8930, YM-family chips,
+raw/discrete output and reserved flags are rejected by this backend. The
+three channel outputs use a normalized 1 kΩ load model and are mixed
+linearly; external I/O ports are not emulated. An unregistered AY source
+remains silent, as before.
 
 To opt into YM2149 approximation, register a factory using
 `YmfmChip::new_ym2149(clock, divide_clock)` for `Chip::Ay8910`;

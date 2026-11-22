@@ -309,7 +309,6 @@ impl RoutingPlan {
                 },
                 Adapter::AyToYm2149,
             ),
-            Chip::Ay8910 => (Target::Silent, Adapter::Direct),
             chip => (
                 Target::Software {
                     chip: SoftwareTarget::Native(chip.clone()),
@@ -670,7 +669,10 @@ mod tests {
             } else {
                 Assignment {
                     source: secondary.clone(),
-                    target: Target::Silent,
+                    target: Target::Software {
+                        chip: SoftwareTarget::Native(Chip::Ay8910),
+                        instance: ChipInstance::Secondary,
+                    },
                     adapter: Adapter::Direct,
                 }
             };

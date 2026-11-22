@@ -11,6 +11,8 @@
 //! metadata for routing and resampling. For complete song playback, use the
 //! [`crate::sequencer`] module instead.
 
+#[cfg(feature = "ay8910")]
+mod ay8910;
 #[cfg(feature = "c140")]
 mod c140;
 #[cfg(feature = "c352")]
@@ -83,6 +85,8 @@ use std::num::NonZeroU32;
 
 use soundlog::chip::Chip;
 
+#[cfg(feature = "ay8910")]
+pub use ay8910::Ay8910;
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
 #[cfg(feature = "c352")]
@@ -441,6 +445,7 @@ impl<T: Any> SoundChipState for T {
 }
 
 #[cfg(any(
+    feature = "ay8910",
     feature = "c140",
     feature = "c352",
     feature = "es5503",
@@ -474,6 +479,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
 }
 
 #[cfg(any(
+    feature = "ay8910",
     feature = "c140",
     feature = "c352",
     feature = "es5503",

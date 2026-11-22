@@ -124,17 +124,14 @@ software output may need external mixing or system loopback.
 
 | Setting | Behavior |
 | --- | --- |
-| Assign YM2149 to AY8910 | Off by default. Uses software YM2149 to approximate AY8910-family VGM audio; changes apply to the next track. |
+| Assign YM2149 to AY8910 | Off by default: uses native AY-3-8910/8912/8913 software emulation. Enable to use the YM2149 approximation instead; changes apply to the next track. |
 
-NanoDrive routes take priority per instance; unrouted instances use YM2149.
-AY8910 and YM2149 sound different. AY8930, AY8914, raw/discrete output, and
-reserved AY flags are not supported by this emulation. YM2149 clock division
-and per-channel stereo masks are supported.
-
-For a VGM with two AY instances and only one hardware route, enable emulation or
-route both instances. A partial hardware route without emulation is not
-playable. Music and Playlist support indicators reflect the setting and the
-track's AY variant and output flags.
+NanoDrive routes take priority per instance; unrouted instances use the selected
+software backend. AY8910 and YM2149 sound different. Native emulation supports
+AY-3-8910/8912/8913; YM-family models require the YM2149 option or hardware.
+AY8930, AY8914, raw/discrete output, and reserved AY flags are not supported by
+either software backend. YM2149 clock division and per-channel stereo masks are
+supported. Music and Playlist indicators reflect each track's configuration.
 
 ### Linux audio devices
 

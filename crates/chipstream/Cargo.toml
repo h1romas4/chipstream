@@ -12,6 +12,7 @@ categories = ["multimedia::audio", "game-development"]
 
 [features]
 default = []
+ay8910 = []
 c140 = []
 c352 = []
 es5503 = []

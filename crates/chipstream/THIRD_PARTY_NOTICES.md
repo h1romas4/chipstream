@@ -1,3 +1,11 @@
+# AY8910 implementation
+
+The AY8910 implementation is based on libvgm's MAME-derived
+[`emu/cores/ay8910.c`](https://github.com/ValleyBell/libvgm), revision
+`c8b998b606895990c409a512b86c5509070f9f0d`.
+Copyright (c) Couriersud and contributors. It is distributed under the
+BSD-3-Clause terms reproduced in the C352 section below.
+
 # QSound implementation
 
 The QSound implementation is a Rust adaptation of

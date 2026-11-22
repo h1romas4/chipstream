@@ -71,6 +71,7 @@ struct Settings {
     play_count: u32,
     fadeout_seconds: f64,
     ay8910_ym2149: bool,
+    ay8910_native: bool,
     ndsif_port: Option<String>,
     ndsif_ports: Option<String>,
     ndsif_baud_rate: u32,
@@ -95,6 +96,7 @@ impl Default for Settings {
             play_count: DEFAULT_PLAY_COUNT,
             fadeout_seconds: DEFAULT_FADEOUT_SECONDS,
             ay8910_ym2149: true,
+            ay8910_native: false,
             ndsif_port: None,
             ndsif_ports: None,
             ndsif_baud_rate: DEFAULT_NDSIF_BAUD_RATE,
@@ -126,6 +128,7 @@ struct RenderSettings {
     play_count: u32,
     fadeout_samples: Option<u32>,
     ay8910_ym2149: bool,
+    ay8910_native: bool,
 }
 
 enum WorkerMessage {
@@ -325,6 +328,12 @@ mod imp {
                         .default_value(true)
                         .flags(mutable_ready)
                         .build(),
+                    glib::ParamSpecBoolean::builder("ay8910-native")
+                        .nick("Native AY8910 emulation")
+                        .blurb("Use native AY-3-8910/8912/8913 instead of YM2149 approximation")
+                        .default_value(false)
+                        .flags(mutable_ready)
+                        .build(),
                     glib::ParamSpecString::builder("ndsif-port")
                         .nick("NDSIF serial port")
                         .blurb("Optional serial port connected to a NanoDrive NDSIF device")
@@ -386,6 +395,9 @@ mod imp {
                 "ay8910-ym2149" => {
                     settings.ay8910_ym2149 = value.get().expect("ay8910-ym2149 is a boolean")
                 }
+                "ay8910-native" => {
+                    settings.ay8910_native = value.get().expect("ay8910-native is a boolean")
+                }
                 "ndsif-port" => settings.ndsif_port = value.get().expect("ndsif-port is a string"),
                 "ndsif-ports" => {
                     settings.ndsif_ports = value.get().expect("ndsif-ports is a string")
@@ -418,6 +430,7 @@ mod imp {
                 "play-count" => settings.play_count.to_value(),
                 "fadeout-seconds" => settings.fadeout_seconds.to_value(),
                 "ay8910-ym2149" => settings.ay8910_ym2149.to_value(),
+                "ay8910-native" => settings.ay8910_native.to_value(),
                 "ndsif-port" => settings.ndsif_port.to_value(),
                 "ndsif-ports" => settings.ndsif_ports.to_value(),
                 "ndsif-baud-rate" => settings.ndsif_baud_rate.to_value(),
@@ -836,6 +849,7 @@ mod imp {
                 play_count: settings.play_count,
                 fadeout_samples: fadeout_samples(settings.fadeout_seconds),
                 ay8910_ym2149: settings.ay8910_ym2149,
+                ay8910_native: settings.ay8910_native,
             };
             let ndsif_settings = NdsifSettings {
                 port: settings.ndsif_port.clone(),
@@ -1457,7 +1471,9 @@ fn load_sequencer_with_factories(
     settings: RenderSettings,
     mut factories: ChipFactoryRegistry,
 ) -> Result<(Sequencer, TrackMetadata, Option<String>, Option<u64>), String> {
-    if settings.ay8910_ym2149 {
+    if settings.ay8910_native {
+        factories.register_native_ay8910_fallback();
+    } else if settings.ay8910_ym2149 {
         register_ay_ym2149(&mut factories);
     }
     let playback = PlaybackOptions {
@@ -2467,6 +2483,7 @@ mod tests {
         );
         assert!(defaults.property::<bool>("ndsif-reset"));
         assert!(defaults.property::<bool>("ay8910-ym2149"));
+        assert!(!defaults.property::<bool>("ay8910-native"));
         assert_eq!(defaults.property::<Option<String>>("ndsif-port"), None);
         assert_eq!(defaults.property::<Option<String>>("ndsif-ports"), None);
 
@@ -2474,6 +2491,7 @@ mod tests {
             .property("play-count", 3_u32)
             .property("fadeout-seconds", 0.5_f64)
             .property("ay8910-ym2149", false)
+            .property("ay8910-native", true)
             .property("ndsif-port", "/dev/ttyUSB0")
             .property("ndsif-baud-rate", 230_400_u32)
             .property("ndsif-timeout-ms", 1_000_u32)
@@ -2482,6 +2500,7 @@ mod tests {
         assert_eq!(configured.property::<u32>("play-count"), 3);
         assert_eq!(configured.property::<f64>("fadeout-seconds"), 0.5);
         assert!(!configured.property::<bool>("ay8910-ym2149"));
+        assert!(configured.property::<bool>("ay8910-native"));
         assert_eq!(
             configured.property::<Option<String>>("ndsif-port"),
             Some("/dev/ttyUSB0".to_owned())
@@ -2498,6 +2517,46 @@ mod tests {
         assert!(!configured.property::<bool>("ndsif-reset"));
         assert_eq!(fadeout_samples(2.0), Some(88_200));
         assert_eq!(fadeout_samples(0.0), None);
+    }
+
+    #[test]
+    fn native_ay_fallback_renders_vgm() {
+        use soundlog::chip::Ay8910Spec;
+
+        let path = std::env::temp_dir().join(format!(
+            "chipstream-native-ay-{}-{}.vgm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
+        for (register, value) in [(0, 255), (7, 0x3e), (8, 15)] {
+            builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
+        }
+        builder.add_vgm_command(WaitSamples(1000));
+        fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        let settings = RenderSettings {
+            sample_rate: 44_100,
+            chunk_frames: 128,
+            play_count: 1,
+            fadeout_samples: None,
+            ay8910_ym2149: true,
+            ay8910_native: true,
+        };
+        let (mut player, _, _, _) = load_sequencer(&path, None, settings).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(
+            player
+                .render()
+                .unwrap()
+                .unwrap()
+                .frames()
+                .iter()
+                .any(|frame| frame[0] != 0.0)
+        );
     }
 
     #[test]
@@ -2763,6 +2822,7 @@ mod tests {
             play_count: 1,
             fadeout_samples: None,
             ay8910_ym2149: true,
+            ay8910_native: false,
         };
         let options = VgmSequencerOptions {
             playback: PlaybackOptions {
@@ -2950,6 +3010,7 @@ mod tests {
             play_count: 1,
             fadeout_samples: None,
             ay8910_ym2149: true,
+            ay8910_native: false,
         };
         let (mut sequencer, _, _, _) = load_sequencer(&input_path, None, settings).unwrap();
         let mut has_audio = false;

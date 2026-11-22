@@ -38,6 +38,8 @@ pub struct PlayOptions {
     pub compat_vgm_pwm: Option<bool>,
     /// Approximate VGM AY8910 with YM2149; `None` enables it by default.
     pub ay8910_ym2149: Option<bool>,
+    /// Use native AY-3-8910/8912/8913 emulation instead of YM2149 approximation.
+    pub ay8910_native: bool,
     /// Suppress playback progress output for audio-device playback.
     pub no_progress: bool,
 }
@@ -58,6 +60,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         loop_base,
         compat_vgm_pwm,
         ay8910_ym2149,
+        ay8910_native,
         no_progress,
     } = options;
     if infinite && (output.is_some() || loop_count.is_some()) {
@@ -68,6 +71,9 @@ pub fn play(options: PlayOptions) -> Result<()> {
     }
     if output.is_some() && output_device.is_some() {
         anyhow::bail!("audio output device cannot be combined with WAV output");
+    }
+    if ay8910_native && ay8910_ym2149.is_some() {
+        anyhow::bail!("native AY8910 and YM2149 approximation options cannot be combined");
     }
     let output_path = output.as_deref().filter(|path| *path != Path::new("-"));
     input::protect_source(&file, output_path)?;
@@ -94,6 +100,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         loop_base,
         compat_vgm_pwm,
         ay8910_ym2149,
+        ay8910_native,
         ym2608_rhythm_rom,
     };
     match output {

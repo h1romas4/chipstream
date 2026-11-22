@@ -5507,10 +5507,13 @@ mod tests {
                         instance,
                     }
                 } else {
-                    Target::Silent
+                    Target::Software {
+                        chip: SoftwareTarget::Native(Chip::Ay8910),
+                        instance,
+                    }
                 };
                 assert_eq!(source.hardware, is_hardware);
-                assert_eq!(source.visual_only, !is_hardware && !enabled);
+                assert!(!source.visual_only);
                 assert_eq!(source.target.as_ref(), Some(&expected));
                 assert_eq!(
                     source.target_device_name.as_deref(),
@@ -5552,7 +5555,7 @@ mod tests {
         }
         builder.add_vgm_command(WaitSamples(4_410));
         let mut document = builder.finalize();
-        document.header.ay_chip_type = Ay8910ChipType::Ym2149;
+        document.header.ay_chip_type = Ay8910ChipType::Ay8910;
         std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
         let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ay8910,
@@ -5617,12 +5620,10 @@ mod tests {
                 );
                 let player =
                     Sequencer::for_playback(&path, 44_100, false, factories, dir.path(), routes);
-                if hardware && !enabled {
-                    assert!(player.is_err());
-                } else {
+                {
                     let mut player = player.unwrap();
                     let mut sources = Sequencer::gain_sources(&player, routes);
-                    assert_eq!(sources.len(), if enabled { 2 } else { 0 });
+                    assert_eq!(sources.len(), 2);
                     if hardware {
                         assert!(
                             sources
@@ -5630,11 +5631,9 @@ mod tests {
                                 .any(|s| s.instance == Instance::Primary && s.hardware)
                         );
                     }
-                    if enabled {
-                        assert!(sources.iter().any(|s| s.instance == Instance::Secondary
-                            && !s.hardware
-                            && !s.visual_only));
-                    }
+                    assert!(sources.iter().any(|s| s.instance == Instance::Secondary
+                        && !s.hardware
+                        && !s.visual_only));
                     add_visual_ay_sources(&path, routes, &mut sources).unwrap();
                     set_source_targets(&mut sources, &routing, plan.as_ref());
                     assert_targets(&sources, hardware, enabled);
@@ -5644,7 +5643,7 @@ mod tests {
                             peak = peak.max(sample.abs());
                         }
                     }
-                    assert_eq!(peak > 0.001, enabled, "hardware={hardware}, peak={peak}");
+                    assert!(peak > 0.001, "hardware={hardware}, peak={peak}");
                     assert_eq!(!transport.borrow().0.is_empty(), hardware);
                     assert!(transport.borrow().0.iter().all(|event| event.instance == 1));
                 }

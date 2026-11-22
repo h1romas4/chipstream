@@ -63,6 +63,16 @@ pub struct AyOutputSettings {
 }
 
 impl Ay8910Settings {
+    /// Whether the native AY backend supports this model and output mode.
+    pub fn supports_native_ay8910(&self) -> bool {
+        matches!(
+            self.variant,
+            Ay8910Variant::Ay8910 | Ay8910Variant::Ay8912 | Ay8910Variant::Ay8913
+        ) && !self.output.discrete_output
+            && !self.output.raw_output
+            && self.output.reserved_flags == 0
+    }
+
     /// Return the clock-divider setting for supported YM2149 approximations.
     ///
     /// `None` means the model or output configuration cannot be represented.
@@ -318,6 +328,20 @@ impl ChipFactoryConfig {
     }
 }
 
+#[cfg(feature = "ay8910")]
+fn native_ay8910(config: &ChipFactoryConfig) -> Result<Box<dyn SoundChip>, ChipError> {
+    let settings = config
+        .ay8910_settings()
+        .ok_or(ChipError::UnsupportedChip(Chip::Ay8910))?;
+    if !settings.supports_native_ay8910() {
+        return Err(ChipError::InvalidConfiguration {
+            chip: Chip::Ay8910,
+            reason: "native AY8910 does not support this model or output configuration",
+        });
+    }
+    Ok(Box::new(crate::chip::Ay8910::new(config.clock())?))
+}
+
 type Factory = dyn FnMut(&ChipFactoryConfig) -> Result<Option<Box<dyn SoundChip>>, ChipError>;
 
 /// Factories that replace built-in backends for selected chip types.
@@ -334,6 +358,22 @@ impl ChipFactoryRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Opt in to native AY-3-8910/8912/8913 sound generation.
+    ///
+    /// Other models and discrete, raw, or unrecognized output flags return an
+    /// error. This replaces any existing AY factory; no default is changed.
+    #[cfg(feature = "ay8910")]
+    pub fn register_native_ay8910(&mut self) -> &mut Self {
+        self.register(Chip::Ay8910, native_ay8910)
+    }
+
+    /// Use native AY-3-8910 sound generation only when an existing factory
+    /// declines an instance. Factory errors are not replaced with fallback.
+    #[cfg(feature = "ay8910")]
+    pub fn register_native_ay8910_fallback(&mut self) -> &mut Self {
+        self.register_fallback(Chip::Ay8910, native_ay8910)
     }
 
     pub(super) fn contains(&self, chip: &Chip) -> bool {

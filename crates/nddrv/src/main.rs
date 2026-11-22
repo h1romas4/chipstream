@@ -1510,7 +1510,7 @@ impl AppView {
                         .page(
                             SettingPage::new("VGM")
                                 .icon(assets::IconName::Cpu)
-                                .description("Changes apply to the next track. AY8910 is approximated by YM2149; NanoDrive routes take priority.")
+                                .description("Changes apply to the next track. AY8910 uses native emulation unless YM2149 is selected; NanoDrive routes take priority.")
                                 .group(SettingGroup::new().item(SettingItem::new(
                                     "Assign YM2149 to AY8910",
                                     ay_field,
@@ -4834,7 +4834,7 @@ impl AppView {
                 .child(div().size(px(8.)).rounded_full().bg(rgb(0x6a8e9c)))
                 .when(silent, |node| {
                     node.tooltip(|window, cx| {
-                        Tooltip::new("AY8910 has no software emulation").build(window, cx)
+                        Tooltip::new("No software route is available").build(window, cx)
                     })
                 });
             if editable && selected {
@@ -6323,6 +6323,13 @@ fn piano_route_label(source: &GainSource) -> Option<(String, String)> {
             format!("YM2149 #{}", instance.number() + 1),
             format!("Output: YM2149 #{} (software)", instance.number() + 1),
         )),
+        Some(routing::Target::Software {
+            chip: routing::SoftwareTarget::Native(Chip::Ay8910),
+            instance,
+        }) if !source.hardware && !source.visual_only => Some((
+            format!("AY8910 #{}", instance.number() + 1),
+            format!("Output: AY8910 #{} (software)", instance.number() + 1),
+        )),
         _ if source.hardware => {
             Some(("ND".into(), "Route: NanoDrive (details unavailable)".into()))
         }
@@ -6390,6 +6397,16 @@ fn piano_gain_route_label(chip: &Chip, sources: &[GainSource]) -> Option<(String
         )
     }) {
         format!("YM2149 x{software}")
+    } else if sources.iter().all(|source| {
+        matches!(
+            source.target,
+            Some(routing::Target::Software {
+                chip: routing::SoftwareTarget::Native(Chip::Ay8910),
+                ..
+            })
+        )
+    }) {
+        format!("AY8910 x{software}")
     } else {
         "SW mixed".to_owned()
     };
@@ -6453,6 +6470,10 @@ fn unsupported_chips_with_plan(
                         chip: routing::SoftwareTarget::Ym2149,
                         ..
                     } => tag.ym2149_compatible[source.number() as usize],
+                    routing::Target::Software {
+                        chip: routing::SoftwareTarget::Native(Chip::Ay8910),
+                        ..
+                    } => tag.native_ay8910_compatible[source.number() as usize],
                     routing::Target::Software {
                         chip: routing::SoftwareTarget::Native(_),
                         ..
@@ -8355,6 +8376,7 @@ mod tests {
             instances: 1,
             ymfm: false,
             ym2149_compatible: [true; 2],
+            native_ay8910_compatible: [true; 2],
         };
         let dual_ay = ChipTag {
             instances: 2,
@@ -8365,12 +8387,14 @@ mod tests {
             instances: 1,
             ymfm: false,
             ym2149_compatible: [false; 2],
+            native_ay8910_compatible: [false; 2],
         };
         let ym = ChipTag {
             name: "YM2151",
             instances: 1,
             ymfm: true,
             ym2149_compatible: [false; 2],
+            native_ay8910_compatible: [false; 2],
         };
         let capability = ndsif::CapabilityEntry {
             write_id: 0xa0,
@@ -8394,7 +8418,7 @@ mod tests {
                 &statuses,
                 false
             ),
-            ["AY8910", "SCSP"]
+            ["SCSP"]
         );
         assert_eq!(
             unsupported_chips(
@@ -8405,14 +8429,14 @@ mod tests {
             ),
             ["SCSP"]
         );
-        assert_eq!(
+        assert!(
             unsupported_chips(
                 std::slice::from_ref(&dual_ay),
                 std::slice::from_ref(&first),
                 &statuses,
                 false
-            ),
-            ["AY8910x2"]
+            )
+            .is_empty()
         );
 
         let second = Connection {
@@ -8485,6 +8509,7 @@ mod tests {
         );
         let incompatible = ChipTag {
             ym2149_compatible: [true, false],
+            native_ay8910_compatible: [true, false],
             ..dual_ay
         };
         assert_eq!(

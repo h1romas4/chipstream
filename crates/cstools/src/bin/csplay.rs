@@ -69,6 +69,10 @@ struct Args {
     #[arg(long, value_name = "BOOL")]
     ay8910_ym2149: Option<bool>,
 
+    /// Use native AY-3-8910/8912/8913 emulation instead of YM2149 approximation.
+    #[arg(long, conflicts_with = "ay8910_ym2149")]
+    ay8910_native: bool,
+
     /// Do not display playback progress on standard output.
     #[arg(long)]
     no_progress: bool,
@@ -107,6 +111,7 @@ fn main() -> Result<()> {
         loop_base,
         compat_vgm_pwm,
         ay8910_ym2149,
+        ay8910_native,
         no_progress,
         command,
     } = Args::parse();
@@ -136,6 +141,7 @@ fn main() -> Result<()> {
         loop_base,
         compat_vgm_pwm,
         ay8910_ym2149,
+        ay8910_native,
         no_progress,
     })
 }

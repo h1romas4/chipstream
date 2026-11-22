@@ -42,6 +42,7 @@ pub struct Options {
     pub loop_base: Option<i8>,
     pub compat_vgm_pwm: Option<bool>,
     pub ay8910_ym2149: Option<bool>,
+    pub ay8910_native: bool,
     pub ym2608_rhythm_rom: Option<Vec<u8>>,
 }
 
@@ -106,7 +107,9 @@ impl Player {
         Ok(match input {
             Input::Vgm(data) => {
                 let mut factories = ChipFactoryRegistry::new();
-                if options.ay8910_ym2149.unwrap_or(true) {
+                if options.ay8910_native {
+                    factories.register_native_ay8910();
+                } else if options.ay8910_ym2149.unwrap_or(true) {
                     factories.register(Chip::Ay8910, |config| {
                         let settings = config
                             .ay8910_settings()
@@ -1075,6 +1078,7 @@ mod playback_tests {
             loop_base: None,
             compat_vgm_pwm: None,
             ay8910_ym2149: None,
+            ay8910_native: false,
             ym2608_rhythm_rom: None,
         };
         let seek_target = AtomicU64::new(1100);
@@ -1109,6 +1113,7 @@ mod playback_tests {
             loop_base: None,
             compat_vgm_pwm: None,
             ay8910_ym2149: None,
+            ay8910_native: false,
             ym2608_rhythm_rom: None,
         };
         assert_eq!(count_samples(&data, &options).unwrap(), Some(90_300));
@@ -1128,6 +1133,7 @@ mod playback_tests {
             loop_base: None,
             compat_vgm_pwm: None,
             ay8910_ym2149: None,
+            ay8910_native: false,
             ym2608_rhythm_rom: None,
         };
         let data = Input::Mdx(Box::new(package));
@@ -1258,6 +1264,7 @@ mod playback_tests {
                 loop_base: None,
                 compat_vgm_pwm: None,
                 ay8910_ym2149: None,
+                ay8910_native: false,
                 ym2608_rhythm_rom: Some(rom.clone()),
                 fadeout_samples: None,
             };
@@ -1279,6 +1286,7 @@ mod playback_tests {
             loop_base: None,
             compat_vgm_pwm: None,
             ay8910_ym2149: None,
+            ay8910_native: false,
             ym2608_rhythm_rom: Some(rom),
             fadeout_samples: None,
         };
@@ -1330,6 +1338,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: Some(!disabled),
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1360,6 +1369,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1372,6 +1382,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1384,6 +1395,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1396,6 +1408,7 @@ mod playback_tests {
                     loop_base: Some(1),
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1429,6 +1442,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1463,6 +1477,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1491,6 +1506,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1511,6 +1527,7 @@ mod playback_tests {
             loop_base: None,
             compat_vgm_pwm: None,
             ay8910_ym2149: None,
+            ay8910_native: false,
             ym2608_rhythm_rom: None,
             fadeout_samples: None,
         };
@@ -1585,6 +1602,7 @@ mod playback_tests {
                     loop_base: None,
                     compat_vgm_pwm: None,
                     ay8910_ym2149: None,
+                    ay8910_native: false,
                     ym2608_rhythm_rom: None,
                     fadeout_samples: None,
                 },
@@ -1616,6 +1634,7 @@ mod playback_tests {
                 loop_base: None,
                 compat_vgm_pwm: None,
                 ay8910_ym2149: None,
+                ay8910_native: false,
                 ym2608_rhythm_rom: None,
                 fadeout_samples: None,
             }
