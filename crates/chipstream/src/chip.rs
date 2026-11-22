@@ -13,6 +13,8 @@
 
 #[cfg(feature = "c140")]
 mod c140;
+#[cfg(feature = "ga20")]
+mod ga20;
 #[cfg(feature = "huc6280")]
 mod huc6280;
 #[cfg(feature = "k051649")]
@@ -47,6 +49,8 @@ use soundlog::chip::Chip;
 
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
+#[cfg(feature = "ga20")]
+pub use ga20::Ga20;
 #[cfg(feature = "huc6280")]
 pub use huc6280::Huc6280;
 #[cfg(feature = "k051649")]
@@ -360,6 +364,7 @@ impl<T: Any> SoundChipState for T {
 
 #[cfg(any(
     feature = "c140",
+    feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
     feature = "okim6258",
@@ -377,6 +382,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
 
 #[cfg(any(
     feature = "c140",
+    feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
     feature = "okim6258",
@@ -636,7 +642,12 @@ impl fmt::Display for ChipError {
 
 impl Error for ChipError {}
 
-#[cfg(any(feature = "c140", feature = "okim6295", feature = "segapcm"))]
+#[cfg(any(
+    feature = "c140",
+    feature = "ga20",
+    feature = "okim6295",
+    feature = "segapcm"
+))]
 /// Copy a ROM segment, extending the backing buffer within the size limit.
 fn write_rom_data(rom: &mut Vec<u8>, start: usize, data: &[u8]) -> Result<(), ChipError> {
     const MAX_ROM_BYTES: usize = 64 * 1024 * 1024;
