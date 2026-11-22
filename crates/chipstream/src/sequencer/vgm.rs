@@ -808,10 +808,10 @@ impl Voice {
 /// for SegaPCM, `0xe0` for PWM, `0x80` for SN76489, YM2608 and YM2610(B)
 /// and their SSG, `0x80` for YM2203 SSG, and `0x100` for other outputs.
 /// Backend output balancing applies gains of 2.0 to C352, YMZ280B, YMF271, and
-/// QSound, 0.5 to SN76489, 0.25 to YM2203 SSG, and 0.375 to YM2608/YM2610(B)
-/// SSG. When YM2612 is present, all other chip outputs are further attenuated
-/// by 2/3 to preserve headroom while balancing against YM2612. These gains
-/// also apply to custom backends.
+/// QSound, 0.5 to SN76489 and MultiPCM, 0.25 to YM2203 SSG, and 0.375 to
+/// YM2608/YM2610(B) SSG. When YM2612 is present, all other chip outputs are
+/// further attenuated by 2/3 to preserve headroom while balancing against
+/// YM2612. These gains also apply to custom backends.
 ///
 /// PCM is not clipped or normalized. Rendering can allocate and is not
 /// guaranteed real-time safe. After a rendering or checkpoint restore error,

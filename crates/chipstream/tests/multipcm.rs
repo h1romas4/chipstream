@@ -246,6 +246,9 @@ fn vgm_legacy_multi32_bank_writes_play_banked_samples() {
         };
         let legacy = render(true);
         assert!(legacy.frames().iter().any(|frame| frame[0] > 0.01));
+        for sample in legacy.frames()[80] {
+            assert!((0.24..0.26).contains(&sample), "{sample}");
+        }
         assert_eq!(legacy, render(false));
     }
 }
