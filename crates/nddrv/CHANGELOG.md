@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add initial software emulation support for all VGM sound chips.
 - Show YMF271 FM voices in Piano Roll previews and playback.
 - Correct YM2151 stereo positioning for NanoDrive 8 playback and MAME.
 
