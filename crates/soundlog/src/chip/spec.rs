@@ -350,12 +350,12 @@ pub struct MultiPcmSpec {
     pub value: u8,
 }
 
-/// MultiPCM bank write specification.
+/// MultiPCM VGM board bank write specification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MultiPcmBankSpec {
-    /// MultiPCM channel number.
+    /// Bank selection bitmask: bit 0 selects the upper window, bit 1 the lower.
     pub channel: u8,
-    /// Bank offset assigned to the channel.
+    /// Bank offset in 64 KiB units, stored little-endian in VGM commands.
     pub bank_offset: u16,
 }
 

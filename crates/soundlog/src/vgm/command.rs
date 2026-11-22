@@ -2303,14 +2303,14 @@ impl CommandSpec for chip::MultiPcmBankSpec {
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
         dest.push(self.channel);
-        dest.push((self.bank_offset >> 8) as u8);
         dest.push(self.bank_offset as u8);
+        dest.push((self.bank_offset >> 8) as u8);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
         let reg = read_u8_at(bytes, off)?;
-        let hi = read_u8_at(bytes, off + 1)?;
-        let lo = read_u8_at(bytes, off + 2)?;
-        let bank = ((hi as u16) << 8) | (lo as u16);
+        let lo = read_u8_at(bytes, off + 1)?;
+        let hi = read_u8_at(bytes, off + 2)?;
+        let bank = u16::from_le_bytes([lo, hi]);
         Ok((
             chip::MultiPcmBankSpec {
                 channel: reg,

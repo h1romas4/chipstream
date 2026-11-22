@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Fix: Encode and decode MultiPCM VGM bank offsets in little-endian byte order.
 - Fix: Interpret the VGM OKIM6258 ADPCM select bit correctly (set = 4-bit, clear = 3-bit).
 - Fix: Track ES550x bus writes, page selection, and chip variants correctly; detect the variant from the ES550x clock rather than the ES5503 clock.
 

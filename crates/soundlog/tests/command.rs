@@ -16,6 +16,29 @@ use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 
 #[test]
+fn multipcm_bank_offset_uses_vgm_little_endian_bytes() {
+    use soundlog::chip::MultiPcmBankSpec;
+
+    let spec = MultiPcmBankSpec {
+        channel: 3,
+        bank_offset: 0x1234,
+    };
+    let expected = VgmCommand::MultiPcmBankWrite(Instance::Secondary, spec);
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(expected.clone());
+    let bytes: Vec<u8> = builder.finalize().into();
+    assert!(
+        bytes
+            .windows(4)
+            .any(|bytes| bytes == [0xc3, 0x83, 0x34, 0x12])
+    );
+    let stream = VgmStream::from_vgm(bytes).unwrap();
+    assert!(stream.into_iter().any(|result| {
+        matches!(result, Ok(StreamResult::Command(command)) if command == expected)
+    }));
+}
+
+#[test]
 fn instance_conversion_rejects_invalid_indices() {
     assert_eq!(Instance::try_from(0).unwrap(), Instance::Primary);
     assert_eq!(Instance::try_from(1).unwrap(), Instance::Secondary);
