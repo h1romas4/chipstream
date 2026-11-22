@@ -11,15 +11,15 @@ use std::cell::{Cell, RefCell};
 use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
 use soundlog::chip::state::{
-    C352State, ChipState, Ga20State, Huc6280State, K051649State, PokeyState, Saa1099State,
-    Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
-    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+    C352State, ChipState, Ga20State, Huc6280State, K051649State, K053260State, PokeyState,
+    Saa1099State, Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State,
+    Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
 };
 use soundlog::chip::{
-    Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, Okim6258Spec,
-    Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Y8950Spec,
-    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
-    Ymf262Spec, Ymf278bSpec,
+    Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
+    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec,
+    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
+    Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::Instance;
 
@@ -80,6 +80,7 @@ impl_write_callback_target!(SegaPcmSpec, SegaPcm);
 impl_write_callback_target!(C140Spec, C140);
 impl_write_callback_target!(C352Spec, C352);
 impl_write_callback_target!(Ga20Spec, Ga20);
+impl_write_callback_target!(K053260Spec, K053260);
 impl_write_callback_target!(PwmSpec, Pwm);
 impl_write_callback_target!(Saa1099Spec, Saa1099);
 impl_write_callback_target!(Scc1Spec, Scc1);
@@ -110,6 +111,7 @@ pub enum VgmStateTrackerKind {
     Pokey,
     Ga20,
     C352,
+    K053260,
     Ym2151,
     Ym2203,
     Ym2413,
@@ -146,6 +148,7 @@ impl_state_tracker!(Huc6280State, Huc6280);
 impl_state_tracker!(PokeyState, Pokey);
 impl_state_tracker!(Ga20State, Ga20);
 impl_state_tracker!(C352State, C352);
+impl_state_tracker!(K053260State, K053260);
 impl_state_tracker!(Ym2151State, Ym2151);
 impl_state_tracker!(Ym2203State, Ym2203);
 impl_state_tracker!(Ym2413State, Ym2413);
@@ -409,6 +412,7 @@ pub(super) enum Tracker {
     Pokey(PokeyState),
     Ga20(Ga20State),
     C352(C352State),
+    K053260(K053260State),
     Ym2151(Ym2151State),
     Ym2203(Ym2203State),
     Ym2413(Ym2413State),
@@ -445,6 +449,7 @@ impl Tracker {
             Self::Huc6280(state) => state.on_register_write(register, value),
             Self::Pokey(state) => state.on_register_write(register & 15, value),
             Self::Ga20(state) => state.on_register_write(register & 31, value),
+            Self::K053260(state) => state.on_register_write(register & 63, value),
             Self::C352(state) => {
                 state.on_register_write(u16::from_be_bytes([port, register]), u16::from(value))
             }
@@ -488,6 +493,7 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
         VgmStateTrackerKind::Pokey => Chip::Pokey,
         VgmStateTrackerKind::Ga20 => Chip::Ga20,
         VgmStateTrackerKind::C352 => Chip::C352,
+        VgmStateTrackerKind::K053260 => Chip::K053260,
         VgmStateTrackerKind::Ym2151 => Chip::Ym2151,
         VgmStateTrackerKind::Ym2203 => Chip::Ym2203,
         VgmStateTrackerKind::Ym2413 => Chip::Ym2413,
@@ -520,6 +526,7 @@ pub(super) fn tracker(
         VgmStateTrackerKind::Pokey => Tracker::Pokey(PokeyState::new(clock)),
         VgmStateTrackerKind::Ga20 => Tracker::Ga20(Ga20State::new(clock)),
         VgmStateTrackerKind::C352 => Tracker::C352(C352State::new(clock)),
+        VgmStateTrackerKind::K053260 => Tracker::K053260(K053260State::new(clock)),
         VgmStateTrackerKind::Ym2151 => Tracker::Ym2151(Ym2151State::new(clock)),
         VgmStateTrackerKind::Ym2203 => Tracker::Ym2203(Ym2203State::new(clock)),
         VgmStateTrackerKind::Ym2413 => Tracker::Ym2413(Ym2413State::new(clock)),

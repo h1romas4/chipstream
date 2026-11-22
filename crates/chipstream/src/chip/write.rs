@@ -5,10 +5,10 @@
 //! preserving chip-specific address widths and values.
 
 use soundlog::chip::{
-    Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, Okim6258Spec,
-    Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Y8950Spec,
-    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
-    Ymf262Spec, Ymf278bSpec,
+    Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
+    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec,
+    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
+    Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -22,6 +22,8 @@ use super::Ga20;
 use super::Huc6280;
 #[cfg(feature = "k051649")]
 use super::K051649;
+#[cfg(feature = "k053260")]
+use super::K053260;
 #[cfg(feature = "okim6295")]
 use super::Okim6295;
 #[cfg(feature = "pokey")]
@@ -137,6 +139,7 @@ define_writes! {
         (bank, register, u32::from(s.value))
     }),
     Ga20(Ga20Spec, Ga20, |s| (0, s.register, u32::from(s.value))),
+    K053260(K053260Spec, K053260, |s| (0, s.register, u32::from(s.value))),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
     Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
     Scc1(Scc1Spec, K051649, |s| (s.port, s.register, u32::from(s.value))),
@@ -169,6 +172,7 @@ impl ChipRegisterWrite {
             C140Write(i, s) => (*i, Self::C140(s.clone())),
             C352Write(i, s) => (*i, Self::C352(s.clone())),
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
+            K053260Write(i, s) => (*i, Self::K053260(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
             Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
             Scc1Write(i, s) => (*i, Self::Scc1(s.clone())),
@@ -216,6 +220,8 @@ typed_write!(C140, C140Spec, C140);
 typed_write!(C352, C352Spec, C352);
 #[cfg(feature = "ga20")]
 typed_write!(Ga20, Ga20Spec, Ga20);
+#[cfg(feature = "k053260")]
+typed_write!(K053260, K053260Spec, K053260);
 #[cfg(feature = "pwm")]
 typed_write!(Pwm, PwmSpec, Pwm);
 #[cfg(feature = "saa1099")]

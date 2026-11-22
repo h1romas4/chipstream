@@ -43,6 +43,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `ga20` | Irem GA20 |
 | `huc6280` | HuC6280 PSG |
 | `k051649` | K051649 / K052539 (SCC / SCC+) |
+| `k053260` | Konami K053260 |
 | `okim6258` | OKIM6258 |
 | `okim6295` | OKIM6295 |
 | `pokey` | POKEY |

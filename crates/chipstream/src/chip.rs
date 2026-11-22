@@ -21,6 +21,8 @@ mod ga20;
 mod huc6280;
 #[cfg(feature = "k051649")]
 mod k051649;
+#[cfg(feature = "k053260")]
+mod k053260;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]
@@ -59,6 +61,8 @@ pub use ga20::Ga20;
 pub use huc6280::Huc6280;
 #[cfg(feature = "k051649")]
 pub use k051649::K051649;
+#[cfg(feature = "k053260")]
+pub use k053260::K053260;
 #[cfg(feature = "okim6258")]
 pub use oki_adpcm::Okim6258Adpcm;
 #[cfg(feature = "okim6258")]
@@ -372,6 +376,7 @@ impl<T: Any> SoundChipState for T {
     feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
+    feature = "k053260",
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
@@ -391,6 +396,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "ga20",
     feature = "huc6280",
     feature = "k051649",
+    feature = "k053260",
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
@@ -652,6 +658,7 @@ impl Error for ChipError {}
     feature = "c140",
     feature = "c352",
     feature = "ga20",
+    feature = "k053260",
     feature = "okim6295",
     feature = "segapcm"
 ))]
