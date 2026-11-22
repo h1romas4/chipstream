@@ -120,6 +120,7 @@ fn run(
             .lock()
             .map_err(|_| anyhow::anyhow!("NanoDrive connection lock is poisoned"))?;
         transport.reset_for_reuse()?;
+        let mut invert_ym2151_pan = false;
         match plugin {
             Plugin::NanoDrive6 => {
                 transport.configure_live_clock(WriteId::YM2612, 0, 7_670_454)?;
@@ -143,6 +144,15 @@ fn run(
                     })
                 {
                     bail!("NanoDrive does not advertise primary YM2151 writes");
+                }
+                if plugin == Plugin::NanoDrive8 {
+                    let info = transport
+                        .device_info()
+                        .context("Could not identify MAME output device")?;
+                    if info.model.trim().is_empty() {
+                        bail!("MAME output device returned an empty model name");
+                    }
+                    invert_ym2151_pan = info.model.trim() == "NanoDrive 8";
                 }
             }
         }
@@ -187,6 +197,7 @@ fn run(
                     &mut stream,
                     stop,
                     events,
+                    invert_ym2151_pan,
                     |_, name, tag, stop| {
                         clock::ym2151_clock(
                             mame_home.context("Set MAME HOME in Routing > MAME")?,
@@ -710,6 +721,7 @@ fn nd8_connection(
     stream: &mut TcpStream,
     stop: &AtomicBool,
     events: &Sender<ServerEvent>,
+    invert_ym2151_pan: bool,
     mut query_clock: impl FnMut(u32, &str, &str, &AtomicBool) -> Result<u32>,
 ) -> Result<()> {
     let mut input = Input::new(Plugin::NanoDrive8);
@@ -743,6 +755,11 @@ fn nd8_connection(
                 if !initialized {
                     bail!("YM2151 write before MAME reset");
                 }
+                let value = if invert_ym2151_pan {
+                    chipstream_ndsif::nanodrive8_ym2151_pan_value(address, value)
+                } else {
+                    value
+                };
                 transport
                     .schedule_register_write(NdsifRegisterEvent {
                         write_id: WriteId::YM2151,

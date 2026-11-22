@@ -133,6 +133,18 @@ impl NdsifRoutePolicy for NdsifNanoDrivePolicy {
     }
 }
 
+/// Convert YM2151 pan bits to the NanoDrive 8 output convention.
+///
+/// Only registers `0x20..=0x27` are changed; all other bits and registers
+/// are preserved. NanoDrive 8's own YM2151 Pan setting is applied separately.
+pub fn nanodrive8_ym2151_pan_value(address: u8, value: u8) -> u8 {
+    if (0x20..=0x27).contains(&address) {
+        (value & 0x3f) | ((value & 0x40) << 1) | ((value & 0x80) >> 1)
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

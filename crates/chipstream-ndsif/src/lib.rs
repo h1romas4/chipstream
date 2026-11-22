@@ -26,6 +26,7 @@ pub use ndsif_transport::{
 };
 pub use policy::{
     NdsifDirectPolicy, NdsifNanoDrivePolicy, NdsifNd7Policy, NdsifRouteOptions, NdsifRoutePolicy,
+    nanodrive8_ym2151_pan_value,
 };
 pub use routing::{
     NdsifNd7Validator, NdsifRoute, NdsifRoutingError, create_routed_chip_factories,

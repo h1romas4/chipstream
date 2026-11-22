@@ -202,51 +202,59 @@ fn nd6_plugin_stream_reaches_ordered_device() {
 #[cfg(unix)]
 #[test]
 fn nd8_plugin_stream_reaches_ym2151_device() {
-    let (mut transport, frames, device_stop, device_worker) = test_connection(Plugin::NanoDrive8);
-    let (listener, mut client, mut socket) = sockets();
-    client
-        .write_all(b"I\x2a\0\0\0\x03\x03abc:ymRW\x20\x7fW\x21\x11PQ")
+    for invert in [true, false] {
+        let (mut transport, frames, device_stop, device_worker) =
+            test_connection(Plugin::NanoDrive8);
+        let (listener, mut client, mut socket) = sockets();
+        client
+        .write_all(b"I\x2a\0\0\0\x03\x03abc:ymRW\x1f\x40W\x20\x45W\x27\x86W\x21\xc3W\x22\x03W\x28\x80PQ")
         .unwrap();
-    let (events, _) = mpsc::channel();
-    nd8_connection(
-        &mut transport,
-        &listener,
-        &mut socket,
-        &AtomicBool::new(false),
-        &events,
-        |pid, name, tag, _| {
-            assert_eq!((pid, name, tag), (42, "abc", ":ym"));
-            Ok(4_026_987)
-        },
-    )
-    .unwrap();
-    let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert!(matches!(
-        Request::decode(&frame).unwrap(),
-        Request::SetChipClock {
-            write_id: WriteId::YM2151,
-            instance: 0,
-            hz: 4_026_987,
-        }
-    ));
-    let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
-    let Request::WriteRegisters {
-        write_id, writes, ..
-    } = Request::decode(&frame).unwrap()
-    else {
-        panic!("unexpected frame")
-    };
-    assert_eq!(write_id, WriteId::YM2151);
-    assert_eq!(
-        writes.iter().collect::<Vec<_>>(),
-        vec![
-            RegisterWrite::new(0x20, 0x7f),
-            RegisterWrite::new(0x21, 0x11)
-        ]
-    );
-    transport.reset_for_reuse().unwrap();
-    device_stop.store(true, Ordering::Release);
-    device_worker.join().unwrap();
+        let (events, _) = mpsc::channel();
+        nd8_connection(
+            &mut transport,
+            &listener,
+            &mut socket,
+            &AtomicBool::new(false),
+            &events,
+            invert,
+            |pid, name, tag, _| {
+                assert_eq!((pid, name, tag), (42, "abc", ":ym"));
+                Ok(4_026_987)
+            },
+        )
+        .unwrap();
+        let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            Request::decode(&frame).unwrap(),
+            Request::SetChipClock {
+                write_id: WriteId::YM2151,
+                instance: 0,
+                hz: 4_026_987,
+            }
+        ));
+        let frame = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        let Request::WriteRegisters {
+            write_id, writes, ..
+        } = Request::decode(&frame).unwrap()
+        else {
+            panic!("unexpected frame")
+        };
+        assert_eq!(write_id, WriteId::YM2151);
+        assert_eq!(
+            writes.iter().collect::<Vec<_>>(),
+            vec![
+                RegisterWrite::new(0x1f, 0x40),
+                RegisterWrite::new(0x20, if invert { 0x85 } else { 0x45 }),
+                RegisterWrite::new(0x27, if invert { 0x46 } else { 0x86 }),
+                RegisterWrite::new(0x21, 0xc3),
+                RegisterWrite::new(0x22, 0x03),
+                RegisterWrite::new(0x28, 0x80)
+            ]
+        );
+        transport.reset_for_reuse().unwrap();
+        device_stop.store(true, Ordering::Release);
+        device_worker.join().unwrap();
+    }
 }
 
 #[cfg(unix)]

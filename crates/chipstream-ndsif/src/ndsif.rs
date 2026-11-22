@@ -190,8 +190,8 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
             });
         }
         let (write_id, page, address, mut value) = register_parts(&write)?;
-        if self.invert_ym2151_pan && self.chip == Chip::Ym2151 && (0x20..=0x27).contains(&address) {
-            value = (value & 0x3f) | ((value & 0x40) << 1) | ((value & 0x80) >> 1);
+        if self.invert_ym2151_pan && self.chip == Chip::Ym2151 {
+            value = crate::nanodrive8_ym2151_pan_value(address, value);
         }
         let event = NdsifRegisterEvent {
             write_id: write_id_for(write_id, &self.chip)?,
