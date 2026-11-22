@@ -779,6 +779,8 @@ impl Voice {
 /// behavior; native 3-bit ADPCM decoding is not implemented.
 /// YMF271 follows MAME's approximation: PFM is ignored, alternate PCM looping
 /// is rejected, and only its first two native outputs are routed to stereo.
+/// MultiPCM VGM clocks use the legacy `/180` convention and are converted to
+/// the `/224` hardware clock for built-in and custom backends.
 /// The built-in OKIM6258 backend queues direct data and DAC-stream writes in
 /// arrival order and applies a 20 Hz DC blocker. The queue is bounded; an
 /// overflow returns an error. Custom backends define their own behavior.
@@ -1166,7 +1168,9 @@ impl<'a> VgmSequencer<'a> {
         #[cfg(not(feature = "okim6258"))]
         let _ = okim6258_dc_blocker;
         let profile = TimingProfile::for_chip(&chip);
-        let clock = if chip == Chip::C140 && clock < 1_000_000 {
+        let clock = if chip == Chip::MultiPcm {
+            (clock / 45) * 56 + (clock % 45) * 56 / 45
+        } else if chip == Chip::C140 && clock < 1_000_000 {
             match (u8::from(header.c140_chip_type), clock) {
                 (2, 44_100) => 25_056_500,
                 (0 | 1, 21_390) => 12_288_000,

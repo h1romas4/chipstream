@@ -64,6 +64,8 @@ struct Slot {
 /// [`soundlog::chip::MultiPcmBankSpec`] controls the VGM board's external ROM
 /// banking, not a physical chip register. Bit 0 selects the upper 512 KiB
 /// window and bit 1 the lower; equal banks select a single 1 MiB window.
+/// The legacy VGM write offsets `0x10`, `0x11`, and `0x12` also control
+/// external Model 1 and Multi 32 ROM banking.
 #[derive(Clone)]
 pub struct MultiPcm {
     clock: u32,
@@ -72,6 +74,7 @@ pub struct MultiPcm {
     selected_register: u8,
     rom: Vec<u8>,
     banked: bool,
+    split_banks: bool,
     bank_left: u16,
     bank_right: u16,
     attack: [i32; 64],
@@ -127,6 +130,7 @@ impl MultiPcm {
             selected_register: 0,
             rom: Vec::new(),
             banked: false,
+            split_banks: false,
             bank_left: 0,
             bank_right: 0,
             attack,
@@ -155,7 +159,7 @@ impl MultiPcm {
         if self.banked {
             address &= 0x1f_ffff;
             if address & 0x10_0000 != 0 {
-                address = if self.bank_left == self.bank_right {
+                address = if !self.split_banks && self.bank_left == self.bank_right {
                     (u32::from(self.bank_right & !15) << 16) | (address & 0x0f_ffff)
                 } else if address & 0x08_0000 != 0 {
                     (u32::from(self.bank_left & !7) << 16) | (address & 0x07_ffff)
@@ -309,6 +313,25 @@ impl MultiPcm {
                     reason: "external DSP control is not supported",
                 });
             }
+            0x10 => {
+                self.bank_left = u16::from(value) << 4;
+                self.bank_right = self.bank_left;
+                self.banked = true;
+                self.split_banks = false;
+            }
+            0x11 | 0x12 => {
+                if self.banked && !self.split_banks && self.bank_left == self.bank_right {
+                    self.bank_right &= !15;
+                    self.bank_left = self.bank_right + 8;
+                }
+                if register == 0x11 {
+                    self.bank_right = u16::from(value) << 3;
+                } else {
+                    self.bank_left = u16::from(value) << 3;
+                }
+                self.banked = true;
+                self.split_banks = true;
+            }
             _ => {}
         }
         Ok(())
@@ -461,6 +484,7 @@ impl SoundChip for MultiPcm {
                     self.bank_right = spec.bank_offset;
                 }
                 self.banked = true;
+                self.split_banks = false;
                 Ok(())
             }
             other => Err(ChipError::ChipMismatch {

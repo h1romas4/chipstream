@@ -1,7 +1,7 @@
 #![cfg(feature = "multipcm")]
 
 use chipstream::chip::{ChipError, MultiPcm, SoundChip};
-use chipstream::sequencer::VgmSequencer;
+use chipstream::sequencer::{ChipFactoryRegistry, VgmSequencer};
 use soundlog::chip::state::MultiPcmState;
 use soundlog::chip::{Chip, MultiPcmBankSpec, MultiPcmSpec};
 use soundlog::vgm::command::{DataBlock, Instance, WaitSamples};
@@ -150,6 +150,161 @@ fn board_bank_switching_changes_live_reads() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn legacy_board_banks_support_model1_and_independent_multi32_windows() {
+    let mut chip = MultiPcm::new(8_064_000).unwrap();
+    chip.write_rom(0, &header(0x100000)).unwrap();
+    chip.write_rom(0x180000, &[0x40; 4]).unwrap();
+    chip.write_rom(0x200000, &[0x60; 4]).unwrap();
+    chip.write_rom(0x280000, &[0x80; 4]).unwrap();
+
+    write(&mut chip, 0x11, 3);
+    write(&mut chip, 0x12, 0);
+    configure(&mut chip);
+    assert!(samples(&mut chip, 3)[4] > 15_000);
+
+    write(&mut chip, 0x12, 3);
+    chip.write_rom(0, &header(0x180000)).unwrap();
+    slot_write(&mut chip, 0, 1, 0);
+    assert!(samples(&mut chip, 3)[4] > 15_000);
+
+    write(&mut chip, 0x10, 2);
+    assert!(samples(&mut chip, 3)[4] < -30_000);
+    chip.write_rom(0, &header(0x100000)).unwrap();
+    slot_write(&mut chip, 0, 1, 0);
+    assert!(samples(&mut chip, 3)[4] > 20_000);
+
+    write(&mut chip, 0x11, 3);
+    chip.write_rom(0, &header(0x180000)).unwrap();
+    slot_write(&mut chip, 0, 1, 0);
+    let snapshot = chip.save_state().unwrap();
+    assert!(samples(&mut chip, 3)[4] < -30_000);
+    write(&mut chip, 0x12, 3);
+    assert!(samples(&mut chip, 3)[4] > 15_000);
+    chip.restore_state(snapshot.as_ref()).unwrap();
+    assert!(samples(&mut chip, 3)[4] < -30_000);
+}
+
+#[test]
+fn vgm_legacy_multi32_bank_writes_play_banked_samples() {
+    for instance in [Instance::Primary, Instance::Secondary] {
+        let render = |legacy: bool| {
+            let mut builder = VgmBuilder::new();
+            builder.register_chip(Chip::MultiPcm, instance, 8_064_000);
+            for (start, bytes) in [
+                (0_u32, header(0x100000).to_vec()),
+                (0x180000, vec![0x40; 4]),
+            ] {
+                let mut data = Vec::new();
+                data.extend_from_slice(&0x180004_u32.to_le_bytes());
+                data.extend_from_slice(&start.to_le_bytes());
+                data.extend_from_slice(&bytes);
+                builder.add_vgm_command(DataBlock {
+                    marker: 0x66,
+                    chip_instance: instance as u8,
+                    data_type: 0x89,
+                    size: data.len() as u32,
+                    data,
+                });
+            }
+            if legacy {
+                for (register, value) in [(0x11, 3), (0x12, 0)] {
+                    builder.add_chip_write(instance, MultiPcmSpec { register, value });
+                }
+            } else {
+                for (channel, bank_offset) in [(2, 0x18), (1, 0)] {
+                    builder.add_chip_write(
+                        instance,
+                        MultiPcmBankSpec {
+                            channel,
+                            bank_offset,
+                        },
+                    );
+                }
+            }
+            for (register, value) in [
+                (1, 0),
+                (2, 1),
+                (0, 0),
+                (2, 3),
+                (0, 0x10),
+                (2, 5),
+                (0, 1),
+                (2, 4),
+                (0, 0x80),
+            ] {
+                builder.add_chip_write(instance, MultiPcmSpec { register, value });
+            }
+            builder.add_vgm_command(WaitSamples(500));
+            let bytes: Vec<u8> = builder.finalize().into();
+            let mut player =
+                VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
+            player.track_state_with_voice_clocks::<MultiPcmState>();
+            player.render().unwrap().unwrap()
+        };
+        let legacy = render(true);
+        assert!(legacy.frames().iter().any(|frame| frame[0] > 0.01));
+        assert_eq!(legacy, render(false));
+    }
+}
+
+#[test]
+fn vgm_clock_produces_expected_pitch_and_factory_clock() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::MultiPcm, Instance::Primary, 7_938_000);
+    let mut sample_header = header(0x100);
+    sample_header[6] = 0xe0;
+    let mut rom = vec![0; 0x120];
+    rom[..12].copy_from_slice(&sample_header);
+    rom[0x100..0x110].fill(0x40);
+    rom[0x110..0x120].fill(0xc0);
+    let mut data = Vec::new();
+    data.extend_from_slice(&(rom.len() as u32).to_le_bytes());
+    data.extend_from_slice(&0_u32.to_le_bytes());
+    data.extend_from_slice(&rom);
+    builder.add_vgm_command(DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x89,
+        size: data.len() as u32,
+        data,
+    });
+    for (register, value) in [
+        (1, 0),
+        (2, 1),
+        (0, 0),
+        (2, 3),
+        (0, 0x10),
+        (2, 5),
+        (0, 1),
+        (2, 4),
+        (0, 0x80),
+    ] {
+        builder.add_chip_write(Instance::Primary, MultiPcmSpec { register, value });
+    }
+    builder.add_vgm_command(WaitSamples(44_100));
+    let doc = builder.finalize();
+    let mut player = VgmSequencer::new(doc.clone(), 44_100, 1024, Default::default()).unwrap();
+    let mut previous = 0.0;
+    let mut rising_edges = 0;
+    while let Some(block) = player.render().unwrap() {
+        for frame in block.frames() {
+            if previous <= 0.0 && frame[0] > 0.0 {
+                rising_edges += 1;
+            }
+            previous = frame[0];
+        }
+    }
+    assert!((1377..=1380).contains(&rising_edges), "{rising_edges}");
+
+    let mut factories = ChipFactoryRegistry::new();
+    factories.register(Chip::MultiPcm, |config| {
+        assert_eq!(config.clock(), 9_878_400);
+        Ok(Box::new(MultiPcm::new(config.clock())?))
+    });
+    VgmSequencer::new_with_factories(doc, 44_100, 1024, Default::default(), factories).unwrap();
 }
 
 #[test]
