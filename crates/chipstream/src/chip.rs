@@ -13,6 +13,8 @@
 
 #[cfg(feature = "c140")]
 mod c140;
+#[cfg(feature = "huc6280")]
+mod huc6280;
 #[cfg(feature = "k051649")]
 mod k051649;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
@@ -43,6 +45,8 @@ use soundlog::chip::Chip;
 
 #[cfg(feature = "c140")]
 pub use c140::{C140, C140Type};
+#[cfg(feature = "huc6280")]
+pub use huc6280::Huc6280;
 #[cfg(feature = "k051649")]
 pub use k051649::K051649;
 #[cfg(feature = "okim6258")]
@@ -352,6 +356,7 @@ impl<T: Any> SoundChipState for T {
 
 #[cfg(any(
     feature = "c140",
+    feature = "huc6280",
     feature = "k051649",
     feature = "okim6258",
     feature = "okim6295",
@@ -367,6 +372,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
 
 #[cfg(any(
     feature = "c140",
+    feature = "huc6280",
     feature = "k051649",
     feature = "okim6258",
     feature = "okim6295",

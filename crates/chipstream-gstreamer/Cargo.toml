@@ -13,7 +13,7 @@ name = "gstchipstream"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-chipstream = { path = "../chipstream", version = "0.1.0", features = ["c140", "k051649", "okim6258", "okim6295", "pwm", "saa1099", "segapcm", "sn76496"] }
+chipstream = { path = "../chipstream", version = "0.1.0", features = ["c140", "huc6280", "k051649", "okim6258", "okim6295", "pwm", "saa1099", "segapcm", "sn76496"] }
 chipstream-ndsif = { path = "../chipstream-ndsif", version = "0.1.0" }
 ndsif-transport = { path = "../ndsif-transport", version = "0.1.0" }
 gstreamer = "0.25"

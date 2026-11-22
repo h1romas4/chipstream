@@ -8,6 +8,7 @@ use soundlog::vgm::command::WaitSamples;
 fn vgm_chip_features_apply_to_document_and_owned_stream() {
     let cases = [
         (Chip::C140, "c140", cfg!(feature = "c140")),
+        (Chip::Huc6280, "huc6280", cfg!(feature = "huc6280")),
         (Chip::K051649, "k051649", cfg!(feature = "k051649")),
         (Chip::Okim6258, "okim6258", cfg!(feature = "okim6258")),
         (Chip::Okim6295, "okim6295", cfg!(feature = "okim6295")),

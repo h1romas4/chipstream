@@ -156,6 +156,89 @@ fn dac_budget_document(frequency: u32, waits: &[VgmCommand]) -> VgmDocument {
 }
 
 #[test]
+fn huc6280_dac_stream_selects_and_restores_the_correct_instance() {
+    use soundlog::chip::{Chip, Huc6280Spec};
+    use soundlog::vgm::command::{
+        LengthMode, SetStreamData, SetStreamFrequency, SetupStreamControl, StartStream,
+    };
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Huc6280, Instance::Primary, 3_579_545);
+    builder.register_chip(Chip::Huc6280, Instance::Secondary, 3_579_545);
+    builder.attach_data_block(UncompressedStream {
+        chip_type: StreamChipType::Huc6280Pcm,
+        data: vec![31],
+    });
+    for (instance, value) in [(Instance::Primary, 1), (Instance::Secondary, 4)] {
+        builder.add_chip_write(instance, Huc6280Spec { register: 0, value });
+    }
+    for (id, instance, port) in [(0, Instance::Primary, 2), (1, Instance::Secondary, 0xff)] {
+        builder.add_vgm_command(SetupStreamControl {
+            stream_id: id,
+            chip_type: DacStreamChipType {
+                chip_id: ChipId::Huc6280,
+                instance,
+            },
+            write_port: port,
+            write_command: 6,
+        });
+        builder.add_vgm_command(SetStreamData {
+            stream_id: id,
+            data_bank_id: 5,
+            step_size: 1,
+            step_base: 0,
+        });
+        builder.add_vgm_command(SetStreamFrequency {
+            stream_id: id,
+            frequency: 44_100,
+        });
+        builder.add_vgm_command(StartStream {
+            stream_id: id,
+            data_start_offset: 0,
+            length_mode: LengthMode::CommandCount {
+                reverse: false,
+                looped: false,
+            },
+            data_length: 1,
+        });
+    }
+    builder.add_vgm_command(WaitSamples(2));
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    for mut stream in [
+        VgmStream::from_document(document),
+        VgmStream::from_vgm(bytes).unwrap(),
+    ] {
+        for _ in 0..2 {
+            let mut generated = Vec::new();
+            loop {
+                match stream.next().unwrap().unwrap() {
+                    StreamResult::Command(VgmCommand::Huc6280Write(instance, spec)) => {
+                        if let Some(id) = stream.last_stream_write_id() {
+                            generated.push((id, instance, spec.register, spec.value));
+                        }
+                    }
+                    StreamResult::EndOfStream => break,
+                    StreamResult::NeedsMoreData => panic!("incomplete VGM"),
+                    _ => {}
+                }
+            }
+            generated.sort_by_key(|event| event.0);
+            assert_eq!(
+                generated,
+                [
+                    (0, Instance::Primary, 0, 2),
+                    (0, Instance::Primary, 6, 31),
+                    (0, Instance::Primary, 0, 1),
+                    (1, Instance::Secondary, 6, 31),
+                ]
+            );
+            stream.reset();
+        }
+    }
+}
+
+#[test]
 fn dac_stream_controls_are_opt_in_and_expose_their_targets() {
     use soundlog::vgm::command::StopStream;
     use soundlog::vgm::{DacStreamSelector, DacStreamTarget};

@@ -26,8 +26,8 @@ pub type Huc6280Storage = SparseStorage<u8, u8>;
 /// - Bits 0-2: Channel select (0-5)
 ///
 /// Global Volume (0x01):
-/// - Bits 0-3: Master volume (left)
-/// - Bits 4-7: Master volume (right)
+/// - Bits 0-3: Master volume (right)
+/// - Bits 4-7: Master volume (left)
 ///
 /// Per-Channel Registers (selected via 0x00):
 /// - 0x02: Frequency low (8 bits)
@@ -46,11 +46,13 @@ pub type Huc6280Storage = SparseStorage<u8, u8>;
 pub struct Huc6280State {
     /// Channel states for 6 wavetable channels
     channels: [ChannelState; HUC6280_CHANNELS],
+    /// Register values for each channel selection, including unused selections.
+    channel_registers: [Huc6280Storage; 8],
     /// Master clock frequency in Hz (used for frequency calculation)
     master_clock_hz: f32,
     /// Currently selected channel for register access
     selected_channel: u8,
-    /// Global register storage for all written registers
+    /// Global register storage.
     registers: Huc6280Storage,
 }
 
@@ -75,6 +77,7 @@ impl Huc6280State {
     pub fn new(master_clock_hz: f32) -> Self {
         Self {
             channels: array::from_fn(|_| ChannelState::new()),
+            channel_registers: array::from_fn(|_| Huc6280Storage::default()),
             master_clock_hz,
             selected_channel: 0,
             registers: Huc6280Storage::default(),
@@ -111,7 +114,7 @@ impl Huc6280State {
     ///
     /// # Returns
     ///
-    /// Selected channel index (0-5)
+    /// Selected channel index (0-7); indices 6 and 7 do not produce sound.
     pub fn selected_channel(&self) -> u8 {
         self.selected_channel
     }
@@ -126,11 +129,8 @@ impl Huc6280State {
     ///
     /// Frequency in Hz
     fn hz_huc6280(&self, period: u16) -> f32 {
-        if period == 0 {
-            0.0f32
-        } else {
-            self.master_clock_hz / 32.0_f32 / period as f32
-        }
+        let period = if period == 0 { 0x1000 } else { period };
+        self.master_clock_hz / 32.0_f32 / period as f32
     }
 
     /// Extract tone from channel registers
@@ -147,17 +147,11 @@ impl Huc6280State {
             return None;
         }
 
-        // Read from global register storage
-        // Frequency registers: 0x02 (low) and 0x03 (high)
-        let freq_low = self.registers.read(0x02)?;
-        let freq_high = self.registers.read(0x03)?;
+        let freq_low = self.channel_registers[channel].read(0x02)?;
+        let freq_high = self.channel_registers[channel].read(0x03)?;
 
         // 12-bit frequency
         let freq = (freq_low as u16) | ((freq_high as u16 & 0x0F) << 8);
-
-        if freq == 0 {
-            return None;
-        }
 
         let freq_hz = self.hz_huc6280(freq);
 
@@ -171,9 +165,6 @@ impl Huc6280State {
     /// * `value` - Value written (bits 0-2 = channel select)
     fn handle_channel_select(&mut self, value: u8) {
         self.selected_channel = value & 0x07;
-        if self.selected_channel as usize >= HUC6280_CHANNELS {
-            self.selected_channel = 0;
-        }
     }
 
     /// Handle frequency register writes (0x02-0x03)
@@ -279,7 +270,12 @@ impl ChipState for Huc6280State {
     type Value = u8;
 
     fn read_register(&self, register: Self::Register) -> Option<Self::Value> {
-        self.registers.read(register)
+        let register = register & 0x0f;
+        if (0x02..=0x07).contains(&register) {
+            self.channel_registers[usize::from(self.selected_channel)].read(register)
+        } else {
+            self.registers.read(register)
+        }
     }
 
     fn on_register_write(
@@ -287,8 +283,12 @@ impl ChipState for Huc6280State {
         register: Self::Register,
         value: Self::Value,
     ) -> Option<Vec<StateEvent>> {
-        // Store all register writes in global storage
-        self.registers.write(register, value);
+        let register = register & 0x0f;
+        if (0x02..=0x07).contains(&register) {
+            self.channel_registers[usize::from(self.selected_channel)].write(register, value);
+        } else {
+            self.registers.write(register, value);
+        }
 
         match register {
             // Channel select (0x00)
@@ -336,6 +336,9 @@ impl ChipState for Huc6280State {
             channel.clear();
         }
         self.selected_channel = 0;
+        for registers in &mut self.channel_registers {
+            registers.clear();
+        }
         self.registers.clear();
     }
 
@@ -441,6 +444,56 @@ mod tests {
         assert_eq!(ch2.key_state, KeyState::On);
         assert_eq!(ch0.tone.unwrap().fnum, 0x800);
         assert_eq!(ch2.tone.unwrap().fnum, 0x400);
+    }
+
+    #[test]
+    fn frequency_bytes_are_per_channel_and_invalid_selection_is_not_channel_zero() {
+        let mut state = Huc6280State::new(3_579_545.0);
+        for (register, value) in [
+            (0, 0),
+            (2, 0x12),
+            (3, 1),
+            (4, 0x80),
+            (0, 1),
+            (2, 0x34),
+            (3, 2),
+            (4, 0x80),
+            (0, 0),
+        ] {
+            state.on_register_write(register, value);
+        }
+        assert_eq!(state.read_register(3), Some(1));
+        assert!(matches!(
+            state.on_register_write(2, 0x56).as_deref(),
+            Some([StateEvent::ToneChange { channel: 0, tone }]) if tone.fnum == 0x156
+        ));
+        state.on_register_write(0, 6);
+        assert_eq!(state.selected_channel(), 6);
+        assert_eq!(state.read_register(2), None);
+        assert!(state.on_register_write(4, 0).is_none());
+        assert_eq!(state.channel(0).unwrap().key_state, KeyState::On);
+        state.on_register_write(0, 1);
+        assert_eq!(state.read_register(3), Some(2));
+        assert!(matches!(
+            state.on_register_write(2, 0x78).as_deref(),
+            Some([StateEvent::ToneChange { channel: 1, tone }]) if tone.fnum == 0x278
+        ));
+        state.reset();
+        state.on_register_write(0, 1);
+        state.on_register_write(2, 1);
+        assert!(state.on_register_write(4, 0x80).is_none());
+    }
+
+    #[test]
+    fn zero_frequency_uses_the_4096_clock_period() {
+        let mut state = Huc6280State::new(3_579_545.0);
+        state.on_register_write(2, 0);
+        state.on_register_write(3, 0);
+        assert!(matches!(
+            state.on_register_write(4, 0x80).as_deref(),
+            Some([StateEvent::KeyOn { channel: 0, tone }])
+                if tone.fnum == 0 && tone.freq_hz == Some(3_579_545.0 / 32.0 / 4096.0)
+        ));
     }
 
     #[test]

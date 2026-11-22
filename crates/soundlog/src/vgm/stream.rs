@@ -901,6 +901,8 @@ pub struct VgmStream {
     initial_wait_started: bool,
     /// Pending stream write commands to emit
     pending_stream_writes: Vec<(u8, VgmCommand)>,
+    /// HuC6280 channel selections from the source command stream.
+    huc6280_selected: [u8; 2],
     /// Origin of the last iterator result, if it was a DAC-stream write.
     last_stream_write_id: Option<u8>,
     /// Pending wait time that hasn't been emitted yet (in samples)
@@ -998,6 +1000,7 @@ impl VgmStream {
             current_sample: 0,
             initial_wait_started: false,
             pending_stream_writes: Vec::new(),
+            huc6280_selected: [0; 2],
             last_stream_write_id: None,
             pending_wait: None,
             fadeout_samples: None,
@@ -1252,6 +1255,16 @@ impl VgmStream {
     /// `StreamResult::NeedsMoreData` if more bytes are required, or
     /// `StreamResult::EndOfStream` if the stream has ended.
     fn next_command(&mut self) -> Result<StreamResult, ParseError> {
+        let result = self.next_command_inner()?;
+        if let StreamResult::Command(VgmCommand::Huc6280Write(instance, spec)) = &result
+            && spec.register & 15 == 0
+        {
+            self.huc6280_selected[*instance as usize] = spec.value & 7;
+        }
+        Ok(result)
+    }
+
+    fn next_command_inner(&mut self) -> Result<StreamResult, ParseError> {
         loop {
             if !self.pending_stream_writes.is_empty() {
                 let (stream_id, cmd) = self.pending_stream_writes.remove(0);
@@ -1882,6 +1895,7 @@ impl VgmStream {
         self.current_sample = 0;
         self.initial_wait_started = false;
         self.pending_stream_writes.clear();
+        self.huc6280_selected = [0; 2];
         self.pending_wait = None;
         self.fadeout_remaining_samples = None;
         self.pcm_data_offset = 0;
@@ -2495,6 +2509,7 @@ impl VgmStream {
     /// positions and timing are derived from [`StreamSnapshot`] rather than being
     /// stored as mutable per-step state.
     fn generate_stream_writes(&mut self) -> Result<(), ParseError> {
+        let mut huc6280_selected = self.huc6280_selected;
         self.stream_id_scratch.clear();
         self.stream_id_scratch
             .extend(self.stream_states.keys().copied());
@@ -2564,7 +2579,54 @@ impl VgmStream {
                 (Some(_), Some((data_pos, step))) => {
                     // Normal emit: read byte from data bank and emit chip-write command.
                     if let Some(data) = self.read_stream_byte_at(snapshot.data_bank_id, data_pos)? {
-                        if let Some(cmd) = Self::create_stream_write_command_static(
+                        if snapshot.chip_id == ChipId::Huc6280 {
+                            let instance = snapshot.instance as usize;
+                            let selected = huc6280_selected[instance];
+                            let register = snapshot.write_command >> 4;
+                            if snapshot.write_port != 0xff {
+                                self.pending_stream_writes.push((
+                                    stream_id,
+                                    VgmCommand::Huc6280Write(
+                                        snapshot.instance,
+                                        chip::Huc6280Spec {
+                                            register,
+                                            value: snapshot.write_port,
+                                        },
+                                    ),
+                                ));
+                                if register == 0 {
+                                    huc6280_selected[instance] = snapshot.write_port & 7;
+                                }
+                            }
+                            self.pending_stream_writes.push((
+                                stream_id,
+                                VgmCommand::Huc6280Write(
+                                    snapshot.instance,
+                                    chip::Huc6280Spec {
+                                        register: snapshot.write_command & 15,
+                                        value: data,
+                                    },
+                                ),
+                            ));
+                            if snapshot.write_command & 15 == 0 {
+                                huc6280_selected[instance] = data & 7;
+                            }
+                            if snapshot.write_port != 0xff && snapshot.write_port != selected {
+                                self.pending_stream_writes.push((
+                                    stream_id,
+                                    VgmCommand::Huc6280Write(
+                                        snapshot.instance,
+                                        chip::Huc6280Spec {
+                                            register,
+                                            value: selected,
+                                        },
+                                    ),
+                                ));
+                                if register == 0 {
+                                    huc6280_selected[instance] = selected;
+                                }
+                            }
+                        } else if let Some(cmd) = Self::create_stream_write_command_static(
                             snapshot.chip_id,
                             snapshot.instance,
                             snapshot.write_port,
@@ -2926,13 +2988,6 @@ impl VgmStream {
                 instance,
                 chip::K054539Spec {
                     register: ((write_port as u16) << 8) | (write_command as u16),
-                    value: data,
-                },
-            )),
-            ChipId::Huc6280 => Some(VgmCommand::Huc6280Write(
-                instance,
-                chip::Huc6280Spec {
-                    register: write_command,
                     value: data,
                 },
             )),
