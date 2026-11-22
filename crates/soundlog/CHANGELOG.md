@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.17.0 (Unreleased)
+## Unreleased
+
+- [ ] Add: Initial XGM format support (`xgm` feature).
+
+## v0.17.0
 
 ### Breaking API Changes
 
@@ -28,13 +32,6 @@
 - Fix: Track VSU global stop and zero-valued frequencies correctly.
 - Fix: Track simultaneous SAA1099 channel changes, SCC waveform writes, and HuC6280/POKEY non-tonal modes correctly.
 - Fix: Use the configured Game Boy clock and correct the SAA1099 tone frequency.
-
-## Planned
-
-- [ ] Add: Initial XGM format support (`xgm` feature).
-- [ ] Chip State
-  - [ ] Doc: NES APU Mapping
-  - [ ] Doc: GBDMG Mapping
 
 ## v0.16.0
 

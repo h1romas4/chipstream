@@ -566,6 +566,9 @@ detecting key on/off events and extracting tone information from register writes
 - Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
 - The specifications for key on/off detection — including total level extraction — are not yet stabilized.
 - The values returned by `StateEvent` shall not be compatible across versions. Please note that the timing and values of events may differ between versions.
+- The channel counts below are those reported by each tracker. PCM trackers
+  retain register writes but do not emit key or tone events; ES5505/ES5506
+  additionally track the selected page and host-bus writes.
 
 ### Implemented Chips
 
@@ -575,47 +578,52 @@ detecting key on/off events and extracting tone information from register writes
 | **YM2413 (OPLL)** | 9 FM | ✅ | ✅ | MSX, SMS FM Unit | ✅ |
 | **YM2612 (OPN2)** | 6 FM | ✅ | ✅ | Sega Genesis/Mega Drive | ✅ |
 | **YM2151 (OPM)** | 8 FM | ✅ | ✅ | Arcade systems, etc. | ✅ |
-| **SegaPcm** | N/A | N/A | N/A | Sega PCM chip | - |
-| **Rf5c68** | N/A | N/A | N/A | RF5C68 PCM chip | - |
+| **Sega PCM** | 16 | — | — | Sega PCM chip | ✅ |
+| **RF5C68** | 8 | — | — | RF5C68 PCM chip | ✅ |
 | **YM2203 (OPN)** | 3 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ✅ |
 | **YM2608 (OPNA)** | 6 FM + 3 PSG | ✅ | ✅ | NEC PC-8801, etc. | ✅ |
-| **YM2610b (OPNB)** | 6 FM + 3 PSG + ADPCM | ✅ | ✅ | Neo Geo, etc. | ✅ |
+| **YM2610B (OPNB)** | 6 FM + 3 PSG | ✅ | ✅ | Neo Geo, etc. | ✅ |
 | **YM3812 (OPL2)** | 9 FM | ✅ | ✅ | AdLib, Sound Blaster | ✅ |
 | **YM3526 (OPL)** | 9 FM | ✅ | ✅ | C64 Sound Expander, etc. | ✅ |
-| **Y8950** | 9 FM + ADPCM | ✅ | ✅ | MSX | ✅ |
-| **YMf262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ✅ |
-| **YMF278b (OPL4)** | 18 FM + PCM | ✅ | ✅ | YMF278B | ✅ |
-| **YMF271 (OPX)** | 12 groups / 48 slots | ✅ | ✅ | YMF271 | FM voices; PCM not tracked |
+| **Y8950** | 9 FM | ✅ | ✅ | MSX | ✅ |
+| **YMF262 (OPL3)** | 18 FM | ✅ | ✅ | Sound Blaster 16, etc. | ✅ |
+| **YMF278B (OPL4)** | 18 FM | ✅ | ✅ | YMF278B | ✅ |
+| **YMF271 (OPX)** | 12 groups / 48 slots | ✅ | ✅ | YMF271 | ✅ |
 | **K051649** | 5 | ✅ | ✅ | Konami SCC | ✅ |
 | **SCC1 (K052539)** | 5 | ✅ | ✅ | Konami SCC (same as K051649) | ✅ |
-| **YMZ280b** | N/A | N/A | N/A | YMZ280B PCM | - |
-| **RF5C164** | N/A | N/A | N/A | RF5C164 PCM | - |
-| **PWM** | N/A | N/A | N/A | Sega PWM | - |
+| **YMZ280B** | 8 | — | — | YMZ280B PCM | ✅ |
+| **RF5C164** | 8 | — | — | RF5C164 PCM | ✅ |
+| **PWM** | 1 | — | — | Sega PWM | ✅ |
 | **AY8910** | 3 tone + noise | ✅ | ✅ | ZX Spectrum, MSX, etc. | ✅ |
-| **GbDmg** | 4 | ✅ | ✅ | Game Boy | ✅ |
-| **NesApu** | 5 | ✅ | ✅ | NES | ✅ (1) |
-| **MultiPcm** | N/A | N/A | N/A | Sega MultiPCM | - |
-| **UPD7759** | N/A | N/A | N/A | uPD7759 ADPCM | - |
-| **OKIM6258** | N/A | N/A | N/A | OKIM6258 ADPCM | - |
-| **OKIM6295** | N/A | N/A | N/A | OKIM6295 ADPCM | - |
-| **K054539** | N/A | N/A | N/A | Konami K054539 PCM | - |
-| **HUC6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ✅ |
-| **C140** | N/A | N/A | N/A | Namco C140 PCM | - |
-| **K053260** | N/A | N/A | N/A | Konami K053260 PCM | - |
-| **Pokey** | 4 | ✅ | ✅ | Atari 8-bit computers | ✅ |
-| **QSound** | N/A | N/A | N/A | Capcom QSound | - |
-| **SCSP** | N/A | N/A | N/A | Sega Saturn SCSP | - |
+| **Game Boy DMG** | 4 | ✅ | ✅ | Game Boy | ✅ |
+| **NES APU** | 5 + 1 FDS | ✅ | ✅ | NES | ✅ |
+| **MultiPCM** | 28 | — | — | Sega MultiPCM | ✅ |
+| **uPD7759** | 1 | — | — | uPD7759 ADPCM | ✅ |
+| **OKIM6258** | 1 | — | — | OKIM6258 ADPCM | ✅ |
+| **OKIM6295** | 4 | — | — | OKIM6295 ADPCM | ✅ |
+| **K054539** | 8 | — | — | Konami K054539 PCM | ✅ |
+| **HuC6280** | 6 | ✅ | ✅ | PC Engine/TurboGrafx-16 | ✅ |
+| **C140** | 24 | — | — | Namco C140 PCM | ✅ |
+| **K053260** | 4 | — | — | Konami K053260 PCM | ✅ |
+| **POKEY** | 4 | ✅ | ✅ | Atari 8-bit computers | ✅ |
+| **QSound** | 16 | — | — | Capcom QSound | ✅ |
+| **SCSP** | 32 | — | — | Sega Saturn SCSP | ✅ |
 | **WonderSwan** | 4 | ✅ | ✅ | WonderSwan APU | ✅ |
 | **VSU** | 6 | ✅ | ✅ | Virtual Boy VSU | ✅ |
 | **SAA1099** | 6 | ✅ | ✅ | SAM Coupé, etc. | ✅ |
-| **ES5503** | N/A | N/A | N/A | Ensoniq ES5503 | - |
-| **ES5506** | N/A | N/A | N/A | Ensoniq ES5506 | - |
-| **X1010** | N/A | N/A | N/A | Setia X1-010 | - |
-| **C352** | N/A | N/A | N/A | Namco C352 | - |
-| **GA20** | N/A | N/A | N/A | Irem GA20 | - |
-| **Mikey** | N/A | N/A | N/A | Atari Lynx | - |
+| **ES5503** | 32 | — | — | Ensoniq ES5503 | ✅ |
+| **ES5505 / ES5506** | 32 | — | — | Ensoniq ES5505 / ES5506 | ✅ |
+| **X1-010** | 16 | — | — | Setia X1-010 | ✅ |
+| **C352** | 32 | — | — | Namco C352 | ✅ |
+| **GA20** | 4 | — | — | Irem GA20 | ✅ |
+| **Mikey** | 4 | ✅ | ✅ | Atari Lynx | ✅ |
 
-- (1) The NES APU state tracker does not currently support Famicom Disk System (FDS) expansion audio.  
+- YM2610B and Y8950 track FM/PSG as listed, not ADPCM. YMF278B tracks FM,
+  not PCM; YMF271 tracks FM voices, not PCM or its linear waveform.
+- NES APU includes FDS expansion audio as channel 5. FDS pitch excludes
+  modulation, and envelope amplitude is not simulated.
+- Mikey tone frequency represents the channel timer; linked clocks do not have
+  a directly calculated frequency.
 
 ## License
 
