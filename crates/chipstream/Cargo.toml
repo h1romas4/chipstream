@@ -26,6 +26,7 @@ pwm = []
 saa1099 = []
 segapcm = []
 sn76496 = []
+x1010 = []
 
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }

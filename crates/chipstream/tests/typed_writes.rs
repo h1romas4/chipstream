@@ -75,6 +75,10 @@ impl SoundChip for RecordingChip {
                 let [bank, register] = s.register.to_be_bytes();
                 (bank, register, s.value.into())
             }
+            ChipRegisterWrite::X1010(s) => {
+                let [bank, register] = s.offset.to_be_bytes();
+                (bank, register, s.value.into())
+            }
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6295(s) => (0, s.register, s.value.into()),
@@ -181,6 +185,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
             value: 0x81,
         },
         (2, 0x2f, 0x81),
+    );
+    check_mapping(
+        Chip::X1010,
+        X1010Spec {
+            offset: 0x1fff,
+            value: 0x81,
+        },
+        (0x1f, 0xff, 0x81),
     );
     check_mapping(
         Chip::Pwm,

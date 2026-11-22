@@ -44,6 +44,8 @@ mod segapcm;
 #[cfg(feature = "sn76496")]
 mod sn76496;
 mod write;
+#[cfg(feature = "x1010")]
+mod x1010;
 mod ymfm;
 
 use std::any::Any;
@@ -86,6 +88,8 @@ pub use segapcm::SegaPcm;
 #[cfg(feature = "sn76496")]
 pub use sn76496::{Sn76496, Sn76496Config};
 pub use write::{ChipRegisterWrite, ChipWrite};
+#[cfg(feature = "x1010")]
+pub use x1010::X1010;
 pub use ymfm::YmfmChip;
 
 /// Chip-controlled stereo output mutes, separate from user pan or gain.
@@ -388,7 +392,8 @@ impl<T: Any> SoundChipState for T {
     feature = "pokey",
     feature = "saa1099",
     feature = "segapcm",
-    feature = "sn76496"
+    feature = "sn76496",
+    feature = "x1010"
 ))]
 /// Capture a cloneable backend as a type-erased state snapshot.
 pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipState> {
@@ -409,7 +414,8 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "pokey",
     feature = "saa1099",
     feature = "segapcm",
-    feature = "sn76496"
+    feature = "sn76496",
+    feature = "x1010"
 ))]
 /// Restore a cloneable backend after checking the snapshot's concrete type.
 pub(crate) fn restore_cloned_state<T: Clone + Any>(
@@ -667,7 +673,8 @@ impl Error for ChipError {}
     feature = "k053260",
     feature = "k054539",
     feature = "okim6295",
-    feature = "segapcm"
+    feature = "segapcm",
+    feature = "x1010"
 ))]
 /// Copy a ROM segment, extending the backing buffer within the size limit.
 fn write_rom_data(rom: &mut Vec<u8>, start: usize, data: &[u8]) -> Result<(), ChipError> {

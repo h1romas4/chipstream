@@ -15,6 +15,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         (Chip::K051649, "k051649", cfg!(feature = "k051649")),
         (Chip::K053260, "k053260", cfg!(feature = "k053260")),
         (Chip::K054539, "k054539", cfg!(feature = "k054539")),
+        (Chip::X1010, "x1010", cfg!(feature = "x1010")),
         (Chip::Okim6258, "okim6258", cfg!(feature = "okim6258")),
         (Chip::Okim6295, "okim6295", cfg!(feature = "okim6295")),
         (Chip::Pwm, "pwm", cfg!(feature = "pwm")),

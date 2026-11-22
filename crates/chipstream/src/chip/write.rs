@@ -7,8 +7,8 @@
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
     K054539Spec, Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec,
-    SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec,
-    Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
+    SegaPcmSpec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec,
+    Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -38,6 +38,8 @@ use super::Saa1099;
 use super::SegaPcm;
 #[cfg(feature = "sn76496")]
 use super::Sn76496;
+#[cfg(feature = "x1010")]
+use super::X1010;
 use super::{ChipError, SoundChip, YmfmChip};
 #[cfg(feature = "okim6258")]
 use super::{Okim6258, Okim6258Stream};
@@ -146,6 +148,10 @@ define_writes! {
         let [bank, register] = s.register.to_be_bytes();
         (bank, register, u32::from(s.value))
     }),
+    X1010(X1010Spec, X1010, |s| {
+        let [bank, register] = s.offset.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
     Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
     Scc1(Scc1Spec, K051649, |s| (s.port, s.register, u32::from(s.value))),
@@ -180,6 +186,7 @@ impl ChipRegisterWrite {
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
             K053260Write(i, s) => (*i, Self::K053260(s.clone())),
             K054539Write(i, s) => (*i, Self::K054539(s.clone())),
+            X1010Write(i, s) => (*i, Self::X1010(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
             Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
             Scc1Write(i, s) => (*i, Self::Scc1(s.clone())),
@@ -231,6 +238,8 @@ typed_write!(Ga20, Ga20Spec, Ga20);
 typed_write!(K053260, K053260Spec, K053260);
 #[cfg(feature = "k054539")]
 typed_write!(K054539, K054539Spec, K054539);
+#[cfg(feature = "x1010")]
+typed_write!(X1010, X1010Spec, X1010);
 #[cfg(feature = "pwm")]
 typed_write!(Pwm, PwmSpec, Pwm);
 #[cfg(feature = "saa1099")]
