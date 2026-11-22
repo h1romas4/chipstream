@@ -11,12 +11,13 @@ use std::cell::{Cell, RefCell};
 use crate::chip::ChipRegisterWrite;
 use soundlog::chip::event::StateEvent;
 use soundlog::chip::state::{
-    ChipState, Saa1099State, Sn76489State, Y8950State, Ym2151State, Ym2203State, Ym2413State,
-    Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf278bState,
+    ChipState, K051649State, Saa1099State, Sn76489State, Y8950State, Ym2151State, Ym2203State,
+    Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State,
+    Ymf278bState,
 };
 use soundlog::chip::{
     Ay8910Spec, C140Spec, Chip, GameGearPsgSpec, Okim6258Spec, Okim6295Spec, PsgSpec, PwmSpec,
-    Saa1099Spec, SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec,
+    Saa1099Spec, Scc1Spec, SegaPcmSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec,
     Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
 };
 use soundlog::vgm::command::Instance;
@@ -78,6 +79,7 @@ impl_write_callback_target!(SegaPcmSpec, SegaPcm);
 impl_write_callback_target!(C140Spec, C140);
 impl_write_callback_target!(PwmSpec, Pwm);
 impl_write_callback_target!(Saa1099Spec, Saa1099);
+impl_write_callback_target!(Scc1Spec, Scc1);
 impl_write_callback_target!(Okim6258Spec, Okim6258);
 impl_write_callback_target!(Okim6295Spec, Okim6295);
 impl_write_callback_target!(Ym2413Spec, Ym2413);
@@ -98,6 +100,7 @@ impl_write_callback_target!(Ymf278bSpec, Ymf278b);
 pub enum VgmStateTrackerKind {
     Sn76489,
     Saa1099,
+    K051649,
     Ym2151,
     Ym2203,
     Ym2413,
@@ -129,6 +132,7 @@ macro_rules! impl_state_tracker {
 
 impl_state_tracker!(Sn76489State, Sn76489);
 impl_state_tracker!(Saa1099State, Saa1099);
+impl_state_tracker!(K051649State, K051649);
 impl_state_tracker!(Ym2151State, Ym2151);
 impl_state_tracker!(Ym2203State, Ym2203);
 impl_state_tracker!(Ym2413State, Ym2413);
@@ -387,6 +391,7 @@ impl<'a> CallbackRegistry<'a> {
 pub(super) enum Tracker {
     Sn76489(Sn76489State),
     Saa1099(Saa1099State),
+    K051649(K051649State),
     Ym2151(Ym2151State),
     Ym2203(Ym2203State),
     Ym2413(Ym2413State),
@@ -412,6 +417,14 @@ impl Tracker {
             Self::Sn76489(state) if register == 0 => state.on_register_write(register, value),
             Self::Sn76489(_) => None,
             Self::Saa1099(state) => state.on_register_write(register, value),
+            Self::K051649(state)
+                if (port == 1 && register < 10) || (port == 2 && register < 5) || port == 3 =>
+            {
+                let (register, value) =
+                    K051649State::map_vgm_to_k051649_register(port, register, value);
+                state.on_register_write(register, value)
+            }
+            Self::K051649(_) => None,
             Self::Ym2151(state) => state.on_register_write(register, value),
             Self::Ym2203(state) => state.on_register_write(register, value),
             Self::Ym2413(state) => state.on_register_write(register, value),
@@ -447,6 +460,7 @@ pub(super) fn tracker_chip(kind: VgmStateTrackerKind) -> Chip {
     match kind {
         VgmStateTrackerKind::Sn76489 => Chip::Sn76489,
         VgmStateTrackerKind::Saa1099 => Chip::Saa1099,
+        VgmStateTrackerKind::K051649 => Chip::K051649,
         VgmStateTrackerKind::Ym2151 => Chip::Ym2151,
         VgmStateTrackerKind::Ym2203 => Chip::Ym2203,
         VgmStateTrackerKind::Ym2413 => Chip::Ym2413,
@@ -474,6 +488,7 @@ pub(super) fn tracker(
             sn_flags.frequency_0_is_400,
         )),
         VgmStateTrackerKind::Saa1099 => Tracker::Saa1099(Saa1099State::new(clock)),
+        VgmStateTrackerKind::K051649 => Tracker::K051649(K051649State::new(clock)),
         VgmStateTrackerKind::Ym2151 => Tracker::Ym2151(Ym2151State::new(clock)),
         VgmStateTrackerKind::Ym2203 => Tracker::Ym2203(Ym2203State::new(clock)),
         VgmStateTrackerKind::Ym2413 => Tracker::Ym2413(Ym2413State::new(clock)),

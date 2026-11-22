@@ -39,6 +39,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | Feature | Chip |
 | --- | --- |
 | `c140` | C140 / ASIC219 |
+| `k051649` | K051649 / K052539 (SCC / SCC+) |
 | `okim6258` | OKIM6258 |
 | `okim6295` | OKIM6295 |
 | `pwm` | PWM |
