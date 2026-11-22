@@ -73,12 +73,12 @@ pub fn read_slice(bytes: &[u8], off: usize, len: usize) -> Result<&[u8], ParseEr
     Ok(&bytes[off..off + len])
 }
 
-/// Read a 24-bit big-endian unsigned integer from `bytes` at `off`.
+/// Read a 24-bit little-endian unsigned integer from `bytes` at `off`.
 ///
 /// Returns the value as a `u32`. The function expects three bytes at `off`,
-/// `off+1` and `off+2` in big-endian order; if they are not available the
+/// `off+1` and `off+2` in little-endian order; if they are not available the
 /// function returns `Err(ParseError::OffsetOutOfRange)`.
-pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
+pub fn read_u24_le_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
     if off > bytes.len() || bytes.len() - off < 3 {
         return Err(ParseError::OffsetOutOfRange {
             offset: off,
@@ -90,7 +90,7 @@ pub fn read_u24_be_at(bytes: &[u8], off: usize) -> Result<u32, ParseError> {
     let b0 = bytes[off] as u32;
     let b1 = bytes[off + 1] as u32;
     let b2 = bytes[off + 2] as u32;
-    Ok((b0 << 16) | (b1 << 8) | b2)
+    Ok(b0 | (b1 << 8) | (b2 << 16))
 }
 
 /// Read a 16-bit big-endian unsigned integer from `bytes` at `off`.
@@ -219,17 +219,17 @@ mod tests {
             Ok(_) => panic!("expected error for read_slice with insufficient bytes"),
         }
 
-        // read_u24_be_at success
+        // read_u24_le_at success
         let buf2: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
-        assert_eq!(read_u24_be_at(&buf2, 0).unwrap(), 0x01_02_03);
+        assert_eq!(read_u24_le_at(&buf2, 0).unwrap(), 0x03_02_01);
 
-        // read_u24_be_at error when not enough bytes
-        match read_u24_be_at(&buf2, 2) {
+        // read_u24_le_at error when not enough bytes
+        match read_u24_le_at(&buf2, 2) {
             Err(e) => assert_eq!(
                 format!("{}", e),
                 "offset out of range: 0x2 (needed 3 bytes, available 4)"
             ),
-            Ok(_) => panic!("expected error for read_u24_be_at with insufficient bytes"),
+            Ok(_) => panic!("expected error for read_u24_le_at with insufficient bytes"),
         }
 
         // read_i32_le_at success
@@ -250,7 +250,7 @@ mod tests {
                 Err(ParseError::OffsetOutOfRange { .. })
             ));
             assert!(matches!(
-                read_u24_be_at(&bytes, offset),
+                read_u24_le_at(&bytes, offset),
                 Err(ParseError::OffsetOutOfRange { .. })
             ));
             assert!(matches!(

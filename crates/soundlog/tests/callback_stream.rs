@@ -1879,10 +1879,10 @@ fn test_misc_callbacks_invoked() {
     let pcm = PcmRamWrite {
         marker: 0x66,
         chip_type: soundlog::vgm::detail::StreamChipType::Unknown(0x7F),
+        instance: Instance::Primary,
         read_offset: 0,
         write_offset: 0,
         size: 2,
-        data: vec![0xAA, 0xBB],
     };
     builder.add_vgm_command(VgmCommand::PcmRamWrite(Box::new(pcm)));
 

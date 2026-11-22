@@ -257,10 +257,10 @@ fn add_command_pcm_ram_write() {
     let spec = PcmRamWrite {
         marker: 0x66,
         chip_type: StreamChipType::Unknown(0x66),
+        instance: Instance::Secondary,
         read_offset: 0x010203,
         write_offset: 0x030201,
         size: 3,
-        data: vec![4, 5, 6],
     };
     b.add_vgm_command(spec.clone());
     let doc = b.finalize();

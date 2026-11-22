@@ -108,7 +108,7 @@ fn api_spec_encode_vgm_bytes_all() {
                 value: 0x88,
             },
         );
-        assert_eq!(cmds[..4], [0xC1, 0x02, 0x01, 0x88]);
+        assert_eq!(cmds[..4], [0xC1, 0x01, 0x02, 0x88]);
     }
     {
         let cmds = cmd_bytes_for_chip_spec(

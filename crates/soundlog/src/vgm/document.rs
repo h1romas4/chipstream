@@ -285,9 +285,9 @@ impl VgmBuilder {
     /// convenience layer that guarantees a finalized document is properly
     /// terminated for common programmatic construction flows.
     ///
-    /// Note: DataBlock commands (`VgmCommand::DataBlock`, opcode 0x67) are
-    /// relocated to the start of the command stream during finalization so
-    /// that DataBlock entries appear at the beginning of the serialized VGM.
+    /// Note: PCM stream and ROM DataBlock commands are relocated to the start
+    /// of the command stream during finalization. RAM write blocks remain at
+    /// their original positions because their timing and bank selection matter.
     /// DecompressionTable DataBlocks (those with `data_type == 0x7F`)
     /// are promoted ahead of other DataBlocks and thus placed at the very
     /// start of the serialized document.
@@ -374,8 +374,7 @@ impl VgmBuilder {
     /// Relocate DataBlock in `VgmDocument`.
     ///
     /// Behavior:
-    /// - If a valid `loop_index` exists, remove (move out of `document.commands`)
-    ///   every `VgmCommand::DataBlock(_)` whose original index is >= loop_index.
+    /// - Move PCM stream and ROM blocks to the beginning, preserving RAM writes.
     /// - Adjust `loop_index` by adding the number of removed DataBlocks so that
     ///   after a future prepend/aggregation the loop index will point to the same
     ///   logical command.
@@ -390,7 +389,7 @@ impl VgmBuilder {
                 .iter()
                 .enumerate()
                 .skip(loop_index)
-                .filter(|(_i, cmd)| matches!(cmd, VgmCommand::DataBlock(_)))
+                .filter(|(_i, cmd)| matches!(cmd, VgmCommand::DataBlock(block) if block.data_type < 0xc0))
                 .count()
         } else {
             0
@@ -400,11 +399,12 @@ impl VgmBuilder {
             self.loop_index = Some(loop_index + move_count);
         }
 
-        // Collect all DataBlock commands.
+        // Collect blocks that do not represent timed RAM writes.
         let mut data_blocks = Vec::new();
         let mut i = 0;
         while i < self.document.commands.len() {
-            if matches!(self.document.commands[i], VgmCommand::DataBlock(_)) {
+            if matches!(&self.document.commands[i], VgmCommand::DataBlock(block) if block.data_type < 0xc0)
+            {
                 data_blocks.push(self.document.commands.remove(i));
             } else {
                 i += 1;
@@ -426,11 +426,6 @@ impl VgmBuilder {
             i += 1;
         }
         data_blocks.splice(0..0, decompression_tables);
-
-        // Remove DataBlock commands from the document, keeping other commands.
-        self.document
-            .commands
-            .retain(|cmd| !matches!(cmd, VgmCommand::DataBlock(_)));
 
         // Prepend the collected DataBlocks to the front of the command list.
         self.document.commands.splice(0..0, data_blocks);

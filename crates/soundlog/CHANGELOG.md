@@ -5,16 +5,20 @@
 ### Breaking API Changes
 
 - Change: `Es5506State` tracks physical ES5505/ES5506 registers as `u32` values; VGM byte offsets must be converted to bus writes. Header chip enumeration now distinguishes `Chip::Es5505`.
+- Change: `PcmRamWrite` now has an `instance` field and no inline `data` field; PCM bytes come from the referenced data bank.
 
 ### Added
 
 - Add: `VgmStream::last_stream_write_id` identifies the DAC stream that generated the most recent write, distinguishing it from direct chip writes.
+- Add: `VgmStream::pcm_bank_range` reads ranges across compressed and uncompressed PCM blocks.
 
 ### Fixed
 
 - Fix: Encode and decode MultiPCM VGM bank offsets in little-endian byte order.
 - Fix: Interpret the VGM OKIM6258 ADPCM select bit correctly (set = 4-bit, clear = 3-bit).
 - Fix: Track ES550x bus writes, page selection, and chip variants correctly; detect the variant from the ES550x clock rather than the ES5503 clock.
+- Fix: Parse and serialize VGM PCM RAM copies with fixed length, little-endian offsets, and the correct chip instance.
+- Fix: Preserve RAM write block timing in `VgmBuilder`, and correct RF5C68/164 memory address byte order and secondary register selection.
 
 ## Planned
 

@@ -964,7 +964,7 @@ pub(crate) fn parse_vgm_command(
             //   0xE1 C352
             if matches!(
                 other,
-                0xB3..=0xBF | 0xC0 | 0xC3 | 0xC5..=0xC8 | 0xD0..=0xD6 | 0xE1
+                0xB0..=0xB1 | 0xB3..=0xBF | 0xC0 | 0xC3 | 0xC5..=0xC8 | 0xD0..=0xD6 | 0xE1
             ) {
                 let selector = if other == 0xC0 { 1 } else { 0 };
                 let selector_byte = read_u8_at(bytes, cur + selector)?;

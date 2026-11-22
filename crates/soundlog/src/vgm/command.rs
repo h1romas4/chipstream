@@ -12,7 +12,7 @@
 //! - Helpers to convert single commands to bytes (`command_to_vgm_bytes`)
 //!   and compute per-command offsets/lengths used by `VgmDocument`.
 use crate::ParseError;
-use crate::binutil::{read_i32_le_at, read_slice, read_u8_at, read_u24_be_at, read_u32_le_at};
+use crate::binutil::{read_i32_le_at, read_slice, read_u8_at, read_u24_le_at, read_u32_le_at};
 use crate::chip;
 use crate::vgm::document::VgmDocument;
 use crate::vgm::header::{VgmHeader, VgmHeaderField};
@@ -389,10 +389,10 @@ pub struct DataBlock {
 /// let p = PcmRamWrite {
 ///     marker: 0x66, // EndOfData opcode (`0x66`)
 ///     chip_type: StreamChipType::Ym2612Pcm,
+///     instance: soundlog::vgm::command::Instance::Primary,
 ///     read_offset: 0,
 ///     write_offset: 0,
 ///     size: 0,
-///     data: vec![],
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -401,14 +401,14 @@ pub struct PcmRamWrite {
     pub marker: u8,
     /// Target chip format.
     pub chip_type: StreamChipType,
+    /// Target chip instance.
+    pub instance: Instance,
     /// Source address in the data bank.
     pub read_offset: u32,
     /// Destination address in chip RAM.
     pub write_offset: u32,
-    /// Number of bytes to write.
+    /// Number of bytes to write; zero represents 16 MiB.
     pub size: u32,
-    /// PCM data to write.
-    pub data: Vec<u8>,
 }
 
 /// VGM opcode 0x7n: wait n+1 samples, where n is stored as-is (0..=15).
@@ -908,20 +908,14 @@ impl CommandSpec for PcmRamWrite {
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
         dest.push(self.marker);
-        dest.push(self.chip_type.into());
-        let o = self.read_offset & 0x00FF_FFFF;
-        dest.push(((o >> 16) & 0xFF) as u8);
-        dest.push(((o >> 8) & 0xFF) as u8);
-        dest.push((o & 0xFF) as u8);
-        let w = self.write_offset & 0x00FF_FFFF;
-        dest.push(((w >> 16) & 0xFF) as u8);
-        dest.push(((w >> 8) & 0xFF) as u8);
-        dest.push((w & 0xFF) as u8);
-        let s = self.size & 0x00FF_FFFF;
-        dest.push(((s >> 16) & 0xFF) as u8);
-        dest.push(((s >> 8) & 0xFF) as u8);
-        dest.push((s & 0xFF) as u8);
-        dest.extend_from_slice(&self.data);
+        let chip_type = match self.chip_type {
+            StreamChipType::Unknown(value) => value & 0x7f,
+            known => u8::from(known),
+        };
+        dest.push(chip_type | ((self.instance as u8) << 7));
+        dest.extend_from_slice(&self.read_offset.to_le_bytes()[..3]);
+        dest.extend_from_slice(&self.write_offset.to_le_bytes()[..3]);
+        dest.extend_from_slice(&self.size.to_le_bytes()[..3]);
     }
     fn parse(bytes: &[u8], offset: usize, _opcode: u8) -> Result<(Self, usize), ParseError>
     where
@@ -931,21 +925,29 @@ impl CommandSpec for PcmRamWrite {
         // do not validate it here; caller (parser) may choose to validate or not.
         let marker = read_u8_at(bytes, offset)?;
         let chip_raw = read_u8_at(bytes, offset + 1)?;
-        let chip_type = StreamChipType::from(chip_raw);
-        let read_off = read_u24_be_at(bytes, offset + 2)?;
-        let write_off = read_u24_be_at(bytes, offset + 5)?;
-        let size = read_u24_be_at(bytes, offset + 8)?;
-        let data_slice = read_slice(bytes, offset + 11, size as usize)?;
+        let chip_type = if chip_raw & 0x40 != 0 {
+            StreamChipType::Unknown(chip_raw & 0x7f)
+        } else {
+            StreamChipType::from(chip_raw & 0x7f)
+        };
+        let instance = if chip_raw & 0x80 == 0 {
+            Instance::Primary
+        } else {
+            Instance::Secondary
+        };
+        let read_off = read_u24_le_at(bytes, offset + 2)?;
+        let write_off = read_u24_le_at(bytes, offset + 5)?;
+        let size = read_u24_le_at(bytes, offset + 8)?;
         Ok((
             PcmRamWrite {
                 marker,
                 chip_type,
+                instance,
                 read_offset: read_off,
                 write_offset: write_off,
                 size,
-                data: data_slice.to_vec(),
             },
-            1 + 1 + 3 + 3 + 3 + size as usize,
+            11,
         ))
     }
 }
@@ -1844,13 +1846,13 @@ impl CommandSpec for chip::Rf5c68U16Spec {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push((self.offset >> 8) as u8);
         dest.push(self.offset as u8);
+        dest.push((self.offset >> 8) as u8);
         dest.push(self.value);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
-        let off_hi = read_u8_at(bytes, off)?;
-        let off_lo = read_u8_at(bytes, off + 1)?;
+        let off_lo = read_u8_at(bytes, off)?;
+        let off_hi = read_u8_at(bytes, off + 1)?;
         let offv = ((off_hi as u16) << 8) | (off_lo as u16);
         let val = read_u8_at(bytes, off + 2)?;
         Ok((
@@ -2164,13 +2166,13 @@ impl CommandSpec for chip::Rf5c164U16Spec {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push((self.offset >> 8) as u8);
         dest.push(self.offset as u8);
+        dest.push((self.offset >> 8) as u8);
         dest.push(self.value);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
-        let off_hi = read_u8_at(bytes, off)?;
-        let off_lo = read_u8_at(bytes, off + 1)?;
+        let off_lo = read_u8_at(bytes, off)?;
+        let off_hi = read_u8_at(bytes, off + 1)?;
         let offv = ((off_hi as u16) << 8) | (off_lo as u16);
         let val = read_u8_at(bytes, off + 2)?;
         Ok((

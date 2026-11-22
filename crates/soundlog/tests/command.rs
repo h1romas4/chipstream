@@ -16,6 +16,133 @@ use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 
 #[test]
+fn pcm_ram_write_uses_fixed_length_little_endian_and_instance_bit() {
+    use soundlog::vgm::command::{PcmRamWrite, StreamChipType, command_to_vgm_bytes};
+
+    let command = VgmCommand::PcmRamWrite(Box::new(PcmRamWrite {
+        marker: 0x66,
+        chip_type: StreamChipType::Rf5c164Pcm,
+        instance: Instance::Secondary,
+        read_offset: 0x123456,
+        write_offset: 0x234567,
+        size: 0x345678,
+    }));
+    assert_eq!(
+        command_to_vgm_bytes(&command).0,
+        [
+            0x68, 0x66, 0x82, 0x56, 0x34, 0x12, 0x67, 0x45, 0x23, 0x78, 0x56, 0x34
+        ]
+    );
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(command.clone());
+    builder.add_vgm_command(WaitSamples(7));
+    let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+    let commands: Vec<_> = stream
+        .into_iter()
+        .filter_map(|result| match result.unwrap() {
+            StreamResult::Command(command) => Some(command),
+            _ => None,
+        })
+        .take(2)
+        .collect();
+    assert_eq!(commands[0], command);
+    assert!(matches!(
+        commands[1],
+        VgmCommand::WaitSamples(WaitSamples(7))
+    ));
+}
+
+#[test]
+fn rf5c_memory_offsets_and_secondary_registers_use_vgm_encoding() {
+    use soundlog::chip::{Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U16Spec};
+    use soundlog::vgm::command::command_to_vgm_bytes;
+    let commands = [
+        (
+            VgmCommand::Rf5c68U8Write(
+                Instance::Secondary,
+                Rf5c68U8Spec {
+                    offset: 7,
+                    value: 0x80,
+                },
+            ),
+            vec![0xb0, 0x87, 0x80],
+        ),
+        (
+            VgmCommand::Rf5c68U16Write(
+                Instance::Primary,
+                Rf5c68U16Spec {
+                    offset: 0x1234,
+                    value: 0xaa,
+                },
+            ),
+            vec![0xc1, 0x34, 0x12, 0xaa],
+        ),
+        (
+            VgmCommand::Rf5c164U16Write(
+                Instance::Primary,
+                Rf5c164U16Spec {
+                    offset: 0x1234,
+                    value: 0xbb,
+                },
+            ),
+            vec![0xc2, 0x34, 0x12, 0xbb],
+        ),
+    ];
+    let mut builder = VgmBuilder::new();
+    for (command, bytes) in &commands {
+        assert_eq!(&command_to_vgm_bytes(command).0, bytes);
+        builder.add_vgm_command(command.clone());
+    }
+    let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+    let parsed: Vec<_> = stream
+        .into_iter()
+        .filter_map(|item| match item.unwrap() {
+            StreamResult::Command(command) => Some(command),
+            _ => None,
+        })
+        .take(commands.len())
+        .collect();
+    assert_eq!(
+        parsed,
+        commands
+            .into_iter()
+            .map(|(command, _)| command)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pcm_bank_range_combines_compressed_and_uncompressed_blocks() {
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 1,
+        size: 2,
+        data: vec![1, 2],
+    });
+    let compressed = vec![0, 4, 0, 0, 0, 8, 4, 0, 0x10, 0, 0x5a, 0xf3];
+    builder.add_vgm_command(DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0x41,
+        size: compressed.len() as u32,
+        data: compressed,
+    });
+    builder.add_vgm_command(WaitSamples(1));
+    let mut stream = VgmStream::from_document(builder.finalize());
+    assert!(matches!(
+        stream.next().unwrap().unwrap(),
+        StreamResult::Command(VgmCommand::WaitSamples(_))
+    ));
+    assert_eq!(
+        stream.pcm_bank_range(1, 1, 4).unwrap(),
+        [2, 0x15, 0x1a, 0x1f]
+    );
+    assert!(stream.pcm_bank_range(1, 5, 2).is_none());
+}
+
+#[test]
 fn nes_fds_registers_roundtrip_with_both_instance_selectors() {
     use soundlog::chip::NesApuSpec;
 

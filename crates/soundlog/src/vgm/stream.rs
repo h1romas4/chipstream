@@ -2303,6 +2303,33 @@ impl VgmStream {
         self.uncompressed_streams.get(&data_type)
     }
 
+    /// Copy a range from a PCM bank, combining compressed and uncompressed blocks
+    /// in their original order. Returns `None` if the range is unavailable.
+    pub fn pcm_bank_range(&self, data_type: u8, start: usize, length: usize) -> Option<Vec<u8>> {
+        let end = start.checked_add(length)?;
+        let mut position = 0usize;
+        let mut output = Vec::new();
+        for &(kind, offset, size) in &self.block_id_map {
+            if kind >= 0x7f || kind & 0x3f != data_type {
+                continue;
+            }
+            let block_end = position.checked_add(size)?;
+            let from = start.max(position);
+            let to = end.min(block_end);
+            if from < to {
+                let stream = self.uncompressed_streams.get(&kind)?;
+                let slice_start = offset.checked_add(from - position)?;
+                let slice_end = offset.checked_add(to - position)?;
+                output.extend_from_slice(stream.data.get(slice_start..slice_end)?);
+            }
+            position = block_end;
+            if position >= end {
+                return Some(output);
+            }
+        }
+        (end <= position).then_some(output)
+    }
+
     /// Gets a reference to a decompression table by data type.
     pub fn get_decompression_table(&self, data_type: u8) -> Option<&DecompressionTable> {
         self.decompression_tables.get(&data_type)
