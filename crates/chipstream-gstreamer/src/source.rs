@@ -34,7 +34,7 @@ use chipstream::sequencer::{
     MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
     VgmSequencerOptions, measure_mdx_duration_frames, measure_vgm_duration_frames,
 };
-use chipstream_ndsif::{NdsifNd7Policy, create_automatic_transport_factories_with_policy};
+use chipstream_ndsif::{NdsifNanoDrivePolicy, create_automatic_transport_factories_with_policy};
 use ndsif_transport::{
     NdsifHardwareWorkers, NdsifHostTimeline, NdsifSerialConfig, NdsifSerialTransport,
     NdsifWorkerDevice,
@@ -1592,6 +1592,7 @@ fn create_chip_factories(
     let mut devices = Vec::new();
     let mut supports_ay = false;
     let mut nd7_devices = Vec::new();
+    let mut nd8_devices = Vec::new();
     for (index, port) in ports.into_iter().enumerate() {
         let mut transport = NdsifSerialTransport::open(NdsifSerialConfig {
             port: port.clone(),
@@ -1607,16 +1608,20 @@ fn create_chip_factories(
         if transport
             .capabilities()
             .iter()
-            .any(|entry| matches!(entry.write_id, 0xa0 | 0x55 | 0x5b | 0x5a | 0x5e))
+            .any(|entry| matches!(entry.write_id, 0xa0 | 0x55 | 0x5b | 0x5a | 0x5e | 0x54))
         {
-            let info = transport.device_info().map_err(|error| format!("NDSIF device {port}: cannot identify device for shared-chip validation: {error}"))?;
+            let info = transport.device_info().map_err(|error| {
+                format!("NDSIF device {port}: cannot identify device for route policy: {error}")
+            })?;
             if info.model.trim().is_empty() {
                 return Err(format!(
-                    "NDSIF device {port}: empty model name prevents shared-chip validation"
+                    "NDSIF device {port}: empty model name prevents route policy selection"
                 ));
             }
             if info.model.trim() == "NanoDrive 7" {
                 nd7_devices.push(index);
+            } else if info.model.trim() == "NanoDrive 8" {
+                nd8_devices.push(index);
             }
         }
         devices.push(
@@ -1631,7 +1636,8 @@ fn create_chip_factories(
     let factories = create_automatic_transport_factories_with_policy(
         &recorders,
         supports_ay,
-        NdsifNd7Policy::new(nd7_devices, recorders.len()).map_err(|error| error.to_string())?,
+        NdsifNanoDrivePolicy::new(nd7_devices, nd8_devices, recorders.len())
+            .map_err(|error| error.to_string())?,
     );
     Ok((
         factories,

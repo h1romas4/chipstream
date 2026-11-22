@@ -24,7 +24,9 @@ pub use ndsif::{
 pub use ndsif_transport::{
     NdsifRoutingTransport, NdsifSerialConfig, NdsifSerialTransport, NdsifTransportError,
 };
-pub use policy::{NdsifDirectPolicy, NdsifNd7Policy, NdsifRouteOptions, NdsifRoutePolicy};
+pub use policy::{
+    NdsifDirectPolicy, NdsifNanoDrivePolicy, NdsifNd7Policy, NdsifRouteOptions, NdsifRoutePolicy,
+};
 pub use routing::{
     NdsifNd7Validator, NdsifRoute, NdsifRoutingError, create_routed_chip_factories,
     create_routed_transport_factories, create_routed_transport_factories_with_policy,

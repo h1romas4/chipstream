@@ -2116,8 +2116,31 @@ fn run_inner(
             return Ok(());
         }
         let recorders = crate::hardware::recorders(lease)?;
-        let policy = chipstream_ndsif::NdsifNd7Policy::new(
+        let mut nd8_devices = Vec::new();
+        for (index, (id, device)) in lease.devices().iter().enumerate() {
+            if !plan
+                .routes
+                .iter()
+                .any(|route| route.device == index && route.chip == Chip::Ym2151)
+            {
+                continue;
+            }
+            let mut device = device
+                .lock()
+                .map_err(|_| anyhow::anyhow!("NanoDrive device {id} worker failed"))?;
+            let info = device
+                .device_info()
+                .with_context(|| format!("Could not identify NanoDrive device {id}"))?;
+            if info.model.trim().is_empty() {
+                anyhow::bail!("NanoDrive device {id} returned an empty model name");
+            }
+            if info.model.trim() == "NanoDrive 8" {
+                nd8_devices.push(index);
+            }
+        }
+        let policy = chipstream_ndsif::NdsifNanoDrivePolicy::new(
             plan.nd7_devices.iter().copied(),
+            nd8_devices,
             recorders.len(),
         )?;
         let mut factories = chipstream_ndsif::create_routed_transport_factories_with_policy(

@@ -36,11 +36,17 @@ Custom `NdsifRoutePolicy` implementations can validate selected routes and
 specify AY compatibility. A rejected hardware route is an error, not a
 software fallback.
 
+For NanoDrive 8, `NdsifNanoDrivePolicy` also swaps YM2151 left/right pan bits
+for the identified device indices. It includes the NanoDrive 7 policy, so both
+can be used in the same registry. `create_chip_factories` identifies NanoDrive 8
+automatically. Direct transport writes and factories using the default policy
+remain unchanged. NanoDrive 8's own YM2151 Pan setting is applied separately.
+
 ```rust,no_run
 use std::{cell::RefCell, rc::Rc};
 use chipstream::sequencer::ChipFactoryRegistry;
 use chipstream_ndsif::{
-    NdsifNd7Policy, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
+    NdsifNanoDrivePolicy, NdsifRoute, NdsifRoutingError, NdsifRoutingTransport,
     create_automatic_transport_factories_with_policy,
     create_routed_transport_factories_with_policy,
 };
@@ -49,8 +55,11 @@ fn factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
     nd7_devices: &[usize],
+    nd8_devices: &[usize],
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
-    let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
+    let policy = NdsifNanoDrivePolicy::new(
+        nd7_devices.iter().copied(), nd8_devices.iter().copied(), transports.len()
+    )?;
     Ok(create_automatic_transport_factories_with_policy(transports, supports_ay, policy))
 }
 
@@ -58,8 +67,11 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     routes: &[NdsifRoute],
     nd7_devices: &[usize],
+    nd8_devices: &[usize],
 ) -> Result<ChipFactoryRegistry, NdsifRoutingError> {
-    let policy = NdsifNd7Policy::new(nd7_devices.iter().copied(), transports.len())?;
+    let policy = NdsifNanoDrivePolicy::new(
+        nd7_devices.iter().copied(), nd8_devices.iter().copied(), transports.len()
+    )?;
     create_routed_transport_factories_with_policy(transports, routes, policy)
 }
 ```

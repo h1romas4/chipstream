@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Correct YM2151 stereo positioning when playing through NanoDrive 8.
+
 ## v0.15.0
 
 - Add NanoDrive 7 MAME plugin and routing support.

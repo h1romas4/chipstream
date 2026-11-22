@@ -16,8 +16,9 @@ use ndsif::WriteId;
 use ndsif_transport::NdsifSerialConfig;
 
 use crate::{
-    NdsifDirectPolicy, NdsifOkim6258, NdsifRoute, NdsifRouteOptions, NdsifRoutePolicy,
-    NdsifRoutingTransport, NdsifSerialTransport, NdsifSn76489, NdsifSoundChip, NdsifTransportError,
+    NdsifDirectPolicy, NdsifNanoDrivePolicy, NdsifOkim6258, NdsifRoute, NdsifRouteOptions,
+    NdsifRoutePolicy, NdsifRoutingTransport, NdsifSerialTransport, NdsifSn76489, NdsifSoundChip,
+    NdsifTransportError,
 };
 
 /// Open configured NDSIF devices and register hardware-backed factories.
@@ -29,6 +30,7 @@ use crate::{
 /// SN76489 instances that use Game Gear stereo masks use emulation. An empty
 /// list selects no hardware. All configurations are validated before any
 /// device is opened or reset, although opening devices is not transactional.
+/// Devices advertising YM2151 are identified to apply NanoDrive 8 pan correction.
 ///
 /// # Errors
 ///
@@ -47,10 +49,33 @@ pub fn create_chip_factories(
         }
     }
     let mut transports = Vec::with_capacity(configs.len());
+    let mut nd8_devices = Vec::new();
     for config in configs {
-        transports.push(Rc::new(RefCell::new(NdsifSerialTransport::open(
-            config.clone(),
-        )?)));
+        let mut transport = NdsifSerialTransport::open(config.clone())?;
+        if transport
+            .capabilities()
+            .iter()
+            .any(|entry| entry.write_id == 0x54)
+        {
+            let info = transport
+                .device_info()
+                .map_err(|source| NdsifTransportError::Device {
+                    port: config.port.clone(),
+                    source: Box::new(source),
+                })?;
+            if info.model.trim().is_empty() {
+                return Err(NdsifTransportError::Device {
+                    port: config.port.clone(),
+                    source: Box::new(NdsifTransportError::UnexpectedResponse {
+                        operation: "GET_INFO (empty model name)",
+                    }),
+                });
+            }
+            if info.model.trim() == "NanoDrive 8" {
+                nd8_devices.push(transports.len());
+            }
+        }
+        transports.push(Rc::new(RefCell::new(transport)));
     }
 
     let supports_ay = transports.iter().any(|transport| {
@@ -60,9 +85,11 @@ pub fn create_chip_factories(
             .iter()
             .any(|capability| capability.write_id == 0xa0)
     });
-    Ok(create_automatic_transport_factories(
+    Ok(create_automatic_transport_factories_with_policy(
         &transports,
         supports_ay,
+        NdsifNanoDrivePolicy::new([], nd8_devices, transports.len())
+            .expect("discovered device indices are valid"),
     ))
 }
 
@@ -131,11 +158,11 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
             )?;
             if let Some((device, transport)) = transport {
                 let options = select_route(&policy, device, config)?;
-                Ok(Box::new(NdsifSoundChip::with_target_ay_compatibility(
+                Ok(Box::new(NdsifSoundChip::with_target_options(
                     config,
                     config.instance(),
                     transport,
-                    options.ay_compatibility,
+                    options,
                 )?))
             } else {
                 Ok(Box::new(YmfmChip::new(
@@ -163,11 +190,11 @@ pub fn create_automatic_transport_factories_with_policy<T: NdsifRoutingTransport
                 reason: "no NDSIF AY8910 target supports this instance and clock",
             })?;
             let options = select_route(&policy, device, config)?;
-            Ok(Box::new(NdsifSoundChip::with_target_ay_compatibility(
+            Ok(Box::new(NdsifSoundChip::with_target_options(
                 config,
                 config.instance(),
                 transport,
-                options.ay_compatibility,
+                options,
             )?))
         });
     }

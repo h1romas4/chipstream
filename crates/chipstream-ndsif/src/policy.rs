@@ -1,8 +1,8 @@
 //! Device-specific policies for selected hardware routes.
 //!
 //! A policy receives selected hardware routes before configuration. The
-//! direct policy accepts them unchanged; the NanoDrive 7 policy additionally
-//! validates shared chip and clock resources and selects AY compatibility.
+//! direct policy accepts them unchanged; NanoDrive policies also handle
+//! shared resources, AY compatibility, and device-specific pan correction.
 
 use crate::NdsifAyCompatibility;
 use std::collections::HashSet;
@@ -14,6 +14,8 @@ use crate::{NdsifNd7Validator, NdsifRoute, NdsifRoutingError};
 pub struct NdsifRouteOptions {
     /// AY-family approximation accepted by the selected target.
     pub ay_compatibility: NdsifAyCompatibility,
+    /// Swap YM2151 left and right output bits before sending register writes.
+    pub invert_ym2151_pan: bool,
 }
 
 /// Validate a hardware selection and choose its backend compatibility.
@@ -86,10 +88,48 @@ impl NdsifRoutePolicy for NdsifNd7Policy {
             self.validator.add(route, clock)?;
             Ok(NdsifRouteOptions {
                 ay_compatibility: NdsifAyCompatibility::Ay8910AndYm2149,
+                ..Default::default()
             })
         } else {
             Ok(NdsifRouteOptions::default())
         }
+    }
+}
+
+/// NanoDrive 7 resource validation and NanoDrive 8 YM2151 pan correction.
+///
+/// Create a new policy for each playback registry.
+pub struct NdsifNanoDrivePolicy {
+    nd7: NdsifNd7Policy,
+    nd8_devices: HashSet<usize>,
+}
+
+impl NdsifNanoDrivePolicy {
+    /// Create a policy for identified NanoDrive 7 and 8 transport indices.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NdsifRoutingError::UnknownDevice`] for an out-of-range index.
+    pub fn new(
+        nd7_devices: impl IntoIterator<Item = usize>,
+        nd8_devices: impl IntoIterator<Item = usize>,
+        device_count: usize,
+    ) -> Result<Self, NdsifRoutingError> {
+        let nd7 = NdsifNd7Policy::new(nd7_devices, device_count)?;
+        let nd8_devices: HashSet<_> = nd8_devices.into_iter().collect();
+        if let Some(&index) = nd8_devices.iter().find(|&&index| index >= device_count) {
+            return Err(NdsifRoutingError::UnknownDevice(index));
+        }
+        Ok(Self { nd7, nd8_devices })
+    }
+}
+
+impl NdsifRoutePolicy for NdsifNanoDrivePolicy {
+    fn select(&mut self, route: &NdsifRoute, clock: u32) -> Result<NdsifRouteOptions, String> {
+        let mut options = self.nd7.select(route, clock)?;
+        options.invert_ym2151_pan = self.nd8_devices.contains(&route.device)
+            && route.chip == chipstream::sequencer::Chip::Ym2151;
+        Ok(options)
     }
 }
 
@@ -105,5 +145,46 @@ mod tests {
         ));
         assert!(NdsifNd7Policy::new([0], 1).is_ok());
         assert!(NdsifNd7Policy::new([], 0).is_ok());
+    }
+
+    #[test]
+    fn nanodrive_policy_combines_nd7_and_nd8_behavior() {
+        use chipstream::sequencer::{Chip, Instance};
+        assert!(matches!(
+            NdsifNanoDrivePolicy::new([], [1], 1),
+            Err(NdsifRoutingError::UnknownDevice(1))
+        ));
+        let mut policy = NdsifNanoDrivePolicy::new([0], [1], 3).unwrap();
+        let route = |chip, device| NdsifRoute {
+            chip,
+            source: Instance::Primary,
+            device,
+            target: Instance::Primary,
+        };
+        assert_eq!(
+            policy
+                .select(&route(Chip::Ay8910, 0), 2_000_000)
+                .unwrap()
+                .ay_compatibility,
+            NdsifAyCompatibility::Ay8910AndYm2149
+        );
+        assert!(
+            policy
+                .select(&route(Chip::Ym2151, 1), 4_000_000)
+                .unwrap()
+                .invert_ym2151_pan
+        );
+        assert!(
+            !policy
+                .select(&route(Chip::Ym2151, 2), 4_000_000)
+                .unwrap()
+                .invert_ym2151_pan
+        );
+        assert!(
+            !policy
+                .select(&route(Chip::Ym2203, 1), 4_000_000)
+                .unwrap()
+                .invert_ym2151_pan
+        );
     }
 }

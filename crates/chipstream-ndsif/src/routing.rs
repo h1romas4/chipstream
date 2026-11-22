@@ -377,8 +377,8 @@ fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
                     route.target,
                     transport,
                 )?),
-                _ => Box::new(NdsifSoundChip::with_target_ay_compatibility(
-                    config, route.target, transport, options.ay_compatibility,
+                _ => Box::new(NdsifSoundChip::with_target_options(
+                    config, route.target, transport, options,
                 )?),
             };
             Ok(Some(backend))
@@ -391,6 +391,7 @@ fn routed_factories_with_policy<T: NdsifRoutingTransport + 'static>(
 mod tests {
     use super::*;
     use chipstream::sequencer::{VgmSequencer, VgmSequencerError};
+    use ndsif::RegisterWrite;
     use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
     use soundlog::chip::{Ay8910Spec, GameGearPsgSpec, Okim6258Spec, PsgSpec, Ym2151Spec};
     use soundlog::vgm::{
@@ -460,6 +461,115 @@ mod tests {
     }
 
     #[test]
+    fn nanodrive8_policy_inverts_only_ym2151_pan_for_selected_device() {
+        use crate::{NdsifNanoDrivePolicy, create_automatic_transport_factories_with_policy};
+
+        for automatic in [false, true] {
+            let device = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let other = Rc::new(RefCell::new(Device {
+                supported: true,
+                ..Default::default()
+            }));
+            let devices = [Rc::clone(&device), Rc::clone(&other)];
+            let policy = NdsifNanoDrivePolicy::new([], [0], 2).unwrap();
+            let factories = if automatic {
+                create_automatic_transport_factories_with_policy(&devices, false, policy)
+            } else {
+                create_routed_transport_factories_with_policy(
+                    &devices,
+                    &[
+                        route(Instance::Primary, 0, Instance::Primary),
+                        route(Instance::Secondary, 1, Instance::Primary),
+                    ],
+                    policy,
+                )
+                .unwrap()
+            };
+            let mut builder = VgmBuilder::new();
+            for instance in [Instance::Primary, Instance::Secondary] {
+                builder.register_chip(Chip::Ym2151, instance, 4_000_000);
+                for (register, value) in [
+                    (0x1f, 0x40),
+                    (0x20, 0x45),
+                    (0x27, 0x86),
+                    (0x22, 0xc3),
+                    (0x23, 0x03),
+                    (0x28, 0x80),
+                ] {
+                    builder.add_chip_write(instance, Ym2151Spec { register, value });
+                }
+            }
+            builder.add_vgm_command(WaitSamples(441));
+            for instance in [Instance::Primary, Instance::Secondary] {
+                builder.add_chip_write(
+                    instance,
+                    Ym2151Spec {
+                        register: 0x21,
+                        value: 0x41,
+                    },
+                );
+            }
+            builder.add_vgm_command(WaitSamples(441));
+            let mut sequencer = VgmSequencer::from_vgm_with_factories(
+                builder.finalize(),
+                44_100,
+                256,
+                Default::default(),
+                factories,
+            )
+            .unwrap();
+            while sequencer.render().unwrap().is_some() {}
+            let writes = |device: &Rc<RefCell<Device>>| {
+                device
+                    .borrow()
+                    .events
+                    .iter()
+                    .map(|event| event.write)
+                    .collect::<Vec<_>>()
+            };
+            let expected = vec![
+                RegisterWrite::new(0x1f, 0x40),
+                RegisterWrite::new(0x20, 0x85),
+                RegisterWrite::new(0x27, 0x46),
+                RegisterWrite::new(0x22, 0xc3),
+                RegisterWrite::new(0x23, 0x03),
+                RegisterWrite::new(0x28, 0x80),
+                RegisterWrite::new(0x21, 0x81),
+            ];
+            if automatic {
+                let expected_initial = &expected[..6];
+                assert_eq!(
+                    writes(&device),
+                    [
+                        expected_initial,
+                        expected_initial,
+                        &expected[6..],
+                        &expected[6..]
+                    ]
+                    .concat()
+                );
+            } else {
+                assert_eq!(writes(&device), expected);
+                assert_eq!(
+                    writes(&other),
+                    vec![
+                        RegisterWrite::new(0x1f, 0x40),
+                        RegisterWrite::new(0x20, 0x45),
+                        RegisterWrite::new(0x27, 0x86),
+                        RegisterWrite::new(0x22, 0xc3),
+                        RegisterWrite::new(0x23, 0x03),
+                        RegisterWrite::new(0x28, 0x80),
+                        RegisterWrite::new(0x21, 0x41),
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn automatic_factory_uses_custom_policy_and_propagates_rejection() {
         use crate::{
             NdsifAyCompatibility, NdsifRouteOptions, NdsifRoutePolicy,
@@ -483,6 +593,7 @@ mod tests {
                 }
                 Ok(NdsifRouteOptions {
                     ay_compatibility: NdsifAyCompatibility::Ay8910AndYm2149,
+                    ..Default::default()
                 })
             }
         }

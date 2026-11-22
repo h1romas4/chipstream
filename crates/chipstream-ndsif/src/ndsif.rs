@@ -26,6 +26,7 @@ use chipstream::{
     },
 };
 
+use crate::NdsifRouteOptions;
 use ndsif_transport::{
     NdsifAdpcmEvent, NdsifAudioControl, NdsifAudioControlEvent, NdsifPsgEvent, NdsifRegisterEvent,
     NdsifTransport,
@@ -54,6 +55,8 @@ pub struct NdsifSoundChip<T> {
     channels: usize,
     /// Shared scheduled transport for the physical device.
     transport: Rc<RefCell<T>>,
+    /// Whether YM2151 pan bits need to be exchanged for this target.
+    invert_ym2151_pan: bool,
 }
 
 /// AY-family variants accepted by an NDSIF AY-compatible target.
@@ -98,6 +101,28 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
         transport: Rc<RefCell<T>>,
         compatibility: NdsifAyCompatibility,
     ) -> Result<Self, ChipError> {
+        Self::with_target_options(
+            config,
+            target,
+            transport,
+            NdsifRouteOptions {
+                ay_compatibility: compatibility,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Configure an instance with options selected for its target device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::with_target_ay_compatibility`].
+    pub fn with_target_options(
+        config: &ChipFactoryConfig,
+        target: Instance,
+        transport: Rc<RefCell<T>>,
+        options: NdsifRouteOptions,
+    ) -> Result<Self, ChipError> {
         let chip = config.chip().clone();
         let Some((divisor, channels, write_id)) = ndsif_chip_config(&chip) else {
             return Err(ChipError::UnsupportedChip(chip));
@@ -107,7 +132,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
                 return Err(ChipError::UnsupportedChip(chip));
             };
             if !(settings.variant == Ay8910Variant::Ay8910
-                || (compatibility == NdsifAyCompatibility::Ay8910AndYm2149
+                || (options.ay_compatibility == NdsifAyCompatibility::Ay8910AndYm2149
                     && settings.variant == Ay8910Variant::Ym2149))
                 || settings.output.ym_pin26_low
                 || settings.output.discrete_output
@@ -145,6 +170,7 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
             ),
             channels,
             transport,
+            invert_ym2151_pan: options.invert_ym2151_pan,
         })
     }
 
@@ -163,7 +189,10 @@ impl<T: NdsifTransport> NdsifSoundChip<T> {
                 actual: actual_chip,
             });
         }
-        let (write_id, page, address, value) = register_parts(&write)?;
+        let (write_id, page, address, mut value) = register_parts(&write)?;
+        if self.invert_ym2151_pan && self.chip == Chip::Ym2151 && (0x20..=0x27).contains(&address) {
+            value = (value & 0x3f) | ((value & 0x40) << 1) | ((value & 0x80) >> 1);
+        }
         let event = NdsifRegisterEvent {
             write_id: write_id_for(write_id, &self.chip)?,
             instance: self.instance,
