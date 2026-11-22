@@ -21,8 +21,7 @@ pub(super) fn global_gain(raw: u8) -> f32 {
 pub(super) fn mix_gain(chip: &Chip, paired: bool, has_ym2612: bool) -> f32 {
     let backend_gain = match (chip, paired) {
         (Chip::Sn76489, _) => 0.5,
-        (Chip::Ymz280b, _) => 0.5,
-        (Chip::Ymf271 | Chip::Qsound, _) => 2.0,
+        (Chip::C352 | Chip::Ymz280b | Chip::Ymf271 | Chip::Qsound, _) => 2.0,
         (Chip::Ym2203, true) => 0.25,
         (Chip::Ym2608 | Chip::Ym2610b, true) => 0.375,
         _ => 1.0,

@@ -213,6 +213,9 @@ fn vgm_dsp_bypass_writes_allow_pcm_playback() {
     ] {
         let first = player.render().unwrap().unwrap();
         assert!(first.frames().iter().any(|frame| frame[0].abs() > 0.01));
+        let expected = 16320.0 / 32768.0;
+        assert!((first.frames()[80][0] - expected).abs() < 0.0001);
+        assert!((first.frames()[80][1] - expected).abs() < 0.0001);
     }
 }
 

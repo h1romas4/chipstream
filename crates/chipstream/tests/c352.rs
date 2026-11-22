@@ -236,6 +236,9 @@ fn vgm_wide_writes_rear_output_rom_and_checkpoint() {
     );
     let checkpoint = player.checkpoint().unwrap();
     let second = player.render().unwrap().unwrap();
+    let expected = 8096.0 / 32768.0;
+    assert!((second.frames()[100][0] - expected).abs() < 0.0001);
+    assert_eq!(second.frames()[100][1], 0.0);
     player.restore_checkpoint(&checkpoint).unwrap();
     assert_eq!(player.render().unwrap().unwrap(), second);
     assert!(
