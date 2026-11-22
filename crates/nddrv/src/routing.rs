@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use crate::library::VgmSettings;
 
 /// Native software-only sequencer backends exposed by NDDRV.
-pub const SOFTWARE_CHIPS: [Chip; 18] = [
+pub const SOFTWARE_CHIPS: [Chip; 20] = [
     Chip::SegaPcm,
     Chip::Pwm,
+    Chip::Rf5c68,
+    Chip::Rf5c164,
     Chip::C140,
     Chip::Okim6295,
     Chip::Saa1099,

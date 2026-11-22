@@ -2412,6 +2412,8 @@ mod tests {
         use soundlog::vgm::command::WaitSamples;
 
         let cases = [
+            (Chip::Rf5c68, 12_500_000),
+            (Chip::Rf5c164, 12_500_000),
             (Chip::Saa1099, 8_000_000),
             (Chip::K051649, 3_579_545),
             (Chip::Huc6280, 3_579_545),

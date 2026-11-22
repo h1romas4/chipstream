@@ -105,12 +105,14 @@ impl<'a> ChipConfiguration<'a> {
     }
 
     /// Extract supported clocks, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 32] {
+    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 34] {
         let misc = header.misc();
         [
             (Chip::Sn76489, header.sn76489_clock),
             (Chip::SegaPcm, header.sega_pcm_clock),
             (Chip::Pwm, header.pwm_clock),
+            (Chip::Rf5c68, header.rf5c68_clock),
+            (Chip::Rf5c164, header.rf5c164_clock),
             (Chip::Saa1099, header.saa1099_clock),
             (Chip::K051649, header.k051649_clock),
             (Chip::Huc6280, header.huc6280_clock),
@@ -270,6 +272,8 @@ pub(super) fn chip_id(chip: &Chip) -> ChipId {
         Chip::Sn76489 => ChipId::Sn76489,
         Chip::SegaPcm => ChipId::SegaPcm,
         Chip::Pwm => ChipId::Pwm,
+        Chip::Rf5c68 => ChipId::Rf5c68,
+        Chip::Rf5c164 => ChipId::Rf5c164,
         Chip::Saa1099 => ChipId::Saa1099,
         Chip::K051649 => ChipId::K051649,
         Chip::Huc6280 => ChipId::Huc6280,

@@ -59,6 +59,8 @@ use crate::chip::Okim6295;
 use crate::chip::Pokey;
 #[cfg(feature = "pwm")]
 use crate::chip::Pwm;
+#[cfg(feature = "rf5c")]
+use crate::chip::Rf5c;
 #[cfg(feature = "saa1099")]
 use crate::chip::Saa1099;
 #[cfg(feature = "segapcm")]
@@ -440,6 +442,8 @@ struct Voice {
     paired_coefficient: f32,
     /// Writes waiting for their native-sample pacing interval.
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
+    /// RF5C waveform bank used by VGM RAM transfers.
+    rf5c_wave_bank: usize,
     /// Frames between paced writes and remaining frames until the next write.
     write_interval: usize,
     write_cooldown: usize,
@@ -516,6 +520,15 @@ impl Voice {
         let write = context
             .callbacks
             .filter_write(self.instance, write, sample_frame);
+        let rf5c_bank = match &write {
+            ChipRegisterWrite::Rf5c68U8(spec) if spec.offset == 7 && spec.value & 0x40 == 0 => {
+                Some(usize::from(spec.value & 15) << 12)
+            }
+            ChipRegisterWrite::Rf5c164U8(spec) if spec.offset == 7 && spec.value & 0x40 == 0 => {
+                Some(usize::from(spec.value & 15) << 12)
+            }
+            _ => None,
+        };
         let chip = self.route.chip_mut();
         let stop_stream = if let Some(scheduled) = chip.scheduled() {
             let stop_stream = scheduled.stops_dac_stream_on_write(&write);
@@ -532,6 +545,9 @@ impl Voice {
             chip.apply_register_write(write)?;
             false
         };
+        if let Some(bank) = rf5c_bank {
+            self.rf5c_wave_bank = bank;
+        }
         let state_events = if let Some(tracker) = self.tracker.as_mut().filter(|_| !is_bank_write) {
             let changes = if let event::Tracker::C352(state) = tracker {
                 let wide = u16::try_from(value).map_err(|_| ChipError::InvalidRegisterValue {
@@ -698,7 +714,7 @@ impl Voice {
 ///
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
-/// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, SAA1099,
+/// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, RF5C68/164, SAA1099,
 /// K051649, K053260, K054539, X1-010, YMZ280B, MultiPCM, uPD7759, HuC6280, POKEY, GA20, C352, and
 /// C140/219. The non-YMFM chips require their corresponding Cargo features;
 /// a chip declared in the header without its feature returns
@@ -937,6 +953,7 @@ struct VoiceCheckpoint {
     main_coefficient: f32,
     paired_coefficient: f32,
     paced_writes: Option<VecDeque<ChipRegisterWrite>>,
+    rf5c_wave_bank: usize,
     write_interval: usize,
     write_cooldown: usize,
 }
@@ -1159,6 +1176,8 @@ impl<'a> VgmSequencer<'a> {
             })
         } else if chip == Chip::Pwm {
             feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+        } else if matches!(chip, Chip::Rf5c68 | Chip::Rf5c164) {
+            feature_backend!("rf5c", chip, Box::new(Rf5c::new(chip.clone(), clock)?))
         } else if chip == Chip::Saa1099 {
             feature_backend!("saa1099", chip, Box::new(Saa1099::new(clock)?))
         } else if chip == Chip::K051649 {
@@ -1373,6 +1392,7 @@ impl<'a> VgmSequencer<'a> {
             chip,
             instance,
             clock,
+            rf5c_wave_bank: 0,
             sn_flags: header.sn76489_flags,
             tracker: None,
             route: ChipCapture::new(backend),
@@ -1408,6 +1428,8 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Sn76489
             | Chip::SegaPcm
             | Chip::Pwm
+            | Chip::Rf5c68
+            | Chip::Rf5c164
             | Chip::Saa1099
             | Chip::Huc6280
             | Chip::Ga20
@@ -2111,6 +2133,7 @@ impl<'a> VgmSequencer<'a> {
                 main_coefficient: voice.main_coefficient,
                 paired_coefficient: voice.paired_coefficient,
                 paced_writes: voice.paced_writes.clone(),
+                rf5c_wave_bank: voice.rf5c_wave_bank,
                 write_interval: voice.write_interval,
                 write_cooldown: voice.write_cooldown,
             });
@@ -2223,6 +2246,7 @@ impl<'a> VgmSequencer<'a> {
             voice.main_coefficient = saved.main_coefficient;
             voice.paired_coefficient = saved.paired_coefficient;
             voice.paced_writes.clone_from(&saved.paced_writes);
+            voice.rf5c_wave_bank = saved.rf5c_wave_bank;
             voice.write_interval = saved.write_interval;
             voice.write_cooldown = saved.write_cooldown;
         }
@@ -2659,6 +2683,33 @@ impl<'a> VgmSequencer<'a> {
             DataBlock(block) => {
                 self.load_block(*block)?;
             }
+            PcmRamWrite(write) => {
+                let chip = match write.chip_type {
+                    soundlog::vgm::detail::StreamChipType::Rf5c68Pcm => Chip::Rf5c68,
+                    soundlog::vgm::detail::StreamChipType::Rf5c164Pcm => Chip::Rf5c164,
+                    _ => return Ok(()),
+                };
+                if let Some(voice) = self
+                    .voices
+                    .iter_mut()
+                    .find(|voice| voice.chip == chip && voice.instance == write.instance)
+                {
+                    let start = write.read_offset as usize;
+                    let size = if write.size == 0 {
+                        0x1000000
+                    } else {
+                        write.size as usize
+                    };
+                    let data = self
+                        .stream
+                        .pcm_bank_range(u8::from(write.chip_type), start, size)
+                        .ok_or(VgmSequencerError::InvalidRomBlock)?;
+                    voice
+                        .route
+                        .chip_mut()
+                        .write_ram(write.write_offset as usize | voice.rf5c_wave_bank, &data)?;
+                }
+            }
             _ => {}
         }
         if let Some((instance, write)) = write {
@@ -2800,11 +2851,16 @@ impl<'a> VgmSequencer<'a> {
         } else {
             Instance::Secondary
         };
-        if block.data_type == 0xc2 {
+        if matches!(block.data_type, 0xc0..=0xc2) {
+            let chip = match block.data_type {
+                0xc0 => Chip::Rf5c68,
+                0xc1 => Chip::Rf5c164,
+                _ => Chip::NesApu,
+            };
             let Some(voice) = self
                 .voices
                 .iter_mut()
-                .find(|voice| voice.chip == Chip::NesApu && voice.instance == instance)
+                .find(|voice| voice.chip == chip && voice.instance == instance)
             else {
                 return Ok(());
             };
@@ -2813,10 +2869,10 @@ impl<'a> VgmSequencer<'a> {
             else {
                 return Err(VgmSequencerError::InvalidRomBlock);
             };
-            voice
-                .route
-                .chip_mut()
-                .write_ram(usize::from(write.start_address), &write.data)?;
+            voice.route.chip_mut().write_ram(
+                usize::from(write.start_address) | voice.rf5c_wave_bank,
+                &write.data,
+            )?;
             return Ok(());
         }
         let (chip, access) = match block.data_type {

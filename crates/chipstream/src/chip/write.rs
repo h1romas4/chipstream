@@ -7,9 +7,10 @@
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
     K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec, Okim6258Spec, Okim6295Spec,
-    PokeySpec, PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec,
-    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
-    Ym3812Spec, Ymf262Spec, Ymf278bSpec, Ymz280bSpec,
+    PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec,
+    Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec, Y8950Spec, Ym2151Spec, Ym2203Spec,
+    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
+    Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -39,6 +40,8 @@ use super::Okim6295;
 use super::Pokey;
 #[cfg(feature = "pwm")]
 use super::Pwm;
+#[cfg(feature = "rf5c")]
+use super::Rf5c;
 #[cfg(feature = "saa1099")]
 use super::Saa1099;
 #[cfg(feature = "segapcm")]
@@ -170,6 +173,16 @@ define_writes! {
     NesApu(NesApuSpec, NesApu, |s| (0, s.register, u32::from(s.value))),
     Upd7759(Upd7759Spec, Upd7759, |s| (0, s.register, u32::from(s.value))),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
+    Rf5c68U8(Rf5c68U8Spec, Rf5c68, |s| (0, s.offset, u32::from(s.value))),
+    Rf5c164U8(Rf5c164U8Spec, Rf5c164, |s| (0, s.offset, u32::from(s.value))),
+    Rf5c68U16(Rf5c68U16Spec, Rf5c68, |s| {
+        let [bank, register] = s.offset.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
+    Rf5c164U16(Rf5c164U16Spec, Rf5c164, |s| {
+        let [bank, register] = s.offset.to_be_bytes();
+        (bank, register, u32::from(s.value))
+    }),
     Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
     Scc1(Scc1Spec, K051649, |s| (s.port, s.register, u32::from(s.value))),
     Huc6280(Huc6280Spec, Huc6280, |s| (0, s.register, u32::from(s.value))),
@@ -211,6 +224,10 @@ impl ChipRegisterWrite {
             NesApuWrite(i, s) => (*i, Self::NesApu(s.clone())),
             Upd7759Write(i, s) => (*i, Self::Upd7759(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
+            Rf5c68U8Write(i, s) => (*i, Self::Rf5c68U8(s.clone())),
+            Rf5c68U16Write(i, s) => (*i, Self::Rf5c68U16(s.clone())),
+            Rf5c164U8Write(i, s) => (*i, Self::Rf5c164U8(s.clone())),
+            Rf5c164U16Write(i, s) => (*i, Self::Rf5c164U16(s.clone())),
             Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
             Scc1Write(i, s) => (*i, Self::Scc1(s.clone())),
             Huc6280Write(i, s) => (*i, Self::Huc6280(s.clone())),
@@ -277,6 +294,14 @@ typed_write!(NesApu, NesApuSpec, NesApu);
 typed_write!(Upd7759, Upd7759Spec, Upd7759);
 #[cfg(feature = "pwm")]
 typed_write!(Pwm, PwmSpec, Pwm);
+#[cfg(feature = "rf5c")]
+typed_write!(Rf5c, Rf5c68U8Spec, Rf5c68U8);
+#[cfg(feature = "rf5c")]
+typed_write!(Rf5c, Rf5c68U16Spec, Rf5c68U16);
+#[cfg(feature = "rf5c")]
+typed_write!(Rf5c, Rf5c164U8Spec, Rf5c164U8);
+#[cfg(feature = "rf5c")]
+typed_write!(Rf5c, Rf5c164U16Spec, Rf5c164U16);
 #[cfg(feature = "saa1099")]
 typed_write!(Saa1099, Saa1099Spec, Saa1099);
 #[cfg(feature = "k051649")]

@@ -45,6 +45,8 @@ mod okim6295;
 mod pokey;
 #[cfg(feature = "pwm")]
 mod pwm;
+#[cfg(feature = "rf5c")]
+mod rf5c;
 #[cfg(feature = "saa1099")]
 mod saa1099;
 #[cfg(feature = "segapcm")]
@@ -99,6 +101,8 @@ pub use okim6295::Okim6295;
 pub use pokey::Pokey;
 #[cfg(feature = "pwm")]
 pub use pwm::Pwm;
+#[cfg(feature = "rf5c")]
+pub use rf5c::Rf5c;
 #[cfg(feature = "saa1099")]
 pub use saa1099::Saa1099;
 #[cfg(feature = "segapcm")]
@@ -217,10 +221,10 @@ pub trait SoundChip {
 
     /// Apply a soundlog register-write specification to a compatible chip.
     ///
-    /// Writes take effect immediately. Concrete chip types reject incompatible
-    /// specs at compile time. [`YmfmChip`] and `Box<dyn SoundChip>` can
-    /// represent multiple chip types and return [`ChipError::ChipMismatch`]
-    /// when the spec does not match the actual chip.
+    /// Writes take effect immediately. Single-chip concrete types reject
+    /// incompatible specs at compile time. [`YmfmChip`], `Rf5c`, and
+    /// `Box<dyn SoundChip>` can represent multiple chip types and return
+    /// [`ChipError::ChipMismatch`] when the spec does not match the actual chip.
     ///
     /// Specs such as `C140Spec` and `SegaPcmSpec` preserve 16-bit addresses;
     /// `PwmSpec` preserves its full value. For multi-port chips, the spec's
@@ -422,6 +426,7 @@ impl<T: Any> SoundChipState for T {
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
+    feature = "rf5c",
     feature = "pokey",
     feature = "saa1099",
     feature = "segapcm",

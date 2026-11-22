@@ -65,6 +65,16 @@ impl SoundChip for RecordingChip {
                 (bank, register, s.value.into())
             }
             ChipRegisterWrite::Pwm(s) => (0, s.register, s.value),
+            ChipRegisterWrite::Rf5c68U8(s) => (0, s.offset, s.value.into()),
+            ChipRegisterWrite::Rf5c164U8(s) => (0, s.offset, s.value.into()),
+            ChipRegisterWrite::Rf5c68U16(s) => {
+                let [bank, register] = s.offset.to_be_bytes();
+                (bank, register, s.value.into())
+            }
+            ChipRegisterWrite::Rf5c164U16(s) => {
+                let [bank, register] = s.offset.to_be_bytes();
+                (bank, register, s.value.into())
+            }
             ChipRegisterWrite::Saa1099(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Scc1(s) => (s.port, s.register, s.value.into()),
             ChipRegisterWrite::Huc6280(s) => (0, s.register, s.value.into()),
