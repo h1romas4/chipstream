@@ -4,11 +4,13 @@
 
 ### Breaking API Changes
 
+- Change: `NesApuState` exposes FDS as channel 5 and reports six channels.
 - Change: `Es5506State` tracks physical ES5505/ES5506 registers as `u32` values; VGM byte offsets must be converted to bus writes. Header chip enumeration now distinguishes `Chip::Es5505`.
 - Change: `PcmRamWrite` now has an `instance` field and no inline `data` field; PCM bytes come from the referenced data bank.
 
 ### Added
 
+- Add: `NesApuState` tracks the FDS register-controlled pitch as channel 5.
 - Add: `VgmStream::last_stream_write_id` identifies the DAC stream that generated the most recent write, distinguishing it from direct chip writes.
 - Add: `VgmStream::pcm_bank_range` reads ranges across compressed and uncompressed PCM blocks.
 
@@ -22,6 +24,8 @@
 - Fix: Map Game Boy VGM wave RAM and unused register offsets to their actual I/O addresses for state tracking.
 - Fix: Track WonderSwan wavetable frequencies, channel enables, volume and tone modes correctly, including simultaneous channel changes.
 - Fix: Track VSU global stop and zero-valued frequencies correctly.
+- Fix: Track simultaneous SAA1099 channel changes, SCC waveform writes, and HuC6280/POKEY non-tonal modes correctly.
+- Fix: Use the configured Game Boy clock and correct the SAA1099 tone frequency.
 
 ## Planned
 

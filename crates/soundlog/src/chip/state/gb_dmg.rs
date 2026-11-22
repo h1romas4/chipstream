@@ -62,16 +62,17 @@ pub struct GbDmgState {
     channels: [ChannelState; GB_DMG_CHANNELS],
     /// Global register storage for all written registers
     registers: GbDmgStorage,
+    clock_hz: Option<f32>,
 }
 
 impl GbDmgState {
     /// Create a new Game Boy DMG state tracker
     ///
-    /// The clock parameter is accepted for API consistency but not used.
+    /// Pass the sound clock in hertz, or zero when it is unknown.
     ///
     /// # Arguments
     ///
-    /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
+    /// * `clock` - Clock frequency in Hz.
     ///
     /// # Examples
     ///
@@ -80,10 +81,11 @@ impl GbDmgState {
     ///
     /// let state = GbDmgState::new(4_194_304.0f32);
     /// ```
-    pub fn new(_clock: f32) -> Self {
+    pub fn new(clock: f32) -> Self {
         Self {
             channels: array::from_fn(|_| ChannelState::new()),
             registers: GbDmgStorage::default(),
+            clock_hz: (clock.is_finite() && clock > 0.0).then_some(clock),
         }
     }
 
@@ -122,27 +124,9 @@ impl GbDmgState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_game_boy(timer: u32) -> f32 {
-        131_072.0f32 / (2048 - timer) as f32
-    }
-
-    /// Calculate frequency in Hz from Game Boy noise parameters
-    ///
-    /// # Arguments
-    ///
-    /// * `poly_cntr` - Polynomial counter value from NR43
-    ///
-    /// # Returns
-    ///
-    /// Frequency in Hz
-    fn hz_game_boy_noise(poly_cntr: u8) -> f32 {
-        let mut freq_div = (poly_cntr & 0x07) as f32;
-        if freq_div == 0.0f32 {
-            freq_div = 0.5f32;
-        }
-
-        let shift_freq = (poly_cntr >> 4) as u32;
-        524_288.0f32 / freq_div / (1 << (shift_freq + 1)) as f32
+    fn hz_game_boy(&self, timer: u32) -> Option<f32> {
+        self.clock_hz
+            .map(|clock| clock / 32.0 / (2048 - timer) as f32)
     }
 
     /// Extract tone from pulse/wave channel registers
@@ -174,14 +158,14 @@ impl GbDmgState {
         // 11-bit frequency: low 8 bits + high 3 bits
         let freq_value = (freq_low as u16) | ((freq_high as u16 & 0x07) << 8);
 
-        let freq_hz = if channel == 2 {
-            // Wave channel frequency is half
-            Self::hz_game_boy(freq_value as u32) / 2.0f32
-        } else {
-            Self::hz_game_boy(freq_value as u32)
-        };
-
-        Some(ToneInfo::new(freq_value, 0, Some(freq_hz)))
+        let freq_hz = self.hz_game_boy(freq_value as u32).map(|frequency| {
+            if channel == 2 {
+                frequency / 2.0
+            } else {
+                frequency
+            }
+        });
+        Some(ToneInfo::new(freq_value, 0, freq_hz))
     }
 
     /// Extract tone from noise channel registers
@@ -193,10 +177,8 @@ impl GbDmgState {
         // Read from global register storage
         let poly_cntr = self.registers.read(0x22)?; // NR43
 
-        let freq_hz = Self::hz_game_boy_noise(poly_cntr);
-
         // Use poly_cntr as fnum, 0 as block
-        Some(ToneInfo::new(poly_cntr as u16, 0, Some(freq_hz)))
+        Some(ToneInfo::new(poly_cntr as u16, 0, None))
     }
 
     /// Handle frequency register writes for pulse/wave channels
@@ -544,6 +526,19 @@ impl ChipState for GbDmgState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pulse_frequency_uses_chip_clock_and_noise_has_no_pitch() {
+        use super::*;
+        let mut state = GbDmgState::new(2_097_152.0);
+        state.on_register_write(0x13, 0);
+        state.on_register_write(0x14, 4);
+        let tone = state.extract_tone(0).unwrap();
+        assert_eq!(tone.freq_hz, Some(64.0));
+        state.on_register_write(0x22, 0x53);
+        assert_eq!(state.extract_noise_tone().unwrap().freq_hz, None);
+        assert_eq!(GbDmgState::new(0.0).clock_hz, None);
+    }
+
     #[test]
     fn vgm_wave_ram_and_unused_offsets_map_to_io_addresses() {
         use super::{ChipState, GbDmgState};

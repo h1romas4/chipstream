@@ -5,7 +5,7 @@
 // state-tracker emits a KeyOn with a ToneInfo.freq_hz close to the target.
 //
 // The SAA1099 frequency formula used by the state implementation is:
-//   freq_hz = master_clock / ((511 - frequency) * 2^(8 - octave))
+//   freq_hz = master_clock / (2 * (511 - frequency) * 2^(8 - octave))
 //
 // We search for an octave in 0..7 that yields a valid 8-bit `frequency`
 // register (0..=255) when targeting 440 Hz and pick that for the test.
@@ -52,7 +52,7 @@ fn test_saa1099_channel_keyon_and_tone_freq_matches_a4() {
         Instance::Primary,
         chip::Saa1099Spec {
             register: 0x10,
-            value: 0x2,
+            value: 0x3,
         },
     );
 

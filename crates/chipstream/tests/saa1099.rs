@@ -21,6 +21,34 @@ fn tone(chip: &mut Saa1099) {
 }
 
 #[test]
+fn tracked_frequency_matches_generated_tone() {
+    let mut chip = Saa1099::new(8_000_000).unwrap();
+    let mut state = Saa1099State::new(8_000_000.0);
+    use soundlog::chip::state::ChipState;
+    let mut events = Vec::new();
+    for (register, value) in [(0, 0xff), (8, 0xe3), (0x10, 3), (0x14, 1), (0x1c, 1)] {
+        write(&mut chip, register, value);
+        events.extend(state.on_register_write(register, value).unwrap_or_default());
+    }
+    let frequency = events
+        .iter()
+        .find_map(|event| match event {
+            StateEvent::KeyOn { tone, .. } => tone.freq_hz,
+            _ => None,
+        })
+        .unwrap();
+    let mut samples = vec![0; chip.sample_rate() as usize * 2];
+    chip.generate(&mut samples).unwrap();
+    let rising_edges = samples
+        .chunks_exact(2)
+        .map(|frame| frame[0] > 0)
+        .zip(samples.chunks_exact(2).skip(1).map(|frame| frame[0] > 0))
+        .filter(|&(before, after)| !before && after)
+        .count();
+    assert!((rising_edges as f32 - frequency).abs() < 2.0);
+}
+
+#[test]
 fn stereo_tone_matches_mame_counters_and_amplitude() {
     let mut chip = Saa1099::new(8_000_000).unwrap();
     assert_eq!(chip.sample_rate(), 31_250);

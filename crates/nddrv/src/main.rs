@@ -2642,6 +2642,9 @@ impl AppView {
                         }),
                 );
                 for channel in 0..total {
+                    if source.chip == Chip::NesApu && (channel == 3 || channel == 4) {
+                        continue;
+                    }
                     let paired =
                         self.piano_fm_mute()
                             .paired_channel(&source.chip, source.instance, channel);
@@ -2687,6 +2690,10 @@ impl AppView {
                     }
                     let label = if matches!(source.chip, Chip::Sn76489 | Chip::Ay8910) {
                         format!("Tone {}", channel + 1)
+                    } else if source.chip == Chip::NesApu && channel == 5 {
+                        "FDS".to_string()
+                    } else if fm_count == 0 {
+                        format!("Channel {}", channel + 1)
                     } else if channel >= fm_count {
                         format!("SSG {}", channel - fm_count + 1)
                     } else if let Some(other) = paired {

@@ -183,11 +183,11 @@ impl PokeyState {
         if channel % 2 == 1 && audctl & [0x10, 0x08][channel / 2] != 0 {
             audf = (audf << 8) | u16::from(self.registers.read(audf_reg - 2).unwrap_or(0));
         }
-        Some(ToneInfo::new(
-            audf,
-            0,
-            self.calculate_frequency(audf, channel),
-        ))
+        let control = self.registers.read(audf_reg + 1).unwrap_or(0);
+        let frequency = (control & 0xb0 == 0xa0)
+            .then(|| self.calculate_frequency(audf, channel))
+            .flatten();
+        Some(ToneInfo::new(audf, 0, frequency))
     }
 
     /// Check if channel is enabled based on volume
@@ -269,6 +269,7 @@ impl PokeyState {
             (KeyState::On, KeyState::Off) => Some(vec![StateEvent::KeyOff {
                 channel: channel as u8,
             }]),
+            (KeyState::On, KeyState::On) => self.handle_frequency_register(channel),
             _ => None,
         }
     }
@@ -357,6 +358,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn noise_and_direct_volume_do_not_report_pitched_tones() {
+        let mut state = PokeyState::new(1_789_790.0);
+        state.on_register_write(0, 0x20);
+        assert!(matches!(state.on_register_write(1, 0xaf).unwrap()[0],
+            StateEvent::KeyOn { tone, .. } if tone.freq_hz.is_some()));
+        assert!(matches!(state.on_register_write(1, 0x8f).unwrap()[0],
+            StateEvent::ToneChange { tone, .. } if tone.freq_hz.is_none()));
+        assert!(state.on_register_write(1, 0xbf).is_none());
+        assert!(matches!(state.on_register_write(1, 0xaf).unwrap()[0],
+            StateEvent::ToneChange { tone, .. } if tone.freq_hz.is_some()));
+    }
+
+    #[test]
     fn test_pokey_channel_enable() {
         let mut state = PokeyState::new(1_789_790.0f32);
 
@@ -364,7 +378,7 @@ mod tests {
         state.on_register_write(0x00, 0x10); // AUDF1
 
         // Enable channel 0 with volume 8
-        let event = state.on_register_write(0x01, 0x08); // AUDC1
+        let event = state.on_register_write(0x01, 0xa8); // AUDC1
 
         assert!(event.is_some());
         let events = event.as_ref().unwrap();

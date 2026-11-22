@@ -7,8 +7,8 @@
 //! - 1 noise channel
 //! - 1 DMC (Delta Modulation Channel) for samples
 //!
-//! FDS writes are retained as register values, but FDS channel state and
-//! events are not modeled.
+//! FDS expansion audio is tracked as channel 5. Its register-driven pitch
+//! excludes modulation, and envelope amplitude is not simulated.
 
 use super::channel::ChannelState;
 use super::chip_state::ChipState;
@@ -16,15 +16,15 @@ use super::storage::{RegisterStorage, SparseStorage};
 use crate::chip::event::{KeyState, StateEvent, ToneInfo};
 use std::array;
 
-/// NES APU has 5 channels
-const NES_APU_CHANNELS: usize = 5;
+/// NES APU has 5 channels; channel 5 is reserved for FDS expansion audio.
+const NES_APU_CHANNELS: usize = 6;
 
 /// NES APU recommended storage
 pub type NesApuStorage = SparseStorage<u8, u8>;
 
 /// NES APU register state tracker
 ///
-/// Tracks all 5 channels and their register state, detecting key on/off
+/// Tracks the 5 APU channels and FDS expansion audio, detecting key on/off
 /// events and extracting tone information. Key state represents the
 /// register-controlled channel enable, not the length or linear counters:
 /// those counters may expire without a register write.
@@ -63,12 +63,34 @@ pub type NesApuStorage = SparseStorage<u8, u8>;
 /// - 0x17 (IRQCTRL): Frame counter
 #[derive(Debug, Clone)]
 pub struct NesApuState {
-    /// Channel states for 5 channels
+    /// Channel states for 5 APU channels and FDS.
     channels: [ChannelState; NES_APU_CHANNELS],
     /// Global register storage for all written registers
     registers: NesApuStorage,
     /// CPU clock in hertz, when known.
     clock_hz: Option<f32>,
+    fds: FdsState,
+}
+
+#[derive(Debug, Clone)]
+struct FdsState {
+    io_enabled: bool,
+    running: bool,
+    wave_write: bool,
+    audible_volume: bool,
+    frequency: u16,
+}
+
+impl Default for FdsState {
+    fn default() -> Self {
+        Self {
+            io_enabled: true,
+            running: false,
+            wave_write: false,
+            audible_volume: false,
+            frequency: 0,
+        }
+    }
 }
 
 impl NesApuState {
@@ -92,6 +114,7 @@ impl NesApuState {
             channels: array::from_fn(|_| ChannelState::new()),
             registers: NesApuStorage::default(),
             clock_hz: (clock.is_finite() && clock > 0.0).then_some(clock),
+            fds: FdsState::default(),
         }
     }
 
@@ -332,6 +355,63 @@ impl NesApuState {
     }
 }
 
+impl NesApuState {
+    fn handle_fds_register(&mut self, register: u8, value: u8) -> Option<Vec<StateEvent>> {
+        if register == 0x23 {
+            self.fds.io_enabled = value & 2 != 0;
+        } else if !self.fds.io_enabled {
+            return None;
+        } else {
+            match register {
+                0x80 => self.fds.audible_volume = value & 0x80 == 0 || value & 0x3f != 0,
+                0x82 => self.fds.frequency = (self.fds.frequency & 0xf00) | u16::from(value),
+                0x83 => {
+                    self.fds.frequency = (self.fds.frequency & 0xff) | (u16::from(value & 15) << 8);
+                    self.fds.running = value & 0x80 == 0;
+                }
+                0x89 => self.fds.wave_write = value & 0x80 != 0,
+                _ => return None,
+            }
+        }
+        let channel = 5;
+        let enabled = self.fds.running
+            && !self.fds.wave_write
+            && self.fds.audible_volume
+            && self.fds.frequency != 0;
+        let old = self.channels[channel].key_state;
+        let new = if enabled { KeyState::On } else { KeyState::Off };
+        self.channels[channel].key_state = new;
+        if !enabled {
+            self.channels[channel].tone = None;
+            return (old == KeyState::On).then(|| {
+                vec![StateEvent::KeyOff {
+                    channel: channel as u8,
+                }]
+            });
+        }
+        let tone = ToneInfo::new(
+            self.fds.frequency,
+            0,
+            self.clock_hz
+                .map(|clock| clock * f32::from(self.fds.frequency) / 4_194_304.0),
+        );
+        let previous = self.channels[channel].tone.replace(tone);
+        if old == KeyState::Off {
+            Some(vec![StateEvent::KeyOn {
+                channel: channel as u8,
+                tone,
+            }])
+        } else if previous != Some(tone) {
+            Some(vec![StateEvent::ToneChange {
+                channel: channel as u8,
+                tone,
+            }])
+        } else {
+            None
+        }
+    }
+}
+
 impl Default for NesApuState {
     fn default() -> Self {
         Self::new(0.0f32)
@@ -355,6 +435,7 @@ impl ChipState for NesApuState {
         self.registers.write(register, value);
 
         match register {
+            0x23 | 0x80..=0x8a => self.handle_fds_register(register, value),
             // Pulse 1 registers
             0x00 => {
                 // WRA0: Duty, envelope, volume
@@ -432,6 +513,7 @@ impl ChipState for NesApuState {
             channel.clear();
         }
         self.registers.clear();
+        self.fds = FdsState::default();
     }
 
     fn channel_count(&self) -> usize {
@@ -442,6 +524,37 @@ impl ChipState for NesApuState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fds_pitch_stop_and_io_gate() {
+        let mut state = NesApuState::new(1_789_773.0);
+        state.on_register_write(0x80, 0x9f);
+        state.on_register_write(0x82, 0);
+        let event = state.on_register_write(0x83, 4).unwrap();
+        assert!(matches!(event[0], StateEvent::KeyOn { channel: 5, tone }
+            if tone.freq_hz == Some(1_789_773.0 * 1024.0 / 4_194_304.0)));
+        assert!(matches!(
+            state.on_register_write(0x82, 1).unwrap()[0],
+            StateEvent::ToneChange { channel: 5, .. }
+        ));
+        assert!(matches!(
+            state.on_register_write(0x89, 0x80).unwrap()[0],
+            StateEvent::KeyOff { channel: 5 }
+        ));
+        assert!(matches!(
+            state.on_register_write(0x89, 0).unwrap()[0],
+            StateEvent::KeyOn { channel: 5, .. }
+        ));
+        state.on_register_write(0x23, 0);
+        assert!(state.on_register_write(0x83, 0x80).is_none());
+        state.on_register_write(0x23, 2);
+        assert!(matches!(
+            state.on_register_write(0x83, 0x80).unwrap()[0],
+            StateEvent::KeyOff { channel: 5 }
+        ));
+        state.reset();
+        assert_eq!(state.channel(5).unwrap().key_state, KeyState::Off);
+    }
 
     #[test]
     fn test_nes_apu_pulse_enable() {
@@ -553,7 +666,7 @@ mod tests {
     #[test]
     fn test_nes_apu_channel_count() {
         let state = NesApuState::new(0.0f32);
-        assert_eq!(state.channel_count(), 5);
+        assert_eq!(state.channel_count(), 6);
     }
 
     #[test]

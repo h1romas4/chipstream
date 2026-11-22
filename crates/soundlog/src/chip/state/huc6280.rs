@@ -153,9 +153,11 @@ impl Huc6280State {
         // 12-bit frequency
         let freq = (freq_low as u16) | ((freq_high as u16 & 0x0F) << 8);
 
-        let freq_hz = self.hz_huc6280(freq);
-
-        Some(ToneInfo::new(freq, 0, Some(freq_hz)))
+        let control = self.channel_registers[channel].read(0x04).unwrap_or(0);
+        let noise =
+            channel >= 4 && self.channel_registers[channel].read(0x07).unwrap_or(0) & 0x80 != 0;
+        let freq_hz = (control & 0x40 == 0 && !noise).then(|| self.hz_huc6280(freq));
+        Some(ToneInfo::new(freq, 0, freq_hz))
     }
 
     /// Handle channel select register write (0x00)
@@ -186,7 +188,7 @@ impl Huc6280State {
             let tone_changed = self.channels[channel]
                 .tone
                 .as_ref()
-                .map(|old_tone| old_tone.fnum != tone.fnum)
+                .map(|old_tone| *old_tone != tone)
                 .unwrap_or(true);
 
             if tone_changed {
@@ -243,6 +245,7 @@ impl Huc6280State {
             (KeyState::On, KeyState::Off) => Some(vec![StateEvent::KeyOff {
                 channel: channel as u8,
             }]),
+            (KeyState::On, KeyState::On) => self.handle_frequency_register(),
             _ => None,
         }
     }
@@ -319,7 +322,7 @@ impl ChipState for Huc6280State {
             }
 
             // Noise control (0x07)
-            0x07 => None,
+            0x07 => self.handle_frequency_register(),
 
             // LFO frequency (0x08)
             0x08 => None,
@@ -350,6 +353,24 @@ impl ChipState for Huc6280State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_and_noise_modes_do_not_report_pitched_tones() {
+        let mut state = Huc6280State::new(3_579_545.0);
+        for (register, value) in [(0, 4), (2, 0x80), (3, 0), (4, 0x9f)] {
+            state.on_register_write(register, value);
+        }
+        for (register, value, pitched) in [
+            (7, 0x80, false),
+            (7, 0, true),
+            (4, 0xdf, false),
+            (4, 0x9f, true),
+        ] {
+            let events = state.on_register_write(register, value).unwrap();
+            assert!(matches!(events[0], StateEvent::ToneChange { tone, .. }
+                if tone.freq_hz.is_some() == pitched));
+        }
+    }
 
     #[test]
     fn test_huc6280_enable_channel() {

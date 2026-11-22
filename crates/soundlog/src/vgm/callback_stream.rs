@@ -1636,11 +1636,21 @@ impl<'a> VgmCallbackStream<'a> {
                 }
             }
             VgmCommand::Scc1Write(instance, spec) => {
-                let (mapped_register, mapped_value) =
-                    K051649State::map_vgm_to_k051649_register(spec.port, spec.register, spec.value);
-                let event = self.state_trackers.k051649[*instance as usize]
-                    .as_mut()
-                    .and_then(|state| state.on_register_write(mapped_register, mapped_value));
+                let event = if (spec.port == 1 && spec.register < 10)
+                    || (spec.port == 2 && spec.register < 5)
+                    || spec.port == 3
+                {
+                    let (register, value) = K051649State::map_vgm_to_k051649_register(
+                        spec.port,
+                        spec.register,
+                        spec.value,
+                    );
+                    self.state_trackers.k051649[*instance as usize]
+                        .as_mut()
+                        .and_then(|state| state.on_register_write(register, value))
+                } else {
+                    None
+                };
                 if let Some(ref mut cb) = self.callbacks.on_scc1_write {
                     cb(*instance, spec.clone(), sample, event);
                 }

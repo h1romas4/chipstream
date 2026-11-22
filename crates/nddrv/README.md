@@ -156,11 +156,12 @@ Open the full-window Piano Roll with the piano icon.
 | Chip Gain | Adjusts software-emulated output. |
 | FM mute / solo | Controls FM channels; does not affect NanoDrive output. |
 
-The Piano Roll shows selected pitched voices, not every sound such as PCM and
-noise. AY8910 and YM2149 tone channels appear in both modes, including when
-routed to NanoDrive. Without an AY hardware route or enabled YM2149 emulation
-they are visual-only. Envelope-enabled tones are shown as active without
-simulating envelope amplitude. Chip Gain does not affect NanoDrive output.
+The Piano Roll tracks pitched voices from register writes; PCM, noise, and
+Mikey are excluded. Envelopes, length counters, and modulation are not
+simulated, and envelope-enabled tones are treated as active. FDS is listed for
+every NES APU track. AY8910 and YM2149 tones remain visible when routed to
+NanoDrive, or are visual-only without an AY hardware route or YM2149 emulation.
+Chip Gain affects software output only.
 
 The **Chip** slider controls the entire emulated chip. YM2203, YM2608, and
 YM2610(B) also have independent FM (FM / ADPCM for YM2608 and YM2610(B)) and

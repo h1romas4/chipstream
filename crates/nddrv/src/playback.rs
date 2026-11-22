@@ -1050,6 +1050,13 @@ fn run_preview(
                     Chip::Ymf278b => ChipId::Ymf278b,
                     Chip::WonderSwan => ChipId::WonderSwan,
                     Chip::Vsu => ChipId::Vsu,
+                    Chip::Saa1099 => ChipId::Saa1099,
+                    Chip::K051649 => ChipId::K051649,
+                    Chip::Huc6280 => ChipId::Huc6280,
+                    Chip::Pokey => ChipId::Pokey,
+                    Chip::GbDmg => ChipId::GbDmg,
+                    Chip::NesApu => ChipId::NesApu,
+                    Chip::Mikey => ChipId::Mikey,
                     _ => continue,
                 };
                 if let Some(entry) = extra
@@ -1124,9 +1131,9 @@ fn run_preview(
         }};
     }
     use soundlog::chip::{
-        Ay8910Spec, PsgSpec, VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec,
-        Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
-        Ymf278bSpec,
+        Ay8910Spec, GbDmgSpec, Huc6280Spec, NesApuSpec, PokeySpec, PsgSpec, Saa1099Spec, Scc1Spec,
+        VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec,
+        Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec, Ymf278bSpec,
     };
     register!(0, Ym2151Spec);
     register!(1, Ym2203Spec);
@@ -1166,6 +1173,12 @@ fn run_preview(
     register!(crate::visualizer::AY8910_INDEX, Ay8910Spec);
     register!(crate::visualizer::WONDERSWAN_INDEX, WonderSwanRegSpec);
     register!(crate::visualizer::VSU_INDEX, VsuSpec);
+    register!(crate::visualizer::SAA1099_INDEX, Saa1099Spec);
+    register!(crate::visualizer::K051649_INDEX, Scc1Spec);
+    register!(crate::visualizer::HUC6280_INDEX, Huc6280Spec);
+    register!(crate::visualizer::POKEY_INDEX, PokeySpec);
+    register!(crate::visualizer::GB_DMG_INDEX, GbDmgSpec);
+    register!(crate::visualizer::NES_APU_INDEX, NesApuSpec);
 
     let mut samples = 0_u64;
     let mut scanned = 0_u64;
@@ -1660,14 +1673,16 @@ impl Sequencer {
         macro_rules! configure {
             ($player:expr) => {{
                 use soundlog::chip::state::{
+                    GbDmgState, Huc6280State, K051649State, NesApuState, PokeyState, Saa1099State,
                     Sn76489State, VsuState, WonderSwanState, Y8950State, Ym2151State, Ym2203State,
                     Ym2413State, Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State,
                     Ymf262State, Ymf278bState,
                 };
                 use soundlog::chip::{
-                    PsgSpec, VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec,
-                    Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
-                    Ymf262Spec, Ymf278bSpec,
+                    GbDmgSpec, Huc6280Spec, NesApuSpec, PokeySpec, PsgSpec, Saa1099Spec, Scc1Spec,
+                    VsuSpec, WonderSwanRegSpec, Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec,
+                    Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
+                    Ymf278bSpec,
                 };
                 register!($player, 0, Ym2151Spec, Ym2151State);
                 register!($player, 1, Ym2203Spec, Ym2203State);
@@ -1693,6 +1708,42 @@ impl Sequencer {
                     WonderSwanState
                 );
                 register!($player, crate::visualizer::VSU_INDEX, VsuSpec, VsuState);
+                register!(
+                    $player,
+                    crate::visualizer::SAA1099_INDEX,
+                    Saa1099Spec,
+                    Saa1099State
+                );
+                register!(
+                    $player,
+                    crate::visualizer::K051649_INDEX,
+                    Scc1Spec,
+                    K051649State
+                );
+                register!(
+                    $player,
+                    crate::visualizer::HUC6280_INDEX,
+                    Huc6280Spec,
+                    Huc6280State
+                );
+                register!(
+                    $player,
+                    crate::visualizer::POKEY_INDEX,
+                    PokeySpec,
+                    PokeyState
+                );
+                register!(
+                    $player,
+                    crate::visualizer::GB_DMG_INDEX,
+                    GbDmgSpec,
+                    GbDmgState
+                );
+                register!(
+                    $player,
+                    crate::visualizer::NES_APU_INDEX,
+                    NesApuSpec,
+                    NesApuState
+                );
             }};
         }
         match self {
@@ -5779,6 +5830,176 @@ mod tests {
                     .flatten()
                     .all(|sample| sample.abs() < 0.00001)
             );
+        }
+    }
+
+    #[test]
+    fn pitched_chip_piano_roll_matches_preview() {
+        use soundlog::chip::{
+            GbDmgSpec, Huc6280Spec, NesApuSpec, PokeySpec, Saa1099Spec, Scc1Spec,
+        };
+        use soundlog::vgm::{VgmBuilder, command::WaitSamples};
+
+        fn write(
+            builder: &mut VgmBuilder,
+            chip: &Chip,
+            instance: Instance,
+            port: u8,
+            register: u8,
+            value: u8,
+        ) {
+            match chip {
+                Chip::Saa1099 => builder.add_chip_write(instance, Saa1099Spec { register, value }),
+                Chip::K051649 => builder.add_chip_write(
+                    instance,
+                    Scc1Spec {
+                        port,
+                        register,
+                        value,
+                    },
+                ),
+                Chip::Huc6280 => builder.add_chip_write(instance, Huc6280Spec { register, value }),
+                Chip::Pokey => builder.add_chip_write(instance, PokeySpec { register, value }),
+                Chip::GbDmg => builder.add_chip_write(instance, GbDmgSpec { register, value }),
+                Chip::NesApu => builder.add_chip_write(instance, NesApuSpec { register, value }),
+                _ => unreachable!(),
+            };
+        }
+
+        let cases: &[(Chip, u32, bool, &[(u8, u8, u8)], (u8, u8, u8), u8)] = &[
+            (
+                Chip::Saa1099,
+                8_000_000,
+                false,
+                &[
+                    (0, 0, 0xff),
+                    (0, 8, 0x20),
+                    (0, 0x10, 0x33),
+                    (0, 0x14, 1),
+                    (0, 0x1c, 1),
+                ],
+                (0, 0x1c, 0),
+                0,
+            ),
+            (
+                Chip::K051649,
+                3_579_545,
+                false,
+                &[(1, 0, 0xfe), (1, 1, 0), (2, 0, 15), (3, 0, 1), (4, 0x8f, 0)],
+                (3, 0, 0),
+                0,
+            ),
+            (
+                Chip::Huc6280,
+                3_579_545,
+                false,
+                &[(0, 0, 0), (0, 2, 0xfe), (0, 3, 0), (0, 4, 0x9f)],
+                (0, 4, 0),
+                0,
+            ),
+            (
+                Chip::Pokey,
+                1_789_790,
+                false,
+                &[(0, 0, 71), (0, 1, 0xaf)],
+                (0, 1, 0),
+                0,
+            ),
+            (
+                Chip::GbDmg,
+                4_194_304,
+                false,
+                &[
+                    (0, 0x16, 0x80),
+                    (0, 0x15, 0x11),
+                    (0, 2, 0xf0),
+                    (0, 3, 0xd6),
+                    (0, 4, 0x86),
+                ],
+                (0, 0x16, 0),
+                0,
+            ),
+            (
+                Chip::NesApu,
+                1_789_773,
+                false,
+                &[(0, 2, 0xfd), (0, 3, 0), (0, 0x15, 1)],
+                (0, 0x15, 0),
+                0,
+            ),
+            (
+                Chip::NesApu,
+                1_789_773,
+                true,
+                &[(0, 0x80, 0x9f), (0, 0x82, 0), (0, 0x83, 4)],
+                (0, 0x83, 0x84),
+                5,
+            ),
+        ];
+        let normalize = |notes: Vec<crate::visualizer::Note>| {
+            let mut notes: Vec<_> = notes
+                .into_iter()
+                .map(|n| (n.chip, n.instance, n.channel, n.pitch, n.start, n.end))
+                .collect();
+            notes.sort();
+            notes
+        };
+        for (chip, clock, fds, writes, off, channel) in cases {
+            for instance in [Instance::Primary, Instance::Secondary] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("pitched.vgm");
+                let mut builder = VgmBuilder::new();
+                builder.register_chip(chip.clone(), Instance::Primary, *clock);
+                if instance == Instance::Secondary {
+                    builder.register_chip(chip.clone(), Instance::Secondary, *clock);
+                }
+                for &(port, register, value) in *writes {
+                    write(&mut builder, chip, instance, port, register, value);
+                }
+                builder.add_vgm_command(WaitSamples(4410));
+                write(&mut builder, chip, instance, off.0, off.1, off.2);
+                builder.add_vgm_command(WaitSamples(100));
+                let mut document = builder.finalize();
+                if *fds {
+                    document.header.nes_apu_clock |= 0x8000_0000;
+                }
+                std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+                let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+                run_preview(
+                    &path,
+                    44_100,
+                    false,
+                    &preview_control,
+                    &AtomicBool::new(false),
+                    None,
+                )
+                .unwrap();
+                let preview = preview_control.preview.lock().unwrap().roll.snapshot(
+                    0,
+                    44_100,
+                    RollMode::Incoming,
+                );
+                let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+                let pending = Rc::new(RefCell::new(Vec::new()));
+                let mut player = Sequencer::new(&path, 44_100, false).unwrap();
+                player.track_visual_events(Rc::clone(&pending));
+                while player.render().unwrap().is_some() {
+                    flush_visual_events(&control, &pending, player.take_visual_overflow()).unwrap();
+                }
+                let live =
+                    control
+                        .visualizer
+                        .lock()
+                        .unwrap()
+                        .snapshot(0, 44_100, RollMode::Incoming);
+                let notes = normalize(live);
+                assert_eq!(normalize(preview), notes, "{chip:?}, FDS={fds}");
+                assert_eq!(notes.len(), 1, "{chip:?}, FDS={fds}: {notes:?}");
+                assert_eq!(notes[0].0, crate::visualizer::tracked_chip(chip).unwrap().0);
+                assert_eq!(notes[0].1, instance as u8);
+                assert_eq!(notes[0].2, *channel);
+                assert_eq!(notes[0].5, Some(4410), "{chip:?}, FDS={fds}");
+            }
         }
     }
 

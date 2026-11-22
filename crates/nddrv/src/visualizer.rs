@@ -11,6 +11,12 @@ pub const SN76489_INDEX: u8 = crate::fm_mute::CHIP_COUNT as u8;
 pub const AY8910_INDEX: u8 = SN76489_INDEX + 1;
 pub const WONDERSWAN_INDEX: u8 = AY8910_INDEX + 1;
 pub const VSU_INDEX: u8 = WONDERSWAN_INDEX + 1;
+pub const SAA1099_INDEX: u8 = VSU_INDEX + 1;
+pub const K051649_INDEX: u8 = SAA1099_INDEX + 1;
+pub const HUC6280_INDEX: u8 = K051649_INDEX + 1;
+pub const POKEY_INDEX: u8 = HUC6280_INDEX + 1;
+pub const GB_DMG_INDEX: u8 = POKEY_INDEX + 1;
+pub const NES_APU_INDEX: u8 = GB_DMG_INDEX + 1;
 const NOTE_COLORS: [(u32, &str); 8] = [
     (0x50ccbdff, "Turquoise"),
     (0x6990ccff, "Blue"),
@@ -87,7 +93,10 @@ impl PianoRoll {
                 | StateEvent::KeyOff { channel }
                 | StateEvent::ToneChange { channel, .. } => *channel,
             };
-            if chip == VSU_INDEX && channel == 5 {
+            if (chip == VSU_INDEX && channel == 5)
+                || (chip == GB_DMG_INDEX && channel == 3)
+                || (chip == NES_APU_INDEX && (channel == 3 || channel == 4))
+            {
                 continue;
             }
             let voice = Voice {
@@ -218,14 +227,8 @@ fn key_position(pitch: u8) -> Option<(f32, f32)> {
 }
 
 pub fn source_color_index(chip: u8, instance: u8) -> u8 {
-    if chip == SN76489_INDEX {
-        2 * SN76489_INDEX + instance
-    } else if chip == AY8910_INDEX {
-        2 * SN76489_INDEX + 2 + instance
-    } else if chip == WONDERSWAN_INDEX {
-        2 * SN76489_INDEX + 4 + instance
-    } else if chip == VSU_INDEX {
-        2 * SN76489_INDEX + 6 + instance
+    if chip >= SN76489_INDEX {
+        2 * chip + instance
     } else {
         chip + instance * SN76489_INDEX
     }
@@ -240,6 +243,18 @@ pub fn tracked_chip(chip: &chipstream::sequencer::Chip) -> Option<(u8, u8)> {
         Some((WONDERSWAN_INDEX, 4))
     } else if matches!(chip, chipstream::sequencer::Chip::Vsu) {
         Some((VSU_INDEX, 5))
+    } else if matches!(chip, chipstream::sequencer::Chip::Saa1099) {
+        Some((SAA1099_INDEX, 6))
+    } else if matches!(chip, chipstream::sequencer::Chip::K051649) {
+        Some((K051649_INDEX, 5))
+    } else if matches!(chip, chipstream::sequencer::Chip::Huc6280) {
+        Some((HUC6280_INDEX, 6))
+    } else if matches!(chip, chipstream::sequencer::Chip::Pokey) {
+        Some((POKEY_INDEX, 4))
+    } else if matches!(chip, chipstream::sequencer::Chip::GbDmg) {
+        Some((GB_DMG_INDEX, 3))
+    } else if matches!(chip, chipstream::sequencer::Chip::NesApu) {
+        Some((NES_APU_INDEX, 6))
     } else {
         Some((
             crate::fm_mute::chip_index(chip)? as u8,

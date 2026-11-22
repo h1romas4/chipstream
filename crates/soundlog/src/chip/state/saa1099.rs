@@ -37,7 +37,7 @@ pub type Saa1099Storage = ArrayStorage<u8, 256>;
 /// - 0x1C: All channels enable + sync/reset
 ///
 /// Frequency calculation:
-/// freq_hz = master_clock / ((511 - frequency) * 2^(8 - octave))
+/// freq_hz = master_clock / (2 * (511 - frequency) * 2^(8 - octave))
 #[derive(Debug, Clone)]
 pub struct Saa1099State {
     /// Channel states for 6 tone channels
@@ -107,7 +107,7 @@ impl Saa1099State {
     /// Calculate frequency in Hz from SAA1099 frequency and octave values
     ///
     /// SAA1099 frequency formula:
-    /// freq_hz = master_clock / ((511 - frequency) * 2^(8 - octave))
+    /// freq_hz = master_clock / (2 * (511 - frequency) * 2^(8 - octave))
     ///
     /// # Arguments
     ///
@@ -121,7 +121,7 @@ impl Saa1099State {
         let divisor = (511 - frequency as i32).max(1) as f32;
         let octave_shift = 2_f32.powi(8 - (octave & 0x07) as i32);
 
-        self.master_clock_hz / (divisor * octave_shift)
+        self.master_clock_hz / (2.0 * divisor * octave_shift)
     }
 
     /// Extract tone from channel registers
@@ -282,25 +282,14 @@ impl Saa1099State {
             return None;
         }
 
-        // Check if tone changed for enabled channels
-        for offset in 0..2 {
-            let channel = base_channel + offset;
-            if channel >= SAA1099_CHANNELS {
-                break;
-            }
-
-            if self.channels[channel].key_state == KeyState::On
-                && let Some(tone) = self.extract_tone(channel)
-            {
-                self.channels[channel].tone = Some(tone);
-                return Some(vec![StateEvent::ToneChange {
-                    channel: channel as u8,
-                    tone,
-                }]);
-            }
-        }
-
-        None
+        let events: Vec<_> = (base_channel..(base_channel + 2).min(SAA1099_CHANNELS))
+            .flat_map(|channel| {
+                self.handle_frequency_register(channel)
+                    .into_iter()
+                    .flatten()
+            })
+            .collect();
+        (!events.is_empty()).then_some(events)
     }
 
     /// Handle frequency enable register write (0x14)
@@ -312,34 +301,14 @@ impl Saa1099State {
     ///
     /// Some(StateEvent) for first channel that changed, None otherwise
     fn handle_frequency_enable_register(&mut self) -> Option<Vec<StateEvent>> {
-        // Check each channel for state change
-        for channel in 0..SAA1099_CHANNELS {
-            let enabled = self.is_channel_enabled(channel);
-            let new_key_state = if enabled { KeyState::On } else { KeyState::Off };
-
-            let old_key_state = self.channels[channel].key_state;
-            self.channels[channel].key_state = new_key_state;
-
-            match (old_key_state, new_key_state) {
-                (KeyState::Off, KeyState::On) => {
-                    if let Some(tone) = self.extract_tone(channel) {
-                        self.channels[channel].tone = Some(tone);
-                        return Some(vec![StateEvent::KeyOn {
-                            channel: channel as u8,
-                            tone,
-                        }]);
-                    }
-                }
-                (KeyState::On, KeyState::Off) => {
-                    return Some(vec![StateEvent::KeyOff {
-                        channel: channel as u8,
-                    }]);
-                }
-                _ => {}
-            }
-        }
-
-        None
+        let events: Vec<_> = (0..SAA1099_CHANNELS)
+            .flat_map(|channel| {
+                self.handle_amplitude_register(channel)
+                    .into_iter()
+                    .flatten()
+            })
+            .collect();
+        (!events.is_empty()).then_some(events)
     }
 
     /// Handle all channels enable register write (0x1C)
@@ -358,31 +327,7 @@ impl Saa1099State {
 
         // If all enable changed, update all channels
         if old_all_enable != new_all_enable {
-            for channel in 0..SAA1099_CHANNELS {
-                let enabled = self.is_channel_enabled(channel);
-                let new_key_state = if enabled { KeyState::On } else { KeyState::Off };
-
-                let old_key_state = self.channels[channel].key_state;
-                self.channels[channel].key_state = new_key_state;
-
-                match (old_key_state, new_key_state) {
-                    (KeyState::Off, KeyState::On) => {
-                        if let Some(tone) = self.extract_tone(channel) {
-                            self.channels[channel].tone = Some(tone);
-                            return Some(vec![StateEvent::KeyOn {
-                                channel: channel as u8,
-                                tone,
-                            }]);
-                        }
-                    }
-                    (KeyState::On, KeyState::Off) => {
-                        return Some(vec![StateEvent::KeyOff {
-                            channel: channel as u8,
-                        }]);
-                    }
-                    _ => {}
-                }
-            }
+            return self.handle_frequency_enable_register();
         }
 
         None
@@ -454,6 +399,45 @@ impl ChipState for Saa1099State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simultaneous_channel_changes_are_all_reported() {
+        let mut state = Saa1099State::new(8_000_000.0);
+        for (reg, value) in [
+            (0, 0xff),
+            (1, 0xff),
+            (8, 0x20),
+            (9, 0x40),
+            (0x10, 0x33),
+            (0x14, 3),
+        ] {
+            state.on_register_write(reg, value);
+        }
+        let events = state.on_register_write(0x1c, 1).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                StateEvent::KeyOn { channel: 0, .. },
+                StateEvent::KeyOn { channel: 1, .. }
+            ]
+        ));
+        let events = state.on_register_write(0x10, 0x44).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                StateEvent::ToneChange { channel: 0, .. },
+                StateEvent::ToneChange { channel: 1, .. }
+            ]
+        ));
+        let events = state.on_register_write(0x14, 0).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                StateEvent::KeyOff { channel: 0 },
+                StateEvent::KeyOff { channel: 1 }
+            ]
+        ));
+    }
 
     #[test]
     fn test_saa1099_channel_enable() {
