@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.16.0
+
 - Add XGM/XGZ playback with library, Piano Roll, and NanoDrive routing support.
 - Add initial software emulation support for all VGM sound chips.
 - Show YMF271 FM voices in Piano Roll previews and playback.
