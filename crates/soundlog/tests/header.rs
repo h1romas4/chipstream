@@ -26,6 +26,30 @@ fn clock_variant_and_dual_chip_flags_are_independent() {
 }
 
 #[test]
+fn es550x_clock_identifies_variant_and_both_instances() {
+    let mut header = soundlog::vgm::VgmHeader::default();
+    header.set_chip_clock(Chip::Es5505, Instance::Primary, 16_000_000);
+    header.set_chip_clock(Chip::Es5505, Instance::Secondary, 16_000_000);
+    assert_eq!(header.es5506_clock, 0x4000_0000 | 16_000_000);
+    assert!(
+        header
+            .chip_instances()
+            .iter()
+            .all(|(_, chip, _)| *chip == Chip::Es5505)
+    );
+    header.set_chip_clock(Chip::Es5506U8, Instance::Primary, 16_000_000);
+    assert_eq!(header.es5506_clock, 0xc000_0000 | 16_000_000);
+    assert!(
+        header
+            .chip_instances()
+            .iter()
+            .all(|(_, chip, _)| *chip == Chip::Es5506U8)
+    );
+    header.set_chip_clock(Chip::Es5505, Instance::Primary, 16_000_000);
+    assert_eq!(header.es5506_clock, 0x4000_0000 | 16_000_000);
+}
+
+#[test]
 fn okim6258_adpcm_bit_select_matches_vgm_flag_semantics() {
     let three_bit = Okim6258Flags::from(0x02);
     assert!(three_bit.adpcm_3bit_select);

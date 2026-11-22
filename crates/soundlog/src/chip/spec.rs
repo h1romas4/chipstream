@@ -88,9 +88,11 @@ pub enum Chip {
     Saa1099,
     /// Ensoniq ES5503 DOC sound chip.
     Es5503,
-    /// Ensoniq ES5506 with 8-bit register writes.
+    /// Ensoniq ES5505, as identified by the VGM header.
+    Es5505,
+    /// Ensoniq ES5506, using the VGM 8-bit write representation.
     Es5506U8,
-    /// Ensoniq ES5506 with 16-bit register writes.
+    /// Ensoniq ES5506, using the VGM 16-bit write representation.
     Es5506U16,
     /// Setia X1-010 PCM chip.
     X1010,
@@ -496,19 +498,19 @@ pub struct Es5503Spec {
     pub value: u8,
 }
 
-/// ES5506 (8-bit variant) register write specification.
+/// VGM 8-bit ES5505/ES5506 write specification (opcode `0xBE`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Es5506U8Spec {
-    /// 8-bit ES5506 register address.
+    /// VGM byte offset or external sample-bank selector.
     pub register: u8,
     /// Value written to the register.
     pub value: u8,
 }
 
-/// ES5506 (16-bit variant) register write specification.
+/// VGM 16-bit ES5505/ES5506 write specification (opcode `0xD6`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Es5506U16Spec {
-    /// ES5506 register address.
+    /// VGM byte offset or external sample-bank selector.
     pub register: u8,
     /// 16-bit value written to the register.
     pub value: u16,

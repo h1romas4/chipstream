@@ -2179,7 +2179,6 @@ fn test_okim6295_state_tracking() {
 
 #[test]
 fn test_es5506_state_tracking() {
-    // Create a VGM document with ES5506 register writes
     let mut builder = VgmBuilder::new();
     builder.register_chip(
         soundlog::chip::Chip::Es5506U16,
@@ -2187,19 +2186,18 @@ fn test_es5506_state_tracking() {
         16_000_000,
     );
 
-    // ES5506 has u8 register, u16 value (using 16-bit variant)
     builder.add_chip_write(
         Instance::Primary,
         Es5506U16Spec {
-            register: 0x1A,
-            value: 0xBEEF,
+            register: 0x04,
+            value: 0x0001,
         },
     );
     builder.add_chip_write(
         Instance::Primary,
         Es5506U16Spec {
-            register: 0x2B,
-            value: 0x5678,
+            register: 0x06,
+            value: 0x2345,
         },
     );
 
@@ -2210,16 +2208,16 @@ fn test_es5506_state_tracking() {
     for result in stream {
         match result {
             Ok(StreamResult::Command(VgmCommand::Es5506D6Write(Instance::Primary, spec))) => {
-                assert!(state.on_register_write(spec.register, spec.value).is_none());
+                let [high, low] = spec.value.to_be_bytes();
+                state.write_es5506_bus(spec.register, high);
+                state.write_es5506_bus(spec.register | 1, low);
             }
             Ok(StreamResult::EndOfStream) | Ok(StreamResult::NeedsMoreData) => break,
             _ => {}
         }
     }
 
-    // Verify u16 values are stored
-    assert_eq!(state.read_register(0x1A), Some(0xBEEF));
-    assert_eq!(state.read_register(0x2B), Some(0x5678));
+    assert_eq!(state.read_register(1), Some(0x12345));
     assert_eq!(state.channel_count(), 32);
 }
 

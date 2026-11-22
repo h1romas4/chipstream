@@ -2,6 +2,10 @@
 
 ## v0.17.0 (Unreleased)
 
+### Breaking API Changes
+
+- Change: `Es5506State` tracks physical ES5505/ES5506 registers as `u32` values; VGM byte offsets must be converted to bus writes. Header chip enumeration now distinguishes `Chip::Es5505`.
+
 ### Added
 
 - Add: `VgmStream::last_stream_write_id` identifies the DAC stream that generated the most recent write, distinguishing it from direct chip writes.
@@ -9,13 +13,13 @@
 ### Fixed
 
 - Fix: Interpret the VGM OKIM6258 ADPCM select bit correctly (set = 4-bit, clear = 3-bit).
+- Fix: Track ES550x bus writes, page selection, and chip variants correctly; detect the variant from the ES550x clock rather than the ES5503 clock.
 
 ## Planned
 
 - [ ] Add: Initial XGM format support (`xgm` feature).
 - [ ] Chip State
   - [ ] Fix: YMF271(OPX) state tracking.
-  - [ ] Fix: Unify the state of ES5506.
   - [ ] Doc: NES APU Mapping
   - [ ] Doc: GBDMG Mapping
 

@@ -12,6 +12,8 @@ use super::chip_state::ChipState;
 use super::storage::{ArrayStorage, RegisterStorage, SparseStorage};
 use crate::chip::event::StateEvent;
 
+pub use super::es550x::Es5506State;
+
 macro_rules! impl_pcm_chip_u8_u8 {
     (
         $(#[$meta:meta])*
@@ -381,14 +383,6 @@ impl_pcm_chip_u16_u8!(
     32
 );
 
-// ES5506 has two variants: u8 and u16 value types
-// We'll use the u16 variant as the default state
-impl_pcm_chip_u8_u16!(
-    /// ES5506 state (32 channels)
-    Es5506State,
-    32
-);
-
 // X1-010 (offset: u16, value: u8)
 impl_pcm_chip_u16_u8!(
     /// X1-010 state (16 channels)
@@ -527,7 +521,6 @@ mod tests {
         assert_eq!(QsoundState::new(0.0f32).channel_count(), 16);
         assert_eq!(ScspState::new(0.0f32).channel_count(), 32);
         assert_eq!(Es5503State::new(0.0f32).channel_count(), 32);
-        assert_eq!(Es5506State::new(0.0f32).channel_count(), 32);
         assert_eq!(X1010State::new(0.0f32).channel_count(), 16);
         assert_eq!(Ga20State::new(0.0f32).channel_count(), 4);
     }
@@ -560,15 +553,6 @@ mod tests {
         // C352 has u16 register and u16 value
         state.on_register_write(0x0100, 0x1234);
         assert_eq!(state.read_register(0x0100), Some(0x1234));
-    }
-
-    #[test]
-    fn test_es5506_u16_value() {
-        let mut state = Es5506State::new(0.0f32);
-
-        // ES5506 state uses u8 register but u16 value
-        state.on_register_write(0x1A, 0xBEEF);
-        assert_eq!(state.read_register(0x1A), Some(0xBEEF));
     }
 
     #[test]
@@ -725,15 +709,6 @@ mod tests {
             assert_eq!(s.read_register(0x0035u16), Some(0x13u8));
             s.reset();
             assert_eq!(s.read_register(0x0035u16), None);
-        }
-
-        // Es5506State (u8 -> u16)
-        {
-            let mut s = Es5506State::default();
-            s.on_register_write(0x1Au8, 0xCAFEu16);
-            assert_eq!(s.read_register(0x1Au8), Some(0xCAFEu16));
-            s.reset();
-            assert_eq!(s.read_register(0x1Au8), None);
         }
 
         // X1010State (u16 -> u8)

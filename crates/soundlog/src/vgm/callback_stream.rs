@@ -59,12 +59,13 @@ use crate::VgmDocument;
 use crate::chip;
 use crate::chip::event::StateEvent;
 use crate::chip::state::{
-    Ay8910State, C140State, C352State, ChipState, Es5503State, Es5506State, Ga20State, GbDmgState,
-    Huc6280State, K051649State, K053260State, K054539State, MikeyState, MultiPcmState, NesApuState,
-    Okim6258State, Okim6295State, PokeyState, PwmState, QsoundState, Rf5c68State, Rf5c164State,
-    Saa1099State, ScspState, SegaPcmState, Sn76489State, Upd7759State, VsuState, WonderSwanState,
-    X1010State, Y8950State, Ym2151State, Ym2203State, Ym2413State, Ym2608State, Ym2610bState,
-    Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf271State, Ymf278bState, Ymz280bState,
+    Ay8910State, C140State, C352State, ChipState, Es550xVariant, Es5503State, Es5506State,
+    Ga20State, GbDmgState, Huc6280State, K051649State, K053260State, K054539State, MikeyState,
+    MultiPcmState, NesApuState, Okim6258State, Okim6295State, PokeyState, PwmState, QsoundState,
+    Rf5c68State, Rf5c164State, Saa1099State, ScspState, SegaPcmState, Sn76489State, Upd7759State,
+    VsuState, WonderSwanState, X1010State, Y8950State, Ym2151State, Ym2203State, Ym2413State,
+    Ym2608State, Ym2610bState, Ym2612State, Ym3526State, Ym3812State, Ymf262State, Ymf271State,
+    Ymf278bState, Ymz280bState,
 };
 use crate::vgm::command::{
     Ay8910StereoMask, DataBlock, EndOfData, Instance, PcmRamWrite, ReservedU8, ReservedU16,
@@ -548,6 +549,24 @@ pub struct VgmCallbackStream<'a> {
 
 type TrackerInitializer = Box<dyn Fn(&mut StateTrackers) + 'static>;
 
+fn write_es550x_vgm_byte(state: &mut Es5506State, offset: u8, value: u8) {
+    // VGM offsets 0x40 and above address external sample banks, not the chip.
+    if offset >= 0x40 {
+        return;
+    }
+    match state.variant() {
+        Es550xVariant::Es5506 => state.write_es5506_bus(offset, value),
+        Es550xVariant::Es5505 => {
+            let (value, mask) = if offset & 1 == 0 {
+                (u16::from(value) << 8, 0xff00)
+            } else {
+                (u16::from(value), 0x00ff)
+            };
+            state.write_es5505_bus(offset / 2, value, mask);
+        }
+    }
+}
+
 impl<'a> VgmCallbackStream<'a> {
     /// Creates a new callback stream from a VGM stream.
     ///
@@ -982,9 +1001,13 @@ impl<'a> VgmCallbackStream<'a> {
                     self.state_trackers.es5503[*instance as usize] =
                         Some(Es5503State::new(*clock_hz));
                 }
-                chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => {
-                    self.state_trackers.es5506[*instance as usize] =
-                        Some(Es5506State::new(*clock_hz));
+                chip::Chip::Es5505 | chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => {
+                    let variant = if *chip == chip::Chip::Es5505 {
+                        Es550xVariant::Es5505
+                    } else {
+                        Es550xVariant::Es5506
+                    };
+                    self.track_state_with(*instance, Es5506State::with_variant(*clock_hz, variant));
                 }
                 chip::Chip::X1010 => {
                     self.state_trackers.x1_010[*instance as usize] =
@@ -1551,7 +1574,10 @@ impl<'a> VgmCallbackStream<'a> {
             VgmCommand::Es5506BEWrite(instance, spec) => {
                 let event = self.state_trackers.es5506[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.register, spec.value as u16));
+                    .and_then(|state| {
+                        write_es550x_vgm_byte(state, spec.register, spec.value);
+                        None
+                    });
                 if let Some(ref mut cb) = self.callbacks.on_es5506_u8_write {
                     cb(*instance, spec.clone(), sample, event);
                 }
@@ -1559,7 +1585,12 @@ impl<'a> VgmCallbackStream<'a> {
             VgmCommand::Es5506D6Write(instance, spec) => {
                 let event = self.state_trackers.es5506[*instance as usize]
                     .as_mut()
-                    .and_then(|state| state.on_register_write(spec.register, spec.value));
+                    .and_then(|state| {
+                        let [high, low] = spec.value.to_be_bytes();
+                        write_es550x_vgm_byte(state, spec.register, high);
+                        write_es550x_vgm_byte(state, spec.register | 1, low);
+                        None
+                    });
                 if let Some(ref mut cb) = self.callbacks.on_es5506_u16_write {
                     cb(*instance, spec.clone(), sample, event);
                 }
@@ -1733,6 +1764,161 @@ impl<'a> Iterator for VgmCallbackStream<'a> {
             }
             Ok(StreamResult::EndOfStream) => None,
             _ => Some(result),
+        }
+    }
+}
+
+#[cfg(test)]
+mod es550x_tests {
+    use super::*;
+    use crate::vgm::command::command_to_vgm_bytes;
+    use crate::vgm::header::VgmHeader;
+    use crate::vgm::parser::parse_vgm_command;
+
+    #[test]
+    fn es550x_vgm_command_bytes_match_legacy_player() {
+        let bytes = [0xd6, 0x84, 0x12, 0x34];
+        let (command, len) = parse_vgm_command(&bytes, 0).unwrap();
+        assert_eq!(len, bytes.len());
+        assert_eq!(
+            command,
+            VgmCommand::Es5506D6Write(
+                Instance::Secondary,
+                chip::Es5506U16Spec {
+                    register: 4,
+                    value: 0x1234,
+                }
+            )
+        );
+        assert_eq!(command_to_vgm_bytes(&command).0, bytes);
+    }
+
+    #[test]
+    fn mixed_vgm_writes_use_one_tracker_per_instance() {
+        for (variant, flag) in [
+            (Es550xVariant::Es5505, 0),
+            (Es550xVariant::Es5506, 0x8000_0000),
+        ] {
+            let header = VgmHeader {
+                es5506_clock: flag | 0x4000_0000 | 16_000_000,
+                ..Default::default()
+            };
+            let mut stream = VgmCallbackStream::from_document(VgmDocument::default());
+            stream.track_chips(&header.chip_instances());
+            for state in &stream.state_trackers.es5506 {
+                assert_eq!(state.as_ref().unwrap().variant(), variant);
+            }
+            if variant == Es550xVariant::Es5506 {
+                stream.process_command(&VgmCommand::Es5506D6Write(
+                    Instance::Primary,
+                    chip::Es5506U16Spec {
+                        register: 4,
+                        value: 1,
+                    },
+                ));
+                stream.process_command(&VgmCommand::Es5506BEWrite(
+                    Instance::Primary,
+                    chip::Es5506U8Spec {
+                        register: 6,
+                        value: 0x23,
+                    },
+                ));
+                stream.process_command(&VgmCommand::Es5506BEWrite(
+                    Instance::Primary,
+                    chip::Es5506U8Spec {
+                        register: 7,
+                        value: 0x45,
+                    },
+                ));
+                assert_eq!(
+                    stream.state_trackers.es5506[0]
+                        .as_ref()
+                        .unwrap()
+                        .read_register(1),
+                    Some(0x12345)
+                );
+            } else {
+                stream.process_command(&VgmCommand::Es5506D6Write(
+                    Instance::Primary,
+                    chip::Es5506U16Spec {
+                        register: 2,
+                        value: 0xabcd,
+                    },
+                ));
+                stream.process_command(&VgmCommand::Es5506BEWrite(
+                    Instance::Primary,
+                    chip::Es5506U8Spec {
+                        register: 3,
+                        value: 0x12,
+                    },
+                ));
+                assert_eq!(
+                    stream.state_trackers.es5506[0]
+                        .as_ref()
+                        .unwrap()
+                        .read_register(1),
+                    Some(0xab12)
+                );
+            }
+            assert_eq!(
+                stream.state_trackers.es5506[1]
+                    .as_ref()
+                    .unwrap()
+                    .read_register(1),
+                None
+            );
+            let secondary_offset = if variant == Es550xVariant::Es5506 {
+                2
+            } else {
+                0
+            };
+            stream.process_command(&VgmCommand::Es5506D6Write(
+                Instance::Secondary,
+                chip::Es5506U16Spec {
+                    register: secondary_offset,
+                    value: 0x00aa,
+                },
+            ));
+            assert_eq!(
+                stream.state_trackers.es5506[1]
+                    .as_ref()
+                    .unwrap()
+                    .read_register(0),
+                Some(0xaa)
+            );
+            assert_eq!(
+                stream.state_trackers.es5506[0]
+                    .as_ref()
+                    .unwrap()
+                    .read_register(0),
+                None
+            );
+            stream.process_command(&VgmCommand::Es5506BEWrite(
+                Instance::Secondary,
+                chip::Es5506U8Spec {
+                    register: 0x40,
+                    value: 0xff,
+                },
+            ));
+            assert_eq!(
+                stream.state_trackers.es5506[1]
+                    .as_ref()
+                    .unwrap()
+                    .read_register(0),
+                Some(0xaa)
+            );
+            stream.seek_to_sample(0).unwrap();
+            assert_eq!(
+                stream.state_trackers.es5506[0].as_ref().unwrap().variant(),
+                variant
+            );
+            assert_eq!(
+                stream.state_trackers.es5506[1]
+                    .as_ref()
+                    .unwrap()
+                    .read_register(0),
+                None
+            );
         }
     }
 }

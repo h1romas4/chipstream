@@ -63,6 +63,7 @@
 pub mod ay8910;
 pub mod channel;
 pub mod chip_state;
+pub mod es550x;
 pub mod gb_dmg;
 pub mod huc6280;
 pub mod k051649;
@@ -92,15 +93,16 @@ pub mod ymf278b;
 pub use ay8910::Ay8910State;
 pub use channel::ChannelState;
 pub use chip_state::ChipState;
+pub use es550x::{Es550xVariant, Es5506State};
 pub use gb_dmg::GbDmgState;
 pub use huc6280::Huc6280State;
 pub use k051649::K051649State;
 pub use mikey::MikeyState;
 pub use nes_apu::NesApuState;
 pub use pcm::{
-    C140State, C352State, Es5503State, Es5506State, Ga20State, K053260State, K054539State,
-    MultiPcmState, Okim6258State, Okim6295State, PwmState, QsoundState, Rf5c68State, Rf5c164State,
-    ScspState, SegaPcmState, Upd7759State, X1010State, Ymz280bState,
+    C140State, C352State, Es5503State, Ga20State, K053260State, K054539State, MultiPcmState,
+    Okim6258State, Okim6295State, PwmState, QsoundState, Rf5c68State, Rf5c164State, ScspState,
+    SegaPcmState, Upd7759State, X1010State, Ymz280bState,
 };
 pub use pokey::PokeyState;
 pub use saa1099::Saa1099State;

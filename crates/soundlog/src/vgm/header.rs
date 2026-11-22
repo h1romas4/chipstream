@@ -1609,7 +1609,7 @@ impl VgmHeader {
             chip::Chip::Vsu => self.vsu_clock,
             chip::Chip::Saa1099 => self.saa1099_clock,
             chip::Chip::Es5503 => self.es5503_clock,
-            chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => self.es5506_clock,
+            chip::Chip::Es5505 | chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => self.es5506_clock,
             chip::Chip::X1010 => self.x1_010_clock,
             chip::Chip::C352 => self.c352_clock,
             chip::Chip::Ga20 => self.ga20_clock,
@@ -1621,7 +1621,10 @@ impl VgmHeader {
     /// For secondary instances bit 30 is set on the stored value
     /// following VGM header convention.
     pub fn set_chip_clock(&mut self, ch: chip::Chip, instance: Instance, master_clock: u32) {
-        let variant = if ch == chip::Chip::Ym2610b {
+        let variant = if matches!(
+            ch,
+            chip::Chip::Ym2610b | chip::Chip::Es5506U8 | chip::Chip::Es5506U16
+        ) {
             0x8000_0000
         } else {
             0
@@ -1672,8 +1675,8 @@ impl VgmHeader {
             chip::Chip::Vsu => self.vsu_clock = clock,
             chip::Chip::Saa1099 => self.saa1099_clock = clock,
             chip::Chip::Es5503 => self.es5503_clock = clock,
-            chip::Chip::Es5506U8 => self.es5506_clock = clock,
-            chip::Chip::Es5506U16 => self.es5506_clock = clock,
+            chip::Chip::Es5505 => self.es5506_clock = clock & !0x8000_0000,
+            chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => self.es5506_clock = clock,
             chip::Chip::X1010 => self.x1_010_clock = clock,
             chip::Chip::C352 => self.c352_clock = clock,
             chip::Chip::Ga20 => self.ga20_clock = clock,
@@ -1753,7 +1756,14 @@ impl VgmHeader {
         push(self.vsu_clock, chip::Chip::Vsu);
         push(self.saa1099_clock, chip::Chip::Saa1099);
         push(self.es5503_clock, chip::Chip::Es5503);
-        push(self.es5506_clock, chip::Chip::Es5506U8);
+        push(
+            self.es5506_clock,
+            if self.es5506_clock & 0x8000_0000 != 0 {
+                chip::Chip::Es5506U8
+            } else {
+                chip::Chip::Es5505
+            },
+        );
         push(self.x1_010_clock, chip::Chip::X1010);
         push(self.c352_clock, chip::Chip::C352);
         push(self.ga20_clock, chip::Chip::Ga20);
@@ -2570,9 +2580,9 @@ impl VgmHeader {
             misc.fds_detected = Some((self.nes_apu_clock & 0x8000_0000) != 0);
         }
 
-        // ES5506 vs ES5505: check ES5503 clock's high bit when present in header.
-        if self.es5503_clock != 0 {
-            misc.is_es5506 = Some((self.es5503_clock & 0x8000_0000) != 0);
+        // ES5506 vs ES5505: bit 31 of the ES550x clock selects the variant.
+        if self.es5506_clock != 0 {
+            misc.is_es5506 = Some((self.es5506_clock & 0x8000_0000) != 0);
         }
 
         // T6W28 detection: the SN76489 clock's high bit (0x8000_0000) is used as
@@ -2771,8 +2781,12 @@ mod tests {
         let misc = h.misc();
         assert_eq!(misc.fds_detected, Some(true));
 
-        // ES5506 detection via es5503_clock high bit.
+        // ES5503's clock must not influence the ES550x variant.
         h.es5503_clock = 0x8000_0003;
+        assert_eq!(h.misc().is_es5506, None);
+        h.es5506_clock = 0x0000_0003;
+        assert_eq!(h.misc().is_es5506, Some(false));
+        h.es5506_clock |= 0x8000_0000;
         let misc = h.misc();
         assert_eq!(misc.is_es5506, Some(true));
     }
