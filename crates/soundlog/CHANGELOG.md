@@ -19,6 +19,7 @@
 - Fix: Track ES550x bus writes, page selection, and chip variants correctly; detect the variant from the ES550x clock rather than the ES5503 clock.
 - Fix: Parse and serialize VGM PCM RAM copies with fixed length, little-endian offsets, and the correct chip instance.
 - Fix: Preserve RAM write block timing in `VgmBuilder`, and correct RF5C68/164 memory address byte order and secondary register selection.
+- Fix: Map Game Boy VGM wave RAM and unused register offsets to their actual I/O addresses for state tracking.
 
 ## Planned
 

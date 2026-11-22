@@ -2408,13 +2408,14 @@ mod tests {
     fn added_chips_use_the_nddrv_software_playback_path() {
         use crate::adapter::{AdapterMode, register_software_adapters};
         use crate::routing::{RoutingPlan, SoftwareTarget, Target};
-        use soundlog::chip::{Es5503Spec, NesApuSpec};
+        use soundlog::chip::{Es5503Spec, GbDmgSpec, NesApuSpec};
         use soundlog::vgm::command::{DataBlock, WaitSamples};
 
         let cases = [
             (Chip::Rf5c68, 12_500_000),
             (Chip::Rf5c164, 12_500_000),
             (Chip::Es5503, 7_000_000),
+            (Chip::GbDmg, 4_194_304),
             (Chip::Saa1099, 8_000_000),
             (Chip::K051649, 3_579_545),
             (Chip::Huc6280, 3_579_545),
@@ -2456,6 +2457,19 @@ mod tests {
                     builder.add_chip_write(Instance::Primary, Es5503Spec { register, value });
                 }
             }
+            if chip == Chip::GbDmg {
+                for (register, value) in [
+                    (0x16, 0x80),
+                    (0x14, 0x77),
+                    (0x15, 0x11),
+                    (0x01, 0x80),
+                    (0x02, 0xf0),
+                    (0x03, 0x80),
+                    (0x04, 0x87),
+                ] {
+                    builder.add_chip_write(Instance::Primary, GbDmgSpec { register, value });
+                }
+            }
             if clock & 0x8000_0000 != 0 {
                 for (register, value) in [
                     (0x89, 128),
@@ -2495,8 +2509,11 @@ mod tests {
             );
             let block = player.render().unwrap().unwrap();
             assert!(!block.frames().is_empty(), "{chip:?}");
-            if chip == Chip::Es5503 || clock & 0x8000_0000 != 0 {
-                assert!(block.frames().iter().any(|frame| frame[0].abs() > 0.001));
+            if matches!(chip, Chip::Es5503 | Chip::GbDmg) || clock & 0x8000_0000 != 0 {
+                assert!(
+                    block.frames().iter().any(|frame| frame[0].abs() > 0.001),
+                    "{chip:?}"
+                );
             }
         }
     }

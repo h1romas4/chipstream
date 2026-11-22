@@ -43,6 +43,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `c140` | C140 / ASIC219 | MAME | BSD-3-Clause |
 | `c352` | Namco C352 | MAME | BSD-3-Clause |
 | `es5503` | Ensoniq ES5503 | MAME | BSD-3-Clause |
+| `gb_dmg` | Game Boy DMG | MAME, via Tetorica | BSD-3-Clause |
 | `ga20` | Irem GA20 | MAME | BSD-3-Clause |
 | `huc6280` | HuC6280 PSG | MAME | BSD-3-Clause |
 | `k051649` | K051649 / K052539 (SCC / SCC+) | MAME | BSD-3-Clause |

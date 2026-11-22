@@ -84,6 +84,7 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::Huc6280(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Pokey(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ga20(s) => (0, s.register, s.value.into()),
+            ChipRegisterWrite::GbDmg(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::K053260(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::K054539(s) => {
                 let [bank, register] = s.register.to_be_bytes();

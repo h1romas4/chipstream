@@ -365,62 +365,15 @@ impl GbDmgState {
         None
     }
 
-    /// Map a VGM-style (port, register, value) tuple into the internal GbDmg
-    /// register space used by `GbDmgState`.
+    /// Map a VGM register offset to the Game Boy I/O address low byte.
     ///
-    /// VGM uses a compact index encoding for Game Boy DMG registers in many
-    /// cases. The mapping below translates those compact indices into the
-    /// actual GB NR registers expected by `GbDmgState`.
-    ///
-    /// Mapping (compact -> NR address):
-    /// 0x00 => NR10 (0x10)
-    /// 0x01 => NR11 (0x11)
-    /// 0x02 => NR12 (0x12)
-    /// 0x03 => NR13 (0x13)
-    /// 0x04 => NR14 (0x14)
-    /// 0x06 => NR21 (0x16)
-    /// 0x07 => NR22 (0x17)
-    /// 0x08 => NR23 (0x18)
-    /// 0x09 => NR24 (0x19)
-    /// 0x0A => NR30 (0x1A)
-    /// 0x0B => NR31 (0x1B)
-    /// 0x0C => NR32 (0x1C)
-    /// 0x0D => NR33 (0x1D)
-    /// 0x0E => NR34 (0x1E)
-    /// 0x10 => NR41 (0x20)
-    /// 0x11 => NR42 (0x21)
-    /// 0x12 => NR43 (0x22)
-    /// 0x13 => NR44 (0x23)
-    /// 0x14 => NR50 (0x24)
-    /// 0x15 => NR51 (0x25)
-    /// 0x16 => NR52 (0x26)
-    ///
-    /// For registers not listed above the helper falls back to returning the
-    /// raw register/value unchanged.
+    /// VGM offsets `0x00..=0x2f` correspond to `0xff10..=0xff3f`,
+    /// including unused addresses and wave RAM. Other offsets pass through.
     pub fn map_vgm_to_gbdmg_register(register: u8, value: u8) -> (u8, u8) {
-        let mapped_register = match register {
-            0x00 => 0x10,  // NR10
-            0x01 => 0x11,  // NR11
-            0x02 => 0x12,  // NR12
-            0x03 => 0x13,  // NR13
-            0x04 => 0x14,  // NR14
-            0x06 => 0x16,  // NR21
-            0x07 => 0x17,  // NR22
-            0x08 => 0x18,  // NR23
-            0x09 => 0x19,  // NR24
-            0x0A => 0x1A,  // NR30
-            0x0B => 0x1B,  // NR31
-            0x0C => 0x1C,  // NR32
-            0x0D => 0x1D,  // NR33
-            0x0E => 0x1E,  // NR34
-            0x10 => 0x20,  // NR41
-            0x11 => 0x21,  // NR42
-            0x12 => 0x22,  // NR43
-            0x13 => 0x23,  // NR44
-            0x14 => 0x24,  // NR50
-            0x15 => 0x25,  // NR51
-            0x16 => 0x26,  // NR52
-            _ => register, // pass-through for unknown encodings
+        let mapped_register = if register <= 0x2f {
+            register + 0x10
+        } else {
+            register
         };
         (mapped_register, value)
     }
@@ -591,6 +544,17 @@ impl ChipState for GbDmgState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vgm_wave_ram_and_unused_offsets_map_to_io_addresses() {
+        use super::{ChipState, GbDmgState};
+        let mut state = GbDmgState::new(4_194_304.0);
+        for (offset, address) in [(0x05, 0x15), (0x17, 0x27), (0x20, 0x30), (0x2f, 0x3f)] {
+            let (register, value) = GbDmgState::map_vgm_to_gbdmg_register(offset, 0x80);
+            assert_eq!(register, address);
+            assert!(state.on_register_write(register, value).is_none());
+            assert_eq!(state.read_register(address), Some(0x80));
+        }
+    }
     use super::*;
 
     #[test]

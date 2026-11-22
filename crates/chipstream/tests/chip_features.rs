@@ -35,6 +35,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         (Chip::C140, "c140", cfg!(feature = "c140")),
         (Chip::C352, "c352", cfg!(feature = "c352")),
         (Chip::Es5503, "es5503", cfg!(feature = "es5503")),
+        (Chip::GbDmg, "gb_dmg", cfg!(feature = "gb_dmg")),
         (Chip::Ga20, "ga20", cfg!(feature = "ga20")),
         (Chip::Huc6280, "huc6280", cfg!(feature = "huc6280")),
         (Chip::Pokey, "pokey", cfg!(feature = "pokey")),

@@ -75,6 +75,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+# Game Boy DMG implementation
+
+The Game Boy DMG implementation is based on Tetorica's MAME adaptation
+`vendor/mame-gameboy`, revision `b4f2543c08f3a6b2c780d723263dee444ff13343`.
+Tetorica Copyright (c) 2026, kyorohiro. The upstream MAME `gb.cpp` is
+revision `0e6df89e98f10a05af5fd4df32572982e1709c81`.
+Copyright (c) Wilbert Pol and Anthony Kruize; thanks to Shay Green.
+Both are distributed under the BSD-3-Clause terms reproduced below.
+
 # ES5503 implementation
 
 The ES5503 implementation is based on MAME's

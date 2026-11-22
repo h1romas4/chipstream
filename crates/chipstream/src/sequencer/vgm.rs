@@ -43,6 +43,8 @@ use crate::chip::C352;
 use crate::chip::Es5503;
 #[cfg(feature = "ga20")]
 use crate::chip::Ga20;
+#[cfg(feature = "gb_dmg")]
+use crate::chip::GbDmg;
 #[cfg(feature = "huc6280")]
 use crate::chip::Huc6280;
 #[cfg(feature = "k051649")]
@@ -1178,6 +1180,8 @@ impl<'a> VgmSequencer<'a> {
             })
         } else if chip == Chip::Pwm {
             feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+        } else if chip == Chip::GbDmg {
+            feature_backend!("gb_dmg", chip, Box::new(GbDmg::new(clock)?))
         } else if chip == Chip::Es5503 {
             feature_backend!("es5503", chip, {
                 let ChipBackendSettings::Es5503 { output_channels } = factory_config.settings()
@@ -1453,6 +1457,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Rf5c68
             | Chip::Rf5c164
             | Chip::Es5503
+            | Chip::GbDmg
             | Chip::Saa1099
             | Chip::Huc6280
             | Chip::Ga20
@@ -1810,7 +1815,7 @@ impl<'a> VgmSequencer<'a> {
     /// Enable state tracking for a chip type and instance.
     ///
     /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
-    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, and ES5503.
+    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, ES5503, and Game Boy DMG.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: VgmStateTracker,

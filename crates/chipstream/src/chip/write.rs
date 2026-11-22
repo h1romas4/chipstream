@@ -5,12 +5,12 @@
 //! preserving chip-specific address widths and values.
 
 use soundlog::chip::{
-    Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, Huc6280Spec,
-    K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec, Okim6258Spec,
-    Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U8Spec,
-    Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec, Y8950Spec,
-    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
-    Ymf262Spec, Ymf278bSpec, Ymz280bSpec,
+    Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Ga20Spec, GameGearPsgSpec, GbDmgSpec,
+    Huc6280Spec, K053260Spec, K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, NesApuSpec,
+    Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, Rf5c68U8Spec, Rf5c68U16Spec,
+    Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec,
+    Y8950Spec, Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec,
+    Ym3812Spec, Ymf262Spec, Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -22,6 +22,8 @@ use super::C352;
 use super::Es5503;
 #[cfg(feature = "ga20")]
 use super::Ga20;
+#[cfg(feature = "gb_dmg")]
+use super::GbDmg;
 #[cfg(feature = "huc6280")]
 use super::Huc6280;
 #[cfg(feature = "k051649")]
@@ -163,6 +165,7 @@ define_writes! {
         (bank, register, u32::from(s.value))
     }),
     Ga20(Ga20Spec, Ga20, |s| (0, s.register, u32::from(s.value))),
+    GbDmg(GbDmgSpec, GbDmg, |s| (0, s.register, u32::from(s.value))),
     K053260(K053260Spec, K053260, |s| (0, s.register, u32::from(s.value))),
     K054539(K054539Spec, K054539, |s| {
         let [bank, register] = s.register.to_be_bytes();
@@ -221,6 +224,7 @@ impl ChipRegisterWrite {
             C352Write(i, s) => (*i, Self::C352(s.clone())),
             Es5503Write(i, s) => (*i, Self::Es5503(s.clone())),
             Ga20Write(i, s) => (*i, Self::Ga20(s.clone())),
+            GbDmgWrite(i, s) => (*i, Self::GbDmg(s.clone())),
             K053260Write(i, s) => (*i, Self::K053260(s.clone())),
             K054539Write(i, s) => (*i, Self::K054539(s.clone())),
             X1010Write(i, s) => (*i, Self::X1010(s.clone())),
@@ -281,6 +285,8 @@ typed_write!(C140, C140Spec, C140);
 typed_write!(C352, C352Spec, C352);
 #[cfg(feature = "es5503")]
 typed_write!(Es5503, Es5503Spec, Es5503);
+#[cfg(feature = "gb_dmg")]
+typed_write!(GbDmg, GbDmgSpec, GbDmg);
 #[cfg(feature = "ga20")]
 typed_write!(Ga20, Ga20Spec, Ga20);
 #[cfg(feature = "k053260")]
