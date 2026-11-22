@@ -80,13 +80,6 @@ use crate::chip::{ClockDivider, Okim6258, Okim6258Stream, OutputBits};
 use crate::chip::{K054539, K054539Config};
 use crate::fixed::{advance, divide_ratio};
 
-#[cfg(any(
-    feature = "sn76496",
-    feature = "okim6258",
-    feature = "c352",
-    feature = "k054539",
-    feature = "upd7759"
-))]
 use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
 use super::Okim6258Divider;
@@ -1112,13 +1105,6 @@ impl<'a> VgmSequencer<'a> {
         } else {
             clock
         };
-        if chip == Chip::NesApu && header.nes_apu_clock & 0x8000_0000 != 0 {
-            return Err(ChipError::InvalidConfiguration {
-                chip,
-                reason: "NES FDS expansion audio is not supported",
-            }
-            .into());
-        }
         let memory = Rc::new(RefCell::new(Memory::default()));
         let factory_config = ChipFactoryConfig::new(
             chip.clone(),
@@ -1216,7 +1202,11 @@ impl<'a> VgmSequencer<'a> {
         } else if chip == Chip::Mikey {
             feature_backend!("mikey", chip, Box::new(Mikey::new(clock)?))
         } else if chip == Chip::NesApu {
-            feature_backend!("nes_apu", chip, Box::new(NesApu::new(clock)?))
+            if matches!(factory_config.settings(), ChipBackendSettings::NesApuFds) {
+                feature_backend!("nes_fds", chip, Box::new(NesApu::with_fds(clock)?))
+            } else {
+                feature_backend!("nes_apu", chip, Box::new(NesApu::new(clock)?))
+            }
         } else if chip == Chip::Upd7759 {
             feature_backend!("upd7759", chip, {
                 let ChipBackendSettings::Upd7759 { slave } = factory_config.settings() else {

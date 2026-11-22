@@ -5,6 +5,31 @@ use soundlog::vgm::VgmBuilder;
 use soundlog::vgm::command::WaitSamples;
 
 #[test]
+fn vgm_fds_feature_is_required_for_both_input_types() {
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::NesApu, Instance::Primary, 1_789_773 | 0x8000_0000);
+    builder.add_vgm_command(WaitSamples(100));
+    let document = builder.finalize();
+    let bytes: Vec<u8> = document.clone().into();
+    for result in [
+        VgmSequencer::new(document, 44_100, 64, Default::default()),
+        VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()),
+    ] {
+        if cfg!(feature = "nes_fds") {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(
+                result,
+                Err(VgmSequencerError::FeatureDisabled {
+                    chip: Chip::NesApu,
+                    feature: "nes_fds"
+                })
+            ));
+        }
+    }
+}
+
+#[test]
 fn vgm_chip_features_apply_to_document_and_owned_stream() {
     let cases = [
         (Chip::C140, "c140", cfg!(feature = "c140")),

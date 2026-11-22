@@ -49,7 +49,8 @@ YMFM chips are always available. Optional features are disabled by default:
 | `k054539` | Konami K054539 | MAME | BSD-3-Clause |
 | `mikey` | Atari Lynx Mikey | libvgm | MIT |
 | `multipcm` | Yamaha MultiPCM | MAME | BSD-3-Clause |
-| `nes_apu` | NES APU (FDS expansion not supported) | JSNES, via Tetorica | Apache-2.0 |
+| `nes_apu` | NES APU | JSNES, via Tetorica | Apache-2.0 |
+| `nes_fds` | FDS expansion audio (includes `nes_apu`) | fixNES, via Tetorica | MIT and Apache-2.0 |
 | `upd7759` | NEC uPD7759 | MAME | BSD-3-Clause |
 | `okim6258` | OKIM6258 | MAME | BSD-3-Clause |
 | `okim6295` | OKIM6295 | MAME | BSD-3-Clause |
@@ -77,9 +78,9 @@ Unsupported chips without implementations remain silent.
 
 The NES APU uses the VGM CPU clock, DMC RAM upload blocks and the `nes_apu`
 feature. Clocks below 1.7 MHz select PAL timing; higher clocks select NTSC
-timing. FDS expansion audio is not implemented, so the sequencer rejects VGM
-files that declare it. `NesApuState` tracks register-controlled
-enables, not time-dependent length or linear counter expiry.
+timing. FDS expansion audio requires `nes_fds`; its analog mixing and filters
+are approximations. `NesApuState` retains FDS register writes but only tracks
+APU channel enables, not FDS channel state or time-dependent counter expiry.
 
 MDX playback with a supplied PDX requires `okim6258`, even when the song does
 not use PCM notes. Without a PDX, FM-only playback does not require it.

@@ -7,7 +7,8 @@
 //! - 1 noise channel
 //! - 1 DMC (Delta Modulation Channel) for samples
 //!
-//! Note: FDS (Famicom Disk System) expansion audio is not currently supported.
+//! FDS writes are retained as register values, but FDS channel state and
+//! events are not modeled.
 
 use super::channel::ChannelState;
 use super::chip_state::ChipState;

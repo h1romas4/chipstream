@@ -31,6 +31,8 @@ mod mikey;
 mod multipcm;
 #[cfg(feature = "nes_apu")]
 mod nes_apu;
+#[cfg(feature = "nes_fds")]
+mod nes_fds;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]

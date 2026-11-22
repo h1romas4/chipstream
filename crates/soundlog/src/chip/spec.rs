@@ -335,7 +335,12 @@ pub struct GbDmgSpec {
 /// NES APU register write specification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NesApuSpec {
-    /// NES APU register address.
+    /// CPU address offset from `$4000`, including FDS registers when present.
+    ///
+    /// VGM encodes FDS control registers and `$4023` differently; parsing and
+    /// serialization convert those values at the VGM boundary. VGM can encode
+    /// offsets `0x00..=0x1f`, `0x23`, `0x40..=0x7f`, and `0x80..=0x9e`;
+    /// other offsets do not round-trip through VGM.
     pub register: u8,
     /// Value written to the register.
     pub value: u8,

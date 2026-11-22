@@ -174,6 +174,8 @@ pub enum C140Variant {
 pub enum ChipBackendSettings {
     /// No additional settings for this chip.
     Standard,
+    /// NES APU with FDS expansion audio enabled.
+    NesApuFds,
     /// AY-family model and output settings.
     Ay8910(Ay8910Settings),
     /// SN76489-family settings.

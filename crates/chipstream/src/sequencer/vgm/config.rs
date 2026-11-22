@@ -189,6 +189,7 @@ impl From<Ay8910Flags> for AyOutputSettings {
 /// Translate header flags into chip-specific factory settings.
 fn backend_settings(chip: &Chip, header: &VgmHeader) -> ChipBackendSettings {
     match chip {
+        Chip::NesApu if header.nes_apu_clock & 0x8000_0000 != 0 => ChipBackendSettings::NesApuFds,
         Chip::Ay8910 => ChipBackendSettings::Ay8910(Ay8910Settings::from(header)),
         Chip::Sn76489 => {
             let flags = header.sn76489_flags;

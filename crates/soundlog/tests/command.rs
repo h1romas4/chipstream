@@ -16,6 +16,49 @@ use soundlog::vgm::stream::StreamResult;
 use soundlog::vgm::stream::VgmStream;
 
 #[test]
+fn nes_fds_registers_roundtrip_with_both_instance_selectors() {
+    use soundlog::chip::NesApuSpec;
+
+    for instance in [Instance::Primary, Instance::Secondary] {
+        for (physical, encoded) in [
+            (0x23, 0x3f),
+            (0x40, 0x40),
+            (0x7f, 0x7f),
+            (0x80, 0x20),
+            (0x8a, 0x2a),
+        ] {
+            let expected = VgmCommand::NesApuWrite(
+                instance,
+                NesApuSpec {
+                    register: physical,
+                    value: 0x5a,
+                },
+            );
+            let (bytes, _) = soundlog::vgm::command::command_to_vgm_bytes(&expected);
+            assert_eq!(
+                bytes,
+                [
+                    0xb4,
+                    encoded
+                        | if instance == Instance::Secondary {
+                            0x80
+                        } else {
+                            0
+                        },
+                    0x5a
+                ]
+            );
+            let mut builder = VgmBuilder::new();
+            builder.add_vgm_command(expected.clone());
+            let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+            assert!(stream.into_iter().any(
+                |result| matches!(result, Ok(StreamResult::Command(command)) if command == expected)
+            ));
+        }
+    }
+}
+
+#[test]
 fn multipcm_bank_offset_uses_vgm_little_endian_bytes() {
     use soundlog::chip::MultiPcmBankSpec;
 

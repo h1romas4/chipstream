@@ -13,6 +13,43 @@ use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 const MDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
 const PDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");
 
+#[test]
+fn custom_nes_factory_receives_fds_settings_even_without_builtin_feature() {
+    for fds in [false, true] {
+        let mut builder = VgmBuilder::new();
+        builder.register_chip(
+            Chip::NesApu,
+            Instance::Primary,
+            1_789_773 | if fds { 0x8000_0000 } else { 0 },
+        );
+        builder.add_vgm_command(WaitSamples(10));
+        let mut factories = ChipFactoryRegistry::new();
+        factories.register(Chip::NesApu, move |config| {
+            assert_eq!(
+                *config.settings(),
+                if fds {
+                    ChipBackendSettings::NesApuFds
+                } else {
+                    ChipBackendSettings::Standard
+                }
+            );
+            Ok(Box::new(FakeChip::new(
+                config.chip().clone(),
+                config.clock(),
+                Arc::new(Mutex::new(Vec::new())),
+            )))
+        });
+        VgmSequencer::new_with_factories(
+            builder.finalize(),
+            44_100,
+            64,
+            Default::default(),
+            factories,
+        )
+        .unwrap();
+    }
+}
+
 #[derive(Debug)]
 struct Commands(std::vec::IntoIter<VgmCommand>);
 

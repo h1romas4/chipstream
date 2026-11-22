@@ -1,16 +1,54 @@
 # NES APU implementation
 
-The NES APU implementation is based on Tetorica's `nes_core.cpp` (NES APU
-portions), revision `b4f2543c08f3a6b2c780d723263dee444ff13343`, itself derived from JSNES revision
+The NES APU implementation is a Rust adaptation of the APU portions of
+[`nes_core.cpp` in Tetorica](https://github.com/kyorohiro/tetorica-soundchip-native),
+revision `b4f2543c08f3a6b2c780d723263dee444ff13343`. Tetorica's APU is
+derived from [JSNES](https://github.com/bfirsh/jsnes), revision
 `b8a45d088e922b6abcd87c4eb1b7237919e9d3d2`.
 
-Copyright 2026 Tetorica contributors.
-Copyright JSNES contributors, including Ben Firshman.
+Tetorica: Copyright (c) 2026, kyorohiro
+JSNES: Copyright JSNES contributors, including Ben Firshman.
 
-The implementation has been translated to Rust and adapted for chipstream.
-It is licensed under the Apache License, Version 2.0; see
+The APU implementation and its JSNES source are licensed under the Apache
+License, Version 2.0; see
 [`licenses/LICENSE-JSNES`](licenses/LICENSE-JSNES). The JSNES authors and
 acknowledgments are retained in [`licenses/AUTHORS-JSNES.md`](licenses/AUTHORS-JSNES.md).
+
+# NES FDS implementation
+
+The FDS expansion implementation is a Rust adaptation of the FDS portions of
+[`nes_core.cpp` in Tetorica](https://github.com/kyorohiro/tetorica-soundchip-native),
+revision `b4f2543c08f3a6b2c780d723263dee444ff13343`. Tetorica's FDS
+implementation is adapted from [fixNES](https://github.com/FIX94/fixNES)
+`audio_fds.c`, revision `156fcaca9f4cd9c23d423737994c45cfb05d16ca`,
+via Tetorica's JavaScript adaptation.
+
+Tetorica: Copyright (c) 2026, kyorohiro
+The fixNES source is MIT-licensed. Tetorica's `nes_core.cpp` is distributed
+under Apache-2.0 AND MIT; see
+[`licenses/LICENSE-JSNES`](licenses/LICENSE-JSNES) and the MIT license below.
+
+MIT License
+
+Copyright (c) 2017 FIX94
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 # Mikey implementation
 

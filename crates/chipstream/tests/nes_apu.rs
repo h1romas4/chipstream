@@ -163,20 +163,6 @@ fn vgm_dmc_ram_upload_produces_audio() {
 }
 
 #[test]
-fn fds_flag_is_rejected() {
-    let mut builder = VgmBuilder::new();
-    builder.register_chip(Chip::NesApu, Instance::Primary, 1_789_773 | 0x8000_0000);
-    let result = VgmSequencer::new(builder.finalize(), 44_100, 128, Default::default());
-    assert!(matches!(
-        result,
-        Err(VgmSequencerError::Chip(ChipError::InvalidConfiguration {
-            chip: Chip::NesApu,
-            ..
-        }))
-    ));
-}
-
-#[test]
 fn dual_vgm_uses_independent_ram_and_callbacks() {
     fn document(secondary_byte: u8) -> soundlog::vgm::VgmDocument {
         let mut builder = VgmBuilder::new();

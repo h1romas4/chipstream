@@ -1,7 +1,8 @@
 //! NES APU based on the JSNES-derived Tetorica native port.
 //!
 //! JSNES revision `b8a45d088e922b6abcd87c4eb1b7237919e9d3d2`, Apache-2.0.
-//! Copyright JSNES and Tetorica contributors. See `THIRD_PARTY_NOTICES.md`.
+//! Copyright JSNES contributors. Copyright (c) 2026, kyorohiro.
+//! See `THIRD_PARTY_NOTICES.md`.
 
 use super::{ChipError, ChipRegisterWrite, SoundChip};
 use soundlog::chip::Chip;
@@ -439,11 +440,13 @@ impl Dmc {
 /// Nintendo NES APU with two pulse channels, triangle, noise and DMC.
 ///
 /// Registers are offsets from CPU address `$4000`. Sample RAM uses CPU
-/// addresses, and is snapshotted along with the channel state. FDS expansion
-/// audio is not implemented.
+/// addresses, and is snapshotted along with the channel state. With the
+/// `nes_fds` feature, `NesApu::with_fds` enables FDS expansion audio.
 #[derive(Clone)]
 pub struct NesApu {
     clock: u32,
+    #[cfg(feature = "nes_fds")]
+    fds: Option<super::nes_fds::Fds>,
     pal: bool,
     pulse: [Pulse; 2],
     triangle: Triangle,
@@ -496,6 +499,8 @@ impl NesApu {
         let dc_value = f64::from(square_table[511] + tnd_table[3263]) / 2.0;
         let mut apu = Self {
             clock,
+            #[cfg(feature = "nes_fds")]
+            fds: None,
             pal: clock < 1_700_000,
             pulse: [
                 Pulse {
@@ -535,6 +540,14 @@ impl NesApu {
         Ok(apu)
     }
 
+    /// Create an APU with FDS expansion audio enabled.
+    #[cfg(feature = "nes_fds")]
+    pub fn with_fds(clock: u32) -> Result<Self, ChipError> {
+        let mut apu = Self::new(clock)?;
+        apu.fds = Some(super::nes_fds::Fds::new(RATE));
+        Ok(apu)
+    }
+
     fn write_register(&mut self, register: u8, value: u8) -> Result<(), ChipError> {
         match register {
             0x00..=0x03 => self.pulse[0].write(register, value),
@@ -560,6 +573,13 @@ impl NesApu {
                 }
             }
             0x14 | 0x16 => {}
+            #[cfg(feature = "nes_fds")]
+            0x23 | 0x40..=0x7f | 0x80..=0x8a if self.fds.is_some() => {
+                self.fds
+                    .as_mut()
+                    .expect("FDS is enabled")
+                    .write(register, value);
+            }
             _ => {
                 return Err(ChipError::InvalidRegister {
                     chip: Chip::NesApu,
@@ -612,6 +632,10 @@ impl NesApu {
     }
 
     fn tick(&mut self) {
+        #[cfg(feature = "nes_fds")]
+        if let Some(fds) = &mut self.fds {
+            fds.tick();
+        }
         self.parity = (self.parity + 1) & 1;
         if self.dmc.enabled {
             self.dmc.shift_counter -= 8;
@@ -677,7 +701,10 @@ impl NesApu {
         let difference = mixed - self.previous_mix;
         self.previous_mix += difference;
         self.filter_acc += difference - f64::from((self.filter_acc as i32) >> 10);
-        let source = (self.filter_acc / 32768.0) as f32 as f64;
+        let source = self.filter_acc / 32768.0;
+        #[cfg(feature = "nes_fds")]
+        let source = source + self.fds.as_mut().map_or(0.0, |fds| fds.sample());
+        let source = source as f32 as f64;
         self.filtered = self.dc_coefficient * (self.filtered + source - self.previous_source);
         self.previous_source = source;
         ((self.filtered as f32) * 32768.0) as i32
@@ -729,6 +756,11 @@ impl SoundChip for NesApu {
     }
 
     fn reset(&mut self) {
+        #[cfg(feature = "nes_fds")]
+        if self.fds.is_some() {
+            *self = Self::with_fds(self.clock).expect("existing clock is valid");
+            return;
+        }
         *self = Self::new(self.clock).expect("existing clock is valid");
     }
 

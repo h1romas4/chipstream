@@ -2256,7 +2256,11 @@ impl CommandSpec for chip::NesApuSpec {
     }
     fn to_vgm_bytes(&self, dest: &mut Vec<u8>) {
         dest.push(self.opcode());
-        dest.push(self.register);
+        dest.push(match self.register {
+            0x23 => 0x3f,
+            0x80..=0x9e => self.register - 0x60,
+            register => register,
+        });
         dest.push(self.value);
     }
     fn parse(bytes: &[u8], off: usize, _opcode: u8) -> Result<(Self, usize), ParseError> {
@@ -2264,7 +2268,11 @@ impl CommandSpec for chip::NesApuSpec {
         let val = read_u8_at(bytes, off + 1)?;
         Ok((
             chip::NesApuSpec {
-                register: reg,
+                register: match reg {
+                    0x3f => 0x23,
+                    0x20..=0x3e => reg + 0x60,
+                    register => register,
+                },
                 value: val,
             },
             2,
