@@ -1464,7 +1464,7 @@ impl AppView {
                             SettingPage::new("General")
                                 .icon(assets::IconName::Settings)
                                 .group(SettingGroup::new().items([
-                                    SettingItem::new("VGM metadata language", language_field),
+                                    SettingItem::new("VGM/XGM metadata language", language_field),
                                     SettingItem::new("YM2608 rhythm ROM", rom_field)
                                         .layout(Axis::Vertical),
                                 ])),
@@ -1992,7 +1992,7 @@ impl AppView {
                     .token(|token, _, _| {
                         let id = token.token().id();
                         let ymfm = ChipTag::is_ymfm_name(id.as_ref());
-                        let format = matches!(id.as_ref(), "MDX" | "VGM" | "NanoDrive");
+                        let format = matches!(id.as_ref(), "MDX" | "VGM" | "XGM" | "NanoDrive");
                         let system = id.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX);
                         let (background, foreground) = if system {
                             (0x3e2f24, 0xe0c3a0)
@@ -6653,7 +6653,7 @@ fn chip_suggestions(
             continue;
         }
         let fragment = fragment.to_lowercase();
-        let matches: Vec<_> = ["MDX", "VGM"]
+        let matches: Vec<_> = ["MDX", "VGM", "XGM"]
             .into_iter()
             .chain(nanodrive_connected.then_some("NanoDrive"))
             .chain(chips.iter().copied())
@@ -6699,7 +6699,7 @@ fn search_suggestion_label(tag: &str) -> &str {
 fn search_suggestion_kind(tag: &str) -> &'static str {
     if tag.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX) {
         "System"
-    } else if matches!(tag, "MDX" | "VGM") {
+    } else if matches!(tag, "MDX" | "VGM" | "XGM") {
         "Format"
     } else if tag == "NanoDrive" {
         "Device"
@@ -8781,12 +8781,14 @@ mod tests {
     }
 
     #[test]
-    fn music_format_labels_vgm_vgz_and_mdx() {
+    fn music_format_labels_supported_formats() {
         for (file, expected) in [
             ("song.vgm", "VGM"),
             ("song.VGZ", "VGM"),
             ("song.mdx", "MDX"),
             ("song.MDX", "MDX"),
+            ("song.xgm", "XGM"),
+            ("song.XGZ", "XGM"),
         ] {
             assert_eq!(music_format(&PathBuf::from(file)), expected);
         }
@@ -9229,6 +9231,10 @@ mod tests {
         assert_eq!(
             chip_suggestions("md", 2, &[], &chips, &systems, false),
             Some((0..2, vec!["MDX".into()]))
+        );
+        assert_eq!(
+            chip_suggestions("xg", 2, &[], &chips, &systems, false),
+            Some((0..2, vec!["XGM".into()]))
         );
         let content = InputContent::new("VGMvg")
             .with_token(0..3, InlineToken::new("VGM", "VGM"))

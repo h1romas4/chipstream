@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, NativeOutput, PlaybackOptions,
-    VgmSequencer, VgmSequencerOptions,
+    VgmSequencer, VgmSequencerOptions, XgmSequencer, XgmSequencerOptions,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -23,11 +23,13 @@ use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::command::{Instance, VgmCommand};
 use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
+use soundlog::xgm::{XgmDocument, XgmLoopMarker, XgmPlaybackOptions, XgmVgmGenerator};
 
 use crate::device::{DeviceHandle, DeviceLease};
 use crate::fm_mute::FmMute;
 use crate::library::{
     PlaybackSettings, RecordingSettings, VgmSettings, extension, read_bounded, read_track,
+    track_format,
 };
 use crate::routing::{PlaybackPlan, RoutingPlan};
 use crate::visualizer::{PianoRoll, RollMode, Snapshot, WINDOW_SECONDS};
@@ -666,6 +668,21 @@ impl Drop for Playback {
 enum Sequencer {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+    Xgm(XgmSequencer<'static>),
+}
+
+enum PreviewLoopMarker {
+    Mdx(soundlog::mdx::convert::MdxLoopMarker),
+    Xgm(XgmLoopMarker),
+}
+
+impl PreviewLoopMarker {
+    fn reached(&self) -> bool {
+        match self {
+            Self::Mdx(marker) => marker.reached(),
+            Self::Xgm(marker) => marker.reached(),
+        }
+    }
 }
 
 struct RhythmRomPaths<'a> {
@@ -937,7 +954,7 @@ fn add_visual_ay_sources(
     routes: &[chipstream_ndsif::NdsifRoute],
     sources: &mut Vec<GainSource>,
 ) -> Result<()> {
-    if extension(path) == "mdx" {
+    if matches!(track_format(path), "MDX" | "XGM") {
         return Ok(());
     }
     let bytes = read_track(path)?;
@@ -1019,13 +1036,38 @@ fn run_preview(
         } else {
             let (generator, marker) =
                 to_vgm_stream_generator_with_loop_marker(package, options.into())?;
-            (generator, Some(marker))
+            (generator, Some(PreviewLoopMarker::Mdx(marker)))
         };
         let mut stream = VgmCallbackStream::from_generator(generator);
         stream.track_state::<soundlog::chip::state::Ym2151State>(
             Instance::Primary,
             options.ym2151_clock as f32,
         );
+        (stream, marker)
+    } else if track_format(path) == "XGM" {
+        let document = XgmDocument::parse(&bytes).context("parse XGM")?;
+        let header = document.header.timing.vgm_header();
+        let options = XgmPlaybackOptions {
+            loop_count: if looped {
+                None
+            } else {
+                Some(control.settings.loop_count)
+            },
+            max_frames: if looped {
+                None
+            } else {
+                XgmPlaybackOptions::default().max_frames
+            },
+            ..Default::default()
+        };
+        let (generator, marker) = if !looped && control.settings.fadeout_samples() > 0 {
+            let (generator, marker) = XgmVgmGenerator::new_with_loop_marker(document, options)?;
+            (generator, Some(PreviewLoopMarker::Xgm(marker)))
+        } else {
+            (XgmVgmGenerator::new(document, options)?, None)
+        };
+        let mut stream = VgmCallbackStream::from_generator(Box::new(generator));
+        stream.track_chips(&header.chip_instances());
         (stream, marker)
     } else {
         let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
@@ -1378,6 +1420,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => register!(player),
             Self::Mdx(player) => register!(player),
+            Self::Xgm(player) => register!(player),
         }
     }
 
@@ -1405,6 +1448,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.chip_instances().collect(),
             Self::Mdx(player) => player.chip_instances().collect(),
+            Self::Xgm(player) => player.chip_instances().collect(),
         }
     }
 
@@ -1412,6 +1456,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.set_chip_gain(chip, instance, gain)?,
             Self::Mdx(player) => player.set_chip_gain(chip, instance, gain)?,
+            Self::Xgm(player) => player.set_chip_gain(chip, instance, gain)?,
         }
         Ok(())
     }
@@ -1420,6 +1465,7 @@ impl Sequencer {
         Ok(match self {
             Self::Vgm(player) => player.output_layout(chip, instance)?,
             Self::Mdx(player) => player.output_layout(chip, instance)?,
+            Self::Xgm(player) => player.output_layout(chip, instance)?,
         })
     }
 
@@ -1427,6 +1473,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.set_output_gains(chip, instance, gains)?,
             Self::Mdx(player) => player.set_output_gains(chip, instance, gains)?,
+            Self::Xgm(player) => player.set_output_gains(chip, instance, gains)?,
         }
         Ok(())
     }
@@ -1550,6 +1597,24 @@ impl Sequencer {
                 options,
                 factories,
             )?))
+        } else if track_format(path) == "XGM" {
+            let document = XgmDocument::parse(&bytes).context("parse XGM")?;
+            let options = XgmSequencerOptions {
+                playback: mdx_options(looped, settings).playback,
+                max_frames: if looped {
+                    None
+                } else {
+                    XgmSequencerOptions::default().max_frames
+                },
+                ..Default::default()
+            };
+            Ok(Self::Xgm(XgmSequencer::new_with_factories(
+                document,
+                rate,
+                CHUNK_FRAMES,
+                options,
+                factories,
+            )?))
         } else {
             let ym2608_clock = if rom.is_some() {
                 soundlog::vgm::VgmHeader::from_bytes(&bytes)?.ym2608_clock
@@ -1659,6 +1724,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => Ok(player.render()?),
             Self::Mdx(player) => Ok(player.render()?),
+            Self::Xgm(player) => Ok(player.render()?),
         }
     }
 
@@ -1757,6 +1823,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => configure!(player),
             Self::Mdx(player) => configure!(player),
+            Self::Xgm(player) => configure!(player),
         }
     }
 
@@ -1764,6 +1831,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.take_state_event_overflow(),
             Self::Mdx(player) => player.take_state_event_overflow(),
+            Self::Xgm(player) => player.take_state_event_overflow(),
         }
     }
 
@@ -1771,6 +1839,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.fade_start_frame(),
             Self::Mdx(player) => player.fade_start_frame(),
+            Self::Xgm(player) => player.fade_start_frame(),
         }
     }
 
@@ -2123,8 +2192,20 @@ fn run_hardware(
 ) -> Result<()> {
     if !plan.nd7_devices.is_empty() && extension(path) != "mdx" {
         let bytes = read_track(path)?;
-        let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
-        let extra = header.extra_header_from_bytes(&bytes)?;
+        let (header, extra) = if track_format(path) == "XGM" {
+            (
+                XgmDocument::parse(&bytes)
+                    .context("parse XGM")?
+                    .header
+                    .timing
+                    .vgm_header(),
+                None,
+            )
+        } else {
+            let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
+            let extra = header.extra_header_from_bytes(&bytes)?;
+            (header, extra)
+        };
         plan.validate_nd7(&header, extra.as_ref())?;
     }
     let lease = devices.acquire(plan.device_ids.clone())?;
@@ -2870,6 +2951,155 @@ mod tests {
         let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         control.recording_failed.store(true, Ordering::Release);
         assert!(wait_for_audio(Instant::now() + Duration::from_secs(60), &control).is_err());
+    }
+
+    #[test]
+    fn xgm_playback_preview_and_ndsif_routing() {
+        use chipstream_ndsif::ndsif::{NdsifSn76489, register_ymfm_factories};
+        use flate2::{Compression, write::GzEncoder};
+        use ndsif_transport::{NdsifPsgEvent, NdsifRegisterEvent, NdsifTransport};
+        use soundlog::xgm::{XgmBuilder, XgmCommand, XgmRegisterWrite, XgmTiming, XgmTrack};
+        use std::io::Write;
+
+        #[derive(Default)]
+        struct Recorder {
+            writes: Vec<NdsifRegisterEvent>,
+            psg: Vec<NdsifPsgEvent>,
+        }
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.writes.push(event);
+                Ok(())
+            }
+            fn schedule_psg_write(&mut self, event: NdsifPsgEvent) -> Result<(), String> {
+                self.psg.push(event);
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+        builder.set_sample(1, &[0x30; 256]).unwrap();
+        builder.add_track(XgmTrack {
+            commands: vec![
+                XgmCommand::Psg(vec![0x84, 0x10, 0x90]),
+                XgmCommand::Ym2612Port0(vec![XgmRegisterWrite {
+                    register: 0x22,
+                    value: 8,
+                }]),
+                XgmCommand::Pcm {
+                    channel: 0,
+                    priority: 0,
+                    sample_id: 1,
+                },
+                XgmCommand::Frame,
+                XgmCommand::Frame,
+                XgmCommand::Loop(3),
+            ],
+            gd3: None,
+        });
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let xgm = directory.path().join("song.xgm");
+        let xgz = directory.path().join("song.xgz");
+        std::fs::write(&xgm, &bytes).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&bytes).unwrap();
+        std::fs::write(&xgz, encoder.finish().unwrap()).unwrap();
+
+        let settings = PlaybackSettings {
+            loop_count: 2,
+            fadeout_millis: 10,
+            start_delay_millis: 0,
+        };
+        let mut software = Vec::new();
+        for path in [&xgm, &xgz] {
+            let mut player = Sequencer::create(
+                path,
+                44_100,
+                false,
+                ChipFactoryRegistry::new(),
+                None,
+                settings,
+            )
+            .unwrap();
+            let sources = Sequencer::gain_sources(&player, &[]);
+            assert_eq!(sources.len(), 2);
+            let events = Rc::new(RefCell::new(Vec::new()));
+            player.track_visual_events(Rc::clone(&events));
+            player.filter_fm_mutes(Arc::new(FmMute::default()));
+            player
+                .set_chip_gain(Chip::Sn76489, Instance::Primary, 0.5)
+                .unwrap();
+            let mut frames = Vec::new();
+            while let Some(block) = player.render().unwrap() {
+                frames.extend_from_slice(block.frames());
+            }
+            assert_eq!(frames.len(), 4 * 735 + 441);
+            assert_eq!(player.fade_start_frame(), Some(4 * 735));
+            assert!(frames.iter().any(|frame| frame[0] != 0.0));
+            assert!(
+                events
+                    .borrow()
+                    .iter()
+                    .any(|event| event.0 == crate::visualizer::SN76489_INDEX)
+            );
+            software.push(frames);
+            let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+            run_preview(path, 44_100, false, &control, &AtomicBool::new(false), None).unwrap();
+            let mut preview = control.preview.lock().unwrap();
+            assert!(
+                !preview
+                    .roll
+                    .snapshot(0, 44_100, RollMode::Incoming)
+                    .is_empty()
+            );
+        }
+        assert_eq!(software[0], software[1]);
+        let mut looped = Sequencer::create(
+            &xgm,
+            44_100,
+            true,
+            ChipFactoryRegistry::new(),
+            None,
+            settings,
+        )
+        .unwrap();
+        for _ in 0..8 {
+            assert!(looped.render().unwrap().is_some());
+        }
+        assert_eq!(looped.fade_start_frame(), None);
+        let recorder = Rc::new(RefCell::new(Recorder::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        register_ymfm_factories(&mut factories, Rc::clone(&recorder)).unwrap();
+        let transport = Rc::clone(&recorder);
+        factories.register(Chip::Sn76489, move |config| {
+            Ok(Box::new(NdsifSn76489::new(config, Rc::clone(&transport))?))
+        });
+        let mut player = Sequencer::create(&xgm, 44_100, false, factories, None, settings).unwrap();
+        while player.render().unwrap().is_some() {}
+        let recorder = recorder.borrow();
+        assert!(
+            recorder
+                .writes
+                .iter()
+                .any(|event| event.write == ndsif::RegisterWrite::new(0x22, 8))
+        );
+        assert!(
+            recorder
+                .writes
+                .iter()
+                .any(|event| event.write.address == 0x2a)
+        );
+        assert_eq!(
+            recorder
+                .psg
+                .iter()
+                .map(|event| event.value)
+                .collect::<Vec<_>>(),
+            [0x84, 0x10, 0x90]
+        );
     }
 
     #[test]

@@ -8,7 +8,10 @@ use crate::audio::StereoBlock;
 use super::factory::ChipFactoryRegistry;
 use super::vgm::config::ChipConfiguration;
 use super::vgm::{FadeMarker, StreamFactory};
-use super::{PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError};
+use super::{
+    Chip, Instance, NativeOutput, PlaybackOptions, StateEvent, VgmSequencer,
+    VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
+};
 
 /// Track, loop, fade, and resource limits for XGM playback.
 #[derive(Debug, Clone, Copy)]
@@ -128,6 +131,68 @@ impl<'a> XgmSequencer<'a> {
     /// Return the fade start position once its loop boundary has been reached.
     pub fn fade_start_frame(&self) -> Option<usize> {
         self.player.fade_start_frame()
+    }
+
+    /// Return playable chip instances.
+    pub fn chip_instances(&self) -> impl Iterator<Item = (Chip, Instance)> + '_ {
+        self.player.chip_instances()
+    }
+
+    /// Set a chip's post-resampling gain.
+    pub fn set_chip_gain(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        gain: f32,
+    ) -> Result<(), VgmSequencerError> {
+        self.player.set_chip_gain(chip, instance, gain)
+    }
+
+    /// Return the native output layout for a chip instance.
+    pub fn output_layout(
+        &self,
+        chip: Chip,
+        instance: Instance,
+    ) -> Result<&'static [NativeOutput], VgmSequencerError> {
+        self.player.output_layout(chip, instance)
+    }
+
+    /// Set the gains for a chip's native outputs.
+    pub fn set_output_gains(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        gains: &[f32],
+    ) -> Result<(), VgmSequencerError> {
+        self.player.set_output_gains(chip, instance, gains)
+    }
+
+    /// Transform typed chip writes before they reach the chip.
+    pub fn filter_write<C, F>(&mut self, filter: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize) -> C + 'a,
+    {
+        self.player.filter_write(filter);
+    }
+
+    /// Enable tracking using each matching voice's effective clock.
+    pub fn track_state_with_voice_clocks<S: VgmStateTracker>(&mut self) {
+        self.player.track_state_with_voice_clocks::<S>();
+    }
+
+    /// Register a callback for writes producing tracked state changes.
+    pub fn on_state_change<C, F>(&mut self, callback: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, usize, Vec<StateEvent>) + 'a,
+    {
+        self.player.on_state_change::<C, F>(callback);
+    }
+
+    /// Report and clear whether state events were dropped.
+    pub fn take_state_event_overflow(&mut self) -> bool {
+        self.player.take_state_event_overflow()
     }
 
     /// Capture the exact state at an output-block boundary.

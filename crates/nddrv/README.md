@@ -1,6 +1,6 @@
 # nddrv
 
-NDDRV is a desktop music library and player for VGM, VGZ, and MDX files. It
+NDDRV is a desktop music library and player for VGM, VGZ, MDX, XGM v1, and XGZ files. It
 supports software emulation with chipstream and experimental NanoDrive hardware
 routing.
 
@@ -48,7 +48,7 @@ otherwise, placement is left to the window system.
 | --- | --- |
 | Text | Matches title, artist, album, notes, or path. |
 | Chip tags | Multiple chip tags require all listed chips. |
-| Format tags | `MDX` matches MDX files; `VGM` matches VGM and VGZ files. |
+| Format tags | `MDX` matches MDX; `VGM` matches VGM/VGZ; `XGM` matches XGM/XGZ. |
 | `NanoDrive` tag | Matches chips advertised by a connected device; does not guarantee hardware routing. |
 | Clear button | Removes all search text and tags. |
 
@@ -71,6 +71,10 @@ while disconnected and matches no tracks until a NanoDrive is connected.
 
 Track Info shows available metadata and loads artwork from the track's folder.
 
+For multi-track XGM files, NDDRV currently lists and plays the first track.
+XGZ is gzip-compressed XGM. Input and decompressed data are limited to 64 MiB;
+XGM parsing and playback also apply soundlog's resource limits.
+
 ## Settings
 
 Settings are organized into General, Playback, Recording, and VGM pages.
@@ -79,7 +83,7 @@ Settings are organized into General, Playback, Recording, and VGM pages.
 
 | Setting | Behavior |
 | --- | --- |
-| VGM metadata language | Choose English (default) or original-language VGM/VGZ metadata. Missing fields fall back to the other language; search matches both. MDX metadata is unaffected. |
+| VGM/XGM metadata language | Choose English (default) or original-language GD3 metadata. Missing fields fall back to the other language; search matches both. MDX metadata is unaffected. |
 | YM2608 rhythm ROM | Select an optional ROM file for software YM2608 playback. See [YM2608 rhythm ROM](#ym2608-rhythm-rom). |
 
 ### Playback

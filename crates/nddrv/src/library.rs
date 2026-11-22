@@ -14,6 +14,7 @@ use soundlog::chip::Chip;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
 use soundlog::vgm::header::VgmHeader;
+use soundlog::xgm::XgmDocument;
 use walkdir::WalkDir;
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -390,10 +391,10 @@ pub fn filter_indices_with_chips(
 }
 
 pub fn track_format(path: &Path) -> &'static str {
-    if extension(path) == "mdx" {
-        "MDX"
-    } else {
-        "VGM"
+    match extension(path).as_str() {
+        "mdx" => "MDX",
+        "xgm" | "xgz" => "XGM",
+        _ => "VGM",
     }
 }
 
@@ -406,7 +407,7 @@ pub fn filter_indices_with_tags(
     let (formats, other_tags): (Vec<_>, Vec<_>) = tags
         .iter()
         .cloned()
-        .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM"));
+        .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM" | "XGM"));
     let (systems, chips): (Vec<_>, Vec<_>) = other_tags
         .into_iter()
         .partition(|tag| system_search_tag_value(tag).is_some());
@@ -789,8 +790,8 @@ pub fn read_bounded(reader: impl Read) -> Result<Vec<u8>> {
 pub fn read_track(path: &Path) -> Result<Vec<u8>> {
     let bytes =
         read_bounded(File::open(path).with_context(|| format!("open {}", path.display()))?)?;
-    if extension(path) == "vgz" || bytes.starts_with(&[0x1f, 0x8b]) {
-        read_bounded(GzDecoder::new(Cursor::new(bytes))).context("decompress VGZ")
+    if matches!(extension(path).as_str(), "vgz" | "xgz") || bytes.starts_with(&[0x1f, 0x8b]) {
+        read_bounded(GzDecoder::new(Cursor::new(bytes))).context("decompress gzip input")
     } else {
         Ok(bytes)
     }
@@ -798,6 +799,25 @@ pub fn read_track(path: &Path) -> Result<Vec<u8>> {
 
 pub fn read_track_info(path: &Path) -> Result<Track> {
     let bytes = read_track(path)?;
+    if track_format(path) == "XGM" {
+        let document = XgmDocument::parse(&bytes).context("invalid XGM")?;
+        let gd3 = document.tracks[0].gd3.as_ref();
+        let metadata = gd3
+            .map(|gd3| TrackMetadata::from_gd3(gd3, VgmMetadataLanguage::English))
+            .unwrap_or_default();
+        let original = gd3
+            .map(|gd3| TrackMetadata::from_gd3(gd3, VgmMetadataLanguage::Original))
+            .unwrap_or_default();
+        let chips = document
+            .header
+            .timing
+            .vgm_header()
+            .chip_instances()
+            .iter()
+            .map(|(_, chip, _)| ChipTag::new(chip))
+            .collect();
+        return Ok(Track::new(path.to_path_buf(), metadata, chips).with_original_metadata(original));
+    }
     let is_mdx = extension(path) == "mdx";
     let metadata = if is_mdx {
         probe_mdx_bytes(&bytes).context("invalid MDX")
@@ -974,7 +994,10 @@ pub fn scan_with_progress(
                 continue;
             }
             if !entry.file_type().is_file()
-                || !matches!(extension(entry.path()).as_str(), "vgm" | "vgz" | "mdx")
+                || !matches!(
+                    extension(entry.path()).as_str(),
+                    "vgm" | "vgz" | "mdx" | "xgm" | "xgz"
+                )
             {
                 continue;
             }
@@ -2248,5 +2271,55 @@ mod tests {
                 .chips,
             vec![ChipTag::new(&Chip::Ym2151), ChipTag::new(&Chip::Okim6258)]
         );
+    }
+
+    #[test]
+    fn scan_supports_xgm_and_xgz_metadata_and_format_tags() {
+        use flate2::{Compression, write::GzEncoder};
+        use soundlog::meta::Gd3;
+        use soundlog::xgm::{XgmBuilder, XgmCommand, XgmTiming, XgmTrack};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+        for title in ["First", "Second"] {
+            builder.add_track(XgmTrack {
+                commands: vec![XgmCommand::Frame, XgmCommand::End],
+                gd3: Some(Gd3 {
+                    track_name_en: Some(title.into()),
+                    track_name_origin: Some(format!("{title} original")),
+                    ..Default::default()
+                }),
+            });
+        }
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        fs::write(dir.path().join("song.xgm"), &bytes).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&bytes).unwrap();
+        fs::write(dir.path().join("song.XGZ"), encoder.finish().unwrap()).unwrap();
+        fs::write(dir.path().join("bad.xgz"), b"broken").unwrap();
+        let ScanResult { tracks, errors, .. } = scan(&[dir.path().to_path_buf()]);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(tracks.len(), 2);
+        for track in &tracks {
+            assert_eq!(track_format(&track.path), "XGM");
+            assert_eq!(track.metadata.title.as_deref(), Some("First"));
+            assert_eq!(
+                track
+                    .metadata_for(MetadataLanguage::Original)
+                    .title
+                    .as_deref(),
+                Some("First original")
+            );
+            assert_eq!(
+                track.chips,
+                vec![ChipTag::new(&Chip::Sn76489), ChipTag::new(&Chip::Ym2612)]
+            );
+        }
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "", None, &["XGM".into()]).len(),
+            2
+        );
+        assert!(filter_indices_with_tags(&tracks, "", None, &["VGM".into()]).is_empty());
+        assert_eq!(filter_indices(&tracks, "first original", None).len(), 2);
     }
 }
