@@ -47,6 +47,8 @@ use crate::chip::Huc6280;
 use crate::chip::K051649;
 #[cfg(feature = "k053260")]
 use crate::chip::K053260;
+#[cfg(feature = "mikey")]
+use crate::chip::Mikey;
 #[cfg(feature = "multipcm")]
 use crate::chip::MultiPcm;
 #[cfg(feature = "okim6295")]
@@ -1202,6 +1204,8 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("ymz280b", chip, Box::new(Ymz280b::new(clock)?))
         } else if chip == Chip::MultiPcm {
             feature_backend!("multipcm", chip, Box::new(MultiPcm::new(clock)?))
+        } else if chip == Chip::Mikey {
+            feature_backend!("mikey", chip, Box::new(Mikey::new(clock)?))
         } else if chip == Chip::Upd7759 {
             feature_backend!("upd7759", chip, {
                 let ChipBackendSettings::Upd7759 { slave } = factory_config.settings() else {
@@ -1409,6 +1413,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::X1010
             | Chip::Ymz280b
             | Chip::MultiPcm
+            | Chip::Mikey
             | Chip::C140 => 2,
             _ => 1,
         }

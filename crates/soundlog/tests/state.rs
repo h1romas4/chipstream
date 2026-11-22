@@ -1697,19 +1697,11 @@ fn test_mikey_state_tracking() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(soundlog::chip::Chip::Mikey, Instance::Primary, 16_000_000);
 
-    // Enable master
-    builder.add_chip_write(
-        Instance::Primary,
-        MikeySpec {
-            register: 0x50,
-            value: 0x01,
-        },
-    );
     // Set counter for channel 0
     builder.add_chip_write(
         Instance::Primary,
         MikeySpec {
-            register: 0x06,
+            register: 0x26,
             value: 0x40,
         },
     );
@@ -1717,7 +1709,7 @@ fn test_mikey_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         MikeySpec {
-            register: 0x04,
+            register: 0x24,
             value: 0x01,
         },
     );
@@ -1725,7 +1717,7 @@ fn test_mikey_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         MikeySpec {
-            register: 0x00,
+            register: 0x20,
             value: 0x7F,
         },
     );
@@ -1733,7 +1725,7 @@ fn test_mikey_state_tracking() {
     builder.add_chip_write(
         Instance::Primary,
         MikeySpec {
-            register: 0x05,
+            register: 0x25,
             value: 0x08,
         },
     );

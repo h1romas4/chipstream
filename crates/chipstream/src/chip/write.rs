@@ -6,10 +6,10 @@
 
 use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Ga20Spec, GameGearPsgSpec, Huc6280Spec, K053260Spec,
-    K054539Spec, MultiPcmBankSpec, MultiPcmSpec, Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec,
-    PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec, Y8950Spec, Ym2151Spec,
-    Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
-    Ymf278bSpec, Ymz280bSpec,
+    K054539Spec, MikeySpec, MultiPcmBankSpec, MultiPcmSpec, Okim6258Spec, Okim6295Spec, PokeySpec,
+    PsgSpec, PwmSpec, Saa1099Spec, Scc1Spec, SegaPcmSpec, Upd7759Spec, X1010Spec, Y8950Spec,
+    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
+    Ymf262Spec, Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::{Instance, VgmCommand};
 
@@ -27,6 +27,8 @@ use super::K051649;
 use super::K053260;
 #[cfg(feature = "k054539")]
 use super::K054539;
+#[cfg(feature = "mikey")]
+use super::Mikey;
 #[cfg(feature = "multipcm")]
 use super::MultiPcm;
 #[cfg(feature = "okim6295")]
@@ -162,6 +164,7 @@ define_writes! {
     Ymz280b(Ymz280bSpec, Ymz280b, |s| (0, s.register, u32::from(s.value))),
     MultiPcm(MultiPcmSpec, MultiPcm, |s| (0, s.register, u32::from(s.value))),
     MultiPcmBank(MultiPcmBankSpec, MultiPcm, |s| (s.channel, 0, u32::from(s.bank_offset))),
+    Mikey(MikeySpec, Mikey, |s| (0, s.register, u32::from(s.value))),
     Upd7759(Upd7759Spec, Upd7759, |s| (0, s.register, u32::from(s.value))),
     Pwm(PwmSpec, Pwm, |s| (0, s.register, s.value)),
     Saa1099(Saa1099Spec, Saa1099, |s| (0, s.register, u32::from(s.value))),
@@ -201,6 +204,7 @@ impl ChipRegisterWrite {
             Ymz280bWrite(i, s) => (*i, Self::Ymz280b(s.clone())),
             MultiPcmWrite(i, s) => (*i, Self::MultiPcm(s.clone())),
             MultiPcmBankWrite(i, s) => (*i, Self::MultiPcmBank(s.clone())),
+            MikeyWrite(i, s) => (*i, Self::Mikey(s.clone())),
             Upd7759Write(i, s) => (*i, Self::Upd7759(s.clone())),
             PwmWrite(i, s) => (*i, Self::Pwm(s.clone())),
             Saa1099Write(i, s) => (*i, Self::Saa1099(s.clone())),
@@ -261,6 +265,8 @@ typed_write!(Ymz280b, Ymz280bSpec, Ymz280b);
 typed_write!(MultiPcm, MultiPcmSpec, MultiPcm);
 #[cfg(feature = "multipcm")]
 typed_write!(MultiPcm, MultiPcmBankSpec, MultiPcmBank);
+#[cfg(feature = "mikey")]
+typed_write!(Mikey, MikeySpec, Mikey);
 #[cfg(feature = "upd7759")]
 typed_write!(Upd7759, Upd7759Spec, Upd7759);
 #[cfg(feature = "pwm")]

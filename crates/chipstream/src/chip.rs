@@ -25,6 +25,8 @@ mod k051649;
 mod k053260;
 #[cfg(feature = "k054539")]
 mod k054539;
+#[cfg(feature = "mikey")]
+mod mikey;
 #[cfg(feature = "multipcm")]
 mod multipcm;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
@@ -75,6 +77,8 @@ pub use k051649::K051649;
 pub use k053260::K053260;
 #[cfg(feature = "k054539")]
 pub use k054539::{K054539, K054539Config};
+#[cfg(feature = "mikey")]
+pub use mikey::Mikey;
 #[cfg(feature = "multipcm")]
 pub use multipcm::MultiPcm;
 #[cfg(feature = "okim6258")]
@@ -398,6 +402,7 @@ impl<T: Any> SoundChipState for T {
     feature = "k051649",
     feature = "k053260",
     feature = "k054539",
+    feature = "mikey",
     feature = "multipcm",
     feature = "okim6258",
     feature = "okim6295",
@@ -423,6 +428,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "k051649",
     feature = "k053260",
     feature = "k054539",
+    feature = "mikey",
     feature = "multipcm",
     feature = "okim6258",
     feature = "okim6295",

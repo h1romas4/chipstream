@@ -45,6 +45,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `k051649` | K051649 / K052539 (SCC / SCC+) |
 | `k053260` | Konami K053260 |
 | `k054539` | Konami K054539 |
+| `mikey` | Atari Lynx Mikey |
 | `multipcm` | Yamaha MultiPCM |
 | `upd7759` | NEC uPD7759 |
 | `okim6258` | OKIM6258 |

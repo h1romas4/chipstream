@@ -12,7 +12,7 @@ use std::array;
 /// Mikey has 4 audio channels
 const MIKEY_CHANNELS: usize = 4;
 
-/// Mikey recommended storage (sparse for 64 registers)
+/// Mikey recommended sparse register storage.
 pub type MikeyStorage = SparseStorage<u8, u8>;
 
 /// Mikey register state tracker
@@ -22,7 +22,7 @@ pub type MikeyStorage = SparseStorage<u8, u8>;
 ///
 /// # Register Layout
 ///
-/// Mikey has 8 registers per channel (channels at offsets 0x00, 0x08, 0x10, 0x18):
+/// Mikey has 8 registers per channel (channels at 0x20, 0x28, 0x30, 0x38):
 /// - Offset+0: Volume (signed 8-bit)
 /// - Offset+1: Feedback (shift register feedback configuration)
 /// - Offset+2: Output (output value)
@@ -39,20 +39,20 @@ pub type MikeyStorage = SparseStorage<u8, u8>;
 /// Additional registers (Lynx II):
 /// - 0x40-0x43: Stereo attenuation per channel
 /// - 0x44: Attenuation enable
-/// - 0x50: Master enable
+/// - 0x50: Per-channel stereo output disable bits
 ///
 /// A channel is enabled when:
 /// - Volume is non-zero
 /// - Count enable is set (Control1 bit 3)
-/// - Master enable is set (register 0x50)
+/// - At least one output is enabled (register 0x50)
 #[derive(Debug, Clone)]
 pub struct MikeyState {
     /// Channel states for 4 audio channels
     channels: [ChannelState; MIKEY_CHANNELS],
     /// Master clock frequency in Hz (used for frequency calculation)
     master_clock_hz: f32,
-    /// Master enable flag (register 0x50)
-    master_enable: bool,
+    /// Per-channel stereo output disable bits.
+    stereo: u8,
     /// Global register storage for all written registers
     registers: MikeyStorage,
 }
@@ -79,7 +79,7 @@ impl MikeyState {
         Self {
             channels: array::from_fn(|_| ChannelState::new()),
             master_clock_hz,
-            master_enable: false,
+            stereo: 0,
             registers: MikeyStorage::default(),
         }
     }
@@ -110,16 +110,14 @@ impl MikeyState {
         self.channels.get_mut(channel as usize)
     }
 
-    /// Calculate frequency in Hz from counter and clock divisor values
+    /// Calculate timer frequency in Hz from the backup and clock divisor.
     ///
-    /// Mikey frequency formula (simplified):
-    /// freq = master_clock / (prescaler * (counter + 1))
-    ///
-    /// Where prescaler depends on timer_clock bits in Control1
+    /// `freq = master_clock / (16 * 2^timer_clock * (backup + 1))`.
+    /// Linked clocks do not have a directly calculable frequency.
     ///
     /// # Arguments
     ///
-    /// * `counter` - 8-bit counter value
+    /// * `counter` - 8-bit backup value
     /// * `timer_clock` - 3-bit timer clock divisor
     ///
     /// # Returns
@@ -127,12 +125,7 @@ impl MikeyState {
     /// Frequency in Hz
     fn calculate_frequency(&self, counter: u8, timer_clock: u8) -> f32 {
         // Timer clock divisor: 0=1, 1=2, 2=4, 3=8, 4=16, 5=32, 6=64, 7=linked
-        let divisor = if timer_clock < 7 {
-            1 << timer_clock
-        } else {
-            // Linked mode - use default divisor
-            1
-        };
+        let divisor = 16 << timer_clock;
 
         if counter == 0 {
             // Counter = 0 gives highest frequency
@@ -150,18 +143,18 @@ impl MikeyState {
     ///
     /// # Returns
     ///
-    /// Some(ToneInfo) if registers have been written, None otherwise
+    /// Tone information for a valid channel.
     fn extract_tone(&self, channel: usize) -> Option<ToneInfo> {
         if channel >= MIKEY_CHANNELS {
             return None;
         }
 
         // Read from global register storage
-        let base_reg = (channel * 8) as u8;
+        let base_reg = 0x20 + (channel * 8) as u8;
 
-        // Counter register (offset+6)
-        let counter_reg = base_reg + 6;
-        let counter = self.registers.read(counter_reg)?;
+        // The backup register determines the reloaded timer period.
+        let counter_reg = base_reg + 4;
+        let counter = self.registers.read(counter_reg).unwrap_or(0);
 
         // Control1 register (offset+5)
         let control1_reg = base_reg + 5;
@@ -170,16 +163,16 @@ impl MikeyState {
         // Extract timer clock divisor (bits 2-0)
         let timer_clock = control1 & 0x07;
 
-        let freq_hz = self.calculate_frequency(counter, timer_clock);
+        let freq_hz = (timer_clock != 7).then(|| self.calculate_frequency(counter, timer_clock));
 
         // Use counter as fnum, timer_clock as block for identification
-        Some(ToneInfo::new(counter as u16, timer_clock, Some(freq_hz)))
+        Some(ToneInfo::new(counter as u16, timer_clock, freq_hz))
     }
 
     /// Check if channel is enabled
     ///
     /// A channel is enabled if:
-    /// 1. Master enable is set (0x50)
+    /// 1. At least one stereo output is enabled (0x50)
     /// 2. Volume is non-zero (offset+0)
     /// 3. Count enable is set (Control1 bit 3)
     ///
@@ -191,12 +184,13 @@ impl MikeyState {
     ///
     /// true if channel is enabled, false otherwise
     fn is_channel_enabled(&self, channel: usize) -> bool {
-        if !self.master_enable {
+        let mask = 0x11 << channel;
+        if self.stereo & mask == mask {
             return false;
         }
 
         // Read from global register storage
-        let base_reg = (channel * 8) as u8;
+        let base_reg = 0x20 + (channel * 8) as u8;
 
         // Check volume (offset+0)
         let volume_reg = base_reg;
@@ -286,11 +280,22 @@ impl MikeyState {
             (KeyState::On, KeyState::Off) => Some(vec![StateEvent::KeyOff {
                 channel: channel as u8,
             }]),
+            (KeyState::On, KeyState::On) => {
+                let tone = self.extract_tone(channel)?;
+                if self.channels[channel].tone == Some(tone) {
+                    return None;
+                }
+                self.channels[channel].tone = Some(tone);
+                Some(vec![StateEvent::ToneChange {
+                    channel: channel as u8,
+                    tone,
+                }])
+            }
             _ => None,
         }
     }
 
-    /// Handle counter register write (offset+6)
+    /// Handle backup register write (offset+4).
     ///
     /// # Arguments
     ///
@@ -299,12 +304,12 @@ impl MikeyState {
     /// # Returns
     ///
     /// Some(vec![StateEvent::ToneChange) if tone changed while enabled, None otherwise
-    fn handle_counter_register(&mut self, channel: usize) -> Option<Vec<StateEvent>> {
+    fn handle_backup_register(&mut self, channel: usize) -> Option<Vec<StateEvent>> {
         if channel >= MIKEY_CHANNELS {
             return None;
         }
 
-        // If channel is enabled and counter changed, emit ToneChange
+        // If the channel is enabled, emit a tone change.
         if self.channels[channel].key_state == KeyState::On
             && let Some(tone) = self.extract_tone(channel)
         {
@@ -318,22 +323,22 @@ impl MikeyState {
         None
     }
 
-    /// Handle master enable register write (0x50)
+    /// Handle stereo disable register write (0x50).
     ///
     /// # Arguments
     ///
-    /// * `value` - Master enable value (bit 0)
+    /// * `value` - Per-channel left and right disable bits.
     ///
     /// # Returns
     ///
-    /// Some(StateEvent) for first channel that changed, None otherwise
-    fn handle_master_enable_register(&mut self, value: u8) -> Option<Vec<StateEvent>> {
-        let new_master_enable = (value & 0x01) != 0;
-        let old_master_enable = self.master_enable;
-        self.master_enable = new_master_enable;
+    /// Events for all channels whose key state changed.
+    fn handle_stereo_register(&mut self, value: u8) -> Option<Vec<StateEvent>> {
+        let old_stereo = self.stereo;
+        self.stereo = value;
+        let mut events = Vec::new();
 
-        // If master enable changed, update all channels
-        if old_master_enable != new_master_enable {
+        // Update all channels when the stereo mask changes.
+        if old_stereo != value {
             for channel in 0..MIKEY_CHANNELS {
                 let enabled = self.is_channel_enabled(channel);
                 let new_key_state = if enabled { KeyState::On } else { KeyState::Off };
@@ -345,23 +350,23 @@ impl MikeyState {
                     (KeyState::Off, KeyState::On) => {
                         if let Some(tone) = self.extract_tone(channel) {
                             self.channels[channel].tone = Some(tone);
-                            return Some(vec![StateEvent::KeyOn {
+                            events.push(StateEvent::KeyOn {
                                 channel: channel as u8,
                                 tone,
-                            }]);
+                            });
                         }
                     }
                     (KeyState::On, KeyState::Off) => {
-                        return Some(vec![StateEvent::KeyOff {
+                        events.push(StateEvent::KeyOff {
                             channel: channel as u8,
-                        }]);
+                        });
                     }
                     _ => {}
                 }
             }
         }
 
-        None
+        (!events.is_empty()).then_some(events)
     }
 }
 
@@ -382,15 +387,15 @@ impl ChipState for MikeyState {
         self.registers.write(register, value);
 
         match register {
-            // Channel registers (0x00-0x1F for channels 0-3)
-            0x00..=0x1F => {
-                let channel = (register / 8) as usize;
+            // Channel registers (0x20-0x3F for channels 0-3).
+            0x20..=0x3F => {
+                let channel = ((register - 0x20) / 8) as usize;
                 let offset = register % 8;
 
                 match offset {
                     0 => self.handle_volume_register(channel),
                     5 => self.handle_control1_register(channel),
-                    6 => self.handle_counter_register(channel),
+                    4 => self.handle_backup_register(channel),
                     // Other registers (feedback, output, shifter, backup, control2)
                     _ => None,
                 }
@@ -402,8 +407,8 @@ impl ChipState for MikeyState {
             // Attenuation enable (0x44) - Lynx II only
             0x44 => None,
 
-            // Master enable (0x50)
-            0x50 => self.handle_master_enable_register(value),
+            // Stereo output disable (0x50).
+            0x50 => self.handle_stereo_register(value),
 
             _ => None,
         }
@@ -413,7 +418,7 @@ impl ChipState for MikeyState {
         for channel in &mut self.channels {
             channel.clear();
         }
-        self.master_enable = false;
+        self.stereo = 0;
         self.registers.clear();
     }
 
@@ -430,17 +435,14 @@ mod tests {
     fn test_mikey_channel_enable() {
         let mut state = MikeyState::new(16_000_000.0f32);
 
-        // Set counter for channel 0
-        state.on_register_write(0x06, 0x40); // Counter
+        // Set backup for channel 0
+        state.on_register_write(0x24, 0x40); // Backup
 
         // Set volume
-        state.on_register_write(0x00, 0x7F); // Volume
-
-        // Enable master
-        state.on_register_write(0x50, 0x01);
+        state.on_register_write(0x20, 0x7F); // Volume
 
         // Enable count (Control1 bit 3)
-        let event = state.on_register_write(0x05, 0x08);
+        let event = state.on_register_write(0x25, 0x08);
 
         assert!(event.is_some());
         if let Some(ref events) = event {
@@ -454,13 +456,12 @@ mod tests {
         let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
-        state.on_register_write(0x06, 0x40);
-        state.on_register_write(0x00, 0x7F);
-        state.on_register_write(0x50, 0x01);
-        state.on_register_write(0x05, 0x08);
+        state.on_register_write(0x24, 0x40);
+        state.on_register_write(0x20, 0x7F);
+        state.on_register_write(0x25, 0x08);
 
         // Disable by setting volume to 0
-        let event = state.on_register_write(0x00, 0x00);
+        let event = state.on_register_write(0x20, 0x00);
 
         assert!(event.is_some());
         if let Some(ref events) = event {
@@ -474,13 +475,12 @@ mod tests {
         let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
-        state.on_register_write(0x06, 0x40);
-        state.on_register_write(0x00, 0x7F);
-        state.on_register_write(0x50, 0x01);
-        state.on_register_write(0x05, 0x08);
+        state.on_register_write(0x24, 0x40);
+        state.on_register_write(0x20, 0x7F);
+        state.on_register_write(0x25, 0x08);
 
-        // Change counter while enabled
-        let event = state.on_register_write(0x06, 0x80);
+        // Change backup while enabled
+        let event = state.on_register_write(0x24, 0x80);
 
         assert!(event.is_some());
         if let Some(ref events) = event {
@@ -490,17 +490,16 @@ mod tests {
     }
 
     #[test]
-    fn test_mikey_master_disable() {
+    fn test_mikey_stereo_disable() {
         let mut state = MikeyState::new(16_000_000.0f32);
 
         // Enable channel 0
-        state.on_register_write(0x06, 0x40);
-        state.on_register_write(0x00, 0x7F);
-        state.on_register_write(0x50, 0x01);
-        state.on_register_write(0x05, 0x08);
+        state.on_register_write(0x24, 0x40);
+        state.on_register_write(0x20, 0x7F);
+        state.on_register_write(0x25, 0x08);
 
-        // Disable master
-        let event = state.on_register_write(0x50, 0x00);
+        // Disable both outputs.
+        let event = state.on_register_write(0x50, 0x11);
 
         assert!(event.is_some());
         if let Some(ref events) = event {
@@ -523,27 +522,52 @@ mod tests {
 
         state.reset();
 
-        assert!(!state.master_enable);
+        assert_eq!(state.stereo, 0);
     }
 
     #[test]
     fn test_mikey_multiple_channels() {
         let mut state = MikeyState::new(16_000_000.0f32);
 
-        // Enable master
-        state.on_register_write(0x50, 0x01);
-
         // Enable channel 0
-        state.on_register_write(0x06, 0x40);
-        state.on_register_write(0x00, 0x7F);
-        state.on_register_write(0x05, 0x08);
+        state.on_register_write(0x24, 0x40);
+        state.on_register_write(0x20, 0x7F);
+        state.on_register_write(0x25, 0x08);
 
-        // Enable channel 2 (base register 0x10)
-        state.on_register_write(0x16, 0x20);
-        state.on_register_write(0x10, 0x60);
-        state.on_register_write(0x15, 0x08);
+        // Enable channel 2 (base register 0x30).
+        state.on_register_write(0x34, 0x20);
+        state.on_register_write(0x30, 0x60);
+        state.on_register_write(0x35, 0x08);
 
         assert_eq!(state.channel(0).unwrap().key_state, KeyState::On);
         assert_eq!(state.channel(2).unwrap().key_state, KeyState::On);
+        let events = state.on_register_write(0x50, 0x55).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn timer_registers_stereo_and_clock_division() {
+        let mut state = MikeyState::new(16_000_000.0);
+        assert!(state.on_register_write(0x00, 127).is_none());
+        assert!(state.on_register_write(0x05, 8).is_none());
+        assert_eq!(state.channel(0).unwrap().key_state, KeyState::Off);
+
+        state.on_register_write(0x20, 1);
+        state.on_register_write(0x24, 9);
+        let event = state.on_register_write(0x25, 9).unwrap();
+        assert!(
+            matches!(event[0], StateEvent::KeyOn { tone, .. } if tone.freq_hz == Some(50_000.0))
+        );
+        assert!(state.on_register_write(0x50, 0x01).is_none());
+        assert!(matches!(
+            state.on_register_write(0x50, 0x11).unwrap()[0],
+            StateEvent::KeyOff { channel: 0 }
+        ));
+        assert!(matches!(
+            state.on_register_write(0x50, 0).unwrap()[0],
+            StateEvent::KeyOn { channel: 0, .. }
+        ));
+        let event = state.on_register_write(0x25, 0x0f).unwrap();
+        assert!(matches!(event[0], StateEvent::ToneChange { tone, .. } if tone.freq_hz.is_none()));
     }
 }
