@@ -211,6 +211,14 @@ impl Timing {
         clock: u32,
         rate: SampleRate,
     ) -> (u32, u32) {
+        if *chip == Chip::Es5503 {
+            return (
+                (clock / 272).max(1).min(rate.floor_hz()),
+                clock
+                    .div_ceil(24)
+                    .max(rate.numerator().div_ceil(rate.denominator().get())),
+            );
+        }
         if let Some(changes) = self.clocks.iter().find(|entry| &entry.chip == chip) {
             let (mut min, mut max) =
                 changes.instances[instance as usize].bounds(clock, changes.registers);

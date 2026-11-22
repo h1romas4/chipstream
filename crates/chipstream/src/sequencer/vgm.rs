@@ -39,6 +39,8 @@ use crate::audio::{
 };
 #[cfg(feature = "c352")]
 use crate::chip::C352;
+#[cfg(feature = "es5503")]
+use crate::chip::Es5503;
 #[cfg(feature = "ga20")]
 use crate::chip::Ga20;
 #[cfg(feature = "huc6280")]
@@ -1176,6 +1178,21 @@ impl<'a> VgmSequencer<'a> {
             })
         } else if chip == Chip::Pwm {
             feature_backend!("pwm", chip, Box::new(Pwm::new(clock)?))
+        } else if chip == Chip::Es5503 {
+            feature_backend!("es5503", chip, {
+                let ChipBackendSettings::Es5503 { output_channels } = factory_config.settings()
+                else {
+                    return Err(ChipError::InvalidConfiguration {
+                        chip: Chip::Es5503,
+                        reason: "missing ES5503 output channel configuration",
+                    }
+                    .into());
+                };
+                Box::new(Es5503::with_output_channels(
+                    clock,
+                    (*output_channels).max(1),
+                )?)
+            })
         } else if matches!(chip, Chip::Rf5c68 | Chip::Rf5c164) {
             feature_backend!("rf5c", chip, Box::new(Rf5c::new(chip.clone(), clock)?))
         } else if chip == Chip::Saa1099 {
@@ -1388,6 +1405,11 @@ impl<'a> VgmSequencer<'a> {
         let effects = EffectRack::new(backend.channels());
         let output_masks = vec![[true; 2]; backend.channels()];
         let base_coefficients = matrix.coefficients().to_vec();
+        let resampler = if chip == Chip::Es5503 {
+            StereoResampler::new_adaptive(output_rate, min_rate, max_rate, SRC_CHUNK)?
+        } else {
+            StereoResampler::new(output_rate, min_rate, max_rate, SRC_CHUNK)?
+        };
         Ok(Voice {
             chip,
             instance,
@@ -1397,7 +1419,7 @@ impl<'a> VgmSequencer<'a> {
             tracker: None,
             route: ChipCapture::new(backend),
             matrix,
-            resampler: StereoResampler::new(output_rate, min_rate, max_rate, SRC_CHUNK)?,
+            resampler,
             memory,
             phase: 0,
             phase_rate: None,
@@ -1430,6 +1452,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Pwm
             | Chip::Rf5c68
             | Chip::Rf5c164
+            | Chip::Es5503
             | Chip::Saa1099
             | Chip::Huc6280
             | Chip::Ga20
@@ -1787,7 +1810,7 @@ impl<'a> VgmSequencer<'a> {
     /// Enable state tracking for a chip type and instance.
     ///
     /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
-    /// YM2612, YM3526, Y8950, YM3812, YMF262, and YMF278B.
+    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, and ES5503.
     pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
     where
         S: VgmStateTracker,
@@ -2851,6 +2874,25 @@ impl<'a> VgmSequencer<'a> {
         } else {
             Instance::Secondary
         };
+        if block.data_type == 0xe1 {
+            let Some(voice) = self
+                .voices
+                .iter_mut()
+                .find(|voice| voice.chip == Chip::Es5503 && voice.instance == instance)
+            else {
+                return Ok(());
+            };
+            let DataBlockType::RamWrite32(write) =
+                parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
+            else {
+                return Err(VgmSequencerError::InvalidRomBlock);
+            };
+            voice
+                .route
+                .chip_mut()
+                .write_ram(write.start_address as usize, &write.data)?;
+            return Ok(());
+        }
         if matches!(block.data_type, 0xc0..=0xc2) {
             let chip = match block.data_type {
                 0xc0 => Chip::Rf5c68,

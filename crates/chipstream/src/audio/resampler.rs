@@ -53,6 +53,12 @@ pub struct StereoResampler {
     max_chunk_frames: usize,
     /// Windowed-sinc coefficients for each fractional phase.
     coefficients: Vec<f32>,
+    /// Recalculate the cutoff for the rates covered by each filter window.
+    adaptive_cutoff: bool,
+    /// Rate for which the current coefficient table was generated.
+    coefficient_rate: SampleRate,
+    /// Previously generated tables for dynamic rates.
+    coefficient_cache: Vec<(SampleRate, Vec<f32>)>,
     /// Buffered input frames tagged with their original rates.
     input: VecDeque<([f32; 2], SampleRate)>,
     /// Current filter center in the buffered input.
@@ -119,7 +125,52 @@ impl StereoResampler {
         ceil_multiply_divide(chunk.max(HALF as u32), output_rate, min_input_rate)
             .ok_or(AudioError::OutputLengthOverflow)?;
 
-        let cutoff = (output_rate as f32 / max_input_rate as f32).min(1.0) * 0.95;
+        let coefficient_rate = SampleRate::from_hz(max_input_rate.max(output_rate));
+        let coefficients = Self::coefficients(output_rate, coefficient_rate);
+        Ok(Self {
+            output_rate,
+            min_input_rate,
+            max_input_rate,
+            max_chunk_frames,
+            coefficients,
+            adaptive_cutoff: false,
+            coefficient_rate,
+            coefficient_cache: Vec::new(),
+            input: VecDeque::new(),
+            position: HALF - 1,
+            phase: 0,
+            phase_rate: None,
+            phase_step: 0,
+            pending_advance: false,
+            duration: 1 << 31,
+            due: 0,
+            last_rate: None,
+            finished: false,
+        })
+    }
+
+    /// Construct a converter that adapts its cutoff to the rates in the current window.
+    pub(crate) fn new_adaptive(
+        output_rate: u32,
+        min_input_rate: u32,
+        max_input_rate: u32,
+        max_chunk_frames: usize,
+    ) -> Result<Self, AudioError> {
+        let mut resampler = Self::new(
+            output_rate,
+            min_input_rate,
+            max_input_rate,
+            max_chunk_frames,
+        )?;
+        resampler.adaptive_cutoff = true;
+        Ok(resampler)
+    }
+
+    fn coefficients(output_rate: u32, rate: SampleRate) -> Vec<f32> {
+        let cutoff = (output_rate as f32 * rate.denominator().get() as f32
+            / rate.numerator() as f32)
+            .min(1.0)
+            * 0.95;
         let mut coefficients = Vec::with_capacity((PHASES + 1) * SINC_LENGTH);
         for phase in 0..=PHASES {
             let start = coefficients.len();
@@ -142,23 +193,7 @@ impl StereoResampler {
                 *coefficient /= sum;
             }
         }
-        Ok(Self {
-            output_rate,
-            min_input_rate,
-            max_input_rate,
-            max_chunk_frames,
-            coefficients,
-            input: VecDeque::new(),
-            position: HALF - 1,
-            phase: 0,
-            phase_rate: None,
-            phase_step: 0,
-            pending_advance: false,
-            duration: 1 << 31,
-            due: 0,
-            last_rate: None,
-            finished: false,
-        })
+        coefficients
     }
 
     /// Convert a continuous stereo block, preserving filter history and phase.
@@ -318,6 +353,37 @@ impl StereoResampler {
             let phase = (fraction >> 25) as usize;
             let blend = (fraction & 0x01ff_ffff) as f32 / 33_554_432.0;
             let start = self.position - (HALF - 1);
+            if self.adaptive_cutoff {
+                let mut max_rate = SampleRate::from_hz(self.output_rate);
+                for (_, rate) in self.input.range(start..start + SINC_LENGTH) {
+                    if u64::from(rate.numerator()) * u64::from(max_rate.denominator().get())
+                        > u64::from(max_rate.numerator()) * u64::from(rate.denominator().get())
+                    {
+                        max_rate = *rate;
+                    }
+                }
+                if !same_rate(self.coefficient_rate, max_rate) {
+                    if let Some(index) = self
+                        .coefficient_cache
+                        .iter()
+                        .position(|(rate, _)| same_rate(*rate, max_rate))
+                    {
+                        let cached = &mut self.coefficient_cache[index];
+                        std::mem::swap(&mut self.coefficients, &mut cached.1);
+                        cached.0 = self.coefficient_rate;
+                    } else {
+                        let coefficients = Self::coefficients(self.output_rate, max_rate);
+                        let previous = std::mem::replace(&mut self.coefficients, coefficients);
+                        if self.coefficient_cache.len() < 32 {
+                            self.coefficient_cache
+                                .push((self.coefficient_rate, previous));
+                        } else {
+                            self.coefficient_cache[0] = (self.coefficient_rate, previous);
+                        }
+                    }
+                    self.coefficient_rate = max_rate;
+                }
+            }
             let mut sample = [0.0_f32; 2];
             for tap in 0..SINC_LENGTH {
                 let a = self.coefficients[phase * SINC_LENGTH + tap];

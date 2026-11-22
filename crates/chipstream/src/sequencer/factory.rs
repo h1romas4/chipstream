@@ -189,6 +189,11 @@ pub enum ChipBackendSettings {
     },
     /// C140 board variant.
     C140(C140Variant),
+    /// ES5503 physical output-channel count (zero means the default of one).
+    Es5503 {
+        /// Output channels requested by the source.
+        output_channels: u8,
+    },
     /// C352 clock divider and rear-output selection.
     C352 {
         /// Input-clock cycles per output sample.

@@ -2408,12 +2408,13 @@ mod tests {
     fn added_chips_use_the_nddrv_software_playback_path() {
         use crate::adapter::{AdapterMode, register_software_adapters};
         use crate::routing::{RoutingPlan, SoftwareTarget, Target};
-        use soundlog::chip::NesApuSpec;
-        use soundlog::vgm::command::WaitSamples;
+        use soundlog::chip::{Es5503Spec, NesApuSpec};
+        use soundlog::vgm::command::{DataBlock, WaitSamples};
 
         let cases = [
             (Chip::Rf5c68, 12_500_000),
             (Chip::Rf5c164, 12_500_000),
+            (Chip::Es5503, 7_000_000),
             (Chip::Saa1099, 8_000_000),
             (Chip::K051649, 3_579_545),
             (Chip::Huc6280, 3_579_545),
@@ -2435,6 +2436,26 @@ mod tests {
         for (index, (chip, clock)) in cases.into_iter().enumerate() {
             let mut builder = soundlog::vgm::VgmBuilder::new();
             builder.register_chip(chip.clone(), Instance::Primary, clock);
+            if chip == Chip::Es5503 {
+                builder.add_vgm_command(DataBlock {
+                    marker: 0x66,
+                    chip_instance: 0,
+                    data_type: 0xe1,
+                    size: 5,
+                    data: vec![0, 0, 0, 0, 0xc0],
+                });
+                for (register, value) in [
+                    (0x00, 0),
+                    (0x20, 0),
+                    (0x40, 255),
+                    (0x80, 0),
+                    (0xc0, 0),
+                    (0xa0, 2),
+                    (0xe1, 0),
+                ] {
+                    builder.add_chip_write(Instance::Primary, Es5503Spec { register, value });
+                }
+            }
             if clock & 0x8000_0000 != 0 {
                 for (register, value) in [
                     (0x89, 128),
@@ -2474,7 +2495,7 @@ mod tests {
             );
             let block = player.render().unwrap().unwrap();
             assert!(!block.frames().is_empty(), "{chip:?}");
-            if clock & 0x8000_0000 != 0 {
+            if chip == Chip::Es5503 || clock & 0x8000_0000 != 0 {
                 assert!(block.frames().iter().any(|frame| frame[0].abs() > 0.001));
             }
         }

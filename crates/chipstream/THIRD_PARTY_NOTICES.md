@@ -75,6 +75,16 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+# ES5503 implementation
+
+The ES5503 implementation is based on MAME's
+`src/devices/sound/es5503.cpp`, revision
+`367a7f677a86d4806b5f808978590de5463eb90a`.
+The stereo output-channel mapping follows libvgm's `emu/cores/es5503.c`,
+revision `c8b998b606895990c409a512b86c5509070f9f0d`, also derived from
+MAME. Copyright (c) R. Belmont. Both are distributed under the BSD-3-Clause
+terms reproduced below.
+
 # RF5C68/RF5C164 implementation
 
 The RF5C68/RF5C164 implementation is based on MAME's
