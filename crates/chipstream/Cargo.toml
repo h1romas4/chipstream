@@ -27,6 +27,7 @@ saa1099 = []
 segapcm = []
 sn76496 = []
 x1010 = []
+ymz280b = []
 
 [dependencies]
 soundlog = { workspace = true, features = ["mdx"] }

@@ -53,6 +53,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `segapcm` | SegaPCM |
 | `sn76496` | SN76489 / SN76496 |
 | `x1010` | Seta X1-010 |
+| `ymz280b` | Yamaha YMZ280B |
 
 Enable the chips your application needs, for example:
 

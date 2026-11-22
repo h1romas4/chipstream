@@ -61,6 +61,8 @@ use crate::chip::SegaPcm;
 use crate::chip::Sn76496;
 #[cfg(feature = "x1010")]
 use crate::chip::X1010;
+#[cfg(feature = "ymz280b")]
+use crate::chip::Ymz280b;
 #[cfg(feature = "c140")]
 use crate::chip::{C140, C140Type};
 use crate::chip::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, SoundChipState, YmfmChip};
@@ -693,7 +695,7 @@ impl Voice {
 /// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
 /// handles DAC streams, compressed sample blocks, and loops. The header
 /// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, SAA1099,
-/// K051649, K053260, K054539, X1-010, HuC6280, POKEY, GA20, C352, and
+/// K051649, K053260, K054539, X1-010, YMZ280B, HuC6280, POKEY, GA20, C352, and
 /// C140/219. The non-YMFM chips require their corresponding Cargo features;
 /// a chip declared in the header without its feature returns
 /// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
@@ -1189,6 +1191,8 @@ impl<'a> VgmSequencer<'a> {
             })
         } else if chip == Chip::X1010 {
             feature_backend!("x1010", chip, Box::new(X1010::new(clock)?))
+        } else if chip == Chip::Ymz280b {
+            feature_backend!("ymz280b", chip, Box::new(Ymz280b::new(clock)?))
         } else if chip == Chip::C352 {
             feature_backend!("c352", chip, {
                 let ChipBackendSettings::C352 { divider, .. } = factory_config.settings() else {
@@ -1383,6 +1387,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::K053260
             | Chip::K054539
             | Chip::X1010
+            | Chip::Ymz280b
             | Chip::C140 => 2,
             _ => 1,
         }
@@ -2775,6 +2780,7 @@ impl<'a> VgmSequencer<'a> {
             0x8e => (Chip::K053260, None),
             0x8c => (Chip::K054539, None),
             0x91 => (Chip::X1010, None),
+            0x86 => (Chip::Ymz280b, None),
             0x81 => (Chip::Ym2608, Some(AccessClass::AdpcmB)),
             0x82 => (Chip::Ym2610b, Some(AccessClass::AdpcmA)),
             0x83 => (Chip::Ym2610b, Some(AccessClass::AdpcmB)),

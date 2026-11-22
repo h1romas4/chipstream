@@ -79,6 +79,7 @@ impl SoundChip for RecordingChip {
                 let [bank, register] = s.offset.to_be_bytes();
                 (bank, register, s.value.into())
             }
+            ChipRegisterWrite::Ymz280b(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6295(s) => (0, s.register, s.value.into()),
@@ -193,6 +194,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
             value: 0x81,
         },
         (0x1f, 0xff, 0x81),
+    );
+    check_mapping(
+        Chip::Ymz280b,
+        Ymz280bSpec {
+            register: 0xff,
+            value: 0x80,
+        },
+        (0, 0xff, 0x80),
     );
     check_mapping(
         Chip::Pwm,
