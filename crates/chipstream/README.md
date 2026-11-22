@@ -38,28 +38,31 @@ through `SoundChip::write_rom` and `SoundChip::write_ram`.
 
 YMFM chips are always available. Optional features are disabled by default:
 
-| Feature | Chip |
-| --- | --- |
-| `c140` | C140 / ASIC219 |
-| `c352` | Namco C352 |
-| `ga20` | Irem GA20 |
-| `huc6280` | HuC6280 PSG |
-| `k051649` | K051649 / K052539 (SCC / SCC+) |
-| `k053260` | Konami K053260 |
-| `k054539` | Konami K054539 |
-| `mikey` | Atari Lynx Mikey |
-| `multipcm` | Yamaha MultiPCM |
-| `nes_apu` | NES APU (FDS expansion not supported) |
-| `upd7759` | NEC uPD7759 |
-| `okim6258` | OKIM6258 |
-| `okim6295` | OKIM6295 |
-| `pokey` | POKEY |
-| `pwm` | PWM |
-| `saa1099` | SAA1099 |
-| `segapcm` | SegaPCM |
-| `sn76496` | SN76489 / SN76496 |
-| `x1010` | Seta X1-010 |
-| `ymz280b` | Yamaha YMZ280B |
+| Feature | Chip | Source | Source license |
+| --- | --- | --- | --- |
+| `c140` | C140 / ASIC219 | MAME | BSD-3-Clause |
+| `c352` | Namco C352 | MAME | BSD-3-Clause |
+| `ga20` | Irem GA20 | MAME | BSD-3-Clause |
+| `huc6280` | HuC6280 PSG | MAME | BSD-3-Clause |
+| `k051649` | K051649 / K052539 (SCC / SCC+) | MAME | BSD-3-Clause |
+| `k053260` | Konami K053260 | MAME | BSD-3-Clause |
+| `k054539` | Konami K054539 | MAME | BSD-3-Clause |
+| `mikey` | Atari Lynx Mikey | libvgm | MIT |
+| `multipcm` | Yamaha MultiPCM | MAME | BSD-3-Clause |
+| `nes_apu` | NES APU (FDS expansion not supported) | JSNES, via Tetorica | Apache-2.0 |
+| `upd7759` | NEC uPD7759 | MAME | BSD-3-Clause |
+| `okim6258` | OKIM6258 | MAME | BSD-3-Clause |
+| `okim6295` | OKIM6295 | MAME | BSD-3-Clause |
+| `pokey` | POKEY | MAME | BSD-3-Clause |
+| `pwm` | PWM | MAME | BSD-3-Clause |
+| `saa1099` | SAA1099 | MAME | BSD-3-Clause |
+| `segapcm` | SegaPCM | MAME | BSD-3-Clause |
+| `sn76496` | SN76489 / SN76496 | MAME | BSD-3-Clause |
+| `x1010` | Seta X1-010 | MAME | BSD-3-Clause |
+| `ymz280b` | Yamaha YMZ280B | MAME | BSD-3-Clause |
+
+See [third-party notices](THIRD_PARTY_NOTICES.md) for source revisions and
+license terms.
 
 Enable the chips your application needs, for example:
 
