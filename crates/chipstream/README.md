@@ -63,6 +63,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `pwm` | PWM | MAME | BSD-3-Clause |
 | `rf5c` | RF5C68 / RF5C164 | MAME | BSD-3-Clause |
 | `saa1099` | SAA1099 | MAME | BSD-3-Clause |
+| `scsp` | Sega/Yamaha SCSP (YMF292) | MAME | BSD-3-Clause |
 | `segapcm` | SegaPCM | MAME | BSD-3-Clause |
 | `sn76496` | SN76489 / SN76496 / T6W28 | MAME | BSD-3-Clause |
 | `vsu` | Virtual Boy VSU | Rustual Boy | MIT |
@@ -85,6 +86,11 @@ Legacy 4 MHz VGM clocks and their key-on behavior are supported.
 ES5505/ES5506 output pairs are mixed to stereo. VGM ROM regions and external
 per-voice bank writes are supported. The implementation has been tested with
 synthetic data but not verified against a complete ES550x VGM recording.
+
+SCSP provides PCM, FM modulation, and the programmable DSP with shared sample
+RAM. External audio inputs and host CPU interrupts are not connected. Playback
+has not been verified against a complete SCSP VGM recording. Envelope and DSP
+behavior follows MAME's approximations; noise uses a deterministic generator.
 
 Enable the chips your application needs, for example:
 

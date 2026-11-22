@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn device_column_extends_graph_when_it_exceeds_emulator_height() {
-        let devices: Vec<_> = (0..20)
+        let devices: Vec<_> = (0..24)
             .map(|id| Device {
                 id,
                 name: format!("Drive {id}"),

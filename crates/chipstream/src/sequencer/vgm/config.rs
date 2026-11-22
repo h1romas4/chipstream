@@ -105,7 +105,7 @@ impl<'a> ChipConfiguration<'a> {
     }
 
     /// Extract supported clocks, including legacy header aliases.
-    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 41] {
+    fn supported_clocks(header: &VgmHeader) -> [(Chip, u32); 42] {
         let misc = header.misc();
         [
             (Chip::Sn76489, header.sn76489_clock),
@@ -123,6 +123,7 @@ impl<'a> ChipConfiguration<'a> {
             (Chip::Vsu, header.vsu_clock),
             (Chip::C352, header.c352_clock),
             (Chip::Es5503, header.es5503_clock),
+            (Chip::Scsp, header.scsp_clock),
             (
                 if header.es5506_clock & 0x8000_0000 != 0 {
                     Chip::Es5506U8
@@ -304,6 +305,7 @@ pub(super) fn chip_id(chip: &Chip) -> ChipId {
         Chip::Vsu => ChipId::Vsu,
         Chip::C352 => ChipId::C352,
         Chip::Es5503 => ChipId::Es5503,
+        Chip::Scsp => ChipId::Scsp,
         Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16 => ChipId::Es5506,
         Chip::K053260 => ChipId::K053260,
         Chip::K054539 => ChipId::K054539,
@@ -330,6 +332,5 @@ pub(super) fn chip_id(chip: &Chip) -> ChipId {
         Chip::Ymf278b => ChipId::Ymf278b,
         Chip::Okim6258 => ChipId::Okim6258,
         Chip::Okim6295 => ChipId::Okim6295,
-        _ => unreachable!("only supported chips have sequencer voices"),
     }
 }

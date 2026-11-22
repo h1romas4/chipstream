@@ -61,6 +61,10 @@ mod qsound_tables;
 mod rf5c;
 #[cfg(feature = "saa1099")]
 mod saa1099;
+#[cfg(feature = "scsp")]
+mod scsp;
+#[cfg(any(test, feature = "scsp"))]
+mod scsp_dsp;
 #[cfg(feature = "segapcm")]
 mod segapcm;
 #[cfg(feature = "sn76496")]
@@ -133,6 +137,8 @@ pub use qsound::Qsound;
 pub use rf5c::Rf5c;
 #[cfg(feature = "saa1099")]
 pub use saa1099::Saa1099;
+#[cfg(feature = "scsp")]
+pub use scsp::Scsp;
 #[cfg(feature = "segapcm")]
 pub use segapcm::SegaPcm;
 #[cfg(feature = "sn76496")]
@@ -469,6 +475,7 @@ impl<T: Any> SoundChipState for T {
     feature = "rf5c",
     feature = "pokey",
     feature = "saa1099",
+    feature = "scsp",
     feature = "segapcm",
     feature = "sn76496",
     feature = "upd7759",
@@ -503,6 +510,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "pwm",
     feature = "pokey",
     feature = "saa1099",
+    feature = "scsp",
     feature = "segapcm",
     feature = "sn76496",
     feature = "upd7759",

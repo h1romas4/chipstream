@@ -21,10 +21,10 @@ use soundlog::chip::{
     Ay8910Spec, C140Spec, C352Spec, Chip, Es5503Spec, Es5506U8Spec, Es5506U16Spec, Ga20Spec,
     GameGearPsgSpec, GbDmgSpec, Huc6280Spec, K053260Spec, K054539Spec, MultiPcmBankSpec,
     MultiPcmSpec, NesApuSpec, Okim6258Spec, Okim6295Spec, PokeySpec, PsgSpec, PwmSpec, QsoundSpec,
-    Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, SegaPcmSpec,
-    Upd7759Spec, VsuSpec, WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec, Ym2151Spec,
-    Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec, Ymf262Spec,
-    Ymf271Spec, Ymf278bSpec, Ymz280bSpec,
+    Rf5c68U8Spec, Rf5c68U16Spec, Rf5c164U8Spec, Rf5c164U16Spec, Saa1099Spec, Scc1Spec, ScspSpec,
+    SegaPcmSpec, Upd7759Spec, VsuSpec, WonderSwanRegSpec, WonderSwanSpec, X1010Spec, Y8950Spec,
+    Ym2151Spec, Ym2203Spec, Ym2413Spec, Ym2608Spec, Ym2610Spec, Ym2612Spec, Ym3526Spec, Ym3812Spec,
+    Ymf262Spec, Ymf271Spec, Ymf278bSpec, Ymz280bSpec,
 };
 use soundlog::vgm::command::Instance;
 
@@ -85,6 +85,7 @@ impl_write_callback_target!(SegaPcmSpec, SegaPcm);
 impl_write_callback_target!(C140Spec, C140);
 impl_write_callback_target!(C352Spec, C352);
 impl_write_callback_target!(Es5503Spec, Es5503);
+impl_write_callback_target!(ScspSpec, Scsp);
 impl_write_callback_target!(Es5506U8Spec, Es5506U8);
 impl_write_callback_target!(Es5506U16Spec, Es5506U16);
 impl_write_callback_target!(Ga20Spec, Ga20);

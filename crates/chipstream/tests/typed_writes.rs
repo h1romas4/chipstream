@@ -68,6 +68,10 @@ impl SoundChip for RecordingChip {
                 let [bank, register] = s.register.to_be_bytes();
                 (bank, register, s.value.into())
             }
+            ChipRegisterWrite::Scsp(s) => {
+                let [bank, register] = s.offset.to_be_bytes();
+                (bank, register, s.value.into())
+            }
             ChipRegisterWrite::Es5506U8(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Es5506U16(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Pwm(s) => (0, s.register, s.value),

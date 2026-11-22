@@ -2482,8 +2482,8 @@ mod tests {
         use crate::adapter::{AdapterMode, register_software_adapters};
         use crate::routing::{RoutingPlan, SoftwareTarget, Target};
         use soundlog::chip::{
-            Es5503Spec, Es5506U8Spec, Es5506U16Spec, GbDmgSpec, NesApuSpec, WonderSwanRegSpec,
-            WonderSwanSpec,
+            Es5503Spec, Es5506U8Spec, Es5506U16Spec, GbDmgSpec, NesApuSpec, ScspSpec,
+            WonderSwanRegSpec, WonderSwanSpec,
         };
         use soundlog::vgm::command::{DataBlock, WaitSamples};
 
@@ -2491,6 +2491,7 @@ mod tests {
             (Chip::Rf5c68, 12_500_000),
             (Chip::Rf5c164, 12_500_000),
             (Chip::Es5503, 7_000_000),
+            (Chip::Scsp, 22_579_200),
             (Chip::Es5505, 16_000_000),
             (Chip::Es5506U8, 16_000_000),
             (Chip::GbDmg, 4_194_304),
@@ -2534,6 +2535,37 @@ mod tests {
                     (0xe1, 0),
                 ] {
                     builder.add_chip_write(Instance::Primary, Es5503Spec { register, value });
+                }
+            }
+            if chip == Chip::Scsp {
+                let mut data = 0_u32.to_le_bytes().to_vec();
+                for sample in [1000_i16, -1000, 2000, -2000] {
+                    data.extend_from_slice(&sample.to_be_bytes());
+                }
+                builder.add_vgm_command(DataBlock {
+                    marker: 0x66,
+                    chip_instance: 0,
+                    data_type: 0xe0,
+                    size: data.len() as u32,
+                    data,
+                });
+                for (offset, value) in [
+                    (0x400, 15_u16),
+                    (0x006, 4),
+                    (0x00c, 0x100),
+                    (0x010, 0x5800),
+                    (0x016, 0xe000),
+                    (0x000, 0x1820),
+                ] {
+                    for (i, value) in value.to_be_bytes().into_iter().enumerate() {
+                        builder.add_chip_write(
+                            Instance::Primary,
+                            ScspSpec {
+                                offset: offset + i as u16,
+                                value,
+                            },
+                        );
+                    }
                 }
             }
             if matches!(chip, Chip::Es5505 | Chip::Es5506U8) {
@@ -2663,12 +2695,22 @@ mod tests {
             assert!(!block.frames().is_empty(), "{chip:?}");
             if matches!(
                 chip,
-                Chip::Es5503 | Chip::Es5505 | Chip::Es5506U8 | Chip::GbDmg | Chip::WonderSwan
+                Chip::Es5503
+                    | Chip::Scsp
+                    | Chip::Es5505
+                    | Chip::Es5506U8
+                    | Chip::GbDmg
+                    | Chip::WonderSwan
             ) || clock & 0x8000_0000 != 0
             {
                 assert!(
                     block.frames().iter().any(|frame| frame[0].abs() > 0.001),
-                    "{chip:?}"
+                    "{chip:?}: peak {}",
+                    block
+                        .frames()
+                        .iter()
+                        .map(|frame| frame[0].abs())
+                        .fold(0.0_f32, f32::max)
                 );
             }
         }

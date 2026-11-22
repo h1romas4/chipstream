@@ -8418,7 +8418,7 @@ mod tests {
                 &statuses,
                 false
             ),
-            ["SCSP"]
+            [] as [&str; 0]
         );
         assert_eq!(
             unsupported_chips(
@@ -8427,7 +8427,7 @@ mod tests {
                 &statuses,
                 false
             ),
-            ["SCSP"]
+            [] as [&str; 0]
         );
         assert!(
             unsupported_chips(
@@ -8478,11 +8478,11 @@ mod tests {
         );
         assert_eq!(
             unsupported_chips(std::slice::from_ref(&scsp), &[], &statuses, false),
-            ["SCSP"]
+            [] as [&str; 0]
         );
         assert_eq!(
             unsupported_chips(&[ay.clone(), scsp, ym], &[], &statuses, true),
-            ["SCSP"]
+            [] as [&str; 0]
         );
         assert!(unsupported_chips(std::slice::from_ref(&dual_ay), &[], &statuses, true).is_empty());
         let valid_route = Connection {

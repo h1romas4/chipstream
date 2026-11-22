@@ -1809,7 +1809,7 @@ mod tests {
         {
             assert!(ChipTag::new(&chip).software_supported(), "{chip:?}");
         }
-        for chip in [Chip::Scsp, Chip::Ay8910] {
+        for chip in [Chip::Ay8910] {
             assert!(!ChipTag::new(&chip).software_supported(), "{chip:?}");
         }
     }
@@ -1820,14 +1820,14 @@ mod tests {
 
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
-        builder.register_chip(Chip::Scsp, Instance::Primary, 4_000_000);
+        builder.register_chip(Chip::Ay8910, Instance::Primary, 4_000_000);
         let tags = Track::track_chips(&Vec::<u8>::from(builder.finalize()), false).unwrap();
         let unsupported: Vec<_> = tags
             .iter()
             .filter(|tag| !tag.software_supported())
             .map(|tag| tag.name)
             .collect();
-        assert_eq!(unsupported, ["SCSP"]);
+        assert_eq!(unsupported, ["AY8910"]);
     }
 
     #[test]
@@ -1840,7 +1840,7 @@ mod tests {
             let mut builder = soundlog::vgm::VgmBuilder::new();
             builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
             if unsupported {
-                builder.register_chip(Chip::Scsp, Instance::Primary, 4_000_000);
+                builder.register_chip(Chip::Ay8910, Instance::Primary, 4_000_000);
             }
             let bytes = Vec::<u8>::from(builder.finalize());
             let path = directory.path().join(format!("track.{extension}"));
@@ -1858,7 +1858,7 @@ mod tests {
                 .filter(|chip| !chip.software_supported())
                 .map(ChipTag::label)
                 .collect();
-            assert_eq!(labels, if unsupported { vec!["SCSP"] } else { vec![] });
+            assert_eq!(labels, if unsupported { vec!["AY8910"] } else { vec![] });
         }
     }
 

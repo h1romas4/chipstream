@@ -71,6 +71,8 @@ use crate::chip::Qsound;
 use crate::chip::Rf5c;
 #[cfg(feature = "saa1099")]
 use crate::chip::Saa1099;
+#[cfg(feature = "scsp")]
+use crate::chip::Scsp;
 #[cfg(feature = "segapcm")]
 use crate::chip::SegaPcm;
 #[cfg(feature = "upd7759")]
@@ -1242,6 +1244,8 @@ impl<'a> VgmSequencer<'a> {
                     (*output_channels).max(1),
                 )?)
             })
+        } else if chip == Chip::Scsp {
+            feature_backend!("scsp", chip, Box::new(Scsp::new(clock)?))
         } else if matches!(chip, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16) {
             feature_backend!("es550x", chip, Box::new(Es550x::new(chip.clone(), clock)?))
         } else if matches!(chip, Chip::Rf5c68 | Chip::Rf5c164) {
@@ -1525,6 +1529,7 @@ impl<'a> VgmSequencer<'a> {
             | Chip::Rf5c68
             | Chip::Rf5c164
             | Chip::Es5503
+            | Chip::Scsp
             | Chip::Es5505
             | Chip::Es5506U8
             | Chip::Es5506U16
@@ -2973,11 +2978,16 @@ impl<'a> VgmSequencer<'a> {
         } else {
             Instance::Secondary
         };
-        if block.data_type == 0xe1 {
+        if matches!(block.data_type, 0xe0 | 0xe1) {
+            let chip = if block.data_type == 0xe0 {
+                Chip::Scsp
+            } else {
+                Chip::Es5503
+            };
             let Some(voice) = self
                 .voices
                 .iter_mut()
-                .find(|voice| voice.chip == Chip::Es5503 && voice.instance == instance)
+                .find(|voice| voice.chip == chip && voice.instance == instance)
             else {
                 return Ok(());
             };
