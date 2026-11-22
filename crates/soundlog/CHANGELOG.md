@@ -7,6 +7,9 @@
 - Add: XGM v1 parsing and typed document construction with shared PCM samples, multiple tracks, and GD3 metadata (`xgm` feature).
 - Add: Lazy XGM playback through `VgmCommandGenerator`, including frame timing, looping, and four-channel PCM mixing.
 - Add: Configurable default XGM parsing and playback resource limits, including protection against loops without frame waits.
+- Add: `XgmVgmGenerator::finished_at_loop` identifies playback ending at the configured loop boundary.
+- Add: `XgmHeader` groups timing and sample definitions; `XgmDocument` derives serialized sizes and flags from its data.
+- Change: XGM parsing limits sample and bank lengths and defined sample count instead of total input size, and also limits cumulative GD3 size.
 
 ## v0.17.0
 

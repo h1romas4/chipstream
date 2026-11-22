@@ -5,7 +5,9 @@
 pub mod command;
 pub mod convert;
 pub mod document;
+pub mod header;
 
 pub use command::{XgmCommand, XgmRegisterWrite};
-pub use convert::{XgmPlaybackError, XgmPlaybackOptions, XgmVgmGenerator};
-pub use document::{XgmBuilder, XgmDocument, XgmParseLimits, XgmSample, XgmTiming, XgmTrack};
+pub use convert::{XgmLoopMarker, XgmPlaybackError, XgmPlaybackOptions, XgmVgmGenerator};
+pub use document::{XgmBuilder, XgmDocument, XgmParseLimits, XgmTrack};
+pub use header::{XGM_SAMPLE_COUNT, XgmHeader, XgmSample, XgmTiming};

@@ -34,6 +34,24 @@ pub struct TrackMetadata {
     pub comment: Option<String>,
 }
 
+impl TrackMetadata {
+    /// Convert GD3 fields using the requested language preference.
+    pub fn from_gd3(gd3: &Gd3, language: VgmMetadataLanguage) -> Self {
+        let choose = |english: &Option<String>, original: &Option<String>| match language {
+            VgmMetadataLanguage::English => first_nonempty(english.clone(), original.clone()),
+            VgmMetadataLanguage::Original => first_nonempty(original.clone(), english.clone()),
+        };
+        Self {
+            title: choose(&gd3.track_name_en, &gd3.track_name_origin),
+            artist: choose(&gd3.author_name_en, &gd3.author_name_origin),
+            album: choose(&gd3.game_name_en, &gd3.game_name_origin),
+            system_name: choose(&gd3.system_name_en, &gd3.system_name_origin),
+            release_date: nonempty(gd3.release_date.clone().unwrap_or_default()),
+            comment: nonempty(gd3.notes.clone().unwrap_or_default()),
+        }
+    }
+}
+
 /// Preferred language for bilingual VGM GD3 metadata.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VgmMetadataLanguage {
@@ -107,18 +125,7 @@ pub fn probe_vgm_bytes_with_language(
     let gd3 =
         Gd3::try_from(gd3_bytes).map_err(|error| MetadataError::InvalidGd3(error.to_string()))?;
 
-    let choose = |english, original| match language {
-        VgmMetadataLanguage::English => first_nonempty(english, original),
-        VgmMetadataLanguage::Original => first_nonempty(original, english),
-    };
-    Ok(TrackMetadata {
-        title: choose(gd3.track_name_en, gd3.track_name_origin),
-        artist: choose(gd3.author_name_en, gd3.author_name_origin),
-        album: choose(gd3.game_name_en, gd3.game_name_origin),
-        system_name: choose(gd3.system_name_en, gd3.system_name_origin),
-        release_date: nonempty(gd3.release_date.unwrap_or_default()),
-        comment: nonempty(gd3.notes.unwrap_or_default()),
-    })
+    Ok(TrackMetadata::from_gd3(&gd3, language))
 }
 
 /// Parse title metadata from MDX bytes, including supported compressed bodies.

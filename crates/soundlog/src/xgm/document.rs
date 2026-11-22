@@ -1,30 +1,14 @@
 //! XGM v1 parsing, construction, and serialization.
 
 use super::command::{XgmCommand, XgmRegisterWrite};
+use super::header::{XGM_SAMPLE_COUNT, XgmHeader};
+pub use super::header::{XgmSample, XgmTiming};
 use crate::ParseError;
 use crate::binutil::{read_slice, read_u16_le_at, read_u32_le_at};
-use crate::chip::Chip;
 use crate::meta::{Gd3, parse_gd3};
-use crate::vgm::VgmHeader;
-use crate::vgm::command::Instance;
 
 const HEADER_SIZE: usize = 0x104;
-const SAMPLE_COUNT: usize = 63;
-
-fn invalid(message: impl Into<String>) -> ParseError {
-    ParseError::DataInconsistency(message.into())
-}
-
-fn check_limit(resource: &str, value: usize, limit: Option<usize>) -> Result<(), ParseError> {
-    if let Some(limit) = limit
-        && value > limit
-    {
-        return Err(invalid(format!(
-            "XGM {resource} limit exceeded (maximum {limit})"
-        )));
-    }
-    Ok(())
-}
+const MAX_SAMPLE_DATA_BYTES: usize = u16::MAX as usize * 256;
 
 /// Resource limits for parsing untrusted XGM files.
 ///
@@ -32,68 +16,34 @@ fn check_limit(resource: &str, value: usize, limit: Option<usize>) -> Result<(),
 /// additionally bounded by the XGM format itself to less than 16 MiB.
 #[derive(Debug, Clone, Copy)]
 pub struct XgmParseLimits {
-    /// Maximum total input bytes, including all tracks and metadata. Default: 64 MiB.
-    pub max_input_bytes: Option<usize>,
+    /// Maximum shared sample bank length in bytes. Default: the XGM format maximum.
+    pub max_sample_data_bytes: Option<usize>,
+    /// Maximum length of each defined sample in bytes. Default: the XGM format maximum.
+    pub max_sample_bytes: Option<usize>,
+    /// Maximum number of defined samples. Default: 63.
+    pub max_samples: Option<usize>,
     /// Maximum number of tracks. Default: 256.
     pub max_tracks: Option<usize>,
     /// Maximum total commands across all tracks. Default: 1,000,000.
     pub max_commands: Option<usize>,
-    /// Maximum GD3 chunk size in bytes, including its 12-byte header. Default: 1 MiB.
+    /// Maximum GD3 chunk size in bytes, including its 12-byte header. Default: 16 KiB.
     pub max_gd3_bytes: Option<usize>,
+    /// Maximum total GD3 bytes across all tracks, including headers. Default: 256 KiB.
+    pub max_total_gd3_bytes: Option<usize>,
 }
 
 impl Default for XgmParseLimits {
     fn default() -> Self {
         Self {
-            max_input_bytes: Some(64 * 1024 * 1024),
+            max_sample_data_bytes: Some(MAX_SAMPLE_DATA_BYTES),
+            max_sample_bytes: Some(MAX_SAMPLE_DATA_BYTES),
+            max_samples: Some(XGM_SAMPLE_COUNT),
             max_tracks: Some(256),
             max_commands: Some(1_000_000),
-            max_gd3_bytes: Some(1024 * 1024),
+            max_gd3_bytes: Some(16 * 1024),
+            max_total_gd3_bytes: Some(256 * 1024),
         }
     }
-}
-
-/// Frame timing specified by an XGM file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum XgmTiming {
-    /// 60 frames per second.
-    Ntsc,
-    /// 50 frames per second.
-    Pal,
-}
-
-impl XgmTiming {
-    /// Frame duration in 44.1 kHz VGM samples.
-    pub const fn frame_samples(self) -> u16 {
-        match self {
-            Self::Ntsc => 735,
-            Self::Pal => 882,
-        }
-    }
-
-    /// Header describing the YM2612 and SN76489 used for playback.
-    pub fn vgm_header(self) -> VgmHeader {
-        let (ym, psg) = match self {
-            Self::Ntsc => (7_670_454, 3_579_545),
-            Self::Pal => (7_600_489, 3_546_893),
-        };
-        let mut header = VgmHeader::default();
-        header.set_chip_clock(Chip::Ym2612, Instance::Primary, ym);
-        header.set_chip_clock(Chip::Sn76489, Instance::Primary, psg);
-        header
-    }
-}
-
-/// A sample range within the document's shared sample data, in bytes.
-///
-/// Both fields must be multiples of 256. Sample ID 1 corresponds to entry 0
-/// in [`XgmDocument::samples`]; ID 0 is reserved for stopping playback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct XgmSample {
-    /// Offset in the shared sample data.
-    pub offset: u32,
-    /// Sample length.
-    pub length: u32,
 }
 
 /// One music block and its optional GD3 metadata.
@@ -108,10 +58,8 @@ pub struct XgmTrack {
 /// A complete XGM v1 file, including its shared sample bank and tracks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct XgmDocument {
-    /// PAL or NTSC frame timing.
-    pub timing: XgmTiming,
-    /// Sample ranges for IDs 1–63.
-    pub samples: [Option<XgmSample>; SAMPLE_COUNT],
+    /// Timing and sample table.
+    pub header: XgmHeader,
     /// Shared signed 8-bit PCM data.
     pub sample_data: Vec<u8>,
     /// Music blocks. Multiple tracks share the same sample bank.
@@ -132,7 +80,6 @@ impl XgmDocument {
     /// Limits are checked before copying sample or metadata data, and before
     /// retaining each track or command.
     pub fn parse_with_limits(bytes: &[u8], limits: XgmParseLimits) -> Result<Self, ParseError> {
-        check_limit("input bytes", bytes.len(), limits.max_input_bytes)?;
         let header = read_slice(bytes, 0, HEADER_SIZE)?;
         if &header[..4] != b"XGM " {
             return Err(ParseError::InvalidIdent(header[..4].try_into().unwrap()));
@@ -150,21 +97,35 @@ impl XgmDocument {
             XgmTiming::Pal
         };
         let sample_len = usize::from(read_u16_le_at(bytes, 0x100)?) * 256;
-        let sample_data = read_slice(bytes, HEADER_SIZE, sample_len)?.to_vec();
-        let mut samples = [None; SAMPLE_COUNT];
-        for (index, sample) in samples.iter_mut().enumerate() {
+        check_limit(
+            "sample data bytes",
+            sample_len,
+            limits.max_sample_data_bytes,
+        )?;
+        let mut xgm_header = XgmHeader::new(timing);
+        let mut sample_count = 0;
+        for (index, sample) in xgm_header.samples.iter_mut().enumerate() {
             let offset = read_u16_le_at(bytes, 4 + index * 4)?;
             let length = read_u16_le_at(bytes, 6 + index * 4)?;
             if offset != u16::MAX {
+                sample_count += 1;
+                check_limit("sample count", sample_count, limits.max_samples)?;
+                check_limit(
+                    "sample length",
+                    usize::from(length) * 256,
+                    limits.max_sample_bytes,
+                )?;
                 *sample = Some(XgmSample {
                     offset: u32::from(offset) * 256,
                     length: u32::from(length) * 256,
                 });
             }
         }
+        let sample_data = read_slice(bytes, HEADER_SIZE, sample_len)?.to_vec();
         let mut pos = HEADER_SIZE + sample_len;
         let mut tracks = Vec::new();
         let mut command_count = 0usize;
+        let mut total_gd3_bytes = 0usize;
         loop {
             check_limit("track count", tracks.len() + 1, limits.max_tracks)?;
             let len = read_u32_le_at(bytes, pos)? as usize;
@@ -181,12 +142,18 @@ impl XgmDocument {
                 let total = if metadata_len == 0 {
                     let mut end = pos + 12;
                     check_limit("GD3 bytes", 12, limits.max_gd3_bytes)?;
+                    check_total_gd3(total_gd3_bytes, 12, limits.max_total_gd3_bytes)?;
                     for _ in 0..11 {
                         loop {
                             let next = end
                                 .checked_add(2)
                                 .ok_or_else(|| invalid("XGM GD3 length overflow"))?;
                             check_limit("GD3 bytes", next - pos, limits.max_gd3_bytes)?;
+                            check_total_gd3(
+                                total_gd3_bytes,
+                                next - pos,
+                                limits.max_total_gd3_bytes,
+                            )?;
                             let code = read_u16_le_at(bytes, end)?;
                             end = next;
                             if code == 0 {
@@ -201,6 +168,8 @@ impl XgmDocument {
                         .ok_or_else(|| invalid("XGM GD3 length overflow"))?
                 };
                 check_limit("GD3 bytes", total, limits.max_gd3_bytes)?;
+                total_gd3_bytes =
+                    check_total_gd3(total_gd3_bytes, total, limits.max_total_gd3_bytes)?;
                 let mut raw = read_slice(bytes, pos, total)?.to_vec();
                 if metadata_len == 0 {
                     let len = u32::try_from(total - 12)
@@ -224,8 +193,7 @@ impl XgmDocument {
             return Err(invalid("unexpected trailing data after XGM track"));
         }
         let document = Self {
-            timing,
-            samples,
+            header: xgm_header,
             sample_data,
             tracks,
         };
@@ -238,7 +206,7 @@ impl XgmDocument {
         self.validate()?;
         let mut output = Vec::new();
         output.extend_from_slice(b"XGM ");
-        for sample in self.samples {
+        for sample in self.header.samples {
             let (offset, length) = match sample {
                 Some(sample) => ((sample.offset / 256) as u16, (sample.length / 256) as u16),
                 None => (u16::MAX, 1),
@@ -248,7 +216,7 @@ impl XgmDocument {
         }
         output.extend_from_slice(&((self.sample_data.len() / 256) as u16).to_le_bytes());
         output.push(1);
-        let flags = u8::from(self.timing == XgmTiming::Pal)
+        let flags = u8::from(self.header.timing == XgmTiming::Pal)
             | (u8::from(self.tracks[0].gd3.is_some()) << 1)
             | (u8::from(self.tracks.len() > 1) << 2);
         output.push(flags);
@@ -275,7 +243,7 @@ impl XgmDocument {
                 "XGM sample data must be 256-byte aligned and fit in the header",
             ));
         }
-        for sample in self.samples.iter().flatten() {
+        for sample in self.header.samples.iter().flatten() {
             let offset = sample.offset as usize;
             let length = sample.length as usize;
             if !offset.is_multiple_of(256)
@@ -311,7 +279,7 @@ impl XgmDocument {
             for command in &track.commands {
                 if let XgmCommand::Pcm { sample_id, .. } = command
                     && (1..=63).contains(sample_id)
-                    && self.samples[usize::from(*sample_id - 1)].is_none()
+                    && self.header.samples[usize::from(*sample_id - 1)].is_none()
                 {
                     return Err(invalid(format!("XGM sample {sample_id} is not defined")));
                 }
@@ -331,8 +299,7 @@ impl XgmBuilder {
     pub fn new(timing: XgmTiming) -> Self {
         Self {
             document: XgmDocument {
-                timing,
-                samples: [None; SAMPLE_COUNT],
+                header: XgmHeader::new(timing),
                 sample_data: Vec::new(),
                 tracks: Vec::new(),
             },
@@ -354,7 +321,7 @@ impl XgmBuilder {
             return Err(invalid("XGM sample bank exceeds the format limit"));
         }
         self.document.sample_data.extend_from_slice(data);
-        self.document.samples[usize::from(id - 1)] = Some(XgmSample {
+        self.document.header.samples[usize::from(id - 1)] = Some(XgmSample {
             offset: offset as u32,
             length: data.len() as u32,
         });
@@ -519,4 +486,35 @@ fn serialize_commands(commands: &[XgmCommand]) -> Result<Vec<u8>, ParseError> {
         output[pos..pos + 3].copy_from_slice(&offset.to_le_bytes()[..3]);
     }
     Ok(output)
+}
+
+/// Create an XGM data validation error.
+fn invalid(message: impl Into<String>) -> ParseError {
+    ParseError::DataInconsistency(message.into())
+}
+
+/// Reject a resource value that exceeds its configured limit.
+fn check_limit(resource: &str, value: usize, limit: Option<usize>) -> Result<(), ParseError> {
+    if let Some(limit) = limit
+        && value > limit
+    {
+        return Err(invalid(format!(
+            "XGM {resource} limit exceeded (maximum {limit})"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Add a GD3 chunk to the cumulative metadata budget.
+fn check_total_gd3(
+    current: usize,
+    bytes: usize,
+    limit: Option<usize>,
+) -> Result<usize, ParseError> {
+    let total = current
+        .checked_add(bytes)
+        .ok_or_else(|| invalid("XGM GD3 total length overflow"))?;
+    check_limit("total GD3 bytes", total, limit)?;
+    Ok(total)
 }

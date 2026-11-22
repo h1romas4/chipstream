@@ -425,8 +425,7 @@ for result in &mut stream {
 ### XGM v1
 
 Enable the optional `xgm` feature to parse or build XGM v1 documents and
-play a track through `VgmStream`. XGM2 and gzip-compressed XGZ input are not
-supported. A document can contain multiple tracks sharing one sample bank.
+play a track through `VgmStream`.
 
 ```rust
 # #[cfg(feature = "xgm")]
@@ -447,35 +446,13 @@ builder.add_track(XgmTrack {
 });
 let bytes = builder.finalize()?.to_bytes()?;
 let document = XgmDocument::parse(&bytes)?;
-let header = document.timing.vgm_header();
+let header = document.header.timing.vgm_header();
 let generator = XgmVgmGenerator::new(document, XgmPlaybackOptions::default())?;
 let mut stream = VgmStream::from_generator(Box::new(generator));
 # let _ = (&header, &mut stream);
 # }
 # Ok::<(), soundlog::ParseError>(())
 ```
-
-The header declares the YM2612 and SN76489 clocks for the selected timing;
-pass it to the audio player or register-write consumer. The generator mixes up
-to four signed PCM channels at the nominal 14 kHz rate and emits YM2612 DAC
-writes on the 44.1 kHz VGM timeline. It approximates the driver rather than
-simulating its Z80 instruction timing. Select the track and loop count with
-`XgmPlaybackOptions`; looping is handled by the generator, not the stream.
-Parsing accepts GD3 chunks with a zero length and eleven terminated fields,
-and serialization writes a corrected length.
-
-`XgmDocument::parse` defaults to limits of 64 MiB of input, 256 tracks,
-1,000,000 commands across all tracks, and 1 MiB per GD3 chunk (including its
-header). Use `XgmDocument::parse_with_limits` and `XgmParseLimits` to adjust
-them. These are parsing limits, not limits on programmatically built documents.
-
-Playback defaults to at most 100,000 frames in total and 100,000 XGM commands
-between frame waits, including commands that produce output and repeated loops.
-Configure these independently via `XgmPlaybackOptions`. Even with `loop_count:
-None`, the playback limits remain active. Each limit can be disabled with
-`None`; disabling the command limit can make a no-wait, no-output loop run
-indefinitely. Exceeding a playback limit returns a `ParseError::GeneratorError`
-containing `XgmPlaybackError`. `VgmStream` also has its own independent limits.
 
 ## VgmCallbackStream overview
 

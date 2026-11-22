@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use chipstream::metadata::{MetadataError, TrackMetadata, probe_mdx_bytes, probe_vgm_bytes};
+use chipstream::metadata::{
+    MetadataError, TrackMetadata, VgmMetadataLanguage, probe_mdx_bytes, probe_vgm_bytes,
+};
 use flate2::read::GzDecoder;
 use gst::glib;
 use gst::prelude::*;
@@ -26,13 +28,15 @@ use soundlog::mdx::header::MdxHeader;
 use soundlog::mdx::package::MdxPackage;
 #[cfg(test)]
 use soundlog::vgm::header::Ay8910ChipType;
+use soundlog::xgm::XgmDocument;
 
 use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerError,
     MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
-    VgmSequencerOptions, measure_mdx_duration_frames, measure_vgm_duration_frames,
+    VgmSequencerOptions, XgmSequencer, XgmSequencerOptions, measure_mdx_duration_frames,
+    measure_vgm_duration_frames, measure_xgm_duration_frames,
 };
 use chipstream_ndsif::{NdsifNanoDrivePolicy, create_automatic_transport_factories_with_policy};
 use ndsif_transport::{
@@ -66,6 +70,7 @@ const URI_SCHEME: &str = "chipstream";
 struct Settings {
     location: Option<String>,
     pdx_location: Option<String>,
+    xgm_track: u32,
     sample_rate: u32,
     chunk_frames: u32,
     play_count: u32,
@@ -91,6 +96,7 @@ impl Default for Settings {
         Self {
             location: None,
             pdx_location: None,
+            xgm_track: 0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             chunk_frames: DEFAULT_CHUNK_FRAMES,
             play_count: DEFAULT_PLAY_COUNT,
@@ -125,6 +131,7 @@ struct HardwarePlayback {
 struct RenderSettings {
     sample_rate: u32,
     chunk_frames: usize,
+    xgm_track: u32,
     play_count: u32,
     fadeout_samples: Option<u32>,
     ay8910_ym2149: bool,
@@ -153,11 +160,13 @@ enum WorkerControl {
 enum Sequencer {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+    Xgm(XgmSequencer<'static>),
 }
 
 enum SequencerCheckpoint {
     Vgm(VgmSequencerCheckpoint),
     Mdx(VgmSequencerCheckpoint),
+    Xgm(VgmSequencerCheckpoint),
 }
 
 impl Sequencer {
@@ -166,6 +175,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.render().map_err(|error| error.to_string()),
             Self::Mdx(player) => player.render().map_err(|error| error.to_string()),
+            Self::Xgm(player) => player.render().map_err(|error| error.to_string()),
         }
     }
 
@@ -174,6 +184,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.position_frames(),
             Self::Mdx(player) => player.position_frames(),
+            Self::Xgm(player) => player.position_frames(),
         }
     }
 
@@ -181,6 +192,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.fade_start_frame(),
             Self::Mdx(player) => player.fade_start_frame(),
+            Self::Xgm(player) => player.fade_start_frame(),
         }
     }
 
@@ -194,6 +206,10 @@ impl Sequencer {
             Self::Mdx(player) => player
                 .checkpoint()
                 .map(SequencerCheckpoint::Mdx)
+                .map_err(|error| error.to_string()),
+            Self::Xgm(player) => player
+                .checkpoint()
+                .map(SequencerCheckpoint::Xgm)
                 .map_err(|error| error.to_string()),
         }
     }
@@ -223,6 +239,15 @@ impl Sequencer {
                     Err(MdxSequencerError::Playback(VgmSequencerError::SeekTargetBeyondEnd {
                         ..
                     })) => Ok(false),
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            (Self::Xgm(player), SequencerCheckpoint::Xgm(checkpoint)) => {
+                match player.seek_to_frame_with_cancel(checkpoint, target, || {
+                    cancelled.load(Ordering::Acquire)
+                }) {
+                    Ok(()) => Ok(true),
+                    Err(VgmSequencerError::SeekTargetBeyondEnd { .. }) => Ok(false),
                     Err(error) => Err(error.to_string()),
                 }
             }
@@ -282,12 +307,18 @@ mod imp {
                 vec![
                     glib::ParamSpecString::builder("location")
                         .nick("Location")
-                        .blurb("VGM, VGZ, or MDX input file")
+                        .blurb("VGM, VGZ, MDX, XGM, or XGZ input file")
                         .flags(mutable_ready)
                         .build(),
                     glib::ParamSpecString::builder("pdx-location")
                         .nick("PDX location")
                         .blurb("Optional PDX sample file; otherwise resolved from the MDX")
+                        .flags(mutable_ready)
+                        .build(),
+                    glib::ParamSpecUInt::builder("xgm-track")
+                        .nick("XGM track")
+                        .blurb("Zero-based XGM/XGZ track index")
+                        .default_value(0)
                         .flags(mutable_ready)
                         .build(),
                     glib::ParamSpecUInt::builder("sample-rate")
@@ -380,6 +411,9 @@ mod imp {
                 "pdx-location" => {
                     settings.pdx_location = value.get().expect("pdx-location is a string")
                 }
+                "xgm-track" => {
+                    settings.xgm_track = value.get().expect("xgm-track is an unsigned int")
+                }
                 "sample-rate" => {
                     settings.sample_rate = value.get().expect("sample-rate is an unsigned int")
                 }
@@ -425,6 +459,7 @@ mod imp {
             match pspec.name() {
                 "location" => settings.location.to_value(),
                 "pdx-location" => settings.pdx_location.to_value(),
+                "xgm-track" => settings.xgm_track.to_value(),
                 "sample-rate" => settings.sample_rate.to_value(),
                 "chunk-frames" => settings.chunk_frames.to_value(),
                 "play-count" => settings.play_count.to_value(),
@@ -604,7 +639,7 @@ mod imp {
                 gst::subclass::ElementMetadata::new(
                     "Chipstream song source",
                     "Source/Audio",
-                    "Renders VGM, VGZ, and MDX files to stereo PCM",
+                    "Renders VGM, VGZ, MDX, XGM, and XGZ files to stereo PCM",
                     "h1romas4",
                 )
             }))
@@ -846,6 +881,7 @@ mod imp {
             let render_settings = RenderSettings {
                 sample_rate: settings.sample_rate,
                 chunk_frames: settings.chunk_frames as usize,
+                xgm_track: settings.xgm_track,
                 play_count: settings.play_count,
                 fadeout_samples: fadeout_samples(settings.fadeout_seconds),
                 ay8910_ym2149: settings.ay8910_ym2149,
@@ -1464,7 +1500,7 @@ fn load_sequencer(
     load_sequencer_with_factories(path, pdx_location, settings, ChipFactoryRegistry::new())
 }
 
-/// Load an MDX or VGM player with optional NDSIF chip factories.
+/// Load an MDX, VGM, or XGM player with optional NDSIF chip factories.
 fn load_sequencer_with_factories(
     path: &Path,
     pdx_location: Option<&Path>,
@@ -1485,6 +1521,9 @@ fn load_sequencer_with_factories(
     let bytes = read_path(path, MAX_FILE_BYTES)?;
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("mdx") => {
+            if settings.xgm_track != 0 {
+                return Err("xgm-track can only be used with an XGM file".into());
+            }
             let metadata =
                 probe_mdx_bytes(&bytes).map_err(|error| format!("failed to probe MDX: {error}"))?;
             let normalized = normalize_mdx_for_playback(&bytes)
@@ -1527,15 +1566,62 @@ fn load_sequencer_with_factories(
         Some(extension)
             if extension.eq_ignore_ascii_case("vgm")
                 || extension.eq_ignore_ascii_case("vgz")
-                || extension.eq_ignore_ascii_case("gz") =>
+                || extension.eq_ignore_ascii_case("gz")
+                || extension.eq_ignore_ascii_case("xgm")
+                || extension.eq_ignore_ascii_case("xgz") =>
         {
             if pdx_location.is_some() {
                 return Err("pdx-location can only be used with an MDX file".into());
             }
-            let bytes = decode_vgm(
+            let bytes = decode_input(
                 bytes,
-                extension.eq_ignore_ascii_case("vgz") || extension.eq_ignore_ascii_case("gz"),
+                extension.eq_ignore_ascii_case("vgz")
+                    || extension.eq_ignore_ascii_case("xgz")
+                    || extension.eq_ignore_ascii_case("gz"),
             )?;
+            if extension.eq_ignore_ascii_case("xgm")
+                || extension.eq_ignore_ascii_case("xgz")
+                || bytes.starts_with(b"XGM ")
+            {
+                let document = XgmDocument::parse(&bytes)
+                    .map_err(|error| format!("failed to parse XGM input: {error}"))?;
+                let track = usize::try_from(settings.xgm_track)
+                    .map_err(|_| "XGM track index is out of range".to_owned())?;
+                let selected = document
+                    .tracks
+                    .get(track)
+                    .ok_or_else(|| format!("XGM track index {track} is out of range"))?;
+                let metadata = selected
+                    .gd3
+                    .as_ref()
+                    .map(|gd3| TrackMetadata::from_gd3(gd3, VgmMetadataLanguage::English))
+                    .unwrap_or_default();
+                let mut options = XgmSequencerOptions {
+                    playback,
+                    track,
+                    ..Default::default()
+                };
+                if settings.play_count == 0 {
+                    options.max_frames = None;
+                }
+                let duration_frames =
+                    measure_xgm_duration_frames(document.clone(), settings.sample_rate, options)
+                        .map_err(|error| format!("failed to measure XGM duration: {error}"))?
+                        .finite_frames()
+                        .map(u64::from);
+                let player = XgmSequencer::new_with_factories(
+                    document,
+                    settings.sample_rate,
+                    settings.chunk_frames,
+                    options,
+                    factories,
+                )
+                .map_err(|error| format!("failed to create XGM sequencer: {error}"))?;
+                return Ok((Sequencer::Xgm(player), metadata, None, duration_frames));
+            }
+            if settings.xgm_track != 0 {
+                return Err("xgm-track can only be used with an XGM file".into());
+            }
             let options = VgmSequencerOptions {
                 playback,
                 ..Default::default()
@@ -1569,7 +1655,7 @@ fn load_sequencer_with_factories(
             Ok((Sequencer::Vgm(player), metadata, warning, duration_frames))
         }
         _ => Err(format!(
-            "unsupported input extension for {} (expected .vgm, .vgz, or .mdx)",
+            "unsupported input extension for {} (expected .vgm, .vgz, .mdx, .xgm, or .xgz)",
             path.display()
         )),
     }
@@ -1751,11 +1837,11 @@ fn read_bounded(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Decompress gzip VGM input when indicated by extension or content.
-fn decode_vgm(bytes: Vec<u8>, gzip_extension: bool) -> Result<Vec<u8>, String> {
+/// Decompress gzip input when indicated by extension or content.
+fn decode_input(bytes: Vec<u8>, gzip_extension: bool) -> Result<Vec<u8>, String> {
     if gzip_extension || bytes.starts_with(&[0x1f, 0x8b]) {
         read_bounded(GzDecoder::new(Cursor::new(bytes)), MAX_DECOMPRESSED_BYTES)
-            .map_err(|error| format!("failed to decompress VGZ: {error}"))
+            .map_err(|error| format!("failed to decompress gzip input: {error}"))
     } else {
         Ok(bytes)
     }
@@ -2469,6 +2555,7 @@ mod tests {
         gst::init().unwrap();
         let defaults = glib::Object::builder::<ChipstreamSrc>().build();
         assert_eq!(defaults.property::<u32>("play-count"), DEFAULT_PLAY_COUNT);
+        assert_eq!(defaults.property::<u32>("xgm-track"), 0);
         assert_eq!(
             defaults.property::<f64>("fadeout-seconds"),
             DEFAULT_FADEOUT_SECONDS
@@ -2489,6 +2576,7 @@ mod tests {
 
         let configured = glib::Object::builder::<ChipstreamSrc>()
             .property("play-count", 3_u32)
+            .property("xgm-track", 1_u32)
             .property("fadeout-seconds", 0.5_f64)
             .property("ay8910-ym2149", false)
             .property("ay8910-native", true)
@@ -2498,6 +2586,7 @@ mod tests {
             .property("ndsif-reset", false)
             .build();
         assert_eq!(configured.property::<u32>("play-count"), 3);
+        assert_eq!(configured.property::<u32>("xgm-track"), 1);
         assert_eq!(configured.property::<f64>("fadeout-seconds"), 0.5);
         assert!(!configured.property::<bool>("ay8910-ym2149"));
         assert!(configured.property::<bool>("ay8910-native"));
@@ -2517,6 +2606,110 @@ mod tests {
         assert!(!configured.property::<bool>("ndsif-reset"));
         assert_eq!(fadeout_samples(2.0), Some(88_200));
         assert_eq!(fadeout_samples(0.0), None);
+    }
+
+    #[test]
+    fn xgm_and_xgz_load_tracks_tags_duration_and_seek() {
+        use flate2::{Compression, write::GzEncoder};
+        use soundlog::meta::Gd3;
+        use soundlog::xgm::{XgmBuilder, XgmCommand, XgmTiming, XgmTrack};
+        use std::io::Write;
+
+        let directory = std::env::temp_dir().join(format!(
+            "chipstream-xgm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+        builder.add_track(XgmTrack {
+            commands: vec![
+                XgmCommand::Psg(vec![0x84, 0x10, 0x90]),
+                XgmCommand::Frame,
+                XgmCommand::Frame,
+                XgmCommand::Loop(1),
+            ],
+            gd3: Some(Gd3 {
+                track_name_origin: Some("Original".into()),
+                ..Default::default()
+            }),
+        });
+        builder.add_track(XgmTrack {
+            commands: vec![XgmCommand::Frame, XgmCommand::End],
+            gd3: Some(Gd3 {
+                track_name_en: Some("Second".into()),
+                ..Default::default()
+            }),
+        });
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let xgm = directory.join("song.xgm");
+        let xgz = directory.join("song.xgz");
+        fs::write(&xgm, &bytes).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&bytes).unwrap();
+        fs::write(&xgz, encoder.finish().unwrap()).unwrap();
+        let settings = RenderSettings {
+            sample_rate: 48_000,
+            chunk_frames: 128,
+            play_count: 2,
+            fadeout_samples: Some(441),
+            xgm_track: 0,
+            ay8910_ym2149: true,
+            ay8910_native: false,
+        };
+        let mut rendered = Vec::new();
+        for path in [&xgm, &xgz] {
+            let (mut player, metadata, _, duration) = load_sequencer(path, None, settings).unwrap();
+            assert_eq!(metadata.title.as_deref(), Some("Original"));
+            let checkpoint = player.checkpoint().unwrap();
+            let mut frames = Vec::new();
+            while let Some(block) = player.render().unwrap() {
+                frames.extend_from_slice(block.frames());
+            }
+            assert_eq!(duration, Some(frames.len() as u64));
+            assert_eq!(frames.len(), 3680);
+            assert!(frames.iter().any(|frame| frame[0] != 0.0));
+            let target = 3300;
+            assert!(
+                player
+                    .seek_to_frame(&checkpoint, target, &AtomicBool::new(false))
+                    .unwrap()
+            );
+            let mut seeked = Vec::new();
+            while let Some(block) = player.render().unwrap() {
+                seeked.extend_from_slice(block.frames());
+            }
+            assert_eq!(seeked, frames[target..]);
+            rendered.push(frames);
+        }
+        assert_eq!(rendered[0], rendered[1]);
+        let second = RenderSettings {
+            xgm_track: 1,
+            ..settings
+        };
+        let (_, metadata, _, duration) = load_sequencer(&xgm, None, second).unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("Second"));
+        assert_eq!(duration, Some(800));
+        assert!(
+            load_sequencer(
+                &xgm,
+                None,
+                RenderSettings {
+                    xgm_track: 2,
+                    ..settings
+                }
+            )
+            .is_err()
+        );
+        assert!(load_sequencer(&xgm, Some(Path::new("unused.pdx")), settings).is_err());
+        fs::write(&xgz, b"not gzip").unwrap();
+        assert!(load_sequencer(&xgz, None, settings).is_err());
+        fs::remove_file(xgm).unwrap();
+        fs::remove_file(xgz).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[test]
@@ -2545,6 +2738,7 @@ mod tests {
             fadeout_samples: None,
             ay8910_ym2149: true,
             ay8910_native: true,
+            xgm_track: 0,
         };
         let (mut player, _, _, _) = load_sequencer(&path, None, settings).unwrap();
         fs::remove_file(path).unwrap();
@@ -2823,6 +3017,7 @@ mod tests {
             fadeout_samples: None,
             ay8910_ym2149: true,
             ay8910_native: false,
+            xgm_track: 0,
         };
         let options = VgmSequencerOptions {
             playback: PlaybackOptions {
@@ -3011,6 +3206,7 @@ mod tests {
             fadeout_samples: None,
             ay8910_ym2149: true,
             ay8910_native: false,
+            xgm_track: 0,
         };
         let (mut sequencer, _, _, _) = load_sequencer(&input_path, None, settings).unwrap();
         let mut has_audio = false;

@@ -55,7 +55,17 @@ fn typed_multitrack_document_roundtrips_with_samples_and_metadata() {
     let bytes = original.to_bytes().unwrap();
     let parsed = XgmDocument::parse(&bytes).unwrap();
     assert_eq!(parsed, original);
+    assert_eq!(parsed.header.timing, XgmTiming::Pal);
+    assert_eq!(parsed.header.samples[0].unwrap().length, 256);
+    assert!(parsed.header.samples[1].is_none());
     assert_eq!(parsed.to_bytes().unwrap(), bytes);
+    let mut modified = parsed.clone();
+    modified.header.timing = XgmTiming::Ntsc;
+    modified.tracks.truncate(1);
+    modified.tracks[0].gd3 = None;
+    let changed = modified.to_bytes().unwrap();
+    assert_eq!(changed[0x103], 0);
+    assert_eq!(XgmDocument::parse(&changed).unwrap(), modified);
 
     let mut legacy = bytes.clone();
     let music_start = 0x104 + 256;
@@ -178,6 +188,57 @@ fn loops_are_bounded_by_options_and_pal_timing() {
         }
     }
     assert_eq!(waits, [882, 882]);
+    assert!(generator.finished_at_loop());
+}
+
+#[test]
+fn loop_marker_continues_playback_but_respects_limits_and_natural_end() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::Frame, XgmCommand::Loop(0)]));
+    let document = builder.finalize().unwrap();
+    let (mut generator, marker) =
+        XgmVgmGenerator::new_with_loop_marker(document.clone(), Default::default()).unwrap();
+    assert!(matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::WaitSamples(_))
+    ));
+    assert!(!marker.reached());
+    assert!(matches!(
+        generator.next_command().unwrap(),
+        Some(VgmCommand::WaitSamples(_))
+    ));
+    assert!(marker.reached());
+    assert!(
+        XgmVgmGenerator::new_with_loop_marker(
+            document,
+            XgmPlaybackOptions {
+                loop_count: None,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::Frame, XgmCommand::End]));
+    let (mut generator, marker) =
+        XgmVgmGenerator::new_with_loop_marker(builder.finalize().unwrap(), Default::default())
+            .unwrap();
+    while generator.next_command().unwrap().is_some() {}
+    assert!(!marker.reached());
+
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.add_track(track(vec![XgmCommand::Loop(0)]));
+    let (mut generator, marker) = XgmVgmGenerator::new_with_loop_marker(
+        builder.finalize().unwrap(),
+        XgmPlaybackOptions {
+            max_commands_per_frame: Some(3),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(generator.next_command().is_err());
+    assert!(marker.reached());
 }
 
 #[test]
@@ -217,6 +278,7 @@ fn pcm_mixing_saturates_per_channel_and_returns_to_center() {
                 _ => {}
             }
         }
+        assert!(!generator.finished_at_loop());
     }
     assert_eq!(values.len(), 257);
     assert!(values.iter().all(|&value| value == 0x80));
@@ -237,8 +299,10 @@ fn a_loop_without_output_or_time_progress_fails() {
 }
 
 #[test]
-fn parse_limits_count_input_tracks_commands_and_metadata() {
+fn parse_limits_count_samples_tracks_commands_and_metadata() {
     let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.set_sample(1, &[0; 256]).unwrap();
+    builder.set_sample(3, &[0; 256]).unwrap();
     for _ in 0..2 {
         builder.add_track(XgmTrack {
             commands: vec![XgmCommand::Frame, XgmCommand::End],
@@ -247,19 +311,36 @@ fn parse_limits_count_input_tracks_commands_and_metadata() {
     }
     let bytes = builder.finalize().unwrap().to_bytes().unwrap();
     let limits = XgmParseLimits {
-        max_input_bytes: Some(bytes.len()),
+        max_sample_data_bytes: Some(512),
+        max_sample_bytes: Some(256),
+        max_samples: Some(2),
         max_tracks: Some(2),
         max_commands: Some(4),
         max_gd3_bytes: Some(34),
+        max_total_gd3_bytes: Some(68),
     };
     assert!(XgmDocument::parse_with_limits(&bytes, limits).is_ok());
     for (stricter, resource) in [
         (
             XgmParseLimits {
-                max_input_bytes: Some(bytes.len() - 1),
+                max_sample_data_bytes: Some(511),
                 ..limits
             },
-            "input bytes",
+            "sample data bytes",
+        ),
+        (
+            XgmParseLimits {
+                max_sample_bytes: Some(255),
+                ..limits
+            },
+            "sample length",
+        ),
+        (
+            XgmParseLimits {
+                max_samples: Some(1),
+                ..limits
+            },
+            "sample count",
         ),
         (
             XgmParseLimits {
@@ -282,13 +363,48 @@ fn parse_limits_count_input_tracks_commands_and_metadata() {
             },
             "GD3 bytes",
         ),
+        (
+            XgmParseLimits {
+                max_total_gd3_bytes: Some(67),
+                ..limits
+            },
+            "total GD3 bytes",
+        ),
     ] {
         let error = XgmDocument::parse_with_limits(&bytes, stricter).unwrap_err();
         assert!(error.to_string().contains(resource), "{error}");
     }
     let mut zero_length = bytes.clone();
-    let gd3 = 0x104 + 4 + 2;
+    for (limits, resource) in [
+        (
+            XgmParseLimits {
+                max_sample_data_bytes: Some(511),
+                ..limits
+            },
+            "sample data bytes",
+        ),
+        (
+            XgmParseLimits {
+                max_sample_bytes: Some(255),
+                ..limits
+            },
+            "sample length",
+        ),
+        (
+            XgmParseLimits {
+                max_samples: Some(1),
+                ..limits
+            },
+            "sample count",
+        ),
+    ] {
+        let error = XgmDocument::parse_with_limits(&bytes[..0x104], limits).unwrap_err();
+        assert!(error.to_string().contains(resource), "{error}");
+    }
+    let gd3 = 0x104 + 512 + 4 + 2;
     zero_length[gd3 + 8..gd3 + 12].fill(0);
+    let second_gd3 = gd3 + 34 + 4 + 2;
+    zero_length[second_gd3 + 8..second_gd3 + 12].fill(0);
     assert!(XgmDocument::parse_with_limits(&zero_length, limits).is_ok());
     assert!(
         XgmDocument::parse_with_limits(
@@ -302,12 +418,96 @@ fn parse_limits_count_input_tracks_commands_and_metadata() {
     );
     assert!(
         XgmDocument::parse_with_limits(
+            &zero_length,
+            XgmParseLimits {
+                max_total_gd3_bytes: Some(67),
+                ..limits
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("total GD3 bytes")
+    );
+    assert!(
+        XgmDocument::parse_with_limits(
             &bytes,
             XgmParseLimits {
-                max_input_bytes: None,
+                max_sample_data_bytes: None,
+                max_sample_bytes: None,
+                max_samples: None,
                 max_tracks: None,
                 max_commands: None,
                 max_gd3_bytes: None,
+                max_total_gd3_bytes: None,
+            }
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn default_gd3_limits_apply_to_each_track_and_the_total() {
+    let metadata = Gd3 {
+        notes: Some("a".repeat((16 * 1024 - 34) / 2)),
+        ..Default::default()
+    };
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    for _ in 0..16 {
+        builder.add_track(XgmTrack {
+            commands: vec![XgmCommand::End],
+            gd3: Some(metadata.clone()),
+        });
+    }
+    let document = builder.finalize().unwrap();
+    let bytes = document.to_bytes().unwrap();
+    assert!(XgmDocument::parse(&bytes).is_ok());
+    let gd3 = 0x104 + 4 + 1;
+    let mut legacy = bytes.clone();
+    legacy[gd3 + 8..gd3 + 12].fill(0);
+    assert!(XgmDocument::parse(&legacy).is_ok());
+
+    let mut too_many = document.clone();
+    too_many.tracks.push(XgmTrack {
+        commands: vec![XgmCommand::End],
+        gd3: Some(Gd3::default()),
+    });
+    let bytes = too_many.to_bytes().unwrap();
+    let error = XgmDocument::parse(&bytes).unwrap_err();
+    assert!(error.to_string().contains("total GD3 bytes"), "{error}");
+    assert!(
+        XgmDocument::parse_with_limits(
+            &bytes,
+            XgmParseLimits {
+                max_total_gd3_bytes: None,
+                ..Default::default()
+            }
+        )
+        .is_ok()
+    );
+
+    let mut too_large = document;
+    too_large.tracks.truncate(1);
+    too_large.tracks[0]
+        .gd3
+        .as_mut()
+        .unwrap()
+        .notes
+        .as_mut()
+        .unwrap()
+        .push('a');
+    let bytes = too_large.to_bytes().unwrap();
+    let error = XgmDocument::parse(&bytes).unwrap_err();
+    assert!(error.to_string().contains("GD3 bytes"), "{error}");
+    let mut legacy = bytes.clone();
+    legacy[gd3 + 8..gd3 + 12].fill(0);
+    let error = XgmDocument::parse(&legacy).unwrap_err();
+    assert!(error.to_string().contains("GD3 bytes"), "{error}");
+    assert!(
+        XgmDocument::parse_with_limits(
+            &bytes,
+            XgmParseLimits {
+                max_gd3_bytes: None,
+                ..Default::default()
             }
         )
         .is_ok()

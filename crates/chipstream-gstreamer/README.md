@@ -1,6 +1,6 @@
 # chipstream-gstreamer
 
-GStreamer plugin for VGM and MDX playback with `chipstream`.
+GStreamer plugin for VGM, MDX, and XGM v1 playback with `chipstream`.
 
 ## Element API
 
@@ -9,8 +9,8 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | API | Description |
 |---|---|
 | Source caps | Interleaved stereo `audio/x-raw`, `F32LE` |
-| Input formats | `.vgm`, `.vgz`, `.mdx` |
-| Tags | VGM GD3 tags; MDX title |
+| Input formats | `.vgm`, `.vgz`, `.mdx`, `.xgm`, `.xgz` (gzip-compressed XGM) |
+| Tags | VGM and selected XGM track GD3 tags; MDX title |
 | URI protocol | `chipstream://` with an absolute local file path; supported by `playbin` and `playbin3` |
 | Duration query | Exact finite duration when it fits the bounded command scan, including configured loops and fadeout; unbounded or very long playback may be unknown |
 | Seek | Time-format, normal-rate seeks; reuses the initial state and two recent checkpoints captured about every 30 seconds, then renders forward from the nearest checkpoint. If snapshots are unavailable, seeks fall back to rendering from the start |
@@ -21,6 +21,7 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 |---|---|---:|---|
 | `location` | string | — | Input file path |
 | `pdx-location` | string | — | Optional MDX PDX path; otherwise resolved beside the MDX |
+| `xgm-track` | uint | 0 | Zero-based track index for XGM/XGZ input |
 | `sample-rate` | uint | 48000 | Output rate in Hz (8000–192000) |
 | `chunk-frames` | uint | 512 | Stereo frames per output buffer (64–8192) |
 | `play-count` | uint | 2 | Total traversals; `0` repeats indefinitely |
@@ -41,6 +42,10 @@ GStreamer plugin for VGM and MDX playback with `chipstream`.
 | No loop point | Plays to the natural end; embedded MDX fadeout may end playback earlier |
 | Infinite playback (`play-count=0`) | `fadeout-seconds` is not applied |
 | Adjacent `ym2608_adpcm_rom.bin` | Automatically loaded for VGM/VGZ and applied to each YM2608 instance |
+
+Input files and decompressed gzip data are limited to 64 MiB. XGM parsing and
+playback also use soundlog's default structural and per-frame command limits;
+finite playback uses its default total-frame limit.
 
 AY8910 software playback is an approximation using YM2149. YM-family clock
 divider flags are honored. Unsupported AY variants, raw or discrete output,

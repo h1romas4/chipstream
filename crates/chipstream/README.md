@@ -138,6 +138,20 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Render an XGM track (requires the `sn76496` feature):
+
+```rust,no_run
+use chipstream::sequencer::XgmSequencer;
+use soundlog::xgm::XgmDocument;
+
+let document = XgmDocument::parse(&std::fs::read("song.xgm")?)?;
+let mut player = XgmSequencer::new(document, 48_000, 512, Default::default())?;
+while let Some(block) = player.render()? {
+    // Send block.frames() to the host.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ### Custom command sources
 
 For a custom command source, implement `soundlog::VgmCommandGenerator` and

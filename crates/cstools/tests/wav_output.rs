@@ -6,6 +6,113 @@ fn cli() -> Command {
 }
 
 #[test]
+fn cli_renders_xgm_and_xgz_with_track_loops_and_fade() {
+    use flate2::{Compression, write::GzEncoder};
+    use soundlog::meta::Gd3;
+    use soundlog::xgm::{XgmBuilder, XgmCommand, XgmTiming, XgmTrack};
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.set_sample(1, &[0x30; 256]).unwrap();
+    builder.add_track(XgmTrack {
+        commands: vec![
+            XgmCommand::Psg(vec![0x84, 0x10, 0x90]),
+            XgmCommand::Pcm {
+                channel: 0,
+                priority: 0,
+                sample_id: 1,
+            },
+            XgmCommand::Frame,
+            XgmCommand::Frame,
+            XgmCommand::Loop(2),
+        ],
+        gd3: Some(Gd3::default()),
+    });
+    builder.add_track(XgmTrack {
+        commands: vec![
+            XgmCommand::Psg(vec![0x85, 0x10, 0x90]),
+            XgmCommand::Frame,
+            XgmCommand::End,
+        ],
+        gd3: Some(Gd3::default()),
+    });
+    let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&bytes).unwrap();
+    let xgm = dir.path().join("song.xgm");
+    let xgz = dir.path().join("song.XGZ");
+    fs::write(&xgm, bytes).unwrap();
+    fs::write(&xgz, encoder.finish().unwrap()).unwrap();
+
+    for rate in [44_100u32, 48_000] {
+        let mut rendered = Vec::new();
+        for (index, input) in [&xgm, &xgz].into_iter().enumerate() {
+            let output = dir.path().join(format!("{rate}-{index}.wav"));
+            let result = cli()
+                .arg(input)
+                .arg(&output)
+                .args([
+                    "--sample-rate",
+                    &rate.to_string(),
+                    "--loop-count",
+                    "2",
+                    "--fadeout-samples",
+                    "441",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let mut wav = hound::WavReader::open(output).unwrap();
+            let samples = wav.samples::<i16>().collect::<Result<Vec<_>, _>>().unwrap();
+            let step = ((u128::from(rate) << 32) + 22_050) / 44_100;
+            let end = ((u128::from(735u32 * 4 + 441) * step + (1 << 31)) >> 32) as usize;
+            assert_eq!(samples.len(), end * 2);
+            assert!(samples.iter().any(|sample| *sample != 0));
+            assert_eq!(&samples[samples.len() - 2..], &[0, 0]);
+            rendered.push(samples);
+        }
+        assert_eq!(rendered[0], rendered[1]);
+    }
+
+    let output = dir.path().join("second.wav");
+    let result = cli()
+        .arg(&xgm)
+        .arg(&output)
+        .args(["--xgm-track", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(hound::WavReader::open(output).unwrap().duration(), 735);
+    for args in [
+        vec!["--xgm-track", "2"],
+        vec!["--loop-base", "1"],
+        vec!["--pdx", "not-used.pdx"],
+    ] {
+        assert!(
+            !cli()
+                .arg(&xgm)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let invalid = dir.path().join("invalid.xgz");
+    fs::write(&invalid, b"not gzip").unwrap();
+    assert!(!cli().arg(invalid).output().unwrap().status.success());
+}
+
+#[test]
 fn cli_renders_ay8910_using_ym2149() {
     use chipstream::sequencer::{Chip, Instance};
     use soundlog::chip::Ay8910Spec;
@@ -460,6 +567,7 @@ fn library_rejects_conflicting_infinite_options() {
         output_device: None,
         sample_rate: None,
         pdx: None,
+        xgm_track: None,
         ym2608_rhythm_rom: None,
         loop_count: None,
         fadeout_samples: None,
@@ -550,6 +658,7 @@ fn cli_renders_wav_and_protects_input_and_existing_output() {
         output_device: None,
         sample_rate: Some(48_000),
         pdx: None,
+        xgm_track: None,
         ym2608_rhythm_rom: None,
         loop_count: None,
         fadeout_samples: None,

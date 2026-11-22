@@ -6,8 +6,10 @@ use crate::ParseError;
 use crate::chip::{PsgSpec, Ym2612Spec};
 use crate::vgm::command::{EndOfData, Instance, VgmCommand, WaitSamples};
 use crate::vgm::{VgmCommandGenerator, VgmStream};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt;
+use std::rc::Rc;
 
 const PCM_RATE: u64 = 14_000;
 const VGM_RATE: u64 = 44_100;
@@ -82,6 +84,17 @@ impl From<XgmPlaybackError> for ParseError {
     }
 }
 
+/// Notification that the selected finite loop boundary has been reached.
+#[derive(Debug, Clone, Default)]
+pub struct XgmLoopMarker(Rc<Cell<bool>>);
+
+impl XgmLoopMarker {
+    /// Return whether the configured loop boundary has been reached.
+    pub fn reached(&self) -> bool {
+        self.0.get()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct PcmChannel {
     sample: Option<u8>,
@@ -111,6 +124,8 @@ pub struct XgmVgmGenerator {
     dac_requested: u8,
     dac_dirty: bool,
     finished: bool,
+    finished_at_loop: bool,
+    loop_marker: Option<XgmLoopMarker>,
 }
 
 impl XgmVgmGenerator {
@@ -144,7 +159,33 @@ impl XgmVgmGenerator {
             dac_requested: 0,
             dac_dirty: false,
             finished: false,
+            finished_at_loop: false,
+            loop_marker: None,
         })
+    }
+
+    /// Create a generator that continues looping after notifying the selected
+    /// finite loop boundary. An `End` command may still end playback first.
+    pub fn new_with_loop_marker(
+        document: XgmDocument,
+        options: XgmPlaybackOptions,
+    ) -> Result<(Self, XgmLoopMarker), ParseError> {
+        if options.loop_count.is_none() {
+            return Err(ParseError::DataInconsistency(
+                "XGM loop marker requires a finite loop count".into(),
+            ));
+        }
+        let marker = XgmLoopMarker::default();
+        let mut generator = Self::new(document, options)?;
+        generator.loop_marker = Some(marker.clone());
+        Ok((generator, marker))
+    }
+
+    /// Whether playback has ended at the configured loop limit.
+    ///
+    /// This is false before playback ends and when an `End` command ends it.
+    pub fn finished_at_loop(&self) -> bool {
+        self.finished_at_loop
     }
 
     fn ym(register: u8, value: u8, port: u8) -> VgmCommand {
@@ -163,7 +204,8 @@ impl XgmVgmGenerator {
         let mut active = false;
         for channel in &mut self.channels {
             let Some(id) = channel.sample else { continue };
-            let sample = self.document.samples[usize::from(id - 1)].expect("validated sample");
+            let sample =
+                self.document.header.samples[usize::from(id - 1)].expect("validated sample");
             let index = sample.offset as usize + channel.position;
             mixed = (mixed + i32::from(self.document.sample_data[index] as i8)).clamp(-128, 127);
             active = true;
@@ -278,7 +320,7 @@ impl VgmCommandGenerator for XgmVgmGenerator {
                 XgmCommand::Frame => {
                     self.frames = self.frames.saturating_add(1);
                     self.commands_since_frame = 0;
-                    self.wait = self.document.timing.frame_samples();
+                    self.wait = self.document.header.timing.frame_samples();
                 }
                 XgmCommand::Psg(bytes) => {
                     self.pending.extend(bytes.iter().map(|&value| {
@@ -319,8 +361,13 @@ impl VgmCommandGenerator for XgmVgmGenerator {
                         .loop_count
                         .is_some_and(|count| self.loops >= count)
                     {
-                        self.finished = true;
-                        return Ok(Some(VgmCommand::EndOfData(EndOfData)));
+                        if let Some(marker) = &self.loop_marker {
+                            marker.0.set(true);
+                        } else {
+                            self.finished = true;
+                            self.finished_at_loop = true;
+                            return Ok(Some(VgmCommand::EndOfData(EndOfData)));
+                        }
                     }
                     self.command_index = *target;
                 }

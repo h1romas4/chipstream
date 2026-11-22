@@ -31,6 +31,7 @@ use soundlog::vgm::{
     DacStreamSelector, DacStreamTarget, VGM_SAMPLE_RATE, VgmCommandGenerator, VgmDocument,
     VgmHeader, VgmStream,
 };
+use soundlog::xgm::XgmLoopMarker;
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
 use crate::audio::{
@@ -115,7 +116,22 @@ const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
 const PHASE_SCALE: f32 = 1.0 / 4_294_967_296.0;
 
-pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<MdxLoopMarker>), String>>;
+pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<FadeMarker>), String>>;
+
+#[derive(Clone)]
+pub(super) enum FadeMarker {
+    Mdx(MdxLoopMarker),
+    Xgm(XgmLoopMarker),
+}
+
+impl FadeMarker {
+    pub(super) fn reached(&self) -> bool {
+        match self {
+            Self::Mdx(marker) => marker.reached(),
+            Self::Xgm(marker) => marker.reached(),
+        }
+    }
+}
 
 #[derive(Default)]
 struct T6w28Pair {
@@ -867,8 +883,8 @@ pub struct VgmSequencer<'a> {
     fade_remaining: Option<u32>,
     /// Output-frame fade state, once fading begins.
     fade_frames: Option<Fade>,
-    /// MDX generator marker signalling the start of fading.
-    mdx_loop_marker: Option<MdxLoopMarker>,
+    /// Generator marker signalling the start of fading.
+    fade_marker: Option<FadeMarker>,
     /// Identity tying checkpoints to this sequencer.
     source_identity: Arc<()>,
 }
@@ -1788,7 +1804,7 @@ impl<'a> VgmSequencer<'a> {
             fade_samples: None,
             fade_remaining: None,
             fade_frames: None,
-            mdx_loop_marker: None,
+            fade_marker: None,
             source_identity: Arc::new(()),
         })
     }
@@ -1819,17 +1835,17 @@ impl<'a> VgmSequencer<'a> {
         Ok(())
     }
 
-    /// Set the fade duration and optional MDX loop marker before playback.
+    /// Set the fade duration and optional generator loop marker before playback.
     pub(super) fn configure_fadeout(
         &mut self,
         samples: Option<u32>,
-        marker: Option<MdxLoopMarker>,
+        marker: Option<FadeMarker>,
     ) -> Result<(), VgmSequencerError> {
         if self.started {
             return Err(VgmSequencerError::FadeoutConfigurationAfterPlayback);
         }
         self.fade_samples = samples.filter(|samples| *samples != 0);
-        self.mdx_loop_marker = marker;
+        self.fade_marker = marker;
         Ok(())
     }
 
@@ -2398,7 +2414,7 @@ impl<'a> VgmSequencer<'a> {
         }
         self.stream_steps = checkpoint.stream_steps;
         self.stream_settings.clone_from(&checkpoint.stream_settings);
-        self.mdx_loop_marker = marker;
+        self.fade_marker = marker;
         self.position_frames = checkpoint.position_frames;
         self.wait = checkpoint.wait;
         self.available = checkpoint.available;
@@ -2666,10 +2682,7 @@ impl<'a> VgmSequencer<'a> {
             }
             if self.fade_frames.is_none()
                 && (self.stream.is_fading_out()
-                    || self
-                        .mdx_loop_marker
-                        .as_ref()
-                        .is_some_and(MdxLoopMarker::reached))
+                    || self.fade_marker.as_ref().is_some_and(FadeMarker::reached))
                 && let Some(samples) = self.fade_samples
             {
                 let step = (self.output_rate / VGM_SAMPLE_RATE) as f32

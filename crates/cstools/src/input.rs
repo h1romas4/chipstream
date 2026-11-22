@@ -12,6 +12,7 @@ use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::PdxDocument;
+use soundlog::xgm::XgmDocument;
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
@@ -27,7 +28,8 @@ fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>> {
 
 fn decode(bytes: Vec<u8>, gzip_extension: bool, limit: u64) -> Result<Vec<u8>> {
     if gzip_extension || bytes.starts_with(&[0x1f, 0x8b]) {
-        read_bounded(GzDecoder::new(Cursor::new(bytes)), limit).context("failed to decompress VGZ")
+        read_bounded(GzDecoder::new(Cursor::new(bytes)), limit)
+            .context("failed to decompress gzip input")
     } else {
         Ok(bytes)
     }
@@ -36,6 +38,7 @@ fn decode(bytes: Vec<u8>, gzip_extension: bool, limit: u64) -> Result<Vec<u8>> {
 pub enum Input {
     Vgm(Vec<u8>),
     Mdx(Box<MdxPackage>),
+    Xgm(Box<XgmDocument>, usize),
 }
 
 pub fn metadata_line(input: &Input) -> Result<String> {
@@ -73,6 +76,21 @@ pub fn metadata_line(input: &Input) -> Result<String> {
                 chips.push("OKIM6258".to_owned());
             }
             chips
+        }
+        Input::Xgm(document, track) => {
+            let track = document
+                .tracks
+                .get(*track)
+                .context("XGM track index is out of range")?;
+            push_metadata_field(
+                &mut fields,
+                "Title",
+                track
+                    .gd3
+                    .as_ref()
+                    .and_then(|gd3| gd3.track_name_en.as_deref()),
+            );
+            vec!["SN76489".to_owned(), "YM2612".to_owned()]
         }
     };
     fields.push(format!(
@@ -223,12 +241,21 @@ pub fn load(path: &Path, pdx: Option<&Path>, output: Option<&Path>) -> Result<In
     let gzip_extension = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("vgz") || ext.eq_ignore_ascii_case("gz"));
-    Ok(Input::Vgm(decode(
-        bytes,
-        gzip_extension,
-        MAX_DECOMPRESSED_BYTES,
-    )?))
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("vgz")
+                || ext.eq_ignore_ascii_case("xgz")
+                || ext.eq_ignore_ascii_case("gz")
+        });
+    let bytes = decode(bytes, gzip_extension, MAX_DECOMPRESSED_BYTES)?;
+    let is_xgm = extension
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xgm") || ext.eq_ignore_ascii_case("xgz"))
+        || bytes.starts_with(b"XGM ");
+    if is_xgm {
+        let document = XgmDocument::parse(&bytes).context("failed to parse XGM input")?;
+        Ok(Input::Xgm(Box::new(document), 0))
+    } else {
+        Ok(Input::Vgm(bytes))
+    }
 }
 
 fn resolve_pdx_path(input: &Path, name: &str) -> Result<PathBuf> {
@@ -329,6 +356,35 @@ mod tests {
         assert!(decode(compressed, false, 4).is_err());
         assert!(decode(raw.to_vec(), true, 32).is_err());
         assert!(read_bounded(&raw[..], 4).is_err());
+    }
+
+    #[test]
+    fn xgm_input_detection_and_metadata() {
+        use soundlog::meta::Gd3;
+        use soundlog::xgm::{XgmBuilder, XgmCommand, XgmTiming, XgmTrack};
+
+        let dir = temp_dir();
+        let mut builder = XgmBuilder::new(XgmTiming::Pal);
+        builder.add_track(XgmTrack {
+            commands: vec![XgmCommand::Frame, XgmCommand::End],
+            gd3: Some(Gd3 {
+                track_name_en: Some("XGM\nSong".into()),
+                ..Gd3::default()
+            }),
+        });
+        let bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let file = dir.join("song.gz");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&bytes).unwrap();
+        fs::write(&file, encoder.finish().unwrap()).unwrap();
+        let input = load(&file, None, None).unwrap();
+        assert!(matches!(input, Input::Xgm(_, 0)));
+        assert_eq!(
+            metadata_line(&input).unwrap(),
+            "Title: XGM Song | Chips: SN76489, YM2612"
+        );
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
     #[test]

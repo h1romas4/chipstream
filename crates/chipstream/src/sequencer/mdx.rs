@@ -19,8 +19,8 @@ use soundlog::vgm::{VgmHeader, VgmStream};
 use crate::audio::{NativeEffect, StereoBlock, StereoEffect};
 
 use super::factory::ChipFactoryRegistry;
-use super::vgm::StreamFactory;
 use super::vgm::config::ChipConfiguration;
+use super::vgm::{FadeMarker, StreamFactory};
 use super::{
     Chip, EffectId, Instance, NativeOutput, OutputGroupId, PlaybackOptions, StateEvent,
     VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker,
@@ -243,7 +243,7 @@ impl<'a> MdxSequencer<'a> {
         let (generator, marker) = if fadeout_samples.is_some() && options.loop_count.is_some() {
             let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)
                 .map_err(MdxSequencerError::Conversion)?;
-            (generator, Some(marker))
+            (generator, Some(FadeMarker::Mdx(marker)))
         } else {
             (
                 to_vgm_stream_generator(package, options).map_err(MdxSequencerError::Conversion)?,
@@ -255,7 +255,10 @@ impl<'a> MdxSequencer<'a> {
                 let (generator, marker) =
                     to_vgm_stream_generator_with_loop_marker(replay_package.clone(), options)
                         .map_err(|error| error.to_string())?;
-                Ok((VgmStream::from_generator(generator), Some(marker)))
+                Ok((
+                    VgmStream::from_generator(generator),
+                    Some(FadeMarker::Mdx(marker)),
+                ))
             } else {
                 let generator = to_vgm_stream_generator(replay_package.clone(), options)
                     .map_err(|error| error.to_string())?;

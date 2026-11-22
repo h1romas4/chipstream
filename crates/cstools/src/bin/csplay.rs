@@ -12,7 +12,7 @@ use cstools::{PlayOptions, audio_output_devices, play};
     args_conflicts_with_subcommands = true
 )]
 struct Args {
-    /// VGM, VGZ, MDX, or MML input file.
+    /// VGM, VGZ, MDX, MML, XGM, or XGZ input file.
     #[arg(value_name = "FILE", required = true)]
     file: Option<PathBuf>,
 
@@ -31,6 +31,10 @@ struct Args {
     /// PDX sample file for MDX/MML (otherwise resolved alongside the input).
     #[arg(long, value_name = "PDX_FILE")]
     pdx: Option<PathBuf>,
+
+    /// Zero-based track index for XGM/XGZ (default: 0).
+    #[arg(long, value_name = "INDEX")]
+    xgm_track: Option<usize>,
 
     /// Raw YM2608 rhythm ROM for VGM/VGZ playback.
     #[arg(long, value_name = "ROM_FILE")]
@@ -103,6 +107,7 @@ fn main() -> Result<()> {
         output_device,
         sample_rate,
         pdx,
+        xgm_track,
         ym2608_rhythm_rom,
         loop_count,
         fadeout_samples,
@@ -133,6 +138,7 @@ fn main() -> Result<()> {
         output_device,
         sample_rate,
         pdx,
+        xgm_track,
         ym2608_rhythm_rom,
         loop_count,
         fadeout_samples,

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 pub use playback::audio_output_devices;
 
-/// Options for playing or rendering a VGM, VGZ, MDX, or MML file.
+/// Options for playing or rendering a VGM, VGZ, MDX, MML, XGM, or XGZ file.
 pub struct PlayOptions {
     /// Input file.
     pub file: PathBuf,
@@ -22,6 +22,8 @@ pub struct PlayOptions {
     pub sample_rate: Option<u32>,
     /// Optional PDX path; otherwise resolve the MDX or MML's filename.
     pub pdx: Option<PathBuf>,
+    /// Zero-based XGM track index; `None` selects the first track.
+    pub xgm_track: Option<usize>,
     /// Optional YM2608 rhythm ROM path for VGM.
     pub ym2608_rhythm_rom: Option<PathBuf>,
     /// Finite playthrough count; `None` and zero both mean one.
@@ -52,6 +54,7 @@ pub fn play(options: PlayOptions) -> Result<()> {
         output_device,
         sample_rate,
         pdx,
+        xgm_track,
         ym2608_rhythm_rom,
         loop_count,
         fadeout_samples,
@@ -80,9 +83,19 @@ pub fn play(options: PlayOptions) -> Result<()> {
     if let Some(path) = ym2608_rhythm_rom.as_deref() {
         input::protect_source(path, output_path)?;
     }
-    let data = input::load(&file, pdx.as_deref(), output_path)
+    let mut data = input::load(&file, pdx.as_deref(), output_path)
         .with_context(|| format!("failed to load {}", file.display()))?;
-    if ym2608_rhythm_rom.is_some() && matches!(data, input::Input::Mdx(_)) {
+    match &mut data {
+        input::Input::Xgm(document, track) => {
+            *track = xgm_track.unwrap_or(0);
+            if *track >= document.tracks.len() {
+                anyhow::bail!("XGM track index {track} is out of range");
+            }
+        }
+        _ if xgm_track.is_some() => anyhow::bail!("--xgm-track applies only to XGM/XGZ"),
+        _ => {}
+    }
+    if ym2608_rhythm_rom.is_some() && !matches!(data, input::Input::Vgm(_)) {
         anyhow::bail!("--ym2608-rhythm-rom applies only to VGM/VGZ");
     }
     let ym2608_rhythm_rom = ym2608_rhythm_rom

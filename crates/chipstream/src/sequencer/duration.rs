@@ -1,23 +1,27 @@
 //! Bounded playback-duration measurement without generating PCM audio.
 //!
-//! The VGM and MDX scanners advance their command streams using playback
+//! The VGM, MDX, and XGM scanners advance their command streams using playback
 //! options and convert waits to output frames. [`PlaybackDuration`] distinguishes
 //! finite results, observed unbounded VGM loops, and scans that cannot
 //! determine a duration within their limits.
 
 use soundlog::mdx::convert::{
-    MdxLoopMarker, MdxToVgmOptions, to_vgm_stream_generator,
-    to_vgm_stream_generator_with_loop_marker,
+    MdxToVgmOptions, to_vgm_stream_generator, to_vgm_stream_generator_with_loop_marker,
 };
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VGM_SAMPLE_RATE;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::header::VgmHeader;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
+use soundlog::xgm::{XgmDocument, XgmPlaybackOptions};
 
 use crate::fixed::divide_ratio;
 
-use super::{MdxSequencerError, MdxSequencerOptions, VgmSequencerError, VgmSequencerOptions};
+use super::vgm::FadeMarker;
+use super::{
+    MdxSequencerError, MdxSequencerOptions, VgmSequencerError, VgmSequencerOptions,
+    XgmSequencerOptions,
+};
 
 /// Command scan limit for finite playback and VGM loop detection.
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
@@ -108,7 +112,7 @@ pub fn measure_mdx_duration_frames(
     let (generator, marker) = if fadeout_samples.is_some() && options.loop_count.is_some() {
         let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)
             .map_err(MdxSequencerError::Conversion)?;
-        (generator, Some(marker))
+        (generator, Some(FadeMarker::Mdx(marker)))
     } else {
         (
             to_vgm_stream_generator(package, options).map_err(MdxSequencerError::Conversion)?,
@@ -130,11 +134,39 @@ pub fn measure_mdx_duration_frames(
     .map_err(MdxSequencerError::Playback)
 }
 
+/// Measure XGM playback with a bounded command scan, without rendering audio.
+///
+/// Infinite playback or a scan that exceeds the budget can return
+/// [`PlaybackDuration::Unknown`]. Generator errors are returned explicitly.
+pub fn measure_xgm_duration_frames(
+    document: XgmDocument,
+    output_rate: u32,
+    options: XgmSequencerOptions,
+) -> Result<PlaybackDuration, VgmSequencerError> {
+    let fade =
+        super::options::fadeout_samples(options.playback.fadeout)?.filter(|samples| *samples != 0);
+    let generator_options: XgmPlaybackOptions = options.into();
+    let mark_loop = fade.is_some() && generator_options.loop_count.is_some();
+    let (generator, marker) = super::xgm::xgm_generator(document, generator_options, mark_loop)?;
+    measure_stream_frames(
+        VgmStream::from_generator(generator),
+        output_rate,
+        marker,
+        fade,
+        false,
+        if generator_options.loop_count.is_none() {
+            MAX_UNLIMITED_MDX_DURATION_COMMANDS
+        } else {
+            MAX_DURATION_COMMANDS
+        },
+    )
+}
+
 /// Scan waits and loop markers up to the command limit without rendering audio.
 fn measure_stream_frames(
     mut stream: VgmStream,
     output_rate: u32,
-    marker: Option<MdxLoopMarker>,
+    marker: Option<FadeMarker>,
     fadeout_samples: Option<u32>,
     detect_loop: bool,
     max_commands: u32,
@@ -154,7 +186,7 @@ fn measure_stream_frames(
             return Ok(PlaybackDuration::Unbounded);
         }
         if fade_remaining.is_none()
-            && (stream.is_fading_out() || marker.as_ref().is_some_and(MdxLoopMarker::reached))
+            && (stream.is_fading_out() || marker.as_ref().is_some_and(FadeMarker::reached))
         {
             fade_remaining = fadeout_samples;
         }

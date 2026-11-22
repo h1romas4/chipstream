@@ -11,7 +11,8 @@ use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions,
-    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
+    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions, XgmSequencer,
+    XgmSequencerOptions, measure_xgm_duration_frames,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -64,14 +65,14 @@ enum PlaybackEvent {
 
 impl Options {
     pub(super) fn validate(&self, input: &Input) -> Result<()> {
-        if matches!(input, Input::Mdx(_))
+        if !matches!(input, Input::Vgm(_))
             && (self.loop_modifier.is_some()
                 || self.loop_base.is_some()
                 || self.compat_vgm_pwm.is_some())
         {
             bail!("--loop-modifier, --loop-base and --compat-vgm-pwm apply only to VGM/VGZ");
         }
-        if matches!(input, Input::Mdx(_)) && self.ym2608_rhythm_rom.is_some() {
+        if !matches!(input, Input::Vgm(_)) && self.ym2608_rhythm_rom.is_some() {
             bail!("--ym2608-rhythm-rom applies only to VGM/VGZ");
         }
         if self.ym2608_rhythm_rom.as_ref().is_some_and(Vec::is_empty) {
@@ -84,6 +85,7 @@ impl Options {
 pub(super) enum Player {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+    Xgm(XgmSequencer<'static>),
 }
 
 fn ym2149_clock_divider(settings: &Ay8910Settings) -> Result<bool, ChipError> {
@@ -164,6 +166,20 @@ impl Player {
                         .context("failed to create MDX sequencer")?,
                 )
             }
+            Input::Xgm(document, track) => {
+                let mut settings = XgmSequencerOptions {
+                    playback,
+                    track,
+                    ..Default::default()
+                };
+                if options.loop_count.is_none() {
+                    settings.max_frames = None;
+                }
+                Self::Xgm(
+                    XgmSequencer::new(*document, rate, CHUNK_FRAMES, settings)
+                        .context("failed to create XGM sequencer")?,
+                )
+            }
         })
     }
 
@@ -171,6 +187,7 @@ impl Player {
         match self {
             Self::Vgm(player) => player.render().context("VGM rendering failed"),
             Self::Mdx(player) => player.render().context("MDX rendering failed"),
+            Self::Xgm(player) => player.render().context("XGM rendering failed"),
         }
     }
 }
@@ -308,6 +325,23 @@ fn count_samples(data: &Input, options: &Options) -> Result<Option<u64>> {
                 let generator = to_vgm_stream_generator((**package).clone(), generator_options)?;
                 (VgmStream::from_generator(generator), None, None)
             }
+        }
+        Input::Xgm(document, track) => {
+            let settings = XgmSequencerOptions {
+                track: *track,
+                playback: PlaybackOptions {
+                    loop_count: options.loop_count,
+                    fadeout: options
+                        .fadeout_samples
+                        .map(|samples| Duration::from_secs_f64(f64::from(samples) / 44_100.0)),
+                },
+                ..Default::default()
+            };
+            return Ok(
+                measure_xgm_duration_frames((**document).clone(), 44_100, settings)?
+                    .finite_frames()
+                    .map(u64::from),
+            );
         }
     };
     count_stream_samples(stream, marker, fadeout_samples).map(Some)
@@ -1117,6 +1151,50 @@ mod playback_tests {
             ym2608_rhythm_rom: None,
         };
         assert_eq!(count_samples(&data, &options).unwrap(), Some(90_300));
+    }
+
+    #[test]
+    fn xgm_duration_matches_fade_and_natural_end() {
+        use soundlog::xgm::{XgmBuilder, XgmCommand, XgmTiming, XgmTrack};
+        let options = Options {
+            loop_count: Some(1),
+            fadeout_samples: Some(2000),
+            loop_modifier: None,
+            loop_base: None,
+            compat_vgm_pwm: None,
+            ay8910_ym2149: None,
+            ay8910_native: false,
+            ym2608_rhythm_rom: None,
+        };
+        for (commands, expected) in [
+            (vec![XgmCommand::Frame, XgmCommand::Loop(0)], 735 + 2000),
+            (vec![XgmCommand::Frame, XgmCommand::End], 735),
+            (
+                vec![
+                    XgmCommand::Frame,
+                    XgmCommand::Loop(2),
+                    XgmCommand::Frame,
+                    XgmCommand::End,
+                ],
+                1470,
+            ),
+        ] {
+            let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+            builder.add_track(XgmTrack {
+                commands,
+                gd3: None,
+            });
+            let document = builder.finalize().unwrap();
+            let input = Input::Xgm(Box::new(document.clone()), 0);
+            assert_eq!(count_samples(&input, &options).unwrap(), Some(expected));
+            let mut player =
+                Player::new(Input::Xgm(Box::new(document), 0), 44_100, &options).unwrap();
+            let mut frames = 0;
+            while let Some(block) = player.render().unwrap() {
+                frames += block.frames().len() as u64;
+            }
+            assert_eq!(frames, expected);
+        }
     }
 
     #[test]

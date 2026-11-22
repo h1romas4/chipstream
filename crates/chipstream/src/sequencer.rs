@@ -1,15 +1,16 @@
-//! Device-independent VGM and MDX playback.
+//! Device-independent VGM, MDX, and XGM playback.
 //!
-//! [`VgmSequencer`] and [`MdxSequencer`] render songs into stereo PCM blocks
+//! [`VgmSequencer`], [`MdxSequencer`], and [`XgmSequencer`] render songs into stereo PCM blocks
 //! without an audio device or sound engine. They support per-chip gain and
 //! typed register-write callbacks with optional chip-state tracking.
 //! Output is not clipped, and rendering may allocate.
 //!
-//! [`VgmSequencerOptions`] and [`MdxSequencerOptions`] configure playback;
-//! [`ChipFactoryRegistry`] can replace selected chip backends. Both sequencers
-//! expose native-output effects and checkpoint-based seeking. Duration scans
-//! through [`measure_vgm_duration_frames`] and [`measure_mdx_duration_frames`]
-//! are bounded and can return [`PlaybackDuration::Unknown`].
+//! [`VgmSequencerOptions`], [`MdxSequencerOptions`], and [`XgmSequencerOptions`]
+//! configure playback; [`ChipFactoryRegistry`] can replace selected chip
+//! backends. Checkpoints support seeking. Duration scans through
+//! [`measure_vgm_duration_frames`], [`measure_mdx_duration_frames`], and
+//! [`measure_xgm_duration_frames`] are bounded and can return
+//! [`PlaybackDuration::Unknown`].
 //!
 //! VGM generators can supply commands lazily using [`GeneratorConfig`], but
 //! single-pass generators do not support checkpoints. After a rendering or
@@ -53,8 +54,12 @@ mod mdx;
 mod options;
 mod vgm;
 mod volume;
+mod xgm;
 
-pub use duration::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
+pub use duration::{
+    PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames,
+    measure_xgm_duration_frames,
+};
 pub use effects::{EffectError, EffectId, OutputGroupId};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
 pub use factory::{
@@ -70,3 +75,4 @@ pub use vgm::{
     GeneratorConfig, NativeOutput, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
     VgmSequencerOptions,
 };
+pub use xgm::{XgmSequencer, XgmSequencerOptions};

@@ -45,5 +45,5 @@ ymz280b = []
 ymf271 = []
 
 [dependencies]
-soundlog = { workspace = true, features = ["mdx"] }
+soundlog = { workspace = true, features = ["mdx", "xgm"] }
 ymfm-sys = "0.3.0"

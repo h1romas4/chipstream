@@ -17,7 +17,7 @@ cpal = { version = "0.18.2", features = ["audioworklet"] }
 flate2 = "1.0"
 hound = "3.5"
 mmlx = { workspace = true, features = ["source-map"] }
-soundlog = { workspace = true }
+soundlog = { workspace = true, features = ["xgm"] }
 tempfile = "3"
 terminal_size = "0.4"
 
