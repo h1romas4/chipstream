@@ -2405,6 +2405,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn added_chips_use_the_nddrv_software_playback_path() {
+        use crate::adapter::{AdapterMode, register_software_adapters};
+        use crate::routing::{RoutingPlan, SoftwareTarget, Target};
+        use soundlog::chip::NesApuSpec;
+        use soundlog::vgm::command::WaitSamples;
+
+        let cases = [
+            (Chip::Saa1099, 8_000_000),
+            (Chip::K051649, 3_579_545),
+            (Chip::Huc6280, 3_579_545),
+            (Chip::Pokey, 1_789_790),
+            (Chip::Ga20, 4_000_000),
+            (Chip::C352, 25_401_600),
+            (Chip::K053260, 3_579_545),
+            (Chip::K054539, 18_432_000),
+            (Chip::X1010, 16_000_000),
+            (Chip::Ymz280b, 16_934_400),
+            (Chip::MultiPcm, 8_064_000),
+            (Chip::Upd7759, 640_000),
+            (Chip::Mikey, 16_000_000),
+            (Chip::NesApu, 1_789_773),
+            (Chip::NesApu, 1_789_773 | 0x8000_0000),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let plan = RoutingPlan::new(&[], VgmSettings::default());
+        for (index, (chip, clock)) in cases.into_iter().enumerate() {
+            let mut builder = soundlog::vgm::VgmBuilder::new();
+            builder.register_chip(chip.clone(), Instance::Primary, clock);
+            if clock & 0x8000_0000 != 0 {
+                for (register, value) in [
+                    (0x89, 128),
+                    (0x40, 63),
+                    (0x89, 0),
+                    (0x80, 0x9f),
+                    (0x82, 0x7b),
+                    (0x83, 3),
+                ] {
+                    builder.add_chip_write(Instance::Primary, NesApuSpec { register, value });
+                }
+            }
+            builder.add_vgm_command(WaitSamples(500));
+            let path = directory.path().join(format!("{index}.vgm"));
+            std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+            let mut factories = ChipFactoryRegistry::new();
+            register_software_adapters(&mut factories, &plan, AdapterMode::Playback);
+            let mut player = Sequencer::create(
+                &path,
+                44_100,
+                false,
+                factories,
+                None,
+                PlaybackSettings::default(),
+            )
+            .unwrap_or_else(|error| panic!("{chip:?}: {error}"));
+            let mut sources = Sequencer::gain_sources(&player, &[]);
+            set_source_targets(&mut sources, &plan, None);
+            assert!(
+                sources.iter().any(|source| source.chip == chip
+                    && source.target
+                        == Some(Target::Software {
+                            chip: SoftwareTarget::Native(chip.clone()),
+                            instance: crate::routing::ChipInstance::Primary,
+                        })),
+                "{chip:?}"
+            );
+            let block = player.render().unwrap().unwrap();
+            assert!(!block.frames().is_empty(), "{chip:?}");
+            if clock & 0x8000_0000 != 0 {
+                assert!(block.frames().iter().any(|frame| frame[0].abs() > 0.001));
+            }
+        }
+    }
+
+    #[test]
     fn output_device_change_is_nonfatal_but_other_errors_are_reported() {
         let (sender, receiver) = mpsc::channel();
         handle_output_error(cpal::ErrorKind::DeviceChanged.into(), &sender);

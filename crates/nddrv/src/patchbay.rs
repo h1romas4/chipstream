@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 
 use crate::DeviceStatus;
-use crate::routing::{ChipInstance, Device, HardwareChip, RoutingPlan, SoftwareTarget, Target};
+use crate::routing::{
+    ChipInstance, Device, HardwareChip, RoutingPlan, SOFTWARE_CHIPS, SoftwareTarget, Target,
+    software_instances,
+};
 
 pub const WIDTH: f32 = DEVICE_X + DEVICE_WIDTH + 16.;
 pub const SOURCE_X: f32 = 336.;
@@ -227,13 +230,10 @@ pub fn build(
     let sources: Vec<_> = HardwareChip::ALL
         .into_iter()
         .flat_map(|chip| ChipInstance::ALL.map(|instance| Source::Hardware(chip, instance)))
-        .chain(
-            ["Sega PCM", "PWM", "C140", "OKIM6295"]
-                .into_iter()
-                .flat_map(|name| {
-                    ChipInstance::ALL.map(|instance| Source::Software(name, instance))
-                }),
-        )
+        .chain(SOFTWARE_CHIPS.into_iter().flat_map(|chip| {
+            let name = crate::library::Track::chip_name(&chip);
+            software_instances(&chip).map(move |instance| Source::Software(name, instance))
+        }))
         .collect();
     let emulator_height = HEADER + ROW * sources.len() as f32 + 8.;
     let mut next_top = 0.;
@@ -588,7 +588,14 @@ mod tests {
             target: ChipInstance::Primary,
         }];
         let graph = build(&devices, &HashMap::new(), &routes);
-        assert_eq!(graph.sources.len(), 36);
+        assert_eq!(
+            graph.sources.len(),
+            HardwareChip::ALL.len() * 2
+                + SOFTWARE_CHIPS
+                    .iter()
+                    .map(|chip| software_instances(chip).count())
+                    .sum::<usize>()
+        );
         assert_eq!(graph.devices[0].endpoints.len(), 1);
         assert!(!graph.devices[0].endpoints[0].available);
         assert_eq!(graph.cables.iter().filter(|c| c.hardware).count(), 1);

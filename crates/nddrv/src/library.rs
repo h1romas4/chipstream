@@ -56,10 +56,10 @@ impl ChipTag {
 
     pub fn software_supported(&self) -> bool {
         self.ymfm
-            || matches!(
-                self.name,
-                "SN76489" | "Sega PCM" | "C140" | "PWM" | "OKIM6258" | "OKIM6295"
-            )
+            || matches!(self.name, "SN76489" | "OKIM6258")
+            || crate::routing::SOFTWARE_CHIPS
+                .iter()
+                .any(|chip| Track::chip_name(chip) == self.name)
     }
 
     pub fn label(&self) -> String {
@@ -1794,17 +1794,14 @@ mod tests {
 
     #[test]
     fn chip_tags_identify_software_backend_support() {
-        for chip in YMFM_CHIPS.into_iter().chain([
-            Chip::Sn76489,
-            Chip::SegaPcm,
-            Chip::C140,
-            Chip::Pwm,
-            Chip::Okim6258,
-            Chip::Okim6295,
-        ]) {
+        for chip in YMFM_CHIPS
+            .into_iter()
+            .chain(crate::routing::SOFTWARE_CHIPS)
+            .chain([Chip::Sn76489, Chip::Okim6258])
+        {
             assert!(ChipTag::new(&chip).software_supported(), "{chip:?}");
         }
-        for chip in [Chip::Pokey, Chip::Ay8910, Chip::Ymf271, Chip::Ymz280b] {
+        for chip in [Chip::Qsound, Chip::Ay8910, Chip::Ymf271] {
             assert!(!ChipTag::new(&chip).software_supported(), "{chip:?}");
         }
     }
@@ -1815,14 +1812,14 @@ mod tests {
 
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
-        builder.register_chip(Chip::Pokey, Instance::Primary, 1_789_790);
+        builder.register_chip(Chip::Qsound, Instance::Primary, 4_000_000);
         let tags = Track::track_chips(&Vec::<u8>::from(builder.finalize()), false).unwrap();
         let unsupported: Vec<_> = tags
             .iter()
             .filter(|tag| !tag.software_supported())
             .map(|tag| tag.name)
             .collect();
-        assert_eq!(unsupported, ["POKEY"]);
+        assert_eq!(unsupported, ["QSound"]);
     }
 
     #[test]
@@ -1835,7 +1832,7 @@ mod tests {
             let mut builder = soundlog::vgm::VgmBuilder::new();
             builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
             if unsupported {
-                builder.register_chip(Chip::Pokey, Instance::Primary, 1_789_790);
+                builder.register_chip(Chip::Qsound, Instance::Primary, 4_000_000);
             }
             let bytes = Vec::<u8>::from(builder.finalize());
             let path = directory.path().join(format!("track.{extension}"));
@@ -1853,7 +1850,7 @@ mod tests {
                 .filter(|chip| !chip.software_supported())
                 .map(ChipTag::label)
                 .collect();
-            assert_eq!(labels, if unsupported { vec!["POKEY"] } else { vec![] });
+            assert_eq!(labels, if unsupported { vec!["QSound"] } else { vec![] });
         }
     }
 

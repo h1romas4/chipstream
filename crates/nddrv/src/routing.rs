@@ -10,6 +10,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::library::VgmSettings;
 
+/// Native software-only sequencer backends exposed by NDDRV.
+pub const SOFTWARE_CHIPS: [Chip; 18] = [
+    Chip::SegaPcm,
+    Chip::Pwm,
+    Chip::C140,
+    Chip::Okim6295,
+    Chip::Saa1099,
+    Chip::K051649,
+    Chip::Huc6280,
+    Chip::Pokey,
+    Chip::Ga20,
+    Chip::C352,
+    Chip::K053260,
+    Chip::K054539,
+    Chip::X1010,
+    Chip::Ymz280b,
+    Chip::MultiPcm,
+    Chip::Upd7759,
+    Chip::Mikey,
+    Chip::NesApu,
+];
+
+pub fn software_instances(chip: &Chip) -> impl Iterator<Item = ChipInstance> + use<> {
+    let supports_secondary = *chip != Chip::Mikey;
+    ChipInstance::ALL
+        .into_iter()
+        .filter(move |instance| supports_secondary || *instance == ChipInstance::Primary)
+}
+
 /// Chip types that can be routed to an NDSIF device.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HardwareChip {
@@ -238,21 +267,17 @@ impl RoutingPlan {
                     }
                 })
             })
-            .chain(
-                [Chip::SegaPcm, Chip::Pwm, Chip::C140, Chip::Okim6295]
-                    .into_iter()
-                    .flat_map(|chip| {
-                        ChipInstance::ALL.map(move |instance| {
-                            Self::software_assignment(
-                                Source {
-                                    chip: chip.clone(),
-                                    instance,
-                                },
-                                settings,
-                            )
-                        })
-                    }),
-            )
+            .chain(SOFTWARE_CHIPS.into_iter().flat_map(|chip| {
+                software_instances(&chip).map(move |instance| {
+                    Self::software_assignment(
+                        Source {
+                            chip: chip.clone(),
+                            instance,
+                        },
+                        settings,
+                    )
+                })
+            }))
             .collect();
         Self {
             assignments,
@@ -569,6 +594,26 @@ mod tests {
             source,
             device,
             target,
+        }
+    }
+
+    #[test]
+    fn software_chips_have_native_routes_for_each_supported_instance() {
+        let plan = RoutingPlan::new(&[], VgmSettings::default());
+        for chip in SOFTWARE_CHIPS {
+            for instance in software_instances(&chip) {
+                let source = Source {
+                    chip: chip.clone(),
+                    instance,
+                };
+                assert_eq!(
+                    plan.assignment(&source).target,
+                    Target::Software {
+                        chip: SoftwareTarget::Native(chip.clone()),
+                        instance,
+                    }
+                );
+            }
         }
     }
 
