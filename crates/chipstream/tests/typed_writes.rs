@@ -83,6 +83,7 @@ impl SoundChip for RecordingChip {
             ChipRegisterWrite::MultiPcm(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::MultiPcmBank(s) => (s.channel, 0, s.bank_offset.into()),
             ChipRegisterWrite::Mikey(s) => (0, s.register, s.value.into()),
+            ChipRegisterWrite::NesApu(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Upd7759(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Ay8910(s) => (0, s.register, s.value.into()),
             ChipRegisterWrite::Okim6258(s) => (0, s.register, s.value.into()),
@@ -214,6 +215,14 @@ fn dynamic_routes_map_all_supported_specs_without_narrowing() {
             value: 7,
         },
         (0, 2, 7),
+    );
+    check_mapping(
+        Chip::NesApu,
+        NesApuSpec {
+            register: 0x11,
+            value: 0x7f,
+        },
+        (0, 0x11, 0x7f),
     );
     check_mapping(
         Chip::Upd7759,

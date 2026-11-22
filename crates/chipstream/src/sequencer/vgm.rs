@@ -51,6 +51,8 @@ use crate::chip::K053260;
 use crate::chip::Mikey;
 #[cfg(feature = "multipcm")]
 use crate::chip::MultiPcm;
+#[cfg(feature = "nes_apu")]
+use crate::chip::NesApu;
 #[cfg(feature = "okim6295")]
 use crate::chip::Okim6295;
 #[cfg(feature = "pokey")]
@@ -1110,6 +1112,13 @@ impl<'a> VgmSequencer<'a> {
         } else {
             clock
         };
+        if chip == Chip::NesApu && header.nes_apu_clock & 0x8000_0000 != 0 {
+            return Err(ChipError::InvalidConfiguration {
+                chip,
+                reason: "NES FDS expansion audio is not supported",
+            }
+            .into());
+        }
         let memory = Rc::new(RefCell::new(Memory::default()));
         let factory_config = ChipFactoryConfig::new(
             chip.clone(),
@@ -1206,6 +1215,8 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("multipcm", chip, Box::new(MultiPcm::new(clock)?))
         } else if chip == Chip::Mikey {
             feature_backend!("mikey", chip, Box::new(Mikey::new(clock)?))
+        } else if chip == Chip::NesApu {
+            feature_backend!("nes_apu", chip, Box::new(NesApu::new(clock)?))
         } else if chip == Chip::Upd7759 {
             feature_backend!("upd7759", chip, {
                 let ChipBackendSettings::Upd7759 { slave } = factory_config.settings() else {
@@ -2797,6 +2808,25 @@ impl<'a> VgmSequencer<'a> {
         } else {
             Instance::Secondary
         };
+        if block.data_type == 0xc2 {
+            let Some(voice) = self
+                .voices
+                .iter_mut()
+                .find(|voice| voice.chip == Chip::NesApu && voice.instance == instance)
+            else {
+                return Ok(());
+            };
+            let DataBlockType::RamWrite16(write) =
+                parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
+            else {
+                return Err(VgmSequencerError::InvalidRomBlock);
+            };
+            voice
+                .route
+                .chip_mut()
+                .write_ram(usize::from(write.start_address), &write.data)?;
+            return Ok(());
+        }
         let (chip, access) = match block.data_type {
             0x80 => (Chip::SegaPcm, None),
             0x8b => (Chip::Okim6295, None),

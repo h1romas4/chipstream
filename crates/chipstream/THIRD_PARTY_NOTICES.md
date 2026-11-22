@@ -1,3 +1,17 @@
+# NES APU implementation
+
+The NES APU implementation is based on Tetorica's `nes_core.cpp` (NES APU
+portions), revision `b4f2543c08f3a6b2c780d723263dee444ff13343`, itself derived from JSNES revision
+`b8a45d088e922b6abcd87c4eb1b7237919e9d3d2`.
+
+Copyright 2026 Tetorica contributors.
+Copyright JSNES contributors, including Ben Firshman.
+
+The implementation has been translated to Rust and adapted for chipstream.
+It is licensed under the Apache License, Version 2.0; see
+[`licenses/LICENSE-JSNES`](licenses/LICENSE-JSNES). The JSNES authors and
+acknowledgments are retained in [`licenses/AUTHORS-JSNES.md`](licenses/AUTHORS-JSNES.md).
+
 # Mikey implementation
 
 The Mikey implementation is based on libvgm's `emu/cores/mikey.c`, revision

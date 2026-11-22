@@ -29,6 +29,8 @@ mod k054539;
 mod mikey;
 #[cfg(feature = "multipcm")]
 mod multipcm;
+#[cfg(feature = "nes_apu")]
+mod nes_apu;
 #[cfg(any(feature = "okim6258", feature = "okim6295"))]
 mod oki_adpcm;
 #[cfg(feature = "okim6258")]
@@ -81,6 +83,8 @@ pub use k054539::{K054539, K054539Config};
 pub use mikey::Mikey;
 #[cfg(feature = "multipcm")]
 pub use multipcm::MultiPcm;
+#[cfg(feature = "nes_apu")]
+pub use nes_apu::NesApu;
 #[cfg(feature = "okim6258")]
 pub use oki_adpcm::Okim6258Adpcm;
 #[cfg(feature = "okim6258")]
@@ -271,6 +275,14 @@ pub trait SoundChip {
         Err(ChipError::UnsupportedRom(self.chip_type().clone()))
     }
 
+    /// Write a contiguous portion of a chip's addressable sample RAM.
+    ///
+    /// Chips without sample RAM return an error. On error, the RAM contents
+    /// must remain unchanged.
+    fn write_ram(&mut self, _start: usize, _data: &[u8]) -> Result<(), ChipError> {
+        Err(ChipError::UnsupportedRam(self.chip_type().clone()))
+    }
+
     /// Overwrite a whole number of native output frames.
     ///
     /// On an error, the buffer and chip state are unchanged.
@@ -404,6 +416,7 @@ impl<T: Any> SoundChipState for T {
     feature = "k054539",
     feature = "mikey",
     feature = "multipcm",
+    feature = "nes_apu",
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
@@ -430,6 +443,7 @@ pub(crate) fn save_cloned_state<T: Clone + Any>(state: &T) -> Box<dyn SoundChipS
     feature = "k054539",
     feature = "mikey",
     feature = "multipcm",
+    feature = "nes_apu",
     feature = "okim6258",
     feature = "okim6295",
     feature = "pwm",
@@ -517,6 +531,11 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
         (**self).write_rom(start, data)
     }
 
+    /// Forward RAM writes to the boxed backend.
+    fn write_ram(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
+        (**self).write_ram(start, data)
+    }
+
     /// Forward sample generation to the boxed backend.
     fn generate(&mut self, buffer: &mut [i32]) -> Result<(), ChipError> {
         (**self).generate(buffer)
@@ -552,6 +571,17 @@ pub enum ChipError {
     },
     /// The chip has no writable sample ROM.
     UnsupportedRom(Chip),
+    /// The chip has no writable sample RAM.
+    UnsupportedRam(Chip),
+    /// The sample RAM write exceeds the chip's addressable memory.
+    RamOutOfRange {
+        /// Target chip.
+        chip: Chip,
+        /// Start address of the attempted write.
+        start: usize,
+        /// Number of bytes in the attempted write.
+        length: usize,
+    },
     /// The sample ROM write exceeds the supported size.
     RomTooLarge,
     /// The input clock is too low to produce a nonzero native sample rate.
@@ -636,6 +666,15 @@ impl fmt::Display for ChipError {
                 write!(f, "write for {expected:?} cannot be applied to {actual:?}")
             }
             Self::UnsupportedRom(chip) => write!(f, "{chip:?} has no writable sample ROM"),
+            Self::UnsupportedRam(chip) => write!(f, "{chip:?} has no writable sample RAM"),
+            Self::RamOutOfRange {
+                chip,
+                start,
+                length,
+            } => write!(
+                f,
+                "{chip:?} RAM write at {start:#x} with length {length} is out of range"
+            ),
             Self::RomTooLarge => write!(f, "sample ROM exceeds the supported size"),
             Self::InvalidClock { clock, minimum } => {
                 write!(f, "chip clock {clock} Hz is below the minimum {minimum} Hz")

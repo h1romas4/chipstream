@@ -21,15 +21,12 @@ const NES_APU_CHANNELS: usize = 5;
 /// NES APU recommended storage
 pub type NesApuStorage = SparseStorage<u8, u8>;
 
-/// NES APU base clock frequency
-/// N2A03 clock: 21,477,270 / 12 = 1,789,772.5 Hz
-/// Clock / 16 for tone calculation
-const NES_CLK_BASE: f32 = 111_860.78_f32;
-
 /// NES APU register state tracker
 ///
 /// Tracks all 5 channels and their register state, detecting key on/off
-/// events and extracting tone information.
+/// events and extracting tone information. Key state represents the
+/// register-controlled channel enable, not the length or linear counters:
+/// those counters may expire without a register write.
 ///
 /// # Register Layout
 ///
@@ -69,16 +66,18 @@ pub struct NesApuState {
     channels: [ChannelState; NES_APU_CHANNELS],
     /// Global register storage for all written registers
     registers: NesApuStorage,
+    /// CPU clock in hertz, when known.
+    clock_hz: Option<f32>,
 }
 
 impl NesApuState {
     /// Create a new NES APU state tracker
     ///
-    /// The clock parameter is accepted for API consistency but not used.
+    /// Pass the NES CPU clock in hertz, or zero when it is unknown.
     ///
     /// # Arguments
     ///
-    /// * `_clock` - Clock frequency in Hz (unused, accepted for API consistency)
+    /// * `clock` - CPU clock frequency in Hz
     ///
     /// # Examples
     ///
@@ -87,10 +86,11 @@ impl NesApuState {
     ///
     /// let state = NesApuState::new(1_789_773.0f32);
     /// ```
-    pub fn new(_clock: f32) -> Self {
+    pub fn new(clock: f32) -> Self {
         Self {
             channels: array::from_fn(|_| ChannelState::new()),
             registers: NesApuStorage::default(),
+            clock_hz: (clock.is_finite() && clock > 0.0).then_some(clock),
         }
     }
 
@@ -129,26 +129,10 @@ impl NesApuState {
     /// # Returns
     ///
     /// Frequency in Hz
-    fn hz_nes(timer: u32) -> f32 {
-        NES_CLK_BASE / (timer + 1) as f32
-    }
-
-    /// Calculate frequency in Hz from NES noise period
-    ///
-    /// # Arguments
-    ///
-    /// * `period` - 4-bit period value
-    ///
-    /// # Returns
-    ///
-    /// Frequency in Hz
-    fn hz_nes_noise(period: u8) -> f32 {
-        const NOISE_PERIODS: [u16; 16] = [
-            4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
-        ];
-
-        let timer = NOISE_PERIODS[period as usize & 0x0F];
-        NES_CLK_BASE / timer as f32
+    fn hz_nes(&self, timer: u32, triangle: bool) -> Option<f32> {
+        let divisor = if triangle { 32.0 } else { 16.0 };
+        self.clock_hz
+            .map(|clock| clock / (divisor * (timer + 1) as f32))
     }
 
     /// Extract tone from pulse/triangle channel registers
@@ -185,15 +169,10 @@ impl NesApuState {
         // 11-bit timer: low 8 bits + high 3 bits
         let timer = (timer_low as u16) | ((timer_high as u16 & 0x07) << 8);
 
-        let freq_hz = if channel == 2 {
-            // Triangle channel frequency is half of timer frequency
-            Self::hz_nes(timer as u32) / 2.0f32
-        } else {
-            Self::hz_nes(timer as u32)
-        };
+        let freq_hz = self.hz_nes(timer as u32, channel == 2);
 
         // Use timer as fnum, 0 as block
-        Some(ToneInfo::new(timer, 0, Some(freq_hz)))
+        Some(ToneInfo::new(timer, 0, freq_hz))
     }
 
     /// Extract tone from noise channel registers
@@ -209,10 +188,8 @@ impl NesApuState {
         // Period is bits 3-0
         let period_value = period & 0x0F;
 
-        let freq_hz = Self::hz_nes_noise(period_value);
-
-        // Use period as fnum, 0 as block
-        Some(ToneInfo::new(period_value as u16, 0, Some(freq_hz)))
+        // Noise has no single tonal frequency.
+        Some(ToneInfo::new(period_value as u16, 0, None))
     }
 
     /// Handle timer register writes for pulse/triangle channels
@@ -467,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_nes_apu_pulse_enable() {
-        let mut state = NesApuState::new(0.0f32);
+        let mut state = NesApuState::new(1_789_773.0);
 
         // Set timer for pulse channel 0
         state.on_register_write(0x02, 0x6D); // Timer low
@@ -590,5 +567,32 @@ mod tests {
 
         assert_eq!(state.channel(0).unwrap().key_state, KeyState::Off);
         assert!(state.channel(0).unwrap().tone.is_none());
+    }
+
+    #[test]
+    fn frequency_uses_supplied_clock_and_noise_has_no_pitch() {
+        let mut state = NesApuState::new(1_662_607.0);
+        state.on_register_write(0x02, 0x40);
+        state.on_register_write(0x03, 0);
+        let event = state.on_register_write(0x15, 1).unwrap();
+        let StateEvent::KeyOn { tone, .. } = event[0] else {
+            panic!("expected key on")
+        };
+        assert_eq!(tone.freq_hz, Some(1_662_607.0 / (16.0 * 65.0)));
+        state.on_register_write(0x0e, 4);
+        let event = state.on_register_write(0x15, 9).unwrap();
+        let StateEvent::KeyOn { tone, .. } = event[0] else {
+            panic!("expected key on")
+        };
+        assert_eq!(tone.freq_hz, None);
+
+        let mut unknown = NesApuState::new(0.0);
+        unknown.on_register_write(0x02, 0x40);
+        unknown.on_register_write(0x03, 0);
+        let event = unknown.on_register_write(0x15, 1).unwrap();
+        let StateEvent::KeyOn { tone, .. } = event[0] else {
+            panic!("expected key on")
+        };
+        assert_eq!(tone.freq_hz, None);
     }
 }

@@ -19,6 +19,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         (Chip::Ymz280b, "ymz280b", cfg!(feature = "ymz280b")),
         (Chip::MultiPcm, "multipcm", cfg!(feature = "multipcm")),
         (Chip::Mikey, "mikey", cfg!(feature = "mikey")),
+        (Chip::NesApu, "nes_apu", cfg!(feature = "nes_apu")),
         (Chip::Upd7759, "upd7759", cfg!(feature = "upd7759")),
         (Chip::Okim6258, "okim6258", cfg!(feature = "okim6258")),
         (Chip::Okim6295, "okim6295", cfg!(feature = "okim6295")),

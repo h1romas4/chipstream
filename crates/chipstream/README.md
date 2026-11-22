@@ -31,6 +31,8 @@ stereo and resampled before aligned sources are mixed into the output block.
 
 The factory selects or creates a `SoundChip`; it is not part of the audio
 signal path. Resampling can downsample or upsample. The final mix is not clipped.
+Backends with addressable sample memory accept ROM and RAM writes separately
+through `SoundChip::write_rom` and `SoundChip::write_ram`.
 
 ## Cargo features
 
@@ -47,6 +49,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `k054539` | Konami K054539 |
 | `mikey` | Atari Lynx Mikey |
 | `multipcm` | Yamaha MultiPCM |
+| `nes_apu` | NES APU (FDS expansion not supported) |
 | `upd7759` | NEC uPD7759 |
 | `okim6258` | OKIM6258 |
 | `okim6295` | OKIM6295 |
@@ -68,6 +71,12 @@ chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
 When a VGM header declares one of these chips without its feature,
 sequencer construction returns `VgmSequencerError::FeatureDisabled`.
 Unsupported chips without implementations remain silent.
+
+The NES APU uses the VGM CPU clock, DMC RAM upload blocks and the `nes_apu`
+feature. Clocks below 1.7 MHz select PAL timing; higher clocks select NTSC
+timing. FDS expansion audio is not implemented, so the sequencer rejects VGM
+files that declare it. `NesApuState` tracks register-controlled
+enables, not time-dependent length or linear counter expiry.
 
 MDX playback with a supplied PDX requires `okim6258`, even when the song does
 not use PCM notes. Without a PDX, FM-only playback does not require it.
