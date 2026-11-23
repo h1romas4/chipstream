@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix NanoDrive 8 YM2151 stereo positioning during MDX playback.
+
 ## v0.16.0
 
 - Add XGM/XGZ playback with library, Piano Roll, and NanoDrive routing support.

@@ -2179,6 +2179,44 @@ fn audio_output_config(
         .with_context(|| format!("audio output device does not support {sample_rate} Hz"))
 }
 
+struct PlaybackNanoDrivePolicy {
+    inner: chipstream_ndsif::NdsifNanoDrivePolicy,
+    mdx: bool,
+}
+
+impl PlaybackNanoDrivePolicy {
+    fn new(
+        path: &Path,
+        nd7_devices: &[usize],
+        nd8_devices: &[usize],
+        device_count: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: chipstream_ndsif::NdsifNanoDrivePolicy::new(
+                nd7_devices.iter().copied(),
+                nd8_devices.iter().copied(),
+                device_count,
+            )?,
+            mdx: extension(path) == "mdx",
+        })
+    }
+}
+
+impl chipstream_ndsif::NdsifRoutePolicy for PlaybackNanoDrivePolicy {
+    fn select(
+        &mut self,
+        route: &chipstream_ndsif::NdsifRoute,
+        clock: u32,
+    ) -> Result<chipstream_ndsif::NdsifRouteOptions, String> {
+        let mut options = self.inner.select(route, clock)?;
+        // MDX's NanoDrive 8 FM positioning uses the opposite convention to VGM.
+        if self.mdx {
+            options.invert_ym2151_pan = false;
+        }
+        Ok(options)
+    }
+}
+
 fn run(path: &Path, control: Arc<PlaybackControl>, looped: bool) -> Result<()> {
     run_inner(path, control, looped, None)
 }
@@ -2292,11 +2330,8 @@ fn run_inner(
                 nd8_devices.push(index);
             }
         }
-        let policy = chipstream_ndsif::NdsifNanoDrivePolicy::new(
-            plan.nd7_devices.iter().copied(),
-            nd8_devices,
-            recorders.len(),
-        )?;
+        let policy =
+            PlaybackNanoDrivePolicy::new(path, &plan.nd7_devices, &nd8_devices, recorders.len())?;
         let mut factories = chipstream_ndsif::create_routed_transport_factories_with_policy(
             &recorders,
             &plan.routes,
@@ -2557,6 +2592,87 @@ fn wait_for_audio_with_hardware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mdx_nanodrive8_pan_correction_is_hardware_and_format_specific() {
+        use ndsif_transport::{NdsifRegisterEvent, NdsifRoutingTransport, NdsifTransport};
+        use soundlog::mdx::command::{MdxNote, MdxPan};
+        use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_document};
+        use soundlog::mdx::document::MdxBuilder;
+        use soundlog::mdx::package::MdxPackage;
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+        impl NdsifRoutingTransport for Recorder {
+            fn supports_route_clock(&self, _: ndsif::WriteId, _: u8, _: u32) -> bool {
+                true
+            }
+            fn supports_route_audio(&self, _: u8, _: u32) -> bool {
+                false
+            }
+        }
+
+        let mut builder = MdxBuilder::new();
+        for pan in [MdxPan::Right, MdxPan::Left, MdxPan::Center, MdxPan::Mute] {
+            builder.add_mdx_command(1, pan).add_mdx_command(
+                1,
+                MdxNote {
+                    note: 0x98,
+                    length: 8,
+                },
+            );
+        }
+        let package = MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: None,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let mdx_path = directory.path().join("test.MDX");
+        let vgm_path = directory.path().join("test.vgm");
+        std::fs::write(&mdx_path, package.mdx.to_bytes().unwrap()).unwrap();
+        let vgm = to_vgm_document(&package, &MdxToVgmOptions::default()).unwrap();
+        std::fs::write(&vgm_path, Vec::<u8>::from(vgm)).unwrap();
+        let route = chipstream_ndsif::NdsifRoute {
+            chip: Chip::Ym2151,
+            source: Instance::Primary,
+            device: 0,
+            target: Instance::Primary,
+        };
+        for (path, nd8, expected) in [
+            (&mdx_path, true, [0x40, 0x80, 0xc0, 0]),
+            (&mdx_path, false, [0x40, 0x80, 0xc0, 0]),
+            (&vgm_path, true, [0x80, 0x40, 0xc0, 0]),
+        ] {
+            let recorder = Rc::new(RefCell::new(Recorder::default()));
+            let nd8_devices = if nd8 { &[0][..] } else { &[][..] };
+            let policy = PlaybackNanoDrivePolicy::new(path, &[], nd8_devices, 1).unwrap();
+            let factories = chipstream_ndsif::create_routed_transport_factories_with_policy(
+                &[Rc::clone(&recorder)],
+                std::slice::from_ref(&route),
+                policy,
+            )
+            .unwrap();
+            let mut sequencer = Sequencer::with_factories(path, 44_100, false, factories).unwrap();
+            while sequencer.render().unwrap().is_some() {}
+            let pan: Vec<_> = recorder
+                .borrow()
+                .0
+                .iter()
+                .filter(|event| event.write.address == 0x21)
+                .map(|event| event.write.value & 0xc0)
+                .collect();
+            assert_eq!(pan, expected, "{} nd8={nd8}", path.display());
+        }
+    }
 
     #[test]
     fn added_chips_use_the_nddrv_software_playback_path() {
