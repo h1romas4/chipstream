@@ -9,6 +9,7 @@ repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 keywords = ["audio", "sound", "game", "vgm", "mdx"]
 categories = ["multimedia::audio", "game-development"]
+exclude = ["BACKLOG.md"]
 
 [features]
 default = []
