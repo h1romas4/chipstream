@@ -502,16 +502,20 @@ fn default_gd3_limits_apply_to_each_track_and_the_total() {
     legacy[gd3 + 8..gd3 + 12].fill(0);
     let error = XgmDocument::parse(&legacy).unwrap_err();
     assert!(error.to_string().contains("GD3 bytes"), "{error}");
-    assert!(
-        XgmDocument::parse_with_limits(
-            &bytes,
-            XgmParseLimits {
-                max_gd3_bytes: None,
-                ..Default::default()
-            }
-        )
-        .is_ok()
-    );
+    for input in [&bytes, &legacy] {
+        for max_gd3_bytes in [None, Some(16 * 1024 + 2)] {
+            assert!(
+                XgmDocument::parse_with_limits(
+                    input,
+                    XgmParseLimits {
+                        max_gd3_bytes,
+                        ..Default::default()
+                    }
+                )
+                .is_ok()
+            );
+        }
+    }
 }
 
 fn playback_error(error: ParseError) -> XgmPlaybackError {

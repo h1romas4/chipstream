@@ -5,7 +5,7 @@ use super::header::{XGM_SAMPLE_COUNT, XgmHeader};
 pub use super::header::{XgmSample, XgmTiming};
 use crate::ParseError;
 use crate::binutil::{read_slice, read_u16_le_at, read_u32_le_at};
-use crate::meta::{Gd3, parse_gd3};
+use crate::meta::{Gd3, Gd3ParseLimits};
 
 const HEADER_SIZE: usize = 0x104;
 const MAX_SAMPLE_DATA_BYTES: usize = u16::MAX as usize * 256;
@@ -40,7 +40,7 @@ impl Default for XgmParseLimits {
             max_samples: Some(XGM_SAMPLE_COUNT),
             max_tracks: Some(256),
             max_commands: Some(1_000_000),
-            max_gd3_bytes: Some(16 * 1024),
+            max_gd3_bytes: Gd3ParseLimits::default().max_gd3_bytes,
             max_total_gd3_bytes: Some(256 * 1024),
         }
     }
@@ -176,7 +176,12 @@ impl XgmDocument {
                         .map_err(|_| invalid("XGM GD3 length overflow"))?;
                     raw[8..12].copy_from_slice(&len.to_le_bytes());
                 }
-                let metadata = parse_gd3(&raw)?;
+                let metadata = Gd3::parse_with_limits(
+                    &raw,
+                    Gd3ParseLimits {
+                        max_gd3_bytes: limits.max_gd3_bytes,
+                    },
+                )?;
                 pos = pos
                     .checked_add(total)
                     .ok_or_else(|| invalid("XGM GD3 position overflow"))?;

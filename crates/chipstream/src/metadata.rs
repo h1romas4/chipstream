@@ -4,7 +4,7 @@
 //! normalized for playback, including supported compressed MDX bodies.
 //! [`probe_vgm_bytes_with_language`] selects between bilingual GD3 fields;
 //! [`probe_mdx_bytes`] extracts the MDX title. Results use [`TrackMetadata`],
-//! and inputs larger than 64 MiB are rejected.
+//! Inputs larger than 64 MiB and GD3 chunks larger than 16 KiB are rejected.
 
 use std::error::Error;
 use std::fmt;
@@ -94,7 +94,7 @@ impl Error for MetadataError {}
 /// Parse standard GD3 metadata from uncompressed VGM bytes.
 ///
 /// Callers handling VGZ input should decompress it before calling this function.
-/// Inputs larger than 64 MiB are rejected.
+/// Inputs larger than 64 MiB and GD3 chunks larger than 16 KiB are rejected.
 pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     probe_vgm_bytes_with_language(bytes, VgmMetadataLanguage::English)
 }
@@ -102,7 +102,7 @@ pub fn probe_vgm_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
 /// Parse GD3 metadata, preferring the requested language for each field.
 ///
 /// Callers handling VGZ input should decompress it before calling this function.
-/// Inputs larger than 64 MiB are rejected.
+/// Inputs larger than 64 MiB and GD3 chunks larger than 16 KiB are rejected.
 pub fn probe_vgm_bytes_with_language(
     bytes: &[u8],
     language: VgmMetadataLanguage,
@@ -234,6 +234,20 @@ mod tests {
         assert_eq!(metadata.album.as_deref(), Some("English Game"));
         assert_eq!(metadata.system_name.as_deref(), Some("Original System"));
         assert_eq!(metadata.artist.as_deref(), Some("Composer"));
+    }
+
+    #[test]
+    fn vgm_probe_reports_oversized_gd3() {
+        let mut builder = VgmBuilder::new();
+        builder.set_gd3(Gd3 {
+            notes: Some("a".repeat(8192)),
+            ..Gd3::default()
+        });
+        let bytes: Vec<u8> = builder.finalize().into();
+        assert!(matches!(
+            probe_vgm_bytes(&bytes),
+            Err(MetadataError::InvalidGd3(_))
+        ));
     }
 
     #[test]

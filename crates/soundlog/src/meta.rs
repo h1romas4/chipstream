@@ -7,7 +7,7 @@
 //! a sequence of UTF-16LE nul-terminated strings representing various
 //! metadata fields (track name, game name, author, etc.).
 //!
-//! Use `parse_gd3(bytes)` to parse a full Gd3 chunk starting at offset 0.
+//! Use [`Gd3::parse`] to parse a full Gd3 chunk starting at offset 0.
 //! The parser returns a `Gd3` on success or a `crate::ParseError`
 //! on failure. `Gd3::to_bytes()` serializes the struct back into the raw
 //! Gd3 chunk bytes, preserving the raw `version` value stored in the
@@ -15,6 +15,23 @@
 use crate::ParseError;
 use crate::binutil::{read_slice, read_u16_le_at, read_u32_le_at};
 use std::convert::TryFrom;
+
+/// Resource limits for parsing a GD3 chunk.
+///
+/// `None` disables the limit; zero permits no bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct Gd3ParseLimits {
+    /// Maximum chunk size, including the 12-byte header. Default: 16 KiB.
+    pub max_gd3_bytes: Option<usize>,
+}
+
+impl Default for Gd3ParseLimits {
+    fn default() -> Self {
+        Self {
+            max_gd3_bytes: Some(16 * 1024),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 /// GD3 metadata associated with a VGM file.
@@ -67,6 +84,16 @@ impl Default for Gd3 {
 }
 
 impl Gd3 {
+    /// Parse a complete GD3 chunk with the default resource limit.
+    pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
+        Self::parse_with_limits(bytes, Gd3ParseLimits::default())
+    }
+
+    /// Parse a complete GD3 chunk with a caller-selected resource limit.
+    pub fn parse_with_limits(bytes: &[u8], limits: Gd3ParseLimits) -> Result<Self, ParseError> {
+        parse_gd3(bytes, limits)
+    }
+
     /// Serialize the metadata as a complete GD3 chunk.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
@@ -111,7 +138,7 @@ impl Gd3 {
 
 /// Parse a Gd3 block from bytes (full Gd3 chunk starting at offset 0).
 /// Returns a populated `Gd3` or a `ParseError` on failure.
-pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
+pub(crate) fn parse_gd3(bytes: &[u8], limits: Gd3ParseLimits) -> Result<Gd3, ParseError> {
     // need at least 12 bytes: ident(4) + version(4) + length(4)
     if bytes.len() < 12 {
         return Err(ParseError::HeaderTooShort("gd3".into()));
@@ -128,7 +155,17 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
     let data_len = read_u32_le_at(bytes, 8)? as usize;
 
     let data_off = 0x0C_usize;
-    if bytes.len() < data_off + data_len {
+    let total = data_off
+        .checked_add(data_len)
+        .ok_or_else(|| ParseError::DataInconsistency("GD3 chunk size overflow".into()))?;
+    if let Some(limit) = limits.max_gd3_bytes
+        && total > limit
+    {
+        return Err(ParseError::DataInconsistency(format!(
+            "GD3 bytes limit exceeded (size {total}, maximum {limit})"
+        )));
+    }
+    if bytes.len() < total {
         return Err(ParseError::OffsetOutOfRange {
             offset: data_off,
             needed: 1,
@@ -206,13 +243,11 @@ pub(crate) fn parse_gd3(bytes: &[u8]) -> Result<Gd3, ParseError> {
 
 /// Attempt to convert a raw Gd3 byte slice into a `Gd3` value.
 ///
-/// This is a fallible conversion that delegates to `parse_gd3` and returns
-/// a `crate::ParseError` on failure. Use `Gd3::try_from(bytes)` or
-/// call `parse_gd3(bytes)` directly to handle parse errors explicitly.
+/// Uses [`Gd3ParseLimits::default`]. For custom limits use [`Gd3::parse_with_limits`].
 impl TryFrom<&[u8]> for Gd3 {
     type Error = ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        parse_gd3(bytes)
+        Self::parse(bytes)
     }
 }

@@ -32,14 +32,14 @@
 use crate::ParseError;
 use crate::binutil::{read_slice, read_u8_at, read_u16_le_at, read_u32_le_at};
 use crate::chip;
-use crate::meta::parse_gd3;
+use crate::meta::{Gd3, Gd3ParseLimits};
 use crate::vgm::command::{
     Ay8910StereoMask, CommandSpec, DataBlock, EndOfData, Instance, PcmRamWrite, ReservedU8,
     ReservedU16, ReservedU24, ReservedU32, SeekOffset, SetStreamData, SetStreamFrequency,
     SetupStreamControl, StartStream, StartStreamFastCall, StopStream, UnknownSpec, VgmCommand,
     Wait735Samples, Wait882Samples, WaitNSample, WaitSamples, Ym2612Port0Address2AWriteAndWaitN,
 };
-use crate::vgm::document::VgmDocument;
+use crate::vgm::document::{VgmDocument, VgmParseLimits};
 use crate::vgm::header::{
     Ay8910ChipType, Ay8910Flags, C140ChipType, ChipClock, ChipVolume, K054539Flags, Okim6258Flags,
     Sn76489Flags, VgmExtraHeader, VgmHeader, VgmHeaderField, Ym2203AyFlags, Ym2608AyFlags,
@@ -47,27 +47,22 @@ use crate::vgm::header::{
 
 /// Parse a complete VGM file from a byte slice into a `VgmDocument`.
 ///
-/// High-level parsing steps:
-/// 1. Parse the VGM header with `parse_vgm_header`, which returns the
-///    parsed `VgmHeader` and the header size in bytes.
-/// 2. Iterate commands starting immediately after the header and decode
-///    each command using `parse_vgm_command`. Each command parse returns
-///    a `(VgmCommand, consumed_bytes)` pair; consumed bytes include the
-///    opcode and payload.
-/// 3. If the header declares a non-zero `gd3_offset`, attempt to parse
-///    the GD3 metadata using `crate::meta::parse_gd3` and attach it to
-///    the resulting `VgmDocument::gd3` field. GD3 parsing errors are
-///    ignored here (the document will contain `None` on failure).
-///
-/// Returns `Ok(VgmDocument)` on success or a `ParseError` if header or
-/// any command parsing fails.
-pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
+/// Header, command and GD3 parsing errors are propagated to the caller.
+pub(crate) fn parse_vgm(bytes: &[u8], limits: VgmParseLimits) -> Result<VgmDocument, ParseError> {
     let (header, mut off) = parse_vgm_header(bytes)?;
 
     let mut commands: Vec<VgmCommand> = Vec::new();
 
     let gd3_start_opt =
-        (header.gd3_offset != 0).then(|| header.gd3_offset.wrapping_add(0x14) as usize);
+        if header.gd3_offset == 0 {
+            None
+        } else {
+            Some(
+                header.gd3_offset.checked_add(0x14).ok_or_else(|| {
+                    ParseError::DataInconsistency("VGM GD3 offset overflow".into())
+                })? as usize,
+            )
+        };
 
     while off < bytes.len() {
         if let Some(gd3_start) = gd3_start_opt
@@ -87,8 +82,7 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
     }
 
     // Attach GD3 metadata if present (gd3_offset is stored as gd3_start - 0x14).
-    let gd3 = if header.gd3_offset != 0 {
-        let gd3_start = header.gd3_offset.wrapping_add(0x14) as usize;
+    let gd3 = if let Some(gd3_start) = gd3_start_opt {
         // If the computed start is outside the buffer, treat it as an out-of-range offset.
         if gd3_start >= bytes.len() {
             return Err(ParseError::OffsetOutOfRange {
@@ -99,7 +93,12 @@ pub(crate) fn parse_vgm(bytes: &[u8]) -> Result<VgmDocument, ParseError> {
             });
         }
         // Attempt to parse GD3 and propagate any parse error to the caller.
-        Some(parse_gd3(&bytes[gd3_start..])?)
+        Some(Gd3::parse_with_limits(
+            &bytes[gd3_start..],
+            Gd3ParseLimits {
+                max_gd3_bytes: limits.max_gd3_bytes,
+            },
+        )?)
     } else {
         None
     };

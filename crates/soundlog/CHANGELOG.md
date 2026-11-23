@@ -10,6 +10,8 @@
 - Add: `XgmVgmGenerator::finished_at_loop` identifies playback ending at the configured loop boundary.
 - Add: `XgmHeader` groups timing and sample definitions; `XgmDocument` derives serialized sizes and flags from its data.
 - Change: XGM parsing limits sample and bank lengths and defined sample count instead of total input size, and also limits cumulative GD3 size.
+- Add: Configurable GD3 size limits for VGM documents and standalone metadata parsing, defaulting to 16 KiB.
+- Fix: Reject overflowing GD3 lengths and VGM GD3 offsets.
 
 ## v0.17.0
 

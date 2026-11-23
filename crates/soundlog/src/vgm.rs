@@ -16,6 +16,6 @@ pub mod parser;
 pub mod stream;
 
 pub use callback_stream::{VgmCallbackStream, WriteCallbackTarget};
-pub use document::{VgmBuilder, VgmDocument};
+pub use document::{VgmBuilder, VgmDocument, VgmParseLimits};
 pub use header::{VgmExtraHeader, VgmHeader, VgmHeaderField};
 pub use stream::{DacStreamSelector, DacStreamTarget, VgmCommandGenerator, VgmStream};

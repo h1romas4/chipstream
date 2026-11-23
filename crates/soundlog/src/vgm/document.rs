@@ -20,7 +20,7 @@
 //!   `extra_header_offset` semantics).
 //! - Most items are crate-visible and intended for use inside `soundlog`.
 use crate::chip;
-use crate::meta::Gd3;
+use crate::meta::{Gd3, Gd3ParseLimits};
 use crate::vgm::command::Instance;
 use crate::vgm::command::VgmCommand;
 use crate::vgm::detail;
@@ -46,6 +46,39 @@ pub struct VgmDocument {
     pub commands: Vec<VgmCommand>,
     /// Optional GD3 metadata chunk.
     pub gd3: Option<Gd3>,
+}
+
+/// Resource limits for VGM document parsing.
+///
+/// These limits apply only to GD3 metadata, not to the VGM command stream.
+#[derive(Debug, Clone, Copy)]
+pub struct VgmParseLimits {
+    /// Maximum GD3 chunk size including its 12-byte header. Default: 16 KiB.
+    /// `None` disables the limit; zero permits no GD3 bytes.
+    pub max_gd3_bytes: Option<usize>,
+}
+
+impl Default for VgmParseLimits {
+    fn default() -> Self {
+        Self {
+            max_gd3_bytes: Gd3ParseLimits::default().max_gd3_bytes,
+        }
+    }
+}
+
+impl VgmDocument {
+    /// Parse an uncompressed VGM document with default metadata limits.
+    pub fn parse(bytes: &[u8]) -> Result<Self, crate::ParseError> {
+        Self::parse_with_limits(bytes, VgmParseLimits::default())
+    }
+
+    /// Parse an uncompressed VGM document with caller-selected metadata limits.
+    pub fn parse_with_limits(
+        bytes: &[u8],
+        limits: VgmParseLimits,
+    ) -> Result<Self, crate::ParseError> {
+        parser::parse_vgm(bytes, limits)
+    }
 }
 
 /// Builder for assembling a `VgmDocument`.
@@ -451,16 +484,13 @@ impl Default for VgmBuilder {
 
 /// Attempt to convert a raw VGM byte slice into a `VgmDocument`.
 ///
-/// This is a fallible conversion that delegates to `parser::parse_vgm` and
-/// returns a `crate::ParseError` on failure.
-///
-/// Use `VgmDocument::try_from(bytes)` or `parser::parse_vgm(bytes)` when
-/// you need to handle parse errors explicitly.
+/// Uses [`VgmParseLimits::default`]; see [`VgmDocument::parse_with_limits`]
+/// for custom limits.
 impl TryFrom<&[u8]> for VgmDocument {
     type Error = crate::ParseError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        parser::parse_vgm(bytes)
+        Self::parse(bytes)
     }
 }
 
