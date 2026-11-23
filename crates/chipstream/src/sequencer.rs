@@ -1,9 +1,8 @@
 //! Device-independent VGM, MDX, and XGM playback.
 //!
-//! [`VgmSequencer`], [`MdxSequencer`], and [`XgmSequencer`] render songs into stereo PCM blocks
-//! without an audio device or sound engine. They support per-chip gain and
-//! typed register-write callbacks with optional chip-state tracking.
-//! Output is not clipped, and rendering may allocate.
+//! [`VgmSequencer`], [`MdxSequencer`], and [`XgmSequencer`] render stereo PCM
+//! without an audio device or sound engine. Output is not clipped, and
+//! rendering may allocate.
 //!
 //! [`VgmSequencerOptions`], [`MdxSequencerOptions`], and [`XgmSequencerOptions`]
 //! configure playback; [`ChipFactoryRegistry`] can replace selected chip
@@ -14,36 +13,8 @@
 //!
 //! VGM generators can supply commands lazily using [`GeneratorConfig`], but
 //! single-pass generators do not support checkpoints. After a rendering or
-//! checkpoint restore error, create a new sequencer.
-//!
-//! Render a VGM file containing a YM2151:
-//!
-//! ```no_run
-//! use chipstream::sequencer::{Chip, Instance, VgmSequencer};
-//!
-//! let bytes = std::fs::read("song.vgm")?;
-//! let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
-//! player.set_chip_gain(Chip::Ym2151, Instance::Primary, 0.5)?;
-//! while let Some(block) = player.render()? {
-//!     // Send block.frames() to the host.
-//! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! For MDX playback, provide the MDX and optional PDX data; PDX lookup is the
-//! caller's responsibility:
-//!
-//! ```no_run
-//! use chipstream::sequencer::MdxSequencer;
-//!
-//! let mdx = std::fs::read("song.mdx")?;
-//! let pdx = std::fs::read("song.pdx")?;
-//! let mut player = MdxSequencer::from_mdx(mdx, Some(pdx), 48_000, 512, Default::default())?;
-//! while let Some(block) = player.render()? {
-//!     // Send block.frames() to the host.
-//! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
+//! checkpoint restore error, create a new sequencer. Usage examples are in
+//! the [crate documentation](crate).
 
 mod compat;
 mod duration;

@@ -129,12 +129,10 @@ impl Error for MdxSequencerError {
 /// A supplied PDX requires the `okim6258` Cargo feature, even if the song
 /// does not use PCM notes; without a PDX the PCM path is disabled.
 ///
-/// The parsed MDX/PDX, decoded sample cache, resampler, and output buffers
-/// consume memory. Legacy ADPCM and PCM8/PCM8A use soundlog's driver and its
-/// OKIM6258 re-encoding path. In the default `Through` mode, embedded fadeout
-/// does not attenuate legacy ADPCM; `Resample` and `Lpf` use the software
-/// mixer and apply it. Commands, timing, PCM handling, and limits follow
-/// [`soundlog::mdx::convert`]. Output is not clipped.
+/// Legacy ADPCM and PCM8/PCM8A use soundlog's OKIM6258 re-encoding path.
+/// Embedded fadeout does not attenuate legacy ADPCM in the default `Through`
+/// mode; `Resample` and `Lpf` apply it. See [`soundlog::mdx::convert`] for
+/// driver behavior and limits. Output is not clipped.
 ///
 /// [`Self::on_write`] reports typed chip writes while rendering, with optional
 /// state-change data registered through [`Self::track_state`].
@@ -189,15 +187,13 @@ impl<'a> MdxSequencer<'a> {
 
     /// Play a parsed package with explicit driver options.
     ///
-    /// `playback.loop_count` is applied by the MDX driver, not the VGM stream. Set
-    /// `max_ticks` to `None` for an indefinite loop without a time limit.
-    /// `Some(n)` selects a finite number of traversals; `Some(0)` means one.
-    /// For F1 loops, the intro and first traversal are followed by `n - 1`
-    /// further traversals. Finite nested repeats are unaffected.
-    /// A configured fade begins at the selected loop boundary. Synchronized
-    /// F1 tracks use their shared boundary; other unbounded song loops use
-    /// their own boundaries. Embedded fades or natural endings can finish
-    /// playback earlier. The driver continues looping during the fade.
+    /// The MDX driver applies `playback.loop_count`: `Some(n)` selects `n`
+    /// traversals, with zero treated as one. Finite nested repeats are
+    /// unaffected. Set `max_ticks` to `None` for an indefinite loop.
+    ///
+    /// Fade starts at the selected loop boundary, shared by synchronized F1
+    /// tracks, and playback continues during the fade. Embedded fades or
+    /// natural endings can finish playback earlier.
     ///
     /// The default tick limit is 100,000 (about 17 minutes at tempo t120).
     /// Command-per-tick and decoded-PCM limits are independently configurable.

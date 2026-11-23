@@ -26,7 +26,7 @@ use crate::{
 pub struct NdsifRoute {
     /// Chip type on both ends of the connection.
     pub chip: Chip,
-    /// Instance in the VGM or MDX source.
+    /// Instance in the source.
     pub source: Instance,
     /// Index into the device vector supplied to [`create_routed_chip_factories`].
     pub device: usize,
@@ -151,12 +151,12 @@ impl std::error::Error for NdsifRoutingError {}
 
 /// Build factories for explicit routes using already-opened serial devices.
 ///
-/// Unrouted instances use their normal built-in backend, except AY8910, which
-/// has no built-in backend. If any AY instance is routed, an unrouted AY
-/// instance in the same track is an error. Routed instances
-/// never fall back: an unsupported clock, stream or device capability produces
-/// a chip error when the sequencer creates the instance. Devices are retained
-/// by the registry and its created chips.
+/// Unrouted instances use their normal built-in backend; AY8910 is silent by
+/// default without a factory. If any AY instance is routed, an unrouted AY
+/// instance in the same track is an error. Routed instances never fall back:
+/// incompatible clocks, streams or capabilities produce a chip error when
+/// the sequencer creates the instance. Devices remain owned by the registry
+/// and its chips.
 ///
 /// # Errors
 ///

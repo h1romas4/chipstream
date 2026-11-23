@@ -83,9 +83,9 @@ so earlier chips may already be configured when a later route is rejected.
 
 Most applications should start with `create_chip_factories`. It selects the
 first connected device that advertises a compatible chip and clock; unmatched
-chips use chipstream's normal emulation where available. AY8910 has no
-built-in backend. Errors opening or initializing a configured device are
-returned rather than silently ignored.
+chips use chipstream's normal emulation where available. AY8910 is silent by
+default without a factory; native emulation can be explicitly registered.
+Errors opening or initializing a configured device are returned.
 
 ## Connect devices and play
 
@@ -241,8 +241,9 @@ device advertises compatible capabilities. Check the connected device rather
 than relying on its model name.
 
 - Automatic routing uses emulation when no compatible hardware target is
-  available, except that AY8910 has no built-in backend. Explicit routes fail
-  when the selected target is incompatible.
+  available, except that AY8910 is silent by default without a factory. If an
+  AY device is present, an unroutable AY instance is an error. Explicit routes
+  fail when the selected target is incompatible.
 - SN76489 hardware routing is unavailable for non-default Game Gear stereo
   masks or T6W28; automatic routing uses emulation for these. A VGM
   stereo-capable flag alone does not prevent routing.

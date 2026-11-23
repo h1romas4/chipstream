@@ -24,11 +24,11 @@ use crate::{
 /// Open configured NDSIF devices and register hardware-backed factories.
 ///
 /// Each chip instance is routed to the first configured device advertising a
-/// compatible chip/clock capability. When no device matches, the normal
-/// emulated backend is retained, except AY8910 which has no emulated backend:
+/// compatible chip/clock capability. Unmatched chips use the normal software
+/// backend where available. AY8910 is silent by default without a factory;
 /// when an AY device is present, an unroutable AY instance is an error.
-/// T6W28 and SN76489 instances that use Game Gear stereo masks use emulation. An empty
-/// list selects no hardware. All configurations are validated before any
+/// T6W28 and SN76489 with Game Gear stereo masks use emulation. An empty list
+/// selects no hardware. All configurations are validated before any
 /// device is opened or reset, although opening devices is not transactional.
 /// Devices advertising YM2151 are identified to apply NanoDrive 8 pan correction.
 ///
@@ -96,10 +96,10 @@ pub fn create_chip_factories(
 /// Build automatic chip factories using scheduled transports with cached capabilities.
 ///
 /// `supports_ay` must indicate whether any transport advertises AY8910.
-/// Unmatched chips use their normal software backend where available;
-/// AY8910 has no built-in backend. Non-default Game Gear stereo masks use
-/// SN76489 emulation; T6W28 also uses emulation. Capability checks and chip configuration occur when
-/// the sequencer creates each instance.
+/// Unmatched chips use their normal software backend where available; AY8910
+/// is silent by default without a factory. Non-default Game Gear stereo masks
+/// and T6W28 use SN76489 emulation. Capability checks and chip configuration
+/// occur when the sequencer creates each instance.
 pub fn create_automatic_transport_factories<T: NdsifRoutingTransport + 'static>(
     transports: &[Rc<RefCell<T>>],
     supports_ay: bool,
