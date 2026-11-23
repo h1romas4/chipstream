@@ -16,3 +16,4 @@ soundlog = { workspace = true }
 
 [dev-dependencies]
 serialport = { version = "4.7", default-features = false }
+soundlog = { workspace = true, features = ["mdx"] }

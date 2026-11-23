@@ -1,7 +1,9 @@
+#[cfg(feature = "mdx")]
+use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
 use chipstream::sequencer::{
-    MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerError,
-    VgmSequencerOptions,
+    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
 };
+#[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmBuilder;
 use soundlog::vgm::command::WaitSamples;
@@ -390,6 +392,7 @@ fn seek_to_frame_can_be_cancelled_between_render_blocks() {
 }
 
 #[test]
+#[cfg(feature = "mdx")]
 fn mdx_checkpoint_restores_generator_and_audio_state() {
     let mdx = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
     let package = MdxPackage::parse_owned(mdx.to_vec(), None).unwrap();
@@ -418,6 +421,7 @@ fn mdx_checkpoint_restores_generator_and_audio_state() {
 }
 
 #[test]
+#[cfg(feature = "mdx")]
 fn mdx_checkpoint_restores_fade_start_position() {
     use soundlog::mdx::command::{MdxCommand, MdxRelativeOffset, MdxRest};
     use soundlog::mdx::document::MdxBuilder;

@@ -1,6 +1,6 @@
-use chipstream::sequencer::{
-    Chip, Instance, MdxSequencer, MdxSequencerError, VgmSequencer, VgmSequencerError,
-};
+use chipstream::sequencer::{Chip, Instance, VgmSequencer, VgmSequencerError};
+#[cfg(feature = "mdx")]
+use chipstream::sequencer::{MdxSequencer, MdxSequencerError};
 use soundlog::vgm::VgmBuilder;
 use soundlog::vgm::command::WaitSamples;
 
@@ -98,6 +98,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
 }
 
 #[test]
+#[cfg(feature = "mdx")]
 fn mdx_pdx_requires_okim6258_but_fm_only_does_not() {
     let mdx = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
     let pdx = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");

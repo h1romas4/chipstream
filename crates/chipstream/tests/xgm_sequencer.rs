@@ -1,4 +1,4 @@
-#![cfg(feature = "sn76496")]
+#![cfg(all(feature = "xgm", feature = "sn76496"))]
 
 use std::time::Duration;
 

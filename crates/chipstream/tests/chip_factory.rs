@@ -1,16 +1,20 @@
 use std::sync::{Arc, Mutex};
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, ScheduledChip, SoundChip, SoundChipState};
+#[cfg(feature = "mdx")]
+use chipstream::sequencer::MdxSequencer;
 use chipstream::sequencer::{
     Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, GeneratorConfig,
-    Instance, MdxSequencer, NativeOutput, Okim6258Divider, VgmSequencer, VgmSequencerError,
+    Instance, NativeOutput, Okim6258Divider, VgmSequencer, VgmSequencerError,
 };
 use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::{VgmCommand, WaitSamples};
 use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId};
 use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
+#[cfg(feature = "mdx")]
 const MDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
+#[cfg(feature = "mdx")]
 const PDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");
 
 #[test]
@@ -910,6 +914,7 @@ fn vgm_factories_receive_chip_settings_and_source_timing_without_headers() {
 }
 
 #[test]
+#[cfg(feature = "mdx")]
 fn mdx_factories_receive_the_effective_pcm_settings() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut factories = ChipFactoryRegistry::new();
@@ -1396,6 +1401,7 @@ fn rejects_factory_clock_mismatch_against_extra_header_clock() {
 }
 
 #[test]
+#[cfg(feature = "mdx")]
 fn mdx_sequencer_uses_registered_factories() {
     let created = Arc::new(Mutex::new(Vec::new()));
     let writes = Arc::new(Mutex::new(Vec::new()));

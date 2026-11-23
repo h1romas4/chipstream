@@ -5,28 +5,33 @@
 //! finite results, observed unbounded VGM loops, and scans that cannot
 //! determine a duration within their limits.
 
+#[cfg(feature = "mdx")]
 use soundlog::mdx::convert::{
     MdxToVgmOptions, to_vgm_stream_generator, to_vgm_stream_generator_with_loop_marker,
 };
+#[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VGM_SAMPLE_RATE;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::header::VgmHeader;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
+#[cfg(feature = "xgm")]
 use soundlog::xgm::{XgmDocument, XgmPlaybackOptions};
 
 use crate::fixed::divide_ratio;
 
+#[cfg(feature = "xgm")]
+use super::XgmSequencerOptions;
 use super::vgm::FadeMarker;
-use super::{
-    MdxSequencerError, MdxSequencerOptions, VgmSequencerError, VgmSequencerOptions,
-    XgmSequencerOptions,
-};
+#[cfg(feature = "mdx")]
+use super::{MdxSequencerError, MdxSequencerOptions};
+use super::{VgmSequencerError, VgmSequencerOptions};
 
 /// Command scan limit for finite playback and VGM loop detection.
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
-/// Lower scan limit for potentially unlimited MDX generators.
-const MAX_UNLIMITED_MDX_DURATION_COMMANDS: u32 = 100_000;
+/// Lower scan limit for potentially unlimited generators.
+#[cfg(any(feature = "mdx", feature = "xgm"))]
+const MAX_UNLIMITED_GENERATOR_DURATION_COMMANDS: u32 = 100_000;
 
 /// Result of a bounded playback-duration scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +106,7 @@ pub fn measure_vgm_duration_frames(
 /// lower for unlimited looping to bound work. Driver errors, including resource
 /// limits, are returned as errors rather than an unknown duration. Durations
 /// exceeding `u32::MAX` output frames are unknown.
+#[cfg(feature = "mdx")]
 pub fn measure_mdx_duration_frames(
     package: MdxPackage,
     output_rate: u32,
@@ -126,7 +132,7 @@ pub fn measure_mdx_duration_frames(
         fadeout_samples,
         false,
         if options.loop_count.is_none() {
-            MAX_UNLIMITED_MDX_DURATION_COMMANDS
+            MAX_UNLIMITED_GENERATOR_DURATION_COMMANDS
         } else {
             MAX_DURATION_COMMANDS
         },
@@ -138,6 +144,7 @@ pub fn measure_mdx_duration_frames(
 ///
 /// Infinite playback or a scan that exceeds the budget can return
 /// [`PlaybackDuration::Unknown`]. Generator errors are returned explicitly.
+#[cfg(feature = "xgm")]
 pub fn measure_xgm_duration_frames(
     document: XgmDocument,
     output_rate: u32,
@@ -155,7 +162,7 @@ pub fn measure_xgm_duration_frames(
         fade,
         false,
         if generator_options.loop_count.is_none() {
-            MAX_UNLIMITED_MDX_DURATION_COMMANDS
+            MAX_UNLIMITED_GENERATOR_DURATION_COMMANDS
         } else {
             MAX_DURATION_COMMANDS
         },
@@ -252,15 +259,18 @@ fn multiply_u32_wide(a: u32, b: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "mdx")]
     use soundlog::mdx::package::MdxPackage;
     use soundlog::vgm::VgmBuilder;
     use soundlog::vgm::command::WaitSamples;
 
-    use super::{PlaybackDuration, measure_mdx_duration_frames, measure_vgm_duration_frames};
+    #[cfg(feature = "mdx")]
+    use super::measure_mdx_duration_frames;
+    use super::{PlaybackDuration, measure_vgm_duration_frames};
     use crate::audio::StereoBlock;
-    use crate::sequencer::{
-        MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerOptions,
-    };
+    #[cfg(feature = "mdx")]
+    use crate::sequencer::{MdxSequencer, MdxSequencerOptions};
+    use crate::sequencer::{PlaybackOptions, VgmSequencer, VgmSequencerOptions};
 
     #[test]
     fn u32_multiplication_keeps_the_high_and_low_words() {
@@ -380,6 +390,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdx")]
     fn mdx_duration_matches_rendered_output_with_loop_and_fadeout() {
         let bytes = include_bytes!("../../assets/mdx/mdx_fm_loop.mdx");
         let package = MdxPackage::parse(bytes, None).unwrap();
@@ -459,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdx")]
     fn non_looping_mdx_with_unlimited_count_ends_naturally() {
         use soundlog::mdx::command::MdxRest;
         use soundlog::mdx::document::MdxBuilder;
@@ -522,6 +534,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdx")]
     fn unlimited_mdx_loop_is_unknown_when_the_scan_limit_is_reached() {
         let bytes = include_bytes!("../../assets/mdx/mdx_fm_loop.mdx");
         let package = MdxPackage::parse(bytes, None).unwrap();

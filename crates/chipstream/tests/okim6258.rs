@@ -3,6 +3,7 @@
 use chipstream::chip::{ChipError, ClockDivider, Okim6258, OutputBits, SoundChip};
 use chipstream::sequencer::VgmSequencer;
 use soundlog::chip::{Chip, Okim6258Spec};
+#[cfg(feature = "mdx")]
 use soundlog::mdx::pcm::decode_adpcm;
 use soundlog::vgm::command::{Instance, VgmCommand};
 use soundlog::{VgmBuilder, VgmStream, VgmStreamResult};
@@ -73,22 +74,25 @@ fn vgm_constructor_uses_the_same_unfiltered_data_latch() {
 
 #[test]
 fn precision_and_decoder_match_soundlog_and_clamp() {
-    let bytes = [0x21, 0x43, 0x77, 0xff, 0x08, 0xe4, 0x12, 0x6a];
-    let mut chip = Okim6258::new(8_000_000).unwrap();
-    chip.set_output_bits(OutputBits::Bits12);
-    write(&mut chip, 0, 0x02);
-    let mut actual = Vec::new();
-    for byte in bytes {
-        write(&mut chip, 1, byte);
-        let mut pair = [0; 2];
-        chip.generate(&mut pair).unwrap();
-        actual.extend_from_slice(&pair);
+    #[cfg(feature = "mdx")]
+    {
+        let bytes = [0x21, 0x43, 0x77, 0xff, 0x08, 0xe4, 0x12, 0x6a];
+        let mut chip = Okim6258::new(8_000_000).unwrap();
+        chip.set_output_bits(OutputBits::Bits12);
+        write(&mut chip, 0, 0x02);
+        let mut actual = Vec::new();
+        for byte in bytes {
+            write(&mut chip, 1, byte);
+            let mut pair = [0; 2];
+            chip.generate(&mut pair).unwrap();
+            actual.extend_from_slice(&pair);
+        }
+        let expected: Vec<i32> = decode_adpcm(&bytes)
+            .into_iter()
+            .map(|sample| i32::from(sample) * 16)
+            .collect();
+        assert_eq!(actual, expected);
     }
-    let expected: Vec<i32> = decode_adpcm(&bytes)
-        .into_iter()
-        .map(|sample| i32::from(sample) * 16)
-        .collect();
-    assert_eq!(actual, expected);
 
     for (bits, high, low) in [
         (OutputBits::Bits10, 32704, -32768),

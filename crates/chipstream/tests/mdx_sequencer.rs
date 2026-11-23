@@ -1,3 +1,5 @@
+#![cfg(feature = "mdx")]
+
 use std::error::Error;
 
 use chipstream::sequencer::{

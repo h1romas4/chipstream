@@ -1,15 +1,17 @@
 //! Metadata probing for VGM and MDX byte inputs.
 //!
-//! VGZ input must be decompressed by the caller before probing. MDX input is
-//! normalized for playback, including supported compressed MDX bodies.
-//! [`probe_vgm_bytes_with_language`] selects between bilingual GD3 fields;
-//! [`probe_mdx_bytes`] extracts the MDX title. Results use [`TrackMetadata`],
-//! Inputs larger than 64 MiB and GD3 chunks larger than 16 KiB are rejected.
+//! VGZ input must be decompressed by the caller before probing.
+//! [`probe_vgm_bytes_with_language`] selects between bilingual GD3 fields.
+//! With the `mdx` feature, `probe_mdx_bytes` normalizes MDX input and extracts
+//! its title. Results use [`TrackMetadata`]. Inputs larger than 64 MiB and
+//! GD3 chunks larger than 16 KiB are rejected.
 
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "mdx")]
 use soundlog::mdx::compat::normalize_mdx_for_playback;
+#[cfg(feature = "mdx")]
 use soundlog::mdx::header::MdxHeader;
 use soundlog::meta::Gd3;
 use soundlog::vgm::header::VgmHeader;
@@ -132,6 +134,7 @@ pub fn probe_vgm_bytes_with_language(
 /// Parse title metadata from MDX bytes, including supported compressed bodies.
 ///
 /// Inputs larger than 64 MiB are rejected before normalization.
+#[cfg(feature = "mdx")]
 pub fn probe_mdx_bytes(bytes: &[u8]) -> Result<TrackMetadata, MetadataError> {
     check_size(bytes, MAX_INPUT_BYTES)?;
     let normalized = normalize_mdx_for_playback(bytes)
@@ -169,13 +172,16 @@ fn nonempty(value: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "mdx")]
     use soundlog::mdx::document::MdxBuilder;
     use soundlog::meta::Gd3;
     use soundlog::vgm::VgmBuilder;
 
+    #[cfg(feature = "mdx")]
+    use super::probe_mdx_bytes;
     use super::{
-        MetadataError, TrackMetadata, VgmMetadataLanguage, check_size, probe_mdx_bytes,
-        probe_vgm_bytes, probe_vgm_bytes_with_language,
+        MetadataError, TrackMetadata, VgmMetadataLanguage, check_size, probe_vgm_bytes,
+        probe_vgm_bytes_with_language,
     };
 
     #[test]
@@ -252,6 +258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdx")]
     fn mdx_probe_reads_title() {
         let mut builder = MdxBuilder::new();
         builder.set_title("MDX Song");

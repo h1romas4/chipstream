@@ -184,6 +184,7 @@ impl Timing {
     }
 
     /// Include a complete clock value in a chip instance's bounds.
+    #[cfg(feature = "mdx")]
     pub(super) fn observe_clock(&mut self, chip: &Chip, instance: Instance, clock: u32) {
         if let Some(clock_changes) = self.clocks.iter_mut().find(|entry| &entry.chip == chip) {
             for (index, value) in clock.to_le_bytes().into_iter().enumerate() {

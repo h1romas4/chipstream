@@ -95,6 +95,7 @@ impl<'a> ChipConfiguration<'a> {
     }
 
     /// Include a complete clock value in the instance's timing bounds.
+    #[cfg(feature = "mdx")]
     pub(in crate::sequencer) fn observe_clock(
         &mut self,
         chip: &Chip,

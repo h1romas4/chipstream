@@ -12,6 +12,8 @@ categories = ["multimedia::audio", "game-development"]
 
 [features]
 default = []
+mdx = ["soundlog/mdx"]
+xgm = ["soundlog/xgm"]
 ay8910 = []
 c140 = []
 c352 = []
@@ -45,5 +47,5 @@ ymz280b = []
 ymf271 = []
 
 [dependencies]
-soundlog = { workspace = true, features = ["mdx", "xgm"] }
+soundlog = { workspace = true }
 ymfm-sys = "0.3.0"

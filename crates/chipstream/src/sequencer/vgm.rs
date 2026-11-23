@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use soundlog::chip::state::ChipState;
 use soundlog::chip::{Chip, PwmSpec};
+#[cfg(feature = "mdx")]
 use soundlog::mdx::convert::MdxLoopMarker;
 use soundlog::vgm::command::{Instance, VgmCommand};
 use soundlog::vgm::detail::{DataBlockType, parse_data_block};
@@ -31,6 +32,7 @@ use soundlog::vgm::{
     DacStreamSelector, DacStreamTarget, VGM_SAMPLE_RATE, VgmCommandGenerator, VgmDocument,
     VgmHeader, VgmStream,
 };
+#[cfg(feature = "xgm")]
 use soundlog::xgm::XgmLoopMarker;
 use ymfm_sys::{InterfaceHandler, ffi::AccessClass};
 
@@ -120,15 +122,19 @@ pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<FadeMa
 
 #[derive(Clone)]
 pub(super) enum FadeMarker {
+    #[cfg(feature = "mdx")]
     Mdx(MdxLoopMarker),
+    #[cfg(feature = "xgm")]
     Xgm(XgmLoopMarker),
 }
 
 impl FadeMarker {
     pub(super) fn reached(&self) -> bool {
-        match self {
-            Self::Mdx(marker) => marker.reached(),
-            Self::Xgm(marker) => marker.reached(),
+        match *self {
+            #[cfg(feature = "mdx")]
+            Self::Mdx(ref marker) => marker.reached(),
+            #[cfg(feature = "xgm")]
+            Self::Xgm(ref marker) => marker.reached(),
         }
     }
 }

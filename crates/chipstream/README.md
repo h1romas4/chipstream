@@ -1,16 +1,16 @@
 # chipstream
 
-`chipstream` provides retro sound-chip emulation, device-independent VGM and
-MDX playback, and audio-processing components for applications and games.
+`chipstream` provides retro sound-chip emulation, device-independent VGM, MDX
+and XGM playback, and audio-processing components for applications and games.
 
-It uses [`soundlog`](https://crates.io/crates/soundlog) for VGM/MDX format
+It uses [`soundlog`](https://crates.io/crates/soundlog) for format
 definitions and typed chip writes.
 
 ## APIs
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| `sequencer` | `VgmSequencer`, `MdxSequencer` | Render songs to stereo PCM. |
+| `sequencer` | `VgmSequencer`, `MdxSequencer`, `XgmSequencer` | Render songs to stereo PCM. |
 | `sequencer` | `ChipFactoryRegistry` | Replace chip backends. |
 | `chip` | `SoundChip`, chip implementations | Apply writes and generate native samples. |
 | `audio` | `ChipCapture`, `NativeBlock` | Capture native samples and chip metadata. |
@@ -40,6 +40,11 @@ through `SoundChip::write_rom` and `SoundChip::write_ram`.
 ## Cargo features
 
 YMFM chips are always available. Optional features are disabled by default:
+
+The `mdx` and `xgm` features enable their respective sequencers and duration
+APIs, and the corresponding `soundlog` format support. The `mdx` feature also
+enables MDX metadata probing. VGM support is always available. Enable chip
+features separately as needed.
 
 | Feature | Chip | Source | Source license |
 | --- | --- | --- | --- |
@@ -82,7 +87,7 @@ Enable the chips your application needs, for example:
 
 ```toml
 [dependencies]
-chipstream = { version = "0.1", features = ["okim6258", "sn76496"] }
+chipstream = { version = "0.1", features = ["mdx", "xgm", "okim6258", "sn76496"] }
 ```
 
 Except for AY8910, when a VGM header declares one of these chips without its feature,
@@ -108,9 +113,11 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Render MDX with a PDX loaded by the host (requires the `okim6258` feature):
+Render MDX with a PDX loaded by the host (requires `mdx` and `okim6258`):
 
 ```rust,no_run
+# #[cfg(feature = "mdx")]
+# {
 use chipstream::sequencer::{Chip, Instance, MdxSequencer};
 
 let mdx = std::fs::read("song.mdx")?;
@@ -121,12 +128,15 @@ player.set_chip_gain(Chip::Okim6258, Instance::Primary, 0.5)?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
 }
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Render an XGM track (requires the `sn76496` feature):
+Render an XGM track (requires `xgm` and `sn76496`):
 
 ```rust,no_run
+# #[cfg(feature = "xgm")]
+# {
 use chipstream::sequencer::XgmSequencer;
 use soundlog::xgm::XgmDocument;
 
@@ -135,6 +145,7 @@ let mut player = XgmSequencer::new(document, 48_000, 512, Default::default())?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
 }
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -188,16 +199,17 @@ while let Some(block) = player.render()? {
 
 ### Playback options
 
-Both sequencers require options at construction; their defaults request one
+The sequencers accept options at construction; their defaults request one
 traversal without fading. VGM header loop base and modifier values may change
 the effective number of traversals. Use `PlaybackOptions` for loop count and
 fade duration:
 
 ```rust,no_run
 use std::time::Duration;
-use chipstream::sequencer::{
-    MdxSequencer, MdxSequencerOptions, PlaybackOptions, VgmSequencer, VgmSequencerOptions,
-};
+use chipstream::sequencer::{PlaybackOptions, VgmSequencer, VgmSequencerOptions};
+# #[cfg(feature = "mdx")]
+use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
+# #[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
 
 let playback = PlaybackOptions {
@@ -210,6 +222,8 @@ let vgm = VgmSequencer::from_vgm(
     512,
     VgmSequencerOptions { playback, ..Default::default() },
 )?;
+# #[cfg(feature = "mdx")]
+# {
 let package = MdxPackage::parse_owned(std::fs::read("song.mdx")?, None)?;
 let mdx = MdxSequencer::new(
     package,
@@ -217,6 +231,7 @@ let mdx = MdxSequencer::new(
     512,
     MdxSequencerOptions { playback, ..Default::default() },
 )?;
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -236,8 +251,9 @@ also set `max_ticks` to `None`; other resource limits remain active.
 PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
 
-`measure_vgm_duration_frames` and `measure_mdx_duration_frames` take the same
-sequencer options as playback and return `PlaybackDuration::Finite`,
+The `measure_vgm_duration_frames`, `measure_mdx_duration_frames` and
+`measure_xgm_duration_frames` functions take the same sequencer options as
+playback and return `PlaybackDuration::Finite`,
 `Unbounded`, or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan
 limit, or a duration exceeding `u32::MAX` output frames, is `Unknown`.
 Playback itself is not limited by this measurement.
