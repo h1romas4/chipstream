@@ -1,7 +1,8 @@
 # chipstream
 
-`chipstream` provides retro sound-chip emulation, device-independent VGM, MDX
-and XGM playback, and audio-processing components for applications and games.
+`chipstream` provides retro sound-chip emulation, device-independent playback
+of VGM, MDX, and XGM files, and audio-processing components for applications
+and games.
 
 It uses [`soundlog`](https://crates.io/crates/soundlog) for format
 definitions and typed chip writes.
@@ -40,7 +41,7 @@ through `SoundChip::write_rom` and `SoundChip::write_ram`.
 
 ## Cargo features
 
-YMFM chips are always available. Optional features are disabled by default:
+YMFM chips are always available; optional features are disabled by default.
 
 The `mdx` and `xgm` features enable their respective sequencers and duration
 APIs, and the corresponding `soundlog` format support. The `mdx` feature also
@@ -84,8 +85,8 @@ features separately as needed.
 See [third-party notices](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/THIRD_PARTY_NOTICES.md) for source revisions and
 license terms.
 
-Enable the formats and chips your application needs, for example. Add
-`soundlog` as a direct dependency when using its types, as in the examples below:
+Enable the formats and chips your application needs. Add `soundlog` as a
+direct dependency when using its types, as in the examples below:
 
 ```toml
 [dependencies]
@@ -93,8 +94,9 @@ chipstream = { version = "0.1", features = ["mdx", "xgm", "okim6258", "sn76496"]
 soundlog = { version = "0.18", features = ["mdx", "xgm"] }
 ```
 
-Except for AY8910, when a VGM header declares one of these chips without its feature,
-sequencer construction returns [`VgmSequencerError::FeatureDisabled`](sequencer::VgmSequencerError::FeatureDisabled).
+Except for AY8910, if a VGM header declares one of these chips without its
+feature enabled, sequencer construction returns
+[`VgmSequencerError::FeatureDisabled`](sequencer::VgmSequencerError::FeatureDisabled).
 Unsupported chips without implementations remain silent.
 
 MDX playback with a supplied PDX requires `okim6258`, even when the song does
@@ -205,8 +207,8 @@ while let Some(block) = player.render()? {
 
 The sequencers accept options at construction; their defaults request one
 traversal without fading. VGM header loop base and modifier values may change
-the effective number of traversals. Use [`PlaybackOptions`](sequencer::PlaybackOptions) for loop count and
-fade duration:
+the effective number of traversals. Use [`PlaybackOptions`](sequencer::PlaybackOptions)
+to set the loop count and fade duration:
 
 ```rust,no_run
 use std::time::Duration;
@@ -246,8 +248,8 @@ set it to `false` to disable the heuristic. The pre-render
 `set_pwm_compatibility` method can override this setting and is also available
 for generator sources.
 
-`new` accepts parsed documents, while `from_vgm` accepts file bytes. Both have
-`_with_factories` variants for custom chip factories.
+For VGM, `new` accepts a parsed document, while `from_vgm` accepts file bytes.
+Both have `_with_factories` variants for custom chip factories.
 
 `None` as the loop count allows unlimited looping. For indefinite MDX playback
 also set `max_ticks` to `None`; other resource limits remain active.
@@ -256,16 +258,17 @@ PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
 
 The [`measure_vgm_duration_frames`](sequencer::measure_vgm_duration_frames),
-[`measure_mdx_duration_frames`](sequencer/fn.measure_mdx_duration_frames.html) and
-[`measure_xgm_duration_frames`](sequencer/fn.measure_xgm_duration_frames.html) functions take the same sequencer options as
-playback and return [`PlaybackDuration::Finite`](sequencer::PlaybackDuration::Finite),
-`Unbounded`, or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan
-limit, or a duration exceeding `u32::MAX` output frames, is `Unknown`.
-Playback itself is not limited by this measurement.
+[`measure_mdx_duration_frames`](sequencer/fn.measure_mdx_duration_frames.html),
+and [`measure_xgm_duration_frames`](sequencer/fn.measure_xgm_duration_frames.html)
+functions take the same options as their respective sequencers and return
+[`PlaybackDuration::Finite`](sequencer::PlaybackDuration::Finite), `Unbounded`,
+or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan limit, or a
+duration exceeding `u32::MAX` output frames, is `Unknown`. Playback itself is
+not limited by this measurement.
 
 ### Gain control
 
-Both sequencers provide `set_chip_gain` for the post-resampling gain of a chip
+All sequencers provide `set_chip_gain` for the post-resampling gain of a chip
 instance. Use `output_layout` and `set_output_gains` for its native outputs.
 
 For example, YM2203 uses `[Fm, SsgChannel(0), SsgChannel(1),
@@ -281,8 +284,8 @@ physical hardware audio.
 
 ### Native-output and stereo-group effects
 
-Both sequencers can process each native output before its matrix routing, and
-apply stereo effects to groups of routed outputs before resampling:
+The VGM and MDX sequencers can process each native output before matrix routing
+and apply stereo effects to groups of routed outputs before resampling:
 
 ```rust,no_run
 use chipstream::audio::{Gain, StereoBalance};
@@ -368,8 +371,9 @@ For a keyboard display, use tracked `KeyOn` and `KeyOff` events to maintain
 channel state and `KeyOn` tone frequency, when present, to select a key. The
 events describe the original writes, so a muted channel can still appear active.
 
-Both sequencers expose `chip_instances` and typed write callbacks. Register
-callbacks with `on_write` and state tracking with `track_state` before rendering:
+The VGM and MDX sequencers expose `chip_instances` and typed write callbacks.
+Register callbacks with `on_write` and state tracking with `track_state` before
+rendering:
 
 ```rust,no_run
 use chipstream::sequencer::{Instance, StateEvent, VgmSequencer};
@@ -404,8 +408,11 @@ For SN76489, state tracking uses the VGM header's clock-divider and zero-period
 settings. `track_state_with_voice_clocks` also accounts for per-instance
 extra-header clock overrides.
 
-Both sequencers also provide `filter_write` to transform a typed register write
-before it reaches the chip, including external chip backends:
+The XGM sequencer also exposes `chip_instances` and supports state-change
+callbacks through `on_state_change` and `track_state_with_voice_clocks`.
+
+All sequencers provide `filter_write` to transform a typed register write before
+it reaches the chip, including external chip backends:
 
 ```rust,no_run
 use chipstream::sequencer::{Instance, VgmSequencer};
@@ -429,7 +436,7 @@ A filter returns one write of the same type. Another filter for that type
 replaces it; callbacks and state trackers still see the original writes.
 Filters may execute ahead of returned audio, without global ordering across
 voices, and cannot change already generated audio or queued hardware events.
-For channel mute, keep application mute state and transform the relevant
+To mute a channel, keep application mute state and transform the relevant
 chip-specific writes. Changing that state alone does not rewrite existing
 chip registers; a filter cannot insert or suppress writes.
 
@@ -458,7 +465,8 @@ The [`chip`](chip) module provides [`YmfmChip`](chip::YmfmChip) and, with their 
 [`C140`](chip/struct.C140.html).
 
 `Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
-the `chipstream-ndsif` software fallback use `Okim6258Stream` for ordered byte delivery.
+the `chipstream-ndsif` software fallback use `Okim6258Stream` for ordered byte
+delivery.
 VGM software playback applies a 20 Hz high-pass filter to the decoded output
 to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
 The same mono filter is available independently as [`audio::DcBlocker`](audio::DcBlocker).
@@ -511,10 +519,9 @@ YMFM-backed chip types can be replaced individually:
 | `Ymf262` | 4 |
 | `Ymf278b` | 6 |
 
-The backend must report the configured chip type and clock, and match the
-native output count above. Its `generate()` method supplies samples to the
-sequencer. Routing writes to physical hardware does not route its audio into
-host PCM.
+The backend must report the configured chip type and clock and match the native
+output count above. Its `generate()` method supplies samples to the sequencer.
+Routing writes to physical hardware does not route its audio into host PCM.
 
 Implement `save_state()` and `restore_state()` for checkpoint seeking.
 Scheduled backends must also opt into `supports_checkpoint`; DAC-interrupting
@@ -531,8 +538,8 @@ backends alike:
 | YM2203 SSG | 0.25 |
 | YM2608/YM2610(B) SSG | 0.375 |
 
-When the VGM declares a YM2612, other chips are additionally multiplied by
-2/3 while the YM2612 level remains unchanged.
+When the VGM declares a YM2612, other chip levels are additionally multiplied
+by 2/3 while the YM2612 level remains unchanged.
 VGM header volume settings, `set_chip_gain`, and `set_output_gains` multiply
 these levels.
 
