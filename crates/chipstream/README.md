@@ -587,6 +587,11 @@ The coefficients control routing and scaling; mixing does not clip. Mix
 additional stereo sources into the bus after aligning their rates and frame
 counts. [`Gain`](audio::Gain) and [`StereoBalance`](audio::StereoBalance) provide additional processing.
 
+## Build
+
+For `wasm32-unknown-unknown` and `wasm32-wasip1` targets, see the
+[ymfm-sys build instructions](https://crates.io/crates/ymfm-sys#user-content-building).
+
 ## License
 
 BSD-3-Clause License
