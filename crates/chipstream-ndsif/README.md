@@ -20,23 +20,23 @@ Emulated chips continue to produce host PCM.
 
 | Use case | API |
 | --- | --- |
-| Typical playback with automatic device selection | `NdsifSerialConfig`, `create_chip_factories` |
-| Select a device and target for each chip instance | `NdsifRoute`, `create_routed_chip_factories` |
-| Keep device connections open across playback sessions | `create_shared_routed_chip_factories`, `NdsifSerialTransport::reset_for_reuse` |
-| Use a custom scheduled transport or record chip writes | `NdsifRoutingTransport`, `create_routed_transport_factories`, `NdsifRecordingTransport` |
-| Schedule multiple devices on a host audio timeline | `NdsifWorkerDevice`, `NdsifHardwareWorkers`, `NdsifHostTimeline` |
-| Inspect or control a device directly | `NdsifSerialTransport::open` |
+| Typical playback with automatic device selection | [`NdsifSerialConfig`], [`create_chip_factories`] |
+| Select a device and target for each chip instance | [`NdsifRoute`], [`create_routed_chip_factories`] |
+| Keep device connections open across playback sessions | [`create_shared_routed_chip_factories`], [`NdsifSerialTransport::reset_for_reuse`] |
+| Use a custom scheduled transport or record chip writes | [`NdsifRoutingTransport`], [`create_routed_transport_factories`], [`NdsifRecordingTransport`](ndsif_transport::NdsifRecordingTransport) |
+| Schedule multiple devices on a host audio timeline | [`NdsifWorkerDevice`](ndsif_transport::NdsifWorkerDevice), [`NdsifHardwareWorkers`](ndsif_transport::NdsifHardwareWorkers), [`NdsifHostTimeline`](ndsif_transport::NdsifHostTimeline) |
+| Inspect or control a device directly | [`NdsifSerialTransport::open`] |
 
-For NanoDrive 7 devices, pass `NdsifNd7Policy` to either
-`create_routed_transport_factories_with_policy` or
-`create_automatic_transport_factories_with_policy`. The policy validates
+For NanoDrive 7 devices, pass [`NdsifNd7Policy`] to either
+[`create_routed_transport_factories_with_policy`] or
+[`create_automatic_transport_factories_with_policy`]. The policy validates
 shared chip and clock resources and permits YM2149 on AY targets as an
 approximation using YM2203 SSG. Factories without this policy reject YM2149.
-Custom `NdsifRoutePolicy` implementations can validate selected routes and
+Custom [`NdsifRoutePolicy`] implementations can validate selected routes and
 specify AY compatibility. A rejected hardware route is an error, not a
 software fallback.
 
-For NanoDrive 8, `NdsifNanoDrivePolicy` also swaps YM2151 left/right pan bits
+For NanoDrive 8, [`NdsifNanoDrivePolicy`] also swaps YM2151 left/right pan bits
 for the identified device indices. It includes the NanoDrive 7 policy, so both
 can be used in the same registry. `create_chip_factories` identifies NanoDrive 8
 automatically. Direct transport writes and factories using the default policy
@@ -81,7 +81,7 @@ shared-resource conflicts. The supplied device count must match the transport
 list used by the factory. Validation occurs while each active chip is created,
 so earlier chips may already be configured when a later route is rejected.
 
-Most applications should start with `create_chip_factories`. It selects the
+Most applications should start with [`create_chip_factories`]. It selects the
 first connected device that advertises a compatible chip and clock; unmatched
 chips use chipstream's normal emulation where available. AY8910 is silent by
 default without a factory; native emulation can be explicitly registered.
@@ -89,7 +89,7 @@ Errors opening or initializing a configured device are returned.
 
 ## Connect devices and play
 
-`NdsifSerialConfig` requires all connection and initialization settings:
+[`NdsifSerialConfig`] requires all connection and initialization settings:
 
 | Field | Description |
 | --- | --- |
@@ -129,9 +129,9 @@ package to `MdxSequencer`.
 
 ### Write registers without a sequencer
 
-For direct control, open `NdsifSerialTransport`, configure a supported chip,
-then queue register events through `NdsifTransport`. Scheduling a write does
-not send it immediately; call `flush_scheduled_until` to send queued events
+For direct control, open [`NdsifSerialTransport`], configure a supported chip,
+then queue register events through [`NdsifTransport`](ndsif_transport::NdsifTransport). Scheduling a write does
+not send it immediately; call [`flush_scheduled_until`](ndsif_transport::NdsifTransport::flush_scheduled_until) to send queued events
 through the requested output frame. This example writes YM2151 register `0x1b`
 at frame 0:
 
@@ -169,15 +169,15 @@ advancing absolute frame timeline, and manage playback and device lifetime.
 
 ## Explicit routing
 
-Use `NdsifRoute` when a saved configuration must select an exact source and
+Use [`NdsifRoute`] when a saved configuration must select an exact source and
 hardware target. Each route specifies a chip type, source instance, device
 index, and target instance. Unrouted instances use the built-in backend;
 unsupported explicit routes return an error instead of falling back.
 
-`create_shared_routed_chip_factories` accepts shared transport handles so the
+[`create_shared_routed_chip_factories`] accepts shared transport handles so the
 application can retain device connections between playback sessions. Drop
 the sequencer and factories before recovering a connection, then call
-`reset_for_reuse` before returning it to the connection owner. Do not reset a
+[`reset_for_reuse`](NdsifSerialTransport::reset_for_reuse) before returning it to the connection owner. Do not reset a
 transport while a sequencer is using it. If reset fails, close the connection
 instead of reusing it.
 
@@ -185,15 +185,15 @@ instead of reusing it.
 
 For applications that need to pace several devices against host audio:
 
-1. Construct an `NdsifWorkerDevice` for each shared serial connection. Each
+1. Construct an [`NdsifWorkerDevice`](ndsif_transport::NdsifWorkerDevice) for each shared serial connection. Each
   device owns its matching recorder; no application-specific ID is required.
-2. Obtain the recorders with `NdsifWorkerDevice::recorder`, create routed
-  factories with `create_routed_transport_factories`, and construct the
+2. Obtain the recorders with [`NdsifWorkerDevice::recorder`](ndsif_transport::NdsifWorkerDevice::recorder), create routed
+  factories with [`create_routed_transport_factories`], and construct the
   sequencer. Route indices refer to the order of the recorder list.
-3. Start `NdsifHardwareWorkers` with the worker devices. The devices may be
+3. Start [`NdsifHardwareWorkers`](ndsif_transport::NdsifHardwareWorkers) with the worker devices. The devices may be
   supplied in any order because each remains paired with its own recorder.
-4. After rendering, call `enqueue` on the workers to submit all recorded
-  batches. Buffer enough audio before starting the shared `NdsifHostTimeline`
+4. After rendering, call [`enqueue`](ndsif_transport::NdsifHardwareWorkers::enqueue) on the workers to submit all recorded
+  batches. Buffer enough audio before starting the shared [`NdsifHostTimeline`](ndsif_transport::NdsifHostTimeline)
   at the estimated audio presentation time.
 5. Check worker errors during playback and finish after the final batch.
   Drop sequencers, factories, recorders, worker devices, and workers before
@@ -228,7 +228,7 @@ fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers,
 }
 ```
 
-Use `enqueue_prebuffer` when you need bounded startup for timed DAC data.
+Use [`enqueue_prebuffer`](ndsif_transport::NdsifHardwareWorkers::enqueue_prebuffer) when you need bounded startup for timed DAC data.
 Applications are responsible for audio output, connection management,
 cancellation, and bounding any inter-thread queues. Worker playback and serial
 operations may block; this crate does not put hardware audio into host PCM.
@@ -255,23 +255,24 @@ than relying on its model name.
   serial bandwidth, scheduling, and clock drift can affect timing. Hardware
   audio must be mixed externally with any host audio.
 - Hardware-backed chip adapters do not support sequencer checkpoints, and
-  their `SoundChip::reset` does not reset the adapter or physical device.
+  their [`SoundChip::reset`](chipstream::chip::SoundChip::reset) does not reset the adapter or physical device.
   Manage device reset and connection reuse separately.
 
 ## Errors and device reuse
 
-`create_chip_factories` and `NdsifSerialTransport::open` return
-`NdsifTransportError`. Invalid ports, baud rates, timeouts, and duplicate
+[`create_chip_factories`] and [`NdsifSerialTransport::open`] return
+[`NdsifTransportError`]. Invalid ports, baud rates, timeouts, and duplicate
 ports are reported as configuration errors; serial, I/O, protocol, and device
 initialization failures are reported with their source error. Opening multiple
 devices is not transactional: earlier devices may already have been opened
 or reset if a later device fails.
 
-Use `NdsifRoutingError` for explicit route validation failures.
-`NdsifSerialTransport::supports_clock` and `supports_audio_stream` check
+Use [`NdsifRoutingError`] for explicit route validation failures.
+[`NdsifSerialTransport::supports_clock`] and
+[`supports_audio_stream`](NdsifSerialTransport::supports_audio_stream) check
 capabilities discovered when the device was opened; they do not perform I/O
 or configure the device. Playback errors crossing the
-`NdsifTransport` interface are reported as `String`.
+[`NdsifTransport`](ndsif_transport::NdsifTransport) interface are reported as `String`.
 
 ## License
 
