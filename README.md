@@ -19,7 +19,7 @@ utilities for building and parsing register-write logs such as the VGM
 | `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) | [0.3.0](https://crates.io/crates/mmlx/0.3.0) |
 | `ndsif` | `lib` | I/O-independent, allocation-free NDSIF protocol codec. | [README](crates/ndsif/README.md) | [0.1.0](https://crates.io/crates/ndsif/0.1.0) |
 | `ndsif-transport` | `lib` | Serial NDSIF transport and scheduled playback. | [README](crates/ndsif-transport/README.md) | [0.1.0](https://crates.io/crates/ndsif-transport/0.1.0) |
-| `soundlog` | `lib` | Parses and builds sound logs and converts MDX playback to VGM commands. | [README](crates/soundlog/README.md) | [0.16.0](https://crates.io/crates/soundlog/0.16.0) |
+| `soundlog` | `lib` | Parses and builds sound logs and converts MDX playback to VGM commands. | [README](crates/soundlog/README.md) | [0.18.0](https://crates.io/crates/soundlog/0.18.0) |
 | `soundlog-cli` | `bin` | Command-line tools for working with soundlog-supported formats. | [README](crates/soundlog-cli/README.md) | - |
 | `soundlog-gui` | `bin` | `soundlog-inspector` GUI for inspecting soundlog-supported audio files. | [README](crates/soundlog-gui/README.md) | - |
 
