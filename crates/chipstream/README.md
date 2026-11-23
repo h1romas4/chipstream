@@ -66,7 +66,7 @@ YMFM chips are always available. Optional features are disabled by default:
 | `scsp` | Sega/Yamaha SCSP (YMF292) | MAME | BSD-3-Clause |
 | `segapcm` | SegaPCM | MAME | BSD-3-Clause |
 | `sn76496` | SN76489 / SN76496 / T6W28 | MAME | BSD-3-Clause |
-| `vsu` | Virtual Boy VSU | Rustual Boy | MIT |
+| `vsu` | Virtual Boy VSU | [Rustual Boy](https://github.com/emu-rs/rustual-boy) | MIT |
 | `wonderswan` | WonderSwan | MAME, via Tetorica | BSD-3-Clause |
 | `x1010` | Seta X1-010 | MAME | BSD-3-Clause |
 | `ymf271` | Yamaha YMF271 | MAME | BSD-3-Clause |
