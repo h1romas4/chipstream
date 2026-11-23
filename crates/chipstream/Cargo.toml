@@ -11,6 +11,9 @@ keywords = ["audio", "sound", "game", "vgm", "mdx"]
 categories = ["multimedia::audio", "game-development"]
 exclude = ["BACKLOG.md"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 mdx = ["soundlog/mdx"]

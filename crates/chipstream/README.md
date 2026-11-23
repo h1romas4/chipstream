@@ -10,7 +10,7 @@ definitions and typed chip writes.
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), `MdxSequencer`, `XgmSequencer` | Render songs to stereo PCM. |
+| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), [`MdxSequencer`](sequencer/struct.MdxSequencer.html), [`XgmSequencer`](sequencer/struct.XgmSequencer.html) | Render songs to stereo PCM. |
 | [`sequencer`](sequencer) | [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) | Replace chip backends. |
 | [`chip`](chip) | [`SoundChip`](chip::SoundChip), chip implementations | Apply writes and generate native samples. |
 | [`audio`](audio) | [`ChipCapture`](audio::ChipCapture), [`NativeBlock`](audio::NativeBlock) | Capture native samples and chip metadata. |
@@ -20,8 +20,7 @@ definitions and typed chip writes.
 
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --all-features
---open`). Feature-dependent APIs are documented in their respective modules
-when their features are enabled.
+--open`).
 
 Public error enums are non-exhaustive; matches in downstream crates must
 include a fallback arm for future error variants.
@@ -85,11 +84,13 @@ features separately as needed.
 See [third-party notices](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/THIRD_PARTY_NOTICES.md) for source revisions and
 license terms.
 
-Enable the chips your application needs, for example:
+Enable the formats and chips your application needs, for example. Add
+`soundlog` as a direct dependency when using its types, as in the examples below:
 
 ```toml
 [dependencies]
 chipstream = { version = "0.1", features = ["mdx", "xgm", "okim6258", "sn76496"] }
+soundlog = { version = "0.18", features = ["mdx", "xgm"] }
 ```
 
 Except for AY8910, when a VGM header declares one of these chips without its feature,
@@ -254,8 +255,9 @@ also set `max_ticks` to `None`; other resource limits remain active.
 PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
 
-The [`measure_vgm_duration_frames`](sequencer::measure_vgm_duration_frames), `measure_mdx_duration_frames` and
-`measure_xgm_duration_frames` functions take the same sequencer options as
+The [`measure_vgm_duration_frames`](sequencer::measure_vgm_duration_frames),
+[`measure_mdx_duration_frames`](sequencer/fn.measure_mdx_duration_frames.html) and
+[`measure_xgm_duration_frames`](sequencer/fn.measure_xgm_duration_frames.html) functions take the same sequencer options as
 playback and return [`PlaybackDuration::Finite`](sequencer::PlaybackDuration::Finite),
 `Unbounded`, or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan
 limit, or a duration exceeding `u32::MAX` output frames, is `Unknown`.
@@ -450,18 +452,19 @@ chip.generate(&mut samples)?;
 ```
 
 The [`chip`](chip) module provides [`YmfmChip`](chip::YmfmChip) and, with their respective features,
-`Okim6258`, `Okim6258Stream`, `Okim6295`, `Sn76496`, `SegaPcm`, `Pwm`, and
-`C140`.
+[`Okim6258`](chip/struct.Okim6258.html), [`Okim6258Stream`](chip/struct.Okim6258Stream.html),
+[`Okim6295`](chip/struct.Okim6295.html), [`Sn76496`](chip/struct.Sn76496.html),
+[`SegaPcm`](chip/struct.SegaPcm.html), [`Pwm`](chip/struct.Pwm.html), and
+[`C140`](chip/struct.C140.html).
 
 `Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
-the `chipstream-ndsif` software fallback use
-[`Okim6258Stream`](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/src/chip/okim6258_stream.rs) for ordered byte delivery.
+the `chipstream-ndsif` software fallback use `Okim6258Stream` for ordered byte delivery.
 VGM software playback applies a 20 Hz high-pass filter to the decoded output
 to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
 The same mono filter is available independently as [`audio::DcBlocker`](audio::DcBlocker).
 
 See its API documentation for queue, underrun, and stop behavior.
-`Okim6258Adpcm` provides the 12-bit predictor and encoder separately.
+[`Okim6258Adpcm`](chip/struct.Okim6258Adpcm.html) provides the 12-bit predictor and encoder separately.
 
 ### External chip backends
 
@@ -470,7 +473,7 @@ replace a built-in backend. Factories are selected independently by chip type;
 unregistered types use their built-in implementations where available. Pass the
 registry to `VgmSequencer::from_vgm_with_factories`,
 `VgmSequencer::new_with_factories`, or the corresponding
-`MdxSequencer` constructor.
+[`MdxSequencer`](sequencer/struct.MdxSequencer.html) constructor.
 
 The factory receives a [`ChipFactoryConfig`](sequencer::ChipFactoryConfig) with the chip, instance, clock,
 output rate, and chip-specific settings. See its rustdoc for all accessors.
@@ -482,10 +485,10 @@ factory.
 
 AY8910 has no default backend: unregistered sources remain silent, while a
 registered factory that declines an instance causes an error. With the
-`ay8910` feature, use `register_native_ay8910` or
-`register_native_ay8910_fallback` to opt into native AY-3-8910/8912/8913
+`ay8910` feature, use [`register_native_ay8910`](sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910) or
+[`register_native_ay8910_fallback`](sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910_fallback) to opt into native AY-3-8910/8912/8913
 playback. See [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) and the
-[`chip`](chip) module's `Ay8910` rustdoc for details.
+[`Ay8910`](chip/struct.Ay8910.html) rustdoc for details.
 
 For YM2149 approximation, register a `Chip::Ay8910` factory using
 [`YmfmChip::new_ym2149`](chip::YmfmChip::new_ym2149) and validate its settings with
