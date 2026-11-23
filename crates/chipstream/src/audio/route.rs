@@ -147,6 +147,7 @@ impl NativeBlock<'_> {
 
 /// Errors while capturing a chip's native output.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RouteError {
     /// A chip reported a zero native sample rate.
     InvalidSampleRate,

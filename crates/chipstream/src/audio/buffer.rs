@@ -14,6 +14,7 @@ use super::NativeBlock;
 
 /// An error in the shared audio processing components.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AudioError {
     /// A sample rate is zero.
     InvalidSampleRate,

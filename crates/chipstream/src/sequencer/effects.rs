@@ -38,6 +38,7 @@ pub struct OutputGroupId(Arc<()>);
 
 /// Invalid effect configuration or handle.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum EffectError {
     /// An output index is outside the native output layout.
     OutputOutOfRange {

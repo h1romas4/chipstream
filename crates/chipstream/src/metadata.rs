@@ -64,6 +64,7 @@ pub enum VgmMetadataLanguage {
 
 /// Errors encountered while reading or parsing metadata.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum MetadataError {
     /// Invalid input header or MDX compatibility data.
     InvalidData(String),

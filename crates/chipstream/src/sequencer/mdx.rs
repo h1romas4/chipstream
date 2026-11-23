@@ -83,7 +83,23 @@ impl From<MdxSequencerOptions> for MdxToVgmOptions {
 }
 
 /// Failure to parse, initialize, or render an MDX package.
+///
+/// Matching this error outside chipstream requires a fallback arm:
+///
+/// ```compile_fail
+/// use chipstream::sequencer::MdxSequencerError;
+///
+/// fn describe(error: MdxSequencerError) {
+///     match error {
+///         MdxSequencerError::Compatibility(_) => {}
+///         MdxSequencerError::Parse(_) => {}
+///         MdxSequencerError::Conversion(_) => {}
+///         MdxSequencerError::Playback(_) => {}
+///     }
+/// }
+/// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum MdxSequencerError {
     /// MDX compatibility normalization failed.
     Compatibility(String),

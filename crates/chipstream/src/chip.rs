@@ -624,6 +624,7 @@ impl<T: SoundChip + ?Sized> SoundChip for Box<T> {
 
 /// Errors creating or using a sound chip.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChipError {
     /// The backend does not implement this soundlog chip type.
     UnsupportedChip(Chip),

@@ -21,6 +21,9 @@ definitions and typed chip writes.
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --open`).
 
+Public error enums are non-exhaustive; matches in downstream crates must
+include a fallback arm for future error variants.
+
 ## How chip audio becomes PCM
 
 The sequencer creates a backend for each chip instance, applies timed register

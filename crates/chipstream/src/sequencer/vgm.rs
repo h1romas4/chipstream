@@ -166,6 +166,7 @@ macro_rules! feature_backend {
 
 /// Failure to initialize or render a VGM stream.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum VgmSequencerError {
     /// The output chunk size is zero.
     InvalidChunkSize,
