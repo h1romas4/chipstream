@@ -1,7 +1,8 @@
 //! NES APU based on the JSNES-derived Tetorica native port.
 //!
 //! JSNES revision `b8a45d088e922b6abcd87c4eb1b7237919e9d3d2`, Apache-2.0.
-//! Copyright JSNES contributors. Copyright (c) 2026, kyorohiro.
+//! JSNES: Copyright JSNES contributors.
+//! Tetorica: Copyright (c) 2026, kyorohiro.
 //! See `THIRD_PARTY_NOTICES.md`.
 
 use super::{ChipError, ChipRegisterWrite, SoundChip};
