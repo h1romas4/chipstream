@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include a desktop entry and icon in the Linux release archive.
+
 - Fix NanoDrive 8 YM2151 stereo positioning during MDX playback.
 
 ## v0.16.0

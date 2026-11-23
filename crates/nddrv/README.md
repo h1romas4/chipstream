@@ -16,6 +16,19 @@ Download an `nddrv-` release from [GitHub Releases](https://github.com/h1romas4/
 | Windows x86-64 | Archive or standalone executable | Not signed; Windows may show a security warning. |
 | macOS, Apple Silicon or Intel | App bundle | Not signed or notarized; macOS may show a security warning. |
 
+The Linux archive also includes `nddrv.desktop` and `nddrv.svg`. To install
+them for the current user after extracting the archive:
+
+```sh
+install -Dm755 nddrv "$HOME/.local/bin/nddrv"
+install -Dm644 nddrv.desktop "$HOME/.local/share/applications/nddrv.desktop"
+install -Dm644 nddrv.svg "$HOME/.local/share/icons/hicolor/scalable/apps/nddrv.svg"
+```
+
+The desktop entry runs `nddrv` from the desktop session's `PATH`. If
+`~/.local/bin` is not on that path, edit `Exec` in the installed desktop file
+to use the absolute path to the executable.
+
 ### Build from source
 
 Install Rust and the prerequisites in the

@@ -44,7 +44,7 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y
           build-essential pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev libfontconfig-dev
-          libxkbcommon-dev libxkbcommon-x11-dev
+          libxkbcommon-dev libxkbcommon-x11-dev desktop-file-utils
 
       - name: Build nddrv
         run: cargo build --release --locked -p nddrv --target ${{ matrix.target }}
@@ -125,6 +125,10 @@ jobs:
           else
             cp "target/$TARGET/release/nddrv" package/
           fi
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            cp crates/nddrv/assets/nddrv.desktop package/nddrv.desktop
+            cp crates/nddrv/assets/icon/nddrv-icon.svg package/nddrv.svg
+          fi
           cp crates/nddrv/README.md package/README.md
           cp crates/nddrv/CHANGELOG.md package/CHANGELOG.md
 
@@ -137,6 +141,17 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: tar -czf 'nddrv-${{ matrix.name }}.tar.gz' -C package .
+
+      - name: Verify Linux distribution
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/nddrv-linux-check"
+          tar -xzf 'nddrv-${{ matrix.name }}.tar.gz' -C "$RUNNER_TEMP/nddrv-linux-check"
+          test -x "$RUNNER_TEMP/nddrv-linux-check/nddrv"
+          cmp crates/nddrv/assets/nddrv.desktop "$RUNNER_TEMP/nddrv-linux-check/nddrv.desktop"
+          cmp crates/nddrv/assets/icon/nddrv-icon.svg "$RUNNER_TEMP/nddrv-linux-check/nddrv.svg"
+          desktop-file-validate "$RUNNER_TEMP/nddrv-linux-check/nddrv.desktop"
 
       - uses: actions/upload-artifact@v7
         with:

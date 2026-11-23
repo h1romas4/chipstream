@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NDDRV
+Comment=VGM, VGZ, MDX, XGM and XGZ music player
+Exec=nddrv
+Icon=nddrv
+Terminal=false
+Categories=AudioVideo;Audio;Player;
