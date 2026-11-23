@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.18.0 (Unreleased)
+## v0.18.0
+
+### Compatibility
+
+- GD3 parsing through `Gd3::try_from` and `VgmDocument::try_from` now rejects chunks larger than 16 KiB by default, including the header. Use `parse_with_limits` with `max_gd3_bytes: None` to disable the limit.
 
 ### Added
 

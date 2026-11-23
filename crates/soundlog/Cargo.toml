@@ -1,6 +1,6 @@
 [package]
 name = "soundlog"
-description = "Builder and parser for retro sound-chip register-write logs (VGM)."
+description = "Builder and parser for retro sound-chip register-write logs (VGM, MDX, XGM)."
 version = "0.18.0"
 edition = "2024"
 license = "MIT"
