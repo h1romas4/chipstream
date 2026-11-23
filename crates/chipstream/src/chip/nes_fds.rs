@@ -1,7 +1,8 @@
-//! FDS audio based on Tetorica's fixNES adaptation.
+//! NES FDS audio based on the fixNES-derived Tetorica native port.
 //!
 //! fixNES revision `156fcaca9f4cd9c23d423737994c45cfb05d16ca`.
-//! Copyright (c) 2026, kyorohiro; Copyright (c) 2017 FIX94.
+//! fixNES: Copyright (c) 2017 FIX94.
+//! Tetorica: Copyright (c) 2026, kyorohiro.
 //! Apache-2.0 AND MIT; see `THIRD_PARTY_NOTICES.md`.
 
 #[derive(Clone)]
