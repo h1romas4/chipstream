@@ -8,7 +8,7 @@ Hardware-backed chips produce **silence in the host PCM buffer**. Their audio
 comes from the physical device and must be played or captured separately.
 Emulated chips continue to produce host PCM.
 
-## Supported Devices
+## Supported devices
 
 | Device | Repository |
 |---|---|
@@ -30,17 +30,19 @@ Emulated chips continue to produce host PCM.
 For NanoDrive 7 devices, pass [`NdsifNd7Policy`] to either
 [`create_routed_transport_factories_with_policy`] or
 [`create_automatic_transport_factories_with_policy`]. The policy validates
-shared chip and clock resources and permits YM2149 on AY targets as an
-approximation using YM2203 SSG. Factories without this policy reject YM2149.
-Custom [`NdsifRoutePolicy`] implementations can validate selected routes and
-specify AY compatibility. A rejected hardware route is an error, not a
-software fallback.
+shared chip and clock resources and permits a YM2149 approximation on AY
+targets using YM2203 SSG. The default policy rejects YM2149. Custom
+[`NdsifRoutePolicy`] implementations can validate selected routes and specify
+AY compatibility. A rejected hardware route is an error, not a software
+fallback.
 
 For NanoDrive 8, [`NdsifNanoDrivePolicy`] also swaps YM2151 left/right pan bits
-for the identified device indices. It includes the NanoDrive 7 policy, so both
-can be used in the same registry. `create_chip_factories` identifies NanoDrive 8
-automatically. Direct transport writes and factories using the default policy
-remain unchanged. NanoDrive 8's own YM2151 Pan setting is applied separately.
+for the identified device indices. It also applies the NanoDrive 7 policy to
+the specified NanoDrive 7 devices, so both can be used in the same registry.
+`create_chip_factories` identifies NanoDrive 8 automatically, but does not
+enable the NanoDrive 7 policy. Direct transport writes and factories using the
+default policy remain unchanged. NanoDrive 8's own YM2151 Pan setting is
+applied separately.
 
 ```rust,no_run
 use std::{cell::RefCell, rc::Rc};
@@ -76,7 +78,7 @@ fn routed_factories<T: NdsifRoutingTransport + 'static>(
 }
 ```
 
-Create a new policy for each playback: it retains selected routes to detect
+Create a new policy for each playback registry: it retains selected routes to detect
 shared-resource conflicts. The supplied device count must match the transport
 list used by the factory. Validation occurs while each active chip is created,
 so earlier chips may already be configured when a later route is rejected.
@@ -99,7 +101,7 @@ Errors opening or initializing a configured device are returned.
 | `reset_device` | Reset the device before discovering capabilities |
 
 An empty device list performs no serial I/O and creates a software-only
-registry. For example, to play an uncompressed VGM file:
+registry. To play an uncompressed VGM file:
 
 ```rust,no_run
 use std::time::Duration;
@@ -124,16 +126,18 @@ while let Some(block) = player.render()? {
 
 The application supplies the audio output and handles the rendered PCM.
 VGZ files must be decompressed before passing their VGM data to chipstream.
-For MDX playback, use `MdxPackage` with an optional PDX bank and pass the
-package to `MdxSequencer`.
+For MDX playback, enable chipstream's `mdx` feature. Use `MdxPackage` with an
+optional PDX bank and pass the package to `MdxSequencer`; using `MdxPackage`
+also requires a direct `soundlog` dependency.
 
 ### Write registers without a sequencer
 
 For direct control, open [`NdsifSerialTransport`], configure a supported chip,
-then queue register events through [`NdsifTransport`](ndsif_transport::NdsifTransport). Scheduling a write does
-not send it immediately; call [`flush_scheduled_until`](ndsif_transport::NdsifTransport::flush_scheduled_until) to send queued events
-through the requested output frame. This example writes YM2151 register `0x1b`
-at frame 0:
+then queue register events through [`NdsifTransport`](ndsif_transport::NdsifTransport).
+Scheduling a write does not send it immediately; call
+[`flush_scheduled_until`](ndsif_transport::NdsifTransport::flush_scheduled_until)
+to send queued events through the requested output frame. This example writes
+YM2151 register `0x1b` at frame 0:
 
 ```rust,no_run
 use std::time::Duration;
@@ -164,40 +168,44 @@ device.flush_scheduled_until(1, output_rate)?;
 
 Add `ndsif-transport` and `ndsif` as direct dependencies to use the event and
 register types. Choose a clock supported by the selected device. The caller
-must provide chip-specific initialization, schedule writes on a monotonically
-advancing absolute frame timeline, and manage playback and device lifetime.
+must initialize the chip, schedule writes on a monotonically advancing
+absolute frame timeline, and manage playback and device lifetime.
 
 ## Explicit routing
 
 Use [`NdsifRoute`] when a saved configuration must select an exact source and
 hardware target. Each route specifies a chip type, source instance, device
-index, and target instance. Unrouted instances use the built-in backend;
-unsupported explicit routes return an error instead of falling back.
+index, and target instance. Unrouted instances use the built-in backend where
+available; AY8910 has additional restrictions described below. Unsupported
+explicit routes return an error instead of falling back.
 
 [`create_shared_routed_chip_factories`] accepts shared transport handles so the
 application can retain device connections between playback sessions. Drop
 the sequencer and factories before recovering a connection, then call
-[`reset_for_reuse`](NdsifSerialTransport::reset_for_reuse) before returning it to the connection owner. Do not reset a
-transport while a sequencer is using it. If reset fails, close the connection
-instead of reusing it.
+[`reset_for_reuse`](NdsifSerialTransport::reset_for_reuse) before returning it
+to the connection owner. Do not reset a transport while a sequencer is using
+it. If reset fails, close the connection instead of reusing it.
 
 ## Multiple synchronized devices
 
 For applications that need to pace several devices against host audio:
 
-1. Construct an [`NdsifWorkerDevice`](ndsif_transport::NdsifWorkerDevice) for each shared serial connection. Each
-  device owns its matching recorder; no application-specific ID is required.
-2. Obtain the recorders with [`NdsifWorkerDevice::recorder`](ndsif_transport::NdsifWorkerDevice::recorder), create routed
-  factories with [`create_routed_transport_factories`], and construct the
-  sequencer. Route indices refer to the order of the recorder list.
-3. Start [`NdsifHardwareWorkers`](ndsif_transport::NdsifHardwareWorkers) with the worker devices. The devices may be
-  supplied in any order because each remains paired with its own recorder.
-4. After rendering, call [`enqueue`](ndsif_transport::NdsifHardwareWorkers::enqueue) on the workers to submit all recorded
-  batches. Buffer enough audio before starting the shared [`NdsifHostTimeline`](ndsif_transport::NdsifHostTimeline)
-  at the estimated audio presentation time.
+1. Construct an [`NdsifWorkerDevice`](ndsif_transport::NdsifWorkerDevice) for
+   each shared serial connection. Each device owns its matching recorder; no
+   application-specific ID is required.
+2. Obtain the recorders with [`NdsifWorkerDevice::recorder`](ndsif_transport::NdsifWorkerDevice::recorder),
+   create routed factories with [`create_routed_transport_factories`], and
+   construct the sequencer. Route indices refer to the order of the recorder list.
+3. Start [`NdsifHardwareWorkers`](ndsif_transport::NdsifHardwareWorkers) with
+   the worker devices. They may be supplied in any order because each remains
+   paired with its own recorder.
+4. After rendering, call [`enqueue`](ndsif_transport::NdsifHardwareWorkers::enqueue)
+   on the workers to submit all recorded batches. Buffer enough audio before
+   starting the shared [`NdsifHostTimeline`](ndsif_transport::NdsifHostTimeline)
+   at the estimated audio presentation time.
 5. Check worker errors during playback and finish after the final batch.
-  Drop sequencers, factories, recorders, worker devices, and workers before
-  resetting or reclaiming connections.
+   Drop sequencers, factories, recorders, worker devices, and workers before
+   resetting or reclaiming connections.
 
 ```rust,no_run
 use std::{num::NonZeroUsize, sync::{Arc, Mutex}, time::Duration};
@@ -228,7 +236,8 @@ fn prepare(vgm: Vec<u8>) -> Result<(VgmSequencer<'static>, NdsifHardwareWorkers,
 }
 ```
 
-Use [`enqueue_prebuffer`](ndsif_transport::NdsifHardwareWorkers::enqueue_prebuffer) when you need bounded startup for timed DAC data.
+Use [`enqueue_prebuffer`](ndsif_transport::NdsifHardwareWorkers::enqueue_prebuffer)
+when you need bounded startup for timed DAC data.
 Applications are responsible for audio output, connection management,
 cancellation, and bounding any inter-thread queues. Worker playback and serial
 operations may block; this crate does not put hardware audio into host PCM.
@@ -255,8 +264,9 @@ than relying on its model name.
   serial bandwidth, scheduling, and clock drift can affect timing. Hardware
   audio must be mixed externally with any host audio.
 - Hardware-backed chip adapters do not support sequencer checkpoints, and
-  their [`SoundChip::reset`](chipstream::chip::SoundChip::reset) does not reset the adapter or physical device.
-  Manage device reset and connection reuse separately.
+  their [`SoundChip::reset`](chipstream::chip::SoundChip::reset) does not reset
+  the adapter or physical device. Manage device reset and connection reuse
+  separately.
 
 ## Errors and device reuse
 
