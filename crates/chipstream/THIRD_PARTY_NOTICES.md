@@ -770,6 +770,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The RF5C68/RF5C164 implementation is based on MAME's
 `src/devices/sound/rf5c68.cpp`, revision
 `367a7f677a86d4806b5f808978590de5463eb90a`.
+
 BSD 3-Clause License
 
 Copyright (c) Olivier Galibert and Aaron Giles
