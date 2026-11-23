@@ -40,12 +40,12 @@ YMFM chips are always available. Optional features are disabled by default:
 
 | Feature | Chip | Source | Source license |
 | --- | --- | --- | --- |
-| `ay8910` | AY-3-8910 / 8912 / 8913 | MAME, via libvgm | BSD-3-Clause |
+| `ay8910` | AY-3-8910 / 8912 / 8913 | [MAME](https://github.com/mamedev/mame), via [libvgm](https://github.com/ValleyBell/libvgm) | BSD-3-Clause |
 | `c140` | C140 / ASIC219 | MAME | BSD-3-Clause |
 | `c352` | Namco C352 | MAME | BSD-3-Clause |
 | `es5503` | Ensoniq ES5503 | MAME | BSD-3-Clause |
 | `es550x` | Ensoniq ES5505 / ES5506 | MAME | BSD-3-Clause |
-| `gb_dmg` | Game Boy DMG | MAME, via Tetorica | BSD-3-Clause |
+| `gb_dmg` | Game Boy DMG | MAME, via [Tetorica](https://github.com/kyorohiro/tetorica-soundchip-native) | BSD-3-Clause |
 | `ga20` | Irem GA20 | MAME | BSD-3-Clause |
 | `huc6280` | HuC6280 PSG | MAME | BSD-3-Clause |
 | `k051649` | K051649 / K052539 (SCC / SCC+) | MAME | BSD-3-Clause |
@@ -53,8 +53,8 @@ YMFM chips are always available. Optional features are disabled by default:
 | `k054539` | Konami K054539 | MAME | BSD-3-Clause |
 | `mikey` | Atari Lynx Mikey | libvgm | MIT |
 | `multipcm` | Yamaha MultiPCM | MAME | BSD-3-Clause |
-| `nes_apu` | NES APU | JSNES, via Tetorica | Apache-2.0 |
-| `nes_fds` | FDS expansion audio (includes `nes_apu`) | fixNES, via Tetorica | MIT and Apache-2.0 |
+| `nes_apu` | NES APU | [JSNES](https://github.com/bfirsh/jsnes), via Tetorica | Apache-2.0 |
+| `nes_fds` | FDS expansion audio (includes `nes_apu`) | [fixNES](https://github.com/FIX94/fixNES), via Tetorica | MIT and Apache-2.0 |
 | `upd7759` | NEC uPD7759 | MAME | BSD-3-Clause |
 | `okim6258` | OKIM6258 | MAME | BSD-3-Clause |
 | `okim6295` | OKIM6295 | MAME | BSD-3-Clause |
