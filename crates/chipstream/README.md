@@ -75,23 +75,6 @@ YMFM chips are always available. Optional features are disabled by default:
 See [third-party notices](THIRD_PARTY_NOTICES.md) for source revisions and
 license terms.
 
-YMF271 follows MAME's approximations: PFM is ignored and alternate PCM looping
-is rejected. The VGM stereo mix uses CH0/CH1; the native backend exposes all
-eight outputs.
-
-QSound uses a DSP-ROM-free HLE with 16 PCM voices, three ADPCM voices, filters,
-and echo. Sample ROM data is supplied by VGM data blocks or `write_rom`.
-Legacy 4 MHz VGM clocks and their key-on behavior are supported.
-
-ES5505/ES5506 output pairs are mixed to stereo. VGM ROM regions and external
-per-voice bank writes are supported. The implementation has been tested with
-synthetic data but not verified against a complete ES550x VGM recording.
-
-SCSP provides PCM, FM modulation, and the programmable DSP with shared sample
-RAM. External audio inputs and host CPU interrupts are not connected. Playback
-has not been verified against a complete SCSP VGM recording. Envelope and DSP
-behavior follows MAME's approximations; noise uses a deterministic generator.
-
 Enable the chips your application needs, for example:
 
 ```toml

@@ -37,6 +37,8 @@ struct Voice {
 /// The VGM external voice-bank writes use offsets `0x40..=0x7f`.
 /// ROM regions occupy separate 256 MiB windows in the `write_rom` address
 /// space; sample words are little-endian. Unloaded sample addresses read zero.
+/// The implementation has been tested with synthetic data but not verified
+/// against a complete ES550x VGM recording.
 #[derive(Clone)]
 pub struct Es550x {
     chip: Chip,

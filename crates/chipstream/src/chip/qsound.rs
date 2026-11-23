@@ -166,8 +166,9 @@ impl Echo {
     }
 }
 
-/// Capcom QSound HLE with 16 PCM voices, three ADPCM voices and DSP effects.
+/// Capcom QSound HLE with 16 PCM voices, three ADPCM voices, filters and echo.
 ///
+/// The HLE does not require a DSP ROM.
 /// The clock is the DSP clock in hertz. VGM's legacy 4 MHz clock is converted
 /// by the sequencer; direct callers should pass the actual 60 MHz DSP clock.
 /// Sample ROM data must be provided separately via [`SoundChip::write_rom`].

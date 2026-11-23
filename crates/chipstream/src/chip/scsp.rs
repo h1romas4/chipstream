@@ -255,10 +255,13 @@ impl Slot {
     }
 }
 
-/// Sega/Yamaha SCSP (YMF292) with 32 slots and programmable DSP.
+/// Sega/Yamaha SCSP (YMF292) with 32 slots, PCM, FM modulation and programmable DSP.
 ///
 /// The sample and DSP memory share a 1 MiB big-endian address space. The
 /// external audio inputs and host CPU interrupts are not connected.
+/// Envelope and DSP behavior follows MAME's approximations; noise uses a
+/// deterministic generator. Playback has not been verified against a
+/// complete SCSP VGM recording.
 #[derive(Clone)]
 pub struct Scsp {
     clock: u32,

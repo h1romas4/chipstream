@@ -777,57 +777,26 @@ impl Voice {
 /// change the effective count. Rendering uses lookahead and may consume
 /// commands beyond the returned block.
 ///
-/// Writes and waits are scheduled at 44,100 Hz. `soundlog::VgmStream`
-/// handles DAC streams, compressed sample blocks, and loops. The header
-/// selects YMFM chips, OKIM6258/6295, SN76489/SN76496, SegaPCM, PWM, RF5C68/164, SAA1099,
-/// K051649, K053260, K054539, X1-010, YMF271, YMZ280B, QSound, MultiPCM, uPD7759, HuC6280, POKEY, GA20, C352, and
-/// C140/219. The non-YMFM chips require their corresponding Cargo features;
-/// a chip declared in the header without its feature returns
-/// [`VgmSequencerError::FeatureDisabled`]. Absent or unimplemented chips are
-/// silent. Both YM2610 variants,
-/// dual-chip flags, per-instance extra-header clocks, YM2203 SSG stereo masks,
-/// OKIM6258 pan and rate changes, SN76489 header settings and Game Gear
-/// stereo, SegaPCM banking and ROM, OKIM6295 ROM banking and rate changes,
-/// C140 board types and ROM, and supported Yamaha ROM blocks are handled.
-/// T6W28 uses two linked built-in PSG instances; a factory must provide both
-/// instances or leave both to the built-in backend. The OKIM6258 3-bit selection flag is accepted
-/// using the 4-bit compatibility decoder, matching the bundled vgm2wav MAME
-/// behavior; native 3-bit ADPCM decoding is not implemented.
-/// YMF271 follows MAME's approximation: PFM is ignored, alternate PCM looping
-/// is rejected, and only its first two native outputs are routed to stereo.
-/// MultiPCM VGM clocks use the legacy `/180` convention and are converted to
-/// the `/224` hardware clock for built-in and custom backends.
-/// The built-in OKIM6258 backend queues direct data and DAC-stream writes in
-/// arrival order and applies a 20 Hz DC blocker. The queue is bounded; an
-/// overflow returns an error. Custom backends define their own behavior.
+/// Writes and waits use the 44,100 Hz VGM timeline. The header selects chip
+/// instances and their configuration; supported chips may require Cargo
+/// features. Missing features can return [`VgmSequencerError::FeatureDisabled`];
+/// absent or unimplemented chips are silent. [`VgmStream`] handles DAC
+/// streams, compressed sample blocks and loops.
 ///
-/// Register write pacing is determined by the device timing profile. YMFM
-/// writes are queued per chip instance and applied in order, at most one per
-/// native sample. YM2203/YM2608 and YM2610(B) use intervals of 18 and 9
-/// native samples respectively so that their oversampled FM engines advance
-/// between writes. A burst can therefore delay subsequent writes; exceeding
-/// 1,048,576 pending writes per instance is an error.
-/// Paced write event positions use `f32` arithmetic and may differ from
-/// exact rational arithmetic due to rounding.
-/// At the end of playback, pending writes are applied at the final boundary
-/// without generating additional audio.
-/// Devices with variable clocks use a conservative range derived from their
-/// timing profile and the stream's clock writes to configure resampling.
+/// T6W28 requires either two built-in PSG halves or two factory backends.
+/// OKIM6258's 3-bit flag uses the 4-bit compatibility decoder; its built-in
+/// backend queues data and applies a 20 Hz DC blocker. YMF271 routes its first
+/// two outputs to stereo, while ES5505/ES5506 output pairs are mixed to stereo.
+/// QSound supports VGM ROM blocks and legacy 4 MHz key-on behavior. MultiPCM
+/// legacy `/180` clocks are converted to `/224` for all backends.
 ///
-/// The global volume modifier and extra-header chip volumes multiply the
-/// per-chip gain. Relative volumes multiply the existing level; absolute
-/// volumes are normalized against libvgm defaults, halved for dual-chip files.
-/// Thus absolute levels need not match other players. Separate paired SSG
-/// volumes are supported for YM2203, YM2608, and YM2610(B); paired entries
-/// for other chips are ignored. The first matching entry is used. Single-chip
-/// reference levels are `0x200` for YM2413, `0x1c0` for OKIM6258, `0x180`
-/// for SegaPCM, `0xe0` for PWM, `0x80` for SN76489, YM2608 and YM2610(B)
-/// and their SSG, `0x80` for YM2203 SSG, and `0x100` for other outputs.
-/// Backend output balancing applies gains of 2.0 to C352, YMZ280B, YMF271, and
-/// QSound, 0.5 to SN76489 and MultiPCM, 0.25 to YM2203 SSG, and 0.375 to
-/// YM2608/YM2610(B) SSG. When YM2612 is present, all other chip outputs are
-/// further attenuated by 2/3 to preserve headroom while balancing against
-/// YM2612. These gains also apply to custom backends.
+/// YMFM writes are paced per chip, so bursts may delay writes. Queue overflow
+/// is an error; pending writes are applied at the final boundary without
+/// generating audio. Paced event positions may differ from exact arithmetic
+/// due to `f32` rounding.
+///
+/// Header volumes and backend balancing multiply per-chip gains, including for
+/// custom backends; resulting levels may differ from other players.
 ///
 /// PCM is not clipped or normalized. Rendering can allocate and is not
 /// guaranteed real-time safe. After a rendering or checkpoint restore error,
