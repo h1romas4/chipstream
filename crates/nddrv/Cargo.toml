@@ -30,7 +30,7 @@ hound = "3.5"
 image = { version = "0.25", default-features = false }
 ndsif = { path = "../ndsif" }
 ndsif-transport = { path = "../ndsif-transport" }
-rfd = "0.17.2"
+rfd = "0.18.0"
 roxmltree = "0.21.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
