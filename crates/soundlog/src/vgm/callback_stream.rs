@@ -262,11 +262,12 @@ macro_rules! impl_callback_and_state {
             type Spec = $spec_type;
 
             fn init_tracker(trackers: &mut StateTrackers, instance: Instance, clock: f32) {
-                trackers.$tracker_field[instance as usize] = Some(<$state_type>::new(clock));
+                trackers.$tracker_field[instance as usize] =
+                    Some(Box::new(<$state_type>::new(clock)));
             }
 
             fn install_tracker(trackers: &mut StateTrackers, instance: Instance, state: Self) {
-                trackers.$tracker_field[instance as usize] = Some(state);
+                trackers.$tracker_field[instance as usize] = Some(Box::new(state));
             }
         }
     };
@@ -385,53 +386,52 @@ impl_write_callback_target_no_state!(chip::MultiPcmBankSpec, on_multi_pcm_bank_w
 impl_write_callback_target_no_state!(chip::GameGearPsgSpec, on_game_gear_psg_write);
 impl_write_callback_target_no_state!(chip::WonderSwanRegSpec, on_wonder_swan_reg_write);
 
-/// State trackers for various sound chips
-/// Each chip type supports up to 2 instances (Primary and Secondary)
+/// State trackers are allocated only for enabled chip instances.
 #[derive(Default)]
 struct StateTrackers {
-    ym2612: [Option<Ym2612State>; 2],
-    ym2151: [Option<Ym2151State>; 2],
-    ym2203: [Option<Ym2203State>; 2],
-    ym2608: [Option<Ym2608State>; 2],
-    ym2610b: [Option<Ym2610bState>; 2],
-    ym2413: [Option<Ym2413State>; 2],
-    ym3812: [Option<Ym3812State>; 2],
-    ym3526: [Option<Ym3526State>; 2],
-    y8950: [Option<Y8950State>; 2],
-    ymf262: [Option<Ymf262State>; 2],
-    ymf271: [Option<Ymf271State>; 2],
-    ymf278b: [Option<Ymf278bState>; 2],
-    sn76489: [Option<Sn76489State>; 2],
-    gamegear_psg: [Option<Sn76489State>; 2],
-    ay8910: [Option<Ay8910State>; 2],
-    gb_dmg: [Option<GbDmgState>; 2],
-    nes_apu: [Option<NesApuState>; 2],
-    huc6280: [Option<Huc6280State>; 2],
-    pokey: [Option<PokeyState>; 2],
-    saa1099: [Option<Saa1099State>; 2],
-    wonderswan: [Option<WonderSwanState>; 2],
-    vsu: [Option<VsuState>; 2],
-    mikey: [Option<MikeyState>; 2],
-    k051649: [Option<K051649State>; 2],
-    sega_pcm: [Option<SegaPcmState>; 2],
-    rf5c68: [Option<Rf5c68State>; 2],
-    rf5c164: [Option<Rf5c164State>; 2],
-    pwm: [Option<PwmState>; 2],
-    multi_pcm: [Option<MultiPcmState>; 2],
-    upd7759: [Option<Upd7759State>; 2],
-    okim6258: [Option<Okim6258State>; 2],
-    okim6295: [Option<Okim6295State>; 2],
-    k054539: [Option<K054539State>; 2],
-    c140: [Option<C140State>; 2],
-    c352: [Option<C352State>; 2],
-    k053260: [Option<K053260State>; 2],
-    qsound: [Option<QsoundState>; 2],
-    scsp: [Option<ScspState>; 2],
-    es5503: [Option<Es5503State>; 2],
-    es5506: [Option<Es5506State>; 2],
-    x1_010: [Option<X1010State>; 2],
-    ga20: [Option<Ga20State>; 2],
-    ymz280b: [Option<Ymz280bState>; 2],
+    ym2612: [Option<Box<Ym2612State>>; 2],
+    ym2151: [Option<Box<Ym2151State>>; 2],
+    ym2203: [Option<Box<Ym2203State>>; 2],
+    ym2608: [Option<Box<Ym2608State>>; 2],
+    ym2610b: [Option<Box<Ym2610bState>>; 2],
+    ym2413: [Option<Box<Ym2413State>>; 2],
+    ym3812: [Option<Box<Ym3812State>>; 2],
+    ym3526: [Option<Box<Ym3526State>>; 2],
+    y8950: [Option<Box<Y8950State>>; 2],
+    ymf262: [Option<Box<Ymf262State>>; 2],
+    ymf271: [Option<Box<Ymf271State>>; 2],
+    ymf278b: [Option<Box<Ymf278bState>>; 2],
+    sn76489: [Option<Box<Sn76489State>>; 2],
+    gamegear_psg: [Option<Box<Sn76489State>>; 2],
+    ay8910: [Option<Box<Ay8910State>>; 2],
+    gb_dmg: [Option<Box<GbDmgState>>; 2],
+    nes_apu: [Option<Box<NesApuState>>; 2],
+    huc6280: [Option<Box<Huc6280State>>; 2],
+    pokey: [Option<Box<PokeyState>>; 2],
+    saa1099: [Option<Box<Saa1099State>>; 2],
+    wonderswan: [Option<Box<WonderSwanState>>; 2],
+    vsu: [Option<Box<VsuState>>; 2],
+    mikey: [Option<Box<MikeyState>>; 2],
+    k051649: [Option<Box<K051649State>>; 2],
+    sega_pcm: [Option<Box<SegaPcmState>>; 2],
+    rf5c68: [Option<Box<Rf5c68State>>; 2],
+    rf5c164: [Option<Box<Rf5c164State>>; 2],
+    pwm: [Option<Box<PwmState>>; 2],
+    multi_pcm: [Option<Box<MultiPcmState>>; 2],
+    upd7759: [Option<Box<Upd7759State>>; 2],
+    okim6258: [Option<Box<Okim6258State>>; 2],
+    okim6295: [Option<Box<Okim6295State>>; 2],
+    k054539: [Option<Box<K054539State>>; 2],
+    c140: [Option<Box<C140State>>; 2],
+    c352: [Option<Box<C352State>>; 2],
+    k053260: [Option<Box<K053260State>>; 2],
+    qsound: [Option<Box<QsoundState>>; 2],
+    scsp: [Option<Box<ScspState>>; 2],
+    es5503: [Option<Box<Es5503State>>; 2],
+    es5506: [Option<Box<Es5506State>>; 2],
+    x1_010: [Option<Box<X1010State>>; 2],
+    ga20: [Option<Box<Ga20State>>; 2],
+    ymz280b: [Option<Box<Ymz280bState>>; 2],
 }
 
 /// Callback functions for chip write events
@@ -1647,6 +1647,35 @@ impl<'a> Iterator for VgmCallbackStream<'a> {
             Ok(StreamResult::EndOfStream) => None,
             _ => Some(result),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_stream_keeps_trackers_small_and_allocates_registered_instances() {
+        assert!(std::mem::size_of::<VgmCallbackStream<'_>>() <= 4096);
+
+        let mut stream = VgmCallbackStream::from_document(VgmDocument::default());
+        assert!(stream.state_trackers.ymf271.iter().all(Option::is_none));
+        assert!(stream.state_trackers.ym2151.iter().all(Option::is_none));
+
+        stream.track_state::<Ymf271State>(Instance::Primary, 16_934_400.0);
+        stream.track_state_with(Instance::Secondary, Ym2151State::new(3_579_545.0));
+        assert!(stream.state_trackers.ymf271[0].is_some());
+        assert!(stream.state_trackers.ymf271[1].is_none());
+        assert!(stream.state_trackers.ym2151[0].is_none());
+        assert!(stream.state_trackers.ym2151[1].is_some());
+        assert!(stream.state_trackers.pwm.iter().all(Option::is_none));
+
+        stream.seek_to_sample(0).unwrap();
+        assert!(stream.state_trackers.ymf271[0].is_some());
+        assert!(stream.state_trackers.ymf271[1].is_none());
+        assert!(stream.state_trackers.ym2151[0].is_none());
+        assert!(stream.state_trackers.ym2151[1].is_some());
+        assert!(stream.state_trackers.pwm.iter().all(Option::is_none));
     }
 }
 
