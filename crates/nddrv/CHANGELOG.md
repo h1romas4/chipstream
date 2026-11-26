@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix MDX PCM1 playback using the wrong PDX bank after bank-selection commands.
+
 ## v0.16.1
 
 - Include a desktop entry and icon in the Linux release archive.
