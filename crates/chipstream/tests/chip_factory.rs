@@ -350,52 +350,42 @@ fn generator_uses_configuration_factories_and_callbacks() {
 }
 
 #[test]
-fn generator_with_builtin_chip_matches_document() {
-    let mut builder = VgmBuilder::new();
-    builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
-    for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
-        builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
-    }
-    builder.add_vgm_command(WaitSamples(1000));
-    let document = builder.finalize();
-    let config = GeneratorConfig {
-        header: document.header.clone(),
-        ..Default::default()
-    };
-    let mut generated =
-        VgmSequencer::from_generator(generator(document.commands.clone()), config, 48_000, 128)
-            .unwrap();
+fn generator_with_either_end_marker_matches_document() {
+    let document = VgmDocument::parse(include_bytes!("../assets/vgm/ym2151_a4.vgm")).unwrap();
+    let header = document.header.clone();
+    let explicit_end = document.commands.clone();
+    let mut implicit_end = explicit_end.clone();
+    assert!(matches!(implicit_end.pop(), Some(VgmCommand::EndOfData(_))));
     let mut parsed = VgmSequencer::new(document, 48_000, 128, Default::default()).unwrap();
     let collect = |player: &mut VgmSequencer<'_>| {
-        let mut frames = Vec::new();
+        let mut blocks = Vec::new();
         while let Some(block) = player.render().unwrap() {
-            frames.extend_from_slice(block.frames());
+            blocks.push(block.frames().to_vec());
         }
-        frames
+        assert!(player.render().unwrap().is_none());
+        blocks
     };
     let expected = collect(&mut parsed);
-    assert!(!expected.is_empty());
-    assert_eq!(collect(&mut generated), expected);
+    assert!(expected.len() > 1);
+    assert!(
+        expected
+            .last()
+            .is_some_and(|block| !block.is_empty() && block.len() < 128)
+    );
+    assert!(expected.iter().flatten().any(|frame| *frame != [0.0; 2]));
+    for commands in [explicit_end, implicit_end] {
+        let config = GeneratorConfig {
+            header: header.clone(),
+            ..Default::default()
+        };
+        let mut generated =
+            VgmSequencer::from_generator(generator(commands), config, 48_000, 128).unwrap();
+        assert_eq!(collect(&mut generated), expected);
+    }
 }
 
 #[test]
-fn generator_reports_missing_end_and_generation_errors() {
-    let mut player = VgmSequencer::from_generator(
-        generator(vec![VgmCommand::WaitSamples(WaitSamples(10))]),
-        GeneratorConfig::default(),
-        44_100,
-        64,
-    )
-    .unwrap();
-    assert!(matches!(
-        player.render(),
-        Err(VgmSequencerError::UnexpectedEnd)
-    ));
-    assert!(matches!(
-        player.render(),
-        Err(VgmSequencerError::StreamFailed)
-    ));
-
+fn generator_reports_generation_errors() {
     #[derive(Debug)]
     struct Fails;
     impl soundlog::VgmCommandGenerator for Fails {
@@ -411,6 +401,10 @@ fn generator_reports_missing_end_and_generation_errors() {
         Err(VgmSequencerError::Parse(
             soundlog::ParseError::UnexpectedEof
         ))
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
     ));
 }
 

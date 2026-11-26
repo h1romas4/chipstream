@@ -1181,6 +1181,53 @@ fn no_time_default_budget_stops_excessive_commands() {
 }
 
 #[test]
+fn generator_none_ends_stream_without_polling_again() {
+    #[derive(Debug)]
+    struct Generator {
+        wait: Option<u16>,
+        exhausted: bool,
+    }
+
+    impl soundlog::VgmCommandGenerator for Generator {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            assert!(!self.exhausted, "generator polled after returning None");
+            let command = self
+                .wait
+                .take()
+                .map(WaitSamples)
+                .map(VgmCommand::WaitSamples);
+            self.exhausted = command.is_none();
+            Ok(command)
+        }
+    }
+
+    let generator = |wait| {
+        Box::new(Generator {
+            wait,
+            exhausted: false,
+        })
+    };
+    for first_wait in [None, Some(10)] {
+        let mut stream = VgmStream::from_generator(generator(first_wait));
+        if let Some(wait) = first_wait {
+            assert_eq!(
+                stream.next().unwrap().unwrap(),
+                StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(wait)))
+            );
+        }
+        for _ in 0..2 {
+            assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
+        }
+        stream.reset();
+        assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
+    }
+
+    let mut callbacks = VgmCallbackStream::from_generator(generator(None));
+    assert!(callbacks.next().is_none());
+    assert!(callbacks.next().is_none());
+}
+
+#[test]
 fn generator_error_preserves_custom_error_and_source_chain() {
     use std::error::Error;
     use std::fmt;

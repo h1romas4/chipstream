@@ -377,6 +377,9 @@ pub trait VgmCommandGenerator: std::fmt::Debug {
 
 Return `Ok(Some(command))` to yield a command, `Ok(None)` when the generator
 has permanently finished, or `Err(error)` if command generation fails.
+`Ok(None)` ends the stream even if the generator did not emit `EndOfData`.
+`VgmStream` then returns `EndOfStream` (including on repeated reads), while
+`VgmCallbackStream` returns `None`. This is not a request for more input.
 Implementations must also derive or implement `Debug`.
 
 MDX conversion uses the same interface: its lazy generator is one

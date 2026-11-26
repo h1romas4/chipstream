@@ -167,26 +167,22 @@ Declare per-instance OKIM6258/OKIM6295 clock ranges, including
 intermediate clock-byte values, and SN76489 stereo-mask use in the config:
 the generator cannot be scanned ahead of playback.
 
-The generator must emit `EndOfData` and handle its own loops. It is called
-synchronously and may be read ahead. Single-pass generators do not support
+Either `EndOfData` or `Ok(None)` ends playback normally. The sequencer returns
+any remaining PCM before `render()` returns `Ok(None)`. Return `Err` if
+command generation fails. The generator handles its own loops, is called
+synchronously, and may be read ahead. Single-pass generators do not support
 checkpoints.
 
 ```rust
 use chipstream::sequencer::{GeneratorConfig, VgmSequencer};
 use soundlog::{ParseError, VgmCommandGenerator};
-use soundlog::vgm::{VgmHeader, command::{EndOfData, VgmCommand, WaitSamples}};
+use soundlog::vgm::{VgmHeader, command::{VgmCommand, WaitSamples}};
 
 #[derive(Debug)]
-struct Source(u8);
+struct Source(Option<WaitSamples>);
 impl VgmCommandGenerator for Source {
     fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
-        let command = match self.0 {
-            0 => Some(VgmCommand::WaitSamples(WaitSamples(441))),
-            1 => Some(VgmCommand::EndOfData(EndOfData)),
-            _ => None,
-        };
-        self.0 += 1;
-        Ok(command)
+        Ok(self.0.take().map(VgmCommand::WaitSamples))
     }
 }
 let config = GeneratorConfig {
@@ -196,7 +192,8 @@ let config = GeneratorConfig {
     },
     ..Default::default()
 };
-let mut player = VgmSequencer::from_generator(Box::new(Source(0)), config, 48_000, 512)?;
+let mut player =
+    VgmSequencer::from_generator(Box::new(Source(Some(WaitSamples(441)))), config, 48_000, 512)?;
 while let Some(block) = player.render()? {
     // Send block.frames() to the host.
 }

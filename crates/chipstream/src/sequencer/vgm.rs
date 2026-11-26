@@ -1611,8 +1611,8 @@ impl<'a> VgmSequencer<'a> {
 
     /// Play commands generated lazily using the supplied chip configuration.
     ///
-    /// The generator must emit `EndOfData` before returning `None`; otherwise
-    /// rendering fails with [`VgmSequencerError::UnexpectedEnd`]. It handles
+    /// Either `EndOfData` or the generator returning `Ok(None)` ends playback
+    /// normally. Return `Err` if command generation fails. The generator handles
     /// its own loops. Stream-level loop and fade settings do not provide a
     /// generator loop point. Checkpoints are unsupported for this single-pass
     /// source. The generator is called synchronously during rendering, which

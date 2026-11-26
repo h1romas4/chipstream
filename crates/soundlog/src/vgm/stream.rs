@@ -88,6 +88,7 @@ impl From<&StopStream> for DacStreamSelector {
 pub trait VgmCommandGenerator: fmt::Debug {
     /// Produces the next command, or `Ok(None)` once the generator has
     /// permanently finished (no further calls will ever produce a command).
+    /// The stream treats `Ok(None)` as its end, even without `EndOfData`.
     ///
     /// # Errors
     ///
@@ -127,6 +128,7 @@ enum VgmStreamSource {
     Generator {
         /// The lazy command producer.
         generator: Box<dyn VgmCommandGenerator>,
+        exhausted: bool,
     },
     /// Raw VGM file bytes owned by the stream (created via `VgmStream::from_vgm`).
     ///
@@ -1083,6 +1085,9 @@ impl VgmStream {
     /// control finite vs. infinite repeats instead of
     /// `VgmStream::set_loop_count`.
     ///
+    /// Either `EndOfData` or the generator returning `Ok(None)` ends the
+    /// stream. Repeated reads at the end return [`StreamResult::EndOfStream`].
+    ///
     /// # Examples
     /// ```
     /// use soundlog::{ParseError, VgmCommandGenerator};
@@ -1102,7 +1107,10 @@ impl VgmStream {
     /// ```
     pub fn from_generator(generator: Box<dyn VgmCommandGenerator>) -> Self {
         Self {
-            source: VgmStreamSource::Generator { generator },
+            source: VgmStreamSource::Generator {
+                generator,
+                exhausted: false,
+            },
             ..Self::default()
         }
     }
@@ -1313,6 +1321,9 @@ impl VgmStream {
                         self.budget.count_command_without_wait()?;
                         command
                     }
+                    None if matches!(self.source, VgmStreamSource::Generator { .. }) => {
+                        return Ok(StreamResult::EndOfStream);
+                    }
                     None => return Ok(StreamResult::NeedsMoreData),
                 }
             };
@@ -1375,7 +1386,17 @@ impl VgmStream {
                     Ok(None)
                 }
             }
-            VgmStreamSource::Generator { generator } => generator.next_command(),
+            VgmStreamSource::Generator {
+                generator,
+                exhausted,
+            } => {
+                if *exhausted {
+                    return Ok(None);
+                }
+                let command = generator.next_command()?;
+                *exhausted = command.is_none();
+                Ok(command)
+            }
             VgmStreamSource::File {
                 data, current_pos, ..
             } => {
