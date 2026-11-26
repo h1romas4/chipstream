@@ -247,6 +247,7 @@ each plugin.
 | --- | --- |
 | VGM / VGZ | VGZ files are decompressed for playback. Input files and decompressed VGZ data are limited to 64 MiB. |
 | MDX | A matching PDX sample bank is required when the MDX names one. |
+| XGM / XGZ | XGM v1 and its gzip-compressed form. Only the first track is listed and played. |
 
 Chip support depends on the file and available software emulation or connected
 hardware. Playback errors are shown in the application.

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1720" viewBox="0 0 1440 1720" role="img" aria-labelledby="title description">
   <title id="title">Chip writes, visualization, and control</title>
-  <desc id="description">A VGM or MDX sequencer schedules original chip writes. Optional state tracking and callbacks observe those original writes for a keyboard display. A write filter can transform writes using application mute settings before the selected sound chip receives them. A chip factory chooses a built-in or custom backend. A custom sequencer can produce VGM commands for VgmSequencer::from_generator, which uses VgmStream::from_generator internally, or drive a SoundChip directly and handle scheduling and observation itself.</desc>
+  <desc id="description">A VGM, MDX, or XGM v1 sequencer schedules original chip writes. All three support state-change callbacks on the original writes; VGM and MDX also expose typed write callbacks. A write filter can transform writes using application mute settings before the selected sound chip receives them. A chip factory chooses a built-in or custom backend. A custom sequencer can produce VGM commands for VgmSequencer::from_generator, which uses VgmStream::from_generator internally, or drive a SoundChip directly and handle scheduling and observation itself.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10Z" fill="#14856f"/>
@@ -15,7 +15,6 @@
       .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 2px; fill: #74dfc3; }
       .section { font-size: 21px; font-weight: 700; }
       .section-note { font-size: 14px; fill: #617681; }
-      .number { font-size: 14px; font-weight: 700; fill: #ffffff; }
       .card-title { font-size: 18px; font-weight: 700; }
       .body { font-size: 15px; fill: #405b69; }
       .small { font-size: 13px; fill: #617681; }
@@ -33,24 +32,22 @@
   <text x="64" y="43" class="eyebrow">CHIPSTREAM / WRITES AND CONTROL</text>
   <text x="64" y="91" class="hero-title">From chip writes to application controls</text>
   <text x="64" y="124" class="hero-sub">Observe the source, transform writes, and choose how each chip is driven.</text>
-  <rect x="1140" y="53" width="236" height="48" rx="24" fill="#204b5b" stroke="#477383"/>
-  <text x="1258" y="83" text-anchor="middle" class="hero-sub">VGM  ·  MDX  ·  custom</text>
+  <rect x="1100" y="53" width="276" height="48" rx="24" fill="#204b5b" stroke="#477383"/>
+  <text x="1238" y="83" text-anchor="middle" class="hero-sub">VGM  ·  MDX  ·  XGM v1  ·  custom</text>
 
-  <circle cx="80" cy="201" r="16" fill="#147b6a"/>
-  <text x="80" y="206" text-anchor="middle" class="number">1</text>
-  <text x="109" y="208" class="section">Choose the source and backend</text>
+  <text x="64" y="208" class="section">Sources and backend configuration</text>
   <text x="1376" y="207" text-anchor="end" class="section-note">Factories configure backends; they do not process writes.</text>
 
   <rect x="64" y="232" width="330" height="166" rx="14" fill="#ffffff" stroke="#d4e2e2"/>
   <text x="88" y="264" class="tag">SOURCE</text>
   <text x="88" y="296" class="card-title">Music data</text>
-  <text x="88" y="324" class="body">VGM or MDX + optional PDX</text>
+  <text x="88" y="324" class="body">VGM, MDX (+ optional PDX), or XGM v1</text>
   <text x="88" y="349" class="body">or a custom VGM command generator</text>
   <text x="88" y="376" class="small">The generator handles its own loops.</text>
 
   <rect x="447" y="232" width="440" height="166" rx="14" fill="#ffffff" stroke="#b6d6d0"/>
   <text x="471" y="264" class="tag">SEQUENCER</text>
-  <text x="471" y="296" class="card-title">VGM / MDX sequencer</text>
+  <text x="471" y="296" class="card-title">VGM / MDX / XGM sequencer</text>
   <text x="471" y="324" class="body">Schedule original typed writes</text>
   <text x="471" y="349" class="body">for each chip instance.</text>
   <text x="471" y="376" class="small">Callbacks, filters, and factories are optional.</text>
@@ -61,13 +58,11 @@
   <text x="964" y="296" class="body">Register a factory by chip type;</text>
   <text x="964" y="321" class="body">select a backend for each instance.</text>
   <text x="964" y="350" class="mono">from_vgm_with_factories(...)</text>
-  <text x="964" y="376" class="small">Also available for MDX and generators.</text>
+  <text x="964" y="376" class="small">Factory constructors also exist for MDX, XGM, and generators.</text>
   <path d="M940 315H899" class="config"/>
 
   <rect x="64" y="465" width="1312" height="601" rx="20" fill="#e5f2ef" stroke="#c5e0d9"/>
-  <circle cx="96" cy="500" r="16" fill="#147b6a"/>
-  <text x="96" y="505" text-anchor="middle" class="number">2</text>
-  <text x="125" y="507" class="section">Observe original writes and control the backend</text>
+  <text x="88" y="507" class="section">Write observation and filtering</text>
   <rect x="1067" y="484" width="275" height="32" rx="16" fill="#ffffff"/>
   <text x="1204" y="505" text-anchor="middle" class="tag">PER CHIP / INSTANCE</text>
 
@@ -78,9 +73,9 @@
 
   <rect x="88" y="550" width="344" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
   <text x="109" y="581" class="tag">OBSERVE / ORIGINAL WRITES</text>
-  <text x="109" y="612" class="card-title">track_state() + on_write()</text>
-  <text x="109" y="640" class="body">Track the source chip state and</text>
-  <text x="109" y="663" class="body">receive typed writes and events.</text>
+  <text x="109" y="612" class="card-title">Write and state callbacks</text>
+  <text x="109" y="640" class="body">All three: on_state_change()</text>
+  <text x="109" y="663" class="body">VGM and MDX: also on_write()</text>
   <text x="109" y="687" class="small">Original writes, even when filtered</text>
 
   <rect x="530" y="550" width="360" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
@@ -140,9 +135,7 @@
   <text x="88" y="1020" class="small">Callbacks run during render; use their output-frame positions to align the display with playback.</text>
   <text x="88" y="1042" class="small">Filters can run ahead of returned audio; generated PCM and scheduled hardware writes cannot be changed retroactively.</text>
 
-  <circle cx="80" cy="1122" r="16" fill="#147b6a"/>
-  <text x="80" y="1127" text-anchor="middle" class="number">3</text>
-  <text x="109" y="1129" class="section">Bring your own sequencer</text>
+  <text x="64" y="1129" class="section">Custom sequencer options</text>
   <text x="1376" y="1128" text-anchor="end" class="section-note">Choose direct chip use or a VGM command generator.</text>
 
   <rect x="64" y="1155" width="396" height="190" rx="14" fill="#ffffff" stroke="#d4e2e2"/>

@@ -1,7 +1,7 @@
 # chipstream
 
 `chipstream` provides retro sound-chip emulation, device-independent playback
-of VGM, MDX, and XGM files, and audio-processing components for applications
+of VGM, MDX, and XGM v1 files, and audio-processing components for applications
 and games.
 
 It uses [`soundlog`](https://crates.io/crates/soundlog) for format
@@ -33,7 +33,7 @@ The sequencer creates a backend for each chip instance, applies timed register
 writes, and renders each chip independently. Each native output is mapped to
 stereo and resampled before aligned sources are mixed into the output block.
 
-![Chip audio flow from VGM/MDX input to stereo PCM](https://raw.githubusercontent.com/h1romas4/chipstream/main/crates/chipstream/assets/audio-flow.svg)
+![Chip audio flow from VGM, MDX, or XGM v1 input to stereo PCM](https://raw.githubusercontent.com/h1romas4/chipstream/main/crates/chipstream/assets/audio-flow.svg)
 
 The factory selects or creates a `SoundChip`; it is not part of the audio
 signal path. Resampling can downsample or upsample. The final mix is not clipped.
@@ -152,7 +152,7 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Render an XGM track (requires `xgm` and `sn76496`):
+Render an XGM v1 track (requires `xgm` and `sn76496`):
 
 ```rust,no_run
 # #[cfg(feature = "xgm")]
@@ -230,6 +230,10 @@ use chipstream::sequencer::{PlaybackOptions, VgmSequencer, VgmSequencerOptions};
 use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
 # #[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
+# #[cfg(feature = "xgm")]
+use chipstream::sequencer::{XgmSequencer, XgmSequencerOptions};
+# #[cfg(feature = "xgm")]
+use soundlog::xgm::XgmDocument;
 
 let playback = PlaybackOptions {
     loop_count: Some(2),
@@ -251,6 +255,16 @@ let mdx = MdxSequencer::new(
     MdxSequencerOptions { playback, ..Default::default() },
 )?;
 # }
+# #[cfg(feature = "xgm")]
+# {
+let document = XgmDocument::parse(&std::fs::read("song.xgm")?)?;
+let xgm = XgmSequencer::new(
+    document,
+    48_000,
+    512,
+    XgmSequencerOptions { playback, track: 0, ..Default::default() },
+)?;
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -265,8 +279,9 @@ For VGM, [`new`](sequencer::VgmSequencer::new) accepts a parsed document,
 while [`from_vgm`](sequencer::VgmSequencer::from_vgm) accepts file bytes.
 Both have `_with_factories` variants for custom chip factories.
 
-`None` as the loop count allows unlimited looping. For indefinite MDX playback
-also set `max_ticks` to `None`; other resource limits remain active.
+`None` as the loop count allows unlimited looping. For indefinite playback,
+also set `max_ticks` to `None` for MDX or `max_frames` to `None` for XGM.
+Other resource limits remain active. XGM track indices are zero-based.
 
 PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
@@ -403,8 +418,9 @@ For a keyboard display, use tracked `KeyOn` and `KeyOff` events to maintain
 channel state and `KeyOn` tone frequency, when present, to select a key. The
 events describe the original writes, so a muted channel can still appear active.
 
-The VGM and MDX sequencers expose [`chip_instances`](sequencer::VgmSequencer::chip_instances)
-and typed write callbacks. Register callbacks with [`on_write`](sequencer::VgmSequencer::on_write)
+All sequencers expose [`chip_instances`](sequencer::VgmSequencer::chip_instances).
+The VGM and MDX sequencers also expose typed write callbacks.
+Register them with [`on_write`](sequencer::VgmSequencer::on_write)
 and state tracking with [`track_state`](sequencer::VgmSequencer::track_state) before
 rendering:
 
@@ -442,9 +458,10 @@ For SN76489, state tracking uses the VGM header's clock-divider and zero-period
 settings. [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks) also accounts for per-instance
 extra-header clock overrides.
 
-The XGM sequencer also exposes `chip_instances` and supports state-change
-callbacks through `on_state_change` and `track_state_with_voice_clocks`.
-When using [`on_state_change`](sequencer::VgmSequencer::on_state_change),
+All sequencers support [`on_state_change`](sequencer::VgmSequencer::on_state_change)
+with [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks).
+Use these on [`XgmSequencer`], which does not expose `on_write`.
+When using state-change callbacks,
 check [`take_state_event_overflow()`](sequencer::VgmSequencer::take_state_event_overflow) after
 rendering. Overflow or a seek can leave a display built from event history
 out of sync.

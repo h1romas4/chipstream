@@ -588,9 +588,9 @@ playback. For PCM playback seeking on the output-frame timeline, use
 
 ## Error Handling
 
-Parsing, streaming, decompression, F-number utilities, and MDX serialization
-return `Result` with structured errors. See [`ParseError`] for error variants
-and examples.
+Parsing, streaming, decompression, F-number utilities, and serialization for
+MDX and XGM return `Result` with structured errors. See [`ParseError`] for
+error variants and examples.
 
 User-defined and MDX generators use [`ParseError::GeneratorError`] to preserve
 format-specific error types and their `Error::source()` chains. [`Other`](ParseError::Other) is

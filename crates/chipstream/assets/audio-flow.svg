@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1490" viewBox="0 0 1440 1490" role="img" aria-labelledby="title description">
   <title id="title">How chip audio becomes stereo PCM</title>
-  <desc id="description">A sequencer reads VGM, MDX, or generated commands and schedules writes to each chip instance. Each backend generates native samples, which are captured, processed and routed to stereo, resampled, and queued. The mixer aligns the queues and applies per-chip gain before returning stereo PCM. Output controls act before resampling; neither gain control affects physical hardware audio.</desc>
+  <desc id="description">A sequencer reads VGM, MDX, XGM v1, or generated commands and schedules writes to each chip instance. Each backend generates native samples, which are captured, processed and routed to stereo, resampled, and queued. The mixer aligns the queues and applies per-chip gain before returning stereo PCM. Output controls act before resampling; neither gain control affects physical hardware audio.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10Z" fill="#14856f"/>
@@ -33,8 +33,8 @@
   <text x="64" y="43" class="eyebrow">CHIPSTREAM / AUDIO PIPELINE</text>
   <text x="64" y="91" class="hero-title">How chip audio becomes stereo PCM</text>
   <text x="64" y="124" class="hero-sub">From timed chip writes to a single, output-rate stereo stream.</text>
-  <rect x="1140" y="53" width="236" height="48" rx="24" fill="#204b5b" stroke="#477383"/>
-  <text x="1258" y="83" text-anchor="middle" class="hero-sub">VGM  ·  MDX  ·  custom</text>
+  <rect x="1100" y="53" width="276" height="48" rx="24" fill="#204b5b" stroke="#477383"/>
+  <text x="1238" y="83" text-anchor="middle" class="hero-sub">VGM  ·  MDX  ·  XGM v1  ·  custom</text>
 
   <!-- Sources and configuration -->
   <circle cx="80" cy="201" r="16" fill="#147b6a"/>
@@ -45,13 +45,13 @@
   <rect x="64" y="232" width="330" height="164" rx="14" fill="#ffffff" stroke="#d4e2e2"/>
   <text x="88" y="264" class="tag">SOURCE</text>
   <text x="88" y="296" class="card-title">Music data</text>
-  <text x="88" y="324" class="body">VGM or MDX + optional PDX</text>
+  <text x="88" y="324" class="body">VGM, MDX (+ optional PDX), or XGM v1</text>
   <text x="88" y="349" class="body">or a custom command generator</text>
   <text x="88" y="376" class="small">Bytes or parsed input</text>
 
   <rect x="447" y="232" width="440" height="164" rx="14" fill="#ffffff" stroke="#b6d6d0"/>
   <text x="471" y="264" class="tag">SEQUENCER</text>
-  <text x="471" y="296" class="card-title">VGM / MDX sequencer</text>
+  <text x="471" y="296" class="card-title">VGM / MDX / XGM sequencer</text>
   <text x="471" y="324" class="body">Schedule waits and register writes</text>
   <text x="471" y="349" class="body">for the matching chip instances.</text>
   <text x="471" y="376" class="small">Output rate, chunk size, loop and fade options</text>
@@ -94,7 +94,7 @@
   <text x="721" y="620" class="card-title">Effects + stereo</text>
   <text x="721" y="648" class="body">Output effects → gain / pan</text>
   <text x="721" y="671" class="body">→ stereo → group effects</text>
-  <text x="721" y="695" class="small">Native-rate f32 stereo</text>
+  <text x="721" y="695" class="small">Pan and effects: VGM / MDX only</text>
   <path d="M665 635H690" class="signal"/>
 
   <rect x="1010" y="558" width="350" height="154" rx="14" fill="#ffffff" stroke="#c5dfd9"/>
@@ -157,7 +157,7 @@
   <text x="756" y="1285" class="body">Both default to 1.0; gains must be finite and nonnegative.</text>
   <text x="756" y="1320" class="small">These controls do not affect physical hardware audio.</text>
   <text x="756" y="1342" class="small">Route and mix hardware output separately.</text>
-  <text x="756" y="1372" class="small">Both gain APIs are available on VGM and MDX sequencers.</text>
+  <text x="756" y="1372" class="small">Both gain APIs are available on VGM, MDX, and XGM sequencers.</text>
 
   <path d="M68 1447H116" class="signal"/>
   <text x="130" y="1452" class="small">command / audio flow</text>
