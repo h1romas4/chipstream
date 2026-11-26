@@ -2061,44 +2061,45 @@ fn mdx_package_keeps_mdx_and_optional_pdx_separate() {
 
 #[test]
 fn mdx_package_resolves_pcm_notes_to_pdx_entries() {
-    let mut builder = MdxBuilder::new();
-    builder
-        .add_mdx_command(0, MdxRest { ticks: 1 })
-        .add_mdx_command(8, MdxVoiceOrPcmBank { value: 1 })
-        .add_mdx_command(
-            8,
-            MdxNote {
-                note: 0x83,
-                length: 1,
-            },
+    for (extended, expected_bank, expected_bytes) in
+        [(false, 0, &b"BANK0"[..]), (true, 1, &b"BANK1"[..])]
+    {
+        let mut builder = MdxBuilder::new();
+        builder
+            .add_mdx_command(8, MdxVoiceOrPcmBank { value: 1 })
+            .add_mdx_command(
+                8,
+                MdxNote {
+                    note: 0x83,
+                    length: 1,
+                },
+            );
+        if extended {
+            builder.add_mdx_command(15, MdxRest { ticks: 1 });
+        }
+        let mdx_bytes = builder.finalize().unwrap().to_bytes().unwrap();
+        let mut pdx = PdxBuilder::new();
+        pdx.set_sample(0, 3, b"BANK0".to_vec()).unwrap();
+        pdx.set_sample(1, 3, b"BANK1".to_vec()).unwrap();
+        let pdx_bytes = pdx.finalize().to_bytes();
+
+        let package = MdxPackage::parse(&mdx_bytes, Some(&pdx_bytes)).unwrap();
+        let references = package.pcm_references();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].bank, expected_bank);
+        assert_eq!(references[0].note, 3);
+        assert_eq!(
+            package.pcm_sample_bytes(&references[0]),
+            Some(expected_bytes)
         );
-    let mdx_bytes = builder.finalize().unwrap().to_bytes().unwrap();
 
-    let mut pdx_bytes = vec![0u8; 0x608];
-    pdx_bytes[0x318..0x31c].copy_from_slice(&0x604u32.to_be_bytes());
-    pdx_bytes[0x31c..0x320].copy_from_slice(&4u32.to_be_bytes());
-    pdx_bytes[0x604..].copy_from_slice(b"PCM1");
-
-    let package = MdxPackage::parse(&mdx_bytes, Some(&pdx_bytes)).expect("parse PCM package");
-    assert_eq!(
-        package.pcm_references(),
-        vec![soundlog::mdx::package::MdxPcmReference {
-            track: 8,
-            bank: 1,
-            note: 3,
-            sample: Some(soundlog::mdx::pdx::PdxSample {
-                start: 0x604,
-                size: 4,
-            }),
-        }]
-    );
-
-    let package_without_pdx = MdxPackage::parse(&mdx_bytes, None).expect("parse without PDX");
-    let references = package_without_pdx.pcm_references();
-    assert_eq!(references.len(), 1);
-    assert_eq!(references[0].bank, 1);
-    assert_eq!(references[0].note, 3);
-    assert_eq!(references[0].sample, None);
+        let without_pdx = MdxPackage::parse(&mdx_bytes, None).unwrap();
+        let references = without_pdx.pcm_references();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].bank, expected_bank);
+        assert_eq!(references[0].note, 3);
+        assert_eq!(references[0].sample, None);
+    }
 }
 
 #[test]
@@ -4056,6 +4057,81 @@ fn mdx_converter_emits_pcm_data_and_okim6258_lifecycle() {
     let generator = to_vgm_stream_generator(package, options).expect("convert PCM package lazily");
     let lazy_commands = drain_finite_stream(VgmStream::from_generator(generator));
     assert_eq!(lazy_commands, eager_commands);
+}
+
+#[test]
+fn mdx_pcm_bank_selection_matches_playback_mode() {
+    fn package(extended: bool, selected_bank: u8) -> MdxPackage {
+        let mut builder = MdxBuilder::new();
+        let track = if extended { 9 } else { 8 };
+        builder
+            .add_mdx_command(
+                track,
+                MdxVoiceOrPcmBank {
+                    value: selected_bank,
+                },
+            )
+            .add_mdx_command(
+                track,
+                MdxNote {
+                    note: 0x80,
+                    length: 2,
+                },
+            )
+            .add_mdx_command(track, MdxRest { ticks: 8 });
+        if extended {
+            builder.add_mdx_command(15, MdxRest { ticks: 8 });
+        }
+        let mut pdx = PdxBuilder::new();
+        pdx.set_sample(0, 0, vec![0x12, 0x34, 0x56, 0x78]).unwrap();
+        pdx.set_sample(1, 0, vec![0xef, 0xcd, 0xab, 0x98]).unwrap();
+        MdxPackage {
+            mdx: builder.finalize().unwrap(),
+            pdx: Some(pdx.finalize()),
+        }
+    }
+
+    for extended in [false, true] {
+        for adpcm_mode in [AdpcmMode::Through, AdpcmMode::Resample, AdpcmMode::Lpf] {
+            let options = MdxToVgmOptions {
+                loop_count: Some(1),
+                adpcm_mode,
+                ..Default::default()
+            };
+            let bank_zero = to_vgm_document(&package(extended, 0), &options).unwrap();
+            let bank_one_package = package(extended, 1);
+            let bank_one = to_vgm_document(&bank_one_package, &options).unwrap();
+            let pcm_bytes = |document: &VgmDocument| {
+                document
+                    .commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        VgmCommand::Okim6258Write(_, spec) if spec.register == 1 => {
+                            Some(spec.value)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let zero_bytes = pcm_bytes(&bank_zero);
+            let one_bytes = pcm_bytes(&bank_one);
+            assert!(!zero_bytes.is_empty());
+            if extended {
+                assert_ne!(one_bytes, zero_bytes, "PCM8 must use the selected bank");
+            } else {
+                assert_eq!(one_bytes, zero_bytes, "PCM1 must always use bank zero");
+                if matches!(adpcm_mode, AdpcmMode::Through) {
+                    assert_eq!(&one_bytes[..4], &[0x12, 0x34, 0x56, 0x78]);
+                }
+            }
+            let eager = drain_finite_stream(VgmStream::from_document(bank_one));
+            let generator = to_vgm_stream_generator(bank_one_package, options).unwrap();
+            assert_eq!(
+                drain_finite_stream(VgmStream::from_generator(generator)),
+                eager
+            );
+        }
+    }
 }
 
 #[test]

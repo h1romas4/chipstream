@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: Resolve PCM1 notes against PDX bank zero regardless of bank-selection commands; PCM8 retains per-track bank selection. PCM reference inspection follows the same rule.
+
 ## v0.18.0
 
 ### Compatibility

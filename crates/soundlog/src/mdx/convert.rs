@@ -15,6 +15,7 @@
 
 use crate::ParseError;
 use crate::chip::{Chip, Okim6258Spec, Ym2151Spec};
+use crate::mdx::MdxPcmMode;
 use crate::mdx::command::{
     MdxCommand, MdxExtended2Command, MdxExtendedCommand, MdxLfoWaveform, MdxOpmLfo, MdxPan,
     MdxPitchLfo, MdxVolumeLfo,
@@ -79,12 +80,6 @@ const FM_VOLUME_TABLE: [u8; 16] = [
     0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02,
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MdxPcmMode {
-    LegacyAdpcm,
-    Pcm8a,
-}
-
 /// Schedules the OKIM6258 data-register writes driven by the hardware MCK.
 ///
 /// The hardware MCK produces one output event per PCM byte. VGM has no MCK
@@ -135,17 +130,6 @@ impl MckScheduler {
         } else {
             self.started = true;
             true
-        }
-    }
-}
-
-impl MdxPcmMode {
-    /// Selects PCM8A for 16-track MDX files and legacy ADPCM otherwise.
-    fn from_track_count(track_count: usize) -> Self {
-        if track_count == 16 {
-            Self::Pcm8a
-        } else {
-            Self::LegacyAdpcm
         }
     }
 }
@@ -1627,14 +1611,14 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     }
 
     /// Applies an ADPCM/PCM key-on for `track` (>= 8): resolves the note
-    /// (`0x80`-based) against the track's current PDX bank and data format,
+    /// (`0x80`-based) against the effective PDX bank and track data format,
     /// referencing raw ADPCM or decoding and caching mixed PCM as needed.
     /// A held channel playing the same sample is not triggered again.
     fn begin_pcm_key_on(&mut self, track: usize, note: u8) -> Result<(), MdxConvertError> {
         let Some(note_index) = note.checked_sub(0x80) else {
             return Ok(());
         };
-        let bank = usize::from(self.tracks[track].pcm.bank);
+        let bank = self.pcm_mode.sample_bank(self.tracks[track].pcm.bank);
         let note_index = usize::from(note_index);
         let format = self.tracks[track].pcm.data_kind;
         let tie = self.tracks[track].fm.key_off_disabled;
@@ -1794,7 +1778,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 }
                 MdxCommand::Note(command) => {
                     // PCM key-on: `note` is an 0x80-based index into the
-                    // track's current PDX bank rather than a pitch.
+                    // effective PDX bank rather than a pitch.
                     self.begin_pcm_key_on(track, command.note)?;
                     self.tracks[track].start_note(command.length);
                 }
@@ -4085,6 +4069,7 @@ mod tests {
 
         playback.tracks[8].fm.key_off_disabled = true;
         playback.stop_pcm_channel(8);
+        playback.tracks[8].pcm.bank = 1;
         playback.begin_pcm_key_on(8, 0x80).unwrap();
         assert_eq!(playback.pcm_output.raw_position, 1);
         assert_eq!(
@@ -4126,9 +4111,8 @@ mod tests {
 
         for (bank, note, expected) in [
             (0, 0x81, vec![0xab, 0xcd]),
-            (1, 0x80, vec![0xef, 0x01]),
             (0, 0x82, vec![]),
-            (2, 0x80, vec![]),
+            (2, 0x80, vec![0x12, 0x34, 0x56]),
         ] {
             playback.tracks[8].fm.key_off_disabled = true;
             playback.stop_pcm_channel(8);
@@ -4220,6 +4204,31 @@ mod tests {
                 );
                 assert!(playback.pcm_output.raw_sample.is_none());
             }
+        }
+    }
+
+    #[test]
+    fn pcm_key_on_does_not_fall_back_to_another_bank() {
+        let mut mdx_builder = MdxBuilder::new();
+        mdx_builder.add_mdx_command(8, MdxRest { ticks: 1 });
+        let mut pdx_builder = crate::mdx::pdx::PdxBuilder::new();
+        pdx_builder.set_sample(1, 0, vec![0x12, 0x34]).unwrap();
+        let package = MdxPackage {
+            mdx: mdx_builder.finalize().unwrap(),
+            pdx: Some(pdx_builder.finalize()),
+        };
+        for (pcm_mode, adpcm_mode, selected_bank) in [
+            (MdxPcmMode::LegacyAdpcm, AdpcmMode::Through, 1),
+            (MdxPcmMode::LegacyAdpcm, AdpcmMode::Resample, 1),
+            (MdxPcmMode::Pcm8a, AdpcmMode::Through, 2),
+        ] {
+            let mut playback =
+                PlaybackState::new(package.clone(), pcm_mode, adpcm_mode, Some(1), false);
+            playback.tracks[8].pcm.bank = selected_bank;
+            playback.begin_pcm_key_on(8, 0x80).unwrap();
+            assert!(playback.pcm_output.channels[0].block_key.is_none());
+            assert!(playback.pcm_output.samples.is_empty());
+            assert_eq!(playback.pcm_output.raw_length, 0);
         }
     }
 

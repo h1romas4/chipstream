@@ -11,6 +11,7 @@
 //! - Report whether the loaded package should engage the OKIM6258 path.
 
 use crate::ParseError;
+use crate::mdx::MdxPcmMode;
 use crate::mdx::command::MdxCommand;
 use crate::mdx::document::MdxDocument;
 use crate::mdx::pcm::{Pcm8aFormat, PcmDecodeError, decode_pcm8a};
@@ -26,7 +27,7 @@ use crate::mdx::pdx::{PdxDocument, PdxSample};
 pub struct MdxPcmReference {
     /// Zero-based MDX track containing the PCM note.
     pub track: usize,
-    /// PDX bank selected by the most recent voice/PCM-bank command in the track.
+    /// Effective PDX bank: zero for PCM1, or the selected bank for PCM8.
     pub bank: usize,
     /// Zero-based note index within the selected PDX bank.
     pub note: usize,
@@ -144,15 +145,18 @@ impl MdxPackage {
     /// Track 8 is the ninth MDX track and is the first track considered for
     /// PCM references. The selected bank is tracked independently for each
     /// track and is updated by `VoiceOrPcmBank` commands before subsequent
-    /// notes are resolved.
+    /// notes are resolved in 16-track PCM8 mode. Standard PCM1 mode always
+    /// resolves notes against bank zero. This is a linear scan of the track
+    /// commands, not an execution of loops or jumps.
     ///
     /// A missing PDX or an empty table entry is represented by `sample: None`
     /// rather than an error. The returned references contain table metadata;
     /// use [`pcm_sample_bytes`][Self::pcm_sample_bytes] to access the encoded
     /// sample payload.
     pub fn pcm_references(&self) -> Vec<MdxPcmReference> {
+        let pcm_mode = MdxPcmMode::from_track_count(self.mdx.header.track_count());
         let Some(pdx) = self.pdx.as_ref() else {
-            return self.pcm_references_without_pdx();
+            return self.pcm_references_without_pdx(pcm_mode);
         };
         self.mdx
             .tracks
@@ -160,14 +164,15 @@ impl MdxPackage {
             .enumerate()
             .filter(|(track, _)| *track >= 8)
             .flat_map(|(track, commands)| {
-                let mut bank = 0usize;
+                let mut selected_bank = 0u8;
                 commands.iter().filter_map(move |command| match command {
                     MdxCommand::VoiceOrPcmBank(command) => {
-                        bank = usize::from(command.value);
+                        selected_bank = command.value;
                         None
                     }
                     MdxCommand::Note(command) if command.note >= 0x80 => {
                         let note = usize::from(command.note - 0x80);
+                        let bank = pcm_mode.sample_bank(selected_bank);
                         Some(MdxPcmReference {
                             track,
                             bank,
@@ -209,22 +214,22 @@ impl MdxPackage {
     }
 
     /// Returns PCM references for tracks without an associated PDX.
-    fn pcm_references_without_pdx(&self) -> Vec<MdxPcmReference> {
+    fn pcm_references_without_pdx(&self, pcm_mode: MdxPcmMode) -> Vec<MdxPcmReference> {
         self.mdx
             .tracks
             .iter()
             .enumerate()
             .filter(|(track, _)| *track >= 8)
             .flat_map(|(track, commands)| {
-                let mut bank = 0usize;
+                let mut selected_bank = 0u8;
                 commands.iter().filter_map(move |command| match command {
                     MdxCommand::VoiceOrPcmBank(command) => {
-                        bank = usize::from(command.value);
+                        selected_bank = command.value;
                         None
                     }
                     MdxCommand::Note(command) if command.note >= 0x80 => Some(MdxPcmReference {
                         track,
-                        bank,
+                        bank: pcm_mode.sample_bank(selected_bank),
                         note: usize::from(command.note - 0x80),
                         sample: None,
                     }),
