@@ -835,7 +835,8 @@ impl<'a> VgmCallbackStream<'a> {
     /// Enable state tracking for all chips in the given chip instances list.
     ///
     /// This is a convenience method that automatically enables state tracking
-    /// for all chips found in a VGM header's chip instances.
+    /// for all chips found in a VGM header's chip instances. Like
+    /// [`Self::track_state`], it preserves tracker configuration across seeks.
     ///
     /// # Arguments
     ///
@@ -857,150 +858,43 @@ impl<'a> VgmCallbackStream<'a> {
     pub fn track_chips(&mut self, instances: &ChipInstances) {
         for (instance, chip, clock_hz) in instances.iter() {
             match chip {
-                chip::Chip::Ym2612 => {
-                    self.state_trackers.ym2612[*instance as usize] =
-                        Some(Ym2612State::new(*clock_hz));
-                }
-                chip::Chip::Ym2151 => {
-                    self.state_trackers.ym2151[*instance as usize] =
-                        Some(Ym2151State::new(*clock_hz));
-                }
-                chip::Chip::Ym2203 => {
-                    self.state_trackers.ym2203[*instance as usize] =
-                        Some(Ym2203State::new(*clock_hz));
-                }
-                chip::Chip::Ym2608 => {
-                    self.state_trackers.ym2608[*instance as usize] =
-                        Some(Ym2608State::new(*clock_hz));
-                }
-                chip::Chip::Ym2610b => {
-                    self.state_trackers.ym2610b[*instance as usize] =
-                        Some(Ym2610bState::new(*clock_hz));
-                }
-                chip::Chip::Ym2413 => {
-                    self.state_trackers.ym2413[*instance as usize] =
-                        Some(Ym2413State::new(*clock_hz));
-                }
-                chip::Chip::Ym3812 => {
-                    self.state_trackers.ym3812[*instance as usize] =
-                        Some(Ym3812State::new(*clock_hz));
-                }
-                chip::Chip::Ym3526 => {
-                    self.state_trackers.ym3526[*instance as usize] =
-                        Some(Ym3526State::new(*clock_hz));
-                }
-                chip::Chip::Y8950 => {
-                    self.state_trackers.y8950[*instance as usize] =
-                        Some(Y8950State::new(*clock_hz));
-                }
-                chip::Chip::Sn76489 => {
-                    self.state_trackers.sn76489[*instance as usize] =
-                        Some(Sn76489State::new(*clock_hz));
-                }
-                chip::Chip::Ay8910 => {
-                    self.state_trackers.ay8910[*instance as usize] =
-                        Some(Ay8910State::new(*clock_hz));
-                }
-                chip::Chip::GbDmg => {
-                    self.state_trackers.gb_dmg[*instance as usize] =
-                        Some(GbDmgState::new(*clock_hz));
-                }
-                chip::Chip::NesApu => {
-                    self.state_trackers.nes_apu[*instance as usize] =
-                        Some(NesApuState::new(*clock_hz));
-                }
-                chip::Chip::Huc6280 => {
-                    self.state_trackers.huc6280[*instance as usize] =
-                        Some(Huc6280State::new(*clock_hz));
-                }
-                chip::Chip::Ymf262 => {
-                    self.state_trackers.ymf262[*instance as usize] =
-                        Some(Ymf262State::new(*clock_hz));
-                }
-                chip::Chip::Ymf271 => {
-                    self.state_trackers.ymf271[*instance as usize] =
-                        Some(Ymf271State::new(*clock_hz));
-                }
-                chip::Chip::Ymf278b => {
-                    self.state_trackers.ymf278b[*instance as usize] =
-                        Some(Ymf278bState::new(*clock_hz));
-                }
-                chip::Chip::Pokey => {
-                    self.state_trackers.pokey[*instance as usize] =
-                        Some(PokeyState::new(*clock_hz));
-                }
-                chip::Chip::Saa1099 => {
-                    self.state_trackers.saa1099[*instance as usize] =
-                        Some(Saa1099State::new(*clock_hz));
-                }
-                chip::Chip::WonderSwan => {
-                    self.state_trackers.wonderswan[*instance as usize] =
-                        Some(WonderSwanState::new(*clock_hz));
-                }
-                chip::Chip::Vsu => {
-                    self.state_trackers.vsu[*instance as usize] = Some(VsuState::new(*clock_hz));
-                }
-                chip::Chip::Mikey => {
-                    self.state_trackers.mikey[*instance as usize] =
-                        Some(MikeyState::new(*clock_hz));
-                }
-                chip::Chip::K051649 => {
-                    self.state_trackers.k051649[*instance as usize] =
-                        Some(K051649State::new(*clock_hz));
-                }
-                chip::Chip::SegaPcm => {
-                    self.state_trackers.sega_pcm[*instance as usize] =
-                        Some(SegaPcmState::new(*clock_hz));
-                }
-                chip::Chip::Rf5c68 => {
-                    self.state_trackers.rf5c68[*instance as usize] =
-                        Some(Rf5c68State::new(*clock_hz));
-                }
-                chip::Chip::Rf5c164 => {
-                    self.state_trackers.rf5c164[*instance as usize] =
-                        Some(Rf5c164State::new(*clock_hz));
-                }
-                chip::Chip::MultiPcm => {
-                    self.state_trackers.multi_pcm[*instance as usize] =
-                        Some(MultiPcmState::new(*clock_hz));
-                }
-                chip::Chip::Upd7759 => {
-                    self.state_trackers.upd7759[*instance as usize] =
-                        Some(Upd7759State::new(*clock_hz));
-                }
-                chip::Chip::Okim6258 => {
-                    self.state_trackers.okim6258[*instance as usize] =
-                        Some(Okim6258State::new(*clock_hz));
-                }
-                chip::Chip::Okim6295 => {
-                    self.state_trackers.okim6295[*instance as usize] =
-                        Some(Okim6295State::new(*clock_hz));
-                }
-                chip::Chip::K054539 => {
-                    self.state_trackers.k054539[*instance as usize] =
-                        Some(K054539State::new(*clock_hz));
-                }
-                chip::Chip::C140 => {
-                    self.state_trackers.c140[*instance as usize] = Some(C140State::new(*clock_hz));
-                }
-                chip::Chip::C352 => {
-                    self.state_trackers.c352[*instance as usize] = Some(C352State::new(*clock_hz));
-                }
-                chip::Chip::K053260 => {
-                    self.state_trackers.k053260[*instance as usize] =
-                        Some(K053260State::new(*clock_hz));
-                }
-                chip::Chip::Qsound => {
-                    self.state_trackers.qsound[*instance as usize] =
-                        Some(QsoundState::new(*clock_hz));
-                }
-                chip::Chip::Scsp => {
-                    self.state_trackers.scsp[*instance as usize] = Some(ScspState::new(*clock_hz));
-                }
-                chip::Chip::Es5503 => {
-                    self.state_trackers.es5503[*instance as usize] =
-                        Some(Es5503State::new(*clock_hz));
-                }
+                chip::Chip::Ym2612 => self.track_state::<Ym2612State>(*instance, *clock_hz),
+                chip::Chip::Ym2151 => self.track_state::<Ym2151State>(*instance, *clock_hz),
+                chip::Chip::Ym2203 => self.track_state::<Ym2203State>(*instance, *clock_hz),
+                chip::Chip::Ym2608 => self.track_state::<Ym2608State>(*instance, *clock_hz),
+                chip::Chip::Ym2610b => self.track_state::<Ym2610bState>(*instance, *clock_hz),
+                chip::Chip::Ym2413 => self.track_state::<Ym2413State>(*instance, *clock_hz),
+                chip::Chip::Ym3812 => self.track_state::<Ym3812State>(*instance, *clock_hz),
+                chip::Chip::Ym3526 => self.track_state::<Ym3526State>(*instance, *clock_hz),
+                chip::Chip::Y8950 => self.track_state::<Y8950State>(*instance, *clock_hz),
+                chip::Chip::Sn76489 => self.track_state::<Sn76489State>(*instance, *clock_hz),
+                chip::Chip::Ay8910 => self.track_state::<Ay8910State>(*instance, *clock_hz),
+                chip::Chip::GbDmg => self.track_state::<GbDmgState>(*instance, *clock_hz),
+                chip::Chip::NesApu => self.track_state::<NesApuState>(*instance, *clock_hz),
+                chip::Chip::Huc6280 => self.track_state::<Huc6280State>(*instance, *clock_hz),
+                chip::Chip::Ymf262 => self.track_state::<Ymf262State>(*instance, *clock_hz),
+                chip::Chip::Ymf271 => self.track_state::<Ymf271State>(*instance, *clock_hz),
+                chip::Chip::Ymf278b => self.track_state::<Ymf278bState>(*instance, *clock_hz),
+                chip::Chip::Pokey => self.track_state::<PokeyState>(*instance, *clock_hz),
+                chip::Chip::Saa1099 => self.track_state::<Saa1099State>(*instance, *clock_hz),
+                chip::Chip::WonderSwan => self.track_state::<WonderSwanState>(*instance, *clock_hz),
+                chip::Chip::Vsu => self.track_state::<VsuState>(*instance, *clock_hz),
+                chip::Chip::Mikey => self.track_state::<MikeyState>(*instance, *clock_hz),
+                chip::Chip::K051649 => self.track_state::<K051649State>(*instance, *clock_hz),
+                chip::Chip::SegaPcm => self.track_state::<SegaPcmState>(*instance, *clock_hz),
+                chip::Chip::Rf5c68 => self.track_state::<Rf5c68State>(*instance, *clock_hz),
+                chip::Chip::Rf5c164 => self.track_state::<Rf5c164State>(*instance, *clock_hz),
+                chip::Chip::MultiPcm => self.track_state::<MultiPcmState>(*instance, *clock_hz),
+                chip::Chip::Upd7759 => self.track_state::<Upd7759State>(*instance, *clock_hz),
+                chip::Chip::Okim6258 => self.track_state::<Okim6258State>(*instance, *clock_hz),
+                chip::Chip::Okim6295 => self.track_state::<Okim6295State>(*instance, *clock_hz),
+                chip::Chip::K054539 => self.track_state::<K054539State>(*instance, *clock_hz),
+                chip::Chip::C140 => self.track_state::<C140State>(*instance, *clock_hz),
+                chip::Chip::C352 => self.track_state::<C352State>(*instance, *clock_hz),
+                chip::Chip::K053260 => self.track_state::<K053260State>(*instance, *clock_hz),
+                chip::Chip::Qsound => self.track_state::<QsoundState>(*instance, *clock_hz),
+                chip::Chip::Scsp => self.track_state::<ScspState>(*instance, *clock_hz),
+                chip::Chip::Es5503 => self.track_state::<Es5503State>(*instance, *clock_hz),
                 chip::Chip::Es5505 | chip::Chip::Es5506U8 | chip::Chip::Es5506U16 => {
                     let variant = if *chip == chip::Chip::Es5505 {
                         Es550xVariant::Es5505
@@ -1009,21 +903,10 @@ impl<'a> VgmCallbackStream<'a> {
                     };
                     self.track_state_with(*instance, Es5506State::with_variant(*clock_hz, variant));
                 }
-                chip::Chip::X1010 => {
-                    self.state_trackers.x1_010[*instance as usize] =
-                        Some(X1010State::new(*clock_hz));
-                }
-                chip::Chip::Ga20 => {
-                    self.state_trackers.ga20[*instance as usize] = Some(Ga20State::new(*clock_hz));
-                }
-                chip::Chip::Ymz280b => {
-                    self.state_trackers.ymz280b[*instance as usize] =
-                        Some(Ymz280bState::new(*clock_hz));
-                }
-                chip::Chip::Pwm => {
-                    // Initialize PWM state tracker
-                    self.state_trackers.pwm[*instance as usize] = Some(PwmState::new(*clock_hz));
-                }
+                chip::Chip::X1010 => self.track_state::<X1010State>(*instance, *clock_hz),
+                chip::Chip::Ga20 => self.track_state::<Ga20State>(*instance, *clock_hz),
+                chip::Chip::Ymz280b => self.track_state::<Ymz280bState>(*instance, *clock_hz),
+                chip::Chip::Pwm => self.track_state::<PwmState>(*instance, *clock_hz),
             }
         }
     }

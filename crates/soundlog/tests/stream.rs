@@ -7206,6 +7206,56 @@ fn test_callback_stream_seek_maintains_chip_state() {
 }
 
 #[test]
+fn callback_seek_rebuilds_trackers_registered_with_track_chips() {
+    use soundlog::chip::{Chip, Ym2612Spec, event::StateEvent};
+
+    let mut builder = VgmBuilder::new();
+    builder.register_chip(Chip::Ym2612, Instance::Primary, 7_670_454);
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0xf0,
+        },
+    );
+    builder.add_vgm_command(WaitSamples(100));
+    builder.add_chip_write(
+        Instance::Primary,
+        Ym2612Spec {
+            port: 0,
+            register: 0x28,
+            value: 0x00,
+        },
+    );
+    let document = builder.finalize();
+    let instances = document.header.chip_instances();
+    let mut stream = VgmCallbackStream::from_document(document);
+    stream.track_chips(&instances);
+
+    let writes = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&writes);
+    stream.on_write(move |instance, spec: Ym2612Spec, sample, events| {
+        captured
+            .borrow_mut()
+            .push((instance, spec.value, sample, events));
+    });
+
+    stream.seek_to_sample(100).unwrap();
+    assert!(writes.borrow().is_empty(), "seek must not notify callbacks");
+    for result in &mut stream {
+        result.unwrap();
+    }
+
+    let writes = writes.borrow();
+    assert!(matches!(
+        writes.as_slice(),
+        [(Instance::Primary, 0x00, 100, Some(events))]
+            if matches!(events.as_slice(), [StateEvent::KeyOff { channel: 0 }])
+    ));
+}
+
+#[test]
 fn test_callback_stream_seek_replays_correctly_from_loop_point_with_intro() {
     // Verify that seek_to_sample on a VGM with an intro section correctly starts
     // from the loop point, not from the beginning.
