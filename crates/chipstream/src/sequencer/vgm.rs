@@ -158,7 +158,14 @@ macro_rules! feature_backend {
     ($feature:literal, $chip:expr, $body:expr) => {{
         #[cfg(feature = $feature)]
         {
-            $body
+            // Keep each backend's construction temporaries out of the common voice frame.
+            #[inline(never)]
+            fn construct_backend(
+                create: impl FnOnce() -> Result<Box<dyn SoundChip>, VgmSequencerError>,
+            ) -> Result<Box<dyn SoundChip>, VgmSequencerError> {
+                create()
+            }
+            construct_backend(|| Ok($body))?
         }
         #[cfg(not(feature = $feature))]
         {
@@ -1194,7 +1201,7 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("sn76496", chip, {
                 let ChipBackendSettings::Sn76489(settings) = factory_config.settings() else {
                     return Err(ChipError::InvalidConfiguration {
-                        chip,
+                        chip: chip.clone(),
                         reason: "missing SN76489 settings",
                     }
                     .into());
@@ -1220,7 +1227,7 @@ impl<'a> VgmSequencer<'a> {
                     2 => C140Type::Asic219,
                     _ => {
                         return Err(ChipError::InvalidConfiguration {
-                            chip,
+                            chip: chip.clone(),
                             reason: "unknown C140 board type",
                         }
                         .into());
@@ -1279,7 +1286,7 @@ impl<'a> VgmSequencer<'a> {
                 } = factory_config.settings()
                 else {
                     return Err(ChipError::InvalidConfiguration {
-                        chip,
+                        chip: chip.clone(),
                         reason: "missing K054539 settings",
                     }
                     .into());
@@ -1326,7 +1333,7 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("c352", chip, {
                 let ChipBackendSettings::C352 { divider, .. } = factory_config.settings() else {
                     return Err(ChipError::InvalidConfiguration {
-                        chip,
+                        chip: chip.clone(),
                         reason: "missing C352 settings",
                     }
                     .into());
@@ -1352,7 +1359,7 @@ impl<'a> VgmSequencer<'a> {
             feature_backend!("okim6258", chip, {
                 let ChipBackendSettings::Okim6258(settings) = factory_config.settings() else {
                     return Err(ChipError::InvalidConfiguration {
-                        chip,
+                        chip: chip.clone(),
                         reason: "missing OKIM6258 settings",
                     }
                     .into());

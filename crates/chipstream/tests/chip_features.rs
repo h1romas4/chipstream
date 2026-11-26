@@ -98,6 +98,44 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
 }
 
 #[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "x1010"))]
+fn vgm_voice_construction_on_small_stack() {
+    const CHILD: &str = "CHIPSTREAM_TEST_SMALL_STACK_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                for chip in [Chip::Ym2151, Chip::X1010] {
+                    let mut builder = VgmBuilder::new();
+                    builder.register_chip(chip, Instance::Primary, 4_000_000);
+                    builder.add_vgm_command(WaitSamples(100));
+                    let mut player =
+                        VgmSequencer::new(builder.finalize(), 48_000, 128, Default::default())
+                            .unwrap();
+                    assert!(player.render().unwrap().is_some());
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        return;
+    }
+
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "vgm_voice_construction_on_small_stack"])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "small-stack subprocess failed ({}):\n{}\n{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 #[cfg(feature = "mdx")]
 fn mdx_pdx_requires_okim6258_but_fm_only_does_not() {
     let mdx = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
