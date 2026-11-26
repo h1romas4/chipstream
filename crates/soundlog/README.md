@@ -13,16 +13,15 @@ to stereo PCM. `soundlog` processes commands and tracks chip state; it does
 not synthesize audio.
 
 Key features:
-- Builder API to construct VGM documents programmatically.
-- Parser support to read VGM data into a structured `VgmDocument`.
+- [`VgmBuilder`] constructs VGM documents programmatically.
+- [`VgmDocument::parse`] reads VGM data into a structured [`VgmDocument`].
 - Type-safe APIs: chip specifications and VGM commands are modeled as
   Rust types to help prevent invalid register writes at compile time.
-- Stream processing: `VgmStream` provides a low-memory, iterator-based
-  processor that can accept either chunked binary input (via `push_chunk`),
-  raw VGM bytes (via `from_vgm`), or a pre-parsed `VgmDocument` (via `from_document`),
-  and yields parsed `VgmCommand` values as they become available.
-- Custom streams: `VgmStream::from_generator` accepts user-defined command generators.
-- Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
+- Stream processing: [`VgmStream`] accepts chunked commands (via [`push_chunk`](VgmStream::push_chunk)),
+  raw VGM bytes (via [`from_vgm`](VgmStream::from_vgm)), or a pre-parsed document
+  (via [`from_document`](VgmStream::from_document)), and yields [`VgmCommand`] values.
+- Custom streams: [`VgmStream::from_generator`] accepts user-defined command generators.
+- Callback-based processing: [`VgmCallbackStream`] wraps [`VgmStream`] to provide
   callback registration for chip register writes with automatic state tracking
   and event detection (KeyOn, KeyOff, ToneChange).
 - Memory limits: 32 MiB of data blocks (including decoded data), 256 blocks,
@@ -68,8 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## VgmStream overview
 
 `VgmStream` processes commands incrementally on the VGM timeline.
-`current_sample()` and callback timestamps use 44.1 kHz samples and reset
-when a loop begins. They describe command processing, not audio device playback.
+[`current_sample()`](VgmStream::current_sample) and callback timestamps use
+44.1 kHz samples and reset when a loop begins. They track command processing,
+not audio device playback.
 Parsing and DAC expansion can allocate or decompress data. Neither
 `VgmStream` nor `VgmCallbackStream` guarantees real-time safety; process
 commands outside the audio device callback.
@@ -80,13 +80,15 @@ commands outside the audio device callback.
   `SetStreamData`, `SetStreamFrequency`, `StartStream`, `StartStreamFastCall`,
   `StopStream`) and will expand stream-generated writes into the output
   timeline at the correct sample positions.
-- Call `set_emit_stream_controls(true)` to receive start and stop commands
-  after processing. Use `dac_stream_targets(DacStreamSelector::Stream(id))`
+- Call [`set_emit_stream_controls(true)`](VgmStream::set_emit_stream_controls) to receive start and stop commands
+  after processing. Use
+  [`dac_stream_targets(DacStreamSelector::Stream(id))`](VgmStream::dac_stream_targets)
   for a start or `dac_stream_targets((&stop_command).into())` for a stop,
   including all-stream stops. Targets remain available after stopping.
-- `stop_dac_streams_for_target` stops all streams matching a `DacStreamTarget`
+- [`stop_dac_streams_for_target`](VgmStream::stop_dac_streams_for_target)
+  stops all streams matching a [`DacStreamTarget`](vgm::DacStreamTarget)
   without emitting a command. A later start can resume them. Both
-  `DacStreamTarget` and `DacStreamSelector` are in `soundlog::vgm`.
+  `DacStreamTarget` and [`DacStreamSelector`](vgm::DacStreamSelector) are in `soundlog::vgm`.
 - It also supports YM2612 direct DAC writes and expands them into corresponding
   `Ym2612Port0Address2AWriteAndWaitN`, `SeekOffset` commands on the stream timeline.
 - While processing `Wait*` commands, the internal scheduler computes the outputs of the DAC stream
@@ -97,11 +99,13 @@ commands outside the audio device callback.
 - DataBlock compression (e.g. bit-packed and DPCM streams) is automatically decompressed
   and expanded by the crate so compressed streams and their associated
   decompression tables are applied transparently.
-- Configure memory limits with `set_max_data_block_size()`,
-  `set_max_data_block_count()`, and `set_max_buffer_size()`. The buffer limit
+- Configure memory limits with [`set_max_data_block_size()`](VgmStream::set_max_data_block_size),
+  [`set_max_data_block_count()`](VgmStream::set_max_data_block_count), and
+  [`set_max_buffer_size()`](VgmStream::set_max_buffer_size). The buffer limit
   applies to chunked input. Pass `None` to disable the block count limit.
 - The default limit is 100,000 raw commands without sample-time progress.
-  Use `set_max_commands_without_wait()` to change it or pass `None` to disable it.
+  Use [`set_max_commands_without_wait()`](VgmStream::set_max_commands_without_wait)
+  to change it or pass `None` to disable it.
 
 ## Examples
 
@@ -297,23 +301,24 @@ while let Some(result) = stream.next() {
 
 ### `VgmStream::from_vgm`
 
-`VgmStream::from_vgm` takes a complete VGM byte buffer and parses commands on
+[`VgmStream::from_vgm`] takes a complete VGM byte buffer and parses commands on
 demand. Unlike `from_document`, it does not need a pre-parsed command list.
 `push_chunk` is only supported on streams created for chunked input.
 
 ### `VgmStream` — feeding raw byte chunks
 
-Use `VgmStream::new()` and `push_chunk` to process VGM commands without
-holding the entire file in memory. Feed only the command region, not the
+Use [`VgmStream::new()`](VgmStream::new) and [`push_chunk`](VgmStream::push_chunk)
+to process VGM commands without holding the entire file in memory. Feed only the
+command region, not the
 header or trailing metadata. For a VGM file, parse the header separately
 and find the first command with
-`VgmHeader::command_start(header.version, header.data_offset)`.
+[`VgmHeader::command_start(header.version, header.data_offset)`](VgmHeader::command_start).
 Data blocks can still consume memory inside the stream.
 
-`NeedsMoreData` means the parser needs another chunk, possibly to finish a
-command split across chunks. If your input has ended, this is not successful
-completion. `EndOfStream` means playback has finished, not that the current
-chunk ran out.
+[`NeedsMoreData`](VgmStreamResult::NeedsMoreData) means the parser needs another
+chunk, possibly to finish a split command. If the input has ended, this is not
+successful completion. [`EndOfStream`](VgmStreamResult::EndOfStream) means
+playback has finished, not that the current chunk ran out.
 
 The example uses the default single traversal and includes `EndOfData`.
 If you configure additional loops, the parser cannot rewind the input:
@@ -344,9 +349,9 @@ fn main() -> Result<(), ParseError> {
 
 ### `VgmStream::from_generator` — streaming playback for other formats
 
-`VgmCommandGenerator` is the extension point for producing VGM commands from
-your own source or another file format. Implement `next_command()` and pass
-your boxed generator to `VgmStream::from_generator`.
+[`VgmCommandGenerator`] is the extension point for producing VGM commands from
+your own source or another file format. Implement [`next_command()`](VgmCommandGenerator::next_command)
+and pass your boxed generator to [`VgmStream::from_generator`].
 
 The trait definition is:
 
@@ -443,17 +448,18 @@ let mut stream = VgmStream::from_generator(Box::new(generator));
 
 ## VgmCallbackStream overview
 
-`VgmCallbackStream` wraps `VgmStream` to provide automatic chip state tracking
+[`VgmCallbackStream`] wraps [`VgmStream`] to provide automatic chip state tracking
 and event-driven callbacks during incremental VGM processing:
 
-- **Automatic State Tracking**: Enables per-chip state management for 35+ supported
-  sound chips, automatically detecting register writes and maintaining internal state.
-- **Event Detection**: Emits `StateEvent` notifications for key musical events:
+- **Automatic State Tracking**: [`track_chips`](VgmCallbackStream::track_chips)
+  enables state tracking for the chip instances in a VGM header.
+- **Event Detection**: Emits [`StateEvent`](chip::event::StateEvent) notifications for key musical events:
   - `KeyOn`: Channel starts playing with tone/frequency information
   - `KeyOff`: Channel stops playing
   - `ToneChange`: Frequency changes while channel is active
 - **Flexible Callbacks**: Register chip-specific callbacks using type-safe spec types
-  (e.g., `Ym2612Spec`, `Sn76489Spec`) to handle register writes with sample timing
+  (e.g., `Ym2612Spec`, `Sn76489Spec`) with [`on_write`](VgmCallbackStream::on_write)
+  to handle register writes with sample timing
   and associated events.
 - **Synchronous Callbacks**: Callbacks run as the iterator processes each
   command, not when an audio device plays the corresponding samples.
@@ -548,12 +554,12 @@ for result in callback_stream {
 
 ## Seeking
 
-`VgmStream::seek_to_sample` and `VgmCallbackStream::seek_to_sample` rewind to
+[`VgmStream::seek_to_sample`] and [`VgmCallbackStream::seek_to_sample`] rewind to
 the loop point (or the command stream start if there is no loop). The target
-is in 44.1 kHz samples from that point. `VgmSeekOutcome::Reached { sample }`
+is in 44.1 kHz samples from that point. [`Reached { sample }`](VgmSeekOutcome::Reached)
 reports the actual position, which may be later than requested because waits
 are consumed whole. If the first `EndOfData` comes before the target, the
-stream stops and returns `VgmSeekOutcome::EndOfRange { sample }` rather than
+stream stops and returns [`EndOfRange { sample }`](VgmSeekOutcome::EndOfRange) rather than
 entering another loop or starting a fade. You can seek again from there.
 
 Chunk-fed and generator-backed streams cannot seek. On supported inputs, the
@@ -562,32 +568,32 @@ user callbacks. It starts from the registered initial tracker states and
 does not replay the intro before the loop point. If the loop relies on
 register writes from the intro, tracked state can differ from uninterrupted
 playback. For PCM playback seeking on the output-frame timeline, use
-chipstream's `seek_to_frame` instead.
+[chipstream's `seek_to_frame`](https://docs.rs/chipstream/latest/chipstream/sequencer/struct.VgmSequencer.html#method.seek_to_frame) instead.
 
 ## Looping and EndOfData overview
 
-- `VgmBuilder::finalize()` adds `EndOfData` if the command list has none.
+- [`VgmBuilder::finalize()`](VgmBuilder::finalize) adds `EndOfData` if the command list has none.
 - File- and document-backed streams can rewind to the loop point. They
   handle loop boundaries at `EndOfData`, regardless of `VgmHeader::loop_samples`.
-  - `set_loop_count(Some(n))` requests `n` traversals. `Some(0)` is treated
+  - [`set_loop_count(Some(n))`](VgmStream::set_loop_count) requests `n` traversals. `Some(0)` is treated
     as `Some(1)`, the default. VGM header loop settings can adjust the count.
   - `set_loop_count(None)` repeats indefinitely if there is a loop point.
-- `VgmStream` consumes `EndOfData` internally, so `on_end_of_data` does not
+- `VgmStream` consumes `EndOfData` internally, so [`on_end_of_data`](VgmCallbackStream::on_end_of_data) does not
   fire during normal iteration. Detect completion with `EndOfStream` on
   `VgmStream` or `None` on `VgmCallbackStream`.
-- `set_fadeout_samples(Some(n))` extends a looping stream by `n` samples
-  after the final loop boundary. `is_fading_out()` reports stream progress,
+- [`set_fadeout_samples(Some(n))`](VgmStream::set_fadeout_samples) extends a looping stream by `n` samples
+  after the final loop boundary. [`is_fading_out()`](VgmStream::is_fading_out) reports stream progress,
   which can run ahead of rendered audio. The stream does not attenuate audio;
   apply the fade to the output level or through chip writes.
 
 ## Error Handling
 
 Parsing, streaming, decompression, F-number utilities, and MDX serialization
-return `Result` with structured errors. See the API rustdoc for error variants
+return `Result` with structured errors. See [`ParseError`] for error variants
 and examples.
 
-User-defined and MDX generators use `ParseError::GeneratorError` to preserve
-format-specific error types and their `Error::source()` chains. `Other` is
+User-defined and MDX generators use [`ParseError::GeneratorError`] to preserve
+format-specific error types and their `Error::source()` chains. [`Other`](ParseError::Other) is
 reserved for caller-defined message-only errors.
 
 Stream iterators yield library and generator errors as `Err`.
@@ -600,7 +606,7 @@ Allocation failures and panics in user code are not converted into library error
 
 ## Chip State Tracking (WIP)
 
-The `chip::state` module tracks sound-chip state as writes arrive,
+The [`chip::state`] module tracks sound-chip state as writes arrive,
 detecting key on/off events and extracting tone information from register writes.
 
 - A check in the `Test` column indicates state-tracking tests.

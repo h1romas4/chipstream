@@ -12,7 +12,7 @@ inspect timed commands, or track chip state without rendering PCM.
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), [`MdxSequencer`](sequencer/struct.MdxSequencer.html), [`XgmSequencer`](sequencer/struct.XgmSequencer.html) | Render songs to stereo PCM. |
+| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), [`MdxSequencer`], [`XgmSequencer`] | Render songs to stereo PCM. |
 | [`sequencer`](sequencer) | [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) | Replace chip backends. |
 | [`chip`](chip) | [`SoundChip`](chip::SoundChip), chip implementations | Apply writes and generate native samples. |
 | [`audio`](audio) | [`ChipCapture`](audio::ChipCapture), [`NativeBlock`](audio::NativeBlock) | Capture native samples and chip metadata. |
@@ -22,7 +22,7 @@ inspect timed commands, or track chip state without rendering PCM.
 
 These components can be used without an audio device or an engine. For API
 details and limitations, see the rustdoc (`cargo doc -p chipstream --all-features
---open`).
+--open`). Links to feature-gated APIs use docs.rs, which builds all features.
 
 Public error enums are non-exhaustive; matches in downstream crates must
 include a fallback arm for future error variants.
@@ -38,7 +38,8 @@ stereo and resampled before aligned sources are mixed into the output block.
 The factory selects or creates a `SoundChip`; it is not part of the audio
 signal path. Resampling can downsample or upsample. The final mix is not clipped.
 Backends with addressable sample memory accept ROM and RAM writes separately
-through `SoundChip::write_rom` and `SoundChip::write_ram`.
+through [`SoundChip::write_rom`](chip::SoundChip::write_rom) and
+[`SoundChip::write_ram`](chip::SoundChip::write_ram).
 
 ## Cargo features
 
@@ -105,18 +106,20 @@ not use PCM notes. Without a PDX, FM-only playback does not require it.
 
 ## Sequencers
 
-`render()` returns stereo PCM at the configured output rate. The final block
-can be shorter than the requested block size; `Ok(None)` marks the end of
+[`render()`](sequencer::VgmSequencer::render) returns stereo PCM at the configured
+output rate. The final block can be shorter than requested. `Ok(None)` marks the end of
 playback. The PCM is not clipped. Rendering can read ahead and allocate and
 is not guaranteed real-time safe. Render ahead into a buffer and let the
 audio device callback read from that buffer.
 
-`position_frames()` tracks the PCM output timeline, not the audio device's
-playback position. By contrast, the VGM and MDX sequencers' `current_sample()`
+[`position_frames()`](sequencer::VgmSequencer::position_frames) tracks the PCM
+output timeline, not device playback. On the VGM and MDX sequencers,
+[`current_sample()`](sequencer::VgmSequencer::current_sample)
 reports the underlying command position in 44.1 kHz samples, which can run
 ahead of returned PCM. For VGM, it resets when a loop begins.
 
-Render an uncompressed VGM containing a YM2151 (decompress VGZ first):
+Render an uncompressed VGM containing a YM2151 with
+[`VgmSequencer::from_vgm`](sequencer::VgmSequencer::from_vgm) (decompress VGZ first):
 
 ```rust,no_run
 use chipstream::sequencer::{Chip, Instance, VgmSequencer};
@@ -172,7 +175,8 @@ For a custom command source, implement [`soundlog::VgmCommandGenerator`] and
 pass it to [`VgmSequencer::from_generator`](sequencer::VgmSequencer::from_generator)
 with a [`GeneratorConfig`](sequencer::GeneratorConfig) containing
 the chip header. The sequencer creates a `VgmStream` with
-`VgmStream::from_generator` internally. Use `from_generator_with_factories`
+[`VgmStream::from_generator`](soundlog::VgmStream::from_generator) internally.
+Use [`from_generator_with_factories`](sequencer::VgmSequencer::from_generator_with_factories)
 to replace backends.
 
 Declare per-instance OKIM6258/OKIM6295 clock ranges, including
@@ -254,10 +258,11 @@ For VGM, [`VgmSequencerOptions`](sequencer::VgmSequencerOptions) can also overri
 `loop_modifier`; `None` preserves the respective header value.
 Its `pwm_compatibility` option enables a malformed-rip workaround by default;
 set it to `false` to disable the heuristic. The pre-render
-`set_pwm_compatibility` method can override this setting and is also available
+[`set_pwm_compatibility`](sequencer::VgmSequencer::set_pwm_compatibility) method can override this setting and is also available
 for generator sources.
 
-For VGM, `new` accepts a parsed document, while `from_vgm` accepts file bytes.
+For VGM, [`new`](sequencer::VgmSequencer::new) accepts a parsed document,
+while [`from_vgm`](sequencer::VgmSequencer::from_vgm) accepts file bytes.
 Both have `_with_factories` variants for custom chip factories.
 
 `None` as the loop count allows unlimited looping. For indefinite MDX playback
@@ -267,8 +272,7 @@ PDX lookup is the caller's responsibility. Omitting PDX disables the PCM path
 even when the MDX names a PDX.
 
 The [`measure_vgm_duration_frames`](sequencer::measure_vgm_duration_frames),
-[`measure_mdx_duration_frames`](sequencer/fn.measure_mdx_duration_frames.html),
-and [`measure_xgm_duration_frames`](sequencer/fn.measure_xgm_duration_frames.html)
+[`measure_mdx_duration_frames`], and [`measure_xgm_duration_frames`]
 functions take the same options as their respective sequencers and return
 [`PlaybackDuration::Finite`](sequencer::PlaybackDuration::Finite), `Unbounded`,
 or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan limit, or a
@@ -277,12 +281,13 @@ not limited by this measurement.
 
 ### Seeking
 
-Use `checkpoint()` to save a position, then `seek_to_frame()` with that
+Use [`checkpoint()`](sequencer::VgmSequencer::checkpoint) to save a position,
+then [`seek_to_frame()`](sequencer::VgmSequencer::seek_to_frame) with that
 checkpoint and a target at or after it. The target is an absolute PCM frame
 at the configured output rate, counting from playback start across loops.
 The next `render()` starts at that exact frame, even when it falls inside
-a block. This differs from soundlog's `seek_to_sample()`, which seeks on the
-command timeline and may advance past the target by consuming a whole wait.
+a block. Soundlog's [`seek_to_sample()`](soundlog::VgmStream::seek_to_sample)
+instead seeks on the command timeline and can overshoot by consuming a whole wait.
 
 Checkpoints belong to the sequencer that created them; support depends on
 the source and chip backends. A failed checkpoint restore makes the sequencer
@@ -292,8 +297,10 @@ discard audio queued for the old position when resuming after a seek.
 
 ### Gain control
 
-All sequencers provide `set_chip_gain` for the post-resampling gain of a chip
-instance. Use `output_layout` and `set_output_gains` for its native outputs.
+All sequencers provide [`set_chip_gain`](sequencer::VgmSequencer::set_chip_gain)
+for the post-resampling gain of a chip instance. Use
+[`output_layout`](sequencer::VgmSequencer::output_layout) and
+[`set_output_gains`](sequencer::VgmSequencer::set_output_gains) for its native outputs.
 
 For example, YM2203 uses `[Fm, SsgChannel(0), SsgChannel(1),
 SsgChannel(2)]`; YM2608 and YM2610(B) use `[FmAdpcmLeft, FmAdpcmRight,
@@ -343,7 +350,8 @@ routing. A group sums its routed outputs and applies its [`StereoEffect`](audio:
 Ungrouped outputs use the ordinary mix.
 
 An output can belong to at most one group. Removing a group removes its
-effects; `move_effect` and `remove_effect` manage individual effects.
+effects; [`move_effect`](sequencer::VgmSequencer::move_effect) and
+[`remove_effect`](sequencer::VgmSequencer::remove_effect) manage individual effects.
 
 Pan is linear from -1 (left) to 1 (right), with both sides at full level at
 zero. `None` restores the original routing; explicit pan can route a
@@ -395,8 +403,9 @@ For a keyboard display, use tracked `KeyOn` and `KeyOff` events to maintain
 channel state and `KeyOn` tone frequency, when present, to select a key. The
 events describe the original writes, so a muted channel can still appear active.
 
-The VGM and MDX sequencers expose `chip_instances` and typed write callbacks.
-Register callbacks with `on_write` and state tracking with `track_state` before
+The VGM and MDX sequencers expose [`chip_instances`](sequencer::VgmSequencer::chip_instances)
+and typed write callbacks. Register callbacks with [`on_write`](sequencer::VgmSequencer::on_write)
+and state tracking with [`track_state`](sequencer::VgmSequencer::track_state) before
 rendering:
 
 ```rust,no_run
@@ -430,16 +439,17 @@ the audio device plays the corresponding frames. Unlike soundlog's write
 callbacks, their timestamps are on the PCM output timeline.
 
 For SN76489, state tracking uses the VGM header's clock-divider and zero-period
-settings. `track_state_with_voice_clocks` also accounts for per-instance
+settings. [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks) also accounts for per-instance
 extra-header clock overrides.
 
 The XGM sequencer also exposes `chip_instances` and supports state-change
 callbacks through `on_state_change` and `track_state_with_voice_clocks`.
-When using `on_state_change`, check `take_state_event_overflow()` after
+When using [`on_state_change`](sequencer::VgmSequencer::on_state_change),
+check [`take_state_event_overflow()`](sequencer::VgmSequencer::take_state_event_overflow) after
 rendering. Overflow or a seek can leave a display built from event history
 out of sync.
 
-All sequencers provide `filter_write` to transform a typed register write before
+All sequencers provide [`filter_write`](sequencer::VgmSequencer::filter_write) to transform a typed register write before
 it reaches the chip, including external chip backends:
 
 ```rust,no_run
@@ -487,10 +497,8 @@ chip.generate(&mut samples)?;
 ```
 
 The [`chip`](chip) module provides [`YmfmChip`](chip::YmfmChip) and, with their respective features,
-[`Okim6258`](chip/struct.Okim6258.html), [`Okim6258Stream`](chip/struct.Okim6258Stream.html),
-[`Okim6295`](chip/struct.Okim6295.html), [`Sn76496`](chip/struct.Sn76496.html),
-[`SegaPcm`](chip/struct.SegaPcm.html), [`Pwm`](chip/struct.Pwm.html), and
-[`C140`](chip/struct.C140.html).
+[`Okim6258`], [`Okim6258Stream`], [`Okim6295`], [`Sn76496`], [`SegaPcm`],
+[`Pwm`], and [`C140`].
 
 `Okim6258` models direct writes with a single-byte latch. VGM DAC streams and
 the `chipstream-ndsif` software fallback use `Okim6258Stream` for ordered byte
@@ -500,16 +508,16 @@ to reduce DC-related clicks; direct chip use and MDX playback are unchanged.
 The same mono filter is available independently as [`audio::DcBlocker`](audio::DcBlocker).
 
 See its API documentation for queue, underrun, and stop behavior.
-[`Okim6258Adpcm`](chip/struct.Okim6258Adpcm.html) provides the 12-bit predictor and encoder separately.
+[`Okim6258Adpcm`] provides the 12-bit predictor and encoder separately.
 
 ### External chip backends
 
 Implement [`SoundChip`](chip::SoundChip) and register a factory with [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) to
 replace a built-in backend. Factories are selected independently by chip type;
 unregistered types use their built-in implementations where available. Pass the
-registry to `VgmSequencer::from_vgm_with_factories`,
-`VgmSequencer::new_with_factories`, or the corresponding
-[`MdxSequencer`](sequencer/struct.MdxSequencer.html) constructor.
+registry to [`VgmSequencer::from_vgm_with_factories`](sequencer::VgmSequencer::from_vgm_with_factories),
+[`VgmSequencer::new_with_factories`](sequencer::VgmSequencer::new_with_factories),
+or the corresponding [`MdxSequencer`] constructor.
 
 The factory receives a [`ChipFactoryConfig`](sequencer::ChipFactoryConfig) with the chip, instance, clock,
 output rate, and chip-specific settings. See its rustdoc for all accessors.
@@ -521,10 +529,10 @@ factory.
 
 AY8910 has no default backend: unregistered sources remain silent, while a
 registered factory that declines an instance causes an error. With the
-`ay8910` feature, use [`register_native_ay8910`](sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910) or
-[`register_native_ay8910_fallback`](sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910_fallback) to opt into native AY-3-8910/8912/8913
+`ay8910` feature, use [`register_native_ay8910`] or
+[`register_native_ay8910_fallback`] to opt into native AY-3-8910/8912/8913
 playback. See [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) and the
-[`Ay8910`](chip/struct.Ay8910.html) rustdoc for details.
+[`Ay8910`] rustdoc for details.
 
 For YM2149 approximation, register a `Chip::Ay8910` factory using
 [`YmfmChip::new_ym2149`](chip::YmfmChip::new_ym2149) and validate its settings with
@@ -639,3 +647,19 @@ BSD-3-Clause License
 See [THIRD_PARTY_NOTICES.md](https://github.com/h1romas4/chipstream/blob/main/crates/chipstream/THIRD_PARTY_NOTICES.md) for implementation
 attributions and licenses. Distributors should also review the licenses of
 transitive dependencies.
+
+[`MdxSequencer`]: https://docs.rs/chipstream/latest/chipstream/sequencer/struct.MdxSequencer.html
+[`XgmSequencer`]: https://docs.rs/chipstream/latest/chipstream/sequencer/struct.XgmSequencer.html
+[`measure_mdx_duration_frames`]: https://docs.rs/chipstream/latest/chipstream/sequencer/fn.measure_mdx_duration_frames.html
+[`measure_xgm_duration_frames`]: https://docs.rs/chipstream/latest/chipstream/sequencer/fn.measure_xgm_duration_frames.html
+[`Okim6258`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Okim6258.html
+[`Okim6258Stream`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Okim6258Stream.html
+[`Okim6258Adpcm`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Okim6258Adpcm.html
+[`Okim6295`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Okim6295.html
+[`Sn76496`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Sn76496.html
+[`SegaPcm`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.SegaPcm.html
+[`Pwm`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Pwm.html
+[`C140`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.C140.html
+[`Ay8910`]: https://docs.rs/chipstream/latest/chipstream/chip/struct.Ay8910.html
+[`register_native_ay8910`]: https://docs.rs/chipstream/latest/chipstream/sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910
+[`register_native_ay8910_fallback`]: https://docs.rs/chipstream/latest/chipstream/sequencer/struct.ChipFactoryRegistry.html#method.register_native_ay8910_fallback
