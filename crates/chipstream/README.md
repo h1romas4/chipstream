@@ -5,7 +5,8 @@ of VGM, MDX, and XGM files, and audio-processing components for applications
 and games.
 
 It uses [`soundlog`](https://crates.io/crates/soundlog) for format
-definitions and typed chip writes.
+definitions and typed chip writes. Use `soundlog` directly to parse files,
+inspect timed commands, or track chip state without rendering PCM.
 
 ## APIs
 
@@ -104,7 +105,18 @@ not use PCM notes. Without a PDX, FM-only playback does not require it.
 
 ## Sequencers
 
-Render VGM containing a YM2151:
+`render()` returns stereo PCM at the configured output rate. The final block
+can be shorter than the requested block size; `Ok(None)` marks the end of
+playback. The PCM is not clipped. Rendering can read ahead and allocate and
+is not guaranteed real-time safe. Render ahead into a buffer and let the
+audio device callback read from that buffer.
+
+`position_frames()` tracks the PCM output timeline, not the audio device's
+playback position. By contrast, the VGM and MDX sequencers' `current_sample()`
+reports the underlying command position in 44.1 kHz samples, which can run
+ahead of returned PCM. For VGM, it resets when a loop begins.
+
+Render an uncompressed VGM containing a YM2151 (decompress VGZ first):
 
 ```rust,no_run
 use chipstream::sequencer::{Chip, Instance, VgmSequencer};
@@ -263,6 +275,21 @@ or `Unknown`. Scans are bounded: an MDX loop that exceeds the scan limit, or a
 duration exceeding `u32::MAX` output frames, is `Unknown`. Playback itself is
 not limited by this measurement.
 
+### Seeking
+
+Use `checkpoint()` to save a position, then `seek_to_frame()` with that
+checkpoint and a target at or after it. The target is an absolute PCM frame
+at the configured output rate, counting from playback start across loops.
+The next `render()` starts at that exact frame, even when it falls inside
+a block. This differs from soundlog's `seek_to_sample()`, which seeks on the
+command timeline and may advance past the target by consuming a whole wait.
+
+Checkpoints belong to the sequencer that created them; support depends on
+the source and chip backends. A failed checkpoint restore makes the sequencer
+unusable. A cancelled seek leaves it at the position reached so far.
+Write notifications for skipped frames are not delivered. The host should
+discard audio queued for the old position when resuming after a seek.
+
 ### Gain control
 
 All sequencers provide `set_chip_gain` for the post-resampling gain of a chip
@@ -398,8 +425,9 @@ while let Some(block) = player.render()? {
 ```
 
 Callbacks receive the instance, typed write, output-frame position, and
-optional state changes. They run synchronously during `render`, which may
-allocate and is not guaranteed real-time safe.
+optional state changes. They run synchronously during `render`, not when
+the audio device plays the corresponding frames. Unlike soundlog's write
+callbacks, their timestamps are on the PCM output timeline.
 
 For SN76489, state tracking uses the VGM header's clock-divider and zero-period
 settings. `track_state_with_voice_clocks` also accounts for per-instance
@@ -407,6 +435,9 @@ extra-header clock overrides.
 
 The XGM sequencer also exposes `chip_instances` and supports state-change
 callbacks through `on_state_change` and `track_state_with_voice_clocks`.
+When using `on_state_change`, check `take_state_event_overflow()` after
+rendering. Overflow or a seek can leave a display built from event history
+out of sync.
 
 All sequencers provide `filter_write` to transform a typed register write before
 it reaches the chip, including external chip backends:

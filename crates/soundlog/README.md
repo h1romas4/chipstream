@@ -8,6 +8,10 @@ soundlog — builder, parser and stream-processor for retro sound-chip register-
 logs for retro sound chips. It supports the VGM (Video Game Music) file format,
 MDX-to-VGM conversion, and XGM v1.
 
+Use [`chipstream`](https://crates.io/crates/chipstream) to render these formats
+to stereo PCM. `soundlog` processes commands and tracks chip state; it does
+not synthesize audio.
+
 Key features:
 - Builder API to construct VGM documents programmatically.
 - Parser support to read VGM data into a structured `VgmDocument`.
@@ -21,89 +25,68 @@ Key features:
 - Callback-based processing: `VgmCallbackStream` wraps `VgmStream` to provide
   callback registration for chip register writes with automatic state tracking
   and event detection (KeyOn, KeyOff, ToneChange).
-- Memory limits: Configurable limits for data block accumulation including decoded data (default 32 MiB), block count (default 256),
-  and parsing buffer size (default 64 MiB) prevent unbounded memory growth from
-  untrusted input.
-- Processing limits: Configurable budgets for raw commands without time progress and DAC stream expansion per input wait.
+- Memory limits: 32 MiB of data blocks (including decoded data), 256 blocks,
+  and a 64 MiB parsing buffer by default.
+- Processing limits: Configurable budgets for commands without time progress
+  and for DAC stream expansion per wait.
 - Chip state tracking: Monitor register writes to track key on/off events and
-  extract tone information (frequency, pitch) from sound chip registers in real-time.
+  extract tone information (frequency, pitch) as writes are processed.
 - Format conversion: MDX and XGM v1 can use the same VGM stream-processing
   interface for playback.
 
-## Quick Start — building a VGM player
+## Quick Start — processing a VGM file
 
-```rust
-use soundlog::{VgmBuilder, VgmCallbackStream, VgmHeader, VgmStreamResult};
-use soundlog::chip::{self, event::StateEvent};
-use soundlog::vgm::command::{Instance, VgmCommand, WaitSamples};
+Put an uncompressed VGM file containing YM2612 writes at `song.vgm`. This
+example prints register writes and waits without opening an audio device.
 
-// Load a .vgm file from disk
-// let vgm_bytes: Vec<u8> = 
-//     std::fs::read(PathBuf::from("song.vgm")).expect("failed to read file");
-let vgm_bytes = Vec::<u8>::new();
-# // Build a minimal VGM in memory (or load a .vgm file as Vec<u8>)
-# let mut builder = VgmBuilder::new();
-# builder.add_vgm_command(WaitSamples(735));
-# let vgm_bytes: Vec<u8> = builder.finalize().into();
+```rust,no_run
+use soundlog::{VgmCallbackStream, VgmHeader, VgmStreamResult};
+use soundlog::chip::Ym2612Spec;
+use soundlog::vgm::command::VgmCommand;
 
-// Parse the header to obtain chip configuration
-let header = VgmHeader::from_bytes(&vgm_bytes).expect("valid VGM");
-let instances = header.chip_instances();
-
-// Create a callback stream directly from the raw bytes
-let mut callback_stream = VgmCallbackStream::from_vgm(vgm_bytes).expect("valid VGM");
-// play twice; omit for one playthrough, or pass None for infinite looping
-callback_stream.set_loop_count(Some(2));
-// 2-second fadeout at 44.1 kHz after final loop
-callback_stream.set_fadeout_samples(Some(44100 * 2));
-// Enable state tracking for every chip registered in the VGM header.
-// Only chips that are actually enabled (non-zero clock) in the header are tracked.
-callback_stream.track_chips(&instances);
-
-// Register a callback for YM2612 register writes.
-// DAC Stream and DataBlock details are handled internally by VgmCallbackStream —
-// just write the register values directly to your sound chip hardware here.
-callback_stream.on_write(
-    |inst: Instance, spec: chip::Ym2612Spec, sample: usize, events: Option<Vec<StateEvent>>| {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read("song.vgm")?;
+    let header = VgmHeader::from_bytes(&bytes)?;
+    let mut stream = VgmCallbackStream::from_vgm(bytes)?;
+    stream.track_chips(&header.chip_instances());
+    stream.on_write(|instance, spec: Ym2612Spec, sample, events| {
         println!(
-            "Ym2612Write({:?}, P{}:0x{:02X}=0x{:02X}) @ sample {}",
-            inst, spec.port, spec.register, spec.value, sample
+            "{instance:?} YM2612 P{}:0x{:02X}=0x{:02X} at sample {sample}: {events:?}",
+            spec.port, spec.register, spec.value,
         );
-    },
-);
+    });
 
-// Drive the stream until EndOfStream.
-// The stream loops up to the configured loop count, then continues for the
-// fadeout period (if set) before ending.
-for result in &mut callback_stream {
-    match result {
-        Ok(VgmStreamResult::Command(cmd)) => {
-            // Callbacks for chip register writes are already invoked above.
-            // Handle other commands here as needed; most commonly WaitSamples,
-            // which carries the number of audio samples to render before the
-            // next register write.
-            if let VgmCommand::WaitSamples(wait) = cmd {
-                // Advance your audio renderer by `wait.0` samples here.
-                // For example: render_audio(wait.0 as usize);
-                let _samples = wait.0;
-            }
+    for result in &mut stream {
+        if let VgmStreamResult::Command(VgmCommand::WaitSamples(wait)) = result? {
+            println!("Wait {} samples at 44.1 kHz", wait.0);
         }
-        Ok(_) => {}
-        Err(e) => { eprintln!("stream error: {:?}", e); break; }
     }
+    Ok(())
 }
 ```
 
 ## VgmStream overview
 
-`VgmStream` is designed for streaming/real-time consumption of VGM data:
+`VgmStream` processes commands incrementally on the VGM timeline.
+`current_sample()` and callback timestamps use 44.1 kHz samples and reset
+when a loop begins. They describe command processing, not audio device playback.
+Parsing and DAC expansion can allocate or decompress data. Neither
+`VgmStream` nor `VgmCallbackStream` guarantees real-time safety; process
+commands outside the audio device callback.
+
 - It yields `VgmCommand` values wrapped in stream results as it parses
   input and as it generates writes from DAC streams.
 - It understands DAC stream control commands (e.g. `SetupStreamControl`,
   `SetStreamData`, `SetStreamFrequency`, `StartStream`, `StartStreamFastCall`,
   `StopStream`) and will expand stream-generated writes into the output
   timeline at the correct sample positions.
-- Start and stop commands can optionally be emitted after processing with `set_emit_stream_controls(true)`. Query configured targets using `dac_stream_targets(DacStreamSelector::Stream(id))` for a start, or `dac_stream_targets((&stop_command).into())` for a stop (including all-stream stops). Targets remain available after stopping. Pass a `DacStreamTarget` to `stop_dac_streams_for_target` to stop all matching streams without emitting a command; a subsequent start can resume them. Both types are in `soundlog::vgm`.
+- Call `set_emit_stream_controls(true)` to receive start and stop commands
+  after processing. Use `dac_stream_targets(DacStreamSelector::Stream(id))`
+  for a start or `dac_stream_targets((&stop_command).into())` for a stop,
+  including all-stream stops. Targets remain available after stopping.
+- `stop_dac_streams_for_target` stops all streams matching a `DacStreamTarget`
+  without emitting a command. A later start can resume them. Both
+  `DacStreamTarget` and `DacStreamSelector` are in `soundlog::vgm`.
 - It also supports YM2612 direct DAC writes and expands them into corresponding
   `Ym2612Port0Address2AWriteAndWaitN`, `SeekOffset` commands on the stream timeline.
 - While processing `Wait*` commands, the internal scheduler computes the outputs of the DAC stream
@@ -114,11 +97,11 @@ for result in &mut callback_stream {
 - DataBlock compression (e.g. bit-packed and DPCM streams) is automatically decompressed
   and expanded by the crate so compressed streams and their associated
   decompression tables are applied transparently.
-- Memory limits are enforced to protect against malicious or malformed files:
-    - Data block size limit, including decoded data (default 32 MiB, configurable via `set_max_data_block_size()`)
-    - Data block count limit (default 256, configurable or disabled via `set_max_data_block_count()`)
-  - Parsing buffer size limit (for chunked parsing via `push_chunk()`) (default 64 MiB, configurable via `set_max_buffer_size()`)
-- Raw commands without sample-time progress are limited to 100,000 by default; configure with `VgmStream::set_max_commands_without_wait()`, or pass `None` to disable.
+- Configure memory limits with `set_max_data_block_size()`,
+  `set_max_data_block_count()`, and `set_max_buffer_size()`. The buffer limit
+  applies to chunked input. Pass `None` to disable the block count limit.
+- The default limit is 100,000 raw commands without sample-time progress.
+  Use `set_max_commands_without_wait()` to change it or pass `None` to disable it.
 
 ## Examples
 
@@ -314,9 +297,9 @@ while let Some(result) = stream.next() {
 
 ### `VgmStream::from_vgm`
 
-`VgmStream::from_vgm` constructs a stream directly from a complete, serialized VGM byte buffer (for example a `Vec<u8>`). Functionally, it is the same as `VgmStream::from_document` in every respect except for how the input is supplied and stored: the raw VGM bytes you provide become the stream's internal storage and the stream parses and schedules commands from those bytes.
-
-The stream already has the full VGM bytes as its backing storage, `push_chunk` is not supported. Calling `push_chunk` on a `from_vgm`-created stream will return an error — use `push_chunk` only when you construct the stream for incremental, chunked parsing (see below).
+`VgmStream::from_vgm` takes a complete VGM byte buffer and parses commands on
+demand. Unlike `from_document`, it does not need a pre-parsed command list.
+`push_chunk` is only supported on streams created for chunked input.
 
 ### `VgmStream` — feeding raw byte chunks
 
@@ -393,7 +376,7 @@ does not need to be kept in memory.
 limits and a decoded-PCM cache limit, plus a retained-output limit for eager
 conversion; see the API rustdoc.
 MDX support is disabled by default; enable it in your dependency declaration
-with `soundlog = { version = "0.16", features = ["mdx"] }`.
+with `soundlog = { version = "0.18", features = ["mdx"] }`.
 
 ```rust
 # #[cfg(feature = "mdx")]
@@ -461,7 +444,7 @@ let mut stream = VgmStream::from_generator(Box::new(generator));
 ## VgmCallbackStream overview
 
 `VgmCallbackStream` wraps `VgmStream` to provide automatic chip state tracking
-and event-driven callbacks for real-time VGM processing:
+and event-driven callbacks during incremental VGM processing:
 
 - **Automatic State Tracking**: Enables per-chip state management for 35+ supported
   sound chips, automatically detecting register writes and maintaining internal state.
@@ -472,8 +455,8 @@ and event-driven callbacks for real-time VGM processing:
 - **Flexible Callbacks**: Register chip-specific callbacks using type-safe spec types
   (e.g., `Ym2612Spec`, `Sn76489Spec`) to handle register writes with sample timing
   and associated events.
-- **Real-time Processing**: Low-overhead design suitable for streaming playback,
-  with callbacks invoked automatically as commands are processed.
+- **Synchronous Callbacks**: Callbacks run as the iterator processes each
+  command, not when an audio device plays the corresponding samples.
 - **Comprehensive Chip Support**: (**WIP**) Works with all major sound chips including FM
   synthesizers (YM2612, YM2151, OPL series), PSG chips (SN76489, AY-8910),
   PCM chips, and more.
@@ -575,20 +558,27 @@ entering another loop or starting a fade. You can seek again from there.
 
 Chunk-fed and generator-backed streams cannot seek. On supported inputs, the
 callback stream rebuilds its chip trackers during the seek without notifying
-user callbacks.
+user callbacks. It starts from the registered initial tracker states and
+does not replay the intro before the loop point. If the loop relies on
+register writes from the intro, tracked state can differ from uninterrupted
+playback. For PCM playback seeking on the output-frame timeline, use
+chipstream's `seek_to_frame` instead.
 
 ## Looping and EndOfData overview
 
-- VgmDocument is a data representation only: When you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.
-- VgmStream is intended to act as a player-like iterator. When created from a parsed `VgmDocument` with `VgmStream::from_document()`, it can automatically loop at the documented loop point. The default is one playthrough (`Some(1)`). Its `set_loop_count()` API controls how many playthroughs are performed:
-  - `set_loop_count(Some(n))` — limit playback to `n` playthroughs (for example, `Some(1)` means play once and stop; `Some(2)` means play one full run and then one loop iteration). Passing `Some(0)` is treated the same as `Some(1)` (It's a bit strange, but both mean "play once and stop").
-  - `set_loop_count(None)` — infinite looping (the stream will jump back to the loop point on EndOfData and continue indefinitely).
-- `VgmStream` prioritizes writing to the sound chip registers and performs loop processing based on `EndOfData` without checking the `loop_samples` field in the `VgmHeader`. It is generally considered to perform the same operation, but depending on the data, it may behave differently.
-- When the stream reaches an `EndOfData` command it handles looping and end-of-stream semantics internally. If a finite loop count is configured and the limit is reached the stream will stop; if an infinite loop is configured it will jump to the loop point and continue.
-- `VgmCallbackStream` wraps `VgmStream` and invokes callbacks for register writes and other commands as they are emitted. Note that `VgmStream` consumes the `EndOfData` command internally while implementing loop behavior; as a result the `on_end_of_data` callback registered on `VgmCallbackStream` will not be invoked in normal operation. To detect playback termination observe the iterator reaching `EndOfStream` (or the iterator returning `None` in the callback wrapper).
-- Fadeout support: configure `set_fadeout_samples(Some(n))` on the stream to allow the stream to continue emitting commands for `n` samples after the final loop end, which can be used to implement graceful fadeouts. When fadeout is active the stream records the loop end sample and will keep yielding commands (or generated waits) until the fadeout period elapses, after which `EndOfStream` is returned.
-  - `is_fading_out()` reports whether the final loop boundary has been reached. It reflects stream processing and may run ahead of rendered audio.
-  - Writing to the sound chip's registers may cause the key-on state to persist. Therefore, either gradually reduce the external output level to zero within the fade-out sample time, or write to the sound chip's registers to lower the total level.
+- `VgmBuilder::finalize()` adds `EndOfData` if the command list has none.
+- File- and document-backed streams can rewind to the loop point. They
+  handle loop boundaries at `EndOfData`, regardless of `VgmHeader::loop_samples`.
+  - `set_loop_count(Some(n))` requests `n` traversals. `Some(0)` is treated
+    as `Some(1)`, the default. VGM header loop settings can adjust the count.
+  - `set_loop_count(None)` repeats indefinitely if there is a loop point.
+- `VgmStream` consumes `EndOfData` internally, so `on_end_of_data` does not
+  fire during normal iteration. Detect completion with `EndOfStream` on
+  `VgmStream` or `None` on `VgmCallbackStream`.
+- `set_fadeout_samples(Some(n))` extends a looping stream by `n` samples
+  after the final loop boundary. `is_fading_out()` reports stream progress,
+  which can run ahead of rendered audio. The stream does not attenuate audio;
+  apply the fade to the output level or through chip writes.
 
 ## Error Handling
 
@@ -610,12 +600,12 @@ Allocation failures and panics in user code are not converted into library error
 
 ## Chip State Tracking (WIP)
 
-The `chip::state` module provides real-time state tracking for sound chips,
+The `chip::state` module tracks sound-chip state as writes arrive,
 detecting key on/off events and extracting tone information from register writes.
 
-- Chips with a check in the `Test` column have unit or integration tests that exercise their state-tracking behavior to a reasonable extent.
+- A check in the `Test` column indicates state-tracking tests.
 - The specifications for key on/off detection — including total level extraction — are not yet stabilized.
-- The values returned by `StateEvent` shall not be compatible across versions. Please note that the timing and values of events may differ between versions.
+- `StateEvent` timing and values may change between versions.
 - The channel counts below are those reported by each tracker. PCM trackers
   retain register writes but do not emit key or tone events; ES5505/ES5506
   additionally track the selected page and host-bus writes.
