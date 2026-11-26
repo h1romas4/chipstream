@@ -92,8 +92,8 @@ direct dependency when using its types, as in the examples below:
 
 ```toml
 [dependencies]
-chipstream = { version = "0.1", features = ["mdx", "xgm", "okim6258", "sn76496"] }
-soundlog = { version = "0.18", features = ["mdx", "xgm"] }
+chipstream = { version = "0.2", features = ["mdx", "xgm", "okim6258", "sn76496"] }
+soundlog = { version = "0.19", features = ["mdx", "xgm"] }
 ```
 
 Except for AY8910, if a VGM header declares one of these chips without its

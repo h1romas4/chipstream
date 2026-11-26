@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "chipstream"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "soundlog",
  "ymfm-sys",
@@ -4940,7 +4940,7 @@ dependencies = [
 
 [[package]]
 name = "mmlx"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pest",
  "pest_derive",
@@ -7780,7 +7780,7 @@ dependencies = [
 
 [[package]]
 name = "soundlog"
-version = "0.18.0"
+version = "0.19.0"
 
 [[package]]
 name = "soundlog-cli"

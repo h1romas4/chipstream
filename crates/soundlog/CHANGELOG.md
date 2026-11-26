@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.19.0 (unreleased)
 
 - Fix: Resolve PCM1 notes against PDX bank zero regardless of bank-selection commands; PCM8 retains per-track bank selection. PCM reference inspection follows the same rule.
 - Fix: Treat `VgmCommandGenerator` returning `Ok(None)` as end of stream, not `NeedsMoreData`, even without `EndOfData`.

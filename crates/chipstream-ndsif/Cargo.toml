@@ -9,7 +9,7 @@ repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 
 [dependencies]
-chipstream = { path = "../chipstream", version = "0.1.0", features = ["okim6258", "sn76496"] }
+chipstream = { path = "../chipstream", version = "0.2.0", features = ["okim6258", "sn76496"] }
 ndsif = { path = "../ndsif", version = "0.1.0" }
 ndsif-transport = { path = "../ndsif-transport", version = "0.1.0" }
 soundlog = { workspace = true }

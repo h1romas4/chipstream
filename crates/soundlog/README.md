@@ -381,7 +381,7 @@ does not need to be kept in memory.
 limits and a decoded-PCM cache limit, plus a retained-output limit for eager
 conversion; see the API rustdoc.
 MDX support is disabled by default; enable it in your dependency declaration
-with `soundlog = { version = "0.18", features = ["mdx"] }`.
+with `soundlog = { version = "0.19", features = ["mdx"] }`.
 
 ```rust
 # #[cfg(feature = "mdx")]

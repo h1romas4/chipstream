@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.0 (unreleased)
+
+### Changed
+
+- [x] Change: Update the soundlog dependency to 0.19.0.
+
 ## v0.3.0
 
 ### Added
