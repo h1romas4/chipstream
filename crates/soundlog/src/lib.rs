@@ -14,5 +14,5 @@ pub use vgm::command::*;
 pub use vgm::stream::StreamResult as VgmStreamResult;
 pub use vgm::{
     VgmBuilder, VgmCallbackStream, VgmCommandGenerator, VgmDocument, VgmExtraHeader, VgmHeader,
-    VgmParseLimits, VgmStream,
+    VgmParseLimits, VgmSeekOutcome, VgmStream,
 };

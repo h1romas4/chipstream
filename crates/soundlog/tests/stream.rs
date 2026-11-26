@@ -42,7 +42,7 @@ use soundlog::vgm::command::{
 use soundlog::vgm::detail::{StreamChipType, UncompressedStream};
 use soundlog::vgm::header::ChipId;
 use soundlog::vgm::stream::{StreamResult, VgmStream};
-use soundlog::{VgmCallbackStream, chip};
+use soundlog::{VgmCallbackStream, VgmSeekOutcome, chip};
 use std::cell::RefCell;
 use std::cmp;
 use std::collections::HashSet;
@@ -1135,7 +1135,7 @@ fn no_time_data_block_chain_is_iterative_and_counted() {
 }
 
 #[test]
-fn no_time_loop_and_seek_errors_propagate_to_callbacks() {
+fn zero_length_loop_seek_stops_but_fadeout_still_checks_budget() {
     let mut builder = VgmBuilder::new();
     builder.set_loop_index(0);
     let document = builder.finalize();
@@ -1148,10 +1148,10 @@ fn no_time_loop_and_seek_errors_propagate_to_callbacks() {
     let mut stream = VgmStream::from_document(document.clone());
     stream.set_max_commands_without_wait(Some(16));
     stream.set_loop_count(None);
-    assert!(matches!(
-        stream.seek_to_sample(1),
-        Err(soundlog::ParseError::CommandLimitExceeded { limit: 16 })
-    ));
+    assert_eq!(
+        stream.seek_to_sample(1).unwrap(),
+        VgmSeekOutcome::EndOfRange { sample: 0 }
+    );
 
     let mut stream = VgmStream::from_document(document);
     stream.set_max_commands_without_wait(Some(16));
@@ -6833,12 +6833,11 @@ fn test_seek_to_sample_from_document_basic() {
 
     // Target 150 is within the first loop-body wait (0..300).  The seek consumes
     // that wait in one step, so current_sample ends at 300.
-    stream.seek_to_sample(150).expect("seek failed");
-    assert!(
-        stream.current_sample() >= 150,
-        "current_sample ({}) must be >= target 150",
-        stream.current_sample()
+    assert_eq!(
+        stream.seek_to_sample(150).unwrap(),
+        VgmSeekOutcome::Reached { sample: 300 }
     );
+    assert_eq!(stream.current_sample(), 300);
 }
 
 #[test]
@@ -6847,8 +6846,69 @@ fn test_seek_to_sample_from_vgm_basic() {
     let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
     stream.set_loop_count(Some(1));
 
-    stream.seek_to_sample(150).expect("seek failed");
-    assert!(stream.current_sample() >= 150);
+    assert_eq!(
+        stream.seek_to_sample(150).unwrap(),
+        VgmSeekOutcome::Reached { sample: 300 }
+    );
+    assert_eq!(stream.current_sample(), 300);
+}
+
+#[test]
+fn seek_rejects_generators_without_changing_position_or_consuming_commands() {
+    #[derive(Debug)]
+    struct Generator(std::array::IntoIter<u16, 2>);
+
+    impl soundlog::VgmCommandGenerator for Generator {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
+            Ok(self.0.next().map(WaitSamples).map(VgmCommand::WaitSamples))
+        }
+    }
+
+    let assert_unsupported = |result| {
+        assert!(matches!(
+            result,
+            Err(soundlog::ParseError::UnsupportedStreamOperation {
+                operation: "seek_to_sample",
+                source: "generator",
+            })
+        ));
+    };
+    let mut stream = VgmStream::from_generator(Box::new(Generator([10, 20].into_iter())));
+    assert!(stream.next().unwrap().is_ok());
+    assert_unsupported(stream.seek_to_sample(0));
+    assert_eq!(stream.current_sample(), 10);
+    assert_eq!(
+        stream.next().unwrap().unwrap(),
+        StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(20)))
+    );
+
+    let mut callbacks =
+        VgmCallbackStream::from_generator(Box::new(Generator([10, 20].into_iter())));
+    assert!(callbacks.next().unwrap().is_ok());
+    assert_unsupported(callbacks.seek_to_sample(0));
+    assert_eq!(callbacks.stream().current_sample(), 10);
+    assert_eq!(
+        callbacks.next().unwrap().unwrap(),
+        StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(20)))
+    );
+}
+
+#[test]
+fn seek_reports_missing_end_as_unexpected_eof() {
+    let document = VgmDocument {
+        commands: vec![VgmCommand::WaitSamples(WaitSamples(10))],
+        ..Default::default()
+    };
+    let mut stream = VgmStream::from_document(document.clone());
+    assert!(matches!(
+        stream.seek_to_sample(11),
+        Err(soundlog::ParseError::UnexpectedEof)
+    ));
+    let mut callbacks = VgmCallbackStream::from_document(document);
+    assert!(matches!(
+        callbacks.seek_to_sample(11),
+        Err(soundlog::ParseError::UnexpectedEof)
+    ));
 }
 
 #[test]
@@ -7241,7 +7301,10 @@ fn callback_seek_rebuilds_trackers_registered_with_track_chips() {
             .push((instance, spec.value, sample, events));
     });
 
-    stream.seek_to_sample(100).unwrap();
+    assert_eq!(
+        stream.seek_to_sample(100).unwrap(),
+        VgmSeekOutcome::Reached { sample: 100 }
+    );
     assert!(writes.borrow().is_empty(), "seek must not notify callbacks");
     for result in &mut stream {
         result.unwrap();
@@ -7292,21 +7355,37 @@ fn test_callback_stream_seek_replays_correctly_from_loop_point_with_intro() {
 
 #[test]
 fn test_seek_to_sample_beyond_stream_end_reaches_eos() {
-    // Seeking past the total loop-body length should consume all commands and reach
-    // EndOfStream without panicking.
     let raw = create_intro_plus_loop_vgm(); // body = 700 samples
-    let mut stream = VgmStream::from_vgm(raw).expect("from_vgm");
-    stream.set_loop_count(Some(1));
-
-    // A target larger than the loop body (700 samples).
-    stream.seek_to_sample(99_999).expect("seek failed");
-    // Stream must be at end (next call should be EndOfStream or None).
-    let result = stream.next();
-    assert!(
-        matches!(result, Some(Ok(StreamResult::EndOfStream)) | None),
-        "after seeking past end, stream must report EndOfStream; got {:?}",
-        result
+    let mut stream = VgmStream::from_vgm(raw.clone()).expect("from_vgm");
+    stream.set_loop_count(Some(3));
+    stream.set_fadeout_samples(Some(100));
+    assert_eq!(
+        stream.seek_to_sample(701).unwrap(),
+        VgmSeekOutcome::EndOfRange { sample: 700 }
     );
+    assert_eq!(stream.current_sample(), 700);
+    assert_eq!(stream.current_loop_count(), 0);
+    assert!(!stream.is_fading_out());
+    assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
+
+    // At the exact boundary, the next read still follows normal loop settings.
+    assert_eq!(
+        stream.seek_to_sample(700).unwrap(),
+        VgmSeekOutcome::Reached { sample: 700 }
+    );
+    assert_eq!(
+        stream.next().unwrap().unwrap(),
+        StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(300)))
+    );
+
+    let mut callbacks = VgmCallbackStream::from_vgm(raw).unwrap();
+    callbacks.set_loop_count(Some(3));
+    callbacks.set_fadeout_samples(Some(100));
+    assert_eq!(
+        callbacks.seek_to_sample(701).unwrap(),
+        VgmSeekOutcome::EndOfRange { sample: 700 }
+    );
+    assert!(callbacks.next().is_none());
 }
 
 #[test]

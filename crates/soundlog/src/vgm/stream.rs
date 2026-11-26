@@ -27,6 +27,7 @@ use crate::vgm::header::{ChipId, VgmHeader, VgmHeaderField};
 use crate::vgm::parser::parse_vgm_command;
 use std::collections::HashMap;
 use std::fmt;
+use std::ops::ControlFlow;
 
 /// Minimum buffer capacity (in bytes) at which we consider shrinking the
 /// parser's internal byte buffer. The shrink logic avoids attempting to reduce
@@ -534,6 +535,21 @@ pub enum StreamResult {
     NeedsMoreData,
     /// The VGM stream has ended.
     EndOfStream,
+}
+
+/// Outcome of seeking within one loop iteration (or a non-looping stream).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VgmSeekOutcome {
+    /// The target was reached, possibly by consuming a wait that overshot it.
+    Reached {
+        /// Actual position in 44.1 kHz samples.
+        sample: usize,
+    },
+    /// The end of the seek range was reached before the target.
+    EndOfRange {
+        /// Final position in 44.1 kHz samples.
+        sample: usize,
+    },
 }
 
 /// Resource limits and usage counters for a VGM stream.
@@ -1262,8 +1278,9 @@ impl VgmStream {
     /// Returns `StreamResult::Command` if a complete command was parsed,
     /// `StreamResult::NeedsMoreData` if more bytes are required, or
     /// `StreamResult::EndOfStream` if the stream has ended.
-    fn next_command(&mut self) -> Result<StreamResult, ParseError> {
-        let result = self.next_command_inner()?;
+    fn next_command(&mut self, stop_at_end_of_data: bool) -> Result<StreamResult, ParseError> {
+        self.last_stream_write_id = None;
+        let result = self.next_command_inner(stop_at_end_of_data)?;
         if let StreamResult::Command(VgmCommand::Huc6280Write(instance, spec)) = &result
             && spec.register & 15 == 0
         {
@@ -1272,7 +1289,10 @@ impl VgmStream {
         Ok(result)
     }
 
-    fn next_command_inner(&mut self) -> Result<StreamResult, ParseError> {
+    fn next_command_inner(
+        &mut self,
+        stop_at_end_of_data: bool,
+    ) -> Result<StreamResult, ParseError> {
         loop {
             if !self.pending_stream_writes.is_empty() {
                 let (stream_id, cmd) = self.pending_stream_writes.remove(0);
@@ -1328,6 +1348,10 @@ impl VgmStream {
                 }
             };
 
+            if stop_at_end_of_data && matches!(command, VgmCommand::EndOfData(_)) {
+                self.encountered_end = true;
+                return Ok(StreamResult::EndOfStream);
+            }
             if let Some(result) = self.process_command(command)? {
                 return Ok(result);
             }
@@ -1938,61 +1962,72 @@ impl VgmStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::UnsupportedStreamOperation`] if called on a stream created with
-    /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed
-    /// stream), since those streams have no random-accessible loop position.
+    /// Returns [`ParseError::UnsupportedStreamOperation`] for chunk-fed or
+    /// generator-backed streams, which cannot rewind.
     pub(crate) fn reset_to_loop_point(&mut self) -> Result<(), ParseError> {
-        if let VgmStreamSource::Buffer { .. } = &self.source {
+        let unsupported = match &self.source {
+            VgmStreamSource::Buffer { .. } => Some("buffer"),
+            VgmStreamSource::Generator { .. } => Some("generator"),
+            VgmStreamSource::Document { .. } | VgmStreamSource::File { .. } => None,
+        };
+        if let Some(source) = unsupported {
             return Err(ParseError::UnsupportedStreamOperation {
                 operation: "seek_to_sample",
-                source: "buffer",
+                source,
             });
         }
         self.jump_to_loop_point();
         self.reset_loop_state();
+        self.encountered_end = false;
+        self.fadeout_remaining_samples = None;
+        self.last_stream_write_id = None;
         Ok(())
     }
 
-    /// Moves the stream to the specified sample position within the current loop iteration.
+    /// Rewinds to the loop point (or stream start) and seeks within that range.
     ///
-    /// Because the sample counter resets to 0 at the start of each loop, `target` refers
-    /// to a position within one loop iteration (measured in 44100 Hz samples, starting
-    /// from 0 at the loop point).  The stream is rewound to the loop point and then
-    /// commands are consumed silently until the sample counter reaches `target`.
-    ///
-    /// All internal state (DAC streams, PCM offsets, stream states, etc.) is correctly
-    /// maintained during fast-forward, so the stream is fully ready for playback
-    /// immediately after this call returns.
+    /// `target` is measured in 44.1 kHz samples from that point. Whole waits
+    /// are consumed, so [`VgmSeekOutcome::Reached`] can report a later sample.
+    /// Seeking does not enter another loop iteration or start a fade. If the
+    /// first `EndOfData` is encountered before the target, returns
+    /// [`VgmSeekOutcome::EndOfRange`] and leaves the stream at end of stream.
+    /// The configured loop and fade settings and completed loop count are
+    /// preserved; any in-progress fade is cleared.
     ///
     /// When used with [`VgmCallbackStream`](crate::vgm::VgmCallbackStream), prefer
     /// calling [`VgmCallbackStream::seek_to_sample`](crate::vgm::VgmCallbackStream::seek_to_sample)
     /// instead, which additionally keeps chip state trackers consistent.
     ///
-    /// # Arguments
-    ///
-    /// * `target` — Target sample position (0-based, resets to 0 at each loop iteration).
-    ///
     /// # Errors
     ///
-    /// Returns [`ParseError::UnsupportedStreamOperation`] if called on a stream created with
-    /// [`new`](Self::new) + [`push_chunk`](Self::push_chunk).
-    ///
-    /// # Notes
-    ///
-    /// If `target` exceeds the total sample length of the loop iteration, the stream
-    /// is positioned at `EndOfStream`.
-    pub fn seek_to_sample(&mut self, target: usize) -> Result<(), ParseError> {
+    /// Chunk-fed and generator-backed streams return
+    /// [`ParseError::UnsupportedStreamOperation`] without changing state.
+    /// If input runs out before the target without `EndOfData`, returns
+    /// [`ParseError::UnexpectedEof`].
+    pub fn seek_to_sample(&mut self, target: usize) -> Result<VgmSeekOutcome, ParseError> {
         self.reset_to_loop_point()?;
         loop {
-            if self.current_sample >= target {
-                break;
-            }
-            match self.next_command()? {
-                StreamResult::EndOfStream | StreamResult::NeedsMoreData => break,
-                StreamResult::Command(_) => {}
+            if let ControlFlow::Break(outcome) = self.seek_step(target)? {
+                return Ok(outcome);
             }
         }
-        Ok(())
+    }
+
+    pub(crate) fn seek_step(
+        &mut self,
+        target: usize,
+    ) -> Result<ControlFlow<VgmSeekOutcome, VgmCommand>, ParseError> {
+        let sample = self.current_sample;
+        if sample >= target {
+            return Ok(ControlFlow::Break(VgmSeekOutcome::Reached { sample }));
+        }
+        match self.next_command(true)? {
+            StreamResult::Command(command) => Ok(ControlFlow::Continue(command)),
+            StreamResult::EndOfStream => Ok(ControlFlow::Break(VgmSeekOutcome::EndOfRange {
+                sample: self.current_sample,
+            })),
+            StreamResult::NeedsMoreData => Err(ParseError::UnexpectedEof),
+        }
     }
 
     /// Handles end of data command, potentially starting a new loop.
@@ -3157,8 +3192,7 @@ impl Iterator for VgmStream {
 
     /// Return the next stream result or parsing error.
     fn next(&mut self) -> Option<Self::Item> {
-        self.last_stream_write_id = None;
-        match self.next_command() {
+        match self.next_command(false) {
             Ok(stream_result) => Some(Ok(stream_result)),
             Err(e) => Some(Err(e)),
         }

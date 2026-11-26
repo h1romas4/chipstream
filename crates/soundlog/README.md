@@ -562,6 +562,20 @@ for result in callback_stream {
 }
 ```
 
+## Seeking
+
+`VgmStream::seek_to_sample` and `VgmCallbackStream::seek_to_sample` rewind to
+the loop point (or the command stream start if there is no loop). The target
+is in 44.1 kHz samples from that point. `VgmSeekOutcome::Reached { sample }`
+reports the actual position, which may be later than requested because waits
+are consumed whole. If the first `EndOfData` comes before the target, the
+stream stops and returns `VgmSeekOutcome::EndOfRange { sample }` rather than
+entering another loop or starting a fade. You can seek again from there.
+
+Chunk-fed and generator-backed streams cannot seek. On supported inputs, the
+callback stream rebuilds its chip trackers during the seek without notifying
+user callbacks.
+
 ## Looping and EndOfData overview
 
 - VgmDocument is a data representation only: When you construct a document using `VgmBuilder` and call `finalize()`, the builder will ensure the command stream contains an explicit `EndOfData` — if none is present it appends one.

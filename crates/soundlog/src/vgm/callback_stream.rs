@@ -72,8 +72,9 @@ use crate::vgm::command::{
     ReservedU24, ReservedU32, UnknownSpec, VgmCommand, WaitSamples,
 };
 use crate::vgm::header::ChipInstances;
-use crate::vgm::stream::{StreamResult, VgmCommandGenerator, VgmStream};
+use crate::vgm::stream::{StreamResult, VgmCommandGenerator, VgmSeekOutcome, VgmStream};
 use std::mem;
+use std::ops::ControlFlow;
 
 type ChipCallback<'a, S> = Option<Box<dyn FnMut(Instance, S, usize, Option<Vec<StateEvent>>) + 'a>>;
 type CommandCallback<'a, S> = Option<Box<dyn FnMut(S, usize, Option<Vec<StateEvent>>) + 'a>>;
@@ -780,22 +781,15 @@ impl<'a> VgmCallbackStream<'a> {
     /// 3. Fast-forwards to `target` by consuming commands and updating chip state trackers
     ///    without firing any user-registered callbacks (`on_write`, `on_wait`, etc.).
     ///
-    /// On return, the underlying stream's [`current_sample()`](VgmStream::current_sample) is `>= target`.
-    /// It may be slightly higher if the command that crosses the target boundary
-    /// also advances the sample counter past it in one step (e.g., a long `WaitSamples` command).
-    ///
-    /// # Arguments
-    ///
-    /// * `target` — Target sample position within the current loop iteration (0-based).
+    /// See [`VgmStream::seek_to_sample`] for how waits, loop boundaries, and
+    /// the actual sample position are handled.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::UnsupportedStreamOperation`] if the underlying stream was created with
-    /// [`push_chunk`](Self::push_chunk) (i.e., a `Buffer`-backed stream that has no
-    /// random-accessible position).
-    pub fn seek_to_sample(&mut self, target: usize) -> Result<(), ParseError> {
-        // Reset the inner stream cursor to the loop point.
-        // This also validates that the source is seekable (returns Err for Buffer).
+    /// Chunk-fed and generator-backed streams return
+    /// [`ParseError::UnsupportedStreamOperation`] without changing stream or
+    /// tracker state. Stream parsing errors are propagated.
+    pub fn seek_to_sample(&mut self, target: usize) -> Result<VgmSeekOutcome, ParseError> {
         self.stream.reset_to_loop_point()?;
 
         // Rebuild state trackers from scratch so that fast-forward starts from a
@@ -810,21 +804,13 @@ impl<'a> VgmCallbackStream<'a> {
         let mut saved_callbacks = Callbacks::default();
         mem::swap(&mut self.callbacks, &mut saved_callbacks);
 
-        let mut seek_result = Ok(());
-        loop {
-            if self.stream.current_sample() >= target {
-                break;
+        let seek_result = loop {
+            match self.stream.seek_step(target) {
+                Ok(ControlFlow::Continue(command)) => self.process_command(&command),
+                Ok(ControlFlow::Break(outcome)) => break Ok(outcome),
+                Err(error) => break Err(error),
             }
-            match Iterator::next(self) {
-                None => break,
-                Some(Ok(StreamResult::NeedsMoreData)) => break,
-                Some(Err(e)) => {
-                    seek_result = Err(e);
-                    break;
-                }
-                Some(Ok(_)) => {}
-            }
-        }
+        };
 
         // Always restore callbacks, even on error.
         mem::swap(&mut self.callbacks, &mut saved_callbacks);
