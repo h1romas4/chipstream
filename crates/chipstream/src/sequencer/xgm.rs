@@ -3,14 +3,15 @@
 use soundlog::vgm::{VgmCommandGenerator, VgmStream};
 use soundlog::xgm::{XgmDocument, XgmPlaybackOptions, XgmVgmGenerator};
 
-use crate::audio::StereoBlock;
+use crate::audio::{NativeEffect, StereoBlock, StereoEffect};
 
 use super::factory::ChipFactoryRegistry;
 use super::vgm::config::ChipConfiguration;
 use super::vgm::{FadeMarker, StreamFactory};
 use super::{
-    Chip, Instance, NativeOutput, PlaybackOptions, StateEvent, VgmSequencer,
-    VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget,
+    Chip, EffectId, Instance, NativeOutput, OutputGroupId, PlaybackOptions, StateEvent,
+    VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker,
+    VgmWriteCallbackTarget,
 };
 
 /// Track, loop, fade, and resource limits for XGM playback.
@@ -167,6 +168,75 @@ impl<'a> XgmSequencer<'a> {
         self.player.set_output_gains(chip, instance, gains)
     }
 
+    /// Set or clear native-output pan. See [`VgmSequencer::set_output_pan`].
+    pub fn set_output_pan(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        pan: Option<f32>,
+    ) -> Result<(), VgmSequencerError> {
+        self.player.set_output_pan(chip, instance, output, pan)
+    }
+
+    /// Append a native-output effect. See [`VgmSequencer::add_output_effect`].
+    pub fn add_output_effect<T: NativeEffect + Clone + 'static>(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        output: usize,
+        effect: T,
+    ) -> Result<EffectId<T>, VgmSequencerError> {
+        self.player
+            .add_output_effect(chip, instance, output, effect)
+    }
+
+    /// Create a stereo output group. See [`VgmSequencer::create_output_group`].
+    pub fn create_output_group(
+        &mut self,
+        chip: Chip,
+        instance: Instance,
+        outputs: &[usize],
+    ) -> Result<OutputGroupId, VgmSequencerError> {
+        self.player.create_output_group(chip, instance, outputs)
+    }
+
+    /// Remove an output group. See [`VgmSequencer::remove_output_group`].
+    pub fn remove_output_group(&mut self, group: &OutputGroupId) -> Result<(), VgmSequencerError> {
+        self.player.remove_output_group(group)
+    }
+
+    /// Append a stereo group effect. See [`VgmSequencer::add_group_effect`].
+    pub fn add_group_effect<T: StereoEffect + Clone + 'static>(
+        &mut self,
+        group: &OutputGroupId,
+        effect: T,
+    ) -> Result<EffectId<T>, VgmSequencerError> {
+        self.player.add_group_effect(group, effect)
+    }
+
+    /// Access an installed effect. See [`VgmSequencer::effect_mut`].
+    pub fn effect_mut<T: 'static>(
+        &mut self,
+        id: &EffectId<T>,
+    ) -> Result<&mut T, VgmSequencerError> {
+        self.player.effect_mut(id)
+    }
+
+    /// Remove an effect. See [`VgmSequencer::remove_effect`].
+    pub fn remove_effect<T>(&mut self, id: &EffectId<T>) -> Result<(), VgmSequencerError> {
+        self.player.remove_effect(id)
+    }
+
+    /// Reorder an effect within its chain. See [`VgmSequencer::move_effect`].
+    pub fn move_effect<T>(
+        &mut self,
+        id: &EffectId<T>,
+        position: usize,
+    ) -> Result<(), VgmSequencerError> {
+        self.player.move_effect(id, position)
+    }
+
     /// Transform typed chip writes before they reach the chip.
     pub fn filter_write<C, F>(&mut self, filter: F)
     where
@@ -174,6 +244,23 @@ impl<'a> XgmSequencer<'a> {
         F: FnMut(Instance, C, usize) -> C + 'a,
     {
         self.player.filter_write(filter);
+    }
+
+    /// Register a typed chip-write callback. See [`VgmSequencer::on_write`].
+    pub fn on_write<C, F>(&mut self, callback: F)
+    where
+        C: VgmWriteCallbackTarget,
+        F: FnMut(Instance, C, usize, Option<Vec<StateEvent>>) + 'a,
+    {
+        self.player.on_write(callback);
+    }
+
+    /// Enable state tracking for a chip type and instance.
+    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    where
+        S: VgmStateTracker,
+    {
+        self.player.track_state::<S>(instance, clock);
     }
 
     /// Enable tracking using each matching voice's effective clock.
@@ -193,6 +280,14 @@ impl<'a> XgmSequencer<'a> {
     /// Report and clear whether state events were dropped.
     pub fn take_state_event_overflow(&mut self) -> bool {
         self.player.take_state_event_overflow()
+    }
+
+    /// Return the command-stream position in 44.1 kHz samples.
+    ///
+    /// XGM generators handle their own loops, so this position does not reset
+    /// at a loop boundary. Command processing can run ahead of emitted PCM.
+    pub fn current_sample(&self) -> usize {
+        self.player.current_sample()
     }
 
     /// Capture the exact state at an output-block boundary.

@@ -491,8 +491,8 @@ impl<'a> MdxSequencer<'a> {
 
     /// Return the current command-stream position in 44.1 kHz samples.
     ///
-    /// This follows [`VgmSequencer::current_sample`], including its loop-relative
-    /// position and command-processing lookahead semantics.
+    /// MDX generators handle their own loops, so this position does not reset
+    /// at a loop boundary. Command processing can run ahead of emitted PCM.
     pub fn current_sample(&self) -> usize {
         self.player.current_sample()
     }

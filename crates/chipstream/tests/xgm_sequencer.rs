@@ -1,11 +1,13 @@
 #![cfg(all(feature = "xgm", feature = "sn76496"))]
 
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
+use chipstream::audio::Gain;
 use chipstream::sequencer::{
-    PlaybackDuration, PlaybackOptions, XgmSequencer, XgmSequencerOptions,
-    measure_xgm_duration_frames,
+    Chip, Instance, PlaybackDuration, PlaybackOptions, StateEvent, XgmSequencer,
+    XgmSequencerOptions, measure_xgm_duration_frames,
 };
+use soundlog::chip::{PsgSpec, state::Sn76489State};
 use soundlog::xgm::{XgmBuilder, XgmCommand, XgmDocument, XgmTiming, XgmTrack};
 
 fn document(timing: XgmTiming, looping: bool) -> XgmDocument {
@@ -143,4 +145,93 @@ fn natural_end_and_resource_limits_are_preserved() {
             Ok(Some(_)) => {}
         }
     });
+}
+
+#[test]
+fn typed_writes_and_state_tracking_follow_xgm_playback() {
+    let options = XgmSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut player =
+        XgmSequencer::new(document(XgmTiming::Ntsc, true), 44_100, 128, options).unwrap();
+    player.track_state::<Sn76489State>(Instance::Primary, 3_579_545.0);
+    let writes = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&writes);
+    player.on_write(move |instance, spec: PsgSpec, frame, events| {
+        captured
+            .borrow_mut()
+            .push((instance, spec.value, frame, events));
+    });
+
+    let mut previous_sample = player.current_sample();
+    while player.render().unwrap().is_some() {
+        assert!(player.current_sample() >= previous_sample);
+        previous_sample = player.current_sample();
+    }
+    assert!(previous_sample > 1470);
+    let writes = writes.borrow();
+    assert!(writes.iter().any(|(instance, value, frame, events)| {
+        *instance == Instance::Primary
+            && *value == 0x90
+            && *frame == 0
+            && events.as_ref().is_some_and(|events| {
+                events
+                    .iter()
+                    .any(|event| matches!(event, StateEvent::KeyOn { channel: 0, .. }))
+            })
+    }));
+}
+
+#[test]
+fn xgm_output_effects_and_pan_are_applied_and_checkpointed() {
+    let mut player = XgmSequencer::new(
+        document(XgmTiming::Ntsc, false),
+        44_100,
+        128,
+        Default::default(),
+    )
+    .unwrap();
+    player
+        .set_chip_gain(Chip::Ym2612, Instance::Primary, 0.0)
+        .unwrap();
+    for output in 0..2 {
+        player
+            .set_output_pan(Chip::Sn76489, Instance::Primary, output, Some(-1.0))
+            .unwrap();
+    }
+    let native = player
+        .add_output_effect(Chip::Sn76489, Instance::Primary, 0, Gain::new(0.5).unwrap())
+        .unwrap();
+    let group = player
+        .create_output_group(Chip::Sn76489, Instance::Primary, &[0, 1])
+        .unwrap();
+    let gain = player
+        .add_group_effect(&group, Gain::new(1.0).unwrap())
+        .unwrap();
+    let mute = player
+        .add_group_effect(&group, Gain::new(0.0).unwrap())
+        .unwrap();
+    player.move_effect(&mute, 0).unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    let muted = player.render().unwrap().unwrap().frames().to_vec();
+    assert!(muted.iter().all(|frame| *frame == [0.0, 0.0]));
+
+    player.effect_mut(&mute).unwrap().set_gain(1.0).unwrap();
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(player.effect_mut(&mute).unwrap().gain(), 0.0);
+    assert_eq!(player.render().unwrap().unwrap().frames(), muted);
+
+    player.effect_mut(&mute).unwrap().set_gain(1.0).unwrap();
+    let audible = player.render().unwrap().unwrap();
+    assert!(audible.frames().iter().any(|frame| frame[0] != 0.0));
+    assert!(audible.frames().iter().all(|frame| frame[1] == 0.0));
+
+    player.remove_effect(&native).unwrap();
+    player.remove_effect(&gain).unwrap();
+    player.remove_output_group(&group).unwrap();
+    assert!(player.effect_mut(&mute).is_err());
 }

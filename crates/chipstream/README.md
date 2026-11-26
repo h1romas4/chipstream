@@ -113,10 +113,11 @@ is not guaranteed real-time safe. Render ahead into a buffer and let the
 audio device callback read from that buffer.
 
 [`position_frames()`](sequencer::VgmSequencer::position_frames) tracks the PCM
-output timeline, not device playback. On the VGM and MDX sequencers,
+output timeline, not device playback. On all sequencers,
 [`current_sample()`](sequencer::VgmSequencer::current_sample)
 reports the underlying command position in 44.1 kHz samples, which can run
-ahead of returned PCM. For VGM, it resets when a loop begins.
+ahead of returned PCM. For VGM, it resets when a loop begins; MDX and XGM
+generators handle their own loops without resetting it.
 
 Render an uncompressed VGM containing a YM2151 with
 [`VgmSequencer::from_vgm`](sequencer::VgmSequencer::from_vgm) (decompress VGZ first):
@@ -330,7 +331,7 @@ physical hardware audio.
 
 ### Native-output and stereo-group effects
 
-The VGM and MDX sequencers can process each native output before matrix routing
+All sequencers can process each native output before matrix routing
 and apply stereo effects to groups of routed outputs before resampling:
 
 ```rust,no_run
@@ -418,8 +419,8 @@ For a keyboard display, use tracked `KeyOn` and `KeyOff` events to maintain
 channel state and `KeyOn` tone frequency, when present, to select a key. The
 events describe the original writes, so a muted channel can still appear active.
 
-All sequencers expose [`chip_instances`](sequencer::VgmSequencer::chip_instances).
-The VGM and MDX sequencers also expose typed write callbacks.
+All sequencers expose [`chip_instances`](sequencer::VgmSequencer::chip_instances)
+and typed write callbacks.
 Register them with [`on_write`](sequencer::VgmSequencer::on_write)
 and state tracking with [`track_state`](sequencer::VgmSequencer::track_state) before
 rendering:
@@ -460,7 +461,6 @@ extra-header clock overrides.
 
 All sequencers support [`on_state_change`](sequencer::VgmSequencer::on_state_change)
 with [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks).
-Use these on [`XgmSequencer`], which does not expose `on_write`.
 When using state-change callbacks,
 check [`take_state_event_overflow()`](sequencer::VgmSequencer::take_state_event_overflow) after
 rendering. Overflow or a seek can leave a display built from event history

@@ -2204,9 +2204,10 @@ impl<'a> VgmSequencer<'a> {
 
     /// Return the current command-stream position in 44.1 kHz samples.
     ///
-    /// This follows [`soundlog::vgm::VgmStream::current_sample`]: the position
-    /// is relative to the current loop iteration and resets when a loop begins.
-    /// It tracks command processing, which may run ahead of emitted PCM.
+    /// This follows [`soundlog::vgm::VgmStream::current_sample`]. For file and
+    /// document sources it resets when a loop begins. Generators handle their
+    /// own loops, so their position does not reset at a loop boundary. It tracks
+    /// command processing, which may run ahead of emitted PCM.
     pub fn current_sample(&self) -> usize {
         self.stream.current_sample()
     }
