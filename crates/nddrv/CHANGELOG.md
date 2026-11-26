@@ -4,6 +4,7 @@
 
 - Update GPUI Kit to v0.11.0.
 - Update rfd to v0.18.0.
+- Replace the direct chrono dependency with jiff for recording timestamps.
 - Fix MDX PCM1 playback using the wrong PDX bank after bank-selection commands.
 
 ## v0.16.1

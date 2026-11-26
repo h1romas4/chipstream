@@ -61,7 +61,14 @@ fn input_config(
 }
 
 fn create_file(directory: &Path, source: &Path) -> Result<(PathBuf, File)> {
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let timezone = jiff::tz::TimeZone::try_system().unwrap_or_else(|error| {
+        eprintln!("Could not determine local time zone: {error}; using UTC");
+        jiff::tz::TimeZone::UTC
+    });
+    let timestamp = jiff::Timestamp::now()
+        .to_zoned_datetime(timezone)
+        .strftime("%Y%m%d-%H%M%S")
+        .to_string();
     create_file_at(directory, source, &timestamp)
 }
 
@@ -367,7 +374,7 @@ mod tests {
             .unwrap()
             .strip_suffix(".wav")
             .unwrap();
-        chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%d-%H%M%S").unwrap();
+        jiff::civil::DateTime::strptime("%Y%m%d-%H%M%S", timestamp).unwrap();
     }
 
     #[cfg(unix)]
