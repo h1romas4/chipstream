@@ -320,41 +320,42 @@ The stream already has the full VGM bytes as its backing storage, `push_chunk` i
 
 ### `VgmStream` — feeding raw byte chunks
 
-If you cannot generate the `VgmDocument` all at once, you can use `push_chunk`.
-This is useful when working with microcontrollers that have insufficient memory.
+Use `VgmStream::new()` and `push_chunk` to process VGM commands without
+holding the entire file in memory. Feed only the command region, not the
+header or trailing metadata. For a VGM file, parse the header separately
+and find the first command with
+`VgmHeader::command_start(header.version, header.data_offset)`.
+Data blocks can still consume memory inside the stream.
 
-The required DataBlock is allocated within the library. Please bear in mind the remaining memory.
+`NeedsMoreData` means the parser needs another chunk, possibly to finish a
+command split across chunks. If your input has ended, this is not successful
+completion. `EndOfStream` means playback has finished, not that the current
+chunk ran out.
 
-Providing input via `push_chunk` is the only difference from the from_document example above.
-As with that example, you should iterate over the stream and handle the StreamResult variants
-
-`NeedsMoreData` is special in chunked mode: when the iterator yields `NeedsMoreData` you must supply additional bytes to the parser by calling `push_chunk` before continuing iteration.
-
-Note that when the parser returns `EndOfStream` in chunked mode it means the parser has consumed all bytes you supplied; to loop playback you must re-supply the bytes starting at the documented loop offset yourself (reset your chunk source to the loop point and call `push_chunk` again).
+The example uses the default single traversal and includes `EndOfData`.
+If you configure additional loops, the parser cannot rewind the input:
+when it requests more data after a loop boundary, resume feeding at the loop
+offset from the header. Do not feed another loop after `EndOfStream`.
 
 ```rust
-use soundlog::{VgmStream, VgmStreamResult};
+use soundlog::{ParseError, VgmStream, VgmStreamResult};
 
-let mut parser = VgmStream::new();
-// Typically, the chunk size would be fixed at 1KB or similar.
-let chunks = vec![vec![0x61, 0x44], vec![0x01], vec![0x62, 0x63]];
+fn main() -> Result<(), ParseError> {
+    let mut stream = VgmStream::new();
+    // Wait 324 samples (split across two chunks), then EndOfData (0x66).
+    let chunks: [&[u8]; 3] = [&[0x61, 0x44], &[0x01], &[0x66]];
 
-for chunk in chunks {
-    parser.push_chunk(&chunk).expect("push chunk");
-    for result in &mut parser {
-        match result {
-            Ok(VgmStreamResult::Command(_)) => {},
-            Ok(VgmStreamResult::NeedsMoreData) => break,
-            Ok(VgmStreamResult::EndOfStream) => {
-                // EndOfStream reached — the stream has no further data.
-                // To loop playback, reset your chunk source to the loop
-                // offset and call `push_chunk` again so the parser receives
-                // the bytes from the loop point onward.
-                break
-            },
-            Err(_) => break,
+    for chunk in chunks {
+        stream.push_chunk(chunk)?;
+        for result in &mut stream {
+            match result? {
+                VgmStreamResult::Command(command) => println!("{command:?}"),
+                VgmStreamResult::NeedsMoreData => break,
+                VgmStreamResult::EndOfStream => return Ok(()),
+            }
         }
     }
+    Err(ParseError::UnexpectedEof)
 }
 ```
 

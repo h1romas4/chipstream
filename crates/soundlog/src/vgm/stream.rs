@@ -1240,7 +1240,7 @@ impl VgmStream {
     ///
     /// Note: this method does not parse or strip the VGM header. When you have
     /// a full VGM file, feed only the serialized command/data region starting at
-    /// the command stream offset: `VgmHeader::compute_command_start(header.version, header.data_offset)`.
+    /// the command stream offset: `VgmHeader::command_start(header.version, header.data_offset)`.
     ///
     /// # Arguments
     /// * `chunk` - Raw VGM command/data bytes to add to the parsing buffer
