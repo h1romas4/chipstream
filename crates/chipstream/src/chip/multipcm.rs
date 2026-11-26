@@ -6,6 +6,7 @@
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip, write_rom_data};
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;
+use std::sync::OnceLock;
 
 const BASE_TIMES: [f64; 64] = [
     0., 0., 0., 0., 6222.95, 4978.37, 4148.66, 3556.01, 3111.47, 2489.21, 2074.33, 1778., 1555.74,
@@ -17,6 +18,81 @@ const BASE_TIMES: [f64; 64] = [
 const LFO_FREQ: [f32; 8] = [0.168, 2.019, 3.196, 4.206, 5.215, 5.888, 6.224, 7.066];
 const PITCH_LIMIT: [f32; 8] = [0., 3.378, 5.065, 6.750, 10.114, 20.170, 40.180, 79.307];
 const AMP_LIMIT: [f32; 8] = [0., 0.4, 0.8, 1.5, 3., 6., 12., 24.];
+
+struct Tables {
+    attack: [i32; 64],
+    decay: [i32; 64],
+    pan: Vec<[i32; 2]>,
+    envelope: Vec<i32>,
+    pitch: Vec<[i32; 256]>,
+    amp: Vec<[i32; 256]>,
+}
+
+fn tables() -> &'static Tables {
+    static TABLES: OnceLock<Tables> = OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut attack = [0; 64];
+        let mut decay = [0; 64];
+        for i in 4..64 {
+            attack[i] = ((0x400_u32 << 16) as f32 / (BASE_TIMES[i] * 44.1) as f32) as i32;
+            decay[i] = ((0x400_u32 << 16) as f32 / (BASE_TIMES[i] * 14.32833 * 44.1) as f32) as i32;
+        }
+        attack[63] = 0x400 << 16;
+        let pan = (0..2048)
+            .map(|index| {
+                let level = (index & 127) as f32;
+                let p = index >> 7;
+                let volume = 10_f32.powf((level * -24. / 64.) / 20.) / 4.;
+                let attenuation = |amount: usize| {
+                    if amount == 7 {
+                        0.
+                    } else {
+                        10_f32.powf((amount as f32 * -12. / 4.) / 20.)
+                    }
+                };
+                let gains = if p == 8 {
+                    [0., 0.]
+                } else if p == 0 {
+                    [1., 1.]
+                } else if p & 8 != 0 {
+                    [1., attenuation(16 - p)]
+                } else {
+                    [attenuation(p), 1.]
+                };
+                gains.map(|gain| (gain * volume * 4096.) as i32)
+            })
+            .collect();
+        let envelope = (0..1024)
+            .map(|i| {
+                let db = -(96.0_f32 - 96.0 * i as f32 / 1024.);
+                (4096. * 10_f32.powf(db / 20.)) as i32
+            })
+            .collect();
+        let pitch = (0..8)
+            .map(|depth| {
+                std::array::from_fn(|i| {
+                    (256. * 2_f32.powf(PITCH_LIMIT[depth] * (i as f32 - 128.) / 128. / 1200.))
+                        as i32
+                })
+            })
+            .collect();
+        let amp = (0..8)
+            .map(|depth| {
+                std::array::from_fn(|i| {
+                    (256. * 10_f32.powf(-AMP_LIMIT[depth] * i as f32 / 256. / 20.)) as i32
+                })
+            })
+            .collect();
+        Tables {
+            attack,
+            decay,
+            pan,
+            envelope,
+            pitch,
+            amp,
+        }
+    })
+}
 
 #[derive(Clone, Copy, Default)]
 struct Sample {
@@ -77,12 +153,7 @@ pub struct MultiPcm {
     split_banks: bool,
     bank_left: u16,
     bank_right: u16,
-    attack: [i32; 64],
-    decay: [i32; 64],
-    pan: [[i32; 2]; 2048],
-    envelope_table: [i32; 1024],
-    pitch_table: [[i32; 256]; 8],
-    amp_table: [[i32; 256]; 8],
+    tables: &'static Tables,
 }
 
 impl MultiPcm {
@@ -94,35 +165,6 @@ impl MultiPcm {
                 minimum: 224,
             });
         }
-        let mut attack = [0; 64];
-        let mut decay = [0; 64];
-        for i in 4..64 {
-            attack[i] = ((0x400_u32 << 16) as f32 / (BASE_TIMES[i] * 44.1) as f32) as i32;
-            decay[i] = ((0x400_u32 << 16) as f32 / (BASE_TIMES[i] * 14.32833 * 44.1) as f32) as i32;
-        }
-        attack[63] = 0x400 << 16;
-        let pan = std::array::from_fn(|index| {
-            let level = (index & 127) as f32;
-            let p = index >> 7;
-            let volume = 10_f32.powf((level * -24. / 64.) / 20.) / 4.;
-            let attenuation = |amount: usize| {
-                if amount == 7 {
-                    0.
-                } else {
-                    10_f32.powf((amount as f32 * -12. / 4.) / 20.)
-                }
-            };
-            let gains = if p == 8 {
-                [0., 0.]
-            } else if p == 0 {
-                [1., 1.]
-            } else if p & 8 != 0 {
-                [1., attenuation(16 - p)]
-            } else {
-                [attenuation(p), 1.]
-            };
-            gains.map(|gain| (gain * volume * 4096.) as i32)
-        });
         Ok(Self {
             clock,
             slots: [Slot::default(); 28],
@@ -133,24 +175,7 @@ impl MultiPcm {
             split_banks: false,
             bank_left: 0,
             bank_right: 0,
-            attack,
-            decay,
-            pan,
-            envelope_table: std::array::from_fn(|i| {
-                let db = -(96.0_f32 - 96.0 * i as f32 / 1024.);
-                (4096. * 10_f32.powf(db / 20.)) as i32
-            }),
-            pitch_table: std::array::from_fn(|depth| {
-                std::array::from_fn(|i| {
-                    (256. * 2_f32.powf(PITCH_LIMIT[depth] * (i as f32 - 128.) / 128. / 1200.))
-                        as i32
-                })
-            }),
-            amp_table: std::array::from_fn(|depth| {
-                std::array::from_fn(|i| {
-                    (256. * 10_f32.powf(-AMP_LIMIT[depth] * i as f32 / 256. / 20.)) as i32
-                })
-            }),
+            tables: tables(),
         })
     }
 
@@ -210,10 +235,10 @@ impl MultiPcm {
             table[index]
         };
         slot.envelope_rates = [
-            rate(&self.attack, slot.registers[7] >> 4),
-            rate(&self.decay, slot.registers[7] & 15),
-            rate(&self.decay, slot.registers[8] & 15),
-            rate(&self.decay, slot.registers[9] & 15),
+            rate(&self.tables.attack, slot.registers[7] >> 4),
+            rate(&self.tables.decay, slot.registers[7] & 15),
+            rate(&self.tables.decay, slot.registers[8] & 15),
+            rate(&self.tables.decay, slot.registers[9] & 15),
         ];
         slot.decay_level = 15 - i32::from(slot.registers[8] >> 4);
     }
@@ -337,7 +362,7 @@ impl MultiPcm {
         Ok(())
     }
 
-    fn envelope_tick(slot: &mut Slot, table: &[i32; 1024]) -> i32 {
+    fn envelope_tick(slot: &mut Slot, table: &[i32]) -> i32 {
         match slot.envelope_state {
             EnvelopeState::Attack => {
                 slot.envelope += (((i64::from(0x817 << 15) - i64::from(slot.envelope))
@@ -414,7 +439,7 @@ impl MultiPcm {
                 } else {
                     phase * 2 - 383
                 };
-                step = step.wrapping_mul((self.pitch_table[vibrato][index as usize] << 4) as u32)
+                step = step.wrapping_mul((self.tables.pitch[vibrato][index as usize] << 4) as u32)
                     >> 12;
             }
             slot.offset = slot.offset.wrapping_add(step);
@@ -440,11 +465,11 @@ impl MultiPcm {
                 } else {
                     phase * 2 - 256
                 };
-                sample = (sample * (self.amp_table[tremolo][index] << 4)) >> 12;
+                sample = (sample * (self.tables.amp[tremolo][index] << 4)) >> 12;
             }
-            sample = (sample * Self::envelope_tick(slot, &self.envelope_table)) >> 10;
+            sample = (sample * Self::envelope_tick(slot, &self.tables.envelope)) >> 10;
             for (side, out) in output.iter_mut().enumerate() {
-                *out += (self.pan[volume_index][side] * sample) >> 12;
+                *out += (self.tables.pan[volume_index][side] * sample) >> 12;
             }
         }
         output.map(|value| value.clamp(-32768, 32767))
@@ -493,6 +518,7 @@ impl SoundChip for MultiPcm {
             }),
         }
     }
+
     fn write_rom(&mut self, start: usize, data: &[u8]) -> Result<(), ChipError> {
         write_rom_data(&mut self.rom, start, data)
     }
@@ -518,5 +544,21 @@ impl SoundChip for MultiPcm {
     }
     fn restore_state(&mut self, state: &dyn super::SoundChipState) -> Result<(), ChipError> {
         super::restore_cloned_state(self, state, Chip::MultiPcm)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_tables_are_shared_between_instances_and_clones() {
+        assert!(std::mem::size_of::<MultiPcm>() <= 4096);
+
+        let chip = MultiPcm::new(8_064_000).unwrap();
+        let other_clock = MultiPcm::new(7_938_000).unwrap();
+        let cloned = chip.clone();
+        assert!(std::ptr::eq(chip.tables, other_clock.tables));
+        assert!(std::ptr::eq(chip.tables, cloned.tables));
     }
 }
