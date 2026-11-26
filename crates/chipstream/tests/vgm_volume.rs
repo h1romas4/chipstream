@@ -431,6 +431,42 @@ fn native_effects_and_stereo_groups_process_only_selected_outputs() {
 }
 
 #[test]
+fn effect_work_buffers_remain_clean_when_groups_change() {
+    let document =
+        VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();
+    let mut baseline =
+        VgmSequencer::new(document.clone(), 48_000, 256, Default::default()).unwrap();
+    let mut player = VgmSequencer::new(document, 48_000, 256, Default::default()).unwrap();
+    let native = player
+        .add_output_effect(Chip::Ym2203, Instance::Primary, 1, Gain::new(1.0).unwrap())
+        .unwrap();
+    let group = player
+        .create_output_group(Chip::Ym2203, Instance::Primary, &[0, 1, 2, 3])
+        .unwrap();
+    let group_effect = player
+        .add_group_effect(&group, StereoBalance::new(0.0).unwrap())
+        .unwrap();
+    for step in 0..16 {
+        if step == 5 {
+            player.remove_effect(&group_effect).unwrap();
+        }
+        if step == 8 {
+            player.remove_output_group(&group).unwrap();
+            player.remove_effect(&native).unwrap();
+        }
+        if step == 11 {
+            let group = player
+                .create_output_group(Chip::Ym2203, Instance::Primary, &[0, 1, 2, 3])
+                .unwrap();
+            player
+                .add_group_effect(&group, StereoBalance::new(0.0).unwrap())
+                .unwrap();
+        }
+        assert_eq!(player.render().unwrap(), baseline.render().unwrap());
+    }
+}
+
+#[test]
 fn pan_preserves_stereo_masks_and_validates_effect_configuration() {
     let mut document =
         VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..]).unwrap();

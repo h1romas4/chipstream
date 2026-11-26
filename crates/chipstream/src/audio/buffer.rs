@@ -229,6 +229,16 @@ impl StereoMatrix {
         input: &NativeBlock<'_>,
         gains: Option<&[f32]>,
     ) -> Result<StereoBlock, AudioError> {
+        self.convert_with_gains_into(input, gains, Vec::new())
+    }
+
+    /// Convert using a caller-owned frame buffer.
+    pub(crate) fn convert_with_gains_into(
+        &self,
+        input: &NativeBlock<'_>,
+        gains: Option<&[f32]>,
+        mut frames: Vec<[f32; 2]>,
+    ) -> Result<StereoBlock, AudioError> {
         if input.channels() != self.coefficients.len() {
             return Err(AudioError::ChannelMismatch {
                 expected: self.coefficients.len(),
@@ -247,7 +257,8 @@ impl StereoMatrix {
             }
         }
         let mute = input.stereo_mute();
-        let mut frames = Vec::with_capacity(input.frames());
+        frames.clear();
+        frames.reserve(input.frames());
         for input_frame in input.samples().chunks_exact(input.channels()) {
             let mut output = [0.0_f32; 2];
             for (index, (sample, coeff)) in input_frame.iter().zip(&self.coefficients).enumerate() {

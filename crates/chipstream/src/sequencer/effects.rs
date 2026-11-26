@@ -190,6 +190,14 @@ pub(super) struct EffectRack {
     groups: Vec<Group>,
 }
 
+/// Reusable work buffers, independent of checkpointed effect state.
+#[derive(Default)]
+pub(super) struct EffectScratch {
+    pub(super) stereo: Vec<[f32; 2]>,
+    native: Vec<f32>,
+    groups: Vec<Vec<[f32; 2]>>,
+}
+
 impl EffectRack {
     /// Initialize an empty rack for the native output count.
     pub(super) fn new(channels: usize) -> Self {
@@ -406,26 +414,37 @@ impl EffectRack {
         base: &[[f32; 2]],
         masks: &[[bool; 2]],
         gains: &[f32],
+        scratch: &mut EffectScratch,
     ) -> Result<StereoBlock, AudioError> {
+        let mut mixed = std::mem::take(&mut scratch.stereo);
         if self.native.iter().all(Vec::is_empty)
             && self.pans.iter().all(Option::is_none)
             && self.groups.iter().all(|group| group.effects.is_empty())
         {
-            return matrix.convert_with_gains(input, Some(gains));
+            return matrix.convert_with_gains_into(input, Some(gains), mixed);
         }
         let rate = input.sample_rate_ratio();
         let count = input.frames();
-        let mut mixed = vec![[0.0; 2]; count];
-        let mut grouped = vec![vec![[0.0; 2]; count]; self.groups.len()];
+        mixed.clear();
+        mixed.resize(count, [0.0; 2]);
+        scratch.groups.resize_with(self.groups.len(), Vec::new);
+        for (group, frames) in self.groups.iter().zip(&mut scratch.groups) {
+            if !group.effects.is_empty() {
+                frames.clear();
+                frames.resize(count, [0.0; 2]);
+            }
+        }
         for output in 0..input.channels() {
-            let mut samples: Vec<f32> = input
-                .samples()
-                .chunks_exact(input.channels())
-                .map(|frame| frame[output] as f32)
-                .collect();
+            scratch.native.clear();
+            scratch.native.extend(
+                input
+                    .samples()
+                    .chunks_exact(input.channels())
+                    .map(|frame| frame[output] as f32),
+            );
             for entry in &mut self.native[output] {
-                entry.effect.process(&mut samples, rate)?;
-                if samples.iter().any(|sample| !sample.is_finite()) {
+                entry.effect.process(&mut scratch.native, rate)?;
+                if scratch.native.iter().any(|sample| !sample.is_finite()) {
                     return Err(AudioError::NonFiniteSample);
                 }
             }
@@ -450,20 +469,20 @@ impl EffectRack {
                 .iter()
                 .position(|group| !group.effects.is_empty() && group.outputs.contains(&output))
             {
-                &mut grouped[index]
+                &mut scratch.groups[index]
             } else {
                 &mut mixed
             };
-            for (frame, sample) in destination.iter_mut().zip(samples) {
+            for (frame, sample) in destination.iter_mut().zip(&scratch.native) {
                 frame[0] += sample * coeff[0] * gains[output];
                 frame[1] += sample * coeff[1] * gains[output];
             }
         }
-        for (group, frames) in self.groups.iter_mut().zip(grouped) {
+        for (group, frames) in self.groups.iter_mut().zip(&mut scratch.groups) {
             if group.effects.is_empty() {
                 continue;
             }
-            let mut block = StereoBlock::new(rate, frames)?;
+            let mut block = StereoBlock::new(rate, std::mem::take(frames))?;
             for entry in &mut group.effects {
                 entry.effect.process(&mut block)?;
                 if block.sample_rate() != rate {
@@ -483,6 +502,7 @@ impl EffectRack {
                 output[0] += frame[0];
                 output[1] += frame[1];
             }
+            *frames = block.frames;
         }
         if let Some(mute) = input.stereo_mute() {
             for frame in &mut mixed {

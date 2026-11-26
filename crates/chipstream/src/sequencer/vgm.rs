@@ -104,7 +104,7 @@ use crate::fixed::{advance, divide_ratio};
 use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
 use super::Okim6258Divider;
-use super::effects::{EffectError, EffectId, EffectRack, OutputGroupId};
+use super::effects::{EffectError, EffectId, EffectRack, EffectScratch, OutputGroupId};
 use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
 use config::{ChipConfiguration, VoiceConfig, chip_id};
@@ -480,6 +480,9 @@ struct Voice {
     phase_step: u32,
     /// Resampled frames awaiting the sequencer mix.
     queue: VecDeque<[f32; 2]>,
+    /// Scratch buffers for capture, conversion, and effects.
+    raw_scratch: Vec<i32>,
+    effect_scratch: EffectScratch,
     /// Post-resampling chip gain.
     gain: f32,
     /// Per-native-output gains applied before resampling.
@@ -770,17 +773,19 @@ impl Voice {
         let samples = frames
             .checked_mul(self.route.chip().channels())
             .ok_or(VgmSequencerError::DurationOverflow)?;
-        let mut raw = vec![0; samples];
-        let native = self.route.capture(&mut raw)?;
+        self.raw_scratch.resize(samples, 0);
+        self.raw_scratch.fill(0);
+        let native = self.route.capture(&mut self.raw_scratch)?;
         let stereo = self.effects.process(
             &native,
             &self.matrix,
             &self.base_coefficients,
             &self.output_masks,
             &self.output_gains,
+            &mut self.effect_scratch,
         )?;
-        self.queue
-            .extend(self.resampler.process(&stereo)?.frames().iter().copied());
+        self.resampler.process_queued(&stereo, &mut self.queue)?;
+        self.effect_scratch.stereo = stereo.frames;
         Ok(())
     }
 }
@@ -1514,6 +1519,8 @@ impl<'a> VgmSequencer<'a> {
             phase_rate: None,
             phase_step: 0,
             queue: VecDeque::new(),
+            raw_scratch: Vec::new(),
+            effect_scratch: EffectScratch::default(),
             gain: 1.0,
             output_gains,
             effects,
@@ -2601,9 +2608,7 @@ impl<'a> VgmSequencer<'a> {
                 self.flush_paced_writes(sample_frame_origin)?;
                 for voice in &mut self.voices {
                     if !voice.route.chip().has_no_audio_output() {
-                        voice
-                            .queue
-                            .extend(voice.resampler.finish()?.frames().iter().copied());
+                        voice.resampler.finish_queued(&mut voice.queue)?;
                     }
                 }
                 self.ended = true;
@@ -2690,9 +2695,7 @@ impl<'a> VgmSequencer<'a> {
                     self.flush_paced_writes(sample_frame_origin)?;
                     for voice in &mut self.voices {
                         if !voice.route.chip().has_no_audio_output() {
-                            voice
-                                .queue
-                                .extend(voice.resampler.finish()?.frames().iter().copied());
+                            voice.resampler.finish_queued(&mut voice.queue)?;
                         }
                     }
                     self.ended = true;

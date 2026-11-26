@@ -111,6 +111,7 @@ impl StereoResampler {
         if output_rate == 0 {
             return Err(AudioError::InvalidSampleRate);
         }
+
         if min_input_rate == 0 || max_input_rate < min_input_rate {
             return Err(AudioError::InvalidRateRange {
                 min: min_input_rate,
@@ -201,6 +202,27 @@ impl StereoResampler {
     /// A rate change applies at the input block boundary without resetting the
     /// filter. The filter spans samples on both sides of that boundary.
     pub fn process(&mut self, input: &StereoBlock) -> Result<StereoBlock, AudioError> {
+        let mut output = Vec::new();
+        self.process_frames(input, &mut |frame| output.push(frame))?;
+        StereoBlock::new(SampleRate::from_hz(self.output_rate), output)
+    }
+
+    /// Append a block to the sequencer queue without an intermediate output block.
+    pub(crate) fn process_queued(
+        &mut self,
+        input: &StereoBlock,
+        output: &mut VecDeque<[f32; 2]>,
+    ) -> Result<(), AudioError> {
+        let start = output.len();
+        let result = self.process_frames(input, &mut |frame| output.push_back(frame));
+        Self::validate_queued(output, start, result)
+    }
+
+    fn process_frames(
+        &mut self,
+        input: &StereoBlock,
+        output: &mut impl FnMut([f32; 2]),
+    ) -> Result<(), AudioError> {
         if self.finished {
             return Err(AudioError::StreamFinished);
         }
@@ -219,7 +241,7 @@ impl StereoResampler {
             });
         }
         if input.frames().is_empty() {
-            return StereoBlock::new(SampleRate::from_hz(self.output_rate), Vec::new());
+            return Ok(());
         }
         if self.last_rate.is_none() {
             self.input
@@ -229,7 +251,6 @@ impl StereoResampler {
             multiply_ratio(self.output_rate, denominator, rate.numerator())
                 .ok_or(AudioError::OutputLengthOverflow)?;
         self.last_rate = Some(rate);
-        let mut output = Vec::new();
         for chunk in input.frames().chunks(self.max_chunk_frames) {
             for frame in chunk {
                 let advance = advance(&mut self.duration, whole_step, fraction_step)
@@ -240,28 +261,67 @@ impl StereoResampler {
                     .ok_or(AudioError::OutputLengthOverflow)?;
                 self.input.push_back((*frame, rate));
             }
-            self.generate(&mut output)?;
+            self.generate(output)?;
         }
-        StereoBlock::new(SampleRate::from_hz(self.output_rate), output)
+        Ok(())
     }
 
     /// Drain the filter and return the remaining fixed-point duration, rounded
     /// to frames. Fixed-point rounding can differ from exact rational duration.
     pub fn finish(&mut self) -> Result<StereoBlock, AudioError> {
+        let mut output = Vec::new();
+        self.finish_frames(&mut |frame| output.push(frame))?;
+        StereoBlock::new(SampleRate::from_hz(self.output_rate), output)
+    }
+
+    /// Append the final filter tail directly to the sequencer queue.
+    pub(crate) fn finish_queued(
+        &mut self,
+        output: &mut VecDeque<[f32; 2]>,
+    ) -> Result<(), AudioError> {
+        let start = output.len();
+        let result = self.finish_frames(&mut |frame| output.push_back(frame));
+        Self::validate_queued(output, start, result)
+    }
+
+    fn finish_frames(&mut self, output: &mut impl FnMut([f32; 2])) -> Result<(), AudioError> {
         if self.finished {
             return Err(AudioError::StreamFinished);
         }
-        let mut output = Vec::new();
         if let Some(rate) = self.last_rate {
             self.input
                 .extend(std::iter::repeat_n(([0.0; 2], rate), SINC_LENGTH));
-            self.generate(&mut output)?;
+            self.generate(output)?;
         }
         if self.due != 0 {
             return Err(AudioError::ResamplerDrainIncomplete);
         }
         self.finished = true;
-        StereoBlock::new(SampleRate::from_hz(self.output_rate), output)
+        Ok(())
+    }
+
+    /// Keep the queue unchanged on errors, as when appending an owned block.
+    fn validate_queued(
+        output: &mut VecDeque<[f32; 2]>,
+        start: usize,
+        result: Result<(), AudioError>,
+    ) -> Result<(), AudioError> {
+        let result = result.and_then(|()| {
+            if output
+                .iter()
+                .skip(start)
+                .flatten()
+                .any(|sample| !sample.is_finite())
+            {
+                Err(AudioError::NonFiniteSample)
+            } else {
+                Ok(())
+            }
+        });
+        if result.is_err() {
+            output.truncate(start);
+        }
+        result
     }
 
     /// Filter lookahead in output frames at the most recent input rate.
@@ -326,7 +386,7 @@ impl StereoResampler {
     }
 
     /// Produce due output frames while enough input exists for the sinc window.
-    fn generate(&mut self, output: &mut Vec<[f32; 2]>) -> Result<(), AudioError> {
+    fn generate(&mut self, output: &mut impl FnMut([f32; 2])) -> Result<(), AudioError> {
         while self.due != 0 {
             if self.pending_advance {
                 if !self.advance_position()? {
@@ -393,7 +453,7 @@ impl StereoResampler {
                 sample[0] += frame[0] * coefficient;
                 sample[1] += frame[1] * coefficient;
             }
-            output.push(sample);
+            output(sample);
             self.due -= 1;
             self.pending_advance = true;
         }
@@ -462,5 +522,82 @@ impl StereoResampler {
     fn find_rate_change(&self, position: usize, target: usize, rate: SampleRate) -> Option<usize> {
         let end = target.min(self.input.len().saturating_sub(1));
         ((position + 1)..=end).find(|index| !same_rate(self.input[*index].1, rate))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_output_matches_owned_blocks_across_rate_changes_and_finish() {
+        for adaptive in [false, true] {
+            let make_resampler = || {
+                if adaptive {
+                    StereoResampler::new_adaptive(48_000, 32_000, 48_000, 73).unwrap()
+                } else {
+                    StereoResampler::new(48_000, 32_000, 48_000, 73).unwrap()
+                }
+            };
+            let mut owned = make_resampler();
+            let mut queued = make_resampler();
+            let mut expected = vec![[42.0, -42.0]];
+            let mut actual = VecDeque::from(expected.clone());
+            for (rate, count) in [(44_100, 19), (32_000, 200), (48_000, 307), (44_100, 0)] {
+                let frames = (0..count)
+                    .map(|n| [n as f32 / 123.0, -(n as f32) / 211.0])
+                    .collect();
+                let input = StereoBlock::new(SampleRate::from_hz(rate), frames).unwrap();
+                expected.extend_from_slice(owned.process(&input).unwrap().frames());
+                queued.process_queued(&input, &mut actual).unwrap();
+                assert!(actual.iter().copied().eq(expected.iter().copied()));
+            }
+            expected.extend_from_slice(owned.finish().unwrap().frames());
+            queued.finish_queued(&mut actual).unwrap();
+            assert!(actual.iter().copied().eq(expected.iter().copied()));
+            assert!(matches!(
+                queued.finish_queued(&mut actual),
+                Err(AudioError::StreamFinished)
+            ));
+            assert!(actual.iter().copied().eq(expected.iter().copied()));
+        }
+    }
+
+    #[test]
+    fn queued_output_rolls_back_on_invalid_rate_and_nonfinite_output() {
+        let mut resampler = StereoResampler::new(48_000, 44_100, 44_100, 64).unwrap();
+        let mut queue = VecDeque::from([[2.0, 3.0]]);
+        let wrong_rate = StereoBlock::new(SampleRate::from_hz(32_000), vec![[0.0; 2]]).unwrap();
+        assert!(matches!(
+            resampler.process_queued(&wrong_rate, &mut queue),
+            Err(AudioError::RateOutOfRange { .. })
+        ));
+        assert_eq!(queue, VecDeque::from([[2.0, 3.0]]));
+
+        let extreme =
+            StereoBlock::new(SampleRate::from_hz(44_100), vec![[f32::MAX; 2]; 300]).unwrap();
+        let mut owned = StereoResampler::new(48_000, 44_100, 44_100, 64).unwrap();
+        assert!(matches!(
+            owned.process(&extreme),
+            Err(AudioError::NonFiniteSample)
+        ));
+        assert!(matches!(
+            resampler.process_queued(&extreme, &mut queue),
+            Err(AudioError::NonFiniteSample)
+        ));
+        assert_eq!(queue, VecDeque::from([[2.0, 3.0]]));
+
+        let short =
+            StereoBlock::new(SampleRate::from_hz(44_100), vec![[f32::MAX; 2]; 128]).unwrap();
+        let mut owned = StereoResampler::new(48_000, 44_100, 44_100, 64).unwrap();
+        let mut resampler = StereoResampler::new(48_000, 44_100, 44_100, 64).unwrap();
+        owned.process(&short).unwrap();
+        resampler.process_queued(&short, &mut queue).unwrap();
+        assert!(matches!(owned.finish(), Err(AudioError::NonFiniteSample)));
+        assert!(matches!(
+            resampler.finish_queued(&mut queue),
+            Err(AudioError::NonFiniteSample)
+        ));
+        assert_eq!(queue, VecDeque::from([[2.0, 3.0]]));
     }
 }

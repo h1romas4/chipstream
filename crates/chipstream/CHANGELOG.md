@@ -2,6 +2,7 @@
 
 ## v0.2.0 (unreleased)
 
+- Improve: Reuse sequencer capture buffers and append resampled frames directly to the output queue.
 - Improve: Reduce sequencer voice construction stack usage.
 - Improve: Share MultiPCM lookup tables to reduce stack and per-instance memory usage.
 - Add: XGM sequencer support for output pan, effects, write callbacks, state tracking, and command position.
