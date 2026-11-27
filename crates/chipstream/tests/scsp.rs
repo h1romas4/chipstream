@@ -126,6 +126,63 @@ fn pitch_and_amplitude_lfo_match_reference() {
 }
 
 #[test]
+fn noise_lfo_matches_reference() {
+    let mut chip = Scsp::new(22_579_200).unwrap();
+    chip.write_ram(0, &samples()).unwrap();
+    for (offset, value) in [
+        (0x400, 15),
+        (0x006, 8),
+        (0x008, 0x001f),
+        (0x00a, 0x3c00),
+        (0x012, 0x7fff),
+        (0x016, 0xe000),
+        (0x000, 0x1820),
+    ] {
+        word(&mut chip, offset, value);
+    }
+    let mut output = [0; 32];
+    chip.generate(&mut output).unwrap();
+    let reference = [
+        170, -99, 254, -202, 656, -1404, 2221, -429, 513, 26, 71, -347, 2079, -198, 1171, -718,
+    ];
+    for (frame, sample) in output.chunks_exact(2).zip(reference) {
+        assert_eq!(frame, [sample; 2]);
+    }
+}
+
+#[test]
+fn noise_source_matches_reference_after_restore_and_reset() {
+    fn setup_noise(chip: &mut Scsp) {
+        for (offset, value) in [
+            (0x400, 15),
+            (0x006, 8),
+            (0x00c, 0x100),
+            (0x016, 0xe000),
+            (0x000, 0x18a0),
+        ] {
+            word(chip, offset, value);
+        }
+    }
+    let mut chip = Scsp::new(22_579_200).unwrap();
+    setup_noise(&mut chip);
+    let state = chip.save_state().unwrap();
+    let mut output = [0; 16];
+    chip.generate(&mut output).unwrap();
+    let reference = [6116, -10576, 13427, 3816, 6058, 4182, -24949, -17040];
+    for (frame, sample) in output.chunks_exact(2).zip(reference) {
+        assert_eq!(frame, [sample; 2]);
+    }
+    chip.restore_state(state.as_ref()).unwrap();
+    let mut replay = [0; 16];
+    chip.generate(&mut replay).unwrap();
+    assert_eq!(output, replay);
+    chip.reset();
+    setup_noise(&mut chip);
+    chip.generate(&mut replay).unwrap();
+    assert_eq!(output, replay);
+}
+
+#[test]
 fn dma_loads_registers_from_shared_ram() {
     let mut chip = Scsp::new(22_579_200).unwrap();
     chip.write_ram(0, &samples()).unwrap();

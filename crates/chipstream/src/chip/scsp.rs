@@ -6,10 +6,24 @@ use super::scsp_dsp::Dsp;
 use super::{ChipError, ChipRegisterWrite, SampleRate, SoundChip};
 use soundlog::chip::Chip;
 use std::num::NonZeroU32;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 const RAM_SIZE: usize = 1 << 20;
 const SHIFT: u32 = 12;
+const NOISE_DATA: ([u8; 256], u32) = {
+    let mut table = [0; 256];
+    let mut seed = 0x1234_5678_u32;
+    let mut i = 0;
+    while i < table.len() {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        table[i] = seed as u8;
+        i += 1;
+    }
+    (table, seed)
+};
+static NOISE_TABLE: [u8; 256] = NOISE_DATA.0;
 const AR_TIMES: [f64; 64] = [
     100000., 100000., 8100., 6900., 6000., 4800., 4000., 3400., 3000., 2400., 2000., 1700., 1500.,
     1200., 1000., 860., 760., 600., 500., 430., 380., 300., 250., 220., 190., 150., 130., 110.,
@@ -272,7 +286,6 @@ pub struct Scsp {
     ram: Vec<u8>,
     dsp: Dsp,
     noise: u32,
-    noise_table: Arc<[u8; 256]>,
 }
 
 impl Scsp {
@@ -284,13 +297,6 @@ impl Scsp {
                 minimum: 512,
             });
         }
-        let mut seed = 0x1234_5678_u32;
-        let noise_table = Arc::new(std::array::from_fn(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            seed as u8
-        }));
         Ok(Self {
             clock,
             slots: [Slot::default(); 32],
@@ -299,8 +305,7 @@ impl Scsp {
             ring_pos: 0,
             ram: vec![0; RAM_SIZE],
             dsp: Dsp::default(),
-            noise: seed,
-            noise_table,
+            noise: NOISE_DATA.1,
         })
     }
 
@@ -429,7 +434,7 @@ impl Scsp {
                         2 * i - 256
                     }
                 }
-                _ => i32::from(self.noise_table[i as usize]),
+                _ => i32::from(NOISE_TABLE[i as usize]),
             }
         } else {
             match waveform {
@@ -458,7 +463,7 @@ impl Scsp {
                         i * 2 - 511
                     }
                 }
-                _ => 128 - i32::from(self.noise_table[i as usize]),
+                _ => 128 - i32::from(NOISE_TABLE[i as usize]),
             }
         }
     }
