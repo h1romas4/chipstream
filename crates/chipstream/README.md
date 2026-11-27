@@ -272,9 +272,8 @@ let xgm = XgmSequencer::new(
 For VGM, [`VgmSequencerOptions`](sequencer::VgmSequencerOptions) can also override the header's `loop_base` and
 `loop_modifier`; `None` preserves the respective header value.
 Its `pwm_compatibility` option enables a malformed-rip workaround by default;
-set it to `false` to disable the heuristic. The pre-render
-[`set_pwm_compatibility`](sequencer::VgmSequencer::set_pwm_compatibility) method can override this setting and is also available
-for generator sources.
+set it to `false` to disable the heuristic. For generator sources, configure
+the same setting using [`GeneratorConfig`](sequencer::GeneratorConfig).
 
 For VGM, [`new`](sequencer::VgmSequencer::new) accepts a parsed document,
 while [`from_vgm`](sequencer::VgmSequencer::from_vgm) accepts file bytes.

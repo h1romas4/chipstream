@@ -131,7 +131,7 @@ impl Player {
                         playback,
                         loop_base: options.loop_base,
                         loop_modifier: options.loop_modifier,
-                        ..Default::default()
+                        pwm_compatibility: options.compat_vgm_pwm.unwrap_or(true),
                     },
                     factories,
                 )
@@ -152,7 +152,6 @@ impl Player {
                         }
                     }
                 }
-                sequencer.set_pwm_compatibility(options.compat_vgm_pwm.unwrap_or(true))?;
                 Self::Vgm(sequencer)
             }
             Input::Mdx(package) => {

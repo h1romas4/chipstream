@@ -213,8 +213,6 @@ pub enum VgmSequencerError {
     StreamFailed,
     /// The playback duration exceeds supported limits.
     DurationOverflow,
-    /// PWM compatibility was configured after playback began.
-    PwmCompatibilityConfigurationAfterPlayback,
     /// Fadeout was configured after playback began.
     FadeoutConfigurationAfterPlayback,
     /// A checkpoint is incompatible with this sequencer.
@@ -297,9 +295,6 @@ impl fmt::Display for VgmSequencerError {
                 "sequencer cannot continue after a rendering or checkpoint restore error"
             ),
             Self::DurationOverflow => write!(f, "VGM playback duration exceeds supported limits"),
-            Self::PwmCompatibilityConfigurationAfterPlayback => {
-                write!(f, "PWM compatibility must be configured before rendering")
-            }
             Self::FadeoutConfigurationAfterPlayback => {
                 write!(f, "fadeout must be configured before rendering")
             }
@@ -925,8 +920,13 @@ pub struct VgmSequencerOptions {
     pub loop_modifier: Option<u8>,
     /// Enable the PWM initialization workaround for malformed VGM rips.
     ///
-    /// Enabled by default. See [`VgmSequencer::set_pwm_compatibility`] for
-    /// the heuristic and its effect on register writes.
+    /// Enabled by default. Per chip instance, 32 writes to non-control
+    /// registers before a control write with a nonzero low byte cause a `0x005`
+    /// control write immediately before the 32nd write. The cycle register
+    /// counts too; zero-low-byte control writes do not reset the count. The
+    /// decision is made once per instance and persists across loops. This may
+    /// enable intentionally disabled PWM. Synthetic writes are reported through
+    /// the event API before the triggering write at the same frame offset.
     pub pwm_compatibility: bool,
 }
 
@@ -945,7 +945,6 @@ impl Default for VgmSequencerOptions {
 ///
 /// The header and optional extra header declare the same chips, settings,
 /// clocks, and volumes as for VGM playback; no command pre-scan is performed.
-#[derive(Default)]
 pub struct GeneratorConfig {
     /// Chip clocks, settings, and global volume.
     pub header: VgmHeader,
@@ -961,6 +960,23 @@ pub struct GeneratorConfig {
     ///
     /// Set this for external factories when the header enables stereo.
     pub sn76489_stereo_used: [bool; 2],
+    /// Enable the PWM initialization workaround for malformed VGM rips.
+    ///
+    /// Enabled by default. See [`VgmSequencerOptions::pwm_compatibility`] for
+    /// details of the heuristic.
+    pub pwm_compatibility: bool,
+}
+
+impl Default for GeneratorConfig {
+    fn default() -> Self {
+        Self {
+            header: VgmHeader::default(),
+            extra_header: None,
+            clock_ranges: Vec::new(),
+            sn76489_stereo_used: [false; 2],
+            pwm_compatibility: true,
+        }
+    }
 }
 
 /// Exact sequencer state captured at an output-block boundary.
@@ -1679,14 +1695,18 @@ impl<'a> VgmSequencer<'a> {
                 .timing
                 .include_range(chip, *instance, *range.start(), *range.end());
         }
-        Self::from_generator_parts(
+        let mut player = Self::from_generator_parts(
             generator,
             None,
             prepared,
             output_rate,
             chunk_frames,
             factories,
-        )
+        )?;
+        player.pwm_compatibility = config
+            .pwm_compatibility
+            .then_some([PwmCompatibility::default(); 2]);
+        Ok(player)
     }
 
     /// Create a generator-backed sequencer, optionally with a replay source.
@@ -1802,7 +1822,9 @@ impl<'a> VgmSequencer<'a> {
     fn apply_options(&mut self, options: VgmSequencerOptions) -> Result<(), VgmSequencerError> {
         let fadeout = super::options::fadeout_samples(options.playback.fadeout)?;
         self.configure_fadeout(fadeout, None)?;
-        self.set_pwm_compatibility(options.pwm_compatibility)?;
+        self.pwm_compatibility = options
+            .pwm_compatibility
+            .then_some([PwmCompatibility::default(); 2]);
         self.stream.set_loop_count(options.playback.loop_count);
         self.stream_settings.push((
             self.stream_steps,
@@ -1836,26 +1858,6 @@ impl<'a> VgmSequencer<'a> {
         }
         self.fade_samples = samples.filter(|samples| *samples != 0);
         self.fade_marker = marker;
-        Ok(())
-    }
-
-    /// Enable or disable the bad-rip PWM channel initialization workaround.
-    ///
-    /// Enabled by default. For VGM files and documents, this overrides
-    /// [`VgmSequencerOptions::pwm_compatibility`]. Configuration is only
-    /// allowed before rendering, including for generator sources.
-    /// Per chip instance, 32 writes to non-control registers before a control
-    /// write with a nonzero low byte cause a `0x005` control write immediately
-    /// before the 32nd write. The cycle register counts too; zero-low-byte
-    /// control writes do not reset the count. The decision is made once per
-    /// instance and persists across loops. This heuristic may enable
-    /// intentionally disabled PWM. Synthetic writes are reported through the
-    /// event API before the triggering write at the same frame offset.
-    pub fn set_pwm_compatibility(&mut self, enabled: bool) -> Result<(), VgmSequencerError> {
-        if self.started {
-            return Err(VgmSequencerError::PwmCompatibilityConfigurationAfterPlayback);
-        }
-        self.pwm_compatibility = enabled.then_some([PwmCompatibility::default(); 2]);
         Ok(())
     }
 

@@ -1649,9 +1649,6 @@ fn load_sequencer_with_factories(
             )
             .map_err(|error| format!("failed to create VGM sequencer: {error}"))?;
             configure_adjacent_ym2608_rhythm_rom(path, &mut player)?;
-            player
-                .set_pwm_compatibility(true)
-                .map_err(|error| format!("failed to configure VGM playback: {error}"))?;
             Ok((Sequencer::Vgm(player), metadata, warning, duration_frames))
         }
         _ => Err(format!(

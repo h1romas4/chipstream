@@ -1,9 +1,7 @@
 #![cfg(feature = "pwm")]
 
 use chipstream::chip::{ChipError, ChipRegisterWrite, Pwm, SoundChip};
-use chipstream::sequencer::{
-    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
-};
+use chipstream::sequencer::{PlaybackOptions, VgmSequencer, VgmSequencerOptions};
 use soundlog::chip::{Chip, PwmSpec};
 use soundlog::vgm::command::{Instance, WaitSamples};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
@@ -182,15 +180,14 @@ fn vgm_bad_rip_workaround_triggers_on_32nd_non_control_write() {
             .any(|frame| frame[0] > 0.001 && frame[1] > 0.001)
     );
 
-    let mut disabled = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
-    disabled.set_pwm_compatibility(false).unwrap();
+    let options = VgmSequencerOptions {
+        pwm_compatibility: false,
+        ..Default::default()
+    };
+    let mut disabled = VgmSequencer::new(document, 44_100, 128, options).unwrap();
     let (silent, events) = render_events(&mut disabled);
     assert!(silent.iter().flatten().all(|sample| *sample == 0.0));
     assert!(events.iter().all(|event| event.0 != 0 || event.1 != 5));
-    assert!(matches!(
-        disabled.set_pwm_compatibility(true),
-        Err(VgmSequencerError::PwmCompatibilityConfigurationAfterPlayback)
-    ));
 }
 
 #[test]
@@ -225,17 +222,11 @@ fn pwm_compatibility_option_applies_to_all_vgm_constructors_and_checkpoints() {
         player.restore_checkpoint(&checkpoint).unwrap();
         assert_eq!(render_events(player), (audio, events));
     }
-
-    let mut overridden = VgmSequencer::new(pwm_rip(None, 32), 44_100, 64, options).unwrap();
-    overridden.set_pwm_compatibility(true).unwrap();
-    let (audio, events) = render_events(&mut overridden);
-    assert!(audio.iter().flatten().any(|sample| *sample != 0.0));
-    assert!(events.iter().any(|event| event.0 == 0 && event.1 == 5));
 }
 
 #[test]
-fn pwm_compatibility_setter_remains_available_for_generators() {
-    use chipstream::sequencer::GeneratorConfig;
+fn pwm_compatibility_config_applies_to_generator_constructors() {
+    use chipstream::sequencer::{ChipFactoryRegistry, GeneratorConfig};
     use soundlog::vgm::command::VgmCommand;
 
     #[derive(Debug)]
@@ -246,22 +237,37 @@ fn pwm_compatibility_setter_remains_available_for_generators() {
         }
     }
 
-    let document = pwm_rip(None, 32);
-    let config = GeneratorConfig {
-        header: document.header,
-        ..Default::default()
-    };
-    let mut player = VgmSequencer::from_generator(
-        Box::new(Commands(document.commands.into_iter())),
-        config,
-        44_100,
-        64,
-    )
-    .unwrap();
-    player.set_pwm_compatibility(false).unwrap();
-    let (audio, events) = render_events(&mut player);
-    assert!(audio.iter().flatten().all(|sample| *sample == 0.0));
-    assert!(events.iter().all(|event| event.0 != 0));
+    for enabled in [true, false] {
+        for with_factories in [true, false] {
+            let document = pwm_rip(None, 32);
+            let mut config = GeneratorConfig {
+                header: document.header,
+                ..Default::default()
+            };
+            if !enabled {
+                config.pwm_compatibility = false;
+            }
+            let generator = Box::new(Commands(document.commands.into_iter()));
+            let mut player = if with_factories {
+                VgmSequencer::from_generator_with_factories(
+                    generator,
+                    config,
+                    44_100,
+                    64,
+                    ChipFactoryRegistry::new(),
+                )
+            } else {
+                VgmSequencer::from_generator(generator, config, 44_100, 64)
+            }
+            .unwrap();
+            let (audio, events) = render_events(&mut player);
+            assert_eq!(audio.iter().flatten().any(|sample| *sample != 0.0), enabled);
+            assert_eq!(
+                events.iter().any(|event| event.0 == 0 && event.1 == 5),
+                enabled
+            );
+        }
+    }
 }
 
 #[test]
