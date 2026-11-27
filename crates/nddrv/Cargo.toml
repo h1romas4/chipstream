@@ -6,6 +6,9 @@ description = "Desktop VGM, MDX, and XGM library and player."
 license = "BSD-3-Clause"
 repository = "https://github.com/h1romas4/chipstream"
 
+[lints]
+workspace = true
+
 [package.metadata.packager]
 product-name = "NDDRV"
 identifier = "io.github.h1romas4.nddrv"

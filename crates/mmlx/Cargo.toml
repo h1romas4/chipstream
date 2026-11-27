@@ -11,6 +11,9 @@ readme = "README.md"
 keywords = ["mml", "compiler", "music"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 default = []
 source-map = []

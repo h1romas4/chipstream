@@ -8,6 +8,9 @@ authors = ["h1romas4 <h1romas4@gmail.com>"]
 repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1.0"
 chipstream = { path = "../chipstream", version = "0.2.0", features = ["mdx", "xgm", "ay8910", "c140", "c352", "es550x", "ga20", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "saa1099", "scsp", "segapcm", "sn76496", "upd7759", "x1010", "ymz280b"] }

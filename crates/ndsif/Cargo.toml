@@ -8,6 +8,9 @@ license = "BSD-3-Clause"
 repository = "https://github.com/h1romas4/chipstream"
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 cobs = { version = "0.5.1", default-features = false }
 crc = { version = "3.4", default-features = false }

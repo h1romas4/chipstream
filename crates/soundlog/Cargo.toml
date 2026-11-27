@@ -16,6 +16,9 @@ exclude = [
     "assets/vgm/**",
 ]
 
+[lints]
+workspace = true
+
 [features]
 default = []
 mdx = []
