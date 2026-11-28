@@ -1,6 +1,6 @@
 use chipstream::sequencer::{
-    GeneratorConfig, GeneratorLoopMarker, PlaybackDuration, PlaybackOptions, VgmSequencer,
-    VgmSequencerError, VgmSequencerOptions, measure_generator_duration_frames,
+    GeneratorConfig, GeneratorLoopMarker, GeneratorStreamLimits, PlaybackDuration, PlaybackOptions,
+    VgmSequencer, VgmSequencerError, VgmSequencerOptions, measure_generator_duration_frames,
 };
 #[cfg(feature = "mdx")]
 use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
@@ -53,6 +53,228 @@ fn render_frames(player: &mut VgmSequencer<'_>) -> Vec<[f32; 2]> {
         frames.extend_from_slice(block.frames());
     }
     frames
+}
+
+#[test]
+fn generator_stream_limits_apply_to_playback_and_duration() {
+    use soundlog::vgm::command::{
+        ChipId, DacStreamChipType, DataBlock, Instance, LengthMode, SetStreamData,
+        SetStreamFrequency, SetupStreamControl, StartStream, StopStream,
+    };
+
+    let defaults = GeneratorStreamLimits::default();
+    let stream = soundlog::VgmStream::new();
+    assert_eq!(
+        defaults.max_commands_without_wait,
+        stream.max_commands_without_wait()
+    );
+    assert_eq!(
+        defaults.max_stream_steps_per_wait,
+        stream.max_stream_steps_per_wait()
+    );
+    assert_eq!(defaults.max_data_block_size, stream.max_data_block_size());
+    assert_eq!(defaults.max_data_block_count, stream.max_data_block_count());
+    let block = |data: Vec<u8>| {
+        VgmCommand::from(DataBlock {
+            marker: 0x66,
+            chip_instance: 0,
+            data_type: 0xff,
+            size: data.len() as u32,
+            data,
+        })
+    };
+    let mut dac = VgmBuilder::new();
+    dac.add_vgm_command(DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0,
+        size: 1,
+        data: vec![0x80],
+    });
+    dac.add_vgm_command(SetupStreamControl {
+        stream_id: 0,
+        chip_type: DacStreamChipType {
+            chip_id: ChipId::Ym2612,
+            instance: Instance::Primary,
+        },
+        write_port: 0,
+        write_command: 0x2a,
+    });
+    dac.add_vgm_command(SetStreamData {
+        stream_id: 0,
+        data_bank_id: 0,
+        step_size: 1,
+        step_base: 0,
+    });
+    dac.add_vgm_command(SetStreamFrequency {
+        stream_id: 0,
+        frequency: 44_100,
+    });
+    dac.add_vgm_command(StartStream {
+        stream_id: 0,
+        data_start_offset: 0,
+        length_mode: LengthMode::CommandCount {
+            reverse: false,
+            looped: true,
+        },
+        data_length: 1,
+    });
+    dac.add_vgm_command(WaitSamples(2));
+    let cases = [
+        (
+            vec![StopStream { stream_id: 0 }.into(), WaitSamples(2).into()],
+            GeneratorStreamLimits {
+                max_commands_without_wait: Some(1),
+                ..Default::default()
+            },
+            GeneratorStreamLimits {
+                max_commands_without_wait: None,
+                ..Default::default()
+            },
+        ),
+        (
+            dac.finalize().commands,
+            GeneratorStreamLimits {
+                max_stream_steps_per_wait: Some(0),
+                ..Default::default()
+            },
+            GeneratorStreamLimits {
+                max_stream_steps_per_wait: None,
+                ..Default::default()
+            },
+        ),
+        (
+            vec![block(vec![1, 2, 3]), WaitSamples(2).into()],
+            GeneratorStreamLimits {
+                max_data_block_size: 2,
+                ..Default::default()
+            },
+            GeneratorStreamLimits {
+                max_data_block_size: 3,
+                ..Default::default()
+            },
+        ),
+        (
+            vec![block(vec![]), block(vec![]), WaitSamples(2).into()],
+            GeneratorStreamLimits {
+                max_data_block_count: Some(1),
+                ..Default::default()
+            },
+            GeneratorStreamLimits {
+                max_data_block_count: None,
+                ..Default::default()
+            },
+        ),
+    ];
+    for (index, (commands, limited, allowed)) in cases.into_iter().enumerate() {
+        for scan in [false, true] {
+            for (limits, should_fail) in [(limited, true), (allowed, false)] {
+                let config = GeneratorConfig {
+                    stream_limits: limits,
+                    strict_chip_writes: false,
+                    ..Default::default()
+                };
+                let source = marked_generator(commands.clone(), None, usize::MAX, 0);
+                let result = if scan {
+                    measure_generator_duration_frames(source, 44_100, &config, 1000).map(|_| ())
+                } else {
+                    let mut player =
+                        VgmSequencer::from_generator(source, config, 44_100, 64).unwrap();
+                    loop {
+                        match player.render() {
+                            Ok(Some(_)) => {}
+                            Ok(None) => break Ok(()),
+                            Err(error) => {
+                                assert!(matches!(
+                                    player.render(),
+                                    Err(VgmSequencerError::StreamFailed)
+                                ));
+                                break Err(error);
+                            }
+                        }
+                    }
+                };
+                if should_fail {
+                    assert!(matches!(
+                        (index, result),
+                        (
+                            0,
+                            Err(VgmSequencerError::Parse(ParseError::CommandLimitExceeded {
+                                limit: 1
+                            }))
+                        ) | (
+                            1,
+                            Err(VgmSequencerError::Parse(
+                                ParseError::StreamStepLimitExceeded { limit: 0 }
+                            ))
+                        ) | (
+                            2,
+                            Err(VgmSequencerError::Parse(
+                                ParseError::DataBlockSizeExceeded { limit: 2, .. }
+                            ))
+                        ) | (
+                            3,
+                            Err(VgmSequencerError::Parse(
+                                ParseError::DataBlockCountExceeded { limit: 1, .. }
+                            ))
+                        )
+                    ));
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn generator_stream_limits_survive_checkpoint_reconstruction() {
+    use soundlog::vgm::command::DataBlock;
+    let block: VgmCommand = DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0xff,
+        size: 0,
+        data: vec![],
+    }
+    .into();
+    let mut commands = vec![block.clone(); 257];
+    commands.extend([WaitSamples(100).into(), block, WaitSamples(1).into()]);
+    for seek in [false, true] {
+        let commands = commands.clone();
+        let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+            Ok(marked_generator(commands.clone(), None, usize::MAX, 0))
+        };
+        let config = GeneratorConfig {
+            stream_limits: GeneratorStreamLimits {
+                max_data_block_count: Some(257),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut player = VgmSequencer::from_generator_factory(factory, config, 44_100, 64).unwrap();
+        player.render().unwrap().unwrap();
+        let checkpoint = player.checkpoint().unwrap();
+        let result = if seek {
+            player.seek_to_frame(&checkpoint, 101)
+        } else {
+            player.restore_checkpoint(&checkpoint).unwrap();
+            player.render().map(|_| ())
+        };
+        assert!(matches!(
+            result,
+            Err(VgmSequencerError::Parse(
+                ParseError::DataBlockCountExceeded {
+                    current_count: 257,
+                    limit: 257
+                }
+            ))
+        ));
+        assert!(matches!(
+            player.render(),
+            Err(VgmSequencerError::StreamFailed)
+        ));
+    }
 }
 
 #[test]

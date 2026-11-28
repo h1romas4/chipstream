@@ -255,6 +255,36 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+#### Custom generator stream limits
+
+Set [`GeneratorStreamLimits`](sequencer::GeneratorStreamLimits) in
+`GeneratorConfig` to control the internal VGM stream's command, DAC expansion,
+and data-block budgets:
+
+```rust
+use chipstream::sequencer::{GeneratorConfig, GeneratorStreamLimits};
+
+let config = GeneratorConfig {
+    stream_limits: GeneratorStreamLimits {
+        max_commands_without_wait: Some(200_000),
+        max_data_block_size: 16 * 1024 * 1024,
+        ..Default::default()
+    },
+    ..Default::default()
+};
+# let _ = config;
+```
+
+Defaults match soundlog: 100,000 commands without time progress, 1,000,000
+DAC steps per positive wait, 32 MiB of accumulated raw and decoded data-block
+bytes, and 256 data blocks. `None` disables the optional limits; zero rejects
+commands, DAC steps, data-block bytes, or data blocks respectively.
+Exceeding a limit returns a parsing error and stops
+playback. These settings also apply to custom-generator duration scans and
+checkpoint reconstruction. They do not limit allocations or execution time
+inside the generator itself. The soundlog input-buffer limit only applies to
+chunk-fed input and does not apply to generators.
+
 #### Custom generator loop boundaries and fade
 
 For a fade at a custom generator's selected loop boundary, share a fresh

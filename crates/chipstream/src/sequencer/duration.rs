@@ -62,8 +62,8 @@ impl PlaybackDuration {
 /// limit or the maximum frame count is reached. The generator controls its own
 /// loop count and must continue producing commands through the fade.
 ///
-/// Only `config.loop_marker` and `config.fadeout` affect this scan; chip
-/// configuration and writes are not validated.
+/// The loop marker, fadeout, and stream limits in `config` affect this scan;
+/// chip configuration and writes are not validated.
 pub fn measure_generator_duration_frames(
     generator: Box<dyn VgmCommandGenerator>,
     output_rate: u32,
@@ -71,8 +71,10 @@ pub fn measure_generator_duration_frames(
     max_commands: u32,
 ) -> Result<PlaybackDuration, VgmSequencerError> {
     let fade = VgmSequencer::generator_fadeout(config)?;
+    let mut stream = VgmStream::from_generator(generator);
+    config.stream_limits.apply(&mut stream);
     measure_stream_frames(
-        VgmStream::from_generator(generator),
+        stream,
         output_rate,
         config.loop_marker.clone().map(FadeMarker::Generator),
         fade,

@@ -50,8 +50,8 @@ pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
 pub use vgm::{
-    GeneratorConfig, GeneratorLoopMarker, NativeOutput, VgmSequencer, VgmSequencerCheckpoint,
-    VgmSequencerError, VgmSequencerOptions,
+    GeneratorConfig, GeneratorLoopMarker, GeneratorStreamLimits, NativeOutput, VgmSequencer,
+    VgmSequencerCheckpoint, VgmSequencerError, VgmSequencerOptions,
 };
 #[cfg(feature = "xgm")]
 pub use xgm::{XgmSequencer, XgmSequencerOptions};

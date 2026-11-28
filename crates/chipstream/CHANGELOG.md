@@ -2,6 +2,7 @@
 
 ## v0.2.0 (unreleased)
 
+- Breaking: Add configurable VGM stream resource limits to `GeneratorConfig`, shared by custom-generator playback, reconstruction, and duration scans.
 - Add: Typed, output-frame-aligned custom generator and MDX execution notifications, including checkpoint and seek handling.
 - Breaking: Add custom-generator loop markers and fade configuration to `GeneratorConfig`, and bounded generator duration measurement.
 - Breaking: Custom generators reject writes to missing chip instances by default; set `GeneratorConfig::strict_chip_writes` to `false` to ignore them.

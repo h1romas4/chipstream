@@ -1044,6 +1044,43 @@ impl GeneratorLoopMarker {
     }
 }
 
+/// Resource limits for a generator-backed VGM stream.
+///
+/// Defaults match [`VgmStream`]. Limits apply independently to each stream
+/// reconstruction and to custom-generator duration scans. They cannot
+/// interrupt work performed inside a generator's `next_command` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeneratorStreamLimits {
+    /// Raw commands allowed without advancing source sample time; `None` disables the limit.
+    pub max_commands_without_wait: Option<u32>,
+    /// DAC stream steps allowed per positive input wait; `None` disables the limit.
+    pub max_stream_steps_per_wait: Option<u32>,
+    /// Maximum cumulative raw and decoded data-block bytes.
+    pub max_data_block_size: usize,
+    /// Maximum number of data blocks processed; `None` disables the limit.
+    pub max_data_block_count: Option<usize>,
+}
+
+impl Default for GeneratorStreamLimits {
+    fn default() -> Self {
+        Self {
+            max_commands_without_wait: Some(100_000),
+            max_stream_steps_per_wait: Some(1_000_000),
+            max_data_block_size: 32 * 1024 * 1024,
+            max_data_block_count: Some(256),
+        }
+    }
+}
+
+impl GeneratorStreamLimits {
+    pub(super) fn apply(&self, stream: &mut VgmStream) {
+        stream.set_max_commands_without_wait(self.max_commands_without_wait);
+        stream.set_max_stream_steps_per_wait(self.max_stream_steps_per_wait);
+        stream.set_max_data_block_size(self.max_data_block_size);
+        stream.set_max_data_block_count(self.max_data_block_count);
+    }
+}
+
 /// Initialization information for a single-pass VGM command generator.
 ///
 /// The header and optional extra header declare the same chips, settings,
@@ -1084,6 +1121,8 @@ pub struct GeneratorConfig {
     ///
     /// `None` and durations rounding to zero disable fading.
     pub fadeout: Option<Duration>,
+    /// Resource limits for the generated VGM command stream.
+    pub stream_limits: GeneratorStreamLimits,
 }
 
 impl Default for GeneratorConfig {
@@ -1097,6 +1136,7 @@ impl Default for GeneratorConfig {
             strict_chip_writes: true,
             loop_marker: None,
             fadeout: None,
+            stream_limits: GeneratorStreamLimits::default(),
         }
     }
 }
@@ -1849,14 +1889,14 @@ impl<'a> VgmSequencer<'a> {
         Self::generator_fadeout(&config)?;
         let generator = factory()?;
         let marker = config.loop_marker.clone();
+        let limits = config.stream_limits;
         let stream_factory: StreamFactory = Box::new(move || {
             if let Some(marker) = &marker {
                 marker.clear();
             }
-            Ok((
-                VgmStream::from_generator(factory()?),
-                marker.clone().map(FadeMarker::Generator),
-            ))
+            let mut stream = VgmStream::from_generator(factory()?);
+            limits.apply(&mut stream);
+            Ok((stream, marker.clone().map(FadeMarker::Generator)))
         });
         Self::from_configured_generator(
             generator,
@@ -1912,6 +1952,7 @@ impl<'a> VgmSequencer<'a> {
             .pwm_compatibility
             .then_some([PwmCompatibility::default(); 2]);
         player.strict_chip_writes = config.strict_chip_writes;
+        config.stream_limits.apply(&mut player.stream);
         player.configure_fadeout(fadeout, config.loop_marker.map(FadeMarker::Generator))?;
         Ok(player)
     }
