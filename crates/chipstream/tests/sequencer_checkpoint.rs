@@ -1,13 +1,330 @@
+use chipstream::sequencer::{
+    GeneratorConfig, GeneratorLoopMarker, PlaybackDuration, PlaybackOptions, VgmSequencer,
+    VgmSequencerError, VgmSequencerOptions, measure_generator_duration_frames,
+};
 #[cfg(feature = "mdx")]
 use chipstream::sequencer::{MdxSequencer, MdxSequencerOptions};
-use chipstream::sequencer::{
-    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions,
-};
 #[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VgmBuilder;
-use soundlog::vgm::command::WaitSamples;
+use soundlog::vgm::command::{VgmCommand, WaitSamples};
+use soundlog::{ParseError, VgmCommandGenerator};
 use std::time::Duration;
+
+#[derive(Debug)]
+struct MarkedGenerator {
+    commands: std::vec::IntoIter<VgmCommand>,
+    marker: Option<GeneratorLoopMarker>,
+    report_at: usize,
+    calls: usize,
+    boundary: usize,
+}
+
+impl VgmCommandGenerator for MarkedGenerator {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        if self.calls == self.report_at
+            && let Some(marker) = &self.marker
+        {
+            marker.mark(self.boundary)?;
+        }
+        self.calls += 1;
+        Ok(self.commands.next())
+    }
+}
+
+fn marked_generator(
+    commands: Vec<VgmCommand>,
+    marker: Option<GeneratorLoopMarker>,
+    report_at: usize,
+    boundary: usize,
+) -> Box<dyn VgmCommandGenerator> {
+    Box::new(MarkedGenerator {
+        commands: commands.into_iter(),
+        marker,
+        report_at,
+        calls: 0,
+        boundary,
+    })
+}
+
+fn render_frames(player: &mut VgmSequencer<'_>) -> Vec<[f32; 2]> {
+    let mut frames = Vec::new();
+    while let Some(block) = player.render().unwrap() {
+        frames.extend_from_slice(block.frames());
+    }
+    frames
+}
+
+#[test]
+fn generator_fade_and_duration_use_exact_reported_sample() {
+    let document =
+        soundlog::VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let fade = Duration::from_secs_f64(200.0 / 44_100.0);
+    for (rate, chunk) in [(44_100, 17), (48_000, 256), (22_050, 31)] {
+        let marker = GeneratorLoopMarker::default();
+        let config = GeneratorConfig {
+            header: document.header.clone(),
+            extra_header: document.extra_header.clone(),
+            loop_marker: Some(marker.clone()),
+            fadeout: Some(fade),
+            ..Default::default()
+        };
+        let mut player = VgmSequencer::from_generator(
+            marked_generator(document.commands.clone(), Some(marker), 0, 400),
+            config,
+            rate,
+            chunk,
+        )
+        .unwrap();
+        let frames = render_frames(&mut player);
+        let start = (400_u64 * u64::from(rate) + 22_050) as usize / 44_100;
+        let end = (600_u64 * u64::from(rate) + 22_050) as usize / 44_100;
+        assert_eq!(player.fade_start_frame(), Some(start));
+        assert_eq!(frames.len(), end);
+
+        let mut baseline =
+            VgmSequencer::new(document.clone(), rate, chunk, Default::default()).unwrap();
+        let original = render_frames(&mut baseline);
+        assert!(
+            original[start..end]
+                .iter()
+                .any(|frame| frame[0].abs() > 0.0001)
+        );
+        for (index, (actual, original)) in frames.iter().zip(&original).enumerate() {
+            let gain = if index < start {
+                1.0
+            } else {
+                (end - 1 - index) as f32 / (end - start - 1) as f32
+            };
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - original[channel] * gain).abs() < 0.00002,
+                    "rate={rate}, chunk={chunk}, frame={index}, channel={channel}"
+                );
+            }
+        }
+
+        let marker = GeneratorLoopMarker::default();
+        let config = GeneratorConfig {
+            loop_marker: Some(marker.clone()),
+            fadeout: Some(fade),
+            ..Default::default()
+        };
+        assert_eq!(
+            measure_generator_duration_frames(
+                marked_generator(document.commands.clone(), Some(marker), 0, 400),
+                rate,
+                &config,
+                100_000,
+            )
+            .unwrap(),
+            PlaybackDuration::Finite(end as u32)
+        );
+    }
+}
+
+#[test]
+fn generator_loop_marker_and_fade_survive_checkpoint_and_seek() {
+    let marker = GeneratorLoopMarker::default();
+    let source_marker = marker.clone();
+    let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+        Ok(marked_generator(
+            vec![WaitSamples(2000).into()],
+            Some(source_marker.clone()),
+            0,
+            400,
+        ))
+    };
+    let config = GeneratorConfig {
+        loop_marker: Some(marker.clone()),
+        fadeout: Some(Duration::from_secs_f64(200.0 / 44_100.0)),
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator_factory(factory, config, 44_100, 64).unwrap();
+    let unstarted = player.checkpoint().unwrap();
+    player.render().unwrap();
+    let before = player.checkpoint().unwrap();
+    assert_eq!(marker.sample(), Some(400));
+    while player.fade_start_frame().is_none() {
+        player.render().unwrap().unwrap();
+    }
+    assert_eq!(player.fade_start_frame(), Some(400));
+    let during = player.checkpoint().unwrap();
+    let expected = render_frames(&mut player);
+    player.restore_checkpoint(&during).unwrap();
+    assert_eq!(render_frames(&mut player), expected);
+    player.restore_checkpoint(&before).unwrap();
+    assert_eq!(marker.sample(), Some(400));
+    player.seek_to_frame(&before, 410).unwrap();
+    assert_eq!(player.fade_start_frame(), Some(400));
+    assert_eq!(player.position_frames(), 410);
+    assert_eq!(render_frames(&mut player).len(), 190);
+    player.restore_checkpoint(&unstarted).unwrap();
+    assert_eq!(marker.sample(), None);
+    assert_eq!(render_frames(&mut player).len(), 600);
+    assert_eq!(marker.sample(), Some(400));
+}
+
+#[test]
+fn generator_can_report_boundary_at_current_sample() {
+    for scan in [false, true] {
+        let marker = GeneratorLoopMarker::default();
+        let config = GeneratorConfig {
+            loop_marker: Some(marker.clone()),
+            fadeout: Some(Duration::from_secs_f64(50.0 / 44_100.0)),
+            ..Default::default()
+        };
+        let generator = marked_generator(
+            vec![WaitSamples(100).into(), WaitSamples(100).into()],
+            Some(marker),
+            1,
+            100,
+        );
+        if scan {
+            assert_eq!(
+                measure_generator_duration_frames(generator, 44_100, &config, 10).unwrap(),
+                PlaybackDuration::Finite(150)
+            );
+        } else {
+            let mut player = VgmSequencer::from_generator(generator, config, 44_100, 32).unwrap();
+            assert_eq!(render_frames(&mut player).len(), 150);
+            assert_eq!(player.fade_start_frame(), Some(100));
+        }
+    }
+}
+
+#[test]
+fn generator_fade_boundaries_match_duration_across_rates_and_wait_steps() {
+    let fade = Duration::from_secs_f64(120.0 / 44_100.0);
+    for rate in [8_000, 44_100, 48_000, 96_000] {
+        for boundary in [0, 1, 255, 256, 257, 1000] {
+            let marker = GeneratorLoopMarker::default();
+            let config = GeneratorConfig {
+                loop_marker: Some(marker.clone()),
+                fadeout: Some(fade),
+                ..Default::default()
+            };
+            let mut player = VgmSequencer::from_generator(
+                marked_generator(vec![WaitSamples(1600).into()], Some(marker), 0, boundary),
+                config,
+                rate,
+                37,
+            )
+            .unwrap();
+            let expected_start = ((boundary as u64 * u64::from(rate) + 22_050) / 44_100) as usize;
+            let expected_end =
+                (((boundary + 120) as u64 * u64::from(rate) + 22_050) / 44_100) as usize;
+            assert_eq!(render_frames(&mut player).len(), expected_end);
+            assert_eq!(player.fade_start_frame(), Some(expected_start));
+
+            let marker = GeneratorLoopMarker::default();
+            let config = GeneratorConfig {
+                loop_marker: Some(marker.clone()),
+                fadeout: Some(fade),
+                ..Default::default()
+            };
+            assert_eq!(
+                measure_generator_duration_frames(
+                    marked_generator(vec![WaitSamples(1600).into()], Some(marker), 0, boundary),
+                    rate,
+                    &config,
+                    10,
+                )
+                .unwrap(),
+                PlaybackDuration::Finite(expected_end as u32)
+            );
+        }
+    }
+}
+
+#[test]
+fn generator_loop_boundary_errors_and_limits_are_explicit() {
+    let no_marker = GeneratorConfig {
+        fadeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    };
+    assert!(matches!(
+        VgmSequencer::from_generator(marked_generator(vec![], None, 0, 0), no_marker, 44_100, 64),
+        Err(VgmSequencerError::MissingGeneratorLoopMarker)
+    ));
+    let marker = GeneratorLoopMarker::default();
+    marker.mark(1).unwrap();
+    assert!(marker.mark(2).is_err());
+    assert_eq!(marker.sample(), Some(1));
+
+    for scan in [false, true] {
+        let marker = GeneratorLoopMarker::default();
+        let config = GeneratorConfig {
+            loop_marker: Some(marker.clone()),
+            fadeout: Some(Duration::from_secs(1)),
+            ..Default::default()
+        };
+        let generator = marked_generator(
+            vec![WaitSamples(100).into(), WaitSamples(100).into()],
+            Some(marker),
+            1,
+            50,
+        );
+        if scan {
+            assert!(matches!(
+                measure_generator_duration_frames(generator, 44_100, &config, 10),
+                Err(VgmSequencerError::LateGeneratorLoopBoundary {
+                    boundary: 50,
+                    current: 100
+                })
+            ));
+        } else {
+            let mut player = VgmSequencer::from_generator(generator, config, 44_100, 64).unwrap();
+            let error = loop {
+                match player.render() {
+                    Ok(Some(_)) => {}
+                    Err(error) => break error,
+                    Ok(None) => panic!("generator ended without reporting a late boundary"),
+                }
+            };
+            assert!(matches!(
+                error,
+                VgmSequencerError::LateGeneratorLoopBoundary {
+                    boundary: 50,
+                    current: 100
+                }
+            ));
+            assert!(matches!(
+                player.render(),
+                Err(VgmSequencerError::StreamFailed)
+            ));
+        }
+    }
+    let config = GeneratorConfig::default();
+    assert_eq!(
+        measure_generator_duration_frames(
+            marked_generator(vec![WaitSamples(10).into()], None, 0, 0),
+            44_100,
+            &config,
+            0
+        )
+        .unwrap(),
+        PlaybackDuration::Unknown
+    );
+
+    let marker = GeneratorLoopMarker::default();
+    let config = GeneratorConfig {
+        loop_marker: Some(marker.clone()),
+        fadeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    };
+    assert_eq!(
+        measure_generator_duration_frames(
+            marked_generator(vec![WaitSamples(10).into()], Some(marker), 0, 20),
+            44_100,
+            &config,
+            10,
+        )
+        .unwrap(),
+        PlaybackDuration::Finite(10)
+    );
+}
 
 #[test]
 fn generator_factory_reconstructs_for_checkpoint_and_seek() {

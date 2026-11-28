@@ -255,6 +255,66 @@ while let Some(block) = player.render()? {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+#### Custom generator loop boundaries and fade
+
+For a fade at a custom generator's selected loop boundary, share a fresh
+[`GeneratorLoopMarker`](sequencer::GeneratorLoopMarker) between the generator
+and `GeneratorConfig`. The generator controls its own loop count, reports the
+selected boundary in absolute 44,100 Hz samples, and continues producing
+commands for the fade. It may report the boundary ahead of time, but must do so
+before the stream has passed it. A natural ending may end the fade early.
+Marker observation can precede returned PCM; it is not a device playback
+position.
+
+```rust
+use std::time::Duration;
+use chipstream::sequencer::{GeneratorConfig, GeneratorLoopMarker, VgmSequencer};
+use soundlog::{ParseError, VgmCommandGenerator};
+use soundlog::vgm::command::{VgmCommand, WaitSamples};
+
+#[derive(Debug)]
+struct Source {
+    marker: GeneratorLoopMarker,
+    step: u8,
+}
+impl VgmCommandGenerator for Source {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        let command = match self.step {
+            0 => Some(WaitSamples(441).into()),
+            1 => {
+                self.marker.mark(441)?;
+                Some(WaitSamples(441).into())
+            }
+            _ => None,
+        };
+        self.step += 1;
+        Ok(command)
+    }
+}
+let marker = GeneratorLoopMarker::default();
+let source_marker = marker.clone();
+let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+    Ok(Box::new(Source { marker: source_marker.clone(), step: 0 }))
+};
+let config = GeneratorConfig {
+    loop_marker: Some(marker),
+    fadeout: Some(Duration::from_millis(10)),
+    ..Default::default()
+};
+let mut player = VgmSequencer::from_generator_factory(factory, config, 44_100, 128)?;
+let checkpoint = player.checkpoint()?;
+while player.render()?.is_some() {}
+assert_eq!(player.fade_start_frame(), Some(441));
+player.restore_checkpoint(&checkpoint)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The factory must use that same marker for each reconstructed generator.
+Restoration clears the marker and replays the generator, so notifications and
+other generator side effects can occur again. Use a fresh marker and generator
+for each player or [`measure_generator_duration_frames`](sequencer::measure_generator_duration_frames)
+scan. Duration scanning does not validate chip configuration or writes.
+
 ### Playback options
 
 The sequencers accept options at construction; their defaults request one

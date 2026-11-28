@@ -11,13 +11,14 @@
 pub(super) mod config;
 mod timing;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use soundlog::chip::state::ChipState;
 use soundlog::chip::{Chip, PwmSpec};
@@ -123,6 +124,7 @@ pub(super) type StreamFactory =
 
 #[derive(Clone)]
 pub(super) enum FadeMarker {
+    Generator(GeneratorLoopMarker),
     #[cfg(feature = "mdx")]
     Mdx(MdxLoopMarker),
     #[cfg(feature = "xgm")]
@@ -130,12 +132,32 @@ pub(super) enum FadeMarker {
 }
 
 impl FadeMarker {
-    pub(super) fn reached(&self) -> bool {
+    pub(super) fn reached(&self, sample: usize) -> Result<bool, VgmSequencerError> {
         match *self {
+            Self::Generator(ref marker) => match marker.sample() {
+                Some(boundary) if boundary < sample => {
+                    Err(VgmSequencerError::LateGeneratorLoopBoundary {
+                        boundary,
+                        current: sample,
+                    })
+                }
+                Some(boundary) => Ok(boundary == sample),
+                None => Ok(false),
+            },
             #[cfg(feature = "mdx")]
-            Self::Mdx(ref marker) => marker.reached(),
+            Self::Mdx(ref marker) => Ok(marker.reached()),
             #[cfg(feature = "xgm")]
-            Self::Xgm(ref marker) => marker.reached(),
+            Self::Xgm(ref marker) => Ok(marker.reached()),
+        }
+    }
+
+    pub(super) fn generator_sample(&self) -> Option<usize> {
+        match self {
+            Self::Generator(marker) => marker.sample(),
+            #[cfg(feature = "mdx")]
+            Self::Mdx(_) => None,
+            #[cfg(feature = "xgm")]
+            Self::Xgm(_) => None,
         }
     }
 }
@@ -216,6 +238,15 @@ pub enum VgmSequencerError {
     DurationOverflow,
     /// Fadeout was configured after playback began.
     FadeoutConfigurationAfterPlayback,
+    /// Generator fadeout requires a loop marker.
+    MissingGeneratorLoopMarker,
+    /// A generator reported a loop boundary after its source position had passed.
+    LateGeneratorLoopBoundary {
+        /// Reported boundary on the 44,100 Hz source timeline.
+        boundary: usize,
+        /// Source position already processed.
+        current: usize,
+    },
     /// A checkpoint is incompatible with this sequencer.
     CheckpointMismatch,
     /// A single-pass generator cannot be reconstructed for a checkpoint.
@@ -278,6 +309,15 @@ impl fmt::Display for VgmSequencerError {
             Self::InvalidChunkSize => write!(f, "output chunk size must be nonzero"),
             Self::InvalidSampleRate => write!(f, "output sample rate must be nonzero"),
             Self::InvalidGain => write!(f, "gain must be finite and nonnegative"),
+            Self::MissingGeneratorLoopMarker => {
+                write!(f, "generator fadeout requires a loop marker")
+            }
+            Self::LateGeneratorLoopBoundary { boundary, current } => {
+                write!(
+                    f,
+                    "generator loop boundary {boundary} was reported after source sample {current}"
+                )
+            }
             Self::ChipNotFound { chip, instance } => {
                 write!(f, "no playable {chip:?} {instance:?} chip")
             }
@@ -944,6 +984,47 @@ impl Default for VgmSequencerOptions {
     }
 }
 
+/// The selected loop boundary of a custom generator, on the 44,100 Hz timeline.
+///
+/// Give a clone to the generator and put another in [`GeneratorConfig`]. The
+/// generator chooses its own loop count and reports the final boundary while
+/// producing commands, before the stream passes that sample. It must continue
+/// generating commands during the fade. A boundary may be reported ahead of
+/// time, including in the middle of a wait. Natural termination still ends
+/// playback, even if the boundary or fade has not completed.
+///
+/// Use a fresh marker for each sequencer or duration scan. A reconstructible
+/// generator factory must use the same marker for each generator it creates;
+/// the sequencer clears it before reconstruction and replay reports it again.
+/// Observing the marker does not mean the corresponding PCM has been returned
+/// or played by an audio device.
+#[derive(Debug, Clone, Default)]
+pub struct GeneratorLoopMarker(Rc<Cell<Option<usize>>>);
+
+impl GeneratorLoopMarker {
+    /// Report the selected boundary once.
+    ///
+    /// Returns an error if a boundary has already been reported.
+    pub fn mark(&self, sample: usize) -> Result<(), soundlog::ParseError> {
+        if self.0.get().is_some() {
+            return Err(soundlog::ParseError::DataInconsistency(
+                "generator loop boundary was already reported".into(),
+            ));
+        }
+        self.0.set(Some(sample));
+        Ok(())
+    }
+
+    /// Return the reported source sample, if any.
+    pub fn sample(&self) -> Option<usize> {
+        self.0.get()
+    }
+
+    fn clear(&self) {
+        self.0.set(None);
+    }
+}
+
 /// Initialization information for a single-pass VGM command generator.
 ///
 /// The header and optional extra header declare the same chips, settings,
@@ -978,6 +1059,12 @@ pub struct GeneratorConfig {
     /// ES550x memory blocks use `Es5506U8` in errors for the shared VGM target.
     /// AY8910 requires a registered factory even when declared in the header.
     pub strict_chip_writes: bool,
+    /// Selected loop boundary reported by the generator.
+    pub loop_marker: Option<GeneratorLoopMarker>,
+    /// Fade duration after the reported boundary; requires `loop_marker`.
+    ///
+    /// `None` and durations rounding to zero disable fading.
+    pub fadeout: Option<Duration>,
 }
 
 impl Default for GeneratorConfig {
@@ -989,6 +1076,8 @@ impl Default for GeneratorConfig {
             sn76489_stereo_used: [false; 2],
             pwm_compatibility: true,
             strict_chip_writes: true,
+            loop_marker: None,
+            fadeout: None,
         }
     }
 }
@@ -1662,9 +1751,9 @@ impl<'a> VgmSequencer<'a> {
     ///
     /// Either `EndOfData` or the generator returning `Ok(None)` ends playback
     /// normally. Return `Err` if command generation fails. The generator handles
-    /// its own loops. Stream-level loop and fade settings do not provide a
-    /// generator loop point. Checkpoints are unsupported for this single-pass
-    /// source. The generator is called synchronously during rendering, which
+    /// its own loops and can report a fade boundary using
+    /// [`GeneratorConfig::loop_marker`]. Checkpoints are unsupported for this
+    /// single-pass source. The generator is called synchronously during rendering, which
     /// may read ahead and is not guaranteed real-time safe.
     pub fn from_generator(
         generator: Box<dyn VgmCommandGenerator>,
@@ -1704,7 +1793,9 @@ impl<'a> VgmSequencer<'a> {
     /// Play a generator that can be reconstructed for checkpoints and seeking.
     ///
     /// The factory is called once initially and again on each restore. It must
-    /// produce the same command sequence every time, compatible with `config`.
+    /// produce the same command sequence and loop boundary every time,
+    /// compatible with `config`. If a marker is configured, the factory must
+    /// give a clone of that marker to each newly created generator.
     /// This determinism is not verified by the sequencer.
     /// Restoration replays the consumed commands without rendering their audio;
     /// factory and generator side effects can occur again during replay.
@@ -1735,9 +1826,18 @@ impl<'a> VgmSequencer<'a> {
         factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
+        Self::generator_fadeout(&config)?;
         let generator = factory()?;
-        let stream_factory: StreamFactory =
-            Box::new(move || Ok((VgmStream::from_generator(factory()?), None)));
+        let marker = config.loop_marker.clone();
+        let stream_factory: StreamFactory = Box::new(move || {
+            if let Some(marker) = &marker {
+                marker.clear();
+            }
+            Ok((
+                VgmStream::from_generator(factory()?),
+                marker.clone().map(FadeMarker::Generator),
+            ))
+        });
         Self::from_configured_generator(
             generator,
             Some(stream_factory),
@@ -1757,6 +1857,7 @@ impl<'a> VgmSequencer<'a> {
         factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
+        let fadeout = Self::generator_fadeout(&config)?;
         let mut prepared =
             ChipConfiguration::from_header(&config.header, config.extra_header.as_ref(), true);
         prepared.set_psg_stereo(config.sn76489_stereo_used);
@@ -1791,7 +1892,18 @@ impl<'a> VgmSequencer<'a> {
             .pwm_compatibility
             .then_some([PwmCompatibility::default(); 2]);
         player.strict_chip_writes = config.strict_chip_writes;
+        player.configure_fadeout(fadeout, config.loop_marker.map(FadeMarker::Generator))?;
         Ok(player)
+    }
+
+    pub(super) fn generator_fadeout(
+        config: &GeneratorConfig,
+    ) -> Result<Option<u32>, VgmSequencerError> {
+        let fadeout = super::options::fadeout_samples(config.fadeout)?;
+        if fadeout.is_some() && config.loop_marker.is_none() {
+            return Err(VgmSequencerError::MissingGeneratorLoopMarker);
+        }
+        Ok(fadeout)
     }
 
     /// Create a generator-backed sequencer, optionally with a replay source.
@@ -2712,10 +2824,25 @@ impl<'a> VgmSequencer<'a> {
                 continue;
             }
             if self.wait > 0 {
-                let ticks = self
+                let source_sample = self.stream.current_sample() - self.wait as usize;
+                self.start_fade_if_needed(sample_frame_origin, source_sample)?;
+                let mut ticks = self
                     .wait
                     .min(WAIT_STEP)
                     .min(self.fade_remaining.unwrap_or(u32::MAX));
+                if self.fade_frames.is_none()
+                    && self.fade_samples.is_some()
+                    && let Some(boundary) = self
+                        .fade_marker
+                        .as_ref()
+                        .and_then(FadeMarker::generator_sample)
+                {
+                    ticks = ticks.min(
+                        boundary
+                            .saturating_sub(source_sample)
+                            .min(u32::MAX as usize) as u32,
+                    );
+                }
                 for voice in &mut self.voices {
                     voice.render(
                         ticks,
@@ -2747,6 +2874,8 @@ impl<'a> VgmSequencer<'a> {
                 }
                 continue;
             }
+            let source_sample = self.stream.current_sample();
+            self.start_fade_if_needed(sample_frame_origin, source_sample)?;
             let was_initial = self.stream.is_initial_timestamp();
             let result = self
                 .stream
@@ -2766,27 +2895,7 @@ impl<'a> VgmSequencer<'a> {
                     }
                 }
             }
-            if self.fade_frames.is_none()
-                && (self.stream.is_fading_out()
-                    || self.fade_marker.as_ref().is_some_and(FadeMarker::reached))
-                && let Some(samples) = self.fade_samples
-            {
-                let step = (self.output_rate / VGM_SAMPLE_RATE) as f32
-                    + self.output_step as f32 * PHASE_SCALE;
-                let length =
-                    (self.output_phase as f32 * PHASE_SCALE + samples as f32 * step).floor();
-                self.fade_frames = Some(Fade {
-                    start_frame: sample_frame_origin
-                        .checked_add(self.available)
-                        .ok_or(VgmSequencerError::DurationOverflow)?,
-                    pending: self.available,
-                    length,
-                    rate: self.output_rate,
-                    seconds: 0,
-                    frames: 0,
-                });
-                self.fade_remaining = Some(samples);
-            }
+            self.start_fade_if_needed(sample_frame_origin, source_sample)?;
             match result {
                 StreamResult::EndOfStream => {
                     self.flush_paced_writes(sample_frame_origin)?;
@@ -2804,6 +2913,40 @@ impl<'a> VgmSequencer<'a> {
                 StreamResult::Command(command) => self.command(command, sample_frame_origin)?,
             }
         }
+    }
+
+    fn start_fade_if_needed(
+        &mut self,
+        sample_frame_origin: usize,
+        source_sample: usize,
+    ) -> Result<(), VgmSequencerError> {
+        if self.fade_frames.is_some() {
+            return Ok(());
+        }
+        let Some(samples) = self.fade_samples else {
+            return Ok(());
+        };
+        let reached = match &self.fade_marker {
+            Some(marker) => marker.reached(source_sample)?,
+            None => false,
+        };
+        if self.stream.is_fading_out() || reached {
+            let step =
+                (self.output_rate / VGM_SAMPLE_RATE) as f32 + self.output_step as f32 * PHASE_SCALE;
+            let length = (self.output_phase as f32 * PHASE_SCALE + samples as f32 * step).floor();
+            self.fade_frames = Some(Fade {
+                start_frame: sample_frame_origin
+                    .checked_add(self.available)
+                    .ok_or(VgmSequencerError::DurationOverflow)?,
+                pending: self.available,
+                length,
+                rate: self.output_rate,
+                seconds: 0,
+                frames: 0,
+            });
+            self.fade_remaining = Some(samples);
+        }
+        Ok(())
     }
 
     /// Handle a VGM command's routing, compatibility effects, and data blocks.

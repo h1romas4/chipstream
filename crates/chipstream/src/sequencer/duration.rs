@@ -14,7 +14,7 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::VGM_SAMPLE_RATE;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::header::VgmHeader;
-use soundlog::vgm::stream::{StreamResult, VgmStream};
+use soundlog::vgm::stream::{StreamResult, VgmCommandGenerator, VgmStream};
 #[cfg(feature = "xgm")]
 use soundlog::xgm::{XgmDocument, XgmPlaybackOptions};
 
@@ -23,9 +23,9 @@ use crate::fixed::divide_ratio;
 #[cfg(feature = "xgm")]
 use super::XgmSequencerOptions;
 use super::vgm::FadeMarker;
+use super::{GeneratorConfig, VgmSequencer, VgmSequencerError, VgmSequencerOptions};
 #[cfg(feature = "mdx")]
 use super::{MdxSequencerError, MdxSequencerOptions};
-use super::{VgmSequencerError, VgmSequencerOptions};
 
 /// Command scan limit for finite playback and VGM loop detection.
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
@@ -52,6 +52,33 @@ impl PlaybackDuration {
             Self::Unbounded | Self::Unknown => None,
         }
     }
+}
+
+/// Measure a custom generator without rendering audio.
+///
+/// The generator and its configured loop marker are consumed for this scan;
+/// use a fresh generator and marker for playback. `max_commands` limits the
+/// number of stream results, returning [`PlaybackDuration::Unknown`] if the
+/// limit or the maximum frame count is reached. The generator controls its own
+/// loop count and must continue producing commands through the fade.
+///
+/// Only `config.loop_marker` and `config.fadeout` affect this scan; chip
+/// configuration and writes are not validated.
+pub fn measure_generator_duration_frames(
+    generator: Box<dyn VgmCommandGenerator>,
+    output_rate: u32,
+    config: &GeneratorConfig,
+    max_commands: u32,
+) -> Result<PlaybackDuration, VgmSequencerError> {
+    let fade = VgmSequencer::generator_fadeout(config)?;
+    measure_stream_frames(
+        VgmStream::from_generator(generator),
+        output_rate,
+        config.loop_marker.clone().map(FadeMarker::Generator),
+        fade,
+        false,
+        max_commands,
+    )
 }
 
 /// Measure VGM playback in output frames without rendering audio.
@@ -188,21 +215,41 @@ fn measure_stream_frames(
     let mut fade_remaining = None;
 
     for _ in 0..max_commands {
+        let source_sample = stream.current_sample();
         let result = stream.next().ok_or(VgmSequencerError::UnexpectedEnd)??;
         if detect_loop && stream.current_loop_count() > 0 {
             return Ok(PlaybackDuration::Unbounded);
         }
-        if fade_remaining.is_none()
-            && (stream.is_fading_out() || marker.as_ref().is_some_and(FadeMarker::reached))
-        {
-            fade_remaining = fadeout_samples;
+        if fade_remaining.is_none() && fadeout_samples.is_some() {
+            let reached = match &marker {
+                Some(marker) => marker.reached(source_sample)?,
+                None => false,
+            };
+            if stream.is_fading_out() || reached {
+                fade_remaining = fadeout_samples;
+            }
         }
 
         match result {
             StreamResult::EndOfStream => return Ok(PlaybackDuration::Finite(total_frames)),
             StreamResult::NeedsMoreData => return Err(VgmSequencerError::UnexpectedEnd),
             StreamResult::Command(VgmCommand::WaitSamples(wait)) => {
-                let wait = u32::from(wait.0);
+                let mut wait = u32::from(wait.0);
+                if fade_remaining.is_none()
+                    && fadeout_samples.is_some()
+                    && let Some(boundary) = marker.as_ref().and_then(FadeMarker::generator_sample)
+                {
+                    let before = boundary.saturating_sub(source_sample).min(wait as usize) as u32;
+                    if advance_frames(before, whole, fraction, &mut phase, &mut total_frames)
+                        .is_none()
+                    {
+                        return Ok(PlaybackDuration::Unknown);
+                    }
+                    wait -= before;
+                    if before as usize == boundary - source_sample {
+                        fade_remaining = fadeout_samples;
+                    }
+                }
                 let elapsed = fade_remaining.map_or(wait, |remaining| wait.min(remaining));
                 if advance_frames(elapsed, whole, fraction, &mut phase, &mut total_frames).is_none()
                 {

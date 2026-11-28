@@ -30,7 +30,9 @@ mod xgm;
 pub use duration::measure_mdx_duration_frames;
 #[cfg(feature = "xgm")]
 pub use duration::measure_xgm_duration_frames;
-pub use duration::{PlaybackDuration, measure_vgm_duration_frames};
+pub use duration::{
+    PlaybackDuration, measure_generator_duration_frames, measure_vgm_duration_frames,
+};
 pub use effects::{EffectError, EffectId, OutputGroupId};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
 pub use factory::{
@@ -44,8 +46,8 @@ pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
 pub use vgm::{
-    GeneratorConfig, NativeOutput, VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError,
-    VgmSequencerOptions,
+    GeneratorConfig, GeneratorLoopMarker, NativeOutput, VgmSequencer, VgmSequencerCheckpoint,
+    VgmSequencerError, VgmSequencerOptions,
 };
 #[cfg(feature = "xgm")]
 pub use xgm::{XgmSequencer, XgmSequencerOptions};
