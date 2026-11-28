@@ -1,7 +1,7 @@
 # chipstream
 
 `chipstream` provides retro sound-chip emulation, device-independent playback
-of VGM, MDX, and XGM v1 files, and audio-processing components for applications
+of VGM, MDX, XGM v1, and S98 files, and audio-processing components for applications
 and games.
 
 It uses [`soundlog`](https://crates.io/crates/soundlog) for format
@@ -12,7 +12,7 @@ inspect timed commands, or track chip state without rendering PCM.
 
 | Module | API | Purpose |
 | --- | --- | --- |
-| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), [`MdxSequencer`], [`XgmSequencer`] | Render songs to stereo PCM. |
+| [`sequencer`](sequencer) | [`VgmSequencer`](sequencer::VgmSequencer), [`MdxSequencer`], [`XgmSequencer`], [`S98Sequencer`](sequencer::S98Sequencer) | Render songs to stereo PCM. |
 | [`sequencer`](sequencer) | [`ChipFactoryRegistry`](sequencer::ChipFactoryRegistry) | Replace chip backends. |
 | [`chip`](chip) | [`SoundChip`](chip::SoundChip), chip implementations | Apply writes and generate native samples. |
 | [`audio`](audio) | [`ChipCapture`](audio::ChipCapture), [`NativeBlock`](audio::NativeBlock) | Capture native samples and chip metadata. |
@@ -45,10 +45,15 @@ through [`SoundChip::write_rom`](chip::SoundChip::write_rom) and
 
 YMFM chips are always available; optional features are disabled by default.
 
-The `mdx` and `xgm` features enable their respective sequencers and duration
+The `mdx`, `xgm`, and `s98` features enable their respective sequencers and duration
 APIs, and the corresponding `soundlog` format support. The `mdx` feature also
-enables MDX metadata probing. VGM support is always available. Enable chip
+enables MDX metadata probing; `s98` enables S98 metadata decoding. VGM support is always available. Enable chip
 features separately as needed.
+
+S98 v1–v3 playback uses soundlog's S98-to-VGM generator. Unsupported devices,
+nonzero PAN, and differently clocked instances of the same chip are rejected.
+S98 metadata is decoded as BOM-prefixed UTF-8 for v3 or Shift_JIS otherwise;
+invalid text is reported as an error.
 
 | Feature | Chip | Source | Source license |
 | --- | --- | --- | --- |

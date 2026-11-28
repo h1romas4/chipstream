@@ -1992,7 +1992,8 @@ impl AppView {
                     .token(|token, _, _| {
                         let id = token.token().id();
                         let ymfm = ChipTag::is_ymfm_name(id.as_ref());
-                        let format = matches!(id.as_ref(), "MDX" | "VGM" | "XGM" | "NanoDrive");
+                        let format =
+                            matches!(id.as_ref(), "MDX" | "VGM" | "XGM" | "S98" | "NanoDrive");
                         let system = id.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX);
                         let (background, foreground) = if system {
                             (0x3e2f24, 0xe0c3a0)
@@ -6653,7 +6654,7 @@ fn chip_suggestions(
             continue;
         }
         let fragment = fragment.to_lowercase();
-        let matches: Vec<_> = ["MDX", "VGM", "XGM"]
+        let matches: Vec<_> = ["MDX", "VGM", "XGM", "S98"]
             .into_iter()
             .chain(nanodrive_connected.then_some("NanoDrive"))
             .chain(chips.iter().copied())
@@ -6699,7 +6700,7 @@ fn search_suggestion_label(tag: &str) -> &str {
 fn search_suggestion_kind(tag: &str) -> &'static str {
     if tag.starts_with(library::SYSTEM_SEARCH_TAG_PREFIX) {
         "System"
-    } else if matches!(tag, "MDX" | "VGM" | "XGM") {
+    } else if matches!(tag, "MDX" | "VGM" | "XGM" | "S98") {
         "Format"
     } else if tag == "NanoDrive" {
         "Device"

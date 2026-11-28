@@ -1,10 +1,11 @@
-//! Metadata probing for VGM and MDX byte inputs.
+//! Metadata probing for VGM, MDX, and S98 inputs.
 //!
 //! VGZ input must be decompressed by the caller before probing.
 //! [`probe_vgm_bytes_with_language`] selects between bilingual GD3 fields.
 //! With the `mdx` feature, `probe_mdx_bytes` normalizes MDX input and extracts
-//! its title. Results use [`TrackMetadata`]. Inputs larger than 64 MiB and
-//! GD3 chunks larger than 16 KiB are rejected.
+//! its title. With `s98`, `TrackMetadata::from_s98` decodes parsed tags.
+//! Results use [`TrackMetadata`]. Byte-oriented probes reject inputs larger
+//! than 64 MiB and GD3 chunks larger than 16 KiB.
 
 use std::error::Error;
 use std::fmt;
@@ -19,7 +20,7 @@ use soundlog::vgm::header::VgmHeader;
 /// Maximum input size accepted by metadata probes.
 const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Standard metadata tags available from a VGM/VGZ or MDX file.
+/// Standard metadata tags available from supported music files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackMetadata {
     /// Normalized track title, if available.
@@ -51,6 +52,43 @@ impl TrackMetadata {
             release_date: nonempty(gd3.release_date.clone().unwrap_or_default()),
             comment: nonempty(gd3.notes.clone().unwrap_or_default()),
         }
+    }
+
+    /// Decode S98 metadata as UTF-8 when tagged with a BOM, or as Shift_JIS
+    /// otherwise. Invalid text is reported rather than silently replaced.
+    #[cfg(feature = "s98")]
+    pub fn from_s98(document: &soundlog::s98::S98Document) -> Result<Self, MetadataError> {
+        use soundlog::s98::S98Version;
+
+        let Some(text) = document
+            .tag_text()
+            .map_err(|error| MetadataError::InvalidData(error.to_string()))?
+        else {
+            return Ok(Self::default());
+        };
+        if document.header.version != S98Version::V3 {
+            return Ok(Self {
+                title: nonempty(text),
+                ..Self::default()
+            });
+        }
+        let mut metadata = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = nonempty(value.to_owned());
+            match key.trim().to_ascii_lowercase().as_str() {
+                "title" => metadata.title = value,
+                "artist" => metadata.artist = value,
+                "game" => metadata.album = value,
+                "system" => metadata.system_name = value,
+                "year" => metadata.release_date = value,
+                "comment" => metadata.comment = value,
+                _ => {}
+            }
+        }
+        Ok(metadata)
     }
 }
 

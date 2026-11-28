@@ -11,8 +11,9 @@ use chipstream::audio::StereoBlock;
 use chipstream::chip::{ChipError, YmfmChip};
 use chipstream::sequencer::{
     Ay8910Settings, Chip, ChipFactoryRegistry, Instance, MdxSequencer, MdxSequencerOptions,
-    PlaybackOptions, VgmSequencer, VgmSequencerError, VgmSequencerOptions, XgmSequencer,
-    XgmSequencerOptions, measure_xgm_duration_frames,
+    PlaybackOptions, S98Sequencer, S98SequencerOptions, VgmSequencer, VgmSequencerError,
+    VgmSequencerOptions, XgmSequencer, XgmSequencerOptions, measure_s98_duration_frames,
+    measure_xgm_duration_frames,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -72,8 +73,8 @@ impl Options {
         {
             bail!("--loop-modifier, --loop-base and --compat-vgm-pwm apply only to VGM/VGZ");
         }
-        if !matches!(input, Input::Vgm(_)) && self.ym2608_rhythm_rom.is_some() {
-            bail!("--ym2608-rhythm-rom applies only to VGM/VGZ");
+        if !matches!(input, Input::Vgm(_) | Input::S98(_)) && self.ym2608_rhythm_rom.is_some() {
+            bail!("--ym2608-rhythm-rom applies only to VGM/VGZ and S98");
         }
         if self.ym2608_rhythm_rom.as_ref().is_some_and(Vec::is_empty) {
             bail!("YM2608 rhythm ROM is empty");
@@ -85,7 +86,46 @@ impl Options {
 pub(super) enum Player {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+    S98(S98Sequencer<'static>),
     Xgm(XgmSequencer<'static>),
+}
+
+fn ay_factories(options: &Options) -> ChipFactoryRegistry {
+    let mut factories = ChipFactoryRegistry::new();
+    if options.ay8910_native {
+        factories.register_native_ay8910();
+    } else if options.ay8910_ym2149.unwrap_or(true) {
+        factories.register(Chip::Ay8910, |config| {
+            let settings = config
+                .ay8910_settings()
+                .ok_or(ChipError::UnsupportedChip(config.chip().clone()))?;
+            let divide_clock = ym2149_clock_divider(settings)?;
+            Ok(Box::new(YmfmChip::new_ym2149(
+                config.clock(),
+                divide_clock,
+            )?))
+        });
+    }
+    factories
+}
+
+fn configure_ym2608_rom(sequencer: &mut VgmSequencer<'_>, rom: Option<&[u8]>) -> Result<()> {
+    if let Some(rom) = rom {
+        sequencer
+            .set_ym2608_rhythm_rom(Instance::Primary, rom)
+            .context("failed to configure primary YM2608 rhythm ROM")?;
+        match sequencer.set_ym2608_rhythm_rom(Instance::Secondary, rom) {
+            Ok(())
+            | Err(VgmSequencerError::ChipNotFound {
+                chip: Chip::Ym2608,
+                instance: Instance::Secondary,
+            }) => {}
+            Err(error) => {
+                return Err(error).context("failed to configure secondary YM2608 rhythm ROM");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ym2149_clock_divider(settings: &Ay8910Settings) -> Result<bool, ChipError> {
@@ -108,21 +148,7 @@ impl Player {
         };
         Ok(match input {
             Input::Vgm(data) => {
-                let mut factories = ChipFactoryRegistry::new();
-                if options.ay8910_native {
-                    factories.register_native_ay8910();
-                } else if options.ay8910_ym2149.unwrap_or(true) {
-                    factories.register(Chip::Ay8910, |config| {
-                        let settings = config
-                            .ay8910_settings()
-                            .ok_or(ChipError::UnsupportedChip(config.chip().clone()))?;
-                        let divide_clock = ym2149_clock_divider(settings)?;
-                        Ok(Box::new(YmfmChip::new_ym2149(
-                            config.clock(),
-                            divide_clock,
-                        )?))
-                    });
-                }
+                let factories = ay_factories(options);
                 let mut sequencer = VgmSequencer::from_vgm_with_factories(
                     data,
                     rate,
@@ -136,22 +162,7 @@ impl Player {
                     factories,
                 )
                 .context("failed to create VGM sequencer")?;
-                if let Some(rom) = &options.ym2608_rhythm_rom {
-                    sequencer
-                        .set_ym2608_rhythm_rom(Instance::Primary, rom)
-                        .context("failed to configure primary YM2608 rhythm ROM")?;
-                    match sequencer.set_ym2608_rhythm_rom(Instance::Secondary, rom) {
-                        Ok(())
-                        | Err(VgmSequencerError::ChipNotFound {
-                            chip: Chip::Ym2608,
-                            instance: Instance::Secondary,
-                        }) => {}
-                        Err(error) => {
-                            return Err(error)
-                                .context("failed to configure secondary YM2608 rhythm ROM");
-                        }
-                    }
-                }
+                configure_ym2608_rom(&mut sequencer, options.ym2608_rhythm_rom.as_deref())?;
                 Self::Vgm(sequencer)
             }
             Input::Mdx(package) => {
@@ -164,6 +175,27 @@ impl Player {
                     MdxSequencer::new(*package, rate, CHUNK_FRAMES, settings)
                         .context("failed to create MDX sequencer")?,
                 )
+            }
+            Input::S98(document) => {
+                let settings = S98SequencerOptions {
+                    playback,
+                    max_ticks: if options.loop_count.is_none() {
+                        None
+                    } else {
+                        S98SequencerOptions::default().max_ticks
+                    },
+                    ..Default::default()
+                };
+                let mut sequencer = S98Sequencer::new_with_factories(
+                    *document,
+                    rate,
+                    CHUNK_FRAMES,
+                    settings,
+                    ay_factories(options),
+                )
+                .context("failed to create S98 sequencer")?;
+                configure_ym2608_rom(&mut sequencer, options.ym2608_rhythm_rom.as_deref())?;
+                Self::S98(sequencer)
             }
             Input::Xgm(document, track) => {
                 let mut settings = XgmSequencerOptions {
@@ -186,6 +218,7 @@ impl Player {
         match self {
             Self::Vgm(player) => player.render().context("VGM rendering failed"),
             Self::Mdx(player) => player.render().context("MDX rendering failed"),
+            Self::S98(player) => player.render().context("S98 rendering failed"),
             Self::Xgm(player) => player.render().context("XGM rendering failed"),
         }
     }
@@ -338,6 +371,22 @@ fn count_samples(data: &Input, options: &Options) -> Result<Option<u64>> {
             };
             return Ok(
                 measure_xgm_duration_frames((**document).clone(), 44_100, settings)?
+                    .finite_frames()
+                    .map(u64::from),
+            );
+        }
+        Input::S98(document) => {
+            let settings = S98SequencerOptions {
+                playback: PlaybackOptions {
+                    loop_count: options.loop_count,
+                    fadeout: options
+                        .fadeout_samples
+                        .map(|samples| Duration::from_secs_f64(f64::from(samples) / 44_100.0)),
+                },
+                ..Default::default()
+            };
+            return Ok(
+                measure_s98_duration_frames((**document).clone(), 44_100, settings)?
                     .finite_frames()
                     .map(u64::from),
             );

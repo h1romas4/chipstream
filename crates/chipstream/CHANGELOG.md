@@ -2,6 +2,7 @@
 
 ## v0.2.0 (unreleased)
 
+- Add: S98 playback, duration measurement, and metadata support.
 - Breaking: Add configurable VGM stream resource limits to `GeneratorConfig`, shared by custom-generator playback, reconstruction, and duration scans.
 - Add: Typed, output-frame-aligned custom generator and MDX execution notifications, including checkpoint and seek handling.
 - Breaking: Add custom-generator loop markers and fade configuration to `GeneratorConfig`, and bounded generator duration measurement.

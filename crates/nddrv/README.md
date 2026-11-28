@@ -1,6 +1,6 @@
 # nddrv
 
-NDDRV is a desktop music library and player for VGM, VGZ, MDX, XGM v1, and XGZ files. It
+NDDRV is a desktop music library and player for VGM, VGZ, MDX, XGM v1, XGZ, and S98 files. It
 supports software emulation with chipstream and experimental NanoDrive hardware
 routing.
 
@@ -61,7 +61,7 @@ otherwise, placement is left to the window system.
 | --- | --- |
 | Text | Matches title, artist, album, notes, or path. |
 | Chip tags | Multiple chip tags require all listed chips. |
-| Format tags | `MDX` matches MDX; `VGM` matches VGM/VGZ; `XGM` matches XGM/XGZ. |
+| Format tags | `MDX` matches MDX; `VGM` matches VGM/VGZ; `XGM` matches XGM/XGZ; `S98` matches S98. |
 | `NanoDrive` tag | Matches chips advertised by a connected device; does not guarantee hardware routing. |
 | Clear button | Removes all search text and tags. |
 
@@ -87,6 +87,11 @@ Track Info shows available metadata and loads artwork from the track's folder.
 For multi-track XGM files, NDDRV currently lists and plays the first track.
 XGZ is gzip-compressed XGM. Input and decompressed data are limited to 64 MiB;
 XGM parsing and playback also apply soundlog's resource limits.
+
+S98 v1–v3 playback rejects unsupported devices, nonzero PAN, and differently
+clocked instances of the same chip. Tags use BOM-prefixed UTF-8 for v3 or
+Shift_JIS otherwise; invalid text is reported as an error. YM2608 rhythm
+playback requires a compatible external ROM for software emulation.
 
 ## Settings
 

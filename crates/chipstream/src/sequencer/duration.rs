@@ -1,6 +1,6 @@
 //! Bounded playback-duration measurement without generating PCM audio.
 //!
-//! The VGM, MDX, and XGM scanners advance their command streams using playback
+//! The VGM, MDX, XGM, and S98 scanners advance their command streams using playback
 //! options and convert waits to output frames. [`PlaybackDuration`] distinguishes
 //! finite results, observed unbounded VGM loops, and scans that cannot
 //! determine a duration within their limits.
@@ -11,6 +11,8 @@ use soundlog::mdx::convert::{
 };
 #[cfg(feature = "mdx")]
 use soundlog::mdx::package::MdxPackage;
+#[cfg(feature = "s98")]
+use soundlog::s98::{S98Document, S98PlaybackOptions};
 use soundlog::vgm::VGM_SAMPLE_RATE;
 use soundlog::vgm::command::VgmCommand;
 use soundlog::vgm::header::VgmHeader;
@@ -20,6 +22,8 @@ use soundlog::xgm::{XgmDocument, XgmPlaybackOptions};
 
 use crate::fixed::divide_ratio;
 
+#[cfg(feature = "s98")]
+use super::S98SequencerOptions;
 #[cfg(feature = "xgm")]
 use super::XgmSequencerOptions;
 use super::vgm::FadeMarker;
@@ -30,7 +34,7 @@ use super::{MdxSequencerError, MdxSequencerOptions};
 /// Command scan limit for finite playback and VGM loop detection.
 const MAX_DURATION_COMMANDS: u32 = 10_000_000;
 /// Lower scan limit for potentially unlimited generators.
-#[cfg(any(feature = "mdx", feature = "xgm"))]
+#[cfg(any(feature = "mdx", feature = "xgm", feature = "s98"))]
 const MAX_UNLIMITED_GENERATOR_DURATION_COMMANDS: u32 = 100_000;
 
 /// Result of a bounded playback-duration scan.
@@ -184,6 +188,35 @@ pub fn measure_xgm_duration_frames(
     let generator_options: XgmPlaybackOptions = options.into();
     let mark_loop = fade.is_some() && generator_options.loop_count.is_some();
     let (generator, marker) = super::xgm::xgm_generator(document, generator_options, mark_loop)?;
+    measure_stream_frames(
+        VgmStream::from_generator(generator),
+        output_rate,
+        marker,
+        fade,
+        false,
+        if generator_options.loop_count.is_none() {
+            MAX_UNLIMITED_GENERATOR_DURATION_COMMANDS
+        } else {
+            MAX_DURATION_COMMANDS
+        },
+    )
+}
+
+/// Measure S98 playback with a bounded command scan, without rendering audio.
+///
+/// Infinite playback or a scan that exceeds the budget can return
+/// [`PlaybackDuration::Unknown`]. Generator errors are returned explicitly.
+#[cfg(feature = "s98")]
+pub fn measure_s98_duration_frames(
+    document: S98Document,
+    output_rate: u32,
+    options: S98SequencerOptions,
+) -> Result<PlaybackDuration, VgmSequencerError> {
+    let fade =
+        super::options::fadeout_samples(options.playback.fadeout)?.filter(|samples| *samples != 0);
+    let generator_options: S98PlaybackOptions = options.into();
+    let mark_loop = fade.is_some() && generator_options.loop_count.is_some();
+    let (generator, marker) = super::s98::s98_generator(document, generator_options, mark_loop)?;
     measure_stream_frames(
         VgmStream::from_generator(generator),
         output_rate,

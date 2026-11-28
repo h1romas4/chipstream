@@ -11,11 +11,11 @@ utilities for building and parsing register-write logs such as the VGM
 
 | Crate | Type | Description | Documentation | crates.io |
 | --- | --- | --- | --- | --- |
-| `chipstream` | `lib` | Sound-chip emulation and device-independent VGM, MDX, and XGM v1 playback. | [README](crates/chipstream/README.md) | [0.1.0](https://crates.io/crates/chipstream) |
+| `chipstream` | `lib` | Sound-chip emulation and device-independent VGM, MDX, XGM v1, and S98 playback. | [README](crates/chipstream/README.md) | [0.1.0](https://crates.io/crates/chipstream) |
 | `chipstream-ndsif` | `lib` | NDSIF hardware adapters and routing for chipstream. | [README](crates/chipstream-ndsif/README.md) | [0.1.0](https://crates.io/crates/chipstream-ndsif) |
 | `chipstream-gstreamer` | `plugin` | GStreamer source for VGM, MDX, and XGM v1 playback through chipstream. | [README](crates/chipstream-gstreamer/README.md) | - |
-| `cstools` | `bin` | VGM/VGZ, MDX, MML, and XGM/XGZ player using chipstream. | [README](crates/cstools/README.md) | - |
-| `nddrv` | `bin` | Desktop VGM/VGZ, MDX, and XGM/XGZ library and player using GPUI Kit. | [README](crates/nddrv/README.md) | - |
+| `cstools` | `bin` | VGM/VGZ, MDX, MML, XGM/XGZ, and S98 player using chipstream. | [README](crates/cstools/README.md) | - |
+| `nddrv` | `bin` | Desktop VGM/VGZ, MDX, XGM/XGZ, and S98 library and player using GPUI Kit. | [README](crates/nddrv/README.md) | - |
 | `mmlx` | `lib` | MML parser and compiler; currently supports MXDRV MML input and MDX output. | [README](crates/mmlx/README.md) | [0.3.0](https://crates.io/crates/mmlx/0.3.0) |
 | `ndsif` | `lib` | I/O-independent, allocation-free NDSIF protocol codec. | [README](crates/ndsif/README.md) | [0.1.0](https://crates.io/crates/ndsif/0.1.0) |
 | `ndsif-transport` | `lib` | Serial NDSIF transport and scheduled playback. | [README](crates/ndsif-transport/README.md) | [0.1.0](https://crates.io/crates/ndsif-transport/0.1.0) |

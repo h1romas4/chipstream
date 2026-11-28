@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use soundlog::chip::Chip;
 use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::header::MdxHeader;
+use soundlog::s98::{S98Document, S98VgmGenerator};
 use soundlog::vgm::header::VgmHeader;
 use soundlog::xgm::XgmDocument;
 use walkdir::WalkDir;
@@ -220,43 +221,47 @@ impl Track {
             } else {
                 None
             };
-            let mut chips: Vec<ChipTag> = Vec::new();
-            for (instance, chip, _) in header.chip_instances() {
-                let mut tag = ChipTag::new(&chip);
-                if chip == Chip::Ay8910 {
-                    use soundlog::vgm::header::ChipId;
-                    let clock = extra
-                        .as_ref()
-                        .and_then(|extra| {
-                            extra.chip_clocks.iter().find(|entry| {
-                                entry.chip_id == ChipId::Ay8910 && entry.instance == instance
-                            })
-                        })
-                        .map_or(header.ay8910_clock & 0x3fff_ffff, |entry| {
-                            entry.clock & 0x3fff_ffff
-                        });
-                    let settings = chipstream::sequencer::Ay8910Settings::from(&header);
-                    tag.ym2149_compatible[instance as usize] =
-                        settings.ym2149_clock_divider().is_some_and(|divided| {
-                            chipstream::chip::YmfmChip::validate_ym2149_clock(clock, divided)
-                                .is_ok()
-                        });
-                    tag.native_ay8910_compatible[instance as usize] =
-                        settings.supports_native_ay8910() && clock >= 8;
-                }
-                if let Some(existing) = chips.iter_mut().find(|existing| existing.name == tag.name)
-                {
-                    existing.instances += 1;
-                    existing.ym2149_compatible[instance as usize] =
-                        tag.ym2149_compatible[instance as usize];
-                    existing.native_ay8910_compatible[instance as usize] =
-                        tag.native_ay8910_compatible[instance as usize];
-                } else {
-                    chips.push(tag);
-                }
-            }
-            Ok(chips)
+            Ok(Self::chips_from_header(&header, extra.as_ref()))
         }
+    }
+
+    fn chips_from_header(
+        header: &VgmHeader,
+        extra: Option<&soundlog::VgmExtraHeader>,
+    ) -> Vec<ChipTag> {
+        let mut chips: Vec<ChipTag> = Vec::new();
+        for (instance, chip, _) in header.chip_instances() {
+            let mut tag = ChipTag::new(&chip);
+            if chip == Chip::Ay8910 {
+                use soundlog::vgm::header::ChipId;
+                let clock = extra
+                    .and_then(|extra| {
+                        extra.chip_clocks.iter().find(|entry| {
+                            entry.chip_id == ChipId::Ay8910 && entry.instance == instance
+                        })
+                    })
+                    .map_or(header.ay8910_clock & 0x3fff_ffff, |entry| {
+                        entry.clock & 0x3fff_ffff
+                    });
+                let settings = chipstream::sequencer::Ay8910Settings::from(header);
+                tag.ym2149_compatible[instance as usize] =
+                    settings.ym2149_clock_divider().is_some_and(|divided| {
+                        chipstream::chip::YmfmChip::validate_ym2149_clock(clock, divided).is_ok()
+                    });
+                tag.native_ay8910_compatible[instance as usize] =
+                    settings.supports_native_ay8910() && clock >= 8;
+            }
+            if let Some(existing) = chips.iter_mut().find(|existing| existing.name == tag.name) {
+                existing.instances += 1;
+                existing.ym2149_compatible[instance as usize] =
+                    tag.ym2149_compatible[instance as usize];
+                existing.native_ay8910_compatible[instance as usize] =
+                    tag.native_ay8910_compatible[instance as usize];
+            } else {
+                chips.push(tag);
+            }
+        }
+        chips
     }
 
     #[cfg(test)]
@@ -393,6 +398,7 @@ pub fn filter_indices_with_chips(
 pub fn track_format(path: &Path) -> &'static str {
     match extension(path).as_str() {
         "mdx" => "MDX",
+        "s98" => "S98",
         "xgm" | "xgz" => "XGM",
         _ => "VGM",
     }
@@ -407,7 +413,7 @@ pub fn filter_indices_with_tags(
     let (formats, other_tags): (Vec<_>, Vec<_>) = tags
         .iter()
         .cloned()
-        .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM" | "XGM"));
+        .partition(|tag| matches!(tag.as_str(), "MDX" | "VGM" | "XGM" | "S98"));
     let (systems, chips): (Vec<_>, Vec<_>) = other_tags
         .into_iter()
         .partition(|tag| system_search_tag_value(tag).is_some());
@@ -799,6 +805,14 @@ pub fn read_track(path: &Path) -> Result<Vec<u8>> {
 
 pub fn read_track_info(path: &Path) -> Result<Track> {
     let bytes = read_track(path)?;
+    if track_format(path) == "S98" {
+        let document = S98Document::parse(&bytes).context("invalid S98")?;
+        let metadata = TrackMetadata::from_s98(&document).context("invalid S98 metadata")?;
+        let generator = S98VgmGenerator::new(document, Default::default())
+            .context("unsupported S98 playback configuration")?;
+        let chips = Track::chips_from_header(generator.vgm_header(), None);
+        return Ok(Track::new(path.to_path_buf(), metadata, chips));
+    }
     if track_format(path) == "XGM" {
         let document = XgmDocument::parse(&bytes).context("invalid XGM")?;
         let gd3 = document.tracks[0].gd3.as_ref();
@@ -996,7 +1010,7 @@ pub fn scan_with_progress(
             if !entry.file_type().is_file()
                 || !matches!(
                     extension(entry.path()).as_str(),
-                    "vgm" | "vgz" | "mdx" | "xgm" | "xgz"
+                    "vgm" | "vgz" | "mdx" | "xgm" | "xgz" | "s98"
                 )
             {
                 continue;
@@ -2326,5 +2340,31 @@ mod tests {
         );
         assert!(filter_indices_with_tags(&tracks, "", None, &["VGM".into()]).is_empty());
         assert_eq!(filter_indices(&tracks, "first original", None).len(), 2);
+    }
+
+    #[test]
+    fn scan_supports_s98_metadata_chips_and_format_filter() {
+        use soundlog::s98::{S98Builder, S98Command, S98Header, S98Version};
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = S98Builder::new(S98Header::new(S98Version::V3));
+        builder.set_tag(b"[S98]\xef\xbb\xbftitle=Test\nartist=Composer".to_vec());
+        builder.push(S98Command::Wait(1));
+        fs::write(
+            dir.path().join("song.S98"),
+            builder.finalize().unwrap().to_bytes().unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.path().join("bad.s98"), b"broken").unwrap();
+        let ScanResult { tracks, errors, .. } = scan(&[dir.path().to_path_buf()]);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].metadata.title.as_deref(), Some("Test"));
+        assert_eq!(tracks[0].metadata.artist.as_deref(), Some("Composer"));
+        assert_eq!(tracks[0].chips, vec![ChipTag::new(&Chip::Ym2608)]);
+        assert_eq!(
+            filter_indices_with_tags(&tracks, "", None, &["S98".into()]).len(),
+            1
+        );
+        assert!(filter_indices_with_tags(&tracks, "", None, &["VGM".into()]).is_empty());
     }
 }

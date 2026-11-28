@@ -11,7 +11,8 @@ use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
     Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, NativeOutput, PlaybackOptions,
-    VgmSequencer, VgmSequencerOptions, XgmSequencer, XgmSequencerOptions,
+    S98Sequencer, S98SequencerOptions, VgmSequencer, VgmSequencerOptions, XgmSequencer,
+    XgmSequencerOptions,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -21,6 +22,7 @@ use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::convert::{to_vgm_stream_generator, to_vgm_stream_generator_with_loop_marker};
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
+use soundlog::s98::{S98Document, S98LoopMarker, S98PlaybackOptions, S98VgmGenerator};
 use soundlog::vgm::command::{Instance, VgmCommand};
 use soundlog::vgm::{VGM_SAMPLE_RATE, VgmCallbackStream, stream::StreamResult};
 use soundlog::xgm::{XgmDocument, XgmLoopMarker, XgmPlaybackOptions, XgmVgmGenerator};
@@ -668,11 +670,13 @@ impl Drop for Playback {
 enum Sequencer {
     Vgm(VgmSequencer<'static>),
     Mdx(MdxSequencer<'static>),
+    S98(S98Sequencer<'static>),
     Xgm(XgmSequencer<'static>),
 }
 
 enum PreviewLoopMarker {
     Mdx(soundlog::mdx::convert::MdxLoopMarker),
+    S98(S98LoopMarker),
     Xgm(XgmLoopMarker),
 }
 
@@ -680,6 +684,7 @@ impl PreviewLoopMarker {
     fn reached(&self) -> bool {
         match self {
             Self::Mdx(marker) => marker.reached(),
+            Self::S98(marker) => marker.reached(),
             Self::Xgm(marker) => marker.reached(),
         }
     }
@@ -958,7 +963,11 @@ fn add_visual_ay_sources(
         return Ok(());
     }
     let bytes = read_track(path)?;
-    let header = soundlog::vgm::VgmHeader::from_bytes(&bytes)?;
+    let header = if track_format(path) == "S98" {
+        s98_header(&bytes)?
+    } else {
+        soundlog::vgm::VgmHeader::from_bytes(&bytes)?
+    };
     for (instance, chip, _) in header.chip_instances().iter() {
         if *chip == Chip::Ay8910
             && !sources
@@ -979,6 +988,12 @@ fn add_visual_ay_sources(
         }
     }
     Ok(())
+}
+
+fn s98_header(bytes: &[u8]) -> Result<soundlog::VgmHeader> {
+    let document = S98Document::parse(bytes).context("parse S98")?;
+    let generator = S98VgmGenerator::new(document, Default::default())?;
+    Ok(generator.vgm_header().clone())
 }
 
 fn set_source_targets(
@@ -1043,6 +1058,31 @@ fn run_preview(
             Instance::Primary,
             options.ym2151_clock as f32,
         );
+        (stream, marker)
+    } else if track_format(path) == "S98" {
+        let document = S98Document::parse(&bytes).context("parse S98")?;
+        let options = S98PlaybackOptions {
+            loop_count: if looped {
+                None
+            } else {
+                Some(control.settings.loop_count)
+            },
+            max_ticks: if looped {
+                None
+            } else {
+                S98PlaybackOptions::default().max_ticks
+            },
+            ..Default::default()
+        };
+        let (generator, marker) = if !looped && control.settings.fadeout_samples() > 0 {
+            let (generator, marker) = S98VgmGenerator::new_with_loop_marker(document, options)?;
+            (generator, Some(PreviewLoopMarker::S98(marker)))
+        } else {
+            (S98VgmGenerator::new(document, options)?, None)
+        };
+        let header = generator.vgm_header().clone();
+        let mut stream = VgmCallbackStream::from_generator(Box::new(generator));
+        stream.track_chips(&header.chip_instances());
         (stream, marker)
     } else if track_format(path) == "XGM" {
         let document = XgmDocument::parse(&bytes).context("parse XGM")?;
@@ -1420,6 +1460,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => register!(player),
             Self::Mdx(player) => register!(player),
+            Self::S98(player) => register!(player),
             Self::Xgm(player) => register!(player),
         }
     }
@@ -1448,6 +1489,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.chip_instances().collect(),
             Self::Mdx(player) => player.chip_instances().collect(),
+            Self::S98(player) => player.chip_instances().collect(),
             Self::Xgm(player) => player.chip_instances().collect(),
         }
     }
@@ -1456,6 +1498,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.set_chip_gain(chip, instance, gain)?,
             Self::Mdx(player) => player.set_chip_gain(chip, instance, gain)?,
+            Self::S98(player) => player.set_chip_gain(chip, instance, gain)?,
             Self::Xgm(player) => player.set_chip_gain(chip, instance, gain)?,
         }
         Ok(())
@@ -1465,6 +1508,7 @@ impl Sequencer {
         Ok(match self {
             Self::Vgm(player) => player.output_layout(chip, instance)?,
             Self::Mdx(player) => player.output_layout(chip, instance)?,
+            Self::S98(player) => player.output_layout(chip, instance)?,
             Self::Xgm(player) => player.output_layout(chip, instance)?,
         })
     }
@@ -1473,6 +1517,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.set_output_gains(chip, instance, gains)?,
             Self::Mdx(player) => player.set_output_gains(chip, instance, gains)?,
+            Self::S98(player) => player.set_output_gains(chip, instance, gains)?,
             Self::Xgm(player) => player.set_output_gains(chip, instance, gains)?,
         }
         Ok(())
@@ -1597,6 +1642,33 @@ impl Sequencer {
                 options,
                 factories,
             )?))
+        } else if track_format(path) == "S98" {
+            let document = S98Document::parse(&bytes).context("parse S98")?;
+            let header = S98VgmGenerator::new(document.clone(), Default::default())?
+                .vgm_header()
+                .clone();
+            let options = S98SequencerOptions {
+                playback: mdx_options(looped, settings).playback,
+                max_ticks: if looped {
+                    None
+                } else {
+                    S98SequencerOptions::default().max_ticks
+                },
+                ..Default::default()
+            };
+            let mut sequencer =
+                S98Sequencer::new_with_factories(document, rate, CHUNK_FRAMES, options, factories)?;
+            if let Some((directory, routes, configured_rom)) = rom {
+                Self::configure_ym2608_rhythm_rom(
+                    &mut sequencer,
+                    header.ym2608_clock,
+                    path,
+                    directory,
+                    routes,
+                    configured_rom,
+                )?;
+            }
+            Ok(Self::S98(sequencer))
         } else if track_format(path) == "XGM" {
             let document = XgmDocument::parse(&bytes).context("parse XGM")?;
             let options = XgmSequencerOptions {
@@ -1724,6 +1796,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => Ok(player.render()?),
             Self::Mdx(player) => Ok(player.render()?),
+            Self::S98(player) => Ok(player.render()?),
             Self::Xgm(player) => Ok(player.render()?),
         }
     }
@@ -1823,6 +1896,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => configure!(player),
             Self::Mdx(player) => configure!(player),
+            Self::S98(player) => configure!(player),
             Self::Xgm(player) => configure!(player),
         }
     }
@@ -1831,6 +1905,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.take_state_event_overflow(),
             Self::Mdx(player) => player.take_state_event_overflow(),
+            Self::S98(player) => player.take_state_event_overflow(),
             Self::Xgm(player) => player.take_state_event_overflow(),
         }
     }
@@ -1839,6 +1914,7 @@ impl Sequencer {
         match self {
             Self::Vgm(player) => player.fade_start_frame(),
             Self::Mdx(player) => player.fade_start_frame(),
+            Self::S98(player) => player.fade_start_frame(),
             Self::Xgm(player) => player.fade_start_frame(),
         }
     }
@@ -2230,7 +2306,9 @@ fn run_hardware(
 ) -> Result<()> {
     if !plan.nd7_devices.is_empty() && extension(path) != "mdx" {
         let bytes = read_track(path)?;
-        let (header, extra) = if track_format(path) == "XGM" {
+        let (header, extra) = if track_format(path) == "S98" {
+            (s98_header(&bytes)?, None)
+        } else if track_format(path) == "XGM" {
             (
                 XgmDocument::parse(&bytes)
                     .context("parse XGM")?
@@ -3215,6 +3293,108 @@ mod tests {
                 .map(|event| event.value)
                 .collect::<Vec<_>>(),
             [0x84, 0x10, 0x90]
+        );
+    }
+
+    #[test]
+    fn s98_playback_preview_and_ndsif_routing() {
+        use chipstream_ndsif::ndsif::register_ymfm_factories;
+        use ndsif_transport::{NdsifRegisterEvent, NdsifTransport};
+        use soundlog::s98::{
+            S98Builder, S98Command, S98Device, S98DeviceType, S98Header, S98Port, S98Version,
+        };
+
+        #[derive(Default)]
+        struct Recorder(Vec<NdsifRegisterEvent>);
+        impl NdsifTransport for Recorder {
+            fn configure_chip(&mut self, _: ndsif::WriteId, _: u8, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn schedule_register_write(&mut self, event: NdsifRegisterEvent) -> Result<(), String> {
+                self.0.push(event);
+                Ok(())
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("song.s98");
+        let mut header = S98Header::new(S98Version::V3);
+        header.timer_numerator = 1;
+        header.timer_denominator = 44_100;
+        header
+            .devices
+            .push(S98Device::new(S98DeviceType::Ym2151, 4_000_000));
+        let mut builder = S98Builder::new(header);
+        for (register, value) in [(0x28, 0x4c), (0x30, 0), (0x08, 0x78)] {
+            builder.push(S98Command::Write {
+                device: 0,
+                port: S98Port::Normal,
+                register,
+                value,
+            });
+        }
+        builder.push(S98Command::Wait(100)).mark_loop();
+        builder.push(S98Command::Write {
+            device: 0,
+            port: S98Port::Normal,
+            register: 0x08,
+            value: 0,
+        });
+        builder.push(S98Command::Wait(100));
+        std::fs::write(&path, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+
+        let settings = PlaybackSettings {
+            loop_count: 2,
+            fadeout_millis: 10,
+            start_delay_millis: 0,
+        };
+        let mut player = Sequencer::create(
+            &path,
+            44_100,
+            false,
+            ChipFactoryRegistry::new(),
+            None,
+            settings,
+        )
+        .unwrap();
+        assert_eq!(
+            player.chip_instances(),
+            vec![(Chip::Ym2151, Instance::Primary)]
+        );
+        while player.render().unwrap().is_some() {}
+        assert_eq!(player.fade_start_frame(), Some(300));
+        let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
+        run_preview(
+            &path,
+            44_100,
+            false,
+            &control,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+        assert!(
+            !control
+                .preview
+                .lock()
+                .unwrap()
+                .roll
+                .snapshot(0, 44_100, RollMode::Incoming)
+                .is_empty()
+        );
+
+        let recorder = Rc::new(RefCell::new(Recorder::default()));
+        let mut factories = ChipFactoryRegistry::new();
+        register_ymfm_factories(&mut factories, Rc::clone(&recorder)).unwrap();
+        let mut player =
+            Sequencer::create(&path, 44_100, false, factories, None, settings).unwrap();
+        while player.render().unwrap().is_some() {}
+        assert!(
+            recorder
+                .borrow()
+                .0
+                .iter()
+                .any(|event| event.write == ndsif::RegisterWrite::new(0x08, 0x78))
         );
     }
 

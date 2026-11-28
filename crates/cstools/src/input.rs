@@ -3,7 +3,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chipstream::metadata::probe_vgm_bytes;
+use chipstream::metadata::{TrackMetadata, probe_vgm_bytes};
 use flate2::read::GzDecoder;
 use mmlx::diagnostic::Diagnostic;
 use mmlx::frontend::SourceFile;
@@ -12,6 +12,7 @@ use soundlog::mdx::compat::normalize_mdx_for_playback;
 use soundlog::mdx::document::MdxDocument;
 use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::PdxDocument;
+use soundlog::s98::{S98Document, S98VgmGenerator};
 use soundlog::xgm::XgmDocument;
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -38,6 +39,7 @@ fn decode(bytes: Vec<u8>, gzip_extension: bool, limit: u64) -> Result<Vec<u8>> {
 pub enum Input {
     Vgm(Vec<u8>),
     Mdx(Box<MdxPackage>),
+    S98(Box<S98Document>),
     Xgm(Box<XgmDocument>, usize),
 }
 
@@ -76,6 +78,32 @@ pub fn metadata_line(input: &Input) -> Result<String> {
                 chips.push("OKIM6258".to_owned());
             }
             chips
+        }
+        Input::S98(document) => {
+            let metadata =
+                TrackMetadata::from_s98(document).context("failed to parse S98 metadata")?;
+            push_metadata_field(&mut fields, "Title", metadata.title.as_deref());
+            let generator = S98VgmGenerator::new((**document).clone(), Default::default())
+                .context("unsupported S98 playback configuration")?;
+            let mut chips: Vec<(String, usize)> = Vec::new();
+            for (_, chip, _) in generator.vgm_header().chip_instances().iter() {
+                let name = format!("{chip:?}").to_ascii_uppercase();
+                if let Some((_, count)) = chips.iter_mut().find(|(existing, _)| *existing == name) {
+                    *count += 1;
+                } else {
+                    chips.push((name, 1));
+                }
+            }
+            chips
+                .into_iter()
+                .map(|(name, count)| {
+                    if count == 1 {
+                        name
+                    } else {
+                        format!("{name} x{count}")
+                    }
+                })
+                .collect()
         }
         Input::Xgm(document, track) => {
             let track = document
@@ -250,7 +278,12 @@ pub fn load(path: &Path, pdx: Option<&Path>, output: Option<&Path>) -> Result<In
     let is_xgm = extension
         .is_some_and(|ext| ext.eq_ignore_ascii_case("xgm") || ext.eq_ignore_ascii_case("xgz"))
         || bytes.starts_with(b"XGM ");
-    if is_xgm {
+    let is_s98 =
+        extension.is_some_and(|ext| ext.eq_ignore_ascii_case("s98")) || bytes.starts_with(b"S98");
+    if is_s98 {
+        let document = S98Document::parse(&bytes).context("failed to parse S98 input")?;
+        Ok(Input::S98(Box::new(document)))
+    } else if is_xgm {
         let document = XgmDocument::parse(&bytes).context("failed to parse XGM input")?;
         Ok(Input::Xgm(Box::new(document), 0))
     } else {

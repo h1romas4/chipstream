@@ -12,7 +12,7 @@ use cstools::{PlayOptions, audio_output_devices, play};
     args_conflicts_with_subcommands = true
 )]
 struct Args {
-    /// VGM, VGZ, MDX, MML, XGM, or XGZ input file.
+    /// VGM, VGZ, MDX, MML, XGM, XGZ, or S98 input file.
     #[arg(value_name = "FILE", required = true)]
     file: Option<PathBuf>,
 
@@ -36,7 +36,7 @@ struct Args {
     #[arg(long, value_name = "INDEX")]
     xgm_track: Option<usize>,
 
-    /// Raw YM2608 rhythm ROM for VGM/VGZ playback.
+    /// Raw YM2608 rhythm ROM for VGM/VGZ or S98 playback.
     #[arg(long, value_name = "ROM_FILE")]
     ym2608_rhythm_rom: Option<PathBuf>,
 
@@ -69,7 +69,7 @@ struct Args {
     #[arg(long, value_name = "BOOL")]
     compat_vgm_pwm: Option<bool>,
 
-    /// Approximate VGM AY8910 with YM2149 (default: true).
+    /// Approximate VGM or S98 AY8910 with YM2149 (default: true).
     #[arg(long, value_name = "BOOL")]
     ay8910_ym2149: Option<bool>,
 

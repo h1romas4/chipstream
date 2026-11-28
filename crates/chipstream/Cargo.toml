@@ -20,6 +20,7 @@ all-features = true
 [features]
 default = []
 mdx = ["soundlog/mdx"]
+s98 = ["soundlog/s98"]
 xgm = ["soundlog/xgm"]
 ay8910 = []
 c140 = []

@@ -13,14 +13,14 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0"
-chipstream = { path = "../chipstream", version = "0.2.0", features = ["mdx", "xgm", "ay8910", "c140", "c352", "es550x", "ga20", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "saa1099", "scsp", "segapcm", "sn76496", "upd7759", "x1010", "ymz280b"] }
+chipstream = { path = "../chipstream", version = "0.2.0", features = ["mdx", "s98", "xgm", "ay8910", "c140", "c352", "es550x", "ga20", "huc6280", "k051649", "k053260", "k054539", "mikey", "multipcm", "nes_apu", "nes_fds", "okim6258", "okim6295", "pokey", "pwm", "qsound", "saa1099", "scsp", "segapcm", "sn76496", "upd7759", "x1010", "ymz280b"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 cpal = { version = "0.18.2", features = ["audioworklet"] }
 flate2 = "1.0"
 hound = "3.5"
 mmlx = { workspace = true, features = ["source-map"] }
-soundlog = { workspace = true, features = ["mdx", "xgm"] }
+soundlog = { workspace = true, features = ["mdx", "s98", "xgm"] }
 tempfile = "3"
 terminal_size = "0.4"
 

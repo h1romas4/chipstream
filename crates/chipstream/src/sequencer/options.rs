@@ -1,4 +1,4 @@
-//! Playback options shared by VGM and MDX sequencers.
+//! Playback options shared by the sequencers.
 //!
 //! [`PlaybackOptions`] specifies loop count and fade duration. Fade durations
 //! are converted to VGM-rate samples before playback or duration measurement.
@@ -9,7 +9,7 @@ use soundlog::vgm::VGM_SAMPLE_RATE;
 
 use super::VgmSequencerError;
 
-/// Playback behavior shared by VGM and MDX sequencers.
+/// Playback behavior shared by the sequencers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackOptions {
     /// Requested number of song traversals; `None` allows unlimited looping

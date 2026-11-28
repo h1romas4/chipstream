@@ -6,6 +6,137 @@ fn cli() -> Command {
 }
 
 #[test]
+fn cli_renders_s98_and_rejects_incompatible_options() {
+    use soundlog::s98::{S98Builder, S98Command, S98Header, S98Version};
+    let dir = tempfile::tempdir().unwrap();
+    let mut header = S98Header::new(S98Version::V3);
+    header.timer_numerator = 1;
+    header.timer_denominator = 44_100;
+    let mut builder = S98Builder::new(header);
+    builder.push(S98Command::Wait(100)).mark_loop();
+    builder.push(S98Command::Wait(100));
+    let input = dir.path().join("song.S98");
+    fs::write(&input, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+    let output = dir.path().join("song.wav");
+    let result = cli()
+        .arg(&input)
+        .arg(&output)
+        .args(["--loop-count", "2", "--fadeout-samples", "50"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(hound::WavReader::open(output).unwrap().duration(), 350);
+    for args in [
+        vec!["--xgm-track", "1"],
+        vec!["--pdx", "sample.pdx"],
+        vec!["--loop-base", "1"],
+    ] {
+        assert!(
+            !cli()
+                .arg(&input)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let invalid = dir.path().join("invalid.s98");
+    fs::write(&invalid, b"S98broken").unwrap();
+    assert!(!cli().arg(invalid).output().unwrap().status.success());
+}
+
+#[test]
+fn cli_renders_s98_with_ym2608_rhythm_rom() {
+    use soundlog::s98::{S98Builder, S98Command, S98Header, S98Port, S98Version};
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rhythm.s98");
+    let rom = dir.path().join("rhythm.rom");
+    let output = dir.path().join("rhythm.wav");
+    let mut header = S98Header::new(S98Version::V3);
+    header.timer_numerator = 1;
+    header.timer_denominator = 44_100;
+    let mut builder = S98Builder::new(header);
+    for (register, value) in [(0x11, 0x3f), (0x18, 0xdf), (0x10, 0x01)] {
+        builder.push(S98Command::Write {
+            device: 0,
+            port: S98Port::Normal,
+            register,
+            value,
+        });
+    }
+    builder.push(S98Command::Wait(4410));
+    fs::write(&input, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+    fs::write(&rom, [0x77; 8192]).unwrap();
+    let result = cli()
+        .arg(&input)
+        .arg(&output)
+        .arg("--ym2608-rhythm-rom")
+        .arg(&rom)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        hound::WavReader::open(output)
+            .unwrap()
+            .samples::<i16>()
+            .any(|sample| sample.unwrap().abs() > 32)
+    );
+}
+
+#[test]
+fn cli_renders_s98_ay_with_selected_factory() {
+    use soundlog::s98::{
+        S98Builder, S98Command, S98Device, S98DeviceType, S98Header, S98Port, S98Version,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("ay.s98");
+    let mut header = S98Header::new(S98Version::V3);
+    header.timer_numerator = 1;
+    header.timer_denominator = 44_100;
+    header
+        .devices
+        .push(S98Device::new(S98DeviceType::Ay8910, 1_792_000));
+    let mut builder = S98Builder::new(header);
+    for (register, value) in [(0, 255), (1, 0), (7, 0xfe), (8, 15)] {
+        builder.push(S98Command::Write {
+            device: 0,
+            port: S98Port::Normal,
+            register,
+            value,
+        });
+    }
+    builder.push(S98Command::Wait(4410));
+    fs::write(&input, builder.finalize().unwrap().to_bytes().unwrap()).unwrap();
+    for (name, args, audible) in [
+        ("ym2149", vec![], true),
+        ("silent", vec!["--ay8910-ym2149", "false"], false),
+        ("native", vec!["--ay8910-native"], true),
+    ] {
+        let output = dir.path().join(format!("{name}.wav"));
+        let result = cli().arg(&input).arg(&output).args(args).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let has_audio = hound::WavReader::open(output)
+            .unwrap()
+            .samples::<i16>()
+            .any(|sample| sample.unwrap() != 0);
+        assert_eq!(has_audio, audible, "{name}");
+    }
+}
+
+#[test]
 fn cli_renders_xgm_and_xgz_with_track_loops_and_fade() {
     use flate2::{Compression, write::GzEncoder};
     use soundlog::meta::Gd3;

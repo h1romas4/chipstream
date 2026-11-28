@@ -132,6 +132,8 @@ pub(super) enum FadeMarker {
     Mdx(MdxLoopMarker),
     #[cfg(feature = "xgm")]
     Xgm(XgmLoopMarker),
+    #[cfg(feature = "s98")]
+    S98(soundlog::s98::S98LoopMarker),
 }
 
 impl FadeMarker {
@@ -151,6 +153,8 @@ impl FadeMarker {
             Self::Mdx(ref marker) => Ok(marker.reached()),
             #[cfg(feature = "xgm")]
             Self::Xgm(ref marker) => Ok(marker.reached()),
+            #[cfg(feature = "s98")]
+            Self::S98(ref marker) => Ok(marker.reached()),
         }
     }
 
@@ -161,6 +165,8 @@ impl FadeMarker {
             Self::Mdx(_) => None,
             #[cfg(feature = "xgm")]
             Self::Xgm(_) => None,
+            #[cfg(feature = "s98")]
+            Self::S98(_) => None,
         }
     }
 }

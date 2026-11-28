@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add S98 playback with library, Piano Roll, and NanoDrive routing support.
 - Improve audio processing efficiency and reduce stack usage.
 - Update GPUI Kit to v0.11.0.
 - Update rfd to v0.18.0.

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 pub use playback::audio_output_devices;
 
-/// Options for playing or rendering a VGM, VGZ, MDX, MML, XGM, or XGZ file.
+/// Options for playing or rendering a VGM, VGZ, MDX, MML, XGM, XGZ, or S98 file.
 pub struct PlayOptions {
     /// Input file.
     pub file: PathBuf,
@@ -24,7 +24,7 @@ pub struct PlayOptions {
     pub pdx: Option<PathBuf>,
     /// Zero-based XGM track index; `None` selects the first track.
     pub xgm_track: Option<usize>,
-    /// Optional YM2608 rhythm ROM path for VGM.
+    /// Optional YM2608 rhythm ROM path for VGM or S98.
     pub ym2608_rhythm_rom: Option<PathBuf>,
     /// Finite playthrough count; `None` and zero both mean one.
     pub loop_count: Option<u32>,
@@ -38,7 +38,7 @@ pub struct PlayOptions {
     pub loop_base: Option<i8>,
     /// Configure the VGM PWM workaround; `None` enables it by default.
     pub compat_vgm_pwm: Option<bool>,
-    /// Approximate VGM AY8910 with YM2149; `None` enables it by default.
+    /// Approximate VGM or S98 AY8910 with YM2149; `None` enables it by default.
     pub ay8910_ym2149: Option<bool>,
     /// Use native AY-3-8910/8912/8913 emulation instead of YM2149 approximation.
     pub ay8910_native: bool,
@@ -95,8 +95,8 @@ pub fn play(options: PlayOptions) -> Result<()> {
         _ if xgm_track.is_some() => anyhow::bail!("--xgm-track applies only to XGM/XGZ"),
         _ => {}
     }
-    if ym2608_rhythm_rom.is_some() && !matches!(data, input::Input::Vgm(_)) {
-        anyhow::bail!("--ym2608-rhythm-rom applies only to VGM/VGZ");
+    if ym2608_rhythm_rom.is_some() && !matches!(data, input::Input::Vgm(_) | input::Input::S98(_)) {
+        anyhow::bail!("--ym2608-rhythm-rom applies only to VGM/VGZ and S98");
     }
     let ym2608_rhythm_rom = ym2608_rhythm_rom
         .as_deref()

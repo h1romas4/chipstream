@@ -1,6 +1,6 @@
-//! Device-independent VGM, MDX, and XGM playback.
+//! Device-independent VGM, MDX, XGM, and S98 playback.
 //!
-//! [`VgmSequencer`] and the optional `mdx` and `xgm` sequencers render stereo
+//! [`VgmSequencer`] and the optional `mdx`, `xgm`, and `s98` sequencers render stereo
 //! PCM without an audio device or sound engine. Output is not clipped, and
 //! rendering may allocate.
 //!
@@ -22,6 +22,8 @@ mod factory;
 #[cfg(feature = "mdx")]
 mod mdx;
 mod options;
+#[cfg(feature = "s98")]
+mod s98;
 mod vgm;
 mod volume;
 #[cfg(feature = "xgm")]
@@ -29,6 +31,8 @@ mod xgm;
 
 #[cfg(feature = "mdx")]
 pub use duration::measure_mdx_duration_frames;
+#[cfg(feature = "s98")]
+pub use duration::measure_s98_duration_frames;
 #[cfg(feature = "xgm")]
 pub use duration::measure_xgm_duration_frames;
 pub use duration::{
@@ -46,6 +50,8 @@ pub use factory::{
 #[cfg(feature = "mdx")]
 pub use mdx::{MdxExecutionPosition, MdxSequencer, MdxSequencerError, MdxSequencerOptions};
 pub use options::PlaybackOptions;
+#[cfg(feature = "s98")]
+pub use s98::{S98Sequencer, S98SequencerOptions};
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};
 pub use soundlog::vgm::command::Instance;
