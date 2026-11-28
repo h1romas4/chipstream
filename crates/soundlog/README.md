@@ -439,6 +439,10 @@ Enable the optional `s98` feature to parse, construct, and serialize
 uncompressed S98 files. `S98Document::parse_with_limits` bounds input, command,
 and tag sizes; tags remain raw bytes because their encoding varies. Loop
 targets are command indices, and serialization recalculates offsets.
+When the tag encoding is known to be Shift_JIS, use
+`encoding::decode_shift_jis_strict` to decode it without replacement.
+This follows WHATWG Shift_JIS and does not apply the X68000-specific MDX
+character mappings.
 
 ```rust
 # #[cfg(feature = "s98")]

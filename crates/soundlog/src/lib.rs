@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 mod binutil;
 pub mod chip;
+#[cfg(any(feature = "mdx", feature = "s98"))]
+pub mod encoding;
 mod error;
 pub mod execution;
 #[cfg(feature = "mdx")]
