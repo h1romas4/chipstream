@@ -545,6 +545,8 @@ pub struct ViewPlayback {
     pub playing: bool,
     pub previewing: bool,
     pub paused: bool,
+    pub time: (String, String),
+    pub progress: Option<f32>,
 }
 
 pub fn view(
@@ -560,6 +562,8 @@ pub fn view(
         playing,
         previewing,
         paused,
+        time,
+        progress,
     } = playback;
     let (snapshot, error) = match snapshot {
         Ok(snapshot) => (snapshot, None),
@@ -649,6 +653,37 @@ pub fn view(
                     "Select a track and start playback"
                 }))
                 .child(playback_buttons.mt_2())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .mt_1()
+                        .w(px(288.))
+                        .max_w(relative(1.))
+                        .text_xs()
+                        .text_color(rgb(0x9ab3c1))
+                        .child(div().child(time.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(3.))
+                                .rounded_full()
+                                .overflow_hidden()
+                                .bg(rgb(0x30414d))
+                                .when_some(progress, |bar, progress| {
+                                    bar.child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(progress))
+                                            .rounded_full()
+                                            .bg(rgb(0x64eadc)),
+                                    )
+                                }),
+                        )
+                        .child(div().child(time.1)),
+                )
                 .when_some(error, |view, error| {
                     view.child(
                         div()

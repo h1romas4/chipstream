@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chipstream::metadata::TrackMetadata;
-use chipstream::sequencer::Chip;
+use chipstream::sequencer::{Chip, PlaybackDuration};
 use gpui_kit::component::ElementExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::bubble::{Bubble, BubbleContent};
@@ -793,6 +793,7 @@ struct AppView {
     paused: bool,
     looped: bool,
     elapsed: u64,
+    duration_estimate: DurationEstimate,
     playing_title: String,
     title_viewport_width: Pixels,
     measured_title: Option<(String, Pixels)>,
@@ -819,6 +820,40 @@ struct IdlePreviewTarget {
     looped: bool,
     settings: library::PlaybackSettings,
     vgm_settings: library::VgmSettings,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DurationTarget {
+    path: PathBuf,
+    looped: bool,
+    settings: library::PlaybackSettings,
+}
+
+#[derive(Default)]
+struct DurationEstimate {
+    target: Option<DurationTarget>,
+    generation: u64,
+    total: Option<PlaybackDuration>,
+}
+
+impl DurationEstimate {
+    fn set_target(&mut self, target: Option<DurationTarget>) -> Option<(u64, DurationTarget)> {
+        if self.target == target {
+            return None;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.total = None;
+        self.target = target.clone();
+        target.map(|target| (self.generation, target))
+    }
+
+    fn complete(&mut self, generation: u64, duration: PlaybackDuration) -> bool {
+        if self.generation != generation || self.target.is_none() {
+            return false;
+        }
+        self.total = Some(duration);
+        true
+    }
 }
 
 fn audio_device_options(
@@ -1289,6 +1324,7 @@ impl AppView {
                     let _ = loop_set.update(cx, |view, cx| {
                         view.config.playback.loop_count = value.round() as u32;
                         view.save();
+                        view.sync_idle_duration(cx);
                         view.sync_idle_preview(cx);
                         cx.notify();
                     });
@@ -1310,6 +1346,7 @@ impl AppView {
                     let _ = fade_set.update(cx, |view, cx| {
                         view.config.playback.fadeout_millis = value.round() as u32;
                         view.save();
+                        view.sync_idle_duration(cx);
                         view.sync_idle_preview(cx);
                         cx.notify();
                     });
@@ -1741,6 +1778,7 @@ impl AppView {
             paused: false,
             looped: false,
             elapsed: 0,
+            duration_estimate: DurationEstimate::default(),
             playing_title: String::new(),
             title_viewport_width: px(0.),
             measured_title: None,
@@ -2074,6 +2112,7 @@ impl AppView {
         self.config.playlist.extend(paths);
         self.status = format!("Added {count} tracks to playlist");
         self.save();
+        self.sync_idle_duration(cx);
         cx.notify();
     }
 
@@ -2107,6 +2146,7 @@ impl AppView {
         }
         self.status = format!("Removed {count} tracks from playlist");
         self.save();
+        self.sync_idle_duration(cx);
         cx.notify();
     }
 
@@ -2383,6 +2423,7 @@ impl AppView {
         self.playing = None;
         self.paused = false;
         self.elapsed = 0;
+        self.sync_idle_duration(cx);
         self.status = "Stopped".into();
         cx.notify();
     }
@@ -2471,6 +2512,14 @@ impl AppView {
             } else {
                 self.player.play(path.clone(), self.looped, preview_mute);
             }
+            self.set_duration_target(
+                Some(DurationTarget {
+                    path: path.clone(),
+                    looped: self.looped,
+                    settings: self.config.playback,
+                }),
+                cx,
+            );
             self.transition_preview = if use_transition {
                 self.idle_preview.take()
             } else {
@@ -2511,6 +2560,60 @@ impl AppView {
             self.queue_scroll
                 .scroll_to_item(index, ScrollStrategy::Nearest);
             cx.notify();
+        }
+    }
+
+    fn set_duration_target(&mut self, target: Option<DurationTarget>, cx: &mut Context<Self>) {
+        if self.duration_estimate.target == target {
+            return;
+        }
+        let request = self.duration_estimate.set_target(target);
+        cx.notify();
+        let Some((generation, target)) = request else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    playback::measure_duration(&target.path, target.looped, target.settings)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.playing.is_none()
+                    && view.duration_estimate.target != view.idle_duration_target()
+                {
+                    view.sync_idle_duration(cx);
+                    return;
+                }
+                let duration = result
+                    .as_ref()
+                    .copied()
+                    .unwrap_or(PlaybackDuration::Unknown);
+                if view.duration_estimate.complete(generation, duration) {
+                    if let Err(error) = result {
+                        view.pending_errors.push(error_notification(
+                            "Duration estimation error",
+                            format!("{error:#}"),
+                        ));
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn idle_duration_target(&self) -> Option<DurationTarget> {
+        self.config.playlist.first().map(|path| DurationTarget {
+            path: path.clone(),
+            looped: self.looped,
+            settings: self.config.playback,
+        })
+    }
+
+    fn sync_idle_duration(&mut self, cx: &mut Context<Self>) {
+        if self.playing.is_none() {
+            self.set_duration_target(self.idle_duration_target(), cx);
         }
     }
 
@@ -3325,6 +3428,7 @@ impl AppView {
                 );
             }
         }
+        self.sync_idle_duration(cx);
         self.sync_idle_preview(cx);
         let sources = if self.playing.is_some() {
             Some(self.player.gain_sources())
@@ -3468,6 +3572,7 @@ impl AppView {
                 _ => {}
             }
         }
+        self.sync_idle_duration(cx);
         if self.transition_preview.is_some() {
             let finished = if self.playing.is_none() {
                 true
@@ -4043,6 +4148,7 @@ impl AppView {
                     .disabled(active)
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.looped = !view.looped;
+                        view.sync_idle_duration(cx);
                         cx.notify();
                     })),
             )
@@ -4061,7 +4167,7 @@ impl AppView {
             VolumeMode::Preparing => "Checking NanoDrive volume",
         };
         let state = playback_state_label(active, self.paused, self.waiting_for_start);
-        let title = self.now_playing_title();
+        let title = self.piano_title();
         let title_width = self
             .measured_title
             .as_ref()
@@ -4087,7 +4193,7 @@ impl AppView {
                 if changed {
                     window.defer(cx, move |_, cx| {
                         let _ = view.update(cx, |view, cx| {
-                            if view.now_playing_title() == title_for_measure {
+                            if view.piano_title() == title_for_measure {
                                 view.measured_title = Some((title_for_measure, width));
                                 cx.notify();
                             }
@@ -4164,12 +4270,9 @@ impl AppView {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_2xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("{}:{:02}", self.elapsed / 60, self.elapsed % 60)),
-                    )
+                    .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child(
+                        playback_time_label(self.elapsed, self.duration_estimate.total),
+                    ))
                     .child(
                         div()
                             .text_sm()
@@ -6972,6 +7075,38 @@ fn scrollbar(id: &'static str, handle: &(impl ScrollbarHandle + Clone)) -> impl 
         )
 }
 
+fn playback_time_parts(elapsed: u64, total: Option<PlaybackDuration>) -> (String, String) {
+    let format_time = |seconds: u64| format!("{}:{:02}", seconds / 60, seconds % 60);
+    let total = match total {
+        Some(PlaybackDuration::Finite(frames)) => {
+            format_time(u64::from(frames) / u64::from(soundlog::vgm::VGM_SAMPLE_RATE))
+        }
+        Some(PlaybackDuration::Unbounded) => "∞".into(),
+        Some(PlaybackDuration::Unknown) => "--:--".into(),
+        None => String::new(),
+    };
+    (format_time(elapsed), total)
+}
+
+fn playback_time_label(elapsed: u64, total: Option<PlaybackDuration>) -> String {
+    let (elapsed, total) = playback_time_parts(elapsed, total);
+    if total.is_empty() {
+        elapsed
+    } else {
+        format!("{elapsed} / {total}")
+    }
+}
+
+fn playback_progress(elapsed: u64, total: Option<PlaybackDuration>) -> Option<f32> {
+    match total {
+        Some(PlaybackDuration::Finite(frames)) if frames > 0 => Some(
+            ((elapsed as f64 * f64::from(soundlog::vgm::VGM_SAMPLE_RATE)) / f64::from(frames))
+                .clamp(0.0, 1.0) as f32,
+        ),
+        _ => None,
+    }
+}
+
 fn playback_state_label(active: bool, paused: bool, waiting: bool) -> &'static str {
     if !active {
         "Stopped"
@@ -7218,6 +7353,8 @@ impl Render for AppView {
                                                         playing: self.playing.is_some(),
                                                         previewing: self.playing.is_none() && !self.config.playlist.is_empty(),
                                                         paused: self.paused,
+                                                        time: playback_time_parts(self.elapsed, self.duration_estimate.total),
+                                                        progress: playback_progress(self.elapsed, self.duration_estimate.total),
                                                     },
                                                     self.roll_mode,
                                                     self.roll_hidden_channels.clone(),
@@ -7798,19 +7935,96 @@ mod tests {
     use gpui_kit::component::input::{InlineToken, InputContent};
 
     use super::{
-        ACCENT_COLOR, DetailsSelection, DeviceStatus, ListKey, MusicListRow, Page, ScanOrigin,
-        adjacent_track, build_music_list_rows, can_remove_device, capability_labels, chip_colors,
-        chip_suggestions, clipboard_track_path, connection_action, details_target,
-        global_music_album_shortcut, inclusive_range, initial_window_bounds, is_play_shortcut,
-        is_search_shortcut, is_select_all, is_stop_shortcut, keep_preview_sources,
-        list_cursor_index, list_key, list_selection_step, list_selection_target, music_format,
-        notification_copy_text, piano_channel_panel_height, piano_gain_panel_height,
-        piano_transition_ready, playback_state_label, preferred_mame_device,
-        remove_playlist_entries, renumber_connected_devices, reported_scan_errors,
-        restored_window_bounds, scan_progress_text, search_terms, select_for_context, select_item,
-        select_range, selection_status, single_queue_selection, unsupported_chips,
-        update_selection_order, update_window_settings, visible_music_track_indices,
+        ACCENT_COLOR, DetailsSelection, DeviceStatus, DurationEstimate, DurationTarget, ListKey,
+        MusicListRow, Page, ScanOrigin, adjacent_track, build_music_list_rows, can_remove_device,
+        capability_labels, chip_colors, chip_suggestions, clipboard_track_path, connection_action,
+        details_target, global_music_album_shortcut, inclusive_range, initial_window_bounds,
+        is_play_shortcut, is_search_shortcut, is_select_all, is_stop_shortcut,
+        keep_preview_sources, list_cursor_index, list_key, list_selection_step,
+        list_selection_target, music_format, notification_copy_text, piano_channel_panel_height,
+        piano_gain_panel_height, piano_transition_ready, playback_progress, playback_state_label,
+        playback_time_label, playback_time_parts, preferred_mame_device, remove_playlist_entries,
+        renumber_connected_devices, reported_scan_errors, restored_window_bounds,
+        scan_progress_text, search_terms, select_for_context, select_item, select_range,
+        selection_status, single_queue_selection, unsupported_chips, update_selection_order,
+        update_window_settings, visible_music_track_indices,
     };
+
+    #[test]
+    fn playback_time_displays_elapsed_and_estimated_duration() {
+        use chipstream::sequencer::PlaybackDuration;
+        assert_eq!(playback_time_label(65, None), "1:05");
+        assert_eq!(
+            playback_time_parts(65, None),
+            ("1:05".into(), String::new())
+        );
+        assert_eq!(
+            playback_time_label(65, Some(PlaybackDuration::Finite(125 * 44_100))),
+            "1:05 / 2:05"
+        );
+        assert_eq!(
+            playback_time_label(0, Some(PlaybackDuration::Unbounded)),
+            "0:00 / ∞"
+        );
+        assert_eq!(
+            playback_time_label(0, Some(PlaybackDuration::Unknown)),
+            "0:00 / --:--"
+        );
+    }
+
+    #[test]
+    fn duration_estimate_reuses_matching_target_and_discards_stale_results() {
+        use chipstream::sequencer::PlaybackDuration;
+        let target = DurationTarget {
+            path: PathBuf::from("first.vgm"),
+            looped: false,
+            settings: crate::library::PlaybackSettings::default(),
+        };
+        let mut estimate = DurationEstimate::default();
+        let (first, _) = estimate.set_target(Some(target.clone())).unwrap();
+        assert_eq!(estimate.total, None);
+        assert!(estimate.set_target(Some(target.clone())).is_none());
+        assert!(estimate.complete(first, PlaybackDuration::Finite(100)));
+        assert!(estimate.set_target(Some(target.clone())).is_none());
+        assert_eq!(estimate.total, Some(PlaybackDuration::Finite(100)));
+
+        let mut changed = target.clone();
+        changed.looped = true;
+        let (second, _) = estimate.set_target(Some(changed)).unwrap();
+        assert_eq!(estimate.total, None);
+        assert!(!estimate.complete(first, PlaybackDuration::Finite(100)));
+        assert!(estimate.complete(second, PlaybackDuration::Unknown));
+
+        let mut next_track = target.clone();
+        next_track.path = PathBuf::from("second.vgm");
+        let (third, _) = estimate.set_target(Some(next_track)).unwrap();
+        assert!(!estimate.complete(second, PlaybackDuration::Unknown));
+        let mut new_settings = target;
+        new_settings.settings.loop_count += 1;
+        let (fourth, _) = estimate.set_target(Some(new_settings)).unwrap();
+        assert!(!estimate.complete(third, PlaybackDuration::Finite(200)));
+        assert!(estimate.set_target(None).is_none());
+        assert!(!estimate.complete(fourth, PlaybackDuration::Finite(200)));
+        assert_eq!(estimate.total, None);
+    }
+
+    #[test]
+    fn playback_progress_handles_unknown_zero_and_finished_tracks() {
+        use chipstream::sequencer::PlaybackDuration;
+        let total = Some(PlaybackDuration::Finite(10 * 44_100));
+        assert_eq!(playback_progress(0, total), Some(0.0));
+        assert_eq!(playback_progress(5, total), Some(0.5));
+        assert_eq!(playback_progress(20, total), Some(1.0));
+        assert_eq!(
+            playback_progress(0, Some(PlaybackDuration::Finite(0))),
+            None
+        );
+        assert_eq!(
+            playback_progress(5, Some(PlaybackDuration::Unbounded)),
+            None
+        );
+        assert_eq!(playback_progress(5, None), None);
+    }
 
     #[test]
     fn mame_automatic_selection_prefers_first_compatible_connected_device() {

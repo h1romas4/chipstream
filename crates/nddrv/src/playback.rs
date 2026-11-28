@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chipstream::audio::StereoBlock;
 use chipstream::sequencer::{
-    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, NativeOutput, PlaybackOptions,
-    S98Sequencer, S98SequencerOptions, VgmSequencer, VgmSequencerOptions, XgmSequencer,
-    XgmSequencerOptions,
+    Chip, ChipFactoryRegistry, MdxSequencer, MdxSequencerOptions, NativeOutput, PlaybackDuration,
+    PlaybackOptions, S98Sequencer, S98SequencerOptions, VgmSequencer, VgmSequencerOptions,
+    XgmSequencer, XgmSequencerOptions, measure_mdx_duration_frames, measure_s98_duration_frames,
+    measure_vgm_duration_frames, measure_xgm_duration_frames,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -954,6 +955,66 @@ fn mdx_options(looped: bool, settings: PlaybackSettings) -> MdxSequencerOptions 
     }
 }
 
+fn s98_options(looped: bool, settings: PlaybackSettings) -> S98SequencerOptions {
+    S98SequencerOptions {
+        playback: mdx_options(looped, settings).playback,
+        max_ticks: if looped {
+            None
+        } else {
+            S98SequencerOptions::default().max_ticks
+        },
+        ..Default::default()
+    }
+}
+
+fn xgm_options(looped: bool, settings: PlaybackSettings) -> XgmSequencerOptions {
+    XgmSequencerOptions {
+        playback: mdx_options(looped, settings).playback,
+        max_frames: if looped {
+            None
+        } else {
+            XgmSequencerOptions::default().max_frames
+        },
+        ..Default::default()
+    }
+}
+
+fn vgm_options(looped: bool, settings: PlaybackSettings) -> VgmSequencerOptions {
+    VgmSequencerOptions {
+        playback: mdx_options(looped, settings).playback,
+        loop_base: (!looped).then_some(0),
+        loop_modifier: (!looped).then_some(0x10),
+        ..Default::default()
+    }
+}
+
+pub fn measure_duration(
+    path: &Path,
+    looped: bool,
+    settings: PlaybackSettings,
+) -> Result<PlaybackDuration> {
+    let bytes = read_track(path)?;
+    let duration = match track_format(path) {
+        "MDX" => measure_mdx_duration_frames(
+            mdx_package(path, bytes)?,
+            VGM_SAMPLE_RATE,
+            mdx_options(looped, settings),
+        )?,
+        "S98" => measure_s98_duration_frames(
+            S98Document::parse(&bytes).context("parse S98")?,
+            VGM_SAMPLE_RATE,
+            s98_options(looped, settings),
+        )?,
+        "XGM" => measure_xgm_duration_frames(
+            XgmDocument::parse(&bytes).context("parse XGM")?,
+            VGM_SAMPLE_RATE,
+            xgm_options(looped, settings),
+        )?,
+        _ => measure_vgm_duration_frames(&bytes, VGM_SAMPLE_RATE, vgm_options(looped, settings))?,
+    };
+    Ok(duration)
+}
+
 fn add_visual_ay_sources(
     path: &Path,
     routes: &[chipstream_ndsif::NdsifRoute],
@@ -1647,15 +1708,7 @@ impl Sequencer {
             let header = S98VgmGenerator::new(document.clone(), Default::default())?
                 .vgm_header()
                 .clone();
-            let options = S98SequencerOptions {
-                playback: mdx_options(looped, settings).playback,
-                max_ticks: if looped {
-                    None
-                } else {
-                    S98SequencerOptions::default().max_ticks
-                },
-                ..Default::default()
-            };
+            let options = s98_options(looped, settings);
             let mut sequencer =
                 S98Sequencer::new_with_factories(document, rate, CHUNK_FRAMES, options, factories)?;
             if let Some((directory, routes, configured_rom)) = rom {
@@ -1671,15 +1724,7 @@ impl Sequencer {
             Ok(Self::S98(sequencer))
         } else if track_format(path) == "XGM" {
             let document = XgmDocument::parse(&bytes).context("parse XGM")?;
-            let options = XgmSequencerOptions {
-                playback: mdx_options(looped, settings).playback,
-                max_frames: if looped {
-                    None
-                } else {
-                    XgmSequencerOptions::default().max_frames
-                },
-                ..Default::default()
-            };
+            let options = xgm_options(looped, settings);
             Ok(Self::Xgm(XgmSequencer::new_with_factories(
                 document,
                 rate,
@@ -1697,12 +1742,7 @@ impl Sequencer {
                 bytes,
                 rate,
                 CHUNK_FRAMES,
-                VgmSequencerOptions {
-                    playback: mdx_options(looped, settings).playback,
-                    loop_base: (!looped).then_some(0),
-                    loop_modifier: (!looped).then_some(0x10),
-                    ..Default::default()
-                },
+                vgm_options(looped, settings),
                 factories,
             )?;
             if let Some((directory, routes, configured_rom)) = rom {
@@ -3231,6 +3271,10 @@ mod tests {
                 frames.extend_from_slice(block.frames());
             }
             assert_eq!(frames.len(), 4 * 735 + 441);
+            assert_eq!(
+                measure_duration(path, false, settings).unwrap(),
+                PlaybackDuration::Finite(frames.len() as u32)
+            );
             assert_eq!(player.fade_start_frame(), Some(4 * 735));
             assert!(frames.iter().any(|frame| frame[0] != 0.0));
             assert!(
@@ -3363,6 +3407,10 @@ mod tests {
         );
         while player.render().unwrap().is_some() {}
         assert_eq!(player.fade_start_frame(), Some(300));
+        assert_eq!(
+            measure_duration(&path, false, settings).unwrap(),
+            PlaybackDuration::Finite(741)
+        );
         let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
             &path,
@@ -7244,6 +7292,12 @@ mod tests {
                         expected += block.frames().len() as u64;
                         assert!(expected < u64::from(rate) * 300);
                     }
+                    if rate == VGM_SAMPLE_RATE {
+                        assert_eq!(
+                            measure_duration(path, false, settings).unwrap(),
+                            PlaybackDuration::Finite(expected as u32)
+                        );
+                    }
                     let mut control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
                     control.settings = settings;
                     control
@@ -7263,6 +7317,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn duration_scan_handles_natural_end_and_unbounded_vgm() {
+        use soundlog::vgm::command::WaitSamples;
+
+        let dir = tempfile::tempdir().unwrap();
+        let finite = dir.path().join("finite.vgm");
+        let looped = dir.path().join("looped.vgm");
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(1_000));
+        std::fs::write(&finite, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
+        let mut builder = soundlog::vgm::VgmBuilder::new();
+        builder.set_loop_index(0);
+        builder.add_vgm_command(WaitSamples(1_000));
+        std::fs::write(&looped, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
+        let settings = PlaybackSettings::default();
+        assert_eq!(
+            measure_duration(&finite, true, settings).unwrap(),
+            PlaybackDuration::Finite(1_000)
+        );
+        assert_eq!(
+            measure_duration(&looped, true, settings).unwrap(),
+            PlaybackDuration::Unbounded
+        );
+        assert!(measure_duration(&dir.path().join("missing.vgm"), false, settings).is_err());
     }
 
     #[test]

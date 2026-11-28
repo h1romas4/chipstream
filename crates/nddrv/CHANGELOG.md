@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show elapsed and estimated total playback time in Library and Piano Roll, including before playback.
 - Add S98 playback with library, Piano Roll, and NanoDrive routing support.
 - Improve audio processing efficiency and reduce stack usage.
 - Update GPUI Kit to v0.11.0.
