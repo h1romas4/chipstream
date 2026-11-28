@@ -220,6 +220,36 @@ fn limit(name: &str, value: usize, maximum: Option<usize>) -> Result<(), ParseEr
 }
 
 impl S98Document {
+    /// Decode the tag as text without modifying the original bytes.
+    ///
+    /// Version 3 tags must start with `[S98]`. That identifier and a following
+    /// UTF-8 BOM, if present, are omitted from the returned text. A v3 tag
+    /// with a BOM is decoded as UTF-8; all other tags are assumed to use
+    /// Shift_JIS. S98 does not identify the encoding of tags without a BOM,
+    /// so this assumption may not match the source file. Invalid text and
+    /// invalid v3 identifiers return an error.
+    pub fn tag_text(&self) -> Result<Option<String>, ParseError> {
+        let Some(tag) = self.tag.as_deref() else {
+            return Ok(None);
+        };
+        let body = if self.header.version == S98Version::V3 {
+            let body = tag
+                .strip_prefix(b"[S98]")
+                .ok_or_else(|| invalid("invalid S98 tag identifier"))?;
+            if let Some(utf8) = body.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+                let text = std::str::from_utf8(utf8)
+                    .map_err(|error| invalid(format!("invalid S98 UTF-8 tag: {error}")))?;
+                return Ok(Some(text.to_owned()));
+            }
+            body
+        } else {
+            tag
+        };
+        let text = crate::encoding::decode_shift_jis_strict(body)
+            .map_err(|error| invalid(format!("invalid S98 Shift_JIS tag: {error}")))?;
+        Ok(Some(text))
+    }
+
     /// Parse an uncompressed S98 file using default resource limits.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         Self::parse_with_limits(bytes, S98ParseLimits::default())

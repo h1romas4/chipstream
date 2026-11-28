@@ -1,8 +1,9 @@
 //! S98 v1–v3 documents, typed commands, and lazy VGM playback.
 //!
 //! The format is based on the [S98 v3 specification][spec]. Compressed files
-//! are not supported. Metadata is retained as bytes, without assuming an
-//! encoding. Serialization preserves its contents, not original file offsets
+//! are not supported. Metadata is retained as bytes; [`S98Document::tag_text`]
+//! can decode it using an explicit Shift_JIS assumption for tags without a
+//! UTF-8 BOM. Serialization preserves its contents, not original file offsets
 //! or padding.
 //!
 //! [spec]: https://github.com/rururutan/s98spec3/blob/master/s98spec3-en.md

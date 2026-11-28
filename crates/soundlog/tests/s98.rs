@@ -71,6 +71,57 @@ fn versions_parse_and_serialize_semantics() {
 }
 
 #[test]
+fn tag_text_decodes_supported_encodings_without_changing_raw_bytes() {
+    let mut document = S98Builder::new(S98Header::new(S98Version::V1))
+        .finalize()
+        .unwrap();
+    assert_eq!(document.tag_text().unwrap(), None);
+    for version in [S98Version::V1, S98Version::V2] {
+        document.header.version = version;
+        document.tag = Some(vec![0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+        let original = document.tag.clone();
+        assert_eq!(document.tag_text().unwrap().as_deref(), Some("テスト"));
+        assert_eq!(document.tag, original);
+    }
+    document.header.version = S98Version::V3;
+    for (tag, expected) in [
+        (
+            b"[S98]\xef\xbb\xbftitle=\xe6\x9b\xb2".as_slice(),
+            "title=曲",
+        ),
+        (
+            b"[S98]title=\x83\x65\x83\x58\x83\x67".as_slice(),
+            "title=テスト",
+        ),
+        (b"[S98]".as_slice(), ""),
+    ] {
+        document.tag = Some(tag.to_vec());
+        assert_eq!(document.tag_text().unwrap().as_deref(), Some(expected));
+        let bytes = document.to_bytes().unwrap();
+        assert_eq!(
+            S98Document::parse(&bytes).unwrap().tag.as_deref(),
+            Some(tag)
+        );
+    }
+}
+
+#[test]
+fn tag_text_rejects_malformed_identifiers_and_text() {
+    let mut document = S98Builder::new(S98Header::new(S98Version::V3))
+        .finalize()
+        .unwrap();
+    for tag in [
+        b"invalid".as_slice(),
+        b"[S98]\xef\xbb\xbf\xff".as_slice(),
+        b"[S98]title=\x81".as_slice(),
+    ] {
+        document.tag = Some(tag.to_vec());
+        assert!(document.tag_text().is_err());
+        assert_eq!(document.tag.as_deref(), Some(tag));
+    }
+}
+
+#[test]
 fn malformed_inputs_and_resource_limits_are_rejected() {
     let input = fixture(b'3');
     let mut bad = input.clone();
