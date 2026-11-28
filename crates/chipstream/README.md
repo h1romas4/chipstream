@@ -315,6 +315,67 @@ other generator side effects can occur again. Use a fresh marker and generator
 for each player or [`measure_generator_duration_frames`](sequencer::measure_generator_duration_frames)
 scan. Duration scanning does not validate chip configuration or writes.
 
+#### Execution notifications
+
+Custom generators can report typed source positions using
+[`execution_event_channel`](sequencer::execution_event_channel) and
+[`VgmSequencer::on_execution`](sequencer::VgmSequencer::on_execution).
+Register the receiver before rendering, seeking, or creating checkpoints, and
+reuse its sender in every generator created by the factory.
+
+```rust
+use chipstream::sequencer::{
+    execution_event_channel, ExecutionEventSender, GeneratorConfig, VgmSequencer,
+};
+use soundlog::{ExecutionEvent, ParseError, VgmCommandGenerator};
+use soundlog::vgm::command::{VgmCommand, WaitSamples};
+
+#[derive(Debug)]
+struct Source {
+    events: ExecutionEventSender<usize>,
+    done: bool,
+}
+impl VgmCommandGenerator for Source {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        if self.done {
+            return Ok(None);
+        }
+        self.done = true;
+        self.events.send(ExecutionEvent { sample: 0, data: 42 })
+            .map_err(|error| ParseError::GeneratorError(Box::new(error)))?;
+        Ok(Some(WaitSamples(441).into()))
+    }
+}
+let (sender, receiver) = execution_event_channel();
+let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+    Ok(Box::new(Source { events: sender.clone(), done: false }))
+};
+let mut player = VgmSequencer::from_generator_factory(
+    factory, GeneratorConfig::default(), 48_000, 128,
+)?;
+player.on_execution(receiver, |frame, event| {
+    println!("output frame {frame}: source position {}", event.data);
+})?;
+while player.render()?.is_some() {}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Events use absolute 44,100 Hz source samples, in nondecreasing order. Send
+them synchronously before their source time is consumed; a late event or more
+than 4096 pending events fails playback. Events at the same sample keep their
+order. Their relative order with chip-write callbacks is unspecified. The
+callback receives the corresponding sequencer output frame before `render`
+returns, not the device playback position. At the final frame an event is
+delivered even if there is no final PCM block; events beyond the end are
+discarded.
+
+Seeking discards events before the target frame, retaining events at the target.
+Checkpoints preserve pending events and suppress notifications during generator
+reconstruction, but do not save callback state external to the sequencer. Other
+generator side effects still occur during reconstruction.
+With the `mdx` feature, `MdxSequencer::on_execution` uses the same delivery
+rules and reports MDX track and command indices.
+
 ### Playback options
 
 The sequencers accept options at construction; their defaults request one

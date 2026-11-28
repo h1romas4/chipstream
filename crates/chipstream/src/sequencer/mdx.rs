@@ -9,9 +9,10 @@ use std::error::Error;
 use std::fmt;
 
 use soundlog::mdx::compat::normalize_mdx_for_playback;
+pub use soundlog::mdx::convert::MdxExecutionPosition;
 use soundlog::mdx::convert::{
-    AdpcmMode, MdxConvertError, MdxToVgmOptions, to_vgm_stream_generator,
-    to_vgm_stream_generator_with_loop_marker,
+    AdpcmMode, MdxConvertError, MdxToVgmOptions, to_vgm_stream_generator_with_observer,
+    to_vgm_stream_generator_with_observer_and_loop_marker,
 };
 use soundlog::mdx::package::MdxPackage;
 use soundlog::vgm::{VgmHeader, VgmStream};
@@ -22,10 +23,29 @@ use super::factory::ChipFactoryRegistry;
 use super::vgm::config::ChipConfiguration;
 use super::vgm::{FadeMarker, StreamFactory};
 use super::{
-    Chip, EffectId, Instance, NativeOutput, OutputGroupId, PlaybackOptions, StateEvent,
-    VgmSequencer, VgmSequencerCheckpoint, VgmSequencerError, VgmStateTracker,
-    VgmWriteCallbackTarget,
+    Chip, EffectId, ExecutionEventReceiver, ExecutionEventSender, Instance, NativeOutput,
+    OutputGroupId, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerCheckpoint,
+    VgmSequencerError, VgmStateTracker, VgmWriteCallbackTarget, execution_event_channel,
 };
+
+fn mdx_generator(
+    package: MdxPackage,
+    options: MdxToVgmOptions,
+    mark_loop: bool,
+    sender: ExecutionEventSender<MdxExecutionPosition>,
+) -> Result<(Box<dyn soundlog::VgmCommandGenerator>, Option<FadeMarker>), MdxConvertError> {
+    let observer = move |event| sender.send_if_attached(event);
+    if mark_loop {
+        let (generator, marker) =
+            to_vgm_stream_generator_with_observer_and_loop_marker(package, options, observer)?;
+        Ok((generator, Some(FadeMarker::Mdx(marker))))
+    } else {
+        Ok((
+            to_vgm_stream_generator_with_observer(package, options, observer)?,
+            None,
+        ))
+    }
+}
 
 /// Playback and driver options for the incremental MDX sequencer.
 ///
@@ -156,6 +176,7 @@ impl Error for MdxSequencerError {
 pub struct MdxSequencer<'a> {
     /// VGM-based playback engine driven by the MDX generator.
     player: VgmSequencer<'a>,
+    execution_receiver: Option<ExecutionEventReceiver<MdxExecutionPosition>>,
 }
 
 impl<'a> MdxSequencer<'a> {
@@ -252,30 +273,15 @@ impl<'a> MdxSequencer<'a> {
         }
         let fadeout_samples = fadeout_samples.filter(|samples| *samples != 0);
         let replay_package = package.clone();
-        let (generator, marker) = if fadeout_samples.is_some() && options.loop_count.is_some() {
-            let (generator, marker) = to_vgm_stream_generator_with_loop_marker(package, options)
-                .map_err(MdxSequencerError::Conversion)?;
-            (generator, Some(FadeMarker::Mdx(marker)))
-        } else {
-            (
-                to_vgm_stream_generator(package, options).map_err(MdxSequencerError::Conversion)?,
-                None,
-            )
-        };
+        let (sender, receiver) = execution_event_channel();
+        let mark_loop = fadeout_samples.is_some() && options.loop_count.is_some();
+        let (generator, marker) = mdx_generator(package, options, mark_loop, sender.clone())
+            .map_err(MdxSequencerError::Conversion)?;
         let stream_factory: StreamFactory = Box::new(move || {
-            if fadeout_samples.is_some() && options.loop_count.is_some() {
-                let (generator, marker) =
-                    to_vgm_stream_generator_with_loop_marker(replay_package.clone(), options)
-                        .map_err(soundlog::ParseError::from)?;
-                Ok((
-                    VgmStream::from_generator(generator),
-                    Some(FadeMarker::Mdx(marker)),
-                ))
-            } else {
-                let generator = to_vgm_stream_generator(replay_package.clone(), options)
+            let (generator, marker) =
+                mdx_generator(replay_package.clone(), options, mark_loop, sender.clone())
                     .map_err(soundlog::ParseError::from)?;
-                Ok((VgmStream::from_generator(generator), None))
-            }
+            Ok((VgmStream::from_generator(generator), marker))
         });
         let mut header = VgmHeader {
             ym2151_clock: options.ym2151_clock,
@@ -302,7 +308,29 @@ impl<'a> MdxSequencer<'a> {
         player
             .configure_fadeout(fadeout_samples, marker)
             .map_err(MdxSequencerError::Playback)?;
-        Ok(Self { player })
+        Ok(Self {
+            player,
+            execution_receiver: Some(receiver),
+        })
+    }
+
+    /// Register output-aligned MDX execution notifications before playback.
+    ///
+    /// See [`VgmSequencer::on_execution`] for ordering, seek, and replay
+    /// behavior. Indices refer to the supplied MDX document.
+    pub fn on_execution(
+        &mut self,
+        callback: impl FnMut(usize, &soundlog::ExecutionEvent<MdxExecutionPosition>) + 'a,
+    ) -> Result<(), MdxSequencerError> {
+        let receiver = self
+            .execution_receiver
+            .take()
+            .ok_or(MdxSequencerError::Playback(
+                VgmSequencerError::ExecutionEventsAlreadyRegistered,
+            ))?;
+        self.player
+            .on_execution(receiver, callback)
+            .map_err(MdxSequencerError::Playback)
     }
 
     /// Change a chip's post-resampling mix gain. See [`VgmSequencer::set_chip_gain`].

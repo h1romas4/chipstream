@@ -106,6 +106,9 @@ use super::ChipBackendSettings;
 #[cfg(feature = "okim6258")]
 use super::Okim6258Divider;
 use super::effects::{EffectError, EffectId, EffectRack, EffectScratch, OutputGroupId};
+use super::execution::{
+    self, ExecutionEventError, ExecutionEventReceiver, ExecutionSnapshot, PendingExecutionEvents,
+};
 use super::factory::{ChipFactoryConfig, ChipFactoryRegistry};
 use super::{compat::PwmCompatibility, event, volume};
 use config::{ChipConfiguration, VoiceConfig, chip_id};
@@ -238,6 +241,12 @@ pub enum VgmSequencerError {
     DurationOverflow,
     /// Fadeout was configured after playback began.
     FadeoutConfigurationAfterPlayback,
+    /// Execution event registration must happen before playback begins.
+    ExecutionEventsAfterPlayback,
+    /// An execution event receiver is already registered.
+    ExecutionEventsAlreadyRegistered,
+    /// A generator execution event could not be queued.
+    ExecutionEvent(ExecutionEventError),
     /// Generator fadeout requires a loop marker.
     MissingGeneratorLoopMarker,
     /// A generator reported a loop boundary after its source position had passed.
@@ -339,6 +348,13 @@ impl fmt::Display for VgmSequencerError {
             Self::FadeoutConfigurationAfterPlayback => {
                 write!(f, "fadeout must be configured before rendering")
             }
+            Self::ExecutionEventsAfterPlayback => {
+                write!(f, "execution events must be registered before playback")
+            }
+            Self::ExecutionEventsAlreadyRegistered => {
+                write!(f, "an execution event receiver is already registered")
+            }
+            Self::ExecutionEvent(error) => write!(f, "execution event failed: {error}"),
             Self::CheckpointMismatch => {
                 write!(
                     f,
@@ -402,6 +418,7 @@ impl Error for VgmSequencerError {
             Self::Route(e) => Some(e),
             Self::Audio(e) => Some(e),
             Self::Effect(e) => Some(e),
+            Self::ExecutionEvent(e) => Some(e),
             _ => None,
         }
     }
@@ -897,6 +914,8 @@ pub struct VgmSequencer<'a> {
     started: bool,
     /// Registered write callbacks and filters.
     callbacks: CallbackRegistry<'a>,
+    /// Typed generator events awaiting their output positions.
+    execution_events: Option<Box<dyn PendingExecutionEvents + 'a>>,
     /// Callback events pending output delivery, with frame offsets.
     events: VecDeque<(usize, PendingWriteEvent)>,
     /// Frames preserved when seeking into the middle of a block.
@@ -1104,6 +1123,7 @@ pub struct VgmSequencerCheckpoint {
     failed: bool,
     started: bool,
     events: VecDeque<(usize, PendingWriteEvent)>,
+    execution_events: Option<ExecutionSnapshot>,
     pending_output: VecDeque<[f32; 2]>,
     pwm_compatibility: Option<[PwmCompatibility; 2]>,
     fade_samples: Option<u32>,
@@ -2006,6 +2026,7 @@ impl<'a> VgmSequencer<'a> {
             failed: false,
             started: false,
             callbacks: CallbackRegistry::default(),
+            execution_events: None,
             events: VecDeque::new(),
             pending_output: VecDeque::new(),
             pwm_compatibility: Some([PwmCompatibility::default(); 2]),
@@ -2056,6 +2077,35 @@ impl<'a> VgmSequencer<'a> {
         }
         self.fade_samples = samples.filter(|samples| *samples != 0);
         self.fade_marker = marker;
+        Ok(())
+    }
+
+    /// Deliver typed generator execution events at their output-frame positions.
+    ///
+    /// Register the channel before rendering, seeking, or creating checkpoints.
+    /// Events at the same sample retain generator order. Their order relative to
+    /// chip-write callbacks is unspecified. The frame is on the output timeline,
+    /// not a device playback position. Seek discards events before the target;
+    /// checkpoint replay suppresses duplicate generator notifications.
+    /// Pending events are saved in checkpoints, but the callback's external
+    /// state is not. At natural end or fade completion, an event at the final
+    /// frame is delivered; later events are discarded.
+    ///
+    /// A channel error fails rendering or seeking. The generator must use this
+    /// same sender for each reconstruction and report events in nondecreasing
+    /// 44,100 Hz sample order.
+    pub fn on_execution<T: 'static>(
+        &mut self,
+        receiver: ExecutionEventReceiver<T>,
+        callback: impl FnMut(usize, &soundlog::ExecutionEvent<T>) + 'a,
+    ) -> Result<(), VgmSequencerError> {
+        if self.started {
+            return Err(VgmSequencerError::ExecutionEventsAfterPlayback);
+        }
+        if self.execution_events.is_some() {
+            return Err(VgmSequencerError::ExecutionEventsAlreadyRegistered);
+        }
+        self.execution_events = Some(execution::attach(receiver, callback));
         Ok(())
     }
 
@@ -2457,6 +2507,12 @@ impl<'a> VgmSequencer<'a> {
         if !self.rewindable {
             return Err(VgmSequencerError::CheckpointUnsupported);
         }
+        if let Some(events) = &self.execution_events
+            && let Err(error) = events.check()
+        {
+            self.failed = true;
+            return Err(error);
+        }
 
         let mut voices = Vec::with_capacity(self.voices.len());
         for voice in &mut self.voices {
@@ -2517,6 +2573,10 @@ impl<'a> VgmSequencer<'a> {
             failed: self.failed,
             started: self.started,
             events: self.events.clone(),
+            execution_events: self
+                .execution_events
+                .as_ref()
+                .map(|events| events.snapshot()),
             pending_output: self.pending_output.clone(),
             pwm_compatibility: self.pwm_compatibility,
             fade_samples: self.fade_samples,
@@ -2565,25 +2625,40 @@ impl<'a> VgmSequencer<'a> {
                         || !voice.effects.same_topology(&saved.effects)
                 })
             || unique_memories(&self.voices).len() != checkpoint.memory.len()
+            || match (&self.execution_events, &checkpoint.execution_events) {
+                (Some(events), Some(snapshot)) => !events.matches(snapshot),
+                (None, None) => false,
+                _ => true,
+            }
         {
             return Err(VgmSequencerError::CheckpointMismatch);
         }
 
-        let (mut replacement, marker) = if let Some(factory) = &self.stream_factory {
-            let (mut stream, marker) =
-                factory().map_err(VgmSequencerError::StreamReconstruction)?;
-            stream.set_emit_stream_controls(true);
-            (Some(stream), marker)
-        } else {
-            reset_replay_stream(
-                &mut self.stream,
-                self.initial_loop_base,
-                self.initial_loop_modifier,
-            )?;
-            (None, None)
-        };
-        let stream = replacement.as_mut().unwrap_or(&mut self.stream);
-        replay_stream(stream, checkpoint.stream_steps, &checkpoint.stream_settings)?;
+        if let Some(events) = &self.execution_events {
+            events.set_replaying(true);
+        }
+        let replay = (|| {
+            let (mut replacement, marker) = if let Some(factory) = &self.stream_factory {
+                let (mut stream, marker) =
+                    factory().map_err(VgmSequencerError::StreamReconstruction)?;
+                stream.set_emit_stream_controls(true);
+                (Some(stream), marker)
+            } else {
+                reset_replay_stream(
+                    &mut self.stream,
+                    self.initial_loop_base,
+                    self.initial_loop_modifier,
+                )?;
+                (None, None)
+            };
+            let stream = replacement.as_mut().unwrap_or(&mut self.stream);
+            replay_stream(stream, checkpoint.stream_steps, &checkpoint.stream_settings)?;
+            Ok::<_, VgmSequencerError>((replacement, marker))
+        })();
+        if let Some(events) = &self.execution_events {
+            events.set_replaying(false);
+        }
+        let (replacement, marker) = replay?;
 
         for (memory, saved) in unique_memories(&self.voices).iter().zip(&checkpoint.memory) {
             *memory.borrow_mut() = saved.clone();
@@ -2624,6 +2699,11 @@ impl<'a> VgmSequencer<'a> {
         self.failed = checkpoint.failed;
         self.started = checkpoint.started;
         self.events.clone_from(&checkpoint.events);
+        if let (Some(events), Some(snapshot)) =
+            (&mut self.execution_events, &checkpoint.execution_events)
+        {
+            events.restore(snapshot);
+        }
         self.pending_output.clone_from(&checkpoint.pending_output);
         self.pwm_compatibility = checkpoint.pwm_compatibility;
         self.fade_samples = checkpoint.fade_samples;
@@ -2662,6 +2742,7 @@ impl<'a> VgmSequencer<'a> {
             });
         }
         self.restore_checkpoint(checkpoint)?;
+        self.started = true;
         while self.position_frames < target {
             if is_cancelled() {
                 return Err(VgmSequencerError::SeekCancelled);
@@ -2680,11 +2761,18 @@ impl<'a> VgmSequencer<'a> {
             };
             let start = self.position_frames;
             let discard = (target - start).min(block.frames().len());
+            let Some(end) = start.checked_add(discard) else {
+                self.failed = true;
+                return Err(VgmSequencerError::DurationOverflow);
+            };
             self.discard_events(discard);
-            self.position_frames = self
-                .position_frames
-                .checked_add(discard)
-                .ok_or(VgmSequencerError::DurationOverflow)?;
+            if let Some(events) = &mut self.execution_events
+                && let Err(error) = events.discard_before(end, self.output_rate, self.output_step)
+            {
+                self.failed = true;
+                return Err(error);
+            }
+            self.position_frames = end;
             self.pending_output
                 .extend(block.frames()[discard..].iter().copied());
         }
@@ -2712,6 +2800,12 @@ impl<'a> VgmSequencer<'a> {
             return Err(VgmSequencerError::StreamFailed);
         }
         self.started = true;
+        if let Some(events) = &self.execution_events
+            && let Err(error) = events.check()
+        {
+            self.failed = true;
+            return Err(error);
+        }
         let sample_start = self.position_frames;
         let result = self.render_inner(sample_start).and_then(|block| {
             for voice in &mut self.voices {
@@ -2765,6 +2859,21 @@ impl<'a> VgmSequencer<'a> {
             }
             for (offset, _) in &mut self.events {
                 *offset -= count;
+            }
+            if let Some(events) = &mut self.execution_events {
+                let end = sample_start
+                    .checked_add(count)
+                    .ok_or(VgmSequencerError::DurationOverflow)?;
+                if let Err(error) = events.dispatch(
+                    sample_start,
+                    end,
+                    self.ended && self.available == 0,
+                    self.output_rate,
+                    self.output_step,
+                ) {
+                    self.failed = true;
+                    return Err(error);
+                }
             }
         }
         result
@@ -2876,6 +2985,12 @@ impl<'a> VgmSequencer<'a> {
             }
             let source_sample = self.stream.current_sample();
             self.start_fade_if_needed(sample_frame_origin, source_sample)?;
+            if let Some(events) = &self.execution_events {
+                events.set_minimum_sample(
+                    u64::try_from(source_sample)
+                        .map_err(|_| VgmSequencerError::DurationOverflow)?,
+                );
+            }
             let was_initial = self.stream.is_initial_timestamp();
             let result = self
                 .stream
@@ -2886,6 +3001,9 @@ impl<'a> VgmSequencer<'a> {
                 .checked_add(1)
                 .ok_or(VgmSequencerError::DurationOverflow)?;
             let result = result?;
+            if let Some(events) = &self.execution_events {
+                events.check()?;
+            }
             if was_initial && !self.stream.is_initial_timestamp() {
                 for voice in &mut self.voices {
                     if let Some(scheduled) = voice.route.chip_mut().scheduled()

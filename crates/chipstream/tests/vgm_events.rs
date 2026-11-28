@@ -2,15 +2,333 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use chipstream::sequencer::{
-    Chip, Instance, PlaybackOptions, StateEvent, VgmSequencer, VgmSequencerError,
-    VgmSequencerOptions,
+    Chip, ExecutionEventError, ExecutionEventSender, Instance, PlaybackOptions, StateEvent,
+    VgmSequencer, VgmSequencerError, VgmSequencerOptions, execution_event_channel,
 };
 use soundlog::chip::state::{ChipState, Ym2151State};
 use soundlog::chip::{Ay8910Spec, Ym2151Spec, Ym2612Spec};
 use soundlog::vgm::command::{DataBlock, WaitSamples, Ym2612Port0Address2AWriteAndWaitN};
 use soundlog::vgm::{VgmBuilder, VgmDocument};
+use soundlog::{ExecutionEvent, ParseError, VgmCommandGenerator};
 
 type Ym2151Event = (usize, Instance, Ym2151Spec, Option<Vec<StateEvent>>);
+
+#[derive(Debug)]
+struct SourcePosition(&'static str);
+
+#[derive(Debug)]
+struct ObservedGenerator {
+    sender: ExecutionEventSender<SourcePosition>,
+    events: Vec<(u64, &'static str)>,
+    emitted: bool,
+}
+
+impl VgmCommandGenerator for ObservedGenerator {
+    fn next_command(&mut self) -> Result<Option<soundlog::vgm::command::VgmCommand>, ParseError> {
+        if self.emitted {
+            return Ok(None);
+        }
+        self.emitted = true;
+        for &(sample, name) in &self.events {
+            if self
+                .sender
+                .send(ExecutionEvent {
+                    sample,
+                    data: SourcePosition(name),
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+        Ok(Some(WaitSamples(1000).into()))
+    }
+}
+
+fn source_events() -> Vec<(u64, &'static str)> {
+    vec![
+        (0, "a"),
+        (100, "b"),
+        (100, "c"),
+        (300, "d"),
+        (1000, "end"),
+        (1001, "future"),
+    ]
+}
+
+#[test]
+fn custom_execution_events_follow_output_and_survive_checkpoint_seek() {
+    for (rate, chunk) in [(44_100, 31), (48_000, 64), (22_050, 17)] {
+        let (sender, receiver) = execution_event_channel();
+        let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+            Ok(Box::new(ObservedGenerator {
+                sender: sender.clone(),
+                events: source_events(),
+                emitted: false,
+            }))
+        };
+        let mut player =
+            VgmSequencer::from_generator_factory(factory, Default::default(), rate, chunk).unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&seen);
+        player
+            .on_execution(receiver, move |frame, event| {
+                captured
+                    .borrow_mut()
+                    .push((frame, event.sample, event.data.0));
+            })
+            .unwrap();
+        let initial = player.checkpoint().unwrap();
+        player.render().unwrap().unwrap();
+        let checkpoint = player.checkpoint().unwrap();
+        let position = player.position_frames();
+        seen.borrow_mut().clear();
+        while player.render().unwrap().is_some() {}
+        let expected = seen.borrow().clone();
+        assert_eq!(
+            expected.iter().map(|event| event.2).collect::<Vec<_>>(),
+            ["b", "c", "d", "end"]
+        );
+        for (frame, sample, _) in &expected {
+            assert_eq!(
+                *frame,
+                ((*sample * u64::from(rate) + 22_050) / 44_100) as usize
+            );
+        }
+        seen.borrow_mut().clear();
+        player.restore_checkpoint(&checkpoint).unwrap();
+        assert_eq!(player.position_frames(), position);
+        assert!(seen.borrow().is_empty());
+        while player.render().unwrap().is_some() {}
+        assert_eq!(*seen.borrow(), expected);
+
+        seen.borrow_mut().clear();
+        let target = ((100_u64 * u64::from(rate) + 22_050) / 44_100) as usize;
+        player.seek_to_frame(&initial, target).unwrap();
+        assert!(seen.borrow().is_empty());
+        while player.render().unwrap().is_some() {}
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|event| event.2)
+                .collect::<Vec<_>>(),
+            ["b", "c", "d", "end"]
+        );
+    }
+}
+
+#[test]
+fn execution_queue_errors_are_explicit_and_terminal() {
+    for too_many in [false, true] {
+        let (sender, receiver) = execution_event_channel();
+        let events = if too_many {
+            vec![(0, "event"); 4097]
+        } else {
+            vec![(10, "first"), (9, "out-of-order")]
+        };
+        let mut player = VgmSequencer::from_generator(
+            Box::new(ObservedGenerator {
+                sender,
+                events,
+                emitted: false,
+            }),
+            Default::default(),
+            44_100,
+            64,
+        )
+        .unwrap();
+        player
+            .on_execution(receiver, |_, _| {
+                panic!("events must not be delivered after overflow")
+            })
+            .unwrap();
+        let error = player.render().unwrap_err();
+        if too_many {
+            assert!(matches!(
+                error,
+                VgmSequencerError::ExecutionEvent(ExecutionEventError::QueueFull { limit: 4096 })
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                VgmSequencerError::ExecutionEvent(ExecutionEventError::OutOfOrder {
+                    previous: 10,
+                    sample: 9
+                })
+            ));
+        }
+        assert!(matches!(
+            player.render(),
+            Err(VgmSequencerError::StreamFailed)
+        ));
+    }
+}
+
+#[test]
+fn late_execution_events_fail_after_the_source_passes_them() {
+    #[derive(Debug)]
+    struct LateGenerator {
+        sender: ExecutionEventSender<SourcePosition>,
+        step: usize,
+    }
+    impl VgmCommandGenerator for LateGenerator {
+        fn next_command(
+            &mut self,
+        ) -> Result<Option<soundlog::vgm::command::VgmCommand>, ParseError> {
+            self.step += 1;
+            match self.step {
+                1 => Ok(Some(WaitSamples(100).into())),
+                2 => {
+                    assert!(
+                        self.sender
+                            .send(ExecutionEvent {
+                                sample: 50,
+                                data: SourcePosition("late")
+                            })
+                            .is_err()
+                    );
+                    Ok(Some(WaitSamples(100).into()))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    let (sender, receiver) = execution_event_channel();
+    let mut player = VgmSequencer::from_generator(
+        Box::new(LateGenerator { sender, step: 0 }),
+        Default::default(),
+        44_100,
+        64,
+    )
+    .unwrap();
+    player
+        .on_execution(receiver, |_, _| panic!("late event must not be delivered"))
+        .unwrap();
+    let error = loop {
+        match player.render() {
+            Ok(Some(_)) => {}
+            Err(error) => break error,
+            Ok(None) => panic!("late event was not rejected"),
+        }
+    };
+    assert!(matches!(
+        error,
+        VgmSequencerError::ExecutionEvent(ExecutionEventError::Late {
+            sample: 50,
+            current: 100
+        })
+    ));
+}
+
+#[test]
+fn execution_events_at_empty_end_are_delivered_once() {
+    #[derive(Debug)]
+    struct EmptyGenerator(ExecutionEventSender<SourcePosition>);
+    impl VgmCommandGenerator for EmptyGenerator {
+        fn next_command(
+            &mut self,
+        ) -> Result<Option<soundlog::vgm::command::VgmCommand>, ParseError> {
+            self.0
+                .send(ExecutionEvent {
+                    sample: 0,
+                    data: SourcePosition("end"),
+                })
+                .map_err(|error| ParseError::GeneratorError(Box::new(error)))?;
+            Ok(None)
+        }
+    }
+    let (sender, receiver) = execution_event_channel();
+    let mut player = VgmSequencer::from_generator(
+        Box::new(EmptyGenerator(sender)),
+        Default::default(),
+        44_100,
+        64,
+    )
+    .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&seen);
+    player
+        .on_execution(receiver, move |frame, event| {
+            captured.borrow_mut().push((frame, event.data.0))
+        })
+        .unwrap();
+    assert!(player.render().unwrap().is_none());
+    assert!(player.render().unwrap().is_none());
+    assert_eq!(*seen.borrow(), [(0, "end")]);
+}
+
+#[test]
+fn execution_channel_requires_registration_and_matching_checkpoint() {
+    let (sender, receiver) = execution_event_channel();
+    assert_eq!(
+        sender.send(ExecutionEvent {
+            sample: 0,
+            data: SourcePosition("before")
+        }),
+        Err(ExecutionEventError::ReceiverNotAttached)
+    );
+    let generator_sender = sender.clone();
+    let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+        Ok(Box::new(ObservedGenerator {
+            sender: generator_sender.clone(),
+            events: source_events(),
+            emitted: false,
+        }))
+    };
+    let mut player =
+        VgmSequencer::from_generator_factory(factory, Default::default(), 44_100, 64).unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    player.on_execution(receiver, |_, _| {}).unwrap();
+    assert!(matches!(
+        player.restore_checkpoint(&checkpoint),
+        Err(VgmSequencerError::CheckpointMismatch)
+    ));
+    drop(player);
+    assert_eq!(
+        sender.send(ExecutionEvent {
+            sample: 0,
+            data: SourcePosition("after")
+        }),
+        Err(ExecutionEventError::ReceiverNotAttached)
+    );
+}
+
+#[test]
+fn execution_events_cannot_arrive_after_their_output_frame() {
+    let (sender, receiver) = execution_event_channel();
+    let mut player = VgmSequencer::from_generator(
+        Box::new(ObservedGenerator {
+            sender: sender.clone(),
+            events: Vec::new(),
+            emitted: false,
+        }),
+        Default::default(),
+        44_100,
+        64,
+    )
+    .unwrap();
+    player.on_execution(receiver, |_, _| {}).unwrap();
+    player.render().unwrap().unwrap();
+    sender
+        .send(ExecutionEvent {
+            sample: 0,
+            data: SourcePosition("late"),
+        })
+        .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::ExecutionEvent(
+            ExecutionEventError::LateOutput {
+                frame: 0,
+                current: 64
+            }
+        ))
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+}
 
 #[test]
 fn tracking_reports_missing_instances_and_counts_matches() {

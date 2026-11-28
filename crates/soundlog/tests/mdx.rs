@@ -14,9 +14,9 @@ use soundlog::mdx::command::{
     MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
-    AdpcmMode, MdxConvertError, MdxExecutionEvent, MdxPlaybackCheckError, MdxPlaybackCheckLimits,
-    MdxToVgmOptions, check_playback, to_vgm_document, to_vgm_document_with_diagnostics,
-    to_vgm_stream_generator, to_vgm_stream_generator_with_observer,
+    AdpcmMode, MdxConvertError, MdxPlaybackCheckError, MdxPlaybackCheckLimits, MdxToVgmOptions,
+    check_playback, to_vgm_document, to_vgm_document_with_diagnostics, to_vgm_stream_generator,
+    to_vgm_stream_generator_with_observer,
 };
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::header::parse_mdx_header;
@@ -62,38 +62,18 @@ fn mdx_observer_reports_execution_positions_without_changing_vgm() {
         expected
     );
     assert_eq!(
-        *events.borrow(),
+        events
+            .borrow()
+            .iter()
+            .map(|event| (event.data.track, event.data.command_index, event.sample))
+            .collect::<Vec<_>>(),
         [
-            MdxExecutionEvent {
-                track: 0,
-                command_index: 0,
-                sample: 0
-            },
-            MdxExecutionEvent {
-                track: 0,
-                command_index: 1,
-                sample: 0
-            },
-            MdxExecutionEvent {
-                track: 1,
-                command_index: 0,
-                sample: 0
-            },
-            MdxExecutionEvent {
-                track: 1,
-                command_index: 1,
-                sample: 632
-            },
-            MdxExecutionEvent {
-                track: 0,
-                command_index: 2,
-                sample: 1264
-            },
-            MdxExecutionEvent {
-                track: 0,
-                command_index: 3,
-                sample: 1896
-            },
+            (0, 0, 0),
+            (0, 1, 0),
+            (1, 0, 0),
+            (1, 1, 632),
+            (0, 2, 1264),
+            (0, 3, 1896),
         ]
     );
 }
@@ -154,7 +134,7 @@ fn mdx_observer_positions_match_writes_with_pcm_wait_splitting() {
     for (value, track, command_index) in [(0x11, 0, 0), (0x33, 1, 1), (0x22, 0, 2)] {
         let event = events
             .iter()
-            .find(|event| event.track == track && event.command_index == command_index)
+            .find(|event| event.data.track == track && event.data.command_index == command_index)
             .unwrap();
         assert!(writes.contains(&(value, event.sample)));
     }
@@ -194,7 +174,7 @@ fn mdx_observer_reports_repeated_positions_and_respects_budget() {
     let events = events.borrow();
     let rests: Vec<_> = events
         .iter()
-        .filter(|event| event.command_index == 0)
+        .filter(|event| event.data.command_index == 0)
         .collect();
     assert!(rests.len() >= 2);
     assert_eq!(rests[0].sample, 0);
@@ -227,12 +207,12 @@ fn mdx_observer_reports_repeated_positions_and_respects_budget() {
     .unwrap();
     assert!(generator.next_command().is_err());
     assert_eq!(
-        *events.borrow(),
-        [MdxExecutionEvent {
-            track: 0,
-            command_index: 0,
-            sample: 0
-        }]
+        events
+            .borrow()
+            .iter()
+            .map(|event| (event.data.track, event.data.command_index, event.sample))
+            .collect::<Vec<_>>(),
+        [(0, 0, 0)]
     );
 }
 

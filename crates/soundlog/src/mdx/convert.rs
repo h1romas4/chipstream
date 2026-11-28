@@ -390,16 +390,17 @@ pub fn to_vgm_stream_generator(
     Ok((package, options).into())
 }
 
-/// An MDX track command about to be executed during lazy generation.
+/// The position of an MDX track command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MdxExecutionEvent {
+pub struct MdxExecutionPosition {
     /// Zero-based index of the track in the supplied MDX document.
     pub track: usize,
     /// Zero-based index of the command in that track.
     pub command_index: usize,
-    /// Elapsed 44,100 Hz VGM samples from the beginning, including repeats.
-    pub sample: u64,
 }
+
+/// An MDX command execution notification on the source generation timeline.
+pub type MdxExecutionEvent = crate::ExecutionEvent<MdxExecutionPosition>;
 
 /// Build a lazy generator that reports each executed MDX track command.
 ///
@@ -434,7 +435,7 @@ pub struct MdxExecutionEvent {
 /// for result in VgmCallbackStream::from_generator(generator) {
 ///     result?;
 /// }
-/// assert_eq!((events.borrow()[0].track, events.borrow()[0].command_index), (0, 0));
+/// assert_eq!((events.borrow()[0].data.track, events.borrow()[0].data.command_index), (0, 0));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn to_vgm_stream_generator_with_observer(
@@ -448,6 +449,30 @@ pub fn to_vgm_stream_generator_with_observer(
         sample: 0,
     });
     Ok(Box::new(generator))
+}
+
+/// Create a generator with both execution notifications and a fade loop marker.
+///
+/// The observer has the same timing and replay semantics as
+/// [`to_vgm_stream_generator_with_observer`]. A finite loop count is required.
+pub fn to_vgm_stream_generator_with_observer_and_loop_marker(
+    package: MdxPackage,
+    options: MdxToVgmOptions,
+    observer: impl FnMut(MdxExecutionEvent) + 'static,
+) -> Result<(Box<dyn VgmCommandGenerator>, MdxLoopMarker), MdxConvertError> {
+    if options.loop_count.is_none() {
+        return Err(MdxConvertError::InvalidOptions(
+            "loop marker requires a finite loop count",
+        ));
+    }
+    let marker = MdxLoopMarker::default();
+    let mut generator = MdxVgmGenerator::new(package, options, false);
+    generator.playback.song_loop.continue_at_limit = Some(marker.clone());
+    generator.playback.observer = Some(PlaybackObserver {
+        callback: Box::new(observer),
+        sample: 0,
+    });
+    Ok((Box::new(generator), marker))
 }
 
 /// A notification that the requested MDX loop boundary has been reached.
@@ -1837,9 +1862,11 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.timing.commands_since_tick = self.timing.commands_since_tick.saturating_add(1);
             if let Some(observer) = &mut self.observer {
                 (observer.callback)(MdxExecutionEvent {
-                    track,
-                    command_index: self.tracks[track].command_index,
                     sample: observer.sample,
+                    data: MdxExecutionPosition {
+                        track,
+                        command_index: self.tracks[track].command_index,
+                    },
                 });
             }
             self.tracks[track].command_index += 1;

@@ -2,6 +2,8 @@
 
 ## v0.19.0 (unreleased)
 
+- Breaking: `MdxExecutionEvent` now uses `ExecutionEvent<MdxExecutionPosition>`; access track and command index through `event.data`.
+- Add: Generic typed execution events and combined MDX observer and loop-marker generation.
 - Change: `VgmStream::reset` returns a `Result` and rejects generator-backed streams without changing their state.
 - Add: Optional MDX execution notifications with track, command index, and generated VGM sample position.
 - Change: Error enums `ParseError`, `MdxConvertError`, `MdxPlaybackCheckError`, `PcmDecodeError`, and `XgmPlaybackError` are non-exhaustive; external matches must include a fallback arm.

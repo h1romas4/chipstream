@@ -393,10 +393,13 @@ for result in &mut stream {
 ```
 
 For source mapping, `mdx::convert::to_vgm_stream_generator_with_observer`
-reports the original track and command index before each MDX command executes.
-Its sample timestamp includes repeats and uses the 44.1 kHz generated VGM
-timeline. Notifications can be delivered before the corresponding commands
-are consumed, and replay for a checkpoint can report them again.
+reports an [`ExecutionEvent`] before each MDX command executes. Its
+`data.track` and `data.command_index` identify the original command, and
+`sample` includes repeats on the 44.1 kHz generated VGM timeline.
+
+Notifications can be delivered before the corresponding commands are consumed,
+and replay for a checkpoint can report them again. To also mark loop boundaries,
+use `to_vgm_stream_generator_with_observer_and_loop_marker`.
 
 ### XGM v1
 
@@ -600,6 +603,12 @@ stream; `None` cannot mean temporarily unavailable data. Reset and seek are
 unsupported for this single-pass source. Errors should be returned, not
 treated as end of stream. Each call must return promptly: stream budgets
 cannot interrupt work inside a generator call.
+
+[`ExecutionEvent<T>`] provides a common timestamped wrapper for custom
+generator notifications; `T` is the generator's own position or payload type.
+The timestamp is a generated VGM sample, not a playback position. A generator
+and its consumer choose how to transport these events; `VgmStream` itself does
+not queue or align them with output.
 
 ```rust
 use soundlog::chip::Ym2151Spec;

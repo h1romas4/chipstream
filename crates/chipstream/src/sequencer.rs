@@ -17,6 +17,7 @@ mod compat;
 mod duration;
 mod effects;
 mod event;
+mod execution;
 mod factory;
 #[cfg(feature = "mdx")]
 mod mdx;
@@ -35,12 +36,15 @@ pub use duration::{
 };
 pub use effects::{EffectError, EffectId, OutputGroupId};
 pub use event::{VgmStateTracker, VgmStateTrackerKind, VgmWriteCallbackTarget};
+pub use execution::{
+    ExecutionEventError, ExecutionEventReceiver, ExecutionEventSender, execution_event_channel,
+};
 pub use factory::{
     Ay8910Settings, Ay8910Variant, AyOutputSettings, C140Variant, ChipBackendSettings,
     ChipFactoryConfig, ChipFactoryRegistry, Okim6258Divider, Okim6258Settings, Sn76489Settings,
 };
 #[cfg(feature = "mdx")]
-pub use mdx::{MdxSequencer, MdxSequencerError, MdxSequencerOptions};
+pub use mdx::{MdxExecutionPosition, MdxSequencer, MdxSequencerError, MdxSequencerOptions};
 pub use options::PlaybackOptions;
 pub use soundlog::chip::Chip;
 pub use soundlog::chip::event::{StateEvent, ToneInfo};

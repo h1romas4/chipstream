@@ -17,6 +17,173 @@ use soundlog::mdx::package::MdxPackage;
 use soundlog::mdx::pdx::PdxBuilder;
 use soundlog::mdx::tone::{MdxOperator, MdxTone};
 
+#[test]
+fn mdx_execution_events_match_source_and_output_timeline() {
+    use soundlog::mdx::command::MdxTempo;
+    use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator_with_observer};
+    use soundlog::vgm::stream::StreamResult;
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxTempo { value: 200 })
+        .add_mdx_command(0, MdxRest { ticks: 2 })
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(1, MdxRest { ticks: 1 });
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let source_events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&source_events);
+    let generator = to_vgm_stream_generator_with_observer(
+        package.clone(),
+        MdxToVgmOptions::default(),
+        move |event| observed.borrow_mut().push(event),
+    )
+    .unwrap();
+    let mut stream = soundlog::VgmStream::from_generator(generator);
+    loop {
+        match stream.next().unwrap().unwrap() {
+            StreamResult::EndOfStream => break,
+            StreamResult::Command(_) => {}
+            StreamResult::NeedsMoreData => panic!("generator unexpectedly needs data"),
+        }
+    }
+
+    for (rate, chunk) in [(44_100, 31), (48_000, 128), (22_050, 17)] {
+        let expected = source_events
+            .borrow()
+            .iter()
+            .map(|event| {
+                (
+                    ((event.sample * u64::from(rate) + 22_050) / 44_100) as usize,
+                    *event,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut player =
+            MdxSequencer::new(package.clone(), rate, chunk, Default::default()).unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&seen);
+        player
+            .on_execution(move |frame, event| captured.borrow_mut().push((frame, *event)))
+            .unwrap();
+        let initial = player.checkpoint().unwrap();
+        let audio = render_mdx(&mut player);
+        assert_eq!(*seen.borrow(), expected);
+        let baseline = render_mdx(
+            &mut MdxSequencer::new(package.clone(), rate, chunk, Default::default()).unwrap(),
+        );
+        assert_eq!(audio, baseline);
+
+        seen.borrow_mut().clear();
+        let target = expected
+            .iter()
+            .find(|(_, event)| event.sample > 0)
+            .unwrap()
+            .0;
+        player.seek_to_frame(&initial, target).unwrap();
+        assert!(seen.borrow().is_empty());
+        render_mdx(&mut player);
+        assert_eq!(
+            *seen.borrow(),
+            expected
+                .into_iter()
+                .filter(|(frame, _)| *frame >= target)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn mdx_execution_events_work_with_loop_fade_and_reconstruction() {
+    use soundlog::mdx::command::{MdxCommand, MdxRelativeOffset};
+    use std::{cell::RefCell, rc::Rc, time::Duration};
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -4,
+            }),
+        );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let options = MdxSequencerOptions {
+        playback: PlaybackOptions {
+            loop_count: Some(2),
+            fadeout: Some(Duration::from_millis(30)),
+        },
+        ..Default::default()
+    };
+    let mut player = MdxSequencer::new(package.clone(), 44_100, 128, options).unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&seen);
+    player
+        .on_execution(move |frame, event| captured.borrow_mut().push((frame, *event)))
+        .unwrap();
+    player.render().unwrap().unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    seen.borrow_mut().clear();
+    let audio = render_mdx(&mut player);
+    let expected = seen.borrow().clone();
+    assert!(player.fade_start_frame().is_some());
+    let mut baseline = MdxSequencer::new(package, 44_100, 128, options).unwrap();
+    baseline.render().unwrap().unwrap();
+    assert_eq!(render_mdx(&mut baseline), audio);
+    assert!(
+        expected
+            .iter()
+            .filter(|(_, event)| event.data.command_index == 0)
+            .count()
+            >= 2
+    );
+    seen.borrow_mut().clear();
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert!(seen.borrow().is_empty());
+    assert_eq!(render_mdx(&mut player), audio);
+    assert_eq!(*seen.borrow(), expected);
+}
+
+#[test]
+fn mdx_execution_event_overflow_stops_playback() {
+    use chipstream::sequencer::{ExecutionEventError, MdxSequencerError, VgmSequencerError};
+    use soundlog::mdx::command::MdxOpmRegisterWrite;
+    let mut builder = MdxBuilder::new();
+    for _ in 0..4097 {
+        builder.add_mdx_command(
+            0,
+            MdxOpmRegisterWrite {
+                register: 0x20,
+                value: 0,
+            },
+        );
+    }
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let mut player = MdxSequencer::new(package, 44_100, 128, Default::default()).unwrap();
+    player
+        .on_execution(|_, _| panic!("overflowing events must not be delivered"))
+        .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(MdxSequencerError::Playback(
+            VgmSequencerError::ExecutionEvent(ExecutionEventError::QueueFull { limit: 4096 })
+        ))
+    ));
+    assert!(matches!(
+        player.render(),
+        Err(MdxSequencerError::Playback(VgmSequencerError::StreamFailed))
+    ));
+}
+
 const MDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.mdx");
 #[cfg(feature = "okim6258")]
 const PDX: &[u8] = include_bytes!("../assets/mdx/mdx_fm_loop.pdx");
