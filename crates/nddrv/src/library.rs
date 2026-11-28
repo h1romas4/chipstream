@@ -1197,7 +1197,7 @@ mod tests {
                 track_name_en: Some(title.into()),
                 ..Default::default()
             });
-            fs::write(path, Vec::<u8>::from(builder.finalize())).unwrap();
+            fs::write(path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         }
         let result = scan(&[root.to_path_buf()]);
         assert!(result.errors.is_empty());
@@ -1448,7 +1448,7 @@ mod tests {
             fs::create_dir_all(path).unwrap();
         }
         fs::create_dir(sibling.join("empty-child")).unwrap();
-        let bytes = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let bytes = Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap();
         for path in [
             root.join("root.vgm"),
             album.join("a.vgm"),
@@ -1581,7 +1581,7 @@ mod tests {
         let outside = dir.path().join("outside");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&outside).unwrap();
-        let bytes = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let bytes = Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap();
         fs::write(outside.join("song.vgm"), bytes).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
         let result = scan(&[root]);
@@ -1842,7 +1842,8 @@ mod tests {
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Ay8910, Instance::Primary, 4_000_000);
-        let tags = Track::track_chips(&Vec::<u8>::from(builder.finalize()), false).unwrap();
+        let tags =
+            Track::track_chips(&Vec::<u8>::try_from(builder.finalize()).unwrap(), false).unwrap();
         let unsupported: Vec<_> = tags
             .iter()
             .filter(|tag| !tag.software_supported())
@@ -1863,7 +1864,7 @@ mod tests {
             if unsupported {
                 builder.register_chip(Chip::Ay8910, Instance::Primary, 4_000_000);
             }
-            let bytes = Vec::<u8>::from(builder.finalize());
+            let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
             let path = directory.path().join(format!("track.{extension}"));
             if extension == "vgz" {
                 let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -1899,7 +1900,7 @@ mod tests {
             notes: Some("Notes".into()),
             ..Default::default()
         });
-        let bytes = Vec::<u8>::from(builder.finalize());
+        let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
         for extension in ["vgm", "vgz"] {
             let path = directory.path().join(format!("track.{extension}"));
             let data = if extension == "vgz" {
@@ -1977,7 +1978,7 @@ mod tests {
         });
         let mut document = builder.finalize();
         let compatibility = |document: &soundlog::vgm::VgmDocument| {
-            let bytes = Vec::<u8>::from(document);
+            let bytes = Vec::<u8>::try_from(document).unwrap();
             let tags = Track::track_chips(&bytes, false).unwrap();
             assert_eq!(tags.len(), 1);
             assert_eq!(tags[0].instances, 2);
@@ -2035,7 +2036,7 @@ mod tests {
         });
         let mut document = builder.finalize();
         let compatibility = |document: &soundlog::vgm::VgmDocument| {
-            Track::track_chips(&Vec::<u8>::from(document), false).unwrap()[0]
+            Track::track_chips(&Vec::<u8>::try_from(document).unwrap(), false).unwrap()[0]
                 .native_ay8910_compatible
         };
         for variant in [
@@ -2067,7 +2068,7 @@ mod tests {
         builder.register_chip(Chip::Ym2203, Instance::Primary, 4_000_000);
         builder.register_chip(Chip::Ym2203, Instance::Secondary, 4_000_000);
         builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
-        let vgm = Vec::<u8>::from(builder.finalize());
+        let vgm = Vec::<u8>::try_from(builder.finalize()).unwrap();
         let tags = Track::track_chips(&vgm, false).unwrap();
         assert_eq!(
             tags.iter().map(ChipTag::label).collect::<Vec<_>>(),
@@ -2081,7 +2082,7 @@ mod tests {
             filter_indices_with_chips(&[track], "", None, &["YM2203".into()]),
             [0]
         );
-        let empty_vgm = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let empty_vgm = Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap();
         assert!(Track::track_chips(&empty_vgm, false).unwrap().is_empty());
 
         let mdx = include_bytes!("../../soundlog/assets/mdx/mdx_fm_loop.mdx");
@@ -2104,7 +2105,7 @@ mod tests {
     #[test]
     fn scan_progress_counts_files_and_reports_all_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let good = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let good = Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap();
         fs::write(dir.path().join("good.vgm"), good).unwrap();
         fs::write(dir.path().join("bad.vgm"), b"broken").unwrap();
         let mut updates = Vec::new();
@@ -2140,7 +2141,11 @@ mod tests {
             game_name_en: Some("Test game".into()),
             ..Default::default()
         });
-        fs::write(nested.join("song.vgm"), Vec::<u8>::from(builder.finalize())).unwrap();
+        fs::write(
+            nested.join("song.vgm"),
+            Vec::<u8>::try_from(builder.finalize()).unwrap(),
+        )
+        .unwrap();
         let ScanResult { tracks, errors, .. } = scan(&[dir.path().to_path_buf(), nested]);
         assert!(errors.is_empty());
         assert_eq!(tracks.len(), 1);
@@ -2237,7 +2242,7 @@ mod tests {
             soundlog::vgm::command::Instance::Primary,
             4_000_000,
         );
-        let bytes = Vec::<u8>::from(builder.finalize());
+        let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&bytes).unwrap();
         fs::write(dir.path().join("song.VGZ"), encoder.finish().unwrap()).unwrap();

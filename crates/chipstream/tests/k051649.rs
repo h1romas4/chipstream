@@ -175,7 +175,7 @@ fn vgm_second_chip_callbacks_and_checkpoint() {
     );
     builder.add_vgm_command(WaitSamples(800));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<K051649State>();
     let events = Rc::new(RefCell::new(Vec::new()));

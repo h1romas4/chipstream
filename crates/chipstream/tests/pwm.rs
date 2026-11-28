@@ -85,7 +85,7 @@ fn vgm_playback_and_events_preserve_12_bit_samples() {
     }
     builder.add_vgm_command(WaitSamples(200));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 30, Default::default()).unwrap();
     let mut document = VgmSequencer::new(parsed, 44_100, 128, Default::default()).unwrap();
@@ -155,7 +155,7 @@ fn render_events(player: &mut VgmSequencer<'_>) -> (Vec<[f32; 2]>, CapturedEvent
 #[test]
 fn vgm_bad_rip_workaround_triggers_on_32nd_non_control_write() {
     let document = pwm_rip(Some(0), 33);
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut streamed = VgmSequencer::from_vgm(bytes, 44_100, 11, Default::default()).unwrap();
     let mut parsed = VgmSequencer::new(document.clone(), 44_100, 128, Default::default()).unwrap();
     let (audio, events) = render_events(&mut streamed);
@@ -195,7 +195,7 @@ fn pwm_compatibility_option_applies_to_all_vgm_constructors_and_checkpoints() {
     use chipstream::sequencer::ChipFactoryRegistry;
 
     let document = pwm_rip(None, 32);
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let options = VgmSequencerOptions {
         pwm_compatibility: false,
         ..Default::default()

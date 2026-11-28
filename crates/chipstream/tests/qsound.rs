@@ -109,7 +109,7 @@ fn vgm_rom_legacy_clock_and_16_bit_writes() {
     }
     builder.add_vgm_command(WaitSamples(1000));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for mut player in [
         VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),

@@ -184,7 +184,7 @@ fn vgm_header_flags_control_output() {
     let mut doc = builder.finalize();
     doc.header.k054539_flags.reverse_stereo = true;
     doc.header.k054539_flags.disable_reverb = true;
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     for mut player in [
         VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),
@@ -222,7 +222,7 @@ fn vgm_legacy_sample_rate_clock_matches_modern_clock() {
     let expected = modern.render().unwrap().unwrap();
     assert!(expected.frames().iter().any(|frame| frame[0].abs() > 0.01));
     let legacy = document(48_000);
-    let bytes: Vec<u8> = legacy.clone().into();
+    let bytes: Vec<u8> = legacy.clone().try_into().unwrap();
     for mut player in [
         VgmSequencer::new(legacy, 44_100, 128, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),
@@ -252,7 +252,7 @@ fn vgm_secondary_rom_callbacks_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<K054539State>();

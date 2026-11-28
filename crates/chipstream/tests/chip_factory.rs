@@ -625,7 +625,7 @@ fn factory_receives_per_instance_clocks_and_stereo_for_both_vgm_inputs() {
     });
     let mut document = builder.finalize();
     document.header.sn76489_flags.gamegear_stereo = true;
-    let bytes: Vec<u8> = document.into();
+    let bytes: Vec<u8> = document.try_into().unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
 
     for from_bytes in [false, true] {
@@ -751,7 +751,7 @@ fn psg_factory_scan_reports_malformed_commands_before_creating_a_backend() {
     builder.register_chip(Chip::Sn76489, Instance::Primary, 3_579_545);
     let mut document = builder.finalize();
     document.header.sn76489_flags.gamegear_stereo = true;
-    let mut bytes: Vec<u8> = document.into();
+    let mut bytes: Vec<u8> = document.try_into().unwrap();
     let header = soundlog::vgm::VgmHeader::from_bytes(&bytes).unwrap();
     let start = soundlog::vgm::VgmHeader::command_start(header.version, header.data_offset);
     bytes.truncate(start);
@@ -815,7 +815,7 @@ fn vgm_factories_receive_chip_settings_and_source_timing_without_headers() {
     document.header.ym2203_ay8910_flags.discrete_output = true;
     document.header.ym2608_ay8910_flags.raw_output = true;
     document.header.ym2610b_clock |= 0x8000_0000;
-    let bytes: Vec<u8> = document.into();
+    let bytes: Vec<u8> = document.try_into().unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
 
     for from_bytes in [false, true] {
@@ -971,7 +971,7 @@ fn failed_chip_restore_prevents_playback_and_further_restores() {
         });
         let mut player = if from_file {
             VgmSequencer::from_vgm_with_factories(
-                Vec::<u8>::from(document.clone()),
+                Vec::<u8>::try_from(document.clone()).unwrap(),
                 44_100,
                 64,
                 Default::default(),
@@ -1356,7 +1356,7 @@ fn rejects_factory_clock_mismatch_against_extra_header_clock() {
         ..Default::default()
     });
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for from_bytes in [false, true] {
         let mut factories = ChipFactoryRegistry::new();
         factories.register(Chip::Ym2151, |config| {

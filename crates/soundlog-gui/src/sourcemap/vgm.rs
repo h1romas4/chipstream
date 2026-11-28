@@ -17,7 +17,7 @@ impl SourceAdapter for VgmAdapter {
     }
 
     fn canonical_bytes(document: &Self::Document) -> Result<Vec<u8>> {
-        Ok(Self::canonical_bytes(document))
+        Self::canonical_bytes(document)
     }
 }
 
@@ -26,8 +26,8 @@ impl VgmAdapter {
         VgmDocument::try_from(bytes).map_err(|error| anyhow!("failed to parse VGM: {error:?}"))
     }
 
-    pub fn canonical_bytes(document: &VgmDocument) -> Vec<u8> {
-        document.into()
+    pub fn canonical_bytes(document: &VgmDocument) -> Result<Vec<u8>> {
+        Vec::try_from(document).map_err(|error| anyhow!("failed to serialize VGM: {error}"))
     }
 
     pub fn command_ranges(document: &VgmDocument) -> Vec<ByteRange> {
@@ -353,10 +353,10 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1));
         let document = builder.finalize();
-        let bytes: Vec<u8> = (&document).into();
+        let bytes: Vec<u8> = (&document).try_into().unwrap();
 
         let parsed = VgmAdapter::parse(&bytes).unwrap();
-        let rebuilt = VgmAdapter::canonical_bytes(&parsed);
+        let rebuilt = VgmAdapter::canonical_bytes(&parsed).unwrap();
         let ranges = VgmAdapter::command_ranges(&parsed);
 
         assert_eq!(parsed.commands.len(), 2);
@@ -377,7 +377,7 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1));
         let document = builder.finalize();
-        let bytes: Vec<u8> = (&document).into();
+        let bytes: Vec<u8> = (&document).try_into().unwrap();
         let parsed = VgmAdapter::parse(&bytes).unwrap();
 
         let nodes = VgmAdapter::command_nodes(&parsed, 0, 1);
@@ -397,7 +397,7 @@ mod tests {
             ..Default::default()
         });
         let document = builder.finalize();
-        let bytes: Vec<u8> = (&document).into();
+        let bytes: Vec<u8> = (&document).try_into().unwrap();
         let parsed = VgmAdapter::parse(&bytes).unwrap();
         let node = VgmAdapter::gd3_node(&parsed).unwrap();
 

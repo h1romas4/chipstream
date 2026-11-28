@@ -31,7 +31,7 @@ pub fn test_roundtrip(path: &Path, data: Vec<u8>, dry_run: bool) -> Result<()> {
     };
 
     // Round-trip: serialize parsed doc back to bytes and re-parse
-    let rebuilt: Vec<u8> = (&doc_orig).into();
+    let rebuilt: Vec<u8> = (&doc_orig).try_into()?;
     let doc_reparsed_res: Result<VgmDocument, _> = (&rebuilt[..]).try_into();
 
     match doc_reparsed_res {

@@ -94,7 +94,7 @@ fn test_extra_header_build_and_decode_roundtrip() {
 
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let serialized: Vec<u8> = (&doc).into();
+    let serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Parse back into a VgmDocument
     let parsed: soundlog::VgmDocument = serialized.as_slice().try_into().expect("failed to parse");
@@ -214,7 +214,7 @@ fn test_vgm_header_roundtrip_all_fields() {
     doc.header = h.clone();
 
     // Serialize and parse back
-    let serialized: Vec<u8> = (&doc).into();
+    let serialized: Vec<u8> = (&doc).try_into().unwrap();
     let parsed: soundlog::VgmDocument = serialized.as_slice().try_into().expect("failed to parse");
 
     let ph = parsed.header;

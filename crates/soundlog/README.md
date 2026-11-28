@@ -154,8 +154,8 @@ builder.set_gd3(Gd3 {
 // Values such as `total_samples` in the header are calculated automatically.
 let document: VgmDocument = builder.finalize();
 
-// `into()` converts the finalized `VgmDocument` into VGM-format binary bytes
-let _bytes: Vec<u8> = document.into();
+// Validate the command encodings before writing VGM bytes.
+let _bytes: Vec<u8> = document.try_into().expect("invalid VGM command");
 ```
 
 ### `VgmDocument` as parser
@@ -173,7 +173,7 @@ let mut b = VgmBuilder::new();
 b.add_vgm_command(WaitSamples(100));
 b.add_vgm_command(WaitSamples(200));
 let doc = b.finalize();
-let bytes: Vec<u8> = (&doc).into();
+let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
 // Parse the bytes into a `VgmDocument`
 let document: VgmDocument = (bytes.as_slice())
@@ -436,7 +436,7 @@ builder.add_track(XgmTrack {
     ],
     gd3: None,
 });
-let bytes = builder.finalize()?.to_bytes()?;
+let bytes: Vec<u8> = builder.finalize()?.try_into()?;
 let document = XgmDocument::parse(&bytes)?;
 let header = document.header.timing.vgm_header();
 let generator = XgmVgmGenerator::new(document, XgmPlaybackOptions::default())?;

@@ -185,7 +185,7 @@ fn vgm_rom_dynamic_pin_and_document_match() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 31, Default::default()).unwrap();
     let mut document = VgmSequencer::new(parsed, 44_100, 256, Default::default()).unwrap();

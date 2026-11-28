@@ -260,7 +260,7 @@ fn vgm_playback_routes_both_bus_widths_and_physical_variants() {
         }
         builder.add_vgm_command(WaitSamples(1000));
         let document = builder.finalize();
-        let bytes: Vec<u8> = document.clone().into();
+        let bytes: Vec<u8> = document.clone().try_into().unwrap();
         let mut doc_player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
         let mut byte_player =
             VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();

@@ -292,7 +292,7 @@ fn state_tracking_uses_requested_clock_and_is_instance_specific() {
         builder.add_chip_write(Instance::Primary, Ym2151Spec { register, value });
     }
     builder.add_vgm_command(WaitSamples(10));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 8, Default::default()).unwrap();
     let mut parsed = VgmSequencer::new(document, 44_100, 8, Default::default()).unwrap();

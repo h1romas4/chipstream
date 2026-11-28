@@ -8544,7 +8544,7 @@ mod tests {
             (Ay8910ChipType::Ay8930, vec!["AY8910".to_owned()]),
         ] {
             document.header.ay_chip_type = chip_type;
-            let bytes = Vec::<u8>::from(&document);
+            let bytes = Vec::<u8>::try_from(&document).unwrap();
             for extension in ["vgm", "vgz"] {
                 let path = directory.path().join(format!("track.{extension}"));
                 let data = if extension == "vgz" {

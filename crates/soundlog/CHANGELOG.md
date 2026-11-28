@@ -2,6 +2,11 @@
 
 ## v0.19.0 (unreleased)
 
+- Change: Error enums `ParseError`, `MdxConvertError`, `MdxPlaybackCheckError`, `PcmDecodeError`, and `XgmPlaybackError` are non-exhaustive; external matches must include a fallback arm.
+- Change: Replace VGM document `From` serialization with validated `TryFrom`; use `try_into()` and handle `ParseError`.
+- Add: Validated `TryFrom` serialization for owned and borrowed MDX and XGM documents.
+- Add: MDX and VGM command and document validation for checked serialization.
+- Fix: Reject unencodable MDX commands when serializing a document.
 - Improve: Allocate callback stream chip-state trackers only when enabled, reducing stack usage.
 - Fix: Resolve PCM1 notes against PDX bank zero regardless of bank-selection commands; PCM8 retains per-track bank selection. PCM reference inspection follows the same rule.
 - Fix: Treat `VgmCommandGenerator` returning `Ok(None)` as end of stream, not `NeedsMoreData`, even without `EndOfData`.

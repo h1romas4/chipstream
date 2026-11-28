@@ -1,6 +1,5 @@
 use soundlog::chip::*;
 use soundlog::{Instance, VgmBuilder, VgmCommand};
-use std::convert::TryInto;
 
 /// Ensure we can pass a tag-only `Chip` to `register_chip` (existing test).
 #[test]
@@ -13,8 +12,7 @@ fn add_chip_accepts_tag_only_chip() {
 
 /// Exercise chip spec encoding using only the public API:
 /// - use `VgmBuilder::add_chip_write(Instance, spec)` to add a single write
-/// - finalize and serialize the document
-/// - locate the command stream start from the header data_offset
+/// - finalize the document and serialize the command
 /// - compare the emitted command bytes against expected vgm bytes
 #[test]
 fn api_spec_encode_vgm_bytes_all() {
@@ -28,11 +26,7 @@ fn api_spec_encode_vgm_bytes_all() {
         let mut b = VgmBuilder::new();
         b.add_chip_write(instance, spec.clone());
         let doc = b.finalize();
-        let bytes: Vec<u8> = (&doc).into();
-        let data_offset = u32::from_le_bytes(bytes[0x34..0x38].try_into().unwrap());
-        let header_len = 0x34usize + data_offset as usize;
-        let available = bytes.len().saturating_sub(header_len);
-        bytes[header_len..header_len + available].to_vec()
+        soundlog::vgm::command::command_to_vgm_bytes(&doc.commands[0]).0
     }
 
     // Test PSG (PsgSpec) via a direct VgmCommand to avoid needing Instance wrapping.

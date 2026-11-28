@@ -51,7 +51,7 @@ fn owned_vgm_with_large_block_is_not_copied_at_initialization() {
         size: BLOCK_SIZE as u32,
         data: vec![0; BLOCK_SIZE],
     });
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     MAX_ALLOCATION.store(0, Ordering::Relaxed);
     MEASURING.store(true, Ordering::Relaxed);
     let result = VgmSequencer::from_vgm(bytes, 48_000, 256, Default::default());
@@ -60,7 +60,7 @@ fn owned_vgm_with_large_block_is_not_copied_at_initialization() {
     assert!(result.is_ok());
     assert!(largest < 1024 * 1024, "largest allocation: {largest}");
 
-    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().into();
+    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().try_into().unwrap();
     let header = VgmHeader::from_bytes(&bytes).unwrap();
     let start = VgmHeader::command_start(header.version, header.data_offset);
     bytes.resize(start + 300_000, 0x70);

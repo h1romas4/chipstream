@@ -150,7 +150,7 @@ fn vgm_dmc_ram_upload_produces_audio() {
     }
     builder.add_vgm_command(WaitSamples(1500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut document_player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     let mut stream_player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let first = document_player.render().unwrap().unwrap();
@@ -192,7 +192,13 @@ fn dual_vgm_uses_independent_ram_and_callbacks() {
 
     fn render(doc: soundlog::vgm::VgmDocument, serialized: bool) -> (Vec<[f32; 2]>, Vec<Instance>) {
         let mut player = if serialized {
-            VgmSequencer::from_vgm(doc, 44_100, 128, Default::default()).unwrap()
+            VgmSequencer::from_vgm(
+                Vec::<u8>::try_from(doc).unwrap(),
+                44_100,
+                128,
+                Default::default(),
+            )
+            .unwrap()
         } else {
             VgmSequencer::new(doc, 44_100, 57, Default::default()).unwrap()
         };

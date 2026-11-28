@@ -178,7 +178,7 @@ fn test_ym3526_fm_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Optionally write the VGM artifact for manual verification
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("ym3526_fm_a4.vgm", &vgm_bytes);
 
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz

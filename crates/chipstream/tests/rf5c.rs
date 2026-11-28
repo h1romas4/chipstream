@@ -164,7 +164,7 @@ fn vgm_direct_and_pcm_bank_uploads_render_from_document_and_bytes() {
         let mut outputs = Vec::new();
         for copy in [false, true] {
             let doc = document(kind.clone(), block, copy);
-            let bytes: Vec<u8> = doc.clone().into();
+            let bytes: Vec<u8> = doc.clone().try_into().unwrap();
             let mut from_doc = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
             let mut from_bytes =
                 VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
@@ -234,7 +234,7 @@ fn secondary_pcm_copy_is_isolated_and_survives_checkpoint() {
     }
 
     builder.add_vgm_command(WaitSamples(2000));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     player
         .set_chip_gain(Chip::Rf5c68, Instance::Secondary, 0.0)

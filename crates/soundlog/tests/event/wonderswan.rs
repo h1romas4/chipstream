@@ -118,7 +118,7 @@ fn test_wonderswan_keyon_and_tone_freq_matches_a4() {
     builder.add_vgm_command(WaitSamples(22100));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("wonderswan_a4.vgm", &vgm_bytes);
 
     // Create VgmCallbackStream and enable WonderSwan state tracking.

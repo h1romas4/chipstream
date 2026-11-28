@@ -225,7 +225,29 @@ impl Default for MdxToVgmOptions {
 }
 
 /// Errors returned while converting an MDX playback stream into VGM.
+///
+/// Additional error variants may be added; external matches must include a
+/// fallback arm.
+///
+/// ```compile_fail
+/// use soundlog::mdx::convert::MdxConvertError;
+///
+/// fn describe(error: MdxConvertError) {
+///     match error {
+///         MdxConvertError::TickLimitExceeded { .. }
+///         | MdxConvertError::CommandLimitExceeded { .. }
+///         | MdxConvertError::OutputCommandLimitExceeded { .. }
+///         | MdxConvertError::DecodedPcmSampleLimitExceeded { .. }
+///         | MdxConvertError::InvalidOptions(_)
+///         | MdxConvertError::InvalidDocument(_)
+///         | MdxConvertError::UnsupportedCommand { .. }
+///         | MdxConvertError::MissingTone { .. }
+///         | MdxConvertError::PitchOutOfRange { .. } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MdxConvertError {
     /// Playback would exceed the configured elapsed-tick limit.
     TickLimitExceeded {
@@ -2764,7 +2786,22 @@ impl Default for MdxPlaybackCheckLimits {
 }
 
 /// A playback failure or an incomplete check, with zero-based MDX coordinates.
+///
+/// Additional error variants may be added; external matches must include a
+/// fallback arm.
+///
+/// ```compile_fail
+/// use soundlog::mdx::convert::MdxPlaybackCheckError;
+///
+/// fn describe(error: MdxPlaybackCheckError) {
+///     match error {
+///         MdxPlaybackCheckError::Conversion { .. }
+///         | MdxPlaybackCheckError::LimitExceeded { .. } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MdxPlaybackCheckError {
     /// Playback returned an error.
     Conversion {

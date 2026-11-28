@@ -61,6 +61,7 @@ pub(super) fn playback_error(
             command_index,
             ..
         } => (*track, *command_index),
+        _ => (None, None),
     };
     let position = track
         .zip(command_index)

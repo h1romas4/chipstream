@@ -149,7 +149,7 @@ fn dual_vgm_fds_roundtrip_callbacks_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(1000));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut direct = VgmSequencer::new(document.clone(), 44_100, 57, Default::default()).unwrap();
     let mut serialized =
         VgmSequencer::from_vgm(bytes.clone(), 44_100, 57, Default::default()).unwrap();

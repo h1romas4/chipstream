@@ -204,7 +204,7 @@ fn huc6280_dac_stream_selects_and_restores_the_correct_instance() {
     }
     builder.add_vgm_command(WaitSamples(2));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for mut stream in [
         VgmStream::from_document(document),
         VgmStream::from_vgm(bytes).unwrap(),
@@ -471,7 +471,7 @@ fn dac_budget_stops_expansion_despite_sample_progress_for_every_source() {
         }
     }
     let document = dac_budget_document(88_200, &[WaitSamples(u16::MAX).into()]);
-    let raw: Vec<u8> = (&document).into();
+    let raw: Vec<u8> = (&document).try_into().unwrap();
     let mut buffer = VgmStream::new();
     push_vgm_bytes(&mut buffer, &raw);
     let generator = Commands(document.commands.clone().into_iter());
@@ -678,7 +678,7 @@ fn no_time_control_chain_is_iterative_for_every_source() {
         builder.add_vgm_command(soundlog::vgm::command::Ym2612Port0Address2AWriteAndWaitN(0));
     }
     let document = builder.finalize();
-    let raw: Vec<u8> = (&document).into();
+    let raw: Vec<u8> = (&document).try_into().unwrap();
     let mut buffer_stream = VgmStream::new();
     push_vgm_bytes(&mut buffer_stream, &raw);
     let generator = Commands(document.commands.clone().into_iter());
@@ -755,7 +755,7 @@ fn no_time_fadeout_loop_returns_limit_error() {
     let document = builder.finalize();
     for mut stream in [
         VgmStream::from_document(document.clone()),
-        VgmStream::from_vgm(document).unwrap(),
+        VgmStream::from_vgm(Vec::<u8>::try_from(document).unwrap()).unwrap(),
     ] {
         stream.set_loop_count(Some(1));
         stream.set_fadeout_samples(Some(1));
@@ -836,7 +836,7 @@ fn no_time_budget_persists_across_zero_waits_output_yields_and_loop_rewinds() {
     let document = builder.finalize();
     for mut stream in [
         VgmStream::from_document(document.clone()),
-        VgmStream::from_vgm(document).unwrap(),
+        VgmStream::from_vgm(Vec::<u8>::try_from(document).unwrap()).unwrap(),
     ] {
         stream.set_loop_count(None);
         stream.set_max_commands_without_wait(Some(4));
@@ -871,7 +871,7 @@ fn compressed_data_block_limit_includes_aggregate_decoded_size() {
         let document = builder.finalize();
         for mut limited in [
             VgmStream::from_document(document.clone()),
-            VgmStream::from_vgm(&document).unwrap(),
+            VgmStream::from_vgm(Vec::<u8>::try_from(&document).unwrap()).unwrap(),
         ] {
             limited.set_max_data_block_size(prefix_size + 200);
             assert!(matches!(
@@ -942,7 +942,7 @@ fn data_block_count_limit_for_every_source_and_block_kind() {
     commands.push(VgmCommand::from(EndOfData));
     let mut document = VgmBuilder::new().finalize();
     document.commands = commands;
-    let raw: Vec<u8> = (&document).into();
+    let raw: Vec<u8> = (&document).try_into().unwrap();
     for limit in [Some(0), Some(6), Some(7), None] {
         let mut buffer = VgmStream::new();
         push_vgm_bytes(&mut buffer, &raw);
@@ -1033,7 +1033,7 @@ fn data_block_count_limit_persists_across_loop_rewinds() {
     document.header.loop_offset = document.sourcemap()[0].0 as u32 - 0x1c;
     for mut stream in [
         VgmStream::from_document(document.clone()),
-        VgmStream::from_vgm(document).unwrap(),
+        VgmStream::from_vgm(Vec::<u8>::try_from(document).unwrap()).unwrap(),
     ] {
         stream.set_loop_count(Some(3));
         stream.set_max_data_block_count(Some(2));
@@ -1461,7 +1461,7 @@ fn stream_source_reports_unsupported_operations() {
             source: "document",
         })
     ));
-    let mut stream = VgmStream::from_vgm(document).unwrap();
+    let mut stream = VgmStream::from_vgm(Vec::<u8>::try_from(document).unwrap()).unwrap();
     assert!(matches!(
         stream.push_chunk(&[]),
         Err(soundlog::ParseError::UnsupportedStreamOperation {
@@ -1528,7 +1528,7 @@ fn create_test_vgm_with_loop() -> Vec<u8> {
     builder.add_vgm_command(EndOfData);
 
     let document = builder.finalize();
-    document.into()
+    document.try_into().unwrap()
 }
 
 #[test]
@@ -1561,7 +1561,7 @@ fn test_ym2612_0x8n_and_seekoffset_attach_datablock() {
     // Terminate
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.push_chunk(&raw).expect("push chunk");
@@ -1599,7 +1599,7 @@ fn create_vgm_with_various_commands() -> Vec<u8> {
     builder.add_vgm_command(EndOfData);
 
     let document = builder.finalize();
-    document.into()
+    document.try_into().unwrap()
 }
 
 /// Test A: data exists + wait > 0
@@ -1629,7 +1629,7 @@ fn test_ym2612_0x8n_with_data_and_wait_gt_zero() {
     // Terminate
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&raw).expect("push chunk");
 
@@ -1671,7 +1671,7 @@ fn test_ym2612_0x8n_no_data_and_wait_gt_zero() {
     // Terminate
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&raw).expect("push chunk");
 
@@ -1717,7 +1717,7 @@ fn test_ym2612_0x8n_no_data_and_wait_zero() {
     b.add_vgm_command(WaitSamples(2u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&raw).expect("push chunk");
 
@@ -1904,7 +1904,7 @@ fn test_callback_stream_iteration_borrowing() {
     // Add an EndOfData to terminate
     b.add_vgm_command(soundlog::vgm::command::EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     // Counter to be incremented by callback
     let invoked = RefCell::new(0usize);
@@ -2330,7 +2330,7 @@ fn test_data_block_parsing_and_storage() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     parser.push_chunk(&bytes).expect("push chunk");
 
     let mut found_rom_block = false;
@@ -2646,7 +2646,7 @@ fn test_compressed_stream_decompression() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     parser.push_chunk(&bytes).expect("push chunk");
 
     let mut command_count = 0;
@@ -2732,7 +2732,7 @@ fn test_compressed_stream_without_decompression_table() {
     builder.add_vgm_command(stream_block);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     parser.push_chunk(&bytes).expect("push chunk");
 
     let mut found_error = false;
@@ -2791,7 +2791,7 @@ fn test_dpcm_compressed_stream_without_table_fails() {
     builder.add_vgm_command(stream_block);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     parser.push_chunk(&bytes).expect("push chunk");
 
     let mut found_error = false;
@@ -2882,7 +2882,7 @@ fn test_dac_stream_control_basic() {
 
     // Finalize into bytes and feed parser
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut commands = Vec::new();
@@ -2993,7 +2993,7 @@ fn test_dac_stream_control_stop_all_streams() {
 
     // Finalize and feed parser
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let _stop_command_found = false;
@@ -3072,7 +3072,7 @@ fn test_dac_stream_control_fast_call() {
 
     // Finalize and feed parser
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     for result in &mut parser {
@@ -3188,7 +3188,7 @@ fn test_start_stream_fast_call_with_multiple_blocks() {
 
     // Finalize and parse
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut chip_writes = Vec::new();
@@ -3316,7 +3316,7 @@ fn test_start_stream_with_multiple_blocks() {
 
     // Finalize and parse
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut chip_writes = Vec::new();
@@ -3422,7 +3422,7 @@ fn test_wait_expansion_with_stream_writes() {
 
     // Parse the VGM
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut commands = Vec::new();
@@ -3574,7 +3574,7 @@ fn test_wait_splitting_with_stream_timing() {
 
     // Parse
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut commands = Vec::new();
@@ -3893,7 +3893,7 @@ fn test_fadeout_samples_exact_timing() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1)); // 1 total playthrough (no looping)
@@ -3939,7 +3939,7 @@ fn test_fadeout_samples_with_looped_stream_control_exact_timing() {
     for frequency in [0, 22_050, 44_100, 88_200] {
         let mut document = dac_budget_document(frequency, &[WaitSamples(10).into()]);
         document.header.loop_offset = (document.sourcemap()[1].0 - 0x1c) as u32;
-        let raw: Vec<u8> = (&document).into();
+        let raw: Vec<u8> = (&document).try_into().unwrap();
 
         for fade_samples in [0, 1, 5, 10, 15, 25] {
             for (source, mut stream) in [
@@ -4036,7 +4036,7 @@ fn test_fadeout_samples_with_stream_control() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1));
@@ -4084,7 +4084,7 @@ fn test_fadeout_after_end_of_data_does_not_parse_gd3_as_commands() {
     });
 
     let document = builder.finalize();
-    let bytes: Vec<u8> = (&document).into();
+    let bytes: Vec<u8> = (&document).try_into().unwrap();
     let mut stream = VgmStream::from_vgm(bytes).expect("from_vgm");
     stream.set_loop_count(Some(2));
     stream.set_fadeout_samples(Some(88200));
@@ -4118,7 +4118,7 @@ fn test_no_loop_point_does_not_loop_during_fadeout() {
         ..Default::default()
     });
 
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut stream = VgmStream::from_vgm(bytes).expect("from_vgm");
     stream.set_loop_count(Some(2));
     stream.set_fadeout_samples(Some(200));
@@ -4152,7 +4152,7 @@ fn test_fadeout_samples_none() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.set_loop_count(Some(1));
@@ -4403,7 +4403,7 @@ fn test_multiple_dac_streams_wait_interleaving() {
 
     // Parse the VGM
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
     let mut commands = Vec::new();
@@ -4691,11 +4691,11 @@ fn test_push_data_chunked_512_bytes() {
     builder.add_vgm_command(WaitSamples(1000));
     builder.add_vgm_command(Wait882Samples);
     builder.add_vgm_command(WaitSamples(500));
-    builder.add_vgm_command(WaitNSample(123));
+    builder.add_vgm_command(WaitSamples(123));
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Create stream and feed data in 512-byte chunks
     let mut stream = VgmStream::new();
@@ -4775,7 +4775,7 @@ fn test_push_data_header_availability() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
 
@@ -4823,7 +4823,7 @@ fn test_push_data_very_small_chunks() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     const CHUNK_SIZE: usize = 16;
@@ -4930,7 +4930,7 @@ fn test_push_data_buffer_size() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
 
@@ -4962,7 +4962,7 @@ fn test_push_data_reset() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     push_vgm_bytes(&mut stream, &vgm_bytes);
@@ -5027,7 +5027,7 @@ fn test_data_block_size_tracking() {
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     push_vgm_bytes(&mut stream, &vgm_bytes);
@@ -5065,7 +5065,7 @@ fn test_data_block_size_limit_exceeded() {
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     // Set a very small limit to trigger the error
@@ -5116,7 +5116,7 @@ fn test_data_block_size_reset() {
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     push_vgm_bytes(&mut stream, &vgm_bytes);
@@ -5166,7 +5166,7 @@ fn test_multiple_data_blocks_cumulative_size() {
     builder.add_vgm_command(VgmCommand::EndOfData(soundlog::vgm::command::EndOfData));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut stream = VgmStream::new();
     push_vgm_bytes(&mut stream, &vgm_bytes);
@@ -5638,7 +5638,7 @@ fn test_vgm_callback_stream_push_chunk_large_doc() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Create callback stream backed by a byte-mode VgmStream so we can push chunks
     let inner = VgmStream::new();
@@ -5903,7 +5903,7 @@ fn build_dac_setup_builder(
 
 /// Collect all YM2612 DAC writes (register 0x2A) from an assembled VGM document.
 fn collect_dac_writes(doc: VgmDocument) -> Vec<u8> {
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &vgm_bytes);
     let mut values = Vec::new();
@@ -6553,7 +6553,7 @@ fn test_from_vgm_reads_loop_base_modifier() {
     let mut doc = builder.finalize();
     doc.header.loop_base = -2_i8;
     doc.header.loop_modifier = 0x08;
-    let raw: Vec<u8> = doc.into();
+    let raw: Vec<u8> = doc.try_into().unwrap();
 
     let stream = VgmStream::from_vgm(raw).expect("from_vgm");
     assert_eq!(stream.loop_base(), -2_i8);
@@ -6581,7 +6581,7 @@ fn create_looped_vgm_bytes() -> Vec<u8> {
     b.add_vgm_command(WaitSamples(882));
     b.set_loop_index(0); // loop back to the first WaitSamples
     b.add_vgm_command(EndOfData);
-    b.finalize().into()
+    b.finalize().try_into().unwrap()
 }
 
 #[test]
@@ -6688,7 +6688,7 @@ fn test_from_vgm_callback_stream_loop_and_fadeout() {
     b.add_vgm_command(WaitSamples(735));
     b.set_loop_index(0);
     b.add_vgm_command(EndOfData);
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
     cs.set_loop_count(Some(1));
@@ -6732,7 +6732,7 @@ fn create_intro_plus_loop_vgm() -> Vec<u8> {
     b.add_vgm_command(WaitSamples(300)); // loop body: 300 samples
     b.add_vgm_command(WaitSamples(400)); // loop body: 400 samples
     b.add_vgm_command(EndOfData);
-    b.finalize().into()
+    b.finalize().try_into().unwrap()
 }
 
 /// Collect total wait-sample count from a `VgmStream` until EndOfStream or NeedsMoreData.
@@ -6968,7 +6968,7 @@ fn test_seek_to_sample_loop_offset_not_at_data_start() {
     b.add_vgm_command(WaitSamples(400)); // loop body part A
     b.add_vgm_command(WaitSamples(600)); // loop body part B
     b.add_vgm_command(EndOfData);
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     // Sanity: when played fully from the beginning with 1 loop, total wait =
     // intro 1000 + body 400 + 600 = 2000.
@@ -7067,7 +7067,7 @@ fn test_callback_stream_seek_suppresses_user_callbacks() {
     b.add_vgm_command(WaitSamples(735));
     b.set_loop_index(0); // loop starts at the very first command (no intro)
     b.add_vgm_command(EndOfData);
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
     cs.set_loop_count(Some(1));
@@ -7108,7 +7108,7 @@ fn callback_sn76489_configuration_survives_seek() {
     builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x90 });
     builder.add_chip_write(Instance::Secondary, PsgSpec { value: 0x90 });
     builder.add_vgm_command(WaitSamples(100));
-    let raw: Vec<u8> = builder.finalize().into();
+    let raw: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut stream = VgmCallbackStream::from_vgm(raw).unwrap();
     stream.track_state::<Sn76489State>(Instance::Primary, 3_579_545.0);
     stream.track_state_with(
@@ -7160,7 +7160,7 @@ fn callback_configured_ym_state_preserves_initial_registers_on_seek() {
         },
     );
     builder.add_vgm_command(WaitSamples(100));
-    let raw: Vec<u8> = builder.finalize().into();
+    let raw: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut stream = VgmCallbackStream::from_vgm(raw).unwrap();
     let mut state = Ym2151State::new(4_000_000.0);
     state.on_register_write(0x28, 0x4c);
@@ -7216,7 +7216,7 @@ fn test_callback_stream_seek_maintains_chip_state() {
     b.add_vgm_command(WaitSamples(735));
     b.set_loop_index(0);
     b.add_vgm_command(EndOfData);
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
     cs.set_loop_count(Some(1));
@@ -7420,7 +7420,7 @@ fn test_callback_stream_stop_at_sample_via_on_write_then_seek_to_resume() {
     b.add_vgm_command(WaitSamples(400));
     b.set_loop_index(0); // entire body is the loop (no intro)
     b.add_vgm_command(EndOfData);
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
     let mut cs = VgmCallbackStream::from_vgm(raw).expect("from_vgm");
     cs.set_loop_count(Some(1));
@@ -7526,7 +7526,7 @@ fn create_chunked_loop_vgm() -> Vec<u8> {
     builder.add_vgm_command(WaitSamples(300));
     builder.add_vgm_command(WaitSamples(400));
     builder.add_vgm_command(EndOfData);
-    builder.finalize().into()
+    builder.finalize().try_into().unwrap()
 }
 
 /// Parse the command region and loop restart position from raw VGM bytes.
@@ -7807,7 +7807,7 @@ fn test_length_mode_play_until_end_looped_start_stream_no_double_write_on_wrap()
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
@@ -7879,7 +7879,7 @@ fn test_length_mode_play_until_end_looped_start_stream_timing() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
@@ -7965,7 +7965,7 @@ fn test_length_mode_play_until_end_looped_start_stream_raw_sequence() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
@@ -8497,7 +8497,7 @@ fn test_real_world_register_write_before_fast_call_ordering() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &vgm_bytes);
 
@@ -8672,7 +8672,7 @@ fn test_dac_stream_step0_scheduled_at_stream_start_sample() {
     b.add_vgm_command(WaitSamples(10u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -8774,7 +8774,7 @@ fn test_dac_stream_step_spacing_at_22050hz() {
     b.add_vgm_command(WaitSamples(20u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -8865,7 +8865,7 @@ fn test_dac_stream_wait_split_no_zero_wait_and_write_before_wait() {
     b.add_vgm_command(WaitSamples(5u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -8995,7 +8995,7 @@ fn test_dac_stream_write_due_at_current_sample_no_preceding_zero_wait() {
     b.add_vgm_command(WaitSamples(1u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -9093,7 +9093,7 @@ fn test_dac_stream_fast_call_block_boundary() {
     b.add_vgm_command(WaitSamples(20u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -9177,7 +9177,7 @@ fn test_dac_stream_fast_call_step_base_offset() {
     b.add_vgm_command(WaitSamples(20u16));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 
@@ -9238,7 +9238,7 @@ fn test_wait_n_sample_plus1_sample_count() {
         b.add_vgm_command(WaitSamples(0u16)); // dummy command to advance the stream
         b.add_vgm_command(EndOfData);
 
-        let raw: Vec<u8> = b.finalize().into();
+        let raw: Vec<u8> = b.finalize().try_into().unwrap();
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
 
@@ -9315,7 +9315,7 @@ fn test_wait_n_sample_parse_and_roundtrip_opcode() {
             let mut b = VgmBuilder::new();
             b.add_vgm_command(WaitNSample(inner));
             b.add_vgm_command(EndOfData);
-            let raw: Vec<u8> = b.finalize().into();
+            let raw: Vec<u8> = b.finalize().try_into().unwrap();
             let mut parser = VgmStream::new();
             push_vgm_bytes(&mut parser, &raw);
 
@@ -9372,7 +9372,7 @@ fn test_ym2612_port0_2a_wait_n_not_plus1() {
         b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(n));
         b.add_vgm_command(EndOfData);
 
-        let raw: Vec<u8> = b.finalize().into();
+        let raw: Vec<u8> = b.finalize().try_into().unwrap();
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
 
@@ -9449,7 +9449,7 @@ fn test_ym2612_port0_2a_parse_and_roundtrip_opcode() {
         b.add_vgm_command(SeekOffset(0u32));
         b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(n));
         b.add_vgm_command(EndOfData);
-        let raw: Vec<u8> = b.finalize().into();
+        let raw: Vec<u8> = b.finalize().try_into().unwrap();
 
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
@@ -9504,7 +9504,7 @@ fn test_total_samples_wait_n_and_ym2612_2a() {
         let doc = b.finalize();
         // VgmDocument::total_samples is an internal method used during header
         // serialisation; here we verify indirectly via VgmStream consumption.
-        let raw: Vec<u8> = doc.into();
+        let raw: Vec<u8> = doc.try_into().unwrap();
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
 
@@ -9533,7 +9533,7 @@ fn test_total_samples_wait_n_and_ym2612_2a() {
         b.add_vgm_command(SeekOffset(0u32));
         b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(3u8)); // wait 3 samples
         b.add_vgm_command(EndOfData);
-        let raw: Vec<u8> = b.finalize().into();
+        let raw: Vec<u8> = b.finalize().try_into().unwrap();
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
 
@@ -9564,7 +9564,7 @@ fn test_total_samples_wait_n_and_ym2612_2a() {
         b.add_vgm_command(SeekOffset(0u32));
         b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8)); // wait 0 samples
         b.add_vgm_command(EndOfData);
-        let raw: Vec<u8> = b.finalize().into();
+        let raw: Vec<u8> = b.finalize().try_into().unwrap();
         let mut parser = VgmStream::new();
         push_vgm_bytes(&mut parser, &raw);
 
@@ -9606,7 +9606,7 @@ fn test_ym2612_0x80_sequence_does_not_advance_current_sample() {
     b.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(0u8));
     b.add_vgm_command(EndOfData);
 
-    let raw: Vec<u8> = b.finalize().into();
+    let raw: Vec<u8> = b.finalize().try_into().unwrap();
     let mut parser = VgmStream::new();
     push_vgm_bytes(&mut parser, &raw);
 

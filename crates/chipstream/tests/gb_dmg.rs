@@ -158,7 +158,7 @@ fn document() -> soundlog::vgm::VgmDocument {
 #[test]
 fn vgm_secondary_document_bytes_and_checkpoint() {
     let doc = document();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut doc_player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     let mut byte_player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let a = doc_player.render().unwrap().unwrap();

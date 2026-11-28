@@ -16,14 +16,14 @@ fn legacy_volume_modifier_requires_space_before_command_data() {
         document.header.version = version;
         document.header.volume_modifier = 0x20;
         document.header.data_offset = 0x100 - 0x34;
-        let bytes: Vec<u8> = document.into();
+        let bytes: Vec<u8> = document.try_into().unwrap();
         let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
         assert_eq!(parsed.header.volume_modifier, 0x20);
 
         let mut short = original.clone();
         short.header.version = version;
         short.header.data_offset = 0x0c;
-        let bytes: Vec<u8> = short.into();
+        let bytes: Vec<u8> = short.try_into().unwrap();
         assert_ne!(bytes[0x7c], 0);
         let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
         assert_eq!(parsed.header.volume_modifier, 0);
@@ -64,7 +64,7 @@ fn test_build_serialize_with_extra_header() {
     let doc = builder.finalize();
 
     // Serialize to bytes.
-    let serialized: Vec<u8> = (&doc).into();
+    let serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Basic sanity: serialization produced bytes.
     assert!(
@@ -168,7 +168,7 @@ fn test_build_parse_build_with_extra_header_roundtrip() {
     let doc = builder.finalize();
 
     // Serialize to bytes.
-    let serialized: Vec<u8> = (&doc).into();
+    let serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Parse back into a VgmDocument.
     let parsed: VgmDocument = serialized
@@ -177,7 +177,7 @@ fn test_build_parse_build_with_extra_header_roundtrip() {
         .expect("failed to parse serialized VGM with extra header");
 
     // Re-serialize the parsed document.
-    let reserialized: Vec<u8> = (&parsed).into();
+    let reserialized: Vec<u8> = (&parsed).try_into().unwrap();
 
     // The two serialized forms should match exactly.
     assert_eq!(
@@ -237,7 +237,7 @@ fn test_parse_error_extra_header_offset_out_of_range() {
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Corrupt the stored extra_header_offset so it points outside the file.
     let bad_offset: u32 = 0xFFFF_FF00;
@@ -297,7 +297,7 @@ fn test_parse_error_extra_header_chip_clock_offset_out_of_range() {
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute extra_start from stored offset and then set chip_clock_offset to point past EOF.
     let stored_offset = u32::from_le_bytes(serialized[0xBC..0xC0].try_into().unwrap());
@@ -346,7 +346,7 @@ fn test_parse_error_extra_header_chip_vol_offset_out_of_range() {
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute extra_start from stored offset and then set chip_vol_offset to point past EOF.
     let stored_offset = u32::from_le_bytes(serialized[0xBC..0xC0].try_into().unwrap());
@@ -382,7 +382,7 @@ fn test_parse_error_gd3_offset_out_of_range() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(1));
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Corrupt GD3 offset at 0x14..0x18 to point beyond EOF.
     let bad_gd3_offset: u32 = (serialized.len() as u32).wrapping_add(0x1000);
@@ -516,7 +516,7 @@ fn test_parse_malformed_extra_header_chip_vol_offset_inside_header() {
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute the extra header start and then corrupt chip_vol_offset to point
     // inside the 12-byte header area (value 4). This mimics malformed files
@@ -591,7 +591,7 @@ fn test_parse_malformed_extra_header_chip_clock_offset_inside_header() {
     };
     builder.set_extra_header(extra);
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute the extra header start and then corrupt chip_clock_offset to point
     // inside the 12-byte header area (value 4). This mimics malformed files
@@ -645,7 +645,7 @@ fn test_parse_vgm_command_truncated_datablock_returns_offset_out_of_range() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(1));
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute the header length from stored data_offset
     let data_offset = u32::from_le_bytes(serialized[0x34..0x38].try_into().unwrap());
@@ -703,7 +703,7 @@ fn test_parse_vgm_command_unknown_opcode_yields_unknown_command() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(1));
     let doc = builder.finalize();
-    let mut serialized: Vec<u8> = (&doc).into();
+    let mut serialized: Vec<u8> = (&doc).try_into().unwrap();
 
     // Compute where commands start and replace them with our test opcodes.
     let data_offset = u32::from_le_bytes(serialized[0x34..0x38].try_into().unwrap());

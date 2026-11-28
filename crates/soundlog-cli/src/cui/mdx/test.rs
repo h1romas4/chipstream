@@ -72,7 +72,9 @@ pub fn test_mdx(
         });
         document
     };
-    let bytes: Vec<u8> = (&document).into();
+    let bytes: Vec<u8> = (&document)
+        .try_into()
+        .context("failed to serialize generated VGM")?;
     let reparsed: soundlog::VgmDocument = (&bytes[..])
         .try_into()
         .with_context(|| format!("generated VGM failed to parse: {}", input.display()))?;

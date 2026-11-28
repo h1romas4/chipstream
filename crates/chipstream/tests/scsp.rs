@@ -333,7 +333,7 @@ fn vgm_secondary_instance_receives_ram_and_register_writes() {
     }
     builder.add_vgm_command(WaitSamples(1000));
     let document = builder.finalize();
-    let bytes = Vec::<u8>::from(document.clone());
+    let bytes = Vec::<u8>::try_from(document.clone()).unwrap();
     let mut a = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     let mut b = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let mut audible = false;

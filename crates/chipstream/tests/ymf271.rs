@@ -194,7 +194,7 @@ fn vgm_rom_and_write_playback() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for mut player in [
         VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),
@@ -232,7 +232,7 @@ fn vgm_secondary_rom_and_callbacks() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for mut player in [
         VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap(),

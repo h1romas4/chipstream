@@ -30,7 +30,7 @@ fn qsound_uses_data_then_register_and_keeps_high_bit_data_primary() {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Qsound, Instance::Primary, 4_000_000);
     builder.add_vgm_command(expected.clone());
-    let mut bytes: Vec<u8> = builder.finalize().into();
+    let mut bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let offset = 0x34 + u32::from_le_bytes(bytes[0x34..0x38].try_into().unwrap()) as usize;
     bytes[offset..offset + 4].copy_from_slice(&[0xc4, 0x80, 0xfe, 0x91]);
     let commands: Vec<_> = VgmStream::from_vgm(bytes)
@@ -65,7 +65,7 @@ fn pcm_ram_write_uses_fixed_length_little_endian_and_instance_bit() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(command.clone());
     builder.add_vgm_command(WaitSamples(7));
-    let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+    let stream = VgmStream::from_vgm(Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     let commands: Vec<_> = stream
         .into_iter()
         .filter_map(|result| match result.unwrap() {
@@ -122,7 +122,7 @@ fn rf5c_memory_offsets_and_secondary_registers_use_vgm_encoding() {
         assert_eq!(&command_to_vgm_bytes(command).0, bytes);
         builder.add_vgm_command(command.clone());
     }
-    let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+    let stream = VgmStream::from_vgm(Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     let parsed: Vec<_> = stream
         .into_iter()
         .filter_map(|item| match item.unwrap() {
@@ -206,7 +206,8 @@ fn nes_fds_registers_roundtrip_with_both_instance_selectors() {
             );
             let mut builder = VgmBuilder::new();
             builder.add_vgm_command(expected.clone());
-            let stream = VgmStream::from_vgm(Vec::<u8>::from(builder.finalize())).unwrap();
+            let stream =
+                VgmStream::from_vgm(Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
             assert!(stream.into_iter().any(
                 |result| matches!(result, Ok(StreamResult::Command(command)) if command == expected)
             ));
@@ -225,7 +226,7 @@ fn multipcm_bank_offset_uses_vgm_little_endian_bytes() {
     let expected = VgmCommand::MultiPcmBankWrite(Instance::Secondary, spec);
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(expected.clone());
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     assert!(
         bytes
             .windows(4)
@@ -311,7 +312,7 @@ fn test_dac_stream_chip_type_roundtrip_secondary() {
 
     // Finalize and serialize
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Parse with VgmStream::from_vgm and check emitted commands
     let mut stream = VgmStream::from_vgm(bytes.clone()).expect("from_vgm");
@@ -396,7 +397,7 @@ fn test_chip_write_roundtrip_various() {
         builder.add_vgm_command(cmd.clone());
         // finalize() will ensure EndOfData is present
         let doc = builder.finalize();
-        let bytes: Vec<u8> = (&doc).into();
+        let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
         // Parse back using the public VgmStream API which accepts full VGM bytes.
         // Collect parsed commands emitted by the stream and check presence.
@@ -1133,7 +1134,7 @@ fn test_parse_chip_write_all_opcodes_roundtrip() {
         builder.add_vgm_command(original.clone());
         // finalize() ensures EndOfData present
         let doc = builder.finalize();
-        let bytes: Vec<u8> = (&doc).into();
+        let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
         // Parse the serialized VGM bytes using the public VgmStream API which accepts
         // finalized VGM bytes (header + commands). Collect parsed commands emitted by

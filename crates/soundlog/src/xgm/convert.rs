@@ -43,7 +43,22 @@ impl Default for XgmPlaybackOptions {
 }
 
 /// An XGM playback resource limit was exceeded.
+///
+/// Additional error variants may be added; external matches must include a
+/// fallback arm.
+///
+/// ```compile_fail
+/// use soundlog::xgm::XgmPlaybackError;
+///
+/// fn describe(error: XgmPlaybackError) {
+///     match error {
+///         XgmPlaybackError::FrameLimitExceeded { .. } => {}
+///         XgmPlaybackError::CommandLimitExceeded { .. } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum XgmPlaybackError {
     /// Playback would advance beyond the configured total frame count.
     FrameLimitExceeded {

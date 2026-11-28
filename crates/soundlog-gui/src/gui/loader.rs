@@ -278,7 +278,7 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(735));
         let document = builder.finalize();
-        (&document).into()
+        (&document).try_into().unwrap()
     }
 
     fn sample_mdx_bytes() -> Vec<u8> {

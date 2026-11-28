@@ -128,7 +128,7 @@ fn cli_renders_ay8910_using_ym2149() {
         builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
     }
     builder.add_vgm_command(WaitSamples(4410));
-    fs::write(&input, Vec::from(builder.finalize())).unwrap();
+    fs::write(&input, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     for (name, args, audible) in [
         ("default", vec![], true),
         ("enabled", vec!["--ay8910-ym2149", "true"], true),
@@ -169,10 +169,10 @@ fn cli_rejects_unsupported_ay_configuration_without_overwriting_output() {
     builder.set_version(0x171);
     builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
     builder.add_vgm_command(WaitSamples(100));
-    let bytes = Vec::<u8>::from(builder.finalize());
+    let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
     let mut document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     document.header.ay8910_flags.raw_output = true;
-    fs::write(&input, Vec::from(document)).unwrap();
+    fs::write(&input, Vec::<u8>::try_from(document).unwrap()).unwrap();
     fs::write(&output, b"existing").unwrap();
     let result = cli().arg(&input).arg(&output).output().unwrap();
     assert!(!result.status.success());
@@ -198,7 +198,7 @@ fn cli_renders_secondary_ay8910() {
         builder.add_chip_write(Instance::Secondary, Ay8910Spec { register, value });
     }
     builder.add_vgm_command(WaitSamples(4410));
-    fs::write(&input, Vec::from(builder.finalize())).unwrap();
+    fs::write(&input, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     let result = cli().arg(input).arg(&output).output().unwrap();
     assert!(
         result.status.success(),
@@ -296,7 +296,7 @@ A t120 @1 q8 l4 cccccccc
         ..Default::default()
     };
     let vgm_document = to_vgm_document(&package, &options).unwrap();
-    let vgm_bytes: Vec<u8> = vgm_document.into();
+    let vgm_bytes: Vec<u8> = vgm_document.try_into().unwrap();
     fs::write(&vgm, &vgm_bytes).unwrap();
 
     let key_ons = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -497,7 +497,7 @@ fn cli_pwm_compatibility_defaults_on_and_can_be_disabled() {
         );
         builder.add_vgm_command(WaitSamples(2));
     }
-    fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
+    fs::write(&source, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
     let mut outputs = Vec::new();
     for (name, value) in [
@@ -697,7 +697,7 @@ fn cli_wav_default_rate_needs_no_audio_device() {
     builder.add_vgm_command(WaitSamples(100));
     builder.set_loop_index(1);
     builder.add_vgm_command(WaitSamples(1000));
-    fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
+    fs::write(&source, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     let result = cli().arg(&source).arg(&output).output().unwrap();
     assert!(
         result.status.success(),
@@ -721,7 +721,7 @@ fn cli_streams_wav_to_stdout_when_output_is_dash() {
     builder.add_vgm_command(WaitSamples(100));
     builder.set_loop_index(1);
     builder.add_vgm_command(WaitSamples(1000));
-    fs::write(&source, Vec::<u8>::from(builder.finalize())).unwrap();
+    fs::write(&source, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
     let streamed = cli()
         .arg(&source)
@@ -758,7 +758,7 @@ fn cli_fades_vgm_and_mdx_to_wav() {
     builder.add_vgm_command(WaitSamples(100));
     builder.set_loop_index(1);
     builder.add_vgm_command(WaitSamples(1000));
-    fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+    fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
     let mdx = dir.path().join("mdx_fm_loop.mdx");
     fs::write(
         &mdx,
@@ -873,7 +873,7 @@ fn cli_applies_ym2608_rom_when_rendering_wav() {
         );
     }
     builder.add_vgm_command(WaitSamples(4410));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     fs::write(&input, bytes).unwrap();
     fs::write(&rom, [0x77; 8192]).unwrap();
     let result = cli()

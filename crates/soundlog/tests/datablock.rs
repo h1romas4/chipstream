@@ -11,7 +11,7 @@ use soundlog::vgm::stream::{StreamResult, VgmStream};
 /// Helper: push a document into a VgmStream and drain until NeedsMoreData/EndOfStream,
 /// collecting any DataBlock commands returned by the iterator.
 fn collect_returned_datablocks(doc: VgmDocument) -> Vec<DataBlock> {
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
 
@@ -45,7 +45,7 @@ fn test_handle_data_block_uncompressed_stream_is_stored() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
 
@@ -88,7 +88,7 @@ fn test_handle_data_block_uncompressed_stream_is_stored_attach() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
 
@@ -134,7 +134,7 @@ fn test_handle_data_block_decompression_table_is_stored() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
 
@@ -170,7 +170,7 @@ fn test_handle_data_block_decompression_table_is_stored_attach() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
 
@@ -222,7 +222,7 @@ fn test_handle_data_block_compressed_stream_is_decompressed_and_stored() {
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");
@@ -267,7 +267,7 @@ fn test_handle_data_block_compressed_stream_is_decompressed_and_stored_attach() 
     builder.add_vgm_command(EndOfData);
 
     let doc = builder.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let mut parser = VgmStream::new();
     parser.push_chunk(&bytes).expect("push chunk");

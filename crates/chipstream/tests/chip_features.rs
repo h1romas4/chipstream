@@ -10,7 +10,7 @@ fn vgm_fds_feature_is_required_for_both_input_types() {
     builder.register_chip(Chip::NesApu, Instance::Primary, 1_789_773 | 0x8000_0000);
     builder.add_vgm_command(WaitSamples(100));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for result in [
         VgmSequencer::new(document, 44_100, 64, Default::default()),
         VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()),
@@ -69,7 +69,7 @@ fn vgm_chip_features_apply_to_document_and_owned_stream() {
         builder.register_chip(chip.clone(), Instance::Primary, 4_000_000);
         builder.add_vgm_command(WaitSamples(100));
         let document = builder.finalize();
-        let bytes: Vec<u8> = document.clone().into();
+        let bytes: Vec<u8> = document.clone().try_into().unwrap();
         for result in [
             VgmSequencer::new(document, 48_000, 128, Default::default()),
             VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()),

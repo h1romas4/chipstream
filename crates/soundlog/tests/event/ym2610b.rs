@@ -247,7 +247,7 @@ fn test_ym2610b_fm_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Optionally write the VGM artifact for manual verification
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("ym2610b_fm_a4.vgm", &vgm_bytes);
 
     // State-tracking assertion: KeyOn must fire with freq ≈ 440 Hz
@@ -368,7 +368,7 @@ fn test_ym2610b_psg_channel_a_matches_a4() {
     );
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("ym2610b_psg_a4.vgm", &vgm_bytes);
 
     let mut callback_stream = VgmCallbackStream::from_document(doc);

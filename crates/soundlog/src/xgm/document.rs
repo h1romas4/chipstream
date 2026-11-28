@@ -207,6 +207,9 @@ impl XgmDocument {
     }
 
     /// Validate and serialize the document as an XGM v1 file.
+    ///
+    /// The document can also be serialized with `Vec::<u8>::try_from` or
+    /// `try_into()`, using either an owned or borrowed document.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
         self.validate()?;
         let mut output = Vec::new();
@@ -291,6 +294,24 @@ impl XgmDocument {
             }
         }
         Ok(())
+    }
+}
+
+/// Validate and serialize an owned XGM document.
+impl TryFrom<XgmDocument> for Vec<u8> {
+    type Error = ParseError;
+
+    fn try_from(document: XgmDocument) -> Result<Self, Self::Error> {
+        document.to_bytes()
+    }
+}
+
+/// Validate and serialize a borrowed XGM document.
+impl TryFrom<&XgmDocument> for Vec<u8> {
+    type Error = ParseError;
+
+    fn try_from(document: &XgmDocument) -> Result<Self, Self::Error> {
+        document.to_bytes()
     }
 }
 

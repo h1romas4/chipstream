@@ -238,7 +238,7 @@ fn vgm_legacy_multi32_bank_writes_play_banked_samples() {
                 builder.add_chip_write(instance, MultiPcmSpec { register, value });
             }
             builder.add_vgm_command(WaitSamples(500));
-            let bytes: Vec<u8> = builder.finalize().into();
+            let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
             let mut player =
                 VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
             player.track_state_with_voice_clocks::<MultiPcmState>();
@@ -379,7 +379,7 @@ fn vgm_secondary_rom_banks_callbacks_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     assert!(bytes.windows(4).any(|bytes| bytes == [0xc3, 0x83, 0x20, 0]));
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();

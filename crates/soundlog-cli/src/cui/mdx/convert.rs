@@ -23,7 +23,7 @@ pub fn convert_mdx(
             ..Gd3::default()
         });
     }
-    let bytes: Vec<u8> = (&document).into();
+    let bytes: Vec<u8> = (&document).try_into().context("failed to serialize VGM")?;
     fs::write(output, bytes)
         .with_context(|| format!("failed to write VGM output: {}", output.display()))?;
     Ok(())

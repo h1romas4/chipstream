@@ -69,7 +69,7 @@ fn test_gamegear_psg_keyon_and_tone_freq_matches_a4() {
     );
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Optionally write artifact via shim helper; no-op if OUTPUT_VGM_DIR is None.
     super::maybe_write_vgm("gamegear_a4.vgm", &vgm_bytes);

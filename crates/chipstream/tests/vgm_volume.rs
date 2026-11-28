@@ -731,7 +731,7 @@ fn extra_volume_and_user_gain_compose_after_serialization() {
     )]));
     let mut document = builder.finalize();
     document.header.volume_modifier = 0x20;
-    let bytes: Vec<u8> = document.into();
+    let bytes: Vec<u8> = document.try_into().unwrap();
     let mut player =
         VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     let first = player.render().unwrap().unwrap().frames().to_vec();
@@ -819,7 +819,7 @@ fn dual_chip_absolute_volumes_are_independent() {
         ChipVolume::new(ChipId::Okim6258, Instance::Primary, 0x70),
         ChipVolume::new(ChipId::Okim6258, Instance::Secondary, 0x1c0),
     ]));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     assert_scaled(&render(document), &baseline, 0.5, 2.0);
 }
@@ -878,7 +878,7 @@ fn modifier_in_extended_header_space_is_read_for_vgm_150_and_151() {
     let document =
         VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2413_fm_a4.vgm")[..]).unwrap();
     let baseline = render(document.clone());
-    let mut bytes: Vec<u8> = document.into();
+    let mut bytes: Vec<u8> = document.try_into().unwrap();
     assert!(bytes.len() > 0x7c);
     bytes[0x7c] = 0x20;
     for version in [0x150_u32, 0x151] {
@@ -898,7 +898,7 @@ fn command_data_overlapping_modifier_is_not_read_as_header() {
     let mut document = builder.finalize();
     document.header.version = 0x150;
     document.header.data_offset = 0x0c;
-    let bytes: Vec<u8> = document.into();
+    let bytes: Vec<u8> = document.try_into().unwrap();
     assert_ne!(bytes[0x7c], 0);
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     assert_eq!(parsed.header.volume_modifier, 0);

@@ -169,7 +169,7 @@ fn vgm_checkpoint_restores_parser_chip_and_audio_state() {
         4_000_000,
     );
     builder.add_vgm_command(WaitSamples(2_205));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
 
     let mut player = VgmSequencer::from_vgm(
         bytes,
@@ -224,7 +224,13 @@ fn checkpoint_restores_header_loop_settings() {
             ..Default::default()
         };
         let mut player = if from_file {
-            VgmSequencer::from_vgm(Vec::<u8>::from(document.clone()), 44_100, 64, options).unwrap()
+            VgmSequencer::from_vgm(
+                Vec::<u8>::try_from(document.clone()).unwrap(),
+                44_100,
+                64,
+                options,
+            )
+            .unwrap()
         } else {
             VgmSequencer::new(document.clone(), 44_100, 64, options).unwrap()
         };
@@ -311,7 +317,7 @@ fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
     for from_file in [false, true] {
         let mut player = if from_file {
             VgmSequencer::from_vgm(
-                Vec::<u8>::from(document.clone()),
+                Vec::<u8>::try_from(document.clone()).unwrap(),
                 44_100,
                 128,
                 Default::default(),
@@ -343,7 +349,7 @@ fn vgm_dac_controls_survive_checkpoint_restore_and_seek() {
 fn checkpoint_cannot_be_restored_to_a_different_sequencer() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut first = VgmSequencer::from_vgm(bytes.clone(), 48_000, 128, Default::default()).unwrap();
     let checkpoint = first.checkpoint().unwrap();
     let mut second = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
@@ -358,7 +364,7 @@ fn checkpoint_cannot_be_restored_to_a_different_sequencer() {
 fn seek_to_frame_preserves_the_unconsumed_part_of_a_block() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
     assert!(player.render().unwrap().is_some());
 
@@ -380,7 +386,7 @@ fn seek_to_frame_preserves_the_unconsumed_part_of_a_block() {
 fn seek_to_frame_can_be_cancelled_between_render_blocks() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(2_205));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player = VgmSequencer::from_vgm(bytes, 48_000, 128, Default::default()).unwrap();
     let checkpoint = player.checkpoint().unwrap();
 

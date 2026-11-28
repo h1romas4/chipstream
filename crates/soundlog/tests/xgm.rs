@@ -18,6 +18,40 @@ fn track(commands: Vec<XgmCommand>) -> XgmTrack {
 }
 
 #[test]
+fn xgm_try_into_bytes_matches_serialization_and_reports_errors() {
+    let mut builder = XgmBuilder::new(XgmTiming::Ntsc);
+    builder.set_sample(1, &[0x20; 256]).unwrap();
+    builder.add_track(track(vec![
+        XgmCommand::Pcm {
+            channel: 0,
+            priority: 0,
+            sample_id: 1,
+        },
+        XgmCommand::End,
+    ]));
+    let mut document = builder.finalize().unwrap();
+    let expected = document.to_bytes().unwrap();
+    let borrowed: Vec<u8> = (&document).try_into().unwrap();
+    let owned: Vec<u8> = document.clone().try_into().unwrap();
+    assert_eq!(borrowed, expected);
+    assert_eq!(owned, expected);
+
+    document.tracks[0].commands.insert(
+        0,
+        XgmCommand::Pcm {
+            channel: 4,
+            priority: 0,
+            sample_id: 1,
+        },
+    );
+    let expected = document.to_bytes().unwrap_err().to_string();
+    let borrowed: Result<Vec<u8>, ParseError> = (&document).try_into();
+    let owned: Result<Vec<u8>, ParseError> = document.try_into();
+    assert_eq!(borrowed.unwrap_err().to_string(), expected);
+    assert_eq!(owned.unwrap_err().to_string(), expected);
+}
+
+#[test]
 fn typed_multitrack_document_roundtrips_with_samples_and_metadata() {
     let mut builder = XgmBuilder::new(XgmTiming::Pal);
     builder.set_sample(1, &[0x40; 256]).unwrap();

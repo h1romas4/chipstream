@@ -72,7 +72,7 @@ fn test_sn76489_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Serialize document to bytes for file output (manual verification).
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Optionally write the VGM artifact using the shared helper from the shim.
     // The helper will no-op when `OUTPUT_VGM_DIR` is `None`.

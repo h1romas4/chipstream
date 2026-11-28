@@ -2640,7 +2640,7 @@ mod tests {
         let vgm_path = directory.path().join("test.vgm");
         std::fs::write(&mdx_path, package.mdx.to_bytes().unwrap()).unwrap();
         let vgm = to_vgm_document(&package, &MdxToVgmOptions::default()).unwrap();
-        std::fs::write(&vgm_path, Vec::<u8>::from(vgm)).unwrap();
+        std::fs::write(&vgm_path, Vec::<u8>::try_from(vgm).unwrap()).unwrap();
         let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ym2151,
             source: Instance::Primary,
@@ -2865,7 +2865,7 @@ mod tests {
             }
             builder.add_vgm_command(WaitSamples(500));
             let path = directory.path().join(format!("{index}.vgm"));
-            std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
             let mut factories = ChipFactoryRegistry::new();
             register_software_adapters(&mut factories, &plan, AdapterMode::Playback);
             let mut player = Sequencer::create(
@@ -3271,7 +3271,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(1_000));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let recorder = Rc::new(RefCell::new(Recorder::default()));
         let mut factories = ChipFactoryRegistry::new();
@@ -3472,7 +3472,7 @@ mod tests {
                 _ => unreachable!(),
             };
             builder.add_vgm_command(WaitSamples(441));
-            std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
             let recorder = Rc::new(RefCell::new(Recorder::default()));
             let mut factories = ChipFactoryRegistry::new();
             register_ymfm_factories(&mut factories, Rc::clone(&recorder)).unwrap();
@@ -4009,7 +4009,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(4410));
-        builder.finalize().into()
+        builder.finalize().try_into().unwrap()
     }
 
     fn rhythm_audio(
@@ -4163,7 +4163,7 @@ mod tests {
         let other_track = dir.path().join("other.vgm");
         std::fs::write(
             &other_track,
-            Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize()),
+            Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap(),
         )
         .unwrap();
         assert!(
@@ -4913,7 +4913,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(1_000));
         builder.add_vgm_command(WaitSamples(3_000));
         builder.set_loop_index(1);
-        let mut vgm_bytes = Vec::<u8>::from(builder.finalize());
+        let mut vgm_bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
         vgm_bytes[0x7e] = 1;
         vgm_bytes[0x7f] = 0x20;
         std::fs::write(&vgm, vgm_bytes).unwrap();
@@ -4925,7 +4925,7 @@ mod tests {
         let no_loop = dir.path().join("no-loop.vgm");
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1_000));
-        std::fs::write(&no_loop, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&no_loop, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let no_loop_mdx = dir.path().join("no-loop.mdx");
         let mut builder = soundlog::mdx::document::MdxBuilder::new();
         builder.add_mdx_command(0, soundlog::mdx::command::MdxRest { ticks: 8 });
@@ -5035,7 +5035,7 @@ mod tests {
         }
         builder.set_loop_index(3);
         builder.add_vgm_command(WaitSamples(3_000));
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let mut finite = Sequencer::new(&vgm, 44_100, false).unwrap();
         let mut samples = Vec::new();
@@ -5200,7 +5200,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(44_100));
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let mdx = dir.path().join("track.mdx");
         std::fs::write(
             &mdx,
@@ -5445,7 +5445,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(44_100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let preview = IdlePreview::start(path, false, None).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         while preview.gain_sources().unwrap().is_none() {
@@ -5507,7 +5507,7 @@ mod tests {
                 value: 0,
             },
         );
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let mdx = dir.path().join("preview.mdx");
         std::fs::write(
             &mdx,
@@ -5602,7 +5602,7 @@ mod tests {
             }
         }
         builder.add_vgm_command(WaitSamples(4_410));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         for rate in [8_000, 44_100, 48_000] {
             let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
@@ -5681,7 +5681,7 @@ mod tests {
             let mut document = builder.finalize();
             document.header.ay_chip_type = Ay8910ChipType::Ym2149;
             document.header.ay8910_flags.ym_pin26_low = divider;
-            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
 
             let mut sources = Vec::new();
             add_visual_ay_sources(&path, &[], &mut sources).unwrap();
@@ -5791,7 +5791,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(100));
         let mut document = builder.finalize();
         document.header.ay_chip_type = Ay8910ChipType::Ym2149;
-        std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
 
         let transport = Rc::new(RefCell::new(Recorder::default()));
         let mut factories = ChipFactoryRegistry::new();
@@ -6007,7 +6007,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(4_410));
         let mut document = builder.finalize();
         document.header.ay_chip_type = Ay8910ChipType::Ay8910;
-        std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(&document).unwrap()).unwrap();
         let route = chipstream_ndsif::NdsifRoute {
             chip: Chip::Ay8910,
             source: Instance::Primary,
@@ -6131,7 +6131,7 @@ mod tests {
         ] {
             document.header.ay_chip_type = chip_type;
             document.header.ay8910_flags.raw_output = raw_output;
-            std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(&document).unwrap()).unwrap();
             let mut factories = ChipFactoryRegistry::new();
             register_ay_emulation(
                 &mut factories,
@@ -6159,7 +6159,7 @@ mod tests {
         );
         document.header.ay_chip_type = Ay8910ChipType::Ym2149;
         document.header.ay8910_flags.raw_output = false;
-        std::fs::write(&path, Vec::<u8>::from(&document)).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(&document).unwrap()).unwrap();
         let mut missing_hardware = ChipFactoryRegistry::new();
         crate::adapter::register_software_adapters(
             &mut missing_hardware,
@@ -6214,7 +6214,7 @@ mod tests {
             let mut document = builder.finalize();
             document.header.ay_chip_type = Ay8910ChipType::Ym2149;
             document.header.ay8910_flags.ym_pin26_low = divider;
-            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
             let mut factories = ChipFactoryRegistry::new();
             register_ay_emulation(
                 &mut factories,
@@ -6423,7 +6423,7 @@ mod tests {
                 if *fds {
                     document.header.nes_apu_clock |= 0x8000_0000;
                 }
-                std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+                std::fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
                 let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
                 run_preview(
                     &path,
@@ -6505,7 +6505,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
@@ -6586,7 +6586,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
@@ -6673,7 +6673,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
@@ -6797,7 +6797,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let preview_control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         run_preview(
@@ -6887,7 +6887,7 @@ mod tests {
             let mut document = builder.finalize();
             document.header.sn76489_flags.frequency_0_is_400 = zero_is_1024;
             document.header.sn76489_flags.clock_divider_8 = divider_8;
-            std::fs::write(&path, Vec::<u8>::from(document)).unwrap();
+            std::fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
 
             let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
             run_preview(
@@ -6966,7 +6966,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(4_410));
         builder.add_chip_write(Instance::Primary, PsgSpec { value: 0x9f });
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let transport = Rc::new(RefCell::new(Recorder::default()));
         let mut factories = ChipFactoryRegistry::new();
@@ -7022,7 +7022,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(1_000));
         builder.set_loop_index(1);
         builder.add_vgm_command(WaitSamples(3_000));
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let mdx = dir.path().join("finite.mdx");
         std::fs::write(
             &mdx,
@@ -7158,7 +7158,7 @@ mod tests {
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.set_loop_index(0);
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&vgm, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&vgm, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
         let timeline = Arc::new(NdsifHostTimeline::pending());
         control
@@ -7184,7 +7184,7 @@ mod tests {
         let no_loop = dir.path().join("no-loop.vgm");
         let mut builder = soundlog::vgm::VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(100));
-        std::fs::write(&no_loop, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&no_loop, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         for (path, looped) in [(&vgm, true), (&no_loop, false)] {
             let control = PlaybackControl::new(Arc::new(NdsifOutputGain::new()));
             let timeline = Arc::new(NdsifHostTimeline::pending());
@@ -7396,7 +7396,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(441));
-        std::fs::write(&song, Vec::<u8>::from(builder.finalize())).unwrap();
+        std::fs::write(&song, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
 
         let handle = service.playback_handle();
         thread::spawn(move || {

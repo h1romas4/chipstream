@@ -158,7 +158,7 @@ fn test_y8950_fm_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Optionally write VGM artifact
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("y8950_fm_a4.vgm", &vgm_bytes);
 
     // State-tracking assertion

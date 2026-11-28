@@ -208,7 +208,7 @@ fn document(disable_rear: bool) -> soundlog::vgm::VgmDocument {
 #[test]
 fn vgm_wide_writes_rear_output_rom_and_checkpoint() {
     let doc = document(false);
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 256, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<C352State>();
     let events = Rc::new(RefCell::new(Vec::new()));

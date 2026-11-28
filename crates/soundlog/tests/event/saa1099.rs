@@ -87,7 +87,7 @@ fn test_saa1099_channel_keyon_and_tone_freq_matches_a4() {
     builder.add_vgm_command(soundlog::vgm::command::WaitSamples(22050));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("saa1099_a4.vgm", &vgm_bytes);
 
     // Create VgmCallbackStream and enable SAA1099 state tracking.

@@ -1896,7 +1896,7 @@ impl VgmHeader {
     /// use soundlog::VgmHeader;
     ///
     /// let raw = soundlog::VgmBuilder::new().finalize();
-    /// let bytes: Vec<u8> = raw.into();
+    /// let bytes: Vec<u8> = raw.try_into().unwrap();
     /// let header = VgmHeader::from_bytes(&bytes).unwrap();
     /// let command_start = VgmHeader::command_start(header.version, header.data_offset);
     /// let loop_pos = VgmHeader::loop_pos_in_commands(

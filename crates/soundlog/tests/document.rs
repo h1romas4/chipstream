@@ -563,7 +563,7 @@ fn readme_example_vgmbuilder() {
     // Finalize the document (An `EndOfData` tag is automatically added)
     let document: VgmDocument = builder.finalize();
     // `into()` converts the finalized `VgmDocument` into VGM-format binary bytes
-    let _bytes: Vec<u8> = document.into();
+    let _bytes: Vec<u8> = document.try_into().unwrap();
     //
     // <- README.md
     //

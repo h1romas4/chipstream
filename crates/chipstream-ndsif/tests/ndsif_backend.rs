@@ -934,7 +934,7 @@ fn okim6258_ignores_vgmmame_registers_without_affecting_scheduled_audio() {
         let transport = Rc::new(RefCell::new(FakeTransport::default()));
         let mut factories = ChipFactoryRegistry::new();
         register_okim6258_factory(&mut factories, Rc::clone(&transport));
-        let bytes = Vec::<u8>::from(builder.finalize());
+        let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
         let mut player =
             VgmSequencer::from_vgm_with_factories(bytes, 44_100, 64, Default::default(), factories)
                 .unwrap();

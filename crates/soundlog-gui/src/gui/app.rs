@@ -86,7 +86,9 @@ impl Debuger {
             });
 
             let doc = builder.finalize();
-            let bytes: Vec<u8> = (&doc).into();
+            let bytes: Vec<u8> = (&doc)
+                .try_into()
+                .expect("built-in VGM document must serialize");
 
             let mut s = UiState::new_empty();
             s.populate_from_bytes(&bytes);

@@ -101,7 +101,7 @@ fn test_gbdmg_pulse_keyon_and_tone_freq_matches_a4() {
     builder.add_vgm_command(WaitSamples(22100));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     // Optionally write artifact via shim helper; no-op if OUTPUT_VGM_DIR is None.
     super::maybe_write_vgm("gb_dmg_a4.vgm", &vgm_bytes);
 

@@ -206,7 +206,7 @@ mod tests {
             notes: Some(" Notes ".to_owned()),
             ..Gd3::default()
         });
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
 
         assert_eq!(
             probe_vgm_bytes(&bytes).unwrap(),
@@ -234,7 +234,7 @@ mod tests {
             author_name_origin: Some("Composer".into()),
             ..Gd3::default()
         });
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         let metadata =
             probe_vgm_bytes_with_language(&bytes, VgmMetadataLanguage::Original).unwrap();
         assert_eq!(metadata.title.as_deref(), Some("Original Title"));
@@ -250,7 +250,7 @@ mod tests {
             notes: Some("a".repeat(8192)),
             ..Gd3::default()
         });
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         assert!(matches!(
             probe_vgm_bytes(&bytes),
             Err(MetadataError::InvalidGd3(_))

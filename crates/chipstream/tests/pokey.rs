@@ -136,7 +136,7 @@ fn vgm_initializes_both_pokeys_without_recorded_skctl_writes() {
     }
     builder.add_vgm_command(WaitSamples(12_000));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     for muted in [Instance::Primary, Instance::Secondary] {
         let mut direct =
             VgmSequencer::new(document.clone(), 44_100, 8192, Default::default()).unwrap();
@@ -161,7 +161,7 @@ fn vgm_secondary_events_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<PokeyState>();
     let events = Rc::new(RefCell::new(Vec::new()));

@@ -250,7 +250,7 @@ fn test_ym2151_keyon_and_tone_freq_matches_440_hz() {
     let doc = builder.finalize();
 
     // Optionally write the VGM artefact for manual verification
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("ym2151_a4.vgm", &vgm_bytes);
 
     // State-tracking assertion: KeyOn must report the expected KC/KF frequency.

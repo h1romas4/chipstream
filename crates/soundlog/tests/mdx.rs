@@ -30,6 +30,29 @@ use soundlog::vgm::stream::{StreamResult, VgmCommandGenerator};
 use soundlog::vgm::{VgmCallbackStream, VgmDocument, VgmStream};
 
 #[test]
+fn mdx_try_into_bytes_matches_serialization_and_reports_errors() {
+    for compressed in [false, true] {
+        let mut builder = MdxBuilder::new();
+        builder
+            .set_lz_compressed(compressed)
+            .add_mdx_command(0, MdxRest { ticks: 1 });
+        let mut document = builder.finalize().unwrap();
+        let expected = document.to_bytes().unwrap();
+        let borrowed: Vec<u8> = (&document).try_into().unwrap();
+        let owned: Vec<u8> = document.clone().try_into().unwrap();
+        assert_eq!(borrowed, expected);
+        assert_eq!(owned, expected);
+
+        document.tracks[0].push(MdxCommand::Rest(MdxRest { ticks: 0 }));
+        let expected = document.to_bytes().unwrap_err().to_string();
+        let borrowed: Result<Vec<u8>, ParseError> = (&document).try_into();
+        let owned: Result<Vec<u8>, ParseError> = document.try_into();
+        assert_eq!(borrowed.unwrap_err().to_string(), expected);
+        assert_eq!(owned.unwrap_err().to_string(), expected);
+    }
+}
+
+#[test]
 fn conversion_decoded_pcm_limit_reaches_all_paths() {
     let mut builder = MdxBuilder::new();
     builder
@@ -986,7 +1009,7 @@ fn mdx_document_sourcemap_matches_encoded_commands_across_variants_and_edits() {
                 0,
                 MdxCommand::Extended(MdxExtendedCommand::Unknown(
                     soundlog::mdx::command::MdxExtendedUnknownCommand {
-                        opcode: 0x07,
+                        opcode: 0x0a,
                         operand: Some(0xff),
                     },
                 )),
@@ -1008,6 +1031,106 @@ fn mdx_document_sourcemap_matches_encoded_commands_across_variants_and_edits() {
             }
         }
         assert!(bytes.ends_with(&document.tone_bank.to_bytes()));
+    }
+}
+
+#[test]
+fn mdx_checked_serialization_rejects_unrepresentable_commands() {
+    use soundlog::mdx::command::{
+        MdxExtended2UnknownCommand, MdxExtendedUnknownCommand, MdxSignedWord,
+    };
+
+    let invalid = [
+        MdxCommand::Rest(MdxRest { ticks: 0 }),
+        MdxCommand::Rest(MdxRest { ticks: 129 }),
+        MdxCommand::Note(MdxNote {
+            note: 0x7f,
+            length: 1,
+        }),
+        MdxCommand::Note(MdxNote {
+            note: 0x80,
+            length: 0,
+        }),
+        MdxCommand::Note(MdxNote {
+            note: 0xdf,
+            length: 257,
+        }),
+        MdxCommand::PitchLfo(MdxPitchLfo::Configure {
+            waveform: MdxLfoWaveform::Unknown(0x80),
+            frequency: 0,
+            amplitude: 0,
+        }),
+        MdxCommand::VolumeLfo(MdxVolumeLfo::Configure {
+            waveform: MdxLfoWaveform::Unknown(0x80),
+            frequency: 0,
+            amplitude: 0,
+        }),
+        MdxCommand::OpmLfo(MdxOpmLfo::Configure {
+            control: 0x80,
+            lfrq: 0,
+            pmd: 0,
+            amd: 0,
+            pms_ams: 0,
+        }),
+        MdxCommand::LoopEnd(MdxRelativeOffset {
+            opcode: 0xf4,
+            offset: -1,
+        }),
+        MdxCommand::Jump(MdxRelativeOffset {
+            opcode: 0xf1,
+            offset: 1,
+        }),
+        MdxCommand::Detune(MdxSignedWord {
+            opcode: 0xf2,
+            offset: 0,
+        }),
+        MdxCommand::Extended(MdxExtendedCommand::Unknown(MdxExtendedUnknownCommand {
+            opcode: 7,
+            operand: Some(1),
+        })),
+        MdxCommand::Extended(MdxExtendedCommand::Unknown(MdxExtendedUnknownCommand {
+            opcode: 0x0a,
+            operand: None,
+        })),
+        MdxCommand::Extended2(MdxExtended2Command::Unknown(MdxExtended2UnknownCommand {
+            opcode: 0,
+        })),
+        MdxCommand::Raw(MdxRawCommand { opcode: 0xff }),
+    ];
+    let mut document = MdxBuilder::new().finalize().unwrap();
+    for command in invalid {
+        assert!(command.try_to_mdx_bytes().is_err(), "{command:?}");
+        document.tracks[0] = vec![command];
+        let error = document.to_bytes().unwrap_err().to_string();
+        assert!(error.contains("track 0 command 0"), "{error}");
+    }
+
+    let valid = [
+        MdxCommand::Rest(MdxRest { ticks: 1 }),
+        MdxCommand::Rest(MdxRest { ticks: 128 }),
+        MdxCommand::Note(MdxNote {
+            note: 0xdf,
+            length: 256,
+        }),
+        MdxCommand::Jump(MdxRelativeOffset {
+            opcode: 0xf1,
+            offset: -1,
+        }),
+        MdxCommand::Extended(MdxExtendedCommand::Unknown(MdxExtendedUnknownCommand {
+            opcode: 0x0a,
+            operand: Some(0xff),
+        })),
+        MdxCommand::Extended(MdxExtendedCommand::Unknown(MdxExtendedUnknownCommand {
+            opcode: 7,
+            operand: None,
+        })),
+        MdxCommand::Raw(MdxRawCommand { opcode: 0xe0 }),
+    ];
+    for command in valid {
+        assert_eq!(
+            command.try_to_mdx_bytes().unwrap(),
+            command.to_mdx_bytes().unwrap()
+        );
     }
 }
 

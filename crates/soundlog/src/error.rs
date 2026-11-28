@@ -3,7 +3,40 @@ use std::error::Error;
 use std::fmt;
 
 /// Error type returned by binary parsers and command streams.
+///
+/// Additional error variants may be added; external matches must include a
+/// fallback arm.
+///
+/// ```compile_fail
+/// use soundlog::ParseError;
+///
+/// fn describe(error: ParseError) {
+///     match error {
+///         ParseError::UnexpectedEof
+///         | ParseError::OffsetOutOfRange { .. }
+///         | ParseError::InvalidIdent(_)
+///         | ParseError::UnsupportedVersion(_)
+///         | ParseError::HeaderTooShort(_)
+///         | ParseError::Other(_)
+///         | ParseError::InvalidUtf16 { .. }
+///         | ParseError::MissingTerminator { .. }
+///         | ParseError::GeneratorError(_)
+///         | ParseError::InvalidBitWidth { .. }
+///         | ParseError::UnsupportedBitPackingSubType(_)
+///         | ParseError::UnsupportedCompressionType(_)
+///         | ParseError::UnsupportedStreamOperation { .. }
+///         | ParseError::BufferSizeExceeded { .. }
+///         | ParseError::CommandLimitExceeded { .. }
+///         | ParseError::StreamStepLimitExceeded { .. }
+///         | ParseError::DataBlockCountExceeded { .. }
+///         | ParseError::UnknownOpcode { .. }
+///         | ParseError::DataInconsistency(_)
+///         | ParseError::DataBlockSizeExceeded { .. } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ParseError {
     /// Input ended unexpectedly while the parser was expecting more bytes.
     UnexpectedEof,

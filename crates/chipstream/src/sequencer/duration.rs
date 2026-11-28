@@ -289,7 +289,7 @@ mod tests {
     fn duration_exceeding_u32_output_frames_is_unknown() {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(u16::MAX));
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
 
         assert_eq!(
             measure_vgm_duration_frames(&bytes, u32::MAX, VgmSequencerOptions::default()).unwrap(),
@@ -330,7 +330,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(1_000));
         builder.add_vgm_command(WaitSamples(3_000));
         builder.set_loop_index(1);
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         let options = VgmSequencerOptions {
             playback: PlaybackOptions {
                 loop_count: Some(2),
@@ -355,7 +355,7 @@ mod tests {
         let mut document = builder.finalize();
         document.header.loop_base = 1;
         document.header.loop_modifier = 0x20;
-        let bytes: Vec<u8> = document.into();
+        let bytes: Vec<u8> = document.try_into().unwrap();
 
         for (base, modifier, expected) in [
             (None, None, 1_200),
@@ -415,7 +415,7 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1_000));
         builder.set_loop_index(0);
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         assert_eq!(
             measure_vgm_duration_frames(
                 &bytes,
@@ -451,7 +451,7 @@ mod tests {
     fn non_looping_vgm_with_unlimited_count_ends_naturally() {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1_000));
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         assert_eq!(
             measure_vgm_duration_frames(
                 &bytes,
@@ -504,7 +504,7 @@ mod tests {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1_000));
         builder.set_loop_index(0);
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         let options = VgmSequencerOptions {
             playback: PlaybackOptions {
                 loop_count: Some(2),

@@ -11,8 +11,9 @@
 //! - `VgmBuilder` incrementally assembles a document, computes derived
 //!   header fields (e.g. `total_samples`, `loop_offset`) and finalizes
 //!   the document for serialization.
-//! - Conversions: `TryFrom<&[u8]> for VgmDocument` (parsing) and `From<VgmDocument> for Vec<u8>`
-//!   (serialization) are provided.
+//! - Conversions: `TryFrom<&[u8]> for VgmDocument` (parsing) and
+//!   `TryFrom<VgmDocument>` / `TryFrom<&VgmDocument>` for `Vec<u8>`
+//!   (validated serialization) are provided.
 //!
 //! Notes:
 //! - The builder and serialization logic preserve header offset semantics
@@ -35,8 +36,7 @@ use std::vec;
 /// stream, and optional GD3 metadata and an optional extra header.
 ///
 /// Construct `VgmDocument` instances using `VgmBuilder`. Once assembled,
-/// call `VgmDocument::to_bytes()` to obtain the serialized VGM file
-/// bytes suitable for writing to disk.
+/// convert it to `Vec<u8>` with `TryFrom` or `TryInto` for checked serialization.
 pub struct VgmDocument {
     /// Parsed or constructed VGM header.
     pub header: VgmHeader,
@@ -67,6 +67,19 @@ impl Default for VgmParseLimits {
 }
 
 impl VgmDocument {
+    /// Validate the VGM byte representation of each command.
+    ///
+    /// This checks command encodings and data block lengths, not playback
+    /// behavior, header consistency, or cross-command stream state.
+    pub fn validate(&self) -> Result<(), crate::ParseError> {
+        for (index, command) in self.commands.iter().enumerate() {
+            command.validate().map_err(|error| {
+                crate::ParseError::DataInconsistency(format!("VGM command {index}: {error}"))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Parse an uncompressed VGM document with default metadata limits.
     pub fn parse(bytes: &[u8]) -> Result<Self, crate::ParseError> {
         Self::parse_with_limits(bytes, VgmParseLimits::default())
@@ -494,17 +507,22 @@ impl TryFrom<&[u8]> for VgmDocument {
     }
 }
 
-/// Convert a `VgmDocument` into its serialized VGM bytes.
-impl From<VgmDocument> for Vec<u8> {
-    fn from(document: VgmDocument) -> Vec<u8> {
-        document.to_bytes()
+/// Validate and serialize an owned VGM document.
+impl TryFrom<VgmDocument> for Vec<u8> {
+    type Error = crate::ParseError;
+
+    fn try_from(document: VgmDocument) -> Result<Self, Self::Error> {
+        Self::try_from(&document)
     }
 }
 
-/// Convert a borrowed `VgmDocument` into serialized bytes.
-impl From<&VgmDocument> for Vec<u8> {
-    fn from(document: &VgmDocument) -> Vec<u8> {
-        document.to_bytes()
+/// Validate and serialize a borrowed VGM document.
+impl TryFrom<&VgmDocument> for Vec<u8> {
+    type Error = crate::ParseError;
+
+    fn try_from(document: &VgmDocument) -> Result<Self, Self::Error> {
+        document.validate()?;
+        Ok(document.to_bytes())
     }
 }
 

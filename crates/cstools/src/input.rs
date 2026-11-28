@@ -405,7 +405,7 @@ mod tests {
             author_name_origin: Some("Artist".to_owned()),
             ..Gd3::default()
         });
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
 
         assert_eq!(
             metadata_line(&Input::Vgm(bytes)).unwrap(),

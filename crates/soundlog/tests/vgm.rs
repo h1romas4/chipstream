@@ -2,12 +2,106 @@ use soundlog::chip::*;
 use soundlog::vgm::command::{
     Ay8910StereoMask, DacStreamChipType, DataBlock, Instance, PcmRamWrite, SeekOffset,
     SetStreamFrequency, SetupStreamControl, StartStream, StartStreamFastCall, StopStream,
-    VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
+    UnknownSpec, VgmCommand, Wait735Samples, Wait882Samples, WaitNSample, WaitSamples,
     Ym2612Port0Address2AWriteAndWaitN,
 };
 use soundlog::vgm::detail::StreamChipType;
 use soundlog::vgm::header::ChipId;
 use soundlog::{VgmBuilder, VgmDocument, VgmHeader};
+
+#[test]
+fn checked_serialization_rejects_unrepresentable_vgm_commands() {
+    let data_block = DataBlock {
+        marker: 0x66,
+        chip_instance: 0,
+        data_type: 0,
+        size: 1,
+        data: vec![0x70, 0x71],
+    };
+    let pcm = PcmRamWrite {
+        marker: 0x66,
+        chip_type: StreamChipType::Ym2612Pcm,
+        instance: Instance::Primary,
+        read_offset: 0x1000000,
+        write_offset: 0,
+        size: 0,
+    };
+    let invalid = [
+        VgmCommand::WaitNSample(WaitNSample(16)),
+        VgmCommand::YM2612Port0Address2AWriteAndWaitN(Ym2612Port0Address2AWriteAndWaitN(16)),
+        VgmCommand::Ym2612Write(
+            Instance::Primary,
+            Ym2612Spec {
+                port: 2,
+                register: 0x22,
+                value: 0,
+            },
+        ),
+        VgmCommand::PwmWrite(
+            Instance::Primary,
+            PwmSpec {
+                register: 0,
+                value: 0x1000,
+            },
+        ),
+        VgmCommand::DataBlock(Box::new(DataBlock {
+            chip_instance: 2,
+            size: 2,
+            ..data_block.clone()
+        })),
+        VgmCommand::DataBlock(Box::new(DataBlock {
+            size: 0x8000_0000,
+            ..data_block.clone()
+        })),
+        VgmCommand::DataBlock(Box::new(data_block)),
+        VgmCommand::PcmRamWrite(Box::new(PcmRamWrite {
+            read_offset: 0,
+            write_offset: 0x1000000,
+            ..pcm.clone()
+        })),
+        VgmCommand::PcmRamWrite(Box::new(PcmRamWrite {
+            read_offset: 0,
+            size: 0x1000000,
+            ..pcm.clone()
+        })),
+        VgmCommand::PcmRamWrite(Box::new(pcm)),
+    ];
+    let mut document = VgmBuilder::new().finalize();
+    for command in invalid {
+        assert!(command.try_to_vgm_bytes().is_err(), "{command:?}");
+        document.commands.insert(0, command);
+        let error = Vec::<u8>::try_from(&document).unwrap_err().to_string();
+        assert!(error.contains("command 0"), "{error}");
+        assert!(Vec::<u8>::try_from(document.clone()).is_err());
+        document.commands.remove(0);
+    }
+    let valid = [
+        VgmCommand::WaitNSample(WaitNSample(15)),
+        VgmCommand::YM2612Port0Address2AWriteAndWaitN(Ym2612Port0Address2AWriteAndWaitN(15)),
+        VgmCommand::PcmRamWrite(Box::new(PcmRamWrite {
+            marker: 0x66,
+            chip_type: StreamChipType::Ym2612Pcm,
+            instance: Instance::Primary,
+            read_offset: 0xffffff,
+            write_offset: 0xffffff,
+            size: 0,
+        })),
+        VgmCommand::DataBlock(Box::new(DataBlock {
+            marker: 0x66,
+            chip_instance: 1,
+            data_type: 0xff,
+            size: 2,
+            data: vec![0x70, 0x71],
+        })),
+        VgmCommand::UnknownCommand(UnknownSpec {
+            opcode: 0x60,
+            offset: 123,
+        }),
+    ];
+    document.commands.splice(0..0, valid);
+    let bytes = Vec::<u8>::try_from(&document).unwrap();
+    assert_eq!(bytes, Vec::<u8>::try_from(document).unwrap());
+}
 
 #[test]
 fn build_minimal_vgmdocument() {
@@ -43,7 +137,7 @@ fn test_total_samples_computed_correctly() {
     let doc = b.finalize();
 
     // test re-parse
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     let parsed: VgmDocument = (bytes.as_slice())
         .try_into()
         .expect("failed to parse serialized VGM");
@@ -576,7 +670,7 @@ fn roundtrip_vgmdocument_into_vec_and_parse() {
 
     let doc = b.finalize();
 
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     let parsed: VgmDocument = (bytes.as_slice())
         .try_into()
@@ -680,7 +774,7 @@ fn test_loop_offset_serialized_matches_header() {
     let header_loop = doc.header.loop_offset;
 
     // serialized bytes should contain the same little-endian u32 at 0x1C
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
     assert!(bytes.len() >= 0x20);
     let ser_loop = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
 
@@ -697,7 +791,7 @@ fn test_fallback_header_size_v1_00() {
     doc.header.data_offset = 0;
 
     // Serialize the full document and inspect resulting file bytes.
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // VGM 1.00 header size is 0x24 (36 bytes), but data must start at minimum 0x40
     // The VgmBuilder now appends an EndOfData terminator, so the serialized
@@ -711,7 +805,7 @@ fn test_explicit_data_offset_affects_header_size() {
     let mut doc = VgmBuilder::new().finalize();
     doc.header.data_offset = 0x20; // example small explicit offset
 
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Account for the EndOfData terminator appended by the builder.
     assert_eq!(bytes.len(), 0x34usize + 0x20usize + 1usize);
@@ -726,7 +820,7 @@ fn test_small_version_does_not_include_extra_header_field() {
     doc.header.version = 0x00000110; // legacy small-version indicator
     doc.header.data_offset = 0;
 
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // VGM 1.10 header size is 0x34 (52 bytes)
     // The VgmBuilder now appends an EndOfData terminator, so the serialized
@@ -752,7 +846,7 @@ fn test_extra_header_stored_offset_written_when_layout_allows() {
     b.set_extra_header(extra);
 
     let doc = b.finalize();
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // If the main header layout contains the stored extra-header offset field,
     // it will be written at 0xBC..0xBF. Check that field is non-zero.
@@ -783,7 +877,7 @@ fn test_tail_header_fields_roundtrip() {
     doc.header.saa1099_clock = saa1099_val;
     doc.header.es5503_clock = es5503_val;
 
-    let bytes: Vec<u8> = (&doc).into();
+    let bytes: Vec<u8> = (&doc).try_into().unwrap();
 
     // Re-parse and verify header fields preserved
     let parsed: VgmDocument = (&bytes[..])
@@ -815,7 +909,7 @@ fn test_tail_header_fields_roundtrip() {
     }
 
     // Serialize the reparsed document again and ensure the tail fields remain
-    let reserialized: Vec<u8> = (&parsed).into();
+    let reserialized: Vec<u8> = (&parsed).try_into().unwrap();
     if reserialized.len() >= 0xC0 + 4 {
         let raw_w2 = u32::from_le_bytes([
             reserialized[0xC0],

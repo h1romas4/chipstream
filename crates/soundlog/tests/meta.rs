@@ -59,7 +59,7 @@ fn test_vgmdocument_includes_gd3_and_header_offset() {
         ..Default::default()
     };
 
-    let bytes: Vec<u8> = doc.into();
+    let bytes: Vec<u8> = doc.try_into().unwrap();
 
     let pos = bytes
         .windows(4)
@@ -79,10 +79,11 @@ fn gd3_and_vgm_document_apply_configurable_chunk_limits() {
     let exact = gd3.to_bytes();
     assert_eq!(exact.len(), 16 * 1024);
     assert_eq!(Gd3::try_from(exact.as_slice()).unwrap(), gd3);
-    let exact_document = Vec::<u8>::from(VgmDocument {
+    let exact_document = Vec::<u8>::try_from(VgmDocument {
         gd3: Some(gd3),
         ..Default::default()
-    });
+    })
+    .unwrap();
     assert!(VgmDocument::parse(&exact_document).is_ok());
     assert!(
         VgmDocument::parse_with_limits(
@@ -133,7 +134,7 @@ fn gd3_and_vgm_document_apply_configurable_chunk_limits() {
         gd3: Some(oversized.clone()),
         ..Default::default()
     };
-    let bytes = Vec::<u8>::from(document);
+    let bytes = Vec::<u8>::try_from(document).unwrap();
     assert!(VgmDocument::try_from(bytes.as_slice()).is_err());
     assert_eq!(
         VgmDocument::parse_with_limits(
@@ -157,7 +158,7 @@ fn gd3_and_vgm_document_apply_configurable_chunk_limits() {
         .gd3,
         Some(oversized)
     );
-    let no_gd3 = Vec::<u8>::from(VgmDocument::default());
+    let no_gd3 = Vec::<u8>::try_from(VgmDocument::default()).unwrap();
     assert!(
         VgmDocument::parse_with_limits(
             &no_gd3,
@@ -182,7 +183,7 @@ fn rejects_overflowing_gd3_length_and_vgm_offset() {
         )
         .is_err()
     );
-    let mut vgm = Vec::<u8>::from(VgmDocument::default());
+    let mut vgm = Vec::<u8>::try_from(VgmDocument::default()).unwrap();
     vgm[0x14..0x18].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(VgmDocument::parse(&vgm).is_err());
 }

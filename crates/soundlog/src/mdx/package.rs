@@ -105,7 +105,7 @@ impl MdxPackage {
     ///
     /// # Errors
     ///
-    /// Returns the MDX layout error when the current document cannot be serialized.
+    /// Returns an error when the current document cannot be serialized.
     pub fn to_mdx_bytes(&self) -> Result<Vec<u8>, ParseError> {
         self.mdx.to_bytes()
     }

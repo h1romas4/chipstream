@@ -2900,6 +2900,52 @@ impl CommandSpec for chip::GameGearPsgSpec {
     }
 }
 
+impl VgmCommand {
+    /// Validate that this command can be represented by its VGM encoding.
+    ///
+    /// This does not validate chip behavior or cross-command stream state.
+    pub fn validate(&self) -> Result<(), crate::ParseError> {
+        let invalid = |message: &str| crate::ParseError::DataInconsistency(message.into());
+        match self {
+            Self::DataBlock(block) => {
+                if block.chip_instance > 1
+                    || block.size > 0x7fff_ffff
+                    || usize::try_from(block.size).ok() != Some(block.data.len())
+                {
+                    return Err(invalid("invalid VGM data block size or instance"));
+                }
+                return Ok(());
+            }
+            Self::PcmRamWrite(write)
+                if write.read_offset > 0xff_ffff
+                    || write.write_offset > 0xff_ffff
+                    || write.size > 0xff_ffff =>
+            {
+                return Err(invalid("VGM PCM RAM fields must fit in 24 bits"));
+            }
+            _ => {}
+        }
+
+        let (bytes, _) = command_to_vgm_bytes(self);
+        let (decoded, length) = crate::vgm::parser::parse_vgm_command(&bytes, 0)
+            .map_err(|error| invalid(&format!("invalid VGM command encoding: {error}")))?;
+        let same = match (self, &decoded) {
+            (Self::UnknownCommand(a), Self::UnknownCommand(b)) => a.opcode == b.opcode,
+            _ => self == &decoded,
+        };
+        if length != bytes.len() || !same {
+            return Err(invalid("VGM command changes when encoded and decoded"));
+        }
+        Ok(())
+    }
+
+    /// Validate and serialize this command to VGM bytes.
+    pub fn try_to_vgm_bytes(&self) -> Result<Vec<u8>, crate::ParseError> {
+        self.validate()?;
+        Ok(command_to_vgm_bytes(self).0)
+    }
+}
+
 /// Serialize a single `VgmCommand` into its VGM byte representation.
 ///
 /// Returns a tuple `(Vec<u8>, usize)` where the first element is the
@@ -2915,6 +2961,8 @@ impl CommandSpec for chip::GameGearPsgSpec {
 /// The function is intended for internal use by other routines that need
 /// per-command bytes or lengths (for example computing command offsets)
 /// without serializing the entire document.
+/// This legacy helper does not validate fields; use [`VgmCommand::try_to_vgm_bytes`]
+/// for checked serialization.
 ///
 /// # Returns
 /// - `(bytes, len)` — `bytes` contains the VGM bytes for the command,

@@ -150,7 +150,7 @@ fn vgm_secondary_chip_and_typed_callbacks_produce_audio() {
     }
     builder.add_vgm_command(WaitSamples(2000));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut checkpoint_player =
         VgmSequencer::new(document.clone(), 44_100, 128, Default::default()).unwrap();
     checkpoint_player.render().unwrap();

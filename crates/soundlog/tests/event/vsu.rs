@@ -91,7 +91,7 @@ fn test_vsu_channel_keyon_and_tone_freq_matches_a4() {
     builder.add_vgm_command(WaitSamples(22100));
 
     let doc = builder.finalize();
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("vsu_a4_no_sound.vgm", &vgm_bytes); // TODO: NO SOUND
 
     // Create VgmCallbackStream and enable VSU state tracking.

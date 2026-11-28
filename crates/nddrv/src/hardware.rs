@@ -1647,7 +1647,7 @@ mod tests {
         );
         builder.add_vgm_command(WaitSamples(441));
         let mut sequencer = VgmSequencer::from_vgm_with_factories(
-            Vec::<u8>::from(builder.finalize()),
+            Vec::<u8>::try_from(builder.finalize()).unwrap(),
             44_100,
             1024,
             Default::default(),
@@ -2085,7 +2085,7 @@ mod tests {
         );
         builder.add_vgm_command(WaitSamples(441));
         let mut sequencer = VgmSequencer::from_vgm_with_factories(
-            Vec::<u8>::from(builder.finalize()),
+            Vec::<u8>::try_from(builder.finalize()).unwrap(),
             44_100,
             1024,
             Default::default(),

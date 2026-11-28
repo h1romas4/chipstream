@@ -237,7 +237,7 @@ fn redump_vgm_with_limits(
     doc_rebuilt.header.es5506_output_channels = doc_orig.header.es5506_output_channels;
     doc_rebuilt.header.c352_clock_divider = doc_orig.header.c352_clock_divider;
 
-    let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).into();
+    let rebuilt_bytes: Vec<u8> = (&doc_rebuilt).try_into()?;
     if rebuilt_bytes.len() > limits.max_output_bytes {
         anyhow::bail!(
             "redump output byte limit exceeded: {} bytes including header and metadata, limit {} bytes",
@@ -362,7 +362,7 @@ mod tests {
             builder.set_loop_index(builder.command_count());
         }
         builder.add_vgm_command(WaitSamples(1));
-        builder.finalize().into()
+        builder.finalize().try_into().unwrap()
     }
 
     #[test]
@@ -390,7 +390,7 @@ mod tests {
     fn redump_file_byte_boundary_includes_header_and_terminator() {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(2));
-        let input: Vec<u8> = builder.finalize().into();
+        let input: Vec<u8> = builder.finalize().try_into().unwrap();
         let limits = RedumpLimits {
             max_commands: 2,
             max_output_bytes: input.len(),

@@ -210,7 +210,7 @@ fn vgm_playback_callbacks_and_checkpoint() {
         builder.add_chip_write(Instance::Secondary, VsuSpec { offset, value });
     }
     builder.add_vgm_command(WaitSamples(2500));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     player.track_state::<VsuState>(Instance::Secondary, 5_000_000.0);
     let events = Rc::new(RefCell::new(Vec::new()));

@@ -2092,7 +2092,7 @@ mod tests {
                 builder.register_chip(SoundlogChip::Ymf262, SoundlogInstance::Primary, 14_318_180);
                 builder.add_vgm_command(WaitSamples(441));
                 let result = VgmSequencer::from_vgm_with_factories(
-                    builder.finalize(),
+                    Vec::<u8>::try_from(builder.finalize()).unwrap(),
                     44_100,
                     256,
                     Default::default(),
@@ -2131,7 +2131,7 @@ mod tests {
                         14_318_180,
                     );
                     builder.add_vgm_command(WaitSamples(441));
-                    fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+                    fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
                     let source = glib::Object::builder::<ChipstreamSrc>()
                         .property("location", path.to_string_lossy().as_ref())
                         .property("ndsif-port", settings.port.as_deref().unwrap())
@@ -2432,7 +2432,7 @@ mod tests {
             );
             builder.add_vgm_command(WaitSamples(220));
         }
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         fs::write(&path, bytes).unwrap();
         let source = glib::Object::builder::<ChipstreamSrc>()
             .property("location", path.to_string_lossy().as_ref())
@@ -2727,7 +2727,7 @@ mod tests {
             builder.add_chip_write(Instance::Primary, Ay8910Spec { register, value });
         }
         builder.add_vgm_command(WaitSamples(1000));
-        fs::write(&path, Vec::<u8>::from(builder.finalize())).unwrap();
+        fs::write(&path, Vec::<u8>::try_from(builder.finalize()).unwrap()).unwrap();
         let settings = RenderSettings {
             sample_rate: 44_100,
             chunk_frames: 128,
@@ -2816,7 +2816,7 @@ mod tests {
             document.header.ay_chip_type = chip_type;
             document.header.ay8910_flags.ym_pin26_low = divider;
             document.header.ay8910_flags.raw_output = raw_output;
-            fs::write(&path, Vec::<u8>::from(document)).unwrap();
+            fs::write(&path, Vec::<u8>::try_from(document).unwrap()).unwrap();
 
             let source = glib::Object::builder::<ChipstreamSrc>()
                 .property("location", path.to_string_lossy().as_ref())
@@ -2898,7 +2898,7 @@ mod tests {
         builder.register_chip(Chip::Ay8910, Instance::Primary, 1_792_000);
         builder.add_vgm_command(WaitSamples(441));
         let error = VgmSequencer::from_vgm_with_factories(
-            builder.finalize(),
+            Vec::<u8>::try_from(builder.finalize()).unwrap(),
             44_100,
             256,
             Default::default(),
@@ -3192,7 +3192,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(4410));
-        let bytes: Vec<u8> = builder.finalize().into();
+        let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         fs::write(&input_path, bytes).unwrap();
         fs::write(&rom_path, [0x77; 8192]).unwrap();
 

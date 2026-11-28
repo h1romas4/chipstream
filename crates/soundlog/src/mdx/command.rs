@@ -89,7 +89,71 @@ pub enum MdxCommand {
 }
 
 impl MdxCommand {
+    /// Validate this command's MDX byte representation.
+    ///
+    /// This checks the encoded form, not whether the command is playable.
+    /// Some typed playback commands can represent durations too long for one
+    /// MDX command and must be split before serialization.
+    pub fn validate(&self) -> Result<(), ParseError> {
+        let error = match self {
+            Self::Rest(rest) if MdxRest::new(rest.ticks).is_none() => {
+                Some("rest duration must be in 1..=128")
+            }
+            Self::Note(note) if MdxNote::new(note.note, note.length).is_none() => {
+                Some("note opcode or duration is outside the MDX range")
+            }
+            Self::PitchLfo(MdxPitchLfo::Configure { waveform, .. })
+            | Self::VolumeLfo(MdxVolumeLfo::Configure { waveform, .. })
+                if waveform.raw() & 0x80 != 0 =>
+            {
+                Some("LFO waveform bit 7 selects the enable command")
+            }
+            Self::OpmLfo(MdxOpmLfo::Configure { control, .. }) if control & 0x80 != 0 => {
+                Some("OPM LFO control bit 7 selects the enable command")
+            }
+            Self::LoopEnd(command) if command.opcode != 0xf5 => Some("invalid loop-end opcode"),
+            Self::LoopEscape(command) if command.opcode != 0xf4 => {
+                Some("invalid loop-escape opcode")
+            }
+            Self::EndOfTrackLoop(command) | Self::Jump(command)
+                if command.opcode != 0xf1 || command.offset.to_be_bytes()[0] == 0 =>
+            {
+                Some("invalid track-loop opcode or offset")
+            }
+            Self::Detune(command) if command.opcode != 0xf3 => Some("invalid detune opcode"),
+            Self::Portamento(command) if command.opcode != 0xf2 => {
+                Some("invalid portamento opcode")
+            }
+            Self::Extended(MdxExtendedCommand::Unknown(command))
+                if command.opcode < 7 || (command.opcode == 0x0a) != command.operand.is_some() =>
+            {
+                Some("invalid unknown extended command or operand")
+            }
+            Self::Extended2(MdxExtended2Command::Unknown(command)) if command.opcode < 4 => {
+                Some("unknown extended command uses a known opcode")
+            }
+            Self::Raw(command) if !(0xe0..=0xe5).contains(&command.opcode) => {
+                Some("raw opcode has a different MDX command encoding")
+            }
+            _ => None,
+        };
+        match error {
+            Some(message) => Err(ParseError::DataInconsistency(message.into())),
+            None => Ok(()),
+        }
+    }
+
+    /// Validate and serialize this command.
+    pub fn try_to_mdx_bytes(&self) -> Result<Vec<u8>, ParseError> {
+        self.validate()?;
+        self.to_mdx_bytes()
+            .ok_or_else(|| ParseError::DataInconsistency("unsupported MDX command".into()))
+    }
+
     /// Serialize commands whose byte-level representation is currently defined.
+    ///
+    /// This legacy method does not validate public fields. Prefer
+    /// [`Self::try_to_mdx_bytes`] for commands constructed or modified by callers.
     pub fn to_mdx_bytes(&self) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
         match self {

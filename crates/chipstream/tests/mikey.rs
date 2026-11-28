@@ -62,7 +62,7 @@ fn vgm_mikey_playback_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 64, Default::default()).unwrap();
     let first = player.render().unwrap().unwrap();
     assert!(first.frames().iter().any(|frame| frame[0].abs() > 0.01));

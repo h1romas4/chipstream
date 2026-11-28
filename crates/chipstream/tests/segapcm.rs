@@ -126,7 +126,7 @@ fn vgm_rom_and_second_chip_preserve_wide_addresses() {
     builder.add_vgm_command(WaitSamples(1000));
     let mut doc = builder.finalize();
     doc.header.spcm_interface = 12 | (0x70 << 16);
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let mut document = VgmSequencer::new(doc, 44_100, 57, Default::default()).unwrap();

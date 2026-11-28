@@ -685,7 +685,7 @@ impl<'a> VgmCallbackStream<'a> {
     ///
     /// let mut builder = VgmBuilder::new();
     /// builder.add_vgm_command(WaitSamples(735));
-    /// let raw: Vec<u8> = builder.finalize().into();
+    /// let raw: Vec<u8> = builder.finalize().try_into().unwrap();
     ///
     /// let mut callback_stream = VgmCallbackStream::from_vgm(raw).expect("valid VGM");
     /// callback_stream.set_loop_count(Some(1));

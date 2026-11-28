@@ -114,7 +114,7 @@ fn test_k051649_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Optionally write VGM artifact for manual verification (no-op unless env set).
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     super::maybe_write_vgm("k051649_a4.vgm", &vgm_bytes);
 
     // Create a callback stream and enable K051649 state tracking.

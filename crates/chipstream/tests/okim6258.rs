@@ -288,7 +288,7 @@ fn vgmmame_registers_do_not_change_okim6258_audio() {
             );
             builder.add_vgm_command(soundlog::vgm::command::WaitSamples(12));
         }
-        let bytes = Vec::<u8>::from(builder.finalize());
+        let bytes = Vec::<u8>::try_from(builder.finalize()).unwrap();
         let mut player = VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()).unwrap();
         let mut frames = Vec::new();
         while let Some(block) = player.render().unwrap() {

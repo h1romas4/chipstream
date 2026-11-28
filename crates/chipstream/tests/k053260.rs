@@ -196,7 +196,7 @@ fn vgm_rom_secondary_callbacks_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let parsed = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let mut player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<K053260State>();

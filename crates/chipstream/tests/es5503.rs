@@ -124,7 +124,7 @@ fn document() -> soundlog::vgm::VgmDocument {
 #[test]
 fn vgm_bytes_document_dynamic_rate_and_checkpoint() {
     let doc = document();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut doc_player = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     let mut byte_player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     for _ in 0..3 {
@@ -236,7 +236,7 @@ fn vgm_rejects_out_of_range_waveform_blocks() {
     builder.add_vgm_command(ram(Instance::Primary, 0x1ffff, &[1, 2]));
     builder.add_vgm_command(WaitSamples(10));
     let doc = builder.finalize();
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut players = [
         VgmSequencer::new(doc, 44_100, 64, Default::default()).unwrap(),
         VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()).unwrap(),

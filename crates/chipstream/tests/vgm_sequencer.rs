@@ -36,7 +36,7 @@ fn construction_options_apply_to_all_file_and_document_paths() {
     builder.add_vgm_command(WaitSamples(400));
     let mut document = builder.finalize();
     document.header.loop_modifier = 0x20;
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
 
     for (loop_base, loop_modifier, expected_frames) in [
         (None, None, 1_600),
@@ -88,7 +88,7 @@ fn construction_options_reject_fadeout_overflow() {
     let mut builder = VgmBuilder::new();
     builder.add_vgm_command(WaitSamples(1));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let options = VgmSequencerOptions {
         playback: PlaybackOptions {
             fadeout: Some(std::time::Duration::MAX),
@@ -488,7 +488,7 @@ fn t6w28_header_plays_for_document_and_stream() {
     assert!(VgmSequencer::new(doc.clone(), 44_100, 128, Default::default()).is_ok());
     doc.header.sn76489_clock |= 0x8000_0000;
     assert_eq!(doc.header.misc().t6w28_detected, Some(true));
-    let bytes: Vec<u8> = doc.clone().into();
+    let bytes: Vec<u8> = doc.clone().try_into().unwrap();
     let mut document = VgmSequencer::new(doc, 44_100, 128, Default::default()).unwrap();
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let expected = render_all(&mut document);
@@ -509,7 +509,7 @@ fn ym2610_header_variant_selects_correct_fm_channels() {
         assert_eq!(doc.header.misc().ym2610b_detected, Some(is_b));
         let mut document_player =
             VgmSequencer::new(doc.clone(), 44_100, 256, Default::default()).unwrap();
-        let bytes: Vec<u8> = doc.clone().into();
+        let bytes: Vec<u8> = doc.clone().try_into().unwrap();
         let mut stream_player =
             VgmSequencer::from_vgm(bytes, 44_100, 512, Default::default()).unwrap();
         let samples = render_all(&mut document_player);
@@ -571,7 +571,7 @@ fn dual_chip_and_independent_gains_survive_serialization() {
         );
     }
     builder.add_vgm_command(WaitSamples(4000));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player =
         VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     player
@@ -643,7 +643,7 @@ fn ym2610_adpcm_reads_vgm_rom_block() {
         );
     }
     builder.add_vgm_command(WaitSamples(4410));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player =
         VgmSequencer::from_vgm(bytes.as_slice(), 44_100, 128, Default::default()).unwrap();
     let audio = render_all(&mut player);
@@ -707,7 +707,7 @@ fn ym2612_pcm_dac_stream_is_expanded() {
     for _ in 0..600 {
         builder.add_vgm_command(Ym2612Port0Address2AWriteAndWaitN(15));
     }
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let mut player =
         VgmSequencer::from_vgm(bytes.as_slice(), 48_000, 256, Default::default()).unwrap();
     let audio = render_all(&mut player);
@@ -817,7 +817,7 @@ fn streamed_dual_oki_matches_document_with_loop_and_extra_header() {
     builder.add_vgm_command(WaitSamples(2000));
     let mut document = builder.finalize();
     document.header.volume_modifier = 0xe0;
-    let bytes: Vec<u8> = document.into();
+    let bytes: Vec<u8> = document.try_into().unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     let options = VgmSequencerOptions {
         playback: PlaybackOptions {
@@ -844,7 +844,7 @@ fn streamed_dual_oki_matches_document_with_loop_and_extra_header() {
 fn malformed_commands_are_reported_when_scanned_or_rendered() {
     use soundlog::vgm::VgmHeader;
 
-    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().into();
+    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().try_into().unwrap();
     let header = VgmHeader::from_bytes(&bytes).unwrap();
     let start = VgmHeader::command_start(header.version, header.data_offset);
     bytes.truncate(start);
@@ -858,7 +858,7 @@ fn malformed_commands_are_reported_when_scanned_or_rendered() {
 
     #[cfg(feature = "okim6258")]
     {
-        let mut bytes: Vec<u8> = oki_document().into();
+        let mut bytes: Vec<u8> = oki_document().try_into().unwrap();
         let header = VgmHeader::from_bytes(&bytes).unwrap();
         let start = VgmHeader::command_start(header.version, header.data_offset);
         bytes.truncate(start);

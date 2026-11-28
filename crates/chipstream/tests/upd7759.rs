@@ -139,7 +139,7 @@ fn vgm_slave_mode_preserves_queued_data() {
     builder.add_vgm_command(WaitSamples(500));
     let mut document = builder.finalize();
     document.header.upd7759_clock |= 0x8000_0000;
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut document_player = VgmSequencer::new(document, 44_100, 64, Default::default()).unwrap();
     let mut byte_player = VgmSequencer::from_vgm(bytes, 44_100, 64, Default::default()).unwrap();
     let first = document_player.render().unwrap().unwrap();
@@ -178,7 +178,7 @@ fn vgm_secondary_rom_bank_callbacks_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(document, 44_100, 64, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<Upd7759State>();
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -215,7 +215,7 @@ fn slave_mode_is_supplied_to_external_factories() {
         if slave {
             document.header.upd7759_clock |= 0x8000_0000;
         }
-        let bytes: Vec<u8> = document.into();
+        let bytes: Vec<u8> = document.try_into().unwrap();
         let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut factories = ChipFactoryRegistry::new();

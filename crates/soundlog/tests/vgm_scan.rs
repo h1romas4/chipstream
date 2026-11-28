@@ -22,7 +22,7 @@ fn scans_commands_without_visiting_data_blocks() {
         },
     );
     builder.add_vgm_command(WaitSamples(5));
-    let bytes: Vec<u8> = builder.finalize().into();
+    let bytes: Vec<u8> = builder.finalize().try_into().unwrap();
     let header = VgmHeader::from_bytes(&bytes).unwrap();
     let document = VgmDocument::try_from(bytes.as_slice()).unwrap();
     assert_eq!(
@@ -42,7 +42,7 @@ fn scans_commands_without_visiting_data_blocks() {
 
 #[test]
 fn scan_rejects_truncated_blocks_and_other_commands() {
-    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().into();
+    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().try_into().unwrap();
     let header = VgmHeader::from_bytes(&bytes).unwrap();
     let start = VgmHeader::command_start(header.version, header.data_offset);
     for data in [
@@ -59,7 +59,7 @@ fn scan_rejects_truncated_blocks_and_other_commands() {
 
 #[test]
 fn extra_header_errors_match_document_parser() {
-    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().into();
+    let mut bytes: Vec<u8> = VgmBuilder::new().finalize().try_into().unwrap();
     bytes[0xbc..0xc0].copy_from_slice(&0x0100_0000_u32.to_le_bytes());
     let header = VgmHeader::from_bytes(&bytes).unwrap();
     assert!(header.extra_header_from_bytes(&bytes).is_err());

@@ -457,7 +457,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(441));
-        builder.finalize().into()
+        builder.finalize().try_into().unwrap()
     }
 
     #[test]
@@ -514,7 +514,7 @@ mod tests {
             }
             builder.add_vgm_command(WaitSamples(441));
             let mut sequencer = VgmSequencer::from_vgm_with_factories(
-                builder.finalize(),
+                Vec::<u8>::try_from(builder.finalize()).unwrap(),
                 44_100,
                 256,
                 Default::default(),
@@ -858,7 +858,7 @@ mod tests {
                 NdsifNd7Policy::new(nd7_devices.iter().copied(), devices.len()).unwrap(),
             );
             let result = VgmSequencer::from_vgm_with_factories(
-                builder.finalize(),
+                Vec::<u8>::try_from(builder.finalize()).unwrap(),
                 44_100,
                 256,
                 Default::default(),
@@ -1103,7 +1103,7 @@ mod tests {
                     )
                 } else {
                     VgmSequencer::from_vgm_with_factories(
-                        Vec::<u8>::from(document.clone()),
+                        Vec::<u8>::try_from(document.clone()).unwrap(),
                         44_100,
                         256,
                         Default::default(),
@@ -1165,7 +1165,7 @@ mod tests {
                     )
                 } else {
                     VgmSequencer::from_vgm_with_factories(
-                        Vec::<u8>::from(document.clone()),
+                        Vec::<u8>::try_from(document.clone()).unwrap(),
                         44_100,
                         256,
                         Default::default(),
@@ -1252,7 +1252,7 @@ mod tests {
                 )
             } else {
                 VgmSequencer::from_vgm_with_factories(
-                    Vec::<u8>::from(document.clone()),
+                    Vec::<u8>::try_from(document.clone()).unwrap(),
                     44_100,
                     256,
                     Default::default(),
@@ -1278,7 +1278,7 @@ mod tests {
             );
         }
         builder.add_vgm_command(WaitSamples(441));
-        builder.finalize().into()
+        builder.finalize().try_into().unwrap()
     }
 
     #[test]
@@ -1407,7 +1407,7 @@ mod tests {
             let mut builder = VgmBuilder::new();
             builder.register_chip(Chip::Ay8910, Instance::Primary, 2_000_000);
             builder.add_vgm_command(WaitSamples(441));
-            let mut bytes: Vec<u8> = builder.finalize().into();
+            let mut bytes: Vec<u8> = builder.finalize().try_into().unwrap();
             bytes[offset] = value;
             let factories =
                 routed_factories(vec![Rc::clone(&device)], std::slice::from_ref(&route)).unwrap();
@@ -1432,7 +1432,7 @@ mod tests {
         builder.add_vgm_command(WaitSamples(441));
         let factories = routed_factories(vec![device], &[route]).unwrap();
         let mut sequencer = VgmSequencer::from_vgm_with_factories(
-            builder.finalize(),
+            Vec::<u8>::try_from(builder.finalize()).unwrap(),
             44_100,
             256,
             Default::default(),
@@ -1472,7 +1472,7 @@ mod tests {
             },
         );
         builder.add_vgm_command(WaitSamples(441));
-        let mut bytes: Vec<u8> = builder.finalize().into();
+        let mut bytes: Vec<u8> = builder.finalize().try_into().unwrap();
         bytes[0x78] = 0x10;
         bytes[0x79] = 0x01;
 

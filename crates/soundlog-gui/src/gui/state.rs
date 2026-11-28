@@ -646,7 +646,7 @@ mod tests {
             ..Default::default()
         });
         let document = builder.finalize();
-        (&document).into()
+        (&document).try_into().unwrap()
     }
 
     #[test]

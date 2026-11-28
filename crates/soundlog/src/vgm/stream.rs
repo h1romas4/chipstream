@@ -1163,7 +1163,7 @@ impl VgmStream {
     ///
     /// # let mut builder = VgmBuilder::new();
     /// # builder.add_vgm_command(WaitSamples(735));
-    /// # let raw: Vec<u8> = builder.finalize().into();
+    /// # let raw: Vec<u8> = builder.finalize().try_into().unwrap();
     ///
     /// let mut stream = VgmStream::from_vgm(raw).expect("valid VGM");
     /// stream.set_loop_count(Some(1));

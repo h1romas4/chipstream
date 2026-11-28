@@ -958,7 +958,7 @@ mod playback_tests {
 
     #[test]
     fn ym2149_adapter_validates_ay_types_flags_and_clock_divider() {
-        let bytes = Vec::<u8>::from(soundlog::vgm::VgmBuilder::new().finalize());
+        let bytes = Vec::<u8>::try_from(soundlog::vgm::VgmBuilder::new().finalize()).unwrap();
         let mut header = soundlog::vgm::VgmDocument::try_from(bytes.as_slice())
             .unwrap()
             .header;
@@ -1102,7 +1102,7 @@ mod playback_tests {
     fn producer_starts_pcm_at_the_requested_seek_position() {
         let mut builder = VgmBuilder::new();
         builder.add_vgm_command(WaitSamples(1500));
-        let data: Vec<u8> = builder.finalize().into();
+        let data: Vec<u8> = builder.finalize().try_into().unwrap();
         let (sender, receiver) = mpsc::sync_channel(QUEUE_BLOCKS);
         let options = Options {
             loop_count: Some(1),
@@ -1138,7 +1138,7 @@ mod playback_tests {
         builder.add_vgm_command(WaitSamples(100));
         builder.set_loop_index(1);
         builder.add_vgm_command(WaitSamples(1000));
-        let data = Input::from(Vec::<u8>::from(builder.finalize()));
+        let data = Input::from(Vec::<u8>::try_from(builder.finalize()).unwrap());
         let options = Options {
             loop_count: Some(2),
             fadeout_samples: Some(88_200),
@@ -1300,7 +1300,7 @@ mod playback_tests {
         builder.add_vgm_command(WaitSamples(100));
         builder.set_loop_index(1);
         builder.add_vgm_command(WaitSamples(300));
-        builder.finalize().into()
+        builder.finalize().try_into().unwrap()
     }
 
     #[test]
@@ -1325,7 +1325,7 @@ mod playback_tests {
                 );
             }
             builder.add_vgm_command(WaitSamples(4410));
-            let data: Vec<u8> = builder.finalize().into();
+            let data: Vec<u8> = builder.finalize().try_into().unwrap();
             let mut reference =
                 VgmSequencer::from_vgm(data.as_slice(), 44_100, CHUNK_FRAMES, Default::default())
                     .unwrap();
@@ -1403,7 +1403,7 @@ mod playback_tests {
             );
             builder.add_vgm_command(WaitSamples(2));
         }
-        let data: Vec<u8> = builder.finalize().into();
+        let data: Vec<u8> = builder.finalize().try_into().unwrap();
         for disabled in [false, true] {
             let (sender, receiver) = mpsc::sync_channel(QUEUE_BLOCKS);
             produce(
@@ -1829,7 +1829,7 @@ mod playback_tests {
             builder.add_vgm_command(WaitSamples(100));
             builder.set_loop_index(1);
             builder.add_vgm_command(WaitSamples(300));
-            let data: Vec<u8> = builder.finalize().into();
+            let data: Vec<u8> = builder.finalize().try_into().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("loop.wav");
             let mut options = options();
@@ -1860,7 +1860,7 @@ mod playback_tests {
                 builder.set_loop_index(4);
             }
             builder.add_vgm_command(WaitSamples(1501));
-            builder.finalize().into()
+            builder.finalize().try_into().unwrap()
         }
 
         #[test]

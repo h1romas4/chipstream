@@ -105,7 +105,20 @@ pub fn decode_pcm8a_with_pcm16_15khz(
 ///
 /// ADPCM and PCM8 consume complete input bytes, so they cannot produce one of
 /// these errors. PCM16 requires two bytes for every sample.
+/// Additional error variants may be added; external matches must include a
+/// fallback arm.
+///
+/// ```compile_fail
+/// use soundlog::mdx::pcm::PcmDecodeError;
+///
+/// fn describe(error: PcmDecodeError) {
+///     match error {
+///         PcmDecodeError::OddPcm16ByteCount => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PcmDecodeError {
     /// PCM16 input contains an incomplete final two-byte sample.
     OddPcm16ByteCount,

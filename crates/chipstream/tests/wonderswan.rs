@@ -193,7 +193,7 @@ fn vgm_memory_register_callbacks_secondary_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(2500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut doc_player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     let mut player = VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
     let events = Rc::new(RefCell::new(Vec::new()));

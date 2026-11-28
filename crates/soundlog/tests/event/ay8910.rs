@@ -93,7 +93,7 @@ fn test_ay8910_keyon_and_tone_freq_matches_a4() {
     let doc = builder.finalize();
 
     // Optionally write the VGM artifact via the shim helper (no-op if OUTPUT_VGM_DIR is None).
-    let vgm_bytes: Vec<u8> = (&doc).into();
+    let vgm_bytes: Vec<u8> = (&doc).try_into().unwrap();
     // Use `super::maybe_write_vgm` so the shim controls where (and whether) we write.
     super::maybe_write_vgm("ay8910_a4.vgm", &vgm_bytes);
 

@@ -217,7 +217,7 @@ fn vgm_secondary_state_events_and_checkpoint() {
     }
     builder.add_vgm_command(WaitSamples(500));
     let document = builder.finalize();
-    let bytes: Vec<u8> = document.clone().into();
+    let bytes: Vec<u8> = document.clone().try_into().unwrap();
     let mut player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
     player.track_state_with_voice_clocks::<Huc6280State>();
     let events = Rc::new(RefCell::new(Vec::new()));

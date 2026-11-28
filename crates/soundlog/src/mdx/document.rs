@@ -474,7 +474,27 @@ impl MdxDocument {
             .collect())
     }
 
+    /// Validate command encodings and the current MDX layout for serialization.
+    ///
+    /// This does not validate playback behavior or resolve track-relative jumps.
+    pub fn validate(&self) -> Result<(), ParseError> {
+        for (track, commands) in self.tracks.iter().enumerate() {
+            for (index, command) in commands.iter().enumerate() {
+                command.validate().map_err(|error| {
+                    ParseError::DataInconsistency(format!(
+                        "MDX track {track} command {index}: {error}"
+                    ))
+                })?;
+            }
+        }
+        self.sourcemap()?;
+        Ok(())
+    }
+
     /// Serializes the current document to a complete MDX byte stream.
+    ///
+    /// The document can also be serialized with `Vec::<u8>::try_from` or
+    /// `try_into()`, using either an owned or borrowed document.
     ///
     /// Header offsets are recalculated from the current header, tone bank, and
     /// track contents before serialization. The returned bytes are therefore a
@@ -491,10 +511,11 @@ impl MdxDocument {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::DataInconsistency`] if a track offset exceeds
-    /// `0xfffe` or a tone data offset exceeds `0xffff`. Tone data following
-    /// the tracks is moved forward when track edits would overlap it.
+    /// Returns [`ParseError::DataInconsistency`] for invalid command encodings
+    /// or layout offsets. Tone data following the tracks is moved forward when
+    /// track edits would overlap it.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
+        self.validate()?;
         let mut header = self.header.clone();
         Self::synchronize_header_text(&mut header);
         let tone_bytes = self.tone_bank.to_bytes();
@@ -596,6 +617,24 @@ impl TryFrom<&[u8]> for MdxDocument {
     /// Parses an MDX byte slice using [`MdxDocument::parse`].
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         Self::parse(bytes)
+    }
+}
+
+/// Validate and serialize an owned MDX document.
+impl TryFrom<MdxDocument> for Vec<u8> {
+    type Error = ParseError;
+
+    fn try_from(document: MdxDocument) -> Result<Self, Self::Error> {
+        document.to_bytes()
+    }
+}
+
+/// Validate and serialize a borrowed MDX document.
+impl TryFrom<&MdxDocument> for Vec<u8> {
+    type Error = ParseError;
+
+    fn try_from(document: &MdxDocument) -> Result<Self, Self::Error> {
+        document.to_bytes()
     }
 }
 
