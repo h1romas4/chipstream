@@ -1,6 +1,6 @@
 [package]
 name = "soundlog"
-description = "Builder and parser for retro sound-chip register-write logs (VGM, MDX, XGM)."
+description = "Builder and parser for retro sound-chip register-write logs (VGM, MDX, XGM, S98)."
 version = "0.19.0"
 edition = "2024"
 license = "MIT"
@@ -22,4 +22,5 @@ workspace = true
 [features]
 default = []
 mdx = []
+s98 = []
 xgm = []

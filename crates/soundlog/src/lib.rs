@@ -6,6 +6,8 @@ pub mod execution;
 #[cfg(feature = "mdx")]
 pub mod mdx;
 pub mod meta;
+#[cfg(feature = "s98")]
+pub mod s98;
 pub mod vgm;
 #[cfg(feature = "xgm")]
 pub mod xgm;

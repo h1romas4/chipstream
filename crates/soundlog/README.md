@@ -5,8 +5,8 @@
 soundlog — builder, parser and stream-processor for retro sound-chip register-write logs
 
 `soundlog` is a small crate for building and parsing register-write
-logs for retro sound chips. It supports the VGM (Video Game Music) file format,
-MDX-to-VGM conversion, and XGM v1.
+logs for retro sound chips. It is centered on the VGM (Video Game Music) format
+and also supports MDX-to-VGM conversion, XGM v1, and S98 v1–v3.
 
 Use [`chipstream`](https://crates.io/crates/chipstream) to render these formats
 to stereo PCM. `soundlog` processes commands and tracks chip state; it does
@@ -30,7 +30,7 @@ Key features:
   and for DAC stream expansion per wait.
 - Chip state tracking: Monitor register writes to track key on/off events and
   extract tone information (frequency, pitch) as writes are processed.
-- Format conversion: MDX and XGM v1 can use the same VGM stream-processing
+- Format conversion: MDX, XGM v1, and S98 can use the same VGM stream-processing
   interface for playback.
 
 ## Quick Start — processing a VGM file
@@ -432,6 +432,44 @@ let mut stream = VgmStream::from_generator(Box::new(generator));
 # }
 # Ok::<(), soundlog::ParseError>(())
 ```
+
+### S98 v1–v3
+
+Enable the optional `s98` feature to parse, construct, and serialize
+uncompressed S98 files. `S98Document::parse_with_limits` bounds input, command,
+and tag sizes; tags remain raw bytes because their encoding varies. Loop
+targets are command indices, and serialization recalculates offsets.
+
+```rust
+# #[cfg(feature = "s98")]
+# {
+use soundlog::s98::{S98Builder, S98Command, S98Document, S98Header,
+                    S98PlaybackOptions, S98Port, S98Version, S98VgmGenerator};
+use soundlog::VgmStream;
+
+let mut builder = S98Builder::new(S98Header::new(S98Version::V3));
+builder.push(S98Command::Write {
+    device: 0, port: S98Port::Normal, register: 0x22, value: 0,
+});
+builder.mark_loop().push(S98Command::Wait(100));
+let bytes = builder.finalize()?.to_bytes()?;
+let document = S98Document::parse(&bytes)?;
+let generator = S98VgmGenerator::new(document, S98PlaybackOptions::default())?;
+let header = generator.vgm_header().clone();
+let mut stream = VgmStream::from_generator(Box::new(generator));
+# let _ = (&header, &mut stream);
+# }
+# Ok::<(), soundlog::ParseError>(())
+```
+
+The generator handles looping and fractional tick timing; configure the VGM
+consumer with its header. `new_with_loop_marker` continues after a selected
+finite boundary for fading, and `set_observer` reports command indices on the
+generation timeline.
+
+Compressed files, device panning, unequal dual-device
+clocks, SN76489 and unknown devices are explicitly rejected for playback.
+Device declarations and unknown IDs remain available in parsed documents.
 
 ## VgmCallbackStream overview
 

@@ -2,6 +2,8 @@
 
 ## v0.19.0 (unreleased)
 
+- Add: Optional `s98` feature with typed S98 v1–v3 documents, bounded parsing,
+  validated serialization, and a lazy VGM generator.
 - Breaking: `MdxExecutionEvent` now uses `ExecutionEvent<MdxExecutionPosition>`; access track and command index through `event.data`.
 - Add: Generic typed execution events and combined MDX observer and loop-marker generation.
 - Change: `VgmStream::reset` returns a `Result` and rejects generator-backed streams without changing their state.

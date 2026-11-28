@@ -56,3 +56,6 @@ ymf271 = []
 [dependencies]
 soundlog = { workspace = true }
 ymfm-sys = "0.3.0"
+
+[dev-dependencies]
+soundlog = { workspace = true, features = ["s98"] }
