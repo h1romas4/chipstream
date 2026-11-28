@@ -12,6 +12,27 @@ use soundlog::vgm::{VgmBuilder, VgmDocument};
 
 type Ym2151Event = (usize, Instance, Ym2151Spec, Option<Vec<StateEvent>>);
 
+#[test]
+fn tracking_reports_missing_instances_and_counts_matches() {
+    let mut player = VgmSequencer::new(document(), 44_100, 64, Default::default()).unwrap();
+    assert!(matches!(
+        player.track_state::<soundlog::chip::state::Ym2612State>(Instance::Primary, 4_000_000.0),
+        Err(VgmSequencerError::ChipNotFound {
+            chip: Chip::Ym2612,
+            instance: Instance::Primary
+        })
+    ));
+    assert_eq!(
+        player.track_state_with_voice_clocks::<soundlog::chip::state::Ym2612State>(),
+        0
+    );
+    assert_eq!(player.track_state_with_voice_clocks::<Ym2151State>(), 2);
+    player
+        .track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0)
+        .unwrap();
+    assert!(player.render().unwrap().is_some());
+}
+
 fn document() -> VgmDocument {
     let mut builder = VgmBuilder::new();
     builder.register_chip(Chip::Ym2151, Instance::Primary, 4_000_000);
@@ -161,8 +182,12 @@ fn callback_timing_is_chunk_invariant_across_loops_and_fadeout() {
     let mut small = VgmSequencer::new(document(), 44_100, 31, options).unwrap();
     let mut large = VgmSequencer::new(document(), 44_100, 512, options).unwrap();
     for player in [&mut small, &mut large] {
-        player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
-        player.track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0);
+        player
+            .track_state::<Ym2151State>(Instance::Primary, 4_000_000.0)
+            .unwrap();
+        player
+            .track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0)
+            .unwrap();
     }
     let (a, events_a) = collect(&mut small);
     let (b, events_b) = collect(&mut large);
@@ -186,8 +211,12 @@ fn event_timing_matches_pcm_across_chunks_loop_and_final_boundary() {
     let mut large = VgmSequencer::new(doc.clone(), 44_100, 256, options).unwrap();
     let mut plain = VgmSequencer::new(doc, 44_100, 71, options).unwrap();
     for player in [&mut small, &mut large] {
-        player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
-        player.track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0);
+        player
+            .track_state::<Ym2151State>(Instance::Primary, 4_000_000.0)
+            .unwrap();
+        player
+            .track_state::<Ym2151State>(Instance::Secondary, 4_000_000.0)
+            .unwrap();
     }
     small.on_write(|_, _: Ym2151Spec, _, _| {});
     large.on_write(|_, _: Ym2151Spec, _, _| {});
@@ -297,7 +326,9 @@ fn state_tracking_uses_requested_clock_and_is_instance_specific() {
     let mut stream = VgmSequencer::from_vgm(bytes, 44_100, 8, Default::default()).unwrap();
     let mut parsed = VgmSequencer::new(document, 44_100, 8, Default::default()).unwrap();
     for player in [&mut stream, &mut parsed] {
-        player.track_state::<Ym2151State>(Instance::Primary, 2_000_000.0);
+        player
+            .track_state::<Ym2151State>(Instance::Primary, 2_000_000.0)
+            .unwrap();
     }
     let (a, events) = collect(&mut stream);
     assert_eq!((a, events.clone()), collect(&mut parsed));
@@ -390,7 +421,9 @@ fn state_only_overflow_is_reported_without_stopping_playback() {
 #[test]
 fn state_tracking_reports_optional_events_for_filtered_writes() {
     let mut player = VgmSequencer::new(document(), 44_100, 40, Default::default()).unwrap();
-    player.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
+    player
+        .track_state::<Ym2151State>(Instance::Primary, 4_000_000.0)
+        .unwrap();
     let (_, events) = collect(&mut player);
     let key_events = events
         .iter()

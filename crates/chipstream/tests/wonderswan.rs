@@ -200,7 +200,9 @@ fn vgm_memory_register_callbacks_secondary_and_checkpoint() {
     let captured = events.clone();
     let register_events = Rc::new(RefCell::new(Vec::new()));
     let captured_registers = register_events.clone();
-    player.track_state::<WonderSwanState>(Instance::Secondary, 3_072_000.0);
+    player
+        .track_state::<WonderSwanState>(Instance::Secondary, 3_072_000.0)
+        .unwrap();
     player.on_write(move |instance, spec: WonderSwanSpec, _, changes| {
         captured
             .borrow_mut()

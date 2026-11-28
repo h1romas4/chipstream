@@ -184,6 +184,13 @@ Declare per-instance OKIM6258/OKIM6295 clock ranges, including
 intermediate clock-byte values, and SN76489 stereo-mask use in the config:
 the generator cannot be scanned ahead of playback.
 
+By default, supported register, stereo mask, and chip ROM/RAM writes fail when
+the target voice is absent. Set `GeneratorConfig::strict_chip_writes` to `false`
+to ignore such writes. Validation happens during rendering, and an error
+invalidates the sequencer. Unsupported commands and DAC streams that produce
+no writes are not checked. AY8910 requires a registered factory even when
+declared in the header. VGM, MDX, and XGM playback retain their existing behavior.
+
 Either `EndOfData` or `Ok(None)` ends playback normally. The sequencer returns
 any remaining PCM before `render()` returns `Ok(None)`. Return `Err` if
 command generation fails. The generator handles its own loops, is called
@@ -461,7 +468,7 @@ use soundlog::chip::{Ym2151Spec, state::Ym2151State};
 
 let bytes = std::fs::read("song.vgm")?;
 let mut player = VgmSequencer::from_vgm(bytes, 48_000, 512, Default::default())?;
-player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
+player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0)?;
 player.on_write(|instance, spec: Ym2151Spec, sample, events| {
     if let Some(events) = events {
         for event in events {
@@ -487,7 +494,9 @@ callbacks, their timestamps are on the PCM output timeline.
 
 For SN76489, state tracking uses the VGM header's clock-divider and zero-period
 settings. [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks) also accounts for per-instance
-extra-header clock overrides.
+extra-header clock overrides. `track_state` returns an error for an absent
+instance; `track_state_with_voice_clocks` returns the number of matching voices
+and allows zero for optional bulk registration.
 
 All sequencers support [`on_state_change`](sequencer::VgmSequencer::on_state_change)
 with [`track_state_with_voice_clocks`](sequencer::VgmSequencer::track_state_with_voice_clocks).

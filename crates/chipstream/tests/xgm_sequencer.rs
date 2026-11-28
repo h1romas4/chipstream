@@ -158,7 +158,17 @@ fn typed_writes_and_state_tracking_follow_xgm_playback() {
     };
     let mut player =
         XgmSequencer::new(document(XgmTiming::Ntsc, true), 44_100, 128, options).unwrap();
-    player.track_state::<Sn76489State>(Instance::Primary, 3_579_545.0);
+    assert!(matches!(
+        player.track_state::<Sn76489State>(Instance::Secondary, 3_579_545.0),
+        Err(chipstream::sequencer::VgmSequencerError::ChipNotFound {
+            chip: Chip::Sn76489,
+            instance: Instance::Secondary
+        })
+    ));
+    assert_eq!(player.track_state_with_voice_clocks::<Sn76489State>(), 1);
+    player
+        .track_state::<Sn76489State>(Instance::Primary, 3_579_545.0)
+        .unwrap();
     let writes = Rc::new(RefCell::new(Vec::new()));
     let captured = Rc::clone(&writes);
     player.on_write(move |instance, spec: PsgSpec, frame, events| {

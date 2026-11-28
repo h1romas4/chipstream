@@ -7,8 +7,11 @@ use chipstream::sequencer::{
     Ay8910Variant, C140Variant, Chip, ChipBackendSettings, ChipFactoryRegistry, GeneratorConfig,
     Instance, NativeOutput, Okim6258Divider, VgmSequencer, VgmSequencerError,
 };
-use soundlog::chip::{GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
-use soundlog::vgm::command::{VgmCommand, WaitSamples};
+use soundlog::chip::{Ay8910Spec, GameGearPsgSpec, Ym2151Spec, Ym2612Spec};
+use soundlog::vgm::command::{
+    Ay8910StereoMask, DataBlock, PcmRamWrite, StreamChipType, VgmCommand, WaitSamples,
+    Ym2612Port0Address2AWriteAndWaitN,
+};
 use soundlog::vgm::header::{Ay8910ChipType, ChipClock, ChipId};
 use soundlog::vgm::{VgmBuilder, VgmDocument, VgmExtraHeader};
 
@@ -65,6 +68,232 @@ impl soundlog::VgmCommandGenerator for Commands {
 
 fn generator(commands: Vec<VgmCommand>) -> Box<dyn soundlog::VgmCommandGenerator> {
     Box::new(Commands(commands.into_iter()))
+}
+
+#[test]
+fn generator_strict_chip_writes_check_instances_and_allow_opt_out() {
+    let write = |instance| {
+        VgmCommand::Ym2151Write(
+            instance,
+            Ym2151Spec {
+                register: 0x20,
+                value: 1,
+            },
+        )
+    };
+    for (strict, instance, expected_error) in [
+        (false, Instance::Secondary, false),
+        (true, Instance::Primary, false),
+        (true, Instance::Secondary, true),
+    ] {
+        let config = GeneratorConfig {
+            header: soundlog::vgm::VgmHeader {
+                ym2151_clock: 4_000_000,
+                ..Default::default()
+            },
+            strict_chip_writes: strict,
+            ..Default::default()
+        };
+        let mut player = VgmSequencer::from_generator(
+            generator(vec![write(instance), WaitSamples(10).into()]),
+            config,
+            44_100,
+            64,
+        )
+        .unwrap();
+        if expected_error {
+            assert!(matches!(
+                player.render(),
+                Err(VgmSequencerError::ChipNotFound {
+                    chip: Chip::Ym2151,
+                    instance: Instance::Secondary
+                })
+            ));
+            assert!(matches!(
+                player.render(),
+                Err(VgmSequencerError::StreamFailed)
+            ));
+        } else {
+            assert!(player.render().unwrap().is_some());
+        }
+    }
+
+    let config = GeneratorConfig::default();
+    let mut player = VgmSequencer::from_generator(
+        generator(vec![write(Instance::Primary)]),
+        config,
+        44_100,
+        64,
+    )
+    .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::ChipNotFound {
+            chip: Chip::Ym2151,
+            instance: Instance::Primary
+        })
+    ));
+    let mut builder = VgmBuilder::new();
+    builder.add_vgm_command(write(Instance::Primary));
+    builder.add_vgm_command(WaitSamples(10));
+    let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
+    assert!(player.render().unwrap().is_some());
+}
+
+#[test]
+fn generator_default_strict_mode_requires_an_ay8910_factory() {
+    let config = GeneratorConfig {
+        header: soundlog::vgm::VgmHeader {
+            ay8910_clock: 2_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator(
+        generator(vec![VgmCommand::Ay8910Write(
+            Instance::Primary,
+            Ay8910Spec {
+                register: 0,
+                value: 1,
+            },
+        )]),
+        config,
+        44_100,
+        64,
+    )
+    .unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::ChipNotFound {
+            chip: Chip::Ay8910,
+            instance: Instance::Primary
+        })
+    ));
+}
+
+#[test]
+fn generator_strict_chip_writes_check_expanded_dac_writes() {
+    let commands = vec![
+        VgmCommand::DataBlock(Box::new(DataBlock {
+            marker: 0x66,
+            chip_instance: 0,
+            data_type: 0,
+            size: 1,
+            data: vec![42],
+        })),
+        VgmCommand::YM2612Port0Address2AWriteAndWaitN(Ym2612Port0Address2AWriteAndWaitN(1)),
+    ];
+    let config = GeneratorConfig {
+        strict_chip_writes: true,
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator(generator(commands), config, 44_100, 64).unwrap();
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::ChipNotFound {
+            chip: Chip::Ym2612,
+            instance: Instance::Primary
+        })
+    ));
+}
+
+#[test]
+fn generator_strict_chip_writes_check_masks_and_memory_targets() {
+    let block = |data_type, data: Vec<u8>| {
+        VgmCommand::DataBlock(Box::new(DataBlock {
+            marker: 0x66,
+            chip_instance: 1,
+            data_type,
+            size: data.len() as u32,
+            data,
+        }))
+    };
+    let commands = [
+        (
+            VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0xff)),
+            Chip::Ym2203,
+        ),
+        (
+            VgmCommand::AY8910StereoMask(Ay8910StereoMask::from_mask(0xbf)),
+            Chip::Ay8910,
+        ),
+        (block(0x80, vec![1, 0, 0, 0, 0, 0, 0, 0, 42]), Chip::SegaPcm),
+        (
+            block(0x90, vec![1, 0, 0, 0, 0, 0, 0, 0, 42]),
+            Chip::Es5506U8,
+        ),
+        (block(0xc0, vec![0, 0, 42]), Chip::Rf5c68),
+        (block(0xe1, vec![0, 0, 0, 0, 42]), Chip::Es5503),
+        (
+            VgmCommand::PcmRamWrite(Box::new(PcmRamWrite {
+                marker: 0x66,
+                chip_type: StreamChipType::Rf5c164Pcm,
+                instance: Instance::Secondary,
+                read_offset: 0,
+                write_offset: 0,
+                size: 1,
+            })),
+            Chip::Rf5c164,
+        ),
+    ];
+    for (command, chip) in commands {
+        let config = GeneratorConfig {
+            strict_chip_writes: true,
+            ..Default::default()
+        };
+        let mut player =
+            VgmSequencer::from_generator(generator(vec![command]), config, 44_100, 64).unwrap();
+        assert!(
+            matches!(player.render(), Err(VgmSequencerError::ChipNotFound {
+            chip: actual, instance: Instance::Secondary
+        }) if actual == chip)
+        );
+    }
+    // Sample banks are not chip-specific memory writes.
+    let config = GeneratorConfig {
+        strict_chip_writes: true,
+        ..Default::default()
+    };
+    let mut player = VgmSequencer::from_generator(
+        generator(vec![block(0x00, vec![42]), WaitSamples(10).into()]),
+        config,
+        44_100,
+        64,
+    )
+    .unwrap();
+    assert!(player.render().unwrap().is_some());
+}
+
+#[test]
+fn strict_chip_writes_remain_enabled_after_generator_checkpoint_restore() {
+    use soundlog::{ParseError, VgmCommandGenerator};
+    let factory = || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+        Ok(generator(vec![
+            WaitSamples(1000).into(),
+            VgmCommand::Ym2151Write(
+                Instance::Secondary,
+                Ym2151Spec {
+                    register: 0x20,
+                    value: 1,
+                },
+            ),
+        ]))
+    };
+    let config = GeneratorConfig::default();
+    let mut player = VgmSequencer::from_generator_factory(factory, config, 44_100, 64).unwrap();
+    player.render().unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    player.restore_checkpoint(&checkpoint).unwrap();
+    loop {
+        match player.render() {
+            Ok(Some(_)) => {}
+            Err(VgmSequencerError::ChipNotFound {
+                chip: Chip::Ym2151,
+                instance: Instance::Secondary,
+            }) => break,
+            result => panic!("unexpected rendering result: {result:?}"),
+        }
+    }
 }
 
 #[test]

@@ -236,7 +236,9 @@ fn vgm_tracker_reports_clocked_register_state() {
     }
     builder.add_vgm_command(WaitSamples(100));
     let mut player = VgmSequencer::new(builder.finalize(), 44_100, 64, Default::default()).unwrap();
-    player.track_state::<NesApuState>(Instance::Primary, 1_662_607.0);
+    player
+        .track_state::<NesApuState>(Instance::Primary, 1_662_607.0)
+        .unwrap();
     let seen = Rc::new(RefCell::new(Vec::new()));
     let output = seen.clone();
     player.on_write(move |_, _: NesApuSpec, _, events| {

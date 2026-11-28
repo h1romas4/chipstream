@@ -261,6 +261,29 @@ fn vgm_playback_routes_both_bus_widths_and_physical_variants() {
         builder.add_vgm_command(WaitSamples(1000));
         let document = builder.finalize();
         let bytes: Vec<u8> = document.clone().try_into().unwrap();
+        #[derive(Debug)]
+        struct Commands(std::vec::IntoIter<soundlog::vgm::command::VgmCommand>);
+        impl soundlog::VgmCommandGenerator for Commands {
+            fn next_command(
+                &mut self,
+            ) -> Result<Option<soundlog::vgm::command::VgmCommand>, soundlog::ParseError>
+            {
+                Ok(self.0.next())
+            }
+        }
+        let config = chipstream::sequencer::GeneratorConfig {
+            header: document.header.clone(),
+            extra_header: document.extra_header.clone(),
+            strict_chip_writes: true,
+            ..Default::default()
+        };
+        let mut strict_player = VgmSequencer::from_generator(
+            Box::new(Commands(document.commands.clone().into_iter())),
+            config,
+            44_100,
+            128,
+        )
+        .unwrap();
         let mut doc_player = VgmSequencer::new(document, 44_100, 128, Default::default()).unwrap();
         let mut byte_player =
             VgmSequencer::from_vgm(bytes, 44_100, 128, Default::default()).unwrap();
@@ -269,6 +292,7 @@ fn vgm_playback_routes_both_bus_widths_and_physical_variants() {
             let doc = doc_player.render().unwrap().unwrap();
             let raw = byte_player.render().unwrap().unwrap();
             assert_eq!(doc, raw);
+            assert_eq!(doc, strict_player.render().unwrap().unwrap());
             has_audio |= doc.frames().iter().any(|frame| frame[0].abs() > 0.001);
         }
         assert!(has_audio, "{kind:?}");

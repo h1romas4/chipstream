@@ -833,6 +833,8 @@ pub struct VgmSequencer<'a> {
     stream_settings: Vec<(usize, StreamSetting)>,
     /// Active chip instances.
     voices: Vec<Voice>,
+    /// Reject supported writes targeting a missing chip instance.
+    strict_chip_writes: bool,
     /// Output sample rate in frames per second.
     output_rate: u32,
     /// Maximum returned block length in output frames.
@@ -966,6 +968,16 @@ pub struct GeneratorConfig {
     /// Enabled by default. See [`VgmSequencerOptions::pwm_compatibility`] for
     /// details of the heuristic.
     pub pwm_compatibility: bool,
+    /// Reject supported chip writes targeting an absent chip instance.
+    ///
+    /// Enabled by default. Applies to register writes, stereo masks, and
+    /// supported chip ROM/RAM writes. Errors are returned during rendering,
+    /// when the command is encountered; construction does not scan generators.
+    /// Unsupported commands and DAC streams that produce no writes are not
+    /// checked. A rendering error leaves the sequencer in the failed state.
+    /// ES550x memory blocks use `Es5506U8` in errors for the shared VGM target.
+    /// AY8910 requires a registered factory even when declared in the header.
+    pub strict_chip_writes: bool,
 }
 
 impl Default for GeneratorConfig {
@@ -976,6 +988,7 @@ impl Default for GeneratorConfig {
             clock_ranges: Vec::new(),
             sn76489_stereo_used: [false; 2],
             pwm_compatibility: true,
+            strict_chip_writes: true,
         }
     }
 }
@@ -1777,6 +1790,7 @@ impl<'a> VgmSequencer<'a> {
         player.pwm_compatibility = config
             .pwm_compatibility
             .then_some([PwmCompatibility::default(); 2]);
+        player.strict_chip_writes = config.strict_chip_writes;
         Ok(player)
     }
 
@@ -1866,6 +1880,7 @@ impl<'a> VgmSequencer<'a> {
             stream_steps: 0,
             stream_settings: Vec::new(),
             voices,
+            strict_chip_writes: false,
             output_rate,
             chunk_frames,
             position_frames: 0,
@@ -1996,34 +2011,43 @@ impl<'a> VgmSequencer<'a> {
 
     /// Enable state tracking for a chip type and instance.
     ///
-    /// State tracking is available for SN76489, YM2151, YM2203, YM2413, YM2608, YM2610B,
-    /// YM2612, YM3526, Y8950, YM3812, YMF262, YMF278B, ES5503, Game Boy DMG,
-    /// WonderSwan, and VSU.
-    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    /// Returns [`VgmSequencerError::ChipNotFound`] if the instance is absent.
+    /// This configuration error does not invalidate the sequencer.
+    pub fn track_state<S>(
+        &mut self,
+        instance: Instance,
+        clock: f32,
+    ) -> Result<(), VgmSequencerError>
     where
         S: VgmStateTracker,
     {
         let chip = event::tracker_chip(S::KIND);
-        for voice in &mut self.voices {
-            if voice.chip == chip && voice.instance == instance {
-                voice.tracker = Some(event::tracker(S::KIND, clock, voice.sn_flags));
-            }
-        }
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.chip == chip && voice.instance == instance)
+            .ok_or(VgmSequencerError::ChipNotFound { chip, instance })?;
+        voice.tracker = Some(event::tracker(S::KIND, clock, voice.sn_flags));
+        Ok(())
     }
 
     /// Enable state tracking using the effective clock of each matching voice.
     ///
     /// This includes per-instance clock overrides from the VGM extra header.
-    pub fn track_state_with_voice_clocks<S>(&mut self)
+    /// Returns the number of enabled trackers, or zero when no voice matches.
+    pub fn track_state_with_voice_clocks<S>(&mut self) -> usize
     where
         S: VgmStateTracker,
     {
         let chip = event::tracker_chip(S::KIND);
+        let mut count = 0;
         for voice in &mut self.voices {
             if voice.chip == chip {
                 voice.tracker = Some(event::tracker(S::KIND, voice.clock as f32, voice.sn_flags));
+                count += 1;
             }
         }
+        count
     }
 
     /// Return the output-frame position where the current fade begins, once
@@ -2857,6 +2881,12 @@ impl<'a> VgmSequencer<'a> {
                         [mask.left_ch2, mask.right_ch2],
                         [mask.left_ch3, mask.right_ch3],
                     ];
+                } else {
+                    Self::missing_write_target(
+                        self.strict_chip_writes,
+                        Chip::Ym2203,
+                        mask.chip_instance,
+                    )?;
                 }
             }
             AY8910StereoMask(mask) => {
@@ -2893,6 +2923,12 @@ impl<'a> VgmSequencer<'a> {
                             reason: "AY8910 per-channel stereo masks are not supported by this backend",
                         }.into());
                     }
+                } else {
+                    Self::missing_write_target(
+                        self.strict_chip_writes,
+                        Chip::Ay8910,
+                        mask.chip_instance,
+                    )?;
                 }
             }
             DataBlock(block) => {
@@ -2923,6 +2959,8 @@ impl<'a> VgmSequencer<'a> {
                         .route
                         .chip_mut()
                         .write_ram(write.write_offset as usize | voice.rf5c_wave_bank, &data)?;
+                } else {
+                    Self::missing_write_target(self.strict_chip_writes, chip, write.instance)?;
                 }
             }
             _ => {}
@@ -2931,6 +2969,18 @@ impl<'a> VgmSequencer<'a> {
             self.write_chip(instance, write, sample_frame_origin)?;
         }
         Ok(())
+    }
+
+    fn missing_write_target(
+        strict: bool,
+        chip: Chip,
+        instance: Instance,
+    ) -> Result<(), VgmSequencerError> {
+        if strict {
+            Err(VgmSequencerError::ChipNotFound { chip, instance })
+        } else {
+            Ok(())
+        }
     }
 
     /// Notify OKIM6258 adapters when a matching DAC stream starts or stops.
@@ -3030,6 +3080,8 @@ impl<'a> VgmSequencer<'a> {
                     });
                 }
             }
+        } else {
+            Self::missing_write_target(self.strict_chip_writes, chip, instance)?;
         }
         Ok(())
     }
@@ -3081,7 +3133,7 @@ impl<'a> VgmSequencer<'a> {
                 .iter_mut()
                 .find(|voice| voice.chip == chip && voice.instance == instance)
             else {
-                return Ok(());
+                return Self::missing_write_target(self.strict_chip_writes, chip, instance);
             };
             let DataBlockType::RamWrite32(write) =
                 parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
@@ -3105,7 +3157,7 @@ impl<'a> VgmSequencer<'a> {
                 .iter_mut()
                 .find(|voice| voice.chip == chip && voice.instance == instance)
             else {
-                return Ok(());
+                return Self::missing_write_target(self.strict_chip_writes, chip, instance);
             };
             let DataBlockType::RamWrite16(write) =
                 parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
@@ -3123,7 +3175,11 @@ impl<'a> VgmSequencer<'a> {
                 matches!(voice.chip, Chip::Es5505 | Chip::Es5506U8 | Chip::Es5506U16)
                     && voice.instance == instance
             }) else {
-                return Ok(());
+                return Self::missing_write_target(
+                    self.strict_chip_writes,
+                    Chip::Es5506U8,
+                    instance,
+                );
             };
             let DataBlockType::RomRamDump(dump) =
                 parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?
@@ -3187,7 +3243,7 @@ impl<'a> VgmSequencer<'a> {
             .iter_mut()
             .find(|v| v.chip == chip && v.instance == instance)
         else {
-            return Ok(());
+            return Self::missing_write_target(self.strict_chip_writes, chip, instance);
         };
         let DataBlockType::RomRamDump(dump) =
             parse_data_block(block).map_err(|_| VgmSequencerError::InvalidRomBlock)?

@@ -473,20 +473,31 @@ impl<'a> MdxSequencer<'a> {
         self.player.take_state_event_overflow()
     }
 
-    /// Enable state tracking for a chip type and instance.
-    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    /// Enable state tracking for an existing chip type and instance.
+    ///
+    /// Returns [`MdxSequencerError::Playback`] with
+    /// [`VgmSequencerError::ChipNotFound`] when the instance is absent.
+    pub fn track_state<S>(
+        &mut self,
+        instance: Instance,
+        clock: f32,
+    ) -> Result<(), MdxSequencerError>
     where
         S: VgmStateTracker,
     {
-        self.player.track_state::<S>(instance, clock);
+        self.player
+            .track_state::<S>(instance, clock)
+            .map_err(MdxSequencerError::Playback)
     }
 
-    /// Enable state tracking using the effective clock of each matching voice.
-    pub fn track_state_with_voice_clocks<S>(&mut self)
+    /// Enable tracking using each matching voice's effective clock; return the count.
+    ///
+    /// Returns zero when no voice matches.
+    pub fn track_state_with_voice_clocks<S>(&mut self) -> usize
     where
         S: VgmStateTracker,
     {
-        self.player.track_state_with_voice_clocks::<S>();
+        self.player.track_state_with_voice_clocks::<S>()
     }
 
     /// Return the current command-stream position in 44.1 kHz samples.

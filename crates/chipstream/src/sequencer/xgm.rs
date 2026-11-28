@@ -254,17 +254,25 @@ impl<'a> XgmSequencer<'a> {
         self.player.on_write(callback);
     }
 
-    /// Enable state tracking for a chip type and instance.
-    pub fn track_state<S>(&mut self, instance: Instance, clock: f32)
+    /// Enable state tracking for an existing chip type and instance.
+    ///
+    /// Returns [`VgmSequencerError::ChipNotFound`] when the instance is absent.
+    pub fn track_state<S>(
+        &mut self,
+        instance: Instance,
+        clock: f32,
+    ) -> Result<(), VgmSequencerError>
     where
         S: VgmStateTracker,
     {
-        self.player.track_state::<S>(instance, clock);
+        self.player.track_state::<S>(instance, clock)
     }
 
-    /// Enable tracking using each matching voice's effective clock.
-    pub fn track_state_with_voice_clocks<S: VgmStateTracker>(&mut self) {
-        self.player.track_state_with_voice_clocks::<S>();
+    /// Enable tracking using each matching voice's effective clock; return the count.
+    ///
+    /// Returns zero when no voice matches.
+    pub fn track_state_with_voice_clocks<S: VgmStateTracker>(&mut self) -> usize {
+        self.player.track_state_with_voice_clocks::<S>()
     }
 
     /// Register a callback for writes producing tracked state changes.

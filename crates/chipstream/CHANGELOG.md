@@ -2,6 +2,8 @@
 
 ## v0.2.0 (unreleased)
 
+- Breaking: Custom generators reject writes to missing chip instances by default; set `GeneratorConfig::strict_chip_writes` to `false` to ignore them.
+- Breaking: `track_state` reports missing chip instances; `track_state_with_voice_clocks` returns the number of enabled trackers.
 - Add: Reconstructible generator factories for checkpoint and seek support.
 - Breaking: `StreamReconstruction` preserves its underlying `ParseError` rather than a string.
 - Breaking: Configure generator PWM compatibility in `GeneratorConfig` instead of `set_pwm_compatibility`.

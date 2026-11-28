@@ -346,7 +346,19 @@ fn mdx_filter_write_mutes_ym2151_pan() {
 #[test]
 fn events_and_gain_are_available_for_mdx() {
     let mut player = MdxSequencer::new(fm_package(), 48_000, 128, Default::default()).unwrap();
-    player.track_state::<Ym2151State>(Instance::Primary, 3_579_545.0);
+    assert!(matches!(
+        player.track_state::<Ym2151State>(Instance::Secondary, 3_579_545.0),
+        Err(chipstream::sequencer::MdxSequencerError::Playback(
+            chipstream::sequencer::VgmSequencerError::ChipNotFound {
+                chip: Chip::Ym2151,
+                instance: Instance::Secondary
+            }
+        ))
+    ));
+    assert_eq!(player.track_state_with_voice_clocks::<Ym2151State>(), 1);
+    player
+        .track_state::<Ym2151State>(Instance::Primary, 3_579_545.0)
+        .unwrap();
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let callback_events = std::rc::Rc::clone(&events);
     player.on_write(move |instance, spec: Ym2151Spec, sample, state_events| {
