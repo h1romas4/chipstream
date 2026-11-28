@@ -1,15 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.17.0
 
-- Show the current or planned track's emulation and NanoDrive outputs in Playlist Routing.
-- Show elapsed and estimated total playback time in Library and Piano Roll, including before playback.
 - Add S98 playback with library, Piano Roll, and NanoDrive routing support.
+- Fix MDX PCM1 playback using the wrong PDX bank after bank-selection commands.
+- Show elapsed and estimated total playback time in Library and Piano Roll, including before playback.
+- Show the current or planned track's emulation and NanoDrive outputs in Playlist Routing.
 - Improve audio processing efficiency and reduce stack usage.
 - Update GPUI Kit to v0.11.0.
 - Update rfd to v0.18.0.
 - Replace the direct chrono dependency with jiff for recording timestamps.
-- Fix MDX PCM1 playback using the wrong PDX bank after bank-selection commands.
 
 ## v0.16.1
 

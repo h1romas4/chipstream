@@ -1,6 +1,6 @@
 [package]
 name = "nddrv"
-version = "0.16.1"
+version = "0.17.0"
 edition = "2024"
 description = "Desktop VGM, MDX, XGM, and S98 library and player."
 license = "BSD-3-Clause"
