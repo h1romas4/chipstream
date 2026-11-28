@@ -4168,6 +4168,28 @@ impl AppView {
         };
         let state = playback_state_label(active, self.paused, self.waiting_for_start);
         let title = self.piano_title();
+        let routes = if active {
+            match self.player.gain_sources() {
+                Ok(Some(sources)) => playback_routing_labels(&sources),
+                Ok(None) | Err(_) => None,
+            }
+        } else {
+            self.config.playlist.first().and_then(|path| {
+                self.track_by_path
+                    .get(path)
+                    .map(|&index| &self.tracks[index])
+                    .or_else(|| self.playlist_tracks.get(path))
+                    .and_then(|track| {
+                        planned_routing_labels(
+                            &track.chips,
+                            &routing::RoutingPlan::new(self.routing.connections(), self.config.vgm),
+                            &self.config.routing.devices,
+                            &self.device_status,
+                        )
+                    })
+            })
+        }
+        .unwrap_or_else(|| vec!["--".to_owned()]);
         let title_width = self
             .measured_title
             .as_ref()
@@ -4320,36 +4342,11 @@ impl AppView {
                     .mt_1()
                     .child(div().text_sm().child("Routing"))
                     .child(
-                        div().flex().flex_wrap().gap_1().children(
-                            self.config
-                                .routing
-                                .devices
-                                .iter()
-                                .filter(|device| {
-                                    matches!(
-                                        self.device_status.get(&device.id),
-                                        Some(DeviceStatus::Connected(_))
-                                    )
-                                })
-                                .map(|device| {
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_sm()
-                                        .bg(rgb(0x39434b))
-                                        .text_sm()
-                                        .text_color(rgb(0xd0d8dd))
-                                        .child(device.name.clone())
-                                }),
-                        ),
-                    )
-                    .when(
-                        !self
-                            .device_status
-                            .values()
-                            .any(|status| matches!(status, DeviceStatus::Connected(_))),
-                        |row| {
-                            row.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(routes.into_iter().map(|label| {
                                 div()
                                     .px_2()
                                     .py_1()
@@ -4357,9 +4354,8 @@ impl AppView {
                                     .bg(rgb(0x39434b))
                                     .text_sm()
                                     .text_color(rgb(0xd0d8dd))
-                                    .child("Emulation"),
-                            )
-                        },
+                                    .child(label)
+                            })),
                     ),
             )
     }
@@ -6439,6 +6435,85 @@ fn piano_route_label(source: &GainSource) -> Option<(String, String)> {
     }
 }
 
+#[derive(Default)]
+struct RoutingLabels {
+    emulation: bool,
+    devices: Vec<(u64, String)>,
+}
+
+impl RoutingLabels {
+    fn add_device(&mut self, id: u64, name: String) {
+        if !self.devices.iter().any(|(existing, _)| *existing == id) {
+            self.devices.push((id, name));
+        }
+    }
+
+    fn finish(self) -> Option<Vec<String>> {
+        let mut labels = Vec::new();
+        if self.emulation {
+            labels.push("Emulation".to_owned());
+        }
+        labels.extend(self.devices.into_iter().map(|(_, name)| name));
+        (!labels.is_empty()).then_some(labels)
+    }
+}
+
+fn planned_routing_labels(
+    chips: &[ChipTag],
+    plan: &routing::RoutingPlan,
+    devices: &[routing::Device],
+    statuses: &HashMap<u64, DeviceStatus>,
+) -> Option<Vec<String>> {
+    if !unsupported_chips_with_plan(chips, plan, statuses).is_empty() {
+        return None;
+    }
+    let mut labels = RoutingLabels::default();
+    for tag in chips {
+        let instances = routing::ChipInstance::ALL.get(..tag.instances)?;
+        if instances.is_empty() {
+            return None;
+        }
+        for instance in instances {
+            let assignment = plan.assignments().iter().find(|assignment| {
+                Track::chip_name(&assignment.source.chip) == tag.name
+                    && assignment.source.instance == *instance
+            })?;
+            match &assignment.target {
+                routing::Target::Hardware { device_id, .. } => {
+                    if !matches!(statuses.get(device_id), Some(DeviceStatus::Connected(_))) {
+                        return None;
+                    }
+                    let device = devices.iter().find(|device| device.id == *device_id)?;
+                    labels.add_device(*device_id, device.name.clone());
+                }
+                routing::Target::Software { .. } => labels.emulation = true,
+                routing::Target::Silent => return None,
+            }
+        }
+    }
+    labels.finish()
+}
+
+fn playback_routing_labels(sources: &[GainSource]) -> Option<Vec<String>> {
+    let mut labels = RoutingLabels::default();
+    for source in sources.iter().filter(|source| !source.visual_only) {
+        match &source.target {
+            Some(routing::Target::Hardware { device_id, .. }) if source.hardware => {
+                labels.add_device(
+                    *device_id,
+                    source
+                        .target_device_name
+                        .clone()
+                        .unwrap_or_else(|| format!("NanoDrive (device {device_id})")),
+                );
+            }
+            Some(routing::Target::Software { .. }) if !source.hardware => labels.emulation = true,
+            _ => return None,
+        }
+    }
+    labels.finish()
+}
+
 fn piano_gain_panel_height(chip_rows: usize, slider_rows: usize) -> f32 {
     // Two borders, vertical padding, a 20px heading, and an 8px gap per row.
     let rows = if chip_rows == 0 && slider_rows == 0 {
@@ -8024,6 +8099,130 @@ mod tests {
             None
         );
         assert_eq!(playback_progress(5, None), None);
+    }
+
+    #[test]
+    fn planned_routing_uses_only_track_sources_and_connected_assignments() {
+        use super::{ChipTag, DeviceStatus, planned_routing_labels, routing};
+        use routing::{ChipInstance, Connection, Device, HardwareChip, RoutingPlan};
+
+        let tag = |name| ChipTag {
+            name,
+            instances: 1,
+            ymfm: matches!(name, "YM2151" | "YM2612"),
+            ym2149_compatible: [false; 2],
+            native_ay8910_compatible: [false; 2],
+        };
+        let devices = vec![
+            Device {
+                id: 1,
+                name: "NanoDrive 7".into(),
+                port: String::new(),
+                baud_rate: 0,
+            },
+            Device {
+                id: 2,
+                name: "NanoDrive 8".into(),
+                port: String::new(),
+                baud_rate: 0,
+            },
+        ];
+        let statuses = HashMap::from([
+            (1, DeviceStatus::Connected(vec![])),
+            (2, DeviceStatus::Connected(vec![])),
+        ]);
+        let connections = vec![
+            Connection {
+                chip: HardwareChip::Ym2151,
+                source: ChipInstance::Primary,
+                device_id: 1,
+                target: ChipInstance::Primary,
+            },
+            Connection {
+                chip: HardwareChip::Ym2612,
+                source: ChipInstance::Primary,
+                device_id: 2,
+                target: ChipInstance::Primary,
+            },
+        ];
+        let plan = RoutingPlan::new(&connections, Default::default());
+        let labels = |chips: &[ChipTag]| planned_routing_labels(chips, &plan, &devices, &statuses);
+        assert_eq!(labels(&[]), None);
+        assert_eq!(labels(&[tag("OKIM6258")]), Some(vec!["Emulation".into()]));
+        assert_eq!(labels(&[tag("YM2151")]), Some(vec!["NanoDrive 7".into()]));
+        assert_eq!(
+            labels(&[tag("YM2151"), tag("OKIM6258")]),
+            Some(vec!["Emulation".into(), "NanoDrive 7".into()])
+        );
+        assert_eq!(
+            labels(&[tag("YM2151"), tag("YM2612")]),
+            Some(vec!["NanoDrive 7".into(), "NanoDrive 8".into()])
+        );
+        assert_eq!(
+            labels(&[ChipTag {
+                instances: 2,
+                ..tag("YM2151")
+            }]),
+            Some(vec!["Emulation".into(), "NanoDrive 7".into()])
+        );
+        assert_eq!(labels(&[tag("AY8910")]), None);
+        assert_eq!(
+            planned_routing_labels(&[tag("YM2151")], &plan, &devices, &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn playback_routing_uses_actual_sources_and_ignores_visual_only_sources() {
+        use super::playback_routing_labels;
+        use crate::playback::GainSource;
+        use crate::routing::{ChipInstance, HardwareChip, SoftwareTarget, Target};
+        use chipstream::sequencer::{Chip, Instance};
+
+        let hardware = GainSource {
+            chip: Chip::Ym2151,
+            instance: Instance::Primary,
+            hardware: true,
+            visual_only: false,
+            target: Some(Target::Hardware {
+                device_id: 1,
+                chip: HardwareChip::Ym2151,
+                instance: ChipInstance::Primary,
+            }),
+            target_device_name: Some("NanoDrive 7".into()),
+        };
+        let software = GainSource {
+            chip: Chip::Okim6258,
+            instance: Instance::Primary,
+            hardware: false,
+            visual_only: false,
+            target: Some(Target::Software {
+                chip: SoftwareTarget::Native(Chip::Okim6258),
+                instance: ChipInstance::Primary,
+            }),
+            target_device_name: None,
+        };
+        let visual = GainSource {
+            visual_only: true,
+            target: Some(Target::Silent),
+            ..software.clone()
+        };
+        assert_eq!(playback_routing_labels(&[]), None);
+        assert_eq!(
+            playback_routing_labels(&[hardware.clone(), hardware.clone(), visual]),
+            Some(vec!["NanoDrive 7".into()])
+        );
+        assert_eq!(
+            playback_routing_labels(&[hardware, software.clone()]),
+            Some(vec!["Emulation".into(), "NanoDrive 7".into()])
+        );
+        assert_eq!(
+            playback_routing_labels(&[GainSource {
+                target: None,
+                ..software
+            }]),
+            None
+        );
     }
 
     #[test]
