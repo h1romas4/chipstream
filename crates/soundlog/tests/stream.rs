@@ -60,7 +60,7 @@ fn initial_timestamp_ends_when_source_wait_begins_before_stream_writes() {
         StreamResult::Command(VgmCommand::Ym2612Write(_, _))
     ));
     assert!(!stream.is_initial_timestamp());
-    stream.reset();
+    stream.reset().unwrap();
     assert!(stream.is_initial_timestamp());
 }
 
@@ -233,7 +233,7 @@ fn huc6280_dac_stream_selects_and_restores_the_correct_instance() {
                     (1, Instance::Secondary, 6, 31),
                 ]
             );
-            stream.reset();
+            stream.reset().unwrap();
         }
     }
 }
@@ -534,7 +534,7 @@ fn dac_budget_exact_boundary_zero_disable_and_reset() {
                 limit: 0
             }))
         ));
-        stream.reset();
+        stream.reset().unwrap();
         assert_eq!(stream.max_stream_steps_per_wait(), Some(0));
     }
 }
@@ -580,7 +580,7 @@ fn dac_budget_zero_wait_loops_and_reset() {
                 limit: 1
             }))
         ));
-        stream.reset();
+        stream.reset().unwrap();
         assert_eq!(stream.max_stream_steps_per_wait(), Some(1));
     }
 }
@@ -742,7 +742,7 @@ fn no_time_budget_persists_across_chunks_and_reset_preserves_limit() {
         stream.next(),
         Some(Err(soundlog::ParseError::CommandLimitExceeded { limit: 2 }))
     ));
-    stream.reset();
+    stream.reset().unwrap();
     assert_eq!(stream.max_commands_without_wait(), Some(2));
     stream.push_chunk(&[0x94, 0, 0x66]).unwrap();
     assert!(matches!(stream.next(), Some(Ok(StreamResult::EndOfStream))));
@@ -895,7 +895,7 @@ fn compressed_data_block_limit_includes_aggregate_decoded_size() {
             stream.get_uncompressed_stream(0x40).unwrap().data.len(),
             256
         );
-        stream.reset();
+        stream.reset().unwrap();
         assert_eq!(stream.total_data_block_size(), 0);
         assert_eq!(stream.data_block_count(), 0);
         assert_eq!(stream.max_data_block_size(), prefix_size + 284);
@@ -1010,7 +1010,7 @@ fn data_block_count_limit_persists_across_chunks_and_reset_preserves_limit() {
             }))
         ));
         assert_eq!(stream.data_block_count(), 1);
-        stream.reset();
+        stream.reset().unwrap();
         assert_eq!(stream.data_block_count(), 0);
         assert_eq!(stream.max_data_block_count(), Some(1));
         assert_eq!(stream.max_data_block_size(), 0);
@@ -1218,7 +1218,13 @@ fn generator_none_ends_stream_without_polling_again() {
         for _ in 0..2 {
             assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
         }
-        stream.reset();
+        assert!(matches!(
+            stream.reset(),
+            Err(soundlog::ParseError::UnsupportedStreamOperation {
+                operation: "reset",
+                source: "generator"
+            })
+        ));
         assert_eq!(stream.next().unwrap().unwrap(), StreamResult::EndOfStream);
     }
 
@@ -1411,14 +1417,14 @@ fn buffer_cursor_reset_and_loop_clear_discard_consumed_prefix() {
         assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
     }
     assert_eq!(stream.buffer_size(), 10);
-    stream.reset();
+    stream.reset().unwrap();
     assert_eq!(stream.buffer_size(), 0);
     assert_eq!(stream.max_buffer_size(), 32);
     stream.push_chunk(&[0x70]).unwrap();
     assert!(matches!(stream.next(), Some(Ok(StreamResult::Command(_)))));
     assert_eq!(stream.current_sample(), 1);
 
-    stream.reset();
+    stream.reset().unwrap();
     stream.set_loop_count(Some(2));
     stream.push_chunk(&[0x70; 4]).unwrap();
     stream.push_chunk(&[0x66]).unwrap();
@@ -2114,7 +2120,7 @@ fn test_stream_parser_reset_functionality() {
     assert!(parser.buffer_size() > 0);
 
     // Reset the parser
-    parser.reset();
+    parser.reset().unwrap();
 
     // Should be back to initial state
     assert_eq!(parser.buffer_size(), 0);
@@ -4973,7 +4979,7 @@ fn test_push_data_reset() {
     }
 
     // Reset the stream
-    stream.reset();
+    stream.reset().unwrap();
 
     // Should be able to push data again and parse from beginning
     push_vgm_bytes(&mut stream, &vgm_bytes);
@@ -5137,7 +5143,7 @@ fn test_data_block_size_reset() {
     );
 
     // Reset should clear the total size
-    stream.reset();
+    stream.reset().unwrap();
     assert_eq!(
         stream.total_data_block_size(),
         0,
@@ -6430,7 +6436,7 @@ fn test_loop_modifier_preserved_across_reset() {
     let mut stream = VgmStream::new();
     stream.set_loop_modifier(0x20);
     stream.set_loop_base(1);
-    stream.reset();
+    stream.reset().unwrap();
     assert_eq!(
         stream.loop_modifier(),
         0x20,
@@ -6533,7 +6539,7 @@ fn test_from_vgm_reset() {
     }
 
     // Reset and drain again — should yield the same commands.
-    stream.reset();
+    stream.reset().unwrap();
     let mut count = 0usize;
     for result in &mut stream {
         match result.expect("no error after reset") {
@@ -6854,16 +6860,32 @@ fn test_seek_to_sample_from_vgm_basic() {
 }
 
 #[test]
-fn seek_rejects_generators_without_changing_position_or_consuming_commands() {
+fn reset_and_seek_reject_generators_without_changing_position_or_consuming_commands() {
     #[derive(Debug)]
-    struct Generator(std::array::IntoIter<u16, 2>);
+    struct Generator(std::vec::IntoIter<VgmCommand>);
 
     impl soundlog::VgmCommandGenerator for Generator {
         fn next_command(&mut self) -> Result<Option<VgmCommand>, soundlog::ParseError> {
-            Ok(self.0.next().map(WaitSamples).map(VgmCommand::WaitSamples))
+            Ok(self.0.next())
         }
     }
 
+    let generator = || {
+        Box::new(Generator(
+            vec![
+                VgmCommand::from(soundlog::vgm::command::DataBlock {
+                    marker: 0x66,
+                    chip_instance: 0,
+                    data_type: 0,
+                    size: 2,
+                    data: vec![0x12, 0x34],
+                }),
+                WaitSamples(10).into(),
+                WaitSamples(20).into(),
+            ]
+            .into_iter(),
+        ))
+    };
     let assert_unsupported = |result| {
         assert!(matches!(
             result,
@@ -6873,17 +6895,28 @@ fn seek_rejects_generators_without_changing_position_or_consuming_commands() {
             })
         ));
     };
-    let mut stream = VgmStream::from_generator(Box::new(Generator([10, 20].into_iter())));
+    let mut stream = VgmStream::from_generator(generator());
     assert!(stream.next().unwrap().is_ok());
+    assert!(matches!(
+        stream.reset(),
+        Err(soundlog::ParseError::UnsupportedStreamOperation {
+            operation: "reset",
+            source: "generator"
+        })
+    ));
     assert_unsupported(stream.seek_to_sample(0));
     assert_eq!(stream.current_sample(), 10);
+    assert_eq!(stream.data_block_count(), 1);
+    assert_eq!(
+        stream.get_uncompressed_stream(0).unwrap().data,
+        [0x12, 0x34]
+    );
     assert_eq!(
         stream.next().unwrap().unwrap(),
         StreamResult::Command(VgmCommand::WaitSamples(WaitSamples(20)))
     );
 
-    let mut callbacks =
-        VgmCallbackStream::from_generator(Box::new(Generator([10, 20].into_iter())));
+    let mut callbacks = VgmCallbackStream::from_generator(generator());
     assert!(callbacks.next().unwrap().is_ok());
     assert_unsupported(callbacks.seek_to_sample(0));
     assert_eq!(callbacks.stream().current_sample(), 10);

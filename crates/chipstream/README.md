@@ -190,6 +190,37 @@ command generation fails. The generator handles its own loops, is called
 synchronously, and may be read ahead. Single-pass generators do not support
 checkpoints.
 
+For checkpoint and seek support, use
+[`from_generator_factory`](sequencer::VgmSequencer::from_generator_factory).
+The factory must recreate the same command sequence every time. Restoration
+replays the consumed commands without rendering audio, so generator side
+effects may occur again.
+
+```rust
+use chipstream::sequencer::{GeneratorConfig, VgmSequencer};
+use soundlog::{ParseError, VgmCommandGenerator};
+use soundlog::vgm::command::{VgmCommand, WaitSamples};
+
+#[derive(Debug)]
+struct Source(Option<WaitSamples>);
+impl VgmCommandGenerator for Source {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        Ok(self.0.take().map(VgmCommand::WaitSamples))
+    }
+}
+let factory = || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+    Ok(Box::new(Source(Some(WaitSamples(441)))))
+};
+let mut player = VgmSequencer::from_generator_factory(
+    factory, GeneratorConfig::default(), 48_000, 128,
+)?;
+let checkpoint = player.checkpoint()?;
+let block = player.render()?;
+player.restore_checkpoint(&checkpoint)?;
+assert_eq!(player.render()?, block);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ```rust
 use chipstream::sequencer::{GeneratorConfig, VgmSequencer};
 use soundlog::{ParseError, VgmCommandGenerator};

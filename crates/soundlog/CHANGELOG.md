@@ -2,6 +2,8 @@
 
 ## v0.19.0 (unreleased)
 
+- Change: `VgmStream::reset` returns a `Result` and rejects generator-backed streams without changing their state.
+- Add: Optional MDX execution notifications with track, command index, and generated VGM sample position.
 - Change: Error enums `ParseError`, `MdxConvertError`, `MdxPlaybackCheckError`, `PcmDecodeError`, and `XgmPlaybackError` are non-exhaustive; external matches must include a fallback arm.
 - Change: Replace VGM document `From` serialization with validated `TryFrom`; use `try_into()` and handle `ParseError`.
 - Add: Validated `TryFrom` serialization for owned and borrowed MDX and XGM documents.

@@ -2,6 +2,8 @@
 
 ## v0.2.0 (unreleased)
 
+- Add: Reconstructible generator factories for checkpoint and seek support.
+- Breaking: `StreamReconstruction` preserves its underlying `ParseError` rather than a string.
 - Breaking: Configure generator PWM compatibility in `GeneratorConfig` instead of `set_pwm_compatibility`.
 - Improve: Use f32 arithmetic for the DC blocker.
 - Improve: Reuse sequencer capture buffers and append resampled frames directly to the output queue.

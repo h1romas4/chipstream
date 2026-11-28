@@ -347,29 +347,7 @@ fn main() -> Result<(), ParseError> {
 }
 ```
 
-### `VgmStream::from_generator` — streaming playback for other formats
-
-[`VgmCommandGenerator`] is the extension point for producing VGM commands from
-your own source or another file format. Implement [`next_command()`](VgmCommandGenerator::next_command)
-and pass your boxed generator to [`VgmStream::from_generator`].
-
-The trait definition is:
-
-```rust
-use soundlog::vgm::command::VgmCommand;
-use soundlog::ParseError;
-
-pub trait VgmCommandGenerator: std::fmt::Debug {
-    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError>;
-}
-```
-
-Return `Ok(Some(command))` to yield a command, `Ok(None)` when the generator
-has permanently finished, or `Err(error)` if command generation fails.
-`Ok(None)` ends the stream even if the generator did not emit `EndOfData`.
-`VgmStream` then returns `EndOfStream` (including on repeated reads), while
-`VgmCallbackStream` returns `None`. This is not a request for more input.
-Implementations must also derive or implement `Debug`.
+### MDX streaming playback
 
 MDX conversion uses the same interface: its lazy generator is one
 `VgmCommandGenerator` implementation. The example below shows how to use it;
@@ -413,6 +391,12 @@ for result in &mut stream {
 }
 # }
 ```
+
+For source mapping, `mdx::convert::to_vgm_stream_generator_with_observer`
+reports the original track and command index before each MDX command executes.
+Its sample timestamp includes repeats and uses the 44.1 kHz generated VGM
+timeline. Notifications can be delivered before the corresponding commands
+are consumed, and replay for a checkpoint can report them again.
 
 ### XGM v1
 
@@ -603,6 +587,53 @@ propagated through the iterator.
 Missing or undecodable MDX PCM is treated as silence; use the package's decoding
 API for strict validation. PCM cache limit violations still return errors.
 Allocation failures and panics in user code are not converted into library errors.
+
+## Custom Command Generators
+
+A generator emits commands in order on the 44,100 Hz VGM timeline. Writes
+without an intervening wait occur at the same sample. `VgmStream` processes
+the commands, normalizes waits, and expands DAC streams; its output can
+therefore differ from the generator's input.
+
+The generator controls its own loops. `EndOfData` or `Ok(None)` ends the
+stream; `None` cannot mean temporarily unavailable data. Reset and seek are
+unsupported for this single-pass source. Errors should be returned, not
+treated as end of stream. Each call must return promptly: stream budgets
+cannot interrupt work inside a generator call.
+
+```rust
+use soundlog::chip::Ym2151Spec;
+use soundlog::vgm::command::{Instance, VgmCommand, WaitSamples};
+use soundlog::{ParseError, VgmCommandGenerator, VgmStream, VgmStreamResult};
+
+#[derive(Debug)]
+struct Source(std::vec::IntoIter<VgmCommand>);
+
+impl VgmCommandGenerator for Source {
+    fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+        Ok(self.0.next())
+    }
+}
+
+let commands = vec![
+    VgmCommand::Ym2151Write(Instance::Primary, Ym2151Spec {
+        register: 0x20, value: 0xc0,
+    }),
+    VgmCommand::WaitSamples(WaitSamples(441)),
+];
+let mut stream = VgmStream::from_generator(Box::new(Source(commands.into_iter())));
+loop {
+    match stream.next().unwrap()? {
+        VgmStreamResult::Command(command) => println!("{command:?}"),
+        VgmStreamResult::EndOfStream => break,
+        VgmStreamResult::NeedsMoreData => unreachable!("generator is not chunk-fed"),
+    }
+}
+# Ok::<(), ParseError>(())
+```
+
+For PCM rendering, configure the chips and clocks separately with
+`chipstream::sequencer::GeneratorConfig`; see the chipstream documentation.
 
 ## Chip State Tracking (WIP)
 

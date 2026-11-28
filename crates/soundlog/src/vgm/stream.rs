@@ -86,6 +86,16 @@ impl From<&StopStream> for DacStreamSelector {
 /// time or song length. This means a generator's own repeat/loop handling
 /// (e.g. MDX's song-repeat logic) must resolve internally — there is no
 /// stream-level rewind to a previously produced command.
+///
+/// Emit writes in their intended order and advance time with wait commands on
+/// the 44,100 Hz VGM timeline. Writes without an intervening wait occur at
+/// the same sample. [`VgmStream`] processes the commands, normalizing waits
+/// and expanding DAC streams, so its output is not necessarily identical to
+/// the input. The consumer must configure chip clocks separately.
+///
+/// Calls are synchronous. Each call must return promptly, including when
+/// processing malformed input: stream budgets count returned commands and
+/// cannot interrupt work inside `next_command`.
 pub trait VgmCommandGenerator: fmt::Debug {
     /// Produces the next command, or `Ok(None)` once the generator has
     /// permanently finished (no further calls will ever produce a command).
@@ -1100,6 +1110,10 @@ impl VgmStream {
     /// generator's own options (e.g. `MdxToVgmOptions::loop_count`) to
     /// control finite vs. infinite repeats instead of
     /// `VgmStream::set_loop_count`.
+    /// Settings for stream-level loop count, loop base, loop modifier, and
+    /// loop-triggered fadeout do not create a generator loop point.
+    /// [`reset`](Self::reset) and [`seek_to_sample`](Self::seek_to_sample)
+    /// reject generator-backed streams without changing their state.
     ///
     /// Either `EndOfData` or the generator returning `Ok(None)` ends the
     /// stream. Repeated reads at the end return [`StreamResult::EndOfStream`].
@@ -1599,6 +1613,8 @@ impl VgmStream {
     /// Sets the loop count limit.
     ///
     /// Controls how many times the stream will loop when it encounters a loop point.
+    /// A generator has no stream-level loop point; configure loops in the
+    /// generator instead.
     /// The default is `Some(1)` (one playthrough). Set to `Some(n)` for finite
     /// playback or `None` for infinite looping (not recommended for untrusted input).
     ///
@@ -1903,9 +1919,19 @@ impl VgmStream {
         }
     }
 
-    /// Resets the parser state, clearing all buffers and data blocks.
-    /// Resets the stream parser to its initial state.
-    pub fn reset(&mut self) {
+    /// Resets the stream parser to its initial state, clearing buffers and data blocks.
+    ///
+    /// # Errors
+    ///
+    /// Generator-backed streams cannot be rewound. For those streams this
+    /// returns [`ParseError::UnsupportedStreamOperation`] without changing state.
+    pub fn reset(&mut self) -> Result<(), ParseError> {
+        if matches!(self.source, VgmStreamSource::Generator { .. }) {
+            return Err(ParseError::UnsupportedStreamOperation {
+                operation: "reset",
+                source: "generator",
+            });
+        }
         match &mut self.source {
             VgmStreamSource::Buffer { buffer, read_pos } => {
                 buffer.clear();
@@ -1918,8 +1944,6 @@ impl VgmStream {
             } => {
                 *current_index = 0;
             }
-            // A generator is a single-pass producer with no retained
-            // history to rewind to; there is nothing to reset here.
             VgmStreamSource::Generator { .. } => {}
             VgmStreamSource::File {
                 current_pos,
@@ -1949,6 +1973,7 @@ impl VgmStream {
         self.budget.reset_usage();
         // loop_base and loop_modifier are header-derived configuration and are
         // intentionally preserved across reset() calls.
+        Ok(())
     }
 
     /// Resets the stream position to the loop point (or start if no loop point exists),
@@ -3286,7 +3311,7 @@ mod tests {
             ));
         }
         assert_eq!(stream.last_stream_write_id(), Some(7));
-        stream.reset();
+        stream.reset().unwrap();
         assert_eq!(stream.last_stream_write_id(), None);
     }
 

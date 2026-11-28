@@ -107,8 +107,7 @@ impl<'a> XgmSequencer<'a> {
         let (generator, marker) = xgm_generator(document, generator_options, mark_loop)?;
         let stream_factory: StreamFactory = Box::new(move || {
             let (generator, marker) =
-                xgm_generator(replay_document.clone(), generator_options, mark_loop)
-                    .map_err(|error| error.to_string())?;
+                xgm_generator(replay_document.clone(), generator_options, mark_loop)?;
             Ok((VgmStream::from_generator(generator), marker))
         });
         let config = ChipConfiguration::from_header(&header, None, true);

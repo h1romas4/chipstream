@@ -10,6 +10,92 @@ use soundlog::vgm::command::WaitSamples;
 use std::time::Duration;
 
 #[test]
+fn generator_factory_reconstructs_for_checkpoint_and_seek() {
+    use chipstream::sequencer::GeneratorConfig;
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::{ParseError, VgmCommandGenerator};
+    use std::{cell::Cell, rc::Rc};
+
+    #[derive(Debug)]
+    struct Generator(std::vec::IntoIter<VgmCommand>);
+    impl VgmCommandGenerator for Generator {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+            Ok(self.0.next())
+        }
+    }
+
+    let document =
+        soundlog::VgmDocument::try_from(&include_bytes!("../assets/vgm/ym2203_psg_a4.vgm")[..])
+            .unwrap();
+    let config = GeneratorConfig {
+        header: document.header,
+        extra_header: document.extra_header,
+        ..Default::default()
+    };
+    let commands = document.commands;
+    let calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&calls);
+    let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+        observed.set(observed.get() + 1);
+        Ok(Box::new(Generator(commands.clone().into_iter())))
+    };
+    let mut player = VgmSequencer::from_generator_factory(factory, config, 48_000, 128).unwrap();
+    assert_eq!(calls.get(), 1);
+    player.render().unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    let position = player.position_frames();
+    let expected = player.render().unwrap().unwrap();
+    player.restore_checkpoint(&checkpoint).unwrap();
+    assert_eq!(player.render().unwrap().unwrap(), expected);
+    player.seek_to_frame(&checkpoint, position + 53).unwrap();
+    assert_eq!(
+        player.render().unwrap().unwrap().frames(),
+        &expected.frames()[53..]
+    );
+    assert_eq!(calls.get(), 3);
+}
+
+#[test]
+fn generator_factory_preserves_reconstruction_errors() {
+    use chipstream::sequencer::GeneratorConfig;
+    use soundlog::vgm::command::VgmCommand;
+    use soundlog::{ParseError, VgmCommandGenerator};
+    use std::{cell::Cell, error::Error, rc::Rc};
+
+    #[derive(Debug)]
+    struct Generator;
+    impl VgmCommandGenerator for Generator {
+        fn next_command(&mut self) -> Result<Option<VgmCommand>, ParseError> {
+            Ok(Some(WaitSamples(1000).into()))
+        }
+    }
+
+    let calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&calls);
+    let factory = move || -> Result<Box<dyn VgmCommandGenerator>, ParseError> {
+        observed.set(observed.get() + 1);
+        if observed.get() > 1 {
+            return Err(ParseError::DataInconsistency("factory failed".into()));
+        }
+        Ok(Box::new(Generator))
+    };
+    let mut player =
+        VgmSequencer::from_generator_factory(factory, GeneratorConfig::default(), 44_100, 64)
+            .unwrap();
+    let checkpoint = player.checkpoint().unwrap();
+    let error = player.restore_checkpoint(&checkpoint).unwrap_err();
+    assert!(matches!(
+        error,
+        VgmSequencerError::StreamReconstruction(ParseError::DataInconsistency(_))
+    ));
+    assert!(error.source().is_some());
+    assert!(matches!(
+        player.render(),
+        Err(VgmSequencerError::StreamFailed)
+    ));
+}
+
+#[test]
 fn effect_state_and_pan_restore_and_topology_changes_are_rejected() {
     use chipstream::audio::{
         AudioError, Gain, NativeEffect, StereoBalance, StereoBlock, StereoEffect,

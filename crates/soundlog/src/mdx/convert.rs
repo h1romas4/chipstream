@@ -269,6 +269,8 @@ pub enum MdxConvertError {
         /// Configured maximum number of cached decoded `i16` samples.
         max_decoded_pcm_samples: u32,
     },
+    /// The observed playback position cannot be represented in VGM samples.
+    SamplePositionOverflow,
     /// Conversion options contain an unsupported or inconsistent value.
     InvalidOptions(&'static str),
     /// The current MDX document has an unrepresentable layout.
@@ -304,6 +306,9 @@ impl fmt::Display for MdxConvertError {
                 )
             }
             MdxConvertError::InvalidOptions(reason) => write!(f, "invalid options: {reason}"),
+            MdxConvertError::SamplePositionOverflow => {
+                write!(f, "MDX playback sample position overflow")
+            }
             MdxConvertError::DecodedPcmSampleLimitExceeded {
                 max_decoded_pcm_samples,
             } => write!(
@@ -358,9 +363,8 @@ impl MdxToVgmOptions {
 /// [`to_vgm_document`] on the eager side.
 ///
 /// Unlike [`to_vgm_document`], this never accumulates the whole song's worth
-/// of commands in memory: each call to the returned generator's
-/// `next_command` produces (and hands over) at most a tick's worth of
-/// commands, so this is the low-memory path intended for streaming
+/// of commands in memory: it retains generated commands only until they
+/// have been handed over, so this is the low-memory path intended for streaming
 /// straight to a chip driver (e.g. on a microcontroller) rather than
 /// building a `VgmDocument`.
 ///
@@ -384,6 +388,66 @@ pub fn to_vgm_stream_generator(
     options: MdxToVgmOptions,
 ) -> Result<Box<dyn VgmCommandGenerator>, MdxConvertError> {
     Ok((package, options).into())
+}
+
+/// An MDX track command about to be executed during lazy generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MdxExecutionEvent {
+    /// Zero-based index of the track in the supplied MDX document.
+    pub track: usize,
+    /// Zero-based index of the command in that track.
+    pub command_index: usize,
+    /// Elapsed 44,100 Hz VGM samples from the beginning, including repeats.
+    pub sample: u64,
+}
+
+/// Build a lazy generator that reports each executed MDX track command.
+///
+/// The observer runs synchronously immediately before each command is
+/// executed. Events are ordered by execution, including repeated commands;
+/// commands rejected by the command budget are not reported. A reported
+/// command can subsequently fail during execution. Indices refer to the
+/// supplied document, including commands inserted by its builder.
+///
+/// A generator can produce a whole tick of commands in one call, so events
+/// may be reported before those VGM commands are consumed. `sample` is the
+/// generation timeline, not a device playback position. Checkpoint replay
+/// can invoke the observer again for already generated commands.
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use soundlog::mdx::command::MdxRest;
+/// use soundlog::mdx::convert::{MdxToVgmOptions, to_vgm_stream_generator_with_observer};
+/// use soundlog::mdx::document::MdxBuilder;
+/// use soundlog::mdx::package::MdxPackage;
+/// use soundlog::VgmCallbackStream;
+///
+/// let mut builder = MdxBuilder::new();
+/// builder.add_mdx_command(0, MdxRest { ticks: 1 });
+/// let package = MdxPackage { mdx: builder.finalize()?, pdx: None };
+/// let events = Rc::new(RefCell::new(Vec::new()));
+/// let observed = Rc::clone(&events);
+/// let generator = to_vgm_stream_generator_with_observer(
+///     package, MdxToVgmOptions::default(),
+///     move |event| observed.borrow_mut().push(event),
+/// )?;
+/// for result in VgmCallbackStream::from_generator(generator) {
+///     result?;
+/// }
+/// assert_eq!((events.borrow()[0].track, events.borrow()[0].command_index), (0, 0));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn to_vgm_stream_generator_with_observer(
+    package: MdxPackage,
+    options: MdxToVgmOptions,
+    observer: impl FnMut(MdxExecutionEvent) + 'static,
+) -> Result<Box<dyn VgmCommandGenerator>, MdxConvertError> {
+    let mut generator = MdxVgmGenerator::new(package, options, false);
+    generator.playback.observer = Some(PlaybackObserver {
+        callback: Box::new(observer),
+        sample: 0,
+    });
+    Ok(Box::new(generator))
 }
 
 /// A notification that the requested MDX loop boundary has been reached.
@@ -1373,6 +1437,11 @@ impl FadeoutState {
     }
 }
 
+struct PlaybackObserver {
+    callback: Box<dyn FnMut(MdxExecutionEvent)>,
+    sample: u64,
+}
+
 struct PlaybackState<P: Borrow<MdxPackage>> {
     /// MDX/PDX package being consumed by the playback simulation.
     package: P,
@@ -1389,6 +1458,8 @@ struct PlaybackState<P: Borrow<MdxPackage>> {
     jump_source_map: Option<Vec<Vec<(usize, usize)>>>,
     /// Optional diagnostic tracking, with budgets only for playback checking.
     check_state: Option<PlaybackCheckState>,
+    /// Optional execution notifications on the generated VGM timeline.
+    observer: Option<PlaybackObserver>,
     /// PCM channel, sample, encoder, and byte-scheduler state.
     pcm_output: PcmOutputState,
     /// Tempo and fractional VGM sample timing state.
@@ -1476,6 +1547,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             tracks,
             jump_source_map: None,
             check_state: None,
+            observer: None,
             pcm_output: PcmOutputState::new(has_pcm, adpcm_mode),
             timing: PlaybackTimingState::new(),
             opm_reg_1b: 0,
@@ -1539,7 +1611,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
         {
             return Err(MdxConvertError::TickLimitExceeded { max_ticks });
         }
-        self.emit_wait(builder);
+        self.emit_wait(builder)?;
         Ok(StepOutcome::Continue)
     }
 
@@ -1763,6 +1835,13 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
                 });
             }
             self.timing.commands_since_tick = self.timing.commands_since_tick.saturating_add(1);
+            if let Some(observer) = &mut self.observer {
+                (observer.callback)(MdxExecutionEvent {
+                    track,
+                    command_index: self.tracks[track].command_index,
+                    sample: observer.sample,
+                });
+            }
             self.tracks[track].command_index += 1;
             if matches!(self.pcm_mode, MdxPcmMode::LegacyAdpcm)
                 && track == 8
@@ -2570,18 +2649,24 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
     /// of one MDX tick, taking into consideration both the sample rate and any pending
     /// PCM data writes. Ensures that PCM bytes are spread evenly across the tick's
     /// samples to maintain accurate playback timing.
-    fn emit_wait(&mut self, builder: &mut VgmBuilder) {
+    fn emit_wait(&mut self, builder: &mut VgmBuilder) -> Result<(), MdxConvertError> {
         let (tick_microseconds, samples) = self.timing.advance_tick();
+        if let Some(observer) = &mut self.observer {
+            observer.sample = observer
+                .sample
+                .checked_add(u64::from(samples))
+                .ok_or(MdxConvertError::SamplePositionOverflow)?;
+        }
 
         if !self.pcm_output.has_pcm {
             Self::emit_wait_chunks(builder, samples);
-            return;
+            return Ok(());
         }
 
         let pcm_bytes_due = self.pcm_output.mck_scheduler.advance(tick_microseconds);
         if pcm_bytes_due == 0 {
             Self::emit_wait_chunks(builder, samples);
-            return;
+            return Ok(());
         }
 
         // Spread the due OKIM6258 data writes evenly across this tick's
@@ -2611,6 +2696,7 @@ impl<P: Borrow<MdxPackage>> PlaybackState<P> {
             self.emit_pcm_byte(builder);
         }
         Self::emit_wait_chunks(builder, samples - emitted_samples);
+        Ok(())
     }
 
     /// Emits wait commands in chunks of up to 65535 samples to the VGM builder.

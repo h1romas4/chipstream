@@ -118,7 +118,8 @@ const MAX_PENDING_WRITES: usize = 1_048_576;
 const SCALE: f32 = 1.0 / 32768.0;
 const PHASE_SCALE: f32 = 1.0 / 4_294_967_296.0;
 
-pub(super) type StreamFactory = Box<dyn Fn() -> Result<(VgmStream, Option<FadeMarker>), String>>;
+pub(super) type StreamFactory =
+    Box<dyn Fn() -> Result<(VgmStream, Option<FadeMarker>), soundlog::ParseError>>;
 
 #[derive(Clone)]
 pub(super) enum FadeMarker {
@@ -227,7 +228,7 @@ pub enum VgmSequencerError {
         instance: Instance,
     },
     /// The original stream could not be reconstructed for a checkpoint.
-    StreamReconstruction(String),
+    StreamReconstruction(soundlog::ParseError),
     /// A seek target precedes its starting checkpoint.
     SeekTargetBeforeCheckpoint {
         /// Requested output-frame position.
@@ -356,7 +357,7 @@ impl Error for VgmSequencerError {
     /// Return the underlying parse, chip, routing, or audio error.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Parse(e) => Some(e),
+            Self::Parse(e) | Self::StreamReconstruction(e) => Some(e),
             Self::Chip(e) => Some(e),
             Self::Route(e) => Some(e),
             Self::Audio(e) => Some(e),
@@ -1060,13 +1061,18 @@ fn apply_stream_setting(stream: &mut VgmStream, setting: &StreamSetting) {
 }
 
 /// Reset a reconstructed stream to the sequencer's playback defaults.
-fn reset_replay_stream(stream: &mut VgmStream, loop_base: i8, loop_modifier: u8) {
-    stream.reset();
+fn reset_replay_stream(
+    stream: &mut VgmStream,
+    loop_base: i8,
+    loop_modifier: u8,
+) -> Result<(), soundlog::ParseError> {
+    stream.reset()?;
     stream.set_loop_count(Some(1));
     stream.set_loop_base(loop_base);
     stream.set_loop_modifier(loop_modifier);
     stream.set_fadeout_samples(None);
     stream.set_emit_stream_controls(true);
+    Ok(())
 }
 
 /// Replay a fixed number of commands while restoring saved stream settings.
@@ -1672,6 +1678,71 @@ impl<'a> VgmSequencer<'a> {
         chunk_frames: usize,
         factories: ChipFactoryRegistry,
     ) -> Result<Self, VgmSequencerError> {
+        Self::from_configured_generator(
+            generator,
+            None,
+            config,
+            output_rate,
+            chunk_frames,
+            factories,
+        )
+    }
+
+    /// Play a generator that can be reconstructed for checkpoints and seeking.
+    ///
+    /// The factory is called once initially and again on each restore. It must
+    /// produce the same command sequence every time, compatible with `config`.
+    /// This determinism is not verified by the sequencer.
+    /// Restoration replays the consumed commands without rendering their audio;
+    /// factory and generator side effects can occur again during replay.
+    /// An error during restoration makes the sequencer unusable.
+    pub fn from_generator_factory(
+        factory: impl Fn() -> Result<Box<dyn VgmCommandGenerator>, soundlog::ParseError> + 'static,
+        config: GeneratorConfig,
+        output_rate: u32,
+        chunk_frames: usize,
+    ) -> Result<Self, VgmSequencerError> {
+        Self::from_generator_factory_with_factories(
+            factory,
+            config,
+            output_rate,
+            chunk_frames,
+            ChipFactoryRegistry::new(),
+        )
+    }
+
+    /// Play a reconstructible generator with selected external chip factories.
+    ///
+    /// See [`Self::from_generator_factory`] for the reconstruction contract.
+    pub fn from_generator_factory_with_factories(
+        factory: impl Fn() -> Result<Box<dyn VgmCommandGenerator>, soundlog::ParseError> + 'static,
+        config: GeneratorConfig,
+        output_rate: u32,
+        chunk_frames: usize,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, VgmSequencerError> {
+        Self::validate_output(output_rate, chunk_frames)?;
+        let generator = factory()?;
+        let stream_factory: StreamFactory =
+            Box::new(move || Ok((VgmStream::from_generator(factory()?), None)));
+        Self::from_configured_generator(
+            generator,
+            Some(stream_factory),
+            config,
+            output_rate,
+            chunk_frames,
+            factories,
+        )
+    }
+
+    fn from_configured_generator(
+        generator: Box<dyn VgmCommandGenerator>,
+        stream_factory: Option<StreamFactory>,
+        config: GeneratorConfig,
+        output_rate: u32,
+        chunk_frames: usize,
+        factories: ChipFactoryRegistry,
+    ) -> Result<Self, VgmSequencerError> {
         Self::validate_output(output_rate, chunk_frames)?;
         let mut prepared =
             ChipConfiguration::from_header(&config.header, config.extra_header.as_ref(), true);
@@ -1697,7 +1768,7 @@ impl<'a> VgmSequencer<'a> {
         }
         let mut player = Self::from_generator_parts(
             generator,
-            None,
+            stream_factory,
             prepared,
             output_rate,
             chunk_frames,
@@ -2372,7 +2443,7 @@ impl<'a> VgmSequencer<'a> {
                 &mut self.stream,
                 self.initial_loop_base,
                 self.initial_loop_modifier,
-            );
+            )?;
             (None, None)
         };
         let stream = replacement.as_mut().unwrap_or(&mut self.stream);

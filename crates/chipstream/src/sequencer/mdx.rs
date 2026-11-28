@@ -266,14 +266,14 @@ impl<'a> MdxSequencer<'a> {
             if fadeout_samples.is_some() && options.loop_count.is_some() {
                 let (generator, marker) =
                     to_vgm_stream_generator_with_loop_marker(replay_package.clone(), options)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(soundlog::ParseError::from)?;
                 Ok((
                     VgmStream::from_generator(generator),
                     Some(FadeMarker::Mdx(marker)),
                 ))
             } else {
                 let generator = to_vgm_stream_generator(replay_package.clone(), options)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(soundlog::ParseError::from)?;
                 Ok((VgmStream::from_generator(generator), None))
             }
         });

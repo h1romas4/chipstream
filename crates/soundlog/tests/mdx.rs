@@ -14,8 +14,9 @@ use soundlog::mdx::command::{
     MdxVolume, MdxVolumeDown, MdxVolumeLfo, MdxVolumeUp,
 };
 use soundlog::mdx::convert::{
-    AdpcmMode, MdxConvertError, MdxPlaybackCheckError, MdxPlaybackCheckLimits, MdxToVgmOptions,
-    check_playback, to_vgm_document, to_vgm_document_with_diagnostics, to_vgm_stream_generator,
+    AdpcmMode, MdxConvertError, MdxExecutionEvent, MdxPlaybackCheckError, MdxPlaybackCheckLimits,
+    MdxToVgmOptions, check_playback, to_vgm_document, to_vgm_document_with_diagnostics,
+    to_vgm_stream_generator, to_vgm_stream_generator_with_observer,
 };
 use soundlog::mdx::document::{MdxBuilder, MdxDocument};
 use soundlog::mdx::header::parse_mdx_header;
@@ -28,6 +29,212 @@ use soundlog::mdx::tone::{MdxOperator, MdxTone};
 use soundlog::vgm::command::{VgmCommand, WaitSamples};
 use soundlog::vgm::stream::{StreamResult, VgmCommandGenerator};
 use soundlog::vgm::{VgmCallbackStream, VgmDocument, VgmStream};
+
+#[test]
+fn mdx_observer_reports_execution_positions_without_changing_vgm() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxTempo { value: 200 })
+        .add_mdx_command(0, MdxRest { ticks: 2 })
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(1, MdxRest { ticks: 1 });
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let options = MdxToVgmOptions {
+        loop_count: Some(1),
+        ..Default::default()
+    };
+    let expected = drain_finite_stream(VgmStream::from_generator(
+        to_vgm_stream_generator(package.clone(), options).unwrap(),
+    ));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let generator = to_vgm_stream_generator_with_observer(package, options, move |event| {
+        observed.borrow_mut().push(event);
+    })
+    .unwrap();
+    assert_eq!(
+        drain_finite_stream(VgmStream::from_generator(generator)),
+        expected
+    );
+    assert_eq!(
+        *events.borrow(),
+        [
+            MdxExecutionEvent {
+                track: 0,
+                command_index: 0,
+                sample: 0
+            },
+            MdxExecutionEvent {
+                track: 0,
+                command_index: 1,
+                sample: 0
+            },
+            MdxExecutionEvent {
+                track: 1,
+                command_index: 0,
+                sample: 0
+            },
+            MdxExecutionEvent {
+                track: 1,
+                command_index: 1,
+                sample: 632
+            },
+            MdxExecutionEvent {
+                track: 0,
+                command_index: 2,
+                sample: 1264
+            },
+            MdxExecutionEvent {
+                track: 0,
+                command_index: 3,
+                sample: 1896
+            },
+        ]
+    );
+}
+
+#[test]
+fn mdx_observer_positions_match_writes_with_pcm_wait_splitting() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let write = |value| MdxOpmRegisterWrite {
+        register: 0x1a,
+        value,
+    };
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, write(0x11))
+        .add_mdx_command(0, MdxRest { ticks: 2 })
+        .add_mdx_command(0, write(0x22))
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(1, MdxRest { ticks: 1 })
+        .add_mdx_command(1, write(0x33))
+        .add_mdx_command(
+            8,
+            MdxNote {
+                note: 0x80,
+                length: 3,
+            },
+        );
+    let mut pdx = PdxBuilder::new();
+    pdx.set_sample(0, 0, vec![0x12; 512]).unwrap();
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: Some(pdx.finalize()),
+    };
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let generator = to_vgm_stream_generator_with_observer(
+        package,
+        MdxToVgmOptions {
+            loop_count: Some(1),
+            ..Default::default()
+        },
+        move |event| observed.borrow_mut().push(event),
+    )
+    .unwrap();
+    let mut stream = VgmStream::from_generator(generator);
+    let mut writes = Vec::new();
+    loop {
+        match stream.next().unwrap().unwrap() {
+            StreamResult::Command(VgmCommand::Ym2151Write(_, spec)) if spec.register == 0x1a => {
+                writes.push((spec.value, stream.current_sample() as u64));
+            }
+            StreamResult::Command(_) => {}
+            StreamResult::EndOfStream => break,
+            StreamResult::NeedsMoreData => panic!("generator unexpectedly needs data"),
+        }
+    }
+    let events = events.borrow();
+    for (value, track, command_index) in [(0x11, 0, 0), (0x33, 1, 1), (0x22, 0, 2)] {
+        let event = events
+            .iter()
+            .find(|event| event.track == track && event.command_index == command_index)
+            .unwrap();
+        assert!(writes.contains(&(value, event.sample)));
+    }
+    assert_eq!(writes.len(), 3);
+}
+
+#[test]
+fn mdx_observer_reports_repeated_positions_and_respects_budget() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxRest { ticks: 1 })
+        .add_mdx_command(
+            0,
+            MdxCommand::EndOfTrackLoop(MdxRelativeOffset {
+                opcode: 0xf1,
+                offset: -4,
+            }),
+        );
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let generator = to_vgm_stream_generator_with_observer(
+        package,
+        MdxToVgmOptions {
+            loop_count: Some(2),
+            ..Default::default()
+        },
+        move |event| observed.borrow_mut().push(event),
+    )
+    .unwrap();
+    drain_finite_stream(VgmStream::from_generator(generator));
+    let events = events.borrow();
+    let rests: Vec<_> = events
+        .iter()
+        .filter(|event| event.command_index == 0)
+        .collect();
+    assert!(rests.len() >= 2);
+    assert_eq!(rests[0].sample, 0);
+    assert!(rests[1].sample > rests[0].sample);
+    assert!(
+        events
+            .windows(2)
+            .all(|pair| pair[0].sample <= pair[1].sample)
+    );
+    drop(events);
+
+    let mut builder = MdxBuilder::new();
+    builder
+        .add_mdx_command(0, MdxTempo { value: 200 })
+        .add_mdx_command(0, MdxRest { ticks: 1 });
+    let package = MdxPackage {
+        mdx: builder.finalize().unwrap(),
+        pdx: None,
+    };
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let mut generator = to_vgm_stream_generator_with_observer(
+        package,
+        MdxToVgmOptions {
+            max_commands_per_tick: Some(1),
+            ..Default::default()
+        },
+        move |event| observed.borrow_mut().push(event),
+    )
+    .unwrap();
+    assert!(generator.next_command().is_err());
+    assert_eq!(
+        *events.borrow(),
+        [MdxExecutionEvent {
+            track: 0,
+            command_index: 0,
+            sample: 0
+        }]
+    );
+}
 
 #[test]
 fn mdx_try_into_bytes_matches_serialization_and_reports_errors() {
